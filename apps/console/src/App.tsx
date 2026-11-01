@@ -6,7 +6,7 @@ import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult } from "@/components/Playground";
-import { type Agent, toolOffers } from "@/lib/agentForm";
+import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
@@ -131,9 +131,10 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
   }, [v2, where]);
   const agentName = (id: string) => names[id] ?? id;
-  const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string } } | null;
-  // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
-  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
+  const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string }; workflows?: Parameters<typeof decisionProvider>[0] } | null;
+  // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both. A
+  // new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
+  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default, decisionProvider: decisionProvider(c?.workflows) };
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/" }[s]);
   // The agents both start screens pick from, every page of them.
   const [agents, setAgents] = useState<Agent[] | null>(null);

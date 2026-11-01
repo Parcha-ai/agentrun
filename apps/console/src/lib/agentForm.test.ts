@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createBody, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers } from "./agentForm";
+import { createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers } from "./agentForm";
+import { DECISION_STARTER } from "./decisionStarter";
 import { ClientError } from "./client";
 import agent from "../fixtures/agent.invoice-checker.json";
 import workflow from "../fixtures/agent.support-triage.json";
@@ -94,6 +95,77 @@ describe("harnessOptions", () => {
   });
   it("offers nothing the server does not list", () => {
     expect(harnessOptions([{ id: "pi", available: true }]).map((h) => h.id)).toEqual(["pi"]);
+  });
+});
+
+describe("a decision agent", () => {
+  it("is offered on create after the harnesses, as a choice and never a harness id: available when the server runs decision workflows, else disabled with why", () => {
+    expect(DECISION).toBe("decision");
+    expect(harnessOptions(caps.body.harnesses, { available: true }).map((h) => h.id)).toEqual(["pi", "claude-agent", "codex", "decision"]);
+    expect(harnessOptions(caps.body.harnesses, { available: true }).at(-1)).toEqual({ id: "decision", label: "Decision", available: true, reason: undefined });
+    const off = harnessOptions([{ id: "pi", available: true }], { available: false }).at(-1)!;
+    expect([off.id, off.available]).toEqual(["decision", false]);
+    expect(off.reason).toMatch(/decision workflows/);
+    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain("decision");
+  });
+
+  it("is created as a workflow revision from the starter decision workflow: no instructions, harness, thinking or model, and no tools", () => {
+    const body = createBody({ name: "Gambling check", description: "Is a payment for gambling?", instructions: "Typed before the choice.", harness: DECISION, tools: ["read"], thinking: "high", model: "faux/faux-1" });
+    expect(body).toEqual({ definition: { version: 1, name: "Gambling check", description: "Is a payment for gambling?", workflow: DECISION_STARTER, skills: [], tools: [] } });
+    expect(body.definition.workflow).not.toBe(DECISION_STARTER);
+    expect(createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [] }).definition).not.toHaveProperty("description");
+  });
+
+  // Capabilities' workflows as serve lists them (server.ts: adapters, and decisions.providers from decisions.ts).
+  const workflows = (available: Record<string, boolean>) => ({
+    adapters: ["runNode", "runEffect", ...(Object.values(available).some(Boolean) ? ["runJudge"] : [])],
+    decisions: { providers: ["jev", "parallel", "openrouter"].map((id) => (available[id] ? { id, available: true } : { id, available: false, reason: `no key for ${id}` })) },
+  });
+
+  it("names the server's decision provider: Jev first, then Parallel; none when the server runs no decision workflows a starter can use", () => {
+    expect(decisionProvider(workflows({ jev: true, parallel: true, openrouter: true }))).toBe("jev");
+    expect(decisionProvider(workflows({ parallel: true }))).toBe("parallel");
+    expect(decisionProvider(workflows({}))).toBeUndefined();
+    // OpenRouter needs a model on every node, and where its key is set Jev runs too: alone, it is no starter's provider.
+    expect(decisionProvider(workflows({ openrouter: true }))).toBeUndefined();
+    expect(decisionProvider({ adapters: ["runNode", "runEffect"] })).toBeUndefined();
+    expect(decisionProvider({ adapters: ["runNode", "runJudge"] })).toBe("jev");
+    expect(decisionProvider(undefined)).toBeUndefined();
+  });
+
+  it("on a server whose only decision provider is Parallel, the starter's judge names parallel, with the decision demos' longer timeout", () => {
+    const provider = decisionProvider(workflows({ parallel: true }));
+    const made = createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [], decisionProvider: provider }).definition.workflow as typeof DECISION_STARTER;
+    expect(made.root.steps[0]).toMatchObject({ node: "judge", provider: "parallel", timeoutMs: 120000 });
+    expect({ ...made, root: { ...made.root, steps: [DECISION_STARTER.root.steps[0], ...made.root.steps.slice(1)] } }).toEqual(DECISION_STARTER);
+    expect(createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [], decisionProvider: "jev" }).definition.workflow).toEqual(DECISION_STARTER);
+    expect(DECISION_STARTER.root.steps[0]).not.toHaveProperty("provider");
+  });
+
+  it("starts from a decision workflow with an example input: a typed question, then a person for an unclear or low-confidence answer", () => {
+    const steps = DECISION_STARTER.root.steps.map((s) => s.node);
+    expect(steps).toEqual(["judge", "escalate", "escalate", "escalate"]);
+    expect(DECISION_STARTER.root.steps.slice(1).map((s) => (s as { when: { predicate: string } }).when.predicate)).toEqual(["field_equals", "not", "lt"]);
+    expect(DECISION_STARTER.schemas.Input.examples).toHaveLength(1);
+    expect(DECISION_STARTER.root.steps[0]).not.toHaveProperty("provider");
+  });
+
+  // A server runs a code node only when its operator allows them (--allow-code-nodes), and refuses the run of a
+  // workflow that holds one otherwise: a starter with one would make agents whose every run a default server refuses.
+  it("has no code node anywhere, on any provider, so a default server runs it", () => {
+    const kinds = (node: unknown): string[] => {
+      if (Array.isArray(node)) return node.flatMap(kinds);
+      if (!node || typeof node !== "object") return [];
+      const own = typeof (node as { node?: unknown }).node === "string" ? [(node as { node: string }).node] : [];
+      return [...own, ...Object.values(node).flatMap(kinds)];
+    };
+    for (const provider of [undefined, "parallel"]) {
+      const workflow = createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [], decisionProvider: provider }).definition.workflow;
+      const nodes = kinds((workflow as { root: unknown }).root);
+      expect(nodes).toContain("judge");
+      expect(nodes).not.toContain("code");
+      expect(JSON.stringify(workflow)).not.toMatch(/"via":"(?:executor|shell)"/);
+    }
   });
 });
 

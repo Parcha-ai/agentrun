@@ -2,6 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditPage, AgentsPage } from "./AgentsPage";
+import { AgentPage } from "./AgentPage";
 import { ClientError } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
 
@@ -71,6 +72,55 @@ describe("AgentEditPage", () => {
     expect(page.host.querySelector("textarea")).toBeTruthy();
     expect(page.button(/^Reload$/)).toBeTruthy();
     expect(page.host.textContent).toContain("could not be reloaded");
+  });
+});
+
+describe("AgentEditPage, a new decision agent", () => {
+  /** Create a decision agent named "Gambling check" on a server whose decision provider is `provider`: what was sent,
+   *  where the page went, and the page and host to look at after. */
+  async function createDecision(provider: string) {
+    const { DECISION_STARTER } = await import("@/lib/decisionStarter");
+    const made: Agent = { agent_id: "gambling-check", kind: "workflow", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] } };
+    let sent: { definition: Record<string, unknown> } | undefined;
+    let went: string | undefined;
+    const v2 = {
+      createAgent: async (body: { definition: Record<string, unknown> }) => { sent = body; return made; },
+      getAgent: async () => ({ agent: made, etag: "r1" }),
+      listRevisions: async () => ({ revisions: [{ revision: "r1", version: 1, current: true, note: null, created_at: "2026-11-01T00:00:00Z" }], next_cursor: null }),
+      validateWorkflow: async () => ({ ok: true, issues: [], warnings: [] }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const page = (agentId: string | null) => createElement(AgentEditPage, { v2: v2 as never, caps: { ...caps, decisionProvider: provider } as never, agentId, go: (hash: string) => { went = hash; } });
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
+    act(() => root!.render(page(null)));
+    await act(async () => { button(/Settings/)!.click(); });
+    await act(async () => { host.querySelector<HTMLInputElement>('input[type=radio][value="decision"]')!.click(); });
+    await act(async () => { button(/Context/)!.click(); });
+    await act(async () => {
+      const name = host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "Gambling check");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { button(/^Create$/)!.click(); });
+    await settle();
+    return { DECISION_STARTER, sent, went, host, v2, settle };
+  }
+
+  it("creates a workflow agent from the starter decision workflow, with no harness, and opens its page on the Workflow tab", async () => {
+    const { DECISION_STARTER, sent, went, host, v2, settle } = await createDecision("jev");
+    expect(sent?.definition).toEqual({ version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] });
+    expect(went).toBe("#/agents/gambling-check/workflow");
+    // The page the create went to: the new workflow agent's own page, its Workflow tab current.
+    act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: "gambling-check", tab: "workflow", go: () => {} })));
+    await settle();
+    expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toMatch(/Workflow/);
+  });
+
+  it("on a server whose decision provider is Parallel, sends a starter whose judge names parallel", async () => {
+    const { sent } = await createDecision("parallel");
+    expect((sent?.definition.workflow as { root: { steps: Record<string, unknown>[] } }).root.steps[0]).toMatchObject({ node: "judge", provider: "parallel" });
   });
 });
 

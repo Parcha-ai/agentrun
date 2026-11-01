@@ -84,9 +84,9 @@ export function AgentEditPage({ v2, caps, agentId, go }: { v2: Client; caps: Edi
         let saved;
         try {
           if (!agent) {
-            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], thinking: fields.thinking, model: fields.model }));
-            // A new agent lands on its own page.
-            go(agentHash(made.agent_id));
+            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], thinking: fields.thinking, model: fields.model, decisionProvider: caps.decisionProvider }));
+            // A new agent lands on its own page; a workflow agent (a decision agent) on its Workflow tab.
+            go(agentHash(made.agent_id, made.kind === "workflow" ? "workflow" : undefined));
             return null;
           }
           const body = editBody(agent, fields, note);
