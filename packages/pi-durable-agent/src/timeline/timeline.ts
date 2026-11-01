@@ -4,7 +4,9 @@ import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, ty
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
   | "subagent_started" | "subagent_progress" | "subagent_completed" | "final_answer" | "error"
-  | "user_message" | "waiting" | "usage";
+  | "user_message" | "waiting" | "usage"
+  /** A workflow decision: a judge's answers or a route's branch (serve's decision rows). */
+  | "decision";
 
 /** Grep's public `TimelineEvent` (its 13 fields) plus the open additions, all optional. */
 export type TimelineEvent = {

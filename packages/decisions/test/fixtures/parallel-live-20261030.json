@@ -1,0 +1,95 @@
+{
+ "about": "POST https://api.parallel.ai/v1/decisions, mode fast, 2026-10-30, live; excerpts cut to 400 characters.",
+ "question": {
+  "active_delaware": {
+   "type": "noul",
+   "instructions": "Is Stripe, Inc. an active corporation registered in Delaware?"
+  }
+ },
+ "response": {
+  "mode": "fast",
+  "answers": {
+   "active_delaware": {
+    "type": "noul",
+    "noul": 0.9397633904483765
+   }
+  },
+  "usage": {
+   "input_tokens": 3415,
+   "output_tokens": 0
+  },
+  "citations": [
+   {
+    "url": "https://opengovus.com/tennessee-business/000817588",
+    "title": "Stripe, Inc. \u00b7 3180 18th St, Ste 100, San Francisco, CA 94110-2042",
+    "excerpts": [
+     "Stripe, Inc.\n\n* 1. Business Overview\n* 2. Office Location\n* 3. Business Officer\n* 4. Competitor\n* 5. Dataset Information\n\nStripe, Inc.\n\naddress: 3180 18th St, Ste 100, San Francisco, CA 94110-2042\nStripe, Inc. (Entity# 000817588) is a business registered with Tennessee Secretary of State . The business formed date is April 13, 2009 .\nSearch\n\nBusiness Overview\n\n* Control Number | 000817588\n* Filing"
+    ]
+   },
+   {
+    "url": "https://lei.report/LEI/549300YK0Z4SWKNYPQ72/",
+    "title": "STRIPE PAYMENTS COMPANY | LEI.report",
+    "excerpts": [
+     "STRIPE PAYMENTS COMPANY\n\n549300YK0Z4SWKNYPQ72 Copy LEI\nISSUED\nGLEIF source publication: Oct 10, 2026, 12:00 AM UTC\n\nLegal address\n\nC/O THE CORPORATION TRUST COMPANY CORPORATION TRUST CENTER 1209 ORANGE ST WILMINGTON, US-DE, 19801 US\n\nHeadquarters address\n\nCORPORATION TRUST CENTER 1209 ORANGE ST WILMINGTON, US-DE, 19801 US\n\nEntity details\n\nEntity status ACTIVE Legal jurisdiction Delaware (United St"
+    ]
+   },
+   {
+    "url": "https://companiesbio.com/CIK-0001691342-company-stripe-inc-info.html",
+    "title": "Stripe, Inc. (CIK: 0001691342) EDGAR, Information, Filings... CompaniesBIO.Com",
+    "excerpts": [
+     "* Home\n* Companies in U.S.\n* Stripe, Inc.\nST\n\nStripe, Inc.\n\n* CIK : 0001691342\n* EIN : 27-0465600\n* Business address: 185 BERRY STREET, SUITE 550, SAN FRANCISCO, California , 94107\n\nInformation\n\n* \n\nMailing address\n\n185 BERRY STREET, SUITE 550, SAN FRANCISCO, Delaware , 94107\n* \n\nPhone\n\n(415) 298-5539\n* \n\nState location\n\nCalifornia\n* \n\nState of incorporation\n\nDelaware\n* \n\nFiscal year end\n\nDecember"
+    ]
+   },
+   {
+    "url": "https://lei.report/LEI/254900VYCQ4K0SLSXF22/",
+    "title": "STRIPE GLOBAL HOLDINGS INC. | LEI.report",
+    "excerpts": [
+     "STRIPE GLOBAL HOLDINGS INC.\n\n254900VYCQ4K0SLSXF22 Copy LEI\nISSUED\nGLEIF source publication: Oct 10, 2026, 12:00 AM UTC\n\nLegal address\n\nC/O THE CORPORATION TRUST COMPANY CORPORATION TRUST CENTER 1209 ORANGE ST WILMINGTON, US-DE, 19801 US\n\nHeadquarters address\n\n354 Oyster Point Blvd South San Francisco, US-CA, 94080 US\n\nEntity details\n\nEntity status ACTIVE Legal jurisdiction Delaware (United States "
+    ]
+   },
+   {
+    "url": "https://banking.delaware.gov/wp-content/uploads/sites/73/2026/10/WEB-OCT-15-Check-Seller-and-Money-Transmitter.pdf",
+    "title": "State of Delaware ",
+    "excerpts": [
+     "State of Delaware\n\nOFFICE OF THE STATE BANK COMMISSIONER\nLicensees and Existing Branches PDT: 10/14/2026 3:00PM\nCheck Seller, Money Transmitter\n042465 1Money USA, Inc.\n575 5th Avenue Floor 14 Suite 14-107 New York, NY 10017 Contact: Kristen Hecht - (845) 999-0474\nFiling Status: Current - Licensed Expires Date: 12/31/2026\n011221 ACI Payments, Inc.\n\n...\n\n221 Main Street 6th Floor San Francisco, CA 9"
+    ]
+   },
+   {
+    "url": "https://uspto.report/company/Stripe-Inc",
+    "title": "Stripe, Inc. Trademarks & Logos",
+    "excerpts": [
+     "USPTO .report\n* Trademarks\n* Patents\n* Copyright\n\nStripe, Inc.\n\nUSPTO Trademark & Patent Filings\n\nTrademark applications and grants for Stripe, Inc.. Stripe, Inc. has 56 trademark applications. The latest application filed is for \"STRIPE READER T600\"\nCompany Profile\nCompany Aliases* STRIPE INC.\n* Stripe, Inc.\n* Stripe, Inc. - San Francisco CA US\n* STRIPE, INC. - San Francisco CA US\n* State Incorpo"
+    ]
+   },
+   {
+    "url": "https://opengovus.com/sam-entity/966357621",
+    "title": "Stripe, Inc. \u00b7 185 Berry Str Ste 550, San Francisco, CA 94107-9105",
+    "excerpts": [
+     "System for Award Management (SAM) Registered Entities\n\nStripe, Inc.\n\n185 Berry Str Ste 550, San Francisco, CA 94107-9105\n\nOverview\n\nSTRIPE, INC. (doing business as STRIPE ) is an entity in San Francisco, California registered with the System for Award Management (SAM) of U.S. General Services Administration (GSA). The entity was registered on November 13, 2015 with Unique Entity ID (UEI) # 9663576"
+    ]
+   },
+   {
+    "url": "https://tracxn.com/d/companies/stripe/__uahG_IGnVgsUsOG-f8otYHLkOkliWg7YFhJ5ZkNIkpI",
+    "title": "Stripe - 2026 Company Profile, Team, Funding & Competitors - Tracxn",
+    "excerpts": [
+     "2 nd among 6331 active competitors\nEmployee Count\n16,622 as on Sep 30, 2026\nInvestment & Acquisitions\nArchive & 94 more\nSimilar Companies\nPayPal & 3775 more\nView Stripe's full profile\n\nLegal entities associated with Stripe\n\nStripe is associated with 4 legal entities given below:\n* Legal Entity Name | Date of Incorporation | Revenue | Latest Employee Count | Reports\n* STRIPE WOOD s.r.o. CIN: 086679"
+    ]
+   },
+   {
+    "url": "https://support.stripe.com/questions/stripe-atlas",
+    "title": "Stripe Atlas : Stripe: Help & Support",
+    "excerpts": [
+     "Docs APIs & SDKs Create account Sign in\n\nStripe Atlas\n\n* Atlas\nStripe Atlas helps founders launch a startup in a reliable, safe, and fast manner, from anywhere in the world.\nWith the one-time Stripe Atlas setup fee of $500, Stripe Atlas founders can:\n* Form a C Corporation or Limited Liability Company (LLC) in Delaware\n* Get an Employer Identification Number (EIN) from the U.S. Internal Revenue Se"
+    ]
+   },
+   {
+    "url": "https://stripe.com/resources/more/what-is-a-delaware-file-number",
+    "title": "What Is a Delaware File Number? How to Find It | Stripe",
+    "excerpts": [
+     "FAQs about Delaware file numbers\n11. Incorporate with Stripe Atlas\nA Delaware file number is a unique identifier the Delaware Division of Corporations assigns to certain business entities formed in the state. File numbers are used to identify corporations, limited liability companies (LLCs), and other business structures in state records. You must provide your Delaware file number when filing an a"
+    ]
+   }
+  ],
+  "decision_id": "decisions_d1ea7f7f311f42d319207b3e9c1b4d3b"
+ }
+}

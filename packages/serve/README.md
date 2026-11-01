@@ -21,6 +21,8 @@ JS
 node packages/serve/dist/cli.js --faux faux.mjs
 ```
 
+Installed, `agentrun-serve` is a launcher that needs a POSIX `sh` with a builtin `printf` (Linux, macOS; not Windows). It hands the server its keys and token over a pipe, so none is in any process's environment, the run's processes included. Started as `node dist/cli.js`, as above, the server reads them from its own environment. `GET /v2/capabilities`' `secrets` says how they are held, and what that does not cover.
+
 It prints where it listens and, at the start that made it, the token:
 
 ```
@@ -56,6 +58,8 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
+| `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
+| `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -201,10 +205,13 @@ it starts:
 - What no setting of this host fixes refuses the save, `422 input_invalid` by field, and nothing is written: a tool
   this host does not bind (`definition.tools[i]`, `bash` among them), a model pi-ai does not know when no gateway is
   set (`definition.model`, saying why), empty instructions (`definition.instructions`), and a workflow that needs a tool
-  call, a judge, code, or a node tool other than `read`, `write` and `edit` (`definition.workflow`, one field per need).
+  call this host does not run, code, or a node tool other than `read`, `write` and `edit` (`definition.workflow`, one
+  field per need).
 - What a setting of this host fixes saves, and the `201` or `200` carries it in `warnings` (`[{field, reason:
   "not_set_up_here", message}]`, empty when there is none): no key for the model's provider, no default model for a
-  revision that names none, no model for a tier a workflow's nodes name. The page shows them before it leaves the form.
+  revision that names none, no model for a tier a workflow's nodes name, no key for the decision provider a workflow's
+  typed questions name ([decision workflows](#decision-workflows)). A decision provider this server does not have
+  refuses the save. The page shows them before it leaves the form.
 
 A run is refused before it starts, `409 agent_not_runnable`, saying which, for any of these: a warning the host has not
 fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
@@ -231,7 +238,14 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 
+| `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/`, the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
+| `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
+
 There is no `bash`: a run gets no shell (see [Safety](#safety)).
+
+A call tool that fails on its own (an unreadable PDF, a model's refusal) fails its call node; inside a `map` with
+`onItemFailure: "collect"` it fails that item, and the other items go on. A cancel or the node's deadline still
+stops the run.
 
 `fetch_page` reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
 every address it resolves to is checked, and the connection is dialled at the address checked, so a loopback, private,
@@ -256,10 +270,10 @@ the sessions it still holds are released at Browserbase.
 | Route | Here |
 | --- | --- |
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
-| `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` and the operations it answers `501` marked `x-agentrun-serve-unsupported`; `links.openapi` in capabilities points at it. |
-| `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get; `models`, where models come from and the model of each tier. |
+| `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
+| `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
 | `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
-| `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |
+| `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
@@ -271,6 +285,10 @@ the sessions it still holds are released at Browserbase.
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
+| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`; `failed` includes escalated. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. |
+| `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; a poll never answers `home_busy` (`stale: true` marks a last whole view). An agentic run has none (`404`). |
+| `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
+| `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
@@ -288,9 +306,61 @@ back.
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. Today this server runs pi.
 
+`claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with Anthropic's own model id, and prices the run
+by it: a revision's `anthropic/<model-id>`, its dots as dashes. A gateway such as OpenRouter names the same models with
+dots (`anthropic/claude-sonnet-5.5`) and takes Anthropic's own id (`claude-sonnet-5-5`), so one name works through it and
+direct. A model with more than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is refused, naming
+the form to use.
+
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
 `serve/1`), and lists them in `info.x-agentrun-serve.fields`.
+
+## Decision workflows
+
+A workflow's typed questions (its `judge`, `pick`, `sift`, `route` and `ask` nodes) run on a decision provider when
+this server's environment sets the provider's key. They are fast decisions, not agent turns: one request per node, with
+typed answers and their probabilities.
+
+- Jev, TypeSafe's System One, through `@parcha/agentrun-jev`, answers a node that names no provider. Set
+  `TYPESAFE_API_KEY`: it is the route whose key stays out of a run's reach (below). `OPENROUTER_API_KEY` also works,
+  for Jev through OpenRouter, and so does a model gateway on OpenRouter: with `AGENT_MODEL_BASE_URL` on the host
+  `openrouter.ai` and neither key set, Jev runs on `AGENT_MODEL_API_KEY`.
+- Parallel Decisions, through `@parcha/agentrun-decisions`, answers a node that says `provider: "parallel"`, with web
+  citations as its evidence. Set `PARALLEL_API_KEY`. Each request is booked at Parallel's list price as an estimate,
+  and one whose outcome was lost after sending is never sent again: the run escalates it as interrupted.
+- OpenRouter's Decisions models answer a node that says `provider: "openrouter"` and names its model in `model`
+  (`liquid/d1`, `perplexity/pplx-decider-v1.2`, `cloudflare/clef`, `typesafe/jev-1.14`). They run on the OpenRouter key
+  Jev's OpenRouter route reads (`OPENROUTER_API_KEY`, else `AGENT_MODEL_API_KEY` with `AGENT_MODEL_BASE_URL` on
+  openrouter.ai), handed to the run's process on the decision descriptor as Jev's is. That key is also the model
+  gateway's, which a run's process holds. Images to them are experimental.
+- A decision node's `images` are files of the run's `work/`, such as the pages `pdf_pages` draws: the run's process
+  reads them and sends them with the request. The receipt keeps each image's SHA-256, never its bytes.
+- `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev" | "parallel" | "openrouter", available,
+  reason?, note?}]`), and `runJudge` is among `workflows.adapters` once any of them runs here. On the OpenRouter route,
+  jev's `note` names the variable Jev runs on (`OPENROUTER_API_KEY` or `AGENT_MODEL_API_KEY`) and says that it is the
+  model gateway's key.
+- With no key for a provider a workflow's nodes name, the workflow saves with a `not_set_up_here` warning on
+  `definition.workflow` naming the variable, and a run of it is `409 agent_not_runnable`, with `details.adapters:
+  ["runJudge"]` and `details.decisions` naming each missing provider, for example `{parallel: {reason:
+  "not_set_up_here", needs: ["PARALLEL_API_KEY"]}}`. A provider this server does not have refuses the save, `422`.
+- Each question's receipt is a row of the run's store (`agentrun.decisions`) before its answer acts, and a resumed run
+  takes an answered one instead of asking again.
+- Jev's API reports token counts and no price, so each answered decision is booked at TypeSafe's published price
+  ($0.042 per million input tokens; output tokens are free) as an estimate, and the run's `cost.usd` is its decisions'
+  sum, with `basis: "estimate"`. A decision whose cost is unknown (no token counts, the OpenRouter route, or a call that
+  failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
+- The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
+  server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands the values to a workflow
+  run's process once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS
+  refuses a high one), at each launch, a resume after a restart included. The process reads them into its decision
+  providers, closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an
+  environment, an argument list or a file, and no program the run starts inherits it. With no key, no descriptor is
+  opened. On the OpenRouter route Jev's key comes on the same descriptor, never from the run's environment; that key is
+  also the model gateway's key, which a run's process holds for its model nodes.
+- `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` are among the secrets the launcher hands the server over its pipe, so the
+  server holds them out of its own environment too. Neither is ever among the secrets a run's process gets over its own
+  pipe, which are its tools' environment: the decision descriptor is their only way into a run.
 
 ## Archiving
 
@@ -379,8 +449,9 @@ cookie to every server on the same host name, whatever its port, so another app 
      (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)).
    - A workflow revision runs on agentrun-pi's durable workflow task, started by `startWorkflowRevision` of
      `@parcha/pi-durable-agent/workflow` (keyed by the run's id): its model nodes (`agent`, `decide`, `extract`,
-     `report`) on the run's model, with the file tools each node names. A workflow that needs a tool call, a judge or
-     code is not saved here (`422`). The run is `queued` until its process serves, then `working`; when the workflow
+     `report`) on the run's model, with the file tools each node names, and its typed questions on Jev or Parallel
+     ([decision workflows](#decision-workflows)). A workflow that needs code or a tool call this host does not run is
+     not saved here (`422`). The run is `queued` until its process serves, then `working`; when the workflow
      ends, the app writes the run's final status with the outcome and releases it. Nothing is carried back from inside
      the process, which holds the run's store until it exits.
 3. When the process has exited, the run's rows are read from its released store (an agentic run's conversation, a
@@ -413,9 +484,9 @@ input tokens are pi-ai's estimate (`estimateContextTokens`: the tokens the last 
 per 3.5 characters after it), which may run low on code or non-English text; the server's check after each response
 catches what it misses. Spent so far is read from the run's store each time its process starts, so it survives a
 restart, plus each response since; a request in flight holds its worst case until it answers. A model with no price (a
-gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`) never reaches a cap, and its run's cost reads
-`null`. Pricing the whole output
-ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's worst case is about $0.96,
+gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`) cannot be kept within a cap: under one its first
+request is refused before anything is sent, and the run ends `spend_cap_reached` at $0; with no cap its run's cost reads
+`null`. Pricing the whole output ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's worst case is about $0.96,
 so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
 
 The server also checks the run's cost after each response, as a backstop, and stops a run whose cost passed its cap.
@@ -452,6 +523,8 @@ carries no cost at all, as from a provider that does not price the model. The te
 
 ## Safety
 
+- The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`) are never in a run's environment or files: a workflow run's
+  process gets them on a pipe of their own, for its decision providers alone ([decision workflows](#decision-workflows)).
 - `fetch_page` dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this
   machine, its network or a cloud's metadata address through it.
 - A `browser` session runs at Browserbase, not on this machine: a page the model opens is reached from Browserbase's

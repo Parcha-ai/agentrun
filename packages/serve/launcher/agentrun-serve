@@ -1,0 +1,75 @@
+#!/bin/sh
+# agentrun-serve's launcher: it hands the server its secrets over a pipe and starts it with none of them in its
+# environment, so no process of the server's user can read them from /proc/<pid>/environ or cmdline.
+#
+#   agentrun-serve [ARG...]              the server (../dist/cli.js beside this launcher) with ARGs
+#   agentrun-serve -- COMMAND [ARG...]   COMMAND, which starts the server (the image's: tini -- node .../cli.js)
+#
+# Each secret named below that is set goes into one pipe as NAME=VALUE and a NUL, AGENTRUN_SECRETS_LEN bytes in all,
+# on fd AGENTRUN_SECRETS_FD; the server reads exactly that many bytes first thing and closes the pipe. First, each
+# secret moves out of the environment into this shell's own memory, so no process it starts (mktemp, mkfifo, rm, env)
+# inherits one; only this launcher's own initial environment, gone at the exec, ever held them. The pipe is a FIFO whose
+# name is gone before any secret is written, and only this shell writes it, with its builtin printf; `env -u` drops
+# every name from what COMMAND inherits too. The condition: this runs before any run's process exists. A process of the
+# same user started earlier could open the FIFO while it is named.
+SECRETS='AGENTRUN_TOKEN AGENTRUN_API_KEY AGENT_MODEL_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY BROWSERBASE_API_KEY OPENROUTER_API_KEY TYPESAFE_API_KEY PARALLEL_API_KEY'
+set -eu
+# Each secret out of the environment and into an unexported variable of this shell (agentrun_secret_<NAME>).
+for name in $SECRETS; do
+  eval "given=\${$name+x}"
+  [ -n "$given" ] || continue
+  eval "agentrun_secret_$name=\${$name}"
+  unset "$name"
+done
+# Written only by this shell's own printf, never a program that would take a secret on its command line.
+case $(command -V printf 2>/dev/null) in
+  *builtin*) ;;
+  *) echo "agentrun-serve: this sh has no builtin printf, so it cannot hand the secrets over without a command line holding them" >&2; exit 1 ;;
+esac
+# Lengths in bytes: the C locale, for this shell only; the caller's own goes back before the exec.
+locale=${LC_ALL-}
+locale_set=${LC_ALL+x}
+LC_ALL=C
+
+# Every other process this launcher starts, it starts here, before it writes a secret.
+dir=$(mktemp -d "${TMPDIR:-/tmp}/agentrun-serve.XXXXXX")
+mkfifo -m 600 "$dir/secrets"
+exec 3<>"$dir/secrets"
+rm -f "$dir/secrets"
+rmdir "$dir"
+
+# From here to the exec: this shell's builtins only.
+total=0
+for name in $SECRETS; do
+  eval "given=\${agentrun_secret_$name+x}"
+  [ -n "$given" ] || continue
+  eval "value=\${agentrun_secret_$name}"
+  total=$((total + ${#name} + ${#value} + 2))
+done
+# A pipe is sure to hold one page unread (a FIFO may get no more: Linux gives a new pipe two pages once its user is over
+# fs.pipe-user-pages-soft): more could block this shell before the server is there to read it.
+if [ "$total" -gt 4096 ]; then
+  echo "agentrun-serve: the secrets come to $total bytes, more than the 4096 a pipe is sure to hold" >&2
+  exit 1
+fi
+for name in $SECRETS; do
+  eval "given=\${agentrun_secret_$name+x}"
+  [ -n "$given" ] || continue
+  eval "value=\${agentrun_secret_$name}"
+  printf '%s=%s\000' "$name" "$value" >&3
+  unset "agentrun_secret_$name"
+done
+value=
+if [ -n "$locale_set" ]; then LC_ALL=$locale; else unset LC_ALL; fi
+
+if [ "${1-}" = "--" ]; then
+  shift
+else
+  # The server beside this launcher, found by node from this file's real path: a package manager's bin is a link.
+  set -- node --input-type=module -e 'import { realpathSync } from "node:fs"; import { pathToFileURL } from "node:url"; const cli = new URL("../dist/cli.js", pathToFileURL(realpathSync(process.argv[1]))); process.argv[1] = cli.pathname; await import(cli.href);' "$0" "$@"
+fi
+set -- AGENTRUN_SECRETS_FD=3 "AGENTRUN_SECRETS_LEN=$total" "$@"
+for name in $SECRETS; do
+  set -- -u "$name" "$@"
+done
+exec env "$@"

@@ -2,9 +2,10 @@ import { observerSnapshot } from "./observer-snapshot.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
-import { WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
-import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
-import { DECISION_RECEIPT_VERSION, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
+import { DECISION_NODE_FIELDS, DECISION_TIMEOUT_MAX_MS, WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, FIELD_TYPES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
+import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
+import { chargedCost, DecisionProviderError, type CostBasis, type DecisionEvidence, type DecisionProvider } from "./decision-provider.js";
+import { DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, DECISION_STATE_MAX_BYTES, type DecisionImageDigest, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeIssues } from "./workflow-shape.js";
@@ -20,7 +21,13 @@ export type ModelTier = "fast" | "default" | "strong";
 /** An `agent` node's context (`AGENT_CONTEXTS`). */
 export type AgentContext = "fresh" | "fork";
 export type VerifyClause = { out: string; state?: Record<string, unknown>; maxDrives?: number; override?: { below: number } };
-export type AskPredicate = { predicate: "ask"; instructions: string; state?: Record<string, unknown>; criteria?: { true?: string; false?: string }; gte?: number };
+/** What a decision node asks of its provider's evidence: none, whatever it gives, or some (a provider that gives none is refused before the run). */
+export type DecisionEvidenceMode = "off" | "if_supported" | "required";
+/** The images a decision node sends with its request: each key is a token (such as `"<page1>"`) that appears literally in
+ *  the node's `state` or in a question's text, and each value is a reference to the image, written as a `state` value is
+ *  (`"{item.pages.0.image}"`, or a literal path), that resolves to a string the host loads (a run-relative file path). */
+export type DecisionImages = Record<string, string>;
+export type AskPredicate = { predicate: "ask"; instructions: string; state?: Record<string, unknown>; criteria?: { true?: string; false?: string }; gte?: number; provider?: string; model?: string; evidence?: DecisionEvidenceMode; timeoutMs?: number; images?: DecisionImages; };
 export type MechanicalPredicate = AcceptPredicate;
 export type Predicate = MechanicalPredicate | AskPredicate;
 
@@ -68,24 +75,24 @@ export type WorkflowNode =
  *  workflow state (a whole-string placeholder keeps its type); `out` is a flat schema of enums,
  *  booleans and level-integers — the question set. The schema-valid value lands at `as`, the raw
  *  answers with their confidences at `<as>$answers`. No tools, no turns, one request. */
-export type JudgeNode = { node: "judge"; label: string; state: Record<string, unknown>; out: string; as: string; requires?: string[]; metadata?: NodeMetadata };
+export type JudgeNode = { node: "judge"; label: string; state: Record<string, unknown>; out: string; as: string; requires?: string[]; provider?: string; model?: string; evidence?: DecisionEvidenceMode; timeoutMs?: number; images?: DecisionImages; metadata?: NodeMetadata };
 /** One choice whose options are the items of a list. `describe` renders each item as its option
  *  text (`{item.field}`); `allowNone` adds a none-of-these option. The result at `as` is
  *  {index, item, none, option}; confidence is `<as>$answers.confidence.pick` and the
  *  distribution is `<as>$answers.answers.pick.probabilities`. */
-export type PickNode = { node: "pick"; label: string; itemsPath: string; describe: string; instructions: string; state?: Record<string, unknown>; allowNone?: boolean; as: string; requires?: string[]; metadata?: NodeMetadata };
+export type PickNode = { node: "pick"; label: string; itemsPath: string; describe: string; instructions: string; state?: Record<string, unknown>; allowNone?: boolean; as: string; requires?: string[]; provider?: string; model?: string; evidence?: DecisionEvidenceMode; timeoutMs?: number; images?: DecisionImages; metadata?: NodeMetadata };
 /** The same question set (`out`, a judge schema) asked of every item of a list in ONE request: item i's
  *  questions are prefixed `i.`; every answer lands in `as.answers[i]` and `as.values[i]`. `keep`
  *  filters: items whose answer at `keep.path` (a question id, or `<id>.confidence`) is at least
  *  `keep.gte` (a boolean question keeps on yes) land in `as.items`, in the original order. */
-export type SiftNode = { node: "sift"; label: string; itemsPath: string; describe?: string; state?: Record<string, unknown>; out: string; as: string; keep?: { path: string; gte?: number }; requires?: string[]; metadata?: NodeMetadata };
+export type SiftNode = { node: "sift"; label: string; itemsPath: string; describe?: string; state?: Record<string, unknown>; out: string; as: string; keep?: { path: string; gte?: number }; requires?: string[]; provider?: string; model?: string; evidence?: DecisionEvidenceMode; timeoutMs?: number; images?: DecisionImages; metadata?: NodeMetadata };
 /** Run one of several named branches. Jev chooses it from `instructions` and `state`, or the workflow
  *  already holds the choice as a string at `valuePath` and no model is asked. */
 export type RouteNode = RouteByJudgmentNode | RouteByValueNode;
 /** A choice among subgraphs that Jev makes. The options are the branch names, their criteria the branch
  *  descriptions; the chosen branch runs on the state. `as` (optional) records the choice and its
  *  distribution; `unsure` names the branch taken when confidence is below `gte`. */
-export type RouteByJudgmentNode = { node: "route"; label: string; state: Record<string, unknown>; instructions: string; branches: { [branch: string]: { criteria?: string; body: WorkflowNode } }; unsure?: { branch: string; gte: number }; valuePath?: never; otherwise?: never; as?: string; requires?: string[]; metadata?: NodeMetadata };
+export type RouteByJudgmentNode = { node: "route"; label: string; state: Record<string, unknown>; instructions: string; branches: { [branch: string]: { criteria?: string; body: WorkflowNode } }; unsure?: { branch: string; gte: number }; valuePath?: never; otherwise?: never; as?: string; requires?: string[]; provider?: string; model?: string; evidence?: DecisionEvidenceMode; timeoutMs?: number; images?: DecisionImages; metadata?: NodeMetadata };
 /** A route by a value already in state: the string at `valuePath` names the branch. A missing value or
  *  an unknown name takes `otherwise` when declared and fails before any branch otherwise; a value that is
  *  not a string always fails. `as` records `{value, taken, fallback}`. */
@@ -324,6 +331,10 @@ export type WorkflowDeps = {
    *  Absent, the interpreter compiles and runs the transform in this process (`compileTransform`),
    *  which is not a sandbox: a host that runs code from an untrusted author supplies this. */
   runCode?: (node: CodeNode, state: Record<string, unknown>, ctx: { sop: string; label: string; executionPath: string; item?: MapItem; signal?: AbortSignal }) => Promise<unknown>;
+  /** The host's decision providers by id, and the one a node that names none gets. A run checks every decision node
+   *  against them before any node runs: a provider the host lacks, evidence it cannot give, a model it does not serve, a
+   *  question type it does not answer. Without them, a node that names a provider or sets timeoutMs is refused. */
+  decisionProviders?: { providers: Readonly<Record<string, DecisionProvider>>; default: string };
   runJudge?: (params: {
     label: string;
     kind: "judge" | "pick" | "sift" | "route" | "ask";
@@ -335,7 +346,31 @@ export type WorkflowDeps = {
     /** The id of this request's decision receipt (`DecisionReceipt.id`): the same request asked again
      *  carries the same id. */
     decisionId?: string;
-  }) => Promise<{ answers: Record<string, SystemOneAnswer>; model?: string | null; usage?: { input_tokens: number; output_tokens: number } | null; cost_usd?: number | null; request_sha256?: string }>;
+    /** The node's provider, by id; absent, the host's default answers. */
+    provider?: string;
+    /** The model the node pins, when it pins one. */
+    model?: string;
+    /** What the node asks of the provider's evidence. */
+    evidence?: DecisionEvidenceMode;
+    /** The node's own time bound, in milliseconds: it only ever shortens the provider's deadline. */
+    timeoutMs?: number;
+    /** The images the node sends, token -> resolved image reference (a run-relative path). The host loads them
+     *  (`judgeFromProvider`'s `loadImage`); each token appears literally in `state` or a question's text. */
+    images?: Record<string, string>;
+  }) => Promise<{ answers: Record<string, SystemOneAnswer>; model?: string | null; usage?: { input_tokens: number; output_tokens: number } | null; cost_usd?: number | null; request_sha256?: string;
+    /** Whether each choice and score answer's confidence is the provider's own or derived from its probabilities. */
+    confidence_source?: Record<string, ConfidenceSource>;
+    /** The sources the provider grounded its answers in (a DecisionProvider's, through judgeFromProvider). */
+    evidence?: DecisionEvidence[];
+    /** The provider's own id for the request, when it gives one. */
+    provider_request_id?: string | null;
+    /** How `cost_usd` was reached: reported by the provider, estimated by the host, or unknown (null). */
+    cost_basis?: CostBasis;
+    /** The provider that answered, by id. */
+    provider?: string;
+    /** The images the request carried, by digest (never the bytes), as the host loaded them. */
+    images?: DecisionImageDigest[];
+  }>;
   /** Records one typed-question request and what its answers decide. It is awaited before the answers
    *  reach state, an event or a branch, so a durable recorder holds every decision the run acted on; a
    *  rejection fails the node. A request the judge could not answer, or one cancelled in flight, is
@@ -477,7 +512,7 @@ function containsReportNode(node: WorkflowNode | undefined): boolean {
 }
 const PREDICATES: ReadonlySet<string> = new Set(WORKFLOW_PREDICATES);
 
-function predicateShapeErrors(pred: { predicate: string; path?: string; values?: unknown; n?: unknown; instructions?: unknown; gte?: unknown; state?: unknown }): string[] {
+function predicateShapeErrors(pred: { predicate: string; path?: string; values?: unknown; n?: unknown; type?: unknown; of?: unknown; instructions?: unknown; gte?: unknown; state?: unknown }): string[] {
   const out: string[] = [];
   if (pred.predicate === "in") {
     if (!String(pred.path || "").trim()) out.push("in needs a path");
@@ -487,14 +522,56 @@ function predicateShapeErrors(pred: { predicate: string; path?: string; values?:
     if (!String(pred.path || "").trim()) out.push(`${pred.predicate} needs a path`);
     if (typeof pred.n !== "number" || !Number.isFinite(pred.n)) out.push(`${pred.predicate} needs a finite number n`);
   }
+  if (pred.predicate === "field_type") {
+    if (!String(pred.path || "").trim()) out.push("field_type needs a path");
+    if (!(FIELD_TYPES as readonly unknown[]).includes(pred.type)) out.push(`field_type needs a type of ${FIELD_TYPES.join("|")}, not ${JSON.stringify(pred.type) ?? "none"}`);
+  }
+  if (pred.predicate === "not" && (!pred.of || typeof pred.of !== "object" || Array.isArray(pred.of))) out.push(`not needs "of", one mechanical predicate`);
   if (pred.predicate === "ask") {
     if (typeof pred.instructions !== "string" || !pred.instructions.trim()) out.push("ask needs instructions (the yes/no question)");
     // A yes/no gate sits above the fence: at 0.5 or below it would hold on an answer that is not a
     // yes, and a dry run's synthesized 0.5 could satisfy it.
     if (pred.gte !== undefined && !(typeof pred.gte === "number" && pred.gte > 0.5 && pred.gte <= 1)) out.push("ask.gte must be in (0.5, 1]");
     if (pred.state !== undefined && (!pred.state || typeof pred.state !== "object" || Array.isArray(pred.state))) out.push("ask.state must be an object map");
+    for (const problem of decisionFieldProblems(pred as unknown as Record<string, unknown>)) out.push(`ask.${problem}`);
+    // Without a state the question sees the whole workflow state, which a token may sit in: only a given state is checked.
+    if (pred.state !== undefined) for (const token of unusedImageTokens((pred as { images?: unknown }).images, [pred.state, pred.instructions, (pred as { criteria?: unknown }).criteria])) out.push(`ask.images token ${JSON.stringify(token)} appears in neither its state nor its question`);
   }
   return out;
+}
+
+/** The problems with a decision's provider, model and timeoutMs, each naming its field; the schema refuses an evidence
+ *  mode it does not list. */
+function decisionFieldProblems(raw: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  if (raw.provider !== undefined && !(typeof raw.provider === "string" && /^[a-z][a-z0-9_:.-]*$/.test(raw.provider))) out.push("provider must name a decision provider: lowercase letters, digits and _ : . -");
+  if (raw.model !== undefined && !(typeof raw.model === "string" && raw.model.trim())) out.push("model must be a non-empty string");
+  if (raw.timeoutMs !== undefined && !(Number.isSafeInteger(raw.timeoutMs) && (raw.timeoutMs as number) > 0 && (raw.timeoutMs as number) <= DECISION_TIMEOUT_MAX_MS)) {
+    out.push(`timeoutMs must be a whole number of milliseconds from 1 to ${DECISION_TIMEOUT_MAX_MS}`);
+  }
+  if (raw.images !== undefined) {
+    const images = raw.images;
+    if (!images || typeof images !== "object" || Array.isArray(images) || !Object.keys(images).length) out.push("images must be a non-empty object map of token -> image reference");
+    else for (const [token, reference] of Object.entries(images as Record<string, unknown>)) {
+      if (!token.trim() || /["\\\u0000-\u001f]/.test(token)) out.push(`images token ${JSON.stringify(token)} must be plain, non-empty text (no quotes, backslashes or control characters)`);
+      if (typeof reference !== "string" || !reference.trim()) out.push(`images.${token} must be an image reference: a non-empty string, such as "{item.page_image}"`);
+    }
+  }
+  return out;
+}
+
+/** The predicate under any number of `not`s: the one that reads a value. */
+function negated(pred: unknown): unknown {
+  while (pred && typeof pred === "object" && (pred as { predicate?: unknown }).predicate === "not") pred = (pred as { of?: unknown }).of;
+  return pred;
+}
+
+/** The image tokens of a decision node that appear in none of `texts` (its state, its questions' text): a provider sends an
+ *  image only where the request names it. */
+function unusedImageTokens(images: unknown, texts: unknown[]): string[] {
+  if (!images || typeof images !== "object" || Array.isArray(images)) return [];
+  const haystack = JSON.stringify(texts) ?? "";
+  return Object.keys(images).filter((token) => token.trim() && !haystack.includes(JSON.stringify(token).slice(1, -1)));
 }
 
 function resultPathMissing(shape: unknown, dotted: string): boolean {
@@ -869,6 +946,7 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
   };
   // A mechanical predicate reads one state key; when no input key or earlier node writes it, the guard can never fire.
   const checkPredicateHead = (pred: unknown, label: string, path: string, field: string, produced?: ReadonlySet<string>): void => {
+    pred = negated(pred);
     if (!reachability || reachability.unknowable || !pred || typeof pred !== "object") return;
     const available = produced ?? reachability.available;
     const { predicate, path: at, key } = pred as { predicate?: unknown; path?: unknown; key?: unknown };
@@ -950,13 +1028,21 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
     if (!map || typeof map !== "object" || Array.isArray(map)) { fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): ${field} must be an object map of what the questions see`); return; }
     checkInterpolations(map, label, path);
   };
+  /** A decision node's images: each reference is interpolated as a state value is, so its paths must be produced upstream;
+   *  with `texts`, each token must appear in one of them. */
+  const checkImages = (images: unknown, label: string, path: string, texts?: unknown[]): void => {
+    if (!images || typeof images !== "object" || Array.isArray(images)) return;
+    checkInterpolations(images, label, path);
+    if (texts) for (const token of unusedImageTokens(images, texts)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): images token ${JSON.stringify(token)} appears in neither the node's state nor its questions; write it where the image belongs`);
+  };
   const checkQuestionSchema = (schemaId: unknown, label: string, path: string): CompiledQuestions | null => {
     if (typeof schemaId !== "string" || !Object.hasOwn(workflow.schemas, schemaId)) { fail("SCHEMA_UNKNOWN", ptrOf(path), `${path} (${label}): out schema "${String(schemaId)}" not in workflow.schemas`); return null; }
     const compiled = compileQuestions(workflow.schemas[schemaId] as Record<string, unknown>, workflow.schemas as Record<string, unknown>);
     if (compiled.ok === false) { for (const e of compiled.errors) fail("SCHEMA_INVALID", `/schemas/${pointerKey(schemaId)}`, `${path} (${label}): schema "${schemaId}": ${e}`); return null; }
     return compiled.questions;
   };
-  const checkPredicate = (pred: unknown, label: string, path: string, field: string, mechanicalOnly = false): boolean => {
+  // `within` names what takes only a mechanical predicate: a poll, or a `not`.
+  const checkPredicate = (pred: unknown, label: string, path: string, field: string, within?: "poll" | "not"): boolean => {
     const name = (pred as any)?.predicate;
     // A predicate with no `predicate` field is the shape mistaken, not an unknown name: say the shape
     // (GRE-2809), naming a predicate the object used as a key when it did.
@@ -965,9 +1051,17 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
       fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: a predicate names itself in its "predicate" field beside its own fields, e.g. {"predicate": "${keyed ?? "field_true"}", "path": "..."}${keyed ? `, not {"${keyed}": {...}}` : ""}`);
       return false;
     }
-    if (!pred || !PREDICATES.has(name) || (mechanicalOnly && !MECHANICAL_PREDICATE_NAMES.has(name))) { fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: unknown predicate "${name}"${mechanicalOnly && name === "ask" ? " (a poll reads a value, never asks a question)" : ""}`); return false; }
-    for (const e of predicateShapeErrors(pred as any)) fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: ${e}`);
-    if (name === "ask") checkStateMap((pred as any).state, label, path, `${field}.state`);
+    if (!pred || !PREDICATES.has(name)) { fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: unknown predicate "${name}"`); return false; }
+    if (within && !MECHANICAL_PREDICATE_NAMES.has(name)) {
+      fail("PREDICATE_INVALID", ptrOf(path), within === "poll" ? `${path} (${label}): ${field}: unknown predicate "${name}" (a poll reads a value, never asks a question)` : `${path} (${label}): ${field}: not takes only a mechanical predicate, not "${name}"`);
+      return false;
+    }
+    const errors = predicateShapeErrors(pred as any);
+    for (const e of errors) fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: ${e}`);
+    if (name === "ask") { checkStateMap((pred as any).state, label, path, `${field}.state`); checkImages((pred as any).images, label, path); }
+    // A predicate whose shape is wrong is refused: no caller reads inside it (a poll's path, a not's of).
+    if (errors.length) return false;
+    if (name === "not") return checkPredicate((pred as { of: unknown }).of, label, path, `${field}.of`, "not");
     return true;
   };
   const walk = (node: WorkflowNode, path: string, ptr: string): void => {
@@ -1117,13 +1211,15 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
         checkPredicate(node.when, node.label, path, "when");
         if (!node.kind?.trim() || !node.stage?.trim() || !node.summary?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): kind, stage, summary required`);
         checkPredicateHead(node.when, node.label, path, "when");
-        checkPredicatePath(node.when as { path?: string }, node.label, path);
+        checkPredicatePath(negated(node.when) as { path?: string }, node.label, path);
         return;
       case "judge": {
         const label = node.label || "judge";
+        for (const problem of decisionFieldProblems(node as unknown as Record<string, unknown>)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): ${problem}`);
         if (!node.state || typeof node.state !== "object" || Array.isArray(node.state) || !Object.keys(node.state).length) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): state must be a non-empty object map of what the questions see`);
         else checkStateMap(node.state, label, path);
         checkQuestionSchema(node.out, label, path);
+        checkImages(node.images, label, path, [node.state, typeof node.out === "string" && Object.hasOwn(workflow.schemas, node.out) ? workflow.schemas[node.out] : null]);
         if (!node.as?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): as required`);
         checkRequires({ label, requires: node.requires }, path);
         if (reachability && node.as) {
@@ -1135,11 +1231,13 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
       }
       case "pick": {
         const label = node.label || "pick";
+        for (const problem of decisionFieldProblems(node as unknown as Record<string, unknown>)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): ${problem}`);
         if (!node.itemsPath?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): itemsPath required`);
         checkItemsPath(node, path);
         if (typeof node.describe !== "string" || !node.describe.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): describe (the option text per item, e.g. "{item.name}, born {item.dob}") required`);
         if (typeof node.instructions !== "string" || !node.instructions.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): instructions (the one question) required`);
         checkStateMap(node.state, label, path);
+        checkImages(node.images, label, path, [node.state, node.instructions, node.describe]);
         if (!node.as?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): as required`);
         if (node.allowNone !== undefined && typeof node.allowNone !== "boolean") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): allowNone must be boolean`);
         checkRequires({ label, requires: node.requires }, path);
@@ -1148,11 +1246,13 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
       }
       case "sift": {
         const label = node.label || "sift";
+        for (const problem of decisionFieldProblems(node as unknown as Record<string, unknown>)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): ${problem}`);
         if (!node.itemsPath?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): itemsPath required`);
         checkItemsPath(node, path);
         if (node.describe !== undefined && (typeof node.describe !== "string" || !node.describe.trim())) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): describe must be a non-empty template when present`);
         checkStateMap(node.state, label, path);
         const compiled = checkQuestionSchema(node.out, label, path);
+        checkImages(node.images, label, path, [node.state, node.describe, typeof node.out === "string" && Object.hasOwn(workflow.schemas, node.out) ? workflow.schemas[node.out] : null]);
         if (!node.as?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): as required`);
         if (node.keep !== undefined) {
           const k = node.keep as { path?: unknown; gte?: unknown };
@@ -1177,7 +1277,7 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
         if (byValue) {
           const valuePath = raw.valuePath;
           if (typeof valuePath !== "string" || !valuePath.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): valuePath must be the state path of the branch name`);
-          for (const key of ["state", "instructions", "unsure"] as const) if (raw[key] !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): ${key} belongs to a route Jev chooses; a route by valuePath asks no question`);
+          for (const key of ["state", "instructions", "unsure", ...DECISION_NODE_FIELDS] as const) if (raw[key] !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): ${key} belongs to a route Jev chooses; a route by valuePath asks no question`);
           if (names.length < 2) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): route needs at least two named branches`);
           if (names.some(name => !name.trim())) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): branch names must be non-empty`);
           if (raw.otherwise !== undefined && (typeof raw.otherwise !== "string" || !names.includes(raw.otherwise))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): otherwise must name one of the branches`);
@@ -1188,9 +1288,11 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
           }
         } else {
           const judged = node as RouteByJudgmentNode;
+          for (const problem of decisionFieldProblems(raw)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): ${problem}`);
           if (!judged.state || typeof judged.state !== "object" || Array.isArray(judged.state) || !Object.keys(judged.state).length) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): state must be a non-empty object map of what the question sees`);
           else checkStateMap(judged.state, label, path);
           if (typeof judged.instructions !== "string" || !judged.instructions.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): instructions (the one question) required`);
+          checkImages(judged.images, label, path, [judged.state, judged.instructions, names.map((name) => (judged.branches as Record<string, { criteria?: unknown }>)[name]?.criteria)]);
           if (raw.otherwise !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): otherwise belongs to a route by valuePath; a route Jev chooses takes unsure for its fallback`);
           if (names.length < 2) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): route needs at least two named branches`);
           if (names.length > SYSTEM_ONE_LIMITS.maxChoiceOptions) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): route takes at most ${SYSTEM_ONE_LIMITS.maxChoiceOptions} branches`);
@@ -1300,8 +1402,8 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
             const resultShape = node.via === "shell" ? shapeFromSchema(SHELL_RESULT_SCHEMA) : node.out && (Object.hasOwn(workflow.schemas, node.out) ? workflow.schemas[node.out] : undefined) ? shapeFromSchema(workflow.schemas[node.out] as Record<string, unknown>) : undefined;
             for (const [name, pred] of [["until", p.until], ["fail_when", p.fail_when]] as const) {
               if (pred === undefined) { if (name === "until") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.until is required`); continue; }
-              if (!checkPredicate(pred, label, path, `poll.${name}`, true)) continue;
-              const predPath = (pred as { path?: string }).path;
+              if (!checkPredicate(pred, label, path, `poll.${name}`, "poll")) continue;
+              const predPath = (negated(pred) as { path?: string }).path;
               if (resultShape && typeof resultShape === "object" && predPath && resultPathMissing(resultShape, predPath)) fail("STATE_PATH_EXCLUDED", ptrOf(path), `${path} (${label}): poll.${name} path "${predPath}" is not in the declared result shape (${Object.keys(resultShape as object).join(", ")}); the poll could never settle`);
             }
             if (!(Number.isFinite(p.interval_s) && p.interval_s >= 0.1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.interval_s must be a finite number of at least 0.1 seconds`);
@@ -1424,7 +1526,7 @@ async function evaluatePredicate(pred: Predicate, state: Record<string, unknown>
   const asked = ask.state ? interpolateValue(ask.state, state, at.label) : promptStateOf(state);
   const questions: Record<string, SystemOneQuestion> = { holds: { type: "noul", instructions: ask.instructions, ...(ask.criteria ? { criteria: ask.criteria } : {}) } };
   const gte = ask.gte ?? 0.6;
-  const decided = await decide(deps, { nodeKind: `${at.kind} (ask predicate)`, kind: "ask", judgeKind: "ask", label: at.label, state: asked, questions }, (answers) => {
+  const decided = await decide(deps, { workflowState: state, nodeKind: `${at.kind} (ask predicate)`, kind: "ask", judgeKind: "ask", label: at.label, state: asked, questions, decision: decisionOf(ask), images: resolveImages(ask.images, state, at.label) }, (answers) => {
     const answer = answers.holds;
     const p = answer?.type === "noul" ? answer.noul : NaN;
     if (!Number.isFinite(p)) throw new Error(`${at.kind} node "${at.label}": the ask predicate got no yes/no answer`);
@@ -1536,8 +1638,20 @@ export class WorkflowStateError extends Error {
 }
 
 /** A map item that ended on its failure (`onItemFailure: "collect"`), as `failedAs` holds it: the item's index, the
- *  label of the node that failed, the failure's code and its message (at most 300 characters). */
-export type MapItemFailure = { item_index: number; label: string; code: string; message: string };
+ *  label of the node that failed, the failure's code and its message (at most 300 characters). `needs_review` marks an
+ *  item whose decision went to a person instead of failing: one sent whose outcome was lost (`decision_interrupted`,
+ *  never asked again) or one its provider refused (`decision_refused`); its code is that escalation's kind. */
+export type MapItemFailure = { item_index: number; label: string; code: string; message: string; needs_review?: true };
+
+/** Decision provider failures a collecting map ends one item on: the item's request failed, and the others go on. Not
+ *  `configuration` or `auth` (every item would fail the same way), `aborted`, or `outcome_unknown` (which is reviewed). */
+const ITEM_DECISION_FAILURES: ReadonlySet<string> = new Set(["rate_limited", "http", "invalid_response", "timeout", "invalid_request", "connection"]);
+/** Decision escalations a collecting map ends one item on, marked for review: the run goes on with the other items. */
+const ITEM_DECISION_REVIEWS: ReadonlySet<string> = new Set([DECISION_INTERRUPTED, DECISION_REFUSED]);
+/** The escalation a collecting map takes as one item's review, if `error` is one. */
+function itemReview(error: unknown): EscalationSignal | undefined {
+  return error instanceof EscalationSignal && error.escalation.stage === "decision" && ITEM_DECISION_REVIEWS.has(error.escalation.kind) ? error : undefined;
+}
 
 /** Whether an item's failure is one a map with `onItemFailure: "collect"` ends the item on: one of the interpreter's own
  *  typed node failures (a call that failed after its retries, output that does not match its schema, a state contract, a
@@ -1553,6 +1667,7 @@ export function isItemFailure(error: unknown): boolean {
   }
   if (error instanceof EffectFailure || error instanceof WorkflowOutputInvalidError || error instanceof WorkflowStateError
     || error instanceof WorkflowCodeError || error instanceof WorkflowVerificationError) return true;
+  if (error instanceof DecisionProviderError) return ITEM_DECISION_FAILURES.has(error.code);
   return typeof (error as { code?: unknown }).code === "string" && (error as { itemFailure?: unknown }).itemFailure === true;
 }
 
@@ -1957,7 +2072,41 @@ export class WorkflowDecisionRecordError extends Error {
   }
 }
 
-type Decided<T> = { id: string; answers: Record<string, SystemOneAnswer>; value: T; model: string | null; cost_usd: number | null; replayed: boolean };
+
+type Decided<T> = { id: string; answers: Record<string, SystemOneAnswer>; value: T; model: string | null; cost_usd: number | null; replayed: boolean; evidence?: DecisionEvidence[]; provider?: string };
+
+/** The state a receipt keeps: the value, or past DECISION_STATE_MAX_BYTES of JSON, that many bytes of its JSON text. */
+function stateSeen(state: unknown): { state: unknown; truncated: boolean } {
+  let text: string | undefined;
+  try { text = JSON.stringify(state); } catch { text = undefined; }
+  if (text === undefined) return { state: null, truncated: true };
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.byteLength <= DECISION_STATE_MAX_BYTES) return { state: JSON.parse(text), truncated: false };
+  // Cut on a character boundary: a partial UTF-8 sequence at the end is dropped.
+  return { state: bytes.subarray(0, DECISION_STATE_MAX_BYTES).toString("utf8").replace(/\uFFFD$/, ""), truncated: true };
+}
+
+/** A decision node's images resolved against the state, as its `state` values are: each must resolve to a non-empty
+ *  string, the image reference the host loads. Undefined when the node sends none. */
+function resolveImages(images: DecisionImages | undefined, state: Record<string, unknown>, label: string): Record<string, string> | undefined {
+  if (!images || !Object.keys(images).length) return undefined;
+  const out: Record<string, string> = {};
+  for (const [token, reference] of Object.entries(images)) {
+    const ref = interpolateValue(reference, state, label);
+    if (typeof ref !== "string" || !ref.trim()) throw new WorkflowStateError(`node "${label}": image ${token} resolves to ${ref === null ? "null" : typeof ref}, not an image reference (a non-empty string)`, label, String(reference), "missing_interpolation");
+    out[token] = ref;
+  }
+  return out;
+}
+
+/** What a decision node says about its provider: the node's own `provider`, `model`, `evidence` and `timeoutMs` (and,
+ *  read only by the before-the-run check, its `images`). */
+type DecisionChoice = { provider?: string; model?: string; evidence?: DecisionEvidenceMode; timeoutMs?: number; images?: DecisionImages };
+/** The decision fields a node or an `ask` predicate sets, and no others. */
+const decisionOf = (node: DecisionChoice): DecisionChoice => ({
+  ...(node.provider !== undefined ? { provider: node.provider } : {}), ...(node.model !== undefined ? { model: node.model } : {}),
+  ...(node.evidence !== undefined ? { evidence: node.evidence } : {}), ...(node.timeoutMs !== undefined ? { timeoutMs: node.timeoutMs } : {}),
+});
 
 /** One typed-question request from identity to receipt. `settle` turns validated answers into the rule,
  *  the action and whatever the caller applies; it throws exactly what the node would throw for answers it
@@ -1967,8 +2116,17 @@ type Decided<T> = { id: string; answers: Record<string, SystemOneAnswer>; value:
 async function decide<T>(
   deps: WorkflowDeps,
   ask: { nodeKind: string; kind: DecisionKind; judgeKind: JudgeRequest["kind"]; label: string; state: unknown; questions: Record<string, SystemOneQuestion>; signal?: AbortSignal; request?: DecisionReceipt["request"];
+    /** The workflow's state at the node: what a refused decision's escalation keeps for the person who takes it. */
+    workflowState: Record<string, unknown>;
+    /** The node takes a refused answer as a decision of its own (a route with an unsure branch); on every other node a
+     *  refusal escalates the run for review. */
+    acceptsRefusal?: boolean;
     /** Called as soon as the request has failed, before its receipt is written. */
-    onFailure?: (error: unknown) => void },
+    onFailure?: (error: unknown) => void;
+    /** The node's provider, model, evidence and timeoutMs. */
+    decision?: DecisionChoice;
+    /** The node's images, token -> resolved reference (`resolveImages`). */
+    images?: Record<string, string> },
   settle: (answers: Record<string, SystemOneAnswer>) => { rule: DecisionRule; action: unknown; value: T },
 ): Promise<Decided<T>> {
   const runJudge = requireJudge(deps, ask.nodeKind, ask.label);
@@ -1977,24 +2135,65 @@ async function decide<T>(
   const signal = ask.signal ?? deps.signal;
   const position = ask.request ?? { index: 0, count: 1 };
   const state_sha256 = sha256Hex(digestText(ask.state));
-  const id = sha256Hex(canonicalJson(["decision-v1", path, ask.kind, position.index, ask.questions, state_sha256]));
+  const choice = ask.decision ?? {};
+  // A pinned provider or model is part of what the decision is; an unpinned one keeps the id it always had.
+  const pin = choice.provider !== undefined || choice.model !== undefined ? [{ provider: choice.provider ?? null, model: choice.model ?? null }] : [];
+  const images = ask.images && Object.keys(ask.images).length ? ask.images : undefined;
+  // Images are part of what is asked, by reference: a request without any keeps the id it always had.
+  const id = sha256Hex(canonicalJson(["decision-v1", path, ask.kind, position.index, ask.questions, state_sha256, ...pin, ...(images ? [{ images }] : [])]));
+  // A refused answer decodes to no value. Unless the node takes refusals itself, the run escalates before `settle` sees
+  // it: the provider gave nothing to act on, and a person decides the case.
+  const settleAnswers = (answers: Record<string, SystemOneAnswer>) => {
+    const refused = refusedQuestions(answers);
+    if (refused.length && !ask.acceptsRefusal) {
+      throw new EscalationSignal({ kind: DECISION_REFUSED, stage: "decision", label: ask.label, executionPath: path, state: ask.workflowState,
+        summary: `The decision "${ask.label}" was refused by its provider (${refused.map((id) => `"${id}"`).join(", ")}): there is no answer to act on, so a person decides it.` });
+    }
+    return settle(answers);
+  };
   const recorded = deps.recovery?.decision ? await deps.recovery.decision(id) : undefined;
   if (recorded?.status === "answered") {
     validateAnswers(ask.questions, recorded.answers);
-    const { value } = settle(recorded.answers);
-    return { id, answers: recorded.answers, value, model: recorded.model ?? null, cost_usd: 0, replayed: true };
+    const { value } = settleAnswers(recorded.answers);
+    return { id, answers: recorded.answers, value, model: recorded.model ?? null, cost_usd: 0, replayed: true,
+      ...(recorded.evidence ? { evidence: recorded.evidence } : {}), ...(recorded.provider ? { provider: recorded.provider } : {}) };
   }
-  const request: JudgeRequest = { label: ask.label, kind: ask.judgeKind, ...(item ? { item } : {}), executionPath: path, signal, state: ask.state, questions: ask.questions, decisionId: id };
+  const request: JudgeRequest = { label: ask.label, kind: ask.judgeKind, ...(item ? { item } : {}), executionPath: path, signal, state: ask.state, questions: ask.questions, decisionId: id, ...choice, ...(images ? { images } : {}) };
+  const seen = stateSeen(ask.state);
+  /** The images a receipt names: as the host loaded them, else by token and reference alone. */
+  const imagesOf = (result: JudgeResult | undefined): DecisionImageDigest[] | undefined => {
+    if (!images) return undefined;
+    const loaded = Array.isArray(result?.images) ? result.images : [];
+    return Object.entries(images).map(([token, ref]) => {
+      const digest = loaded.find((each) => each?.token === token);
+      return { token, ref, sha256: digest?.sha256 ?? null, mime: digest?.mime ?? null, bytes: digest?.bytes ?? null };
+    });
+  };
+  /** The evidence a result carries for this node: none under "off", else what the provider gave, when it gave any. */
+  const evidenceOf = (result: JudgeResult | undefined): DecisionEvidence[] | undefined =>
+    choice.evidence !== "off" && Array.isArray(result?.evidence) && result.evidence.length ? result.evidence : undefined;
+  const providerOf = (result: JudgeResult | undefined): string | undefined => result?.provider ?? choice.provider;
   const startedAt = Date.now();
-  const receipt = (result: JudgeResult | undefined, outcome: Pick<DecisionReceipt, "status" | "rule" | "action"> & { error?: unknown }): DecisionReceipt => ({
-    v: DECISION_RECEIPT_VERSION, id, at: new Date().toISOString(), node: ask.label, kind: ask.kind, item: item?.index ?? null, execution_path: path, request: position,
-    status: outcome.status, state_sha256, questions: ask.questions,
-    answers: result?.answers && typeof result.answers === "object" && !Array.isArray(result.answers) ? result.answers : {},
-    rule: outcome.rule, action: outcome.action,
-    model: result?.model ?? null, usage: result?.usage ?? null, cost_usd: typeof result?.cost_usd === "number" ? result.cost_usd : null, request_sha256: result?.request_sha256 ?? null,
-    latency_ms: Date.now() - startedAt,
-    ...(outcome.error !== undefined ? { error: String((outcome.error as Error)?.message || outcome.error).slice(0, 2000) } : {}),
-  });
+  const receipt = (result: JudgeResult | undefined, outcome: Pick<DecisionReceipt, "status" | "rule" | "action"> & { error?: unknown }): DecisionReceipt => {
+    const answers = result?.answers && typeof result.answers === "object" && !Array.isArray(result.answers) ? result.answers : {};
+    const refused = refusedQuestions(answers);
+    const source = result?.confidence_source;
+    return {
+      v: DECISION_RECEIPT_VERSION, id, at: new Date().toISOString(), node: ask.label, kind: ask.kind, item: item?.index ?? null, execution_path: path, request: position,
+      status: outcome.status, state_sha256, questions: ask.questions, answers,
+      rule: outcome.rule, action: outcome.action,
+      model: result?.model ?? null, usage: result?.usage ?? null, cost_usd: typeof result?.cost_usd === "number" ? result.cost_usd : null, request_sha256: result?.request_sha256 ?? null,
+      latency_ms: Date.now() - startedAt,
+      ...(refused.length ? { refused } : {}),
+      ...(source && typeof source === "object" && !Array.isArray(source) ? { confidence_source: { ...source } } : {}),
+      ...(result?.cost_basis ? { cost_basis: result.cost_basis } : {}),
+      ...(providerOf(result) ? { provider: providerOf(result) } : {}),
+      ...(evidenceOf(result) ? { evidence: evidenceOf(result) } : {}),
+      ...(images ? { images: imagesOf(result) } : {}),
+      state: seen.state, state_truncated: seen.truncated,
+      ...(outcome.error !== undefined ? { error: String(outcome.error instanceof EscalationSignal ? outcome.error.escalation.summary : (outcome.error as Error)?.message || outcome.error).slice(0, 2000) } : {}),
+    };
+  };
   /** Records `made`; with `failure`, the request's own failure, a recorder that also fails surfaces both. */
   const record = async (made: DecisionReceipt, result: JudgeResult | undefined, failure?: { error: unknown }): Promise<void> => {
     if (!deps.recordDecision) return;
@@ -2007,24 +2206,37 @@ async function decide<T>(
   let result: JudgeResult;
   try { result = await runJudge(request); }
   catch (error) {
+    // A request sent whose outcome was lost may have been answered and billed: it is booked at the cost its provider
+    // gives, with how that was reached, never asked again, and a person decides the case. One answered with what is
+    // rejected was billed, and is booked at its cost, or an unknown one.
+    const lost = error instanceof DecisionProviderError && error.code === "outcome_unknown";
+    const charge = chargedCost(error);
+    const spent: JudgeResult | undefined = charge !== undefined ? { answers: {}, cost_usd: charge,
+      ...((error as DecisionProviderError).costBasis !== undefined ? { cost_basis: (error as DecisionProviderError).costBasis } : {}) } : undefined;
     // The status is read before the caller reacts: a request that fails on its own is `failed`, even when
     // its failure is what cancels the others.
-    const failed = receipt(undefined, { status: signal?.aborted ? "cancelled" : "failed", rule: null, action: null, error });
+    const failed = receipt(spent, { status: signal?.aborted && !lost ? "cancelled" : "failed", rule: null, action: null, error });
     ask.onFailure?.(error);
-    await record(failed, undefined, { error });
+    await record(failed, spent, { error });
+    if (lost) {
+      throw new EscalationSignal({ kind: DECISION_INTERRUPTED, stage: "decision", label: ask.label, executionPath: path, state: ask.workflowState,
+        summary: `The decision "${ask.label}" was sent and its outcome was lost (${(error as Error).message}): it may have been answered and billed, so it is not asked again, and a person decides it.` });
+    }
     throw error;
   }
   let settled: { rule: DecisionRule; action: unknown; value: T };
   try {
     validateAnswers(ask.questions, result.answers);
-    settled = settle(result.answers);
+    if (choice.evidence === "required" && !evidenceOf(result)) throw new DecisionProviderError("invalid_response", `${ask.nodeKind} node "${ask.label}" requires evidence, and its provider's answer carries none`);
+    settled = settleAnswers(result.answers);
   } catch (error) {
     ask.onFailure?.(error);
     await record(receipt(result, { status: "failed", rule: null, action: null, error }), result, { error });
     throw error;
   }
   await record(receipt(result, { status: "answered", rule: settled.rule, action: settled.action }), result);
-  return { id, answers: result.answers, value: settled.value, model: result.model ?? null, cost_usd: result.cost_usd ?? null, replayed: false };
+  return { id, answers: result.answers, value: settled.value, model: result.model ?? null, cost_usd: result.cost_usd ?? null, replayed: false,
+    ...(evidenceOf(result) ? { evidence: evidenceOf(result) } : {}), ...(providerOf(result) ? { provider: providerOf(result) } : {}) };
 }
 
 function questionSetOf(workflow: Workflow, node: { node: string; label: string; out: string }): { questions: CompiledQuestions; decode: (answers: Record<string, SystemOneAnswer>, what?: string) => Record<string, unknown> } {
@@ -2047,16 +2259,19 @@ const describeItem = (template: string, state: Record<string, unknown>, item: un
 
 /** What a decision event says of the request behind it: who answered, what it cost, and that a recorded
  *  decision answered it when one did. */
-const meteringOf = (decided: { model: string | null; cost_usd: number | null; replayed: boolean }) => ({ model: decided.model, cost_usd: decided.cost_usd, ...(decided.replayed ? { replayed: true } : {}) });
+const meteringOf = (decided: { model: string | null; cost_usd: number | null; replayed: boolean; evidence?: DecisionEvidence[]; provider?: string }) => ({ model: decided.model, cost_usd: decided.cost_usd,
+  ...(decided.replayed ? { replayed: true } : {}), ...(decided.provider ? { provider: decided.provider } : {}), ...(decided.evidence ? { evidence: decided.evidence } : {}) });
+/** A decided node's sidecar: its answers' confidences, and the evidence it carries. */
+const sidecarOf = (decided: { answers: Record<string, SystemOneAnswer>; evidence?: DecisionEvidence[] }) => ({ ...answersSidecar(decided.answers), ...(decided.evidence ? { evidence: decided.evidence } : {}) });
 
 async function runJudgeNode(node: JudgeNode, state: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<Record<string, unknown>> {
   assertNodeInputs(node, state);
   const set = questionSetOf(workflow, node);
-  const decided = await decide(deps, { nodeKind: "judge", kind: "judge", judgeKind: "judge", label: node.label, state: interpolateValue(node.state, state, node.label), questions: set.questions }, (answers) => {
+  const decided = await decide(deps, { workflowState: state, decision: decisionOf(node), images: resolveImages(node.images, state, node.label), nodeKind: "judge", kind: "judge", judgeKind: "judge", label: node.label, state: interpolateValue(node.state, state, node.label), questions: set.questions }, (answers) => {
     const value = set.decode(answers);
     return { rule: { kind: "judge" }, action: value, value };
   });
-  const value = decided.value; const sidecar = answersSidecar(decided.answers);
+  const value = decided.value; const sidecar = sidecarOf(decided);
   deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "judge", as: node.as, value, sidecar, ...meteringOf(decided), decision_id: decided.id } });
   return { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar };
 }
@@ -2077,7 +2292,7 @@ async function runPickNode(node: PickNode, state: Record<string, unknown>, deps:
   const options: Record<string, string> = Object.fromEntries(items.map((item, i) => [`item_${i}`, describeItem(node.describe, state, item, i) || `item ${i}`]));
   const criteria: Record<string, string | null> = node.allowNone ? { ...options, [NONE]: "none of the items fits" } : options;
   const asked = { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : { context: promptStateOf(state) }), candidates: options };
-  const decided = await decide(deps, { nodeKind: "pick", kind: "pick", judgeKind: "pick", label: node.label, state: asked, questions: { pick: { type: "choice", instructions: node.instructions, criteria } } }, (answers) => {
+  const decided = await decide(deps, { workflowState: state, decision: decisionOf(node), images: resolveImages(node.images, state, node.label), nodeKind: "pick", kind: "pick", judgeKind: "pick", label: node.label, state: asked, questions: { pick: { type: "choice", instructions: node.instructions, criteria } } }, (answers) => {
     const a = answers.pick;
     if (!a || a.type !== "choice") throw new Error(`pick node "${node.label}": no choice came back`);
     const none = a.choice === NONE;
@@ -2086,7 +2301,7 @@ async function runPickNode(node: PickNode, state: Record<string, unknown>, deps:
     const value = { index, item: index === null ? null : items[index], none, option: none ? null : options[a.choice] };
     return { rule: { kind: "pick", options: Object.keys(options), none: node.allowNone ? NONE : null }, action: { index, none }, value };
   });
-  const value = decided.value; const sidecar = answersSidecar(decided.answers);
+  const value = decided.value; const sidecar = sidecarOf(decided);
   deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "pick", as: node.as, value, sidecar, ...meteringOf(decided), decision_id: decided.id } });
   return { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar };
 }
@@ -2098,11 +2313,12 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
   const set = questionSetOf(workflow, node);
   const ids = Object.keys(set.questions);
   const [keepId, keepTail] = node.keep ? node.keep.path.split(".") : [];
-  const values: Record<string, unknown>[] = []; const sidecars: AnswersSidecar[] = []; const kept: number[] = [];
-  let metering: { model: string | null; cost_usd: number | null; requests?: number; replayed?: true } | null = null;
+  const values: Record<string, unknown>[] = []; const sidecars: (AnswersSidecar & { evidence?: DecisionEvidence[] })[] = []; const kept: number[] = [];
+  let metering: { model: string | null; cost_usd: number | null; requests?: number; replayed?: true; provider?: string; evidence?: DecisionEvidence[] } | null = null;
   const decisionIds: string[] = [];
   if (items.length) {
     const base = node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : {};
+    const images = resolveImages(node.images, state, node.label);
     const named = items.map((item, i) => ({ id: `item_${i}`, ...(node.describe ? { summary: describeItem(node.describe, state, item, i) } : {}), item }));
     const chunks = siftChunks(deps, node.label, ids.length, base, named);
     const measure = keepTail === "confidence" ? "confidence" as const : "value" as const;
@@ -2118,7 +2334,7 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
     const ask = (chunk: number[], c: number, signal: AbortSignal | undefined, onFailure?: (error: unknown) => void) => {
       const questions: Record<string, SystemOneQuestion> = {};
       chunk.forEach((i, j) => { for (const id of ids) questions[`${j}.${id}`] = { ...set.questions[id], instructions: `For \`items[${j}]\` (id item_${i}): ${set.questions[id].instructions}` } as SystemOneQuestion; });
-      return decide(deps, { nodeKind: "sift", kind: "sift", judgeKind: "sift", label: node.label, state: { ...base, items: chunk.map((i) => named[i]) }, questions, signal, request: { index: c, count: chunks.length, items: chunk }, ...(onFailure ? { onFailure } : {}) }, (answers) => {
+      return decide(deps, { workflowState: state, decision: decisionOf(node), images, nodeKind: "sift", kind: "sift", judgeKind: "sift", label: node.label, state: { ...base, items: chunk.map((i) => named[i]) }, questions, signal, request: { index: c, count: chunks.length, items: chunk }, ...(onFailure ? { onFailure } : {}) }, (answers) => {
         const decoded: Record<string, unknown>[] = []; const sides: AnswersSidecar[] = []; const keptHere: number[] = [];
         chunk.forEach((i, j) => {
           const mine: Record<string, SystemOneAnswer> = Object.create(null);
@@ -2153,14 +2369,22 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
       if (failure) throw failure.error;
     }
     const models = new Set(results.map((r) => r.model));
+    const providers = new Set(results.map((r) => r.provider));
+    const evidence = results.flatMap((r) => r.evidence ?? []);
     metering = {
       model: models.size === 1 ? results[0].model : null,
       cost_usd: results.every((r) => r.cost_usd !== null) ? results.reduce((sum, r) => sum + (r.cost_usd as number), 0) : null,
       ...(chunks.length > 1 ? { requests: chunks.length } : {}),
       ...(results.every((r) => r.replayed) ? { replayed: true as const } : {}),
+      ...(providers.size === 1 && results[0].provider ? { provider: results[0].provider } : {}),
+      ...(evidence.length ? { evidence } : {}),
     };
-    // Chunks cover the list in order, so their results concatenate into list order.
-    for (const r of results) { values.push(...r.value.values); sidecars.push(...r.value.sidecars); kept.push(...r.value.kept); decisionIds.push(r.id); }
+    // Chunks cover the list in order, so their results concatenate into list order. An item's sidecar carries the
+    // evidence of the request that answered it.
+    for (const r of results) {
+      values.push(...r.value.values); kept.push(...r.value.kept); decisionIds.push(r.id);
+      sidecars.push(...r.value.sidecars.map((sidecar) => r.evidence ? { ...sidecar, evidence: r.evidence } : sidecar));
+    }
   }
   const value = { items: kept.map((i) => items[i]), values, answers: sidecars, kept };
   deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "sift", as: node.as, value, count: items.length, kept: kept.length, ...(metering ?? {}), decision_ids: decisionIds } });
@@ -2184,14 +2408,20 @@ async function runRouteNode(node: RouteNode, state: Record<string, unknown>, wor
   }
   const names = Object.keys(node.branches);
   const criteria: Record<string, string | null> = Object.fromEntries(names.map((n) => [n, node.branches[n]?.criteria?.trim() || null]));
-  const decided = await decide(deps, { nodeKind: "route", kind: "route", judgeKind: "route", label: node.label, state: interpolateValue(node.state, state, node.label), questions: { branch: { type: "choice", instructions: node.instructions, criteria } } }, (answers) => {
+  const rule: DecisionRule = { kind: "route", branches: [...names], unsure: node.unsure ? { gte: node.unsure.gte, branch: node.unsure.branch } : null };
+  const decided = await decide(deps, { workflowState: state, decision: decisionOf(node), images: resolveImages(node.images, state, node.label), nodeKind: "route", kind: "route", judgeKind: "route", label: node.label, state: interpolateValue(node.state, state, node.label), questions: { branch: { type: "choice", instructions: node.instructions, criteria } }, acceptsRefusal: Boolean(node.unsure) }, (answers) => {
     const a = answers.branch;
+    // A refusal takes the unsure branch, as an answer with no confidence would; it chose no branch of its own.
+    if (a?.type === "refusal" && node.unsure) {
+      const value: { branch: string | null; taken: string; unsure: boolean; refused?: true } = { branch: null, taken: node.unsure.branch, unsure: true, refused: true };
+      return { rule, action: value, value };
+    }
     if (!a || a.type !== "choice" || !names.includes(a.choice)) throw new Error(`route node "${node.label}": the choice "${String((a as any)?.choice)}" names no branch`);
     const unsure = Boolean(node.unsure && a.confidence < node.unsure.gte);
-    const value = { branch: a.choice, taken: unsure ? node.unsure!.branch : a.choice, unsure };
-    return { rule: { kind: "route", branches: [...names], unsure: node.unsure ? { gte: node.unsure.gte, branch: node.unsure.branch } : null }, action: value, value };
+    const value: { branch: string | null; taken: string; unsure: boolean; refused?: true } = { branch: a.choice, taken: unsure ? node.unsure!.branch : a.choice, unsure };
+    return { rule, action: value, value };
   });
-  const value = decided.value; const taken = value.taken; const sidecar = answersSidecar(decided.answers);
+  const value = decided.value; const taken = value.taken; const sidecar = sidecarOf(decided);
   deps.onEvent?.({ type: "route.chosen", label: node.label, detail: { kind: "route", as: node.as ?? null, value, sidecar, ...meteringOf(decided), decision_id: decided.id } });
   const routed = node.as ? { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar } : state;
   return runNodeOnState(node.branches[taken].body, routed, workflow, scopeExecution(deps, "branches", taken, "body"));
@@ -2534,7 +2764,8 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
           try {
             // A failure an earlier process committed ends the item again: its body never runs twice.
             const committed = collect ? await itemDeps.recovery?.itemFailure?.(node, executionPath(itemDeps)) : undefined;
-            if (committed) { rows[i] = committed; results[i] = null; continue; }
+            // A store keeps the row's three strings; a reviewed item is known again by its code.
+            if (committed) { rows[i] = ITEM_DECISION_REVIEWS.has(committed.code) ? { ...committed, needs_review: true } : committed; results[i] = null; continue; }
             const itemState = snapshotState({ ...state, item: items[i], item_index: i });
             const out = await runNodeOnState(node.body, itemState, workflow, itemDeps);
             if (node.resultPath !== undefined) {
@@ -2543,14 +2774,18 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
               results[i] = structuredClone(selected);
             } else results[i] = (node.body as any).as ? (out as any)[(node.body as any).as] : out;
           } catch (error) {
-            // An item failure ends its item; the map's stop and every other failure stop the map.
-            if (!collect || signal.aborted || !isItemFailure(error)) { stop(error); return; }
-            const row = itemFailureRow(i, error as Error, node.label);
+            // An item failure ends its item, and a decision that went to review marks it for review; the map's stop and
+            // every other failure stop the map.
+            const review = collect ? itemReview(error) : undefined;
+            if (!collect || signal.aborted || !(review || isItemFailure(error))) { stop(error); return; }
+            const row: MapItemFailure = review
+              ? { item_index: i, label: review.escalation.label ?? node.label, code: review.escalation.kind, message: String(review.escalation.summary ?? review.message).slice(0, 300), needs_review: true }
+              : itemFailureRow(i, error as Error, node.label);
             try { await itemDeps.recovery?.failItem?.(node, row, executionPath(itemDeps)); }
             catch (persistenceError) { stop(persistenceError); return; }
             rows[i] = row;
             results[i] = null;
-            deps.onEvent?.({ type: "map.item_failed", label: node.label, detail: { item_index: i, label: row.label, code: row.code } });
+            deps.onEvent?.({ type: "map.item_failed", label: node.label, detail: { item_index: i, label: row.label, code: row.code, ...(row.needs_review ? { needs_review: true } : {}) } });
           }
         }
       }));
@@ -2743,7 +2978,7 @@ function compileVerifier(workflow: Workflow, node: WorkflowNode & { verify: Veri
     if (outSchema) normalizeStringNullsForSchema(sub, outSchema);
     const asked = interpolateValue({ ...(clause.state ?? {}), submission: "{submission}" }, { ...state, submission: sub, ...(node.as ? { [node.as]: sub } : {}) }, node.label);
     const drive = drives.length + 1;
-    const decided = await decide(deps, { nodeKind: "judge", kind: "verify", judgeKind: "judge", label: `${node.label} (verify)`, state: asked, questions, request: { index: drive - 1, count: maxDrives } }, (answers) => {
+    const decided = await decide(deps, { workflowState: state, nodeKind: "judge", kind: "verify", judgeKind: "judge", label: `${node.label} (verify)`, state: asked, questions, request: { index: drive - 1, count: maxDrives } }, (answers) => {
       const doubted: string[] = []; const unmet: string[] = [];
       const present = Object.keys(questions).filter((id) => Object.prototype.hasOwnProperty.call(sub, id));
       const thresholds: Record<string, number | null> = {};
@@ -2792,6 +3027,45 @@ function resolveSopSections(node: { node: string; label?: string; sopSection?: s
   return { sopSections, sopSlice: slices.map(section => section.text).join("\n\n") };
 }
 
+/** Refuses, before any node runs, a decision node (or an `ask` predicate) the host's providers cannot answer as asked:
+ *  a provider it lacks, `evidence: "required"` on a provider that gives none, a model it does not serve, a question type
+ *  it does not answer, or more questions than one of its requests may hold. A host that names no providers has a judge
+ *  that may honour neither a node's provider nor its timeoutMs, so a node that sets either is refused. */
+function checkDecisionProviders(node: WorkflowNode, deps: WorkflowDeps, workflow?: Workflow): void {
+  const registry = deps.decisionProviders;
+  const label = "label" in node ? node.label : node.node;
+  const asked: Array<{ choice: DecisionChoice; types: string[]; count: number | null; what: string }> = [];
+  const questionsOf = (out: string): string[] => {
+    const compiled = workflow ? compileQuestions(workflow.schemas[out], workflow.schemas) : undefined;
+    return compiled?.ok ? Object.values(compiled.questions).map((question) => question.type) : [];
+  };
+  if (node.node === "judge") { const types = questionsOf(node.out); asked.push({ choice: node, types, count: types.length, what: `judge node "${label}"` }); }
+  if (node.node === "sift") asked.push({ choice: node, types: questionsOf(node.out), count: null, what: `sift node "${label}"` });
+  if (node.node === "pick") asked.push({ choice: node, types: ["choice"], count: 1, what: `pick node "${label}"` });
+  if (node.node === "route" && !routesByValue(node)) asked.push({ choice: node as RouteByJudgmentNode, types: ["choice"], count: 1, what: `route node "${label}"` });
+  for (const pred of [node.node === "loop" ? node.until : undefined, node.node === "escalate" ? node.when : undefined]) {
+    if ((pred as AskPredicate | undefined)?.predicate === "ask") asked.push({ choice: pred as AskPredicate, types: ["noul"], count: 1, what: `${node.node} node "${label}" (ask predicate)` });
+  }
+  for (const { choice, types, count, what } of asked) {
+    if (!registry) {
+      if (choice.provider !== undefined) throw new Error(`${what} names the decision provider ${choice.provider}, and this host names no decision providers`);
+      if (choice.timeoutMs !== undefined) throw new Error(`${what} sets timeoutMs, and this host names no decision providers to bound it with`);
+      continue;
+    }
+    const id = choice.provider ?? registry.default;
+    const provider = Object.hasOwn(registry.providers, id) ? registry.providers[id] : undefined;
+    if (!provider) throw new Error(`${what} names the decision provider ${id}, which this host does not have`);
+    const capabilities = provider.capabilities;
+    if (choice.evidence === "required" && capabilities.evidence === "none") throw new Error(`${what} requires evidence, and the decision provider ${id} gives none`);
+    if (choice.model !== undefined && capabilities.models && !capabilities.models.includes(choice.model)) throw new Error(`${what} pins the model ${choice.model}, which the decision provider ${id} does not answer with`);
+    const missing = [...new Set(types.filter((type) => !(capabilities.types as string[]).includes(type)))];
+    if (missing.length) throw new Error(`${what} asks ${missing.join(", ")} questions, which the decision provider ${id} does not answer`);
+    if (count !== null && capabilities.maxQuestions !== null && count > capabilities.maxQuestions) throw new Error(`${what} asks ${count} questions, more than the ${capabilities.maxQuestions} one request to ${id} may hold`);
+    const images = (choice as { images?: unknown }).images;
+    if (images && typeof images === "object" && Object.keys(images).length && !capabilities.inputs.includes("image")) throw new Error(`${what} sends images, and the decision provider ${id} takes no image input`);
+  }
+}
+
 export function assertWorkflowCapabilities(node: WorkflowNode, deps: WorkflowDeps, workflow?: Workflow): void {
   assertQuestionCount(deps, 0, "workflow");
   if (workflow) {
@@ -2808,6 +3082,7 @@ export function assertWorkflowCapabilities(node: WorkflowNode, deps: WorkflowDep
   if ((["judge", "pick", "sift"].includes(node.node) || node.node === "route" && !routesByValue(node) || "verify" in node && node.verify ||
       node.node === "loop" && (node.until as AskPredicate)?.predicate === "ask" ||
       node.node === "escalate" && (node.when as AskPredicate)?.predicate === "ask") && !deps.runJudge) missing("runJudge");
+  checkDecisionProviders(node, deps, workflow);
   // A store that cannot commit an item's failure would run the item again in the next process.
   if (node.node === "map" && node.onItemFailure === "collect" && deps.recovery && !(deps.recovery.failItem && deps.recovery.itemFailure)) missing("recovery.failItem and recovery.itemFailure");
   if (node.node === "chain") node.steps.forEach(n => assertWorkflowCapabilities(n, deps, workflow));

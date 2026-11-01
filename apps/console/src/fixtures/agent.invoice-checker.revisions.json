@@ -1,0 +1,87 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents/invoice-checker/revisions"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "revisions": [
+      {
+        "revision": "3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe",
+        "version": 3,
+        "parent": "77b2826aaa7d3ed57fcfb683880c79094c56df20645b95d27d8b62a4f3fd2c6a",
+        "kind": "agentic",
+        "current": true,
+        "note": "Asks for the currency when it is missing; thinks harder",
+        "created_at": "2026-10-28T19:32:53.408Z",
+        "definition": {
+          "id": "invoice-checker",
+          "version": 3,
+          "name": "Invoice checker",
+          "description": "Recomputes an invoice's lines and total and reports what is off.",
+          "instructions": "Check the invoice the person pastes with the totals-rubric skill. If the currency is not stated, ask the person before you compute. Write your findings to findings.md, and answer with a table.",
+          "thinking": "high",
+          "harness": "pi",
+          "skills": [
+            "totals-rubric"
+          ],
+          "tools": [
+            "read",
+            "write",
+            "ask_person"
+          ]
+        }
+      },
+      {
+        "revision": "77b2826aaa7d3ed57fcfb683880c79094c56df20645b95d27d8b62a4f3fd2c6a",
+        "version": 2,
+        "parent": "1c9bdb3393edc2277443bbd496b36658c0ed186864b9b37040fb2e0645ee73da",
+        "kind": "agentic",
+        "current": false,
+        "note": "Adds the totals rubric as a skill",
+        "created_at": "2026-10-28T19:32:53.127Z",
+        "definition": {
+          "id": "invoice-checker",
+          "version": 2,
+          "name": "Invoice checker",
+          "description": "Recomputes an invoice's lines and total and reports what is off.",
+          "instructions": "Check the invoice the person pastes with the totals-rubric skill. Write your findings to findings.md, and answer with a table.",
+          "harness": "pi",
+          "skills": [
+            "totals-rubric"
+          ],
+          "tools": [
+            "read",
+            "write"
+          ]
+        }
+      },
+      {
+        "revision": "1c9bdb3393edc2277443bbd496b36658c0ed186864b9b37040fb2e0645ee73da",
+        "version": 1,
+        "parent": null,
+        "kind": "agentic",
+        "current": false,
+        "note": "First prompt",
+        "created_at": "2026-10-28T19:32:52.598Z",
+        "definition": {
+          "id": "invoice-checker",
+          "version": 1,
+          "name": "Invoice checker",
+          "description": "Recomputes an invoice's lines and total and reports what is off.",
+          "instructions": "Check the invoice the person pastes. Recompute every line and the total, write your findings to findings.md, and answer with a table.",
+          "harness": "pi",
+          "skills": [],
+          "tools": [
+            "read",
+            "write"
+          ]
+        }
+      }
+    ],
+    "next_cursor": null
+  }
+}

@@ -1,6 +1,6 @@
 import type { JsonObject } from "@earendil-works/pi-durable";
 import type { Workflow } from "@parcha/agentrun-dsl"; // a type only: a store that never holds a workflow loads nothing of the DSL
-import { existsSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -34,10 +34,28 @@ function cutSummary(text: string): string {
   return text.slice(0, end) + "\u2026";
 }
 
-/** `archivedAt`: when the run was archived, else when its agent was, while it is. */
-export type RunRow = { id: string; agent: string; revision: string; kind: RevisionKind; state: RunState; startedAt: string; endedAt?: string; costUsd?: number; summary?: string; archivedAt?: string };
+/** Where an imported run came from: the harness that ran it on this machine, and its own session id. */
+export type ImportSource = "claude-code" | "codex" | "pi";
+export type ImportedFrom = { source: ImportSource; session: string };
+/** `archivedAt`: when the run was archived, else when its agent was, while it is. `importedFrom`: set on a run imported
+ *  from another harness's session, which is read-only. */
+export type RunRow = { id: string; agent: string; revision: string; kind: RevisionKind; state: RunState; startedAt: string; endedAt?: string; costUsd?: number; summary?: string; archivedAt?: string; importedFrom?: ImportedFrom };
+/** A session to import as a run that has already ended. */
+export type ImportedRun = { agent: string; revision: string; state: "completed" | "failed" | "stopped"; startedAt: string; endedAt: string; costUsd?: number; summary?: string } & ImportedFrom;
 /** What can be archived. */
 export type ArchiveKind = "agent" | "run";
+type RunCounts = Record<RunState, number> & { total: number };
+/** `usd` sums the costs of the `known` runs, those that ended with one; null when there are none, never 0. A run still
+ *  running, or one that ended with no cost, is `unknown`. */
+type CostSum = { usd: number | null; known: number; unknown: number };
+/** What `stats` answers. Every number but `archivedAgents` and `archivedRuns` leaves out what is archived; a run of an
+ *  archived agent is archived with it. `byAgent`: each agent by name, with its run count; `running`: the ids of the runs
+ *  still running. */
+export type StoreStats = {
+  agents: number; archivedAgents: number; runs: RunCounts; archivedRuns: number; cost: CostSum;
+  byAgent: Array<{ id: string; name: string; runs: number }>;
+  running: string[];
+};
 export type NewRevision =
   | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; note?: string }
   | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; note?: string };
@@ -77,6 +95,7 @@ CREATE TABLE IF NOT EXISTS runs (
   summary     TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_by_agent ON runs(agent_id, started_at);
+CREATE INDEX IF NOT EXISTS runs_by_state ON runs(state);
 CREATE TABLE IF NOT EXISTS archive_changes (
   seq      INTEGER PRIMARY KEY,
   kind     TEXT NOT NULL CHECK (kind IN ('agent', 'run')),
@@ -88,9 +107,23 @@ CREATE INDEX IF NOT EXISTS archive_changes_by_item ON archive_changes(kind, id, 
 CREATE TRIGGER IF NOT EXISTS archive_changes_are_written_once BEFORE UPDATE ON archive_changes
 BEGIN SELECT RAISE(ABORT, 'an archive change is written once'); END;
 CREATE TRIGGER IF NOT EXISTS archive_changes_are_kept BEFORE DELETE ON archive_changes
-BEGIN SELECT RAISE(ABORT, 'an archive change is written once'); END;`;
+BEGIN SELECT RAISE(ABORT, 'an archive change is written once'); END;
+CREATE TABLE IF NOT EXISTS run_imports (
+  run_id  TEXT PRIMARY KEY REFERENCES runs(id),
+  source  TEXT NOT NULL CHECK (source IN ('claude-code', 'codex', 'pi')),
+  session TEXT NOT NULL,
+  at      TEXT NOT NULL,
+  UNIQUE (source, session)
+);
+CREATE TRIGGER IF NOT EXISTS run_imports_are_written_once BEFORE UPDATE ON run_imports
+BEGIN SELECT RAISE(ABORT, 'an import is written once'); END;
+CREATE TRIGGER IF NOT EXISTS run_imports_are_kept BEFORE DELETE ON run_imports
+BEGIN SELECT RAISE(ABORT, 'an import is written once'); END;
+CREATE TRIGGER IF NOT EXISTS imported_runs_stay_ended BEFORE UPDATE ON runs WHEN EXISTS (SELECT 1 FROM run_imports i WHERE i.run_id = OLD.id)
+BEGIN SELECT RAISE(ABORT, 'an imported run is read-only'); END;`;
 
-// archive_changes came after version 1 without a new version: an earlier version opens the file and ignores the table.
+// archive_changes, runs_by_state and run_imports came after version 1 without a new version: an earlier version opens
+// the file and ignores them. run_imports' trigger on runs is in the file, so that version still cannot change an imported run.
 const STORE_VERSION = 1;
 const SQLITE_READONLY_ROLLBACK = 776;
 const SQLITE_CONSTRAINT = 19;
@@ -106,6 +139,19 @@ const checkId = (id: unknown, what: string): string => {
   return id;
 };
 const revisionHash = (r: { agent: string; parent: string | null; kind: string; body: unknown }) => sha256(canonical({ agent: r.agent, parent: r.parent, kind: r.kind, body: r.body }));
+const RUN_STATES: readonly RunState[] = ["running", "completed", "failed", "stopped", "escalated"];
+
+const importedFromOf = (r: Record<string, unknown>): { importedFrom?: ImportedFrom } =>
+  r.import_source ? { importedFrom: { source: r.import_source as ImportSource, session: r.import_session as string } } : {};
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+const checkTime = (value: unknown, what: string): string => {
+  if (typeof value !== "string" || !ISO_TIME.test(value) || Number.isNaN(Date.parse(value))) throw invalid(`the ${what} time is not an ISO time in UTC`);
+  const iso = new Date(value).toISOString();
+  // Date.parse rolls an impossible date or hour forward (02-30 reads as 03-02): the time must read back as written, up to
+  // how its fraction of a second is spelled.
+  if (iso.slice(0, 19) !== value.slice(0, 19)) throw invalid(`the ${what} time ${value} is not a time that exists`);
+  return iso;
+};
 
 /** A revision as stored, checked: the id is the hash of its content, so a row that was changed does not pass. */
 function revisionOf(row: Record<string, unknown>): Revision {
@@ -144,14 +190,22 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
 export class AgentStoreReader {
   /** A store an earlier version wrote has no archive_changes until a writer opens it: nothing in it is archived. */
   private readonly archives: boolean;
+  /** Likewise run_imports: a store without it holds no imported run. */
+  private readonly imports: boolean;
   constructor(readonly dir: string, protected readonly db: DatabaseSync) {
-    this.archives = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'archive_changes'").get() !== undefined;
+    const has = (table: string) => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== undefined;
+    this.archives = has("archive_changes");
+    this.imports = has("run_imports");
   }
   close(): void { this.db.close(); }
 
   /** SQL for when the `kind` whose id is `id` (an SQL expression) was archived, while it is; else NULL. */
   protected archivedAtSql(kind: ArchiveKind, id: string): string {
     return this.archives ? `(SELECT CASE WHEN c.archived = 1 THEN c.at END FROM archive_changes c WHERE c.kind = '${kind}' AND c.id = ${id} ORDER BY c.seq DESC LIMIT 1)` : "NULL";
+  }
+  /** The columns and join for a run's import (`r` is the run). */
+  private importSql(): { columns: string; join: string } {
+    return this.imports ? { columns: "i.source AS import_source, i.session AS import_session", join: "LEFT JOIN run_imports i ON i.run_id = r.id" } : { columns: "NULL AS import_source, NULL AS import_session", join: "" };
   }
   /** A run's own archive time, else its agent's. */
   private runArchivedAtSql(): string {
@@ -177,16 +231,60 @@ export class AgentStoreReader {
   }
   /** Newest first; a run joined to its revision's kind. */
   listRuns(filter: { agent?: string; revision?: string } = {}): RunRow[] {
-    const rows = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary, ${this.runArchivedAtSql()} AS archived_at FROM runs r JOIN revisions v ON v.id = r.revision_id
+    const imported = this.importSql();
+    const rows = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary, ${this.runArchivedAtSql()} AS archived_at, ${imported.columns} FROM runs r JOIN revisions v ON v.id = r.revision_id ${imported.join}
       WHERE (? IS NULL OR r.agent_id = ?) AND (? IS NULL OR r.revision_id = ?) ORDER BY r.started_at DESC, r.rowid DESC`).all(filter.agent ?? null, filter.agent ?? null, filter.revision ?? null, filter.revision ?? null) as Array<Record<string, unknown>>;
-    return rows.map((r) => ({ id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}) }));
+    return rows.map((r) => ({ id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}), ...importedFromOf(r) }));
   }
   /** One run: the README's join (runs, agents, revisions) for one run id, in one statement. The run plus its agent's name and its revision's note; undefined for an unknown run. */
   readRun(runId: string): (RunRow & { agentName: string; note?: string }) | undefined {
-    const r = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary, a.name AS agent_name, v.note, ${this.runArchivedAtSql()} AS archived_at
-      FROM runs r JOIN agents a ON a.id = r.agent_id JOIN revisions v ON v.id = r.revision_id WHERE r.id = :id`).get({ id: checkId(runId, "run") }) as Record<string, unknown> | undefined;
+    const imported = this.importSql();
+    const r = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary, a.name AS agent_name, v.note, ${this.runArchivedAtSql()} AS archived_at, ${imported.columns}
+      FROM runs r JOIN agents a ON a.id = r.agent_id JOIN revisions v ON v.id = r.revision_id ${imported.join} WHERE r.id = :id`).get({ id: checkId(runId, "run") }) as Record<string, unknown> | undefined;
     if (!r) return undefined;
-    return { id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}), agentName: r.agent_name as string, ...(r.note ? { note: r.note as string } : {}), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}) };
+    return { id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}), agentName: r.agent_name as string, ...(r.note ? { note: r.note as string } : {}), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}), ...importedFromOf(r) };
+  }
+  /** Counts and cost sums over the whole store, each an SQL aggregate over `store.sqlite`'s indexes, read in one
+   *  snapshot; nothing under `runs/` is opened. */
+  stats(): StoreStats {
+    const notArchived = `${this.runArchivedAtSql()} IS NULL`;
+    this.db.exec("BEGIN");
+    try {
+      const agents = this.db.prepare(`SELECT a.id, a.name, ${this.archivedAtSql("agent", "a.id")} IS NOT NULL AS archived FROM agents a ORDER BY a.name, a.id`).all() as Array<Record<string, unknown>>;
+      // One pass over runs_by_agent: a run's own archive state is a group key, so it is looked up once per run.
+      const groups = this.db.prepare(`SELECT agent_id, archived, COUNT(*) AS total, ${RUN_STATES.map((state) => `SUM(state = '${state}') AS ${state}`).join(", ")},
+          SUM(CASE WHEN state <> 'running' THEN cost_usd END) AS cost_usd, SUM(state <> 'running' AND cost_usd IS NOT NULL) AS known
+        FROM (SELECT r.agent_id, r.state, r.cost_usd, ${this.archivedAtSql("run", "r.id")} IS NOT NULL AS archived FROM runs r) GROUP BY agent_id, archived`).all() as Array<Record<string, unknown>>;
+      const running = (this.db.prepare(`SELECT r.id FROM runs r WHERE r.state = 'running' AND ${notArchived}`).all() as Array<{ id: string }>).map((r) => r.id);
+      const counts = (r?: Record<string, unknown>): RunCounts => ({ total: Number(r?.total ?? 0), ...(Object.fromEntries(RUN_STATES.map((state) => [state, Number(r?.[state] ?? 0)])) as Record<RunState, number>) });
+      const shown = new Map<string, Record<string, unknown>>();
+      const hidden = new Map<string, number>();
+      for (const g of groups) {
+        if (g.archived) hidden.set(g.agent_id as string, Number(g.total));
+        else shown.set(g.agent_id as string, g);
+      }
+      const stats: StoreStats = { agents: 0, archivedAgents: 0, runs: counts(), archivedRuns: 0, cost: { usd: null, known: 0, unknown: 0 }, byAgent: [], running };
+      for (const a of agents) {
+        const g = shown.get(a.id as string);
+        const runs = counts(g);
+        stats.archivedRuns += hidden.get(a.id as string) ?? 0;
+        if (a.archived) {
+          stats.archivedAgents += 1;
+          stats.archivedRuns += runs.total;
+          continue;
+        }
+        const known = Number(g?.known ?? 0);
+        stats.agents += 1;
+        stats.byAgent.push({ id: a.id as string, name: a.name as string, runs: runs.total });
+        for (const key of ["total", ...RUN_STATES] as const) stats.runs[key] += runs[key];
+        if (known > 0) stats.cost.usd = (stats.cost.usd ?? 0) + Number(g!.cost_usd);
+        stats.cost.known += known;
+        stats.cost.unknown += runs.total - known;
+      }
+      return stats;
+    } finally {
+      this.db.exec("COMMIT");
+    }
   }
   /** One agent with every revision and its body, newest first, `current` marked: one statement. Each revision is hash-verified as `readRevision` verifies it. Undefined for an unknown agent. */
   readAgent(agentId: string): { agent: Agent; revisions: Array<Revision & { current: boolean }> } | undefined {
@@ -310,6 +408,7 @@ export class AgentStore extends AgentStoreReader {
     if (!["completed", "failed", "stopped", "escalated"].includes(result?.state)) throw invalid("the state is not completed, failed, stopped or escalated");
     if (result.costUsd !== undefined && !(Number.isFinite(result.costUsd) && result.costUsd >= 0)) throw invalid("the cost is not a number of at least 0");
     if (result.summary !== undefined && (typeof result.summary !== "string" || result.summary === "")) throw invalid("the summary is not non-empty text");
+    this.refuseImported(checkId(runId, "run"));
     const done = this.db.prepare("UPDATE runs SET state = ?, ended_at = ?, cost_usd = ?, summary = ? WHERE id = ? AND ended_at IS NULL").run(result.state, new Date().toISOString(), result.costUsd ?? null, result.summary === undefined ? null : cutSummary(result.summary), checkId(runId, "run"));
     if (done.changes === 0) throw new AgentHomeError(this.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(runId) ? "exists" : "missing", "that run is unknown or has already ended");
   }
@@ -317,10 +416,64 @@ export class AgentStore extends AgentStoreReader {
   /** Opens a completed run again, for a follow-up: running, with no end; its cost and summary stay until the next
    *  carryBack. Only a completed run opens again. */
   reopenRun(runId: string): void {
+    this.refuseImported(checkId(runId, "run"));
     const done = this.db.prepare("UPDATE runs SET state = 'running', ended_at = NULL WHERE id = ? AND state = 'completed'").run(checkId(runId, "run"));
     if (done.changes > 0) return;
     if (!this.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(runId)) throw new AgentHomeError("missing", "that run is unknown");
     throw invalid("only a completed run opens again");
+  }
+
+  /** Records a session another harness ran on this machine as a run of `agent` at `revision` that has already ended,
+   *  at the source's own times. The store mints the run id; the same source and session imports once (again: undefined,
+   *  nothing written). Its directory and store directory are made 0700 (no work directory: nothing ran here), and the
+   *  caller writes the transcript at `storePath`. An imported run is read-only: nothing reopens or ends it again. */
+  importRun(input: ImportedRun): Pick<StartedRun, "runId" | "dir" | "storePath"> | undefined {
+    if (!isObject(input)) throw invalid("the import is not an object");
+    if ("runId" in input || "id" in input) throw invalid("importRun takes no run id: the store mints it");
+    const agent = checkId(input.agent, "agent");
+    const revision = this.readRevision(checkId(input.revision, "revision"));
+    if (revision.agent !== agent) throw invalid("that revision is not a revision of that agent");
+    if (!["completed", "failed", "stopped"].includes(input.state)) throw invalid("an imported run's state is completed, failed or stopped");
+    if (!["claude-code", "codex", "pi"].includes(input.source)) throw invalid("the source is not claude-code, codex or pi");
+    if (typeof input.session !== "string" || input.session === "" || input.session.length > 256) throw invalid("the session is not a non-empty id of at most 256 characters");
+    const startedAt = checkTime(input.startedAt, "start");
+    const endedAt = checkTime(input.endedAt, "end");
+    if (endedAt < startedAt) throw invalid("the run ends before it starts");
+    if (input.costUsd !== undefined && !(Number.isFinite(input.costUsd) && input.costUsd >= 0)) throw invalid("the cost is not a number of at least 0");
+    if (input.summary !== undefined && (typeof input.summary !== "string" || input.summary === "")) throw invalid("the summary is not non-empty text");
+    const runId = uuidv7();
+    const dir = path.join(this.dir, "runs", runId);
+    const storePath = runStoreIn(dir);
+    // The directory first, then the rows (startRun's order); each mode set after its mkdir, so no umask loosens it.
+    // runs/ made here (a first import, before any run) is the owner's too: a umask that strips the owner's write bit
+    // would leave it unwritable, and this run's directory never made.
+    if (mkdirSync(path.dirname(dir), { recursive: true }) !== undefined) chmodSync(path.dirname(dir), 0o700);
+    try {
+      for (const made of [dir, path.dirname(storePath)]) {
+        mkdirSync(made, { mode: 0o700 });
+        chmodSync(made, 0o700);
+      }
+      const added = this.tx(() => {
+        if (this.db.prepare("SELECT 1 FROM run_imports WHERE source = ? AND session = ?").get(input.source, input.session)) return false;
+        this.db.prepare("INSERT INTO runs (id, agent_id, revision_id, state, started_at, ended_at, cost_usd, summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+          .run(runId, agent, revision.id, input.state, startedAt, endedAt, input.costUsd ?? null, input.summary === undefined ? null : cutSummary(input.summary));
+        this.db.prepare("INSERT INTO run_imports (run_id, source, session, at) VALUES (?, ?, ?, ?)").run(runId, input.source, input.session, new Date().toISOString());
+        return true;
+      });
+      if (!added) {
+        rmSync(dir, { recursive: true, force: true });
+        return undefined;
+      }
+    } catch (error) {
+      rmSync(dir, { recursive: true, force: true });
+      throw error;
+    }
+    return { runId, dir, storePath };
+  }
+
+  /** An imported run is read-only: refused by name here, and by the file's trigger under any other writer. */
+  private refuseImported(runId: string): void {
+    if (this.db.prepare("SELECT 1 FROM run_imports WHERE run_id = ?").get(runId)) throw invalid("an imported run is read-only");
   }
 
   /** A beta.24 agent home becomes one agent with one agentic revision (its definition and skills). Its run directories are not copied. */

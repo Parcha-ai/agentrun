@@ -11,15 +11,15 @@ export {
 } from "./workflow.js";
 export { defineJob } from "./job.js";
 export type { Job } from "./job.js";
-export { DECISION_RECEIPT_VERSION, rederiveDecision } from "./decision-receipts.js";
-export type { DecisionKind, DecisionReceipt, DecisionRule } from "./decision-receipts.js";
+export { DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, DECISION_STATE_MAX_BYTES, rederiveDecision } from "./decision-receipts.js";
+export type { DecisionImageDigest, DecisionKind, DecisionReceipt, DecisionRule } from "./decision-receipts.js";
 export type {
   Workflow, WorkflowNode, NodeMetadata, WorkflowDeps, WorkflowEvent, WorkflowRunResult, HostPolicy, HostPolicyContext,
   Escalation, EffectSettlement, MapItem, MapItemFailure, DecisionExchange,
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, RouteByJudgmentNode, RouteByValueNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, EffectFailureCode, CallPredicate, PollClause,
   ModelTier, AgentContext, WorkflowEffort, WorkflowThinking, VerifyClause,
-  AskPredicate, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue, ValidateWorkflowOptions,
+  AskPredicate, DecisionEvidenceMode, DecisionImages, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue, ValidateWorkflowOptions,
 } from "./workflow.js";
 export { dryRunWorkflow, synthesizeInstance } from "./dry-run.js";
 export type { DryRunOptions, DryRunResult } from "./dry-run.js";
@@ -27,11 +27,18 @@ export type { DryRunOptions, DryRunResult } from "./dry-run.js";
 export {
   compileQuestions, validateAnswers, answersToValue, answersSidecar,
   answerConfidence, synthesizeAnswers, SYSTEM_ONE_LIMITS, SystemOneError, isSystemOneResponseReason,
+  deriveConfidence, completeConfidence, refusedQuestions,
 } from "./system-one.js";
 export type {
   SystemOneQuestion, SystemOneAnswer, SystemOneBox, SystemOneResult, SystemOneRetryClass, SystemOneResponseReason,
-  CompiledQuestions, AnswersSidecar,
+  CompiledQuestions, AnswersSidecar, ConfidenceSource,
 } from "./system-one.js";
+
+export { judgeFromProvider, judgeFromProviders, checkCapabilities, DecisionProviderError, imageDimensions } from "./decision-provider.js";
+export type {
+  DecisionProvider, DecisionCapabilities, DecisionInput, DecisionRequest, DecisionContext, DecisionEvidence, DecisionOutcome,
+  ProviderAnswer, CostBasis, DecisionProviderErrorCode, DecisionImage, LoadImage, JudgeFromProviderOptions,
+} from "./decision-provider.js";
 
 export { inspectWorkflow, formatWorkflowTree } from "./inspection.js";
 export type { WorkflowInspection, WorkflowInspectionNode } from "./inspection.js";
@@ -57,7 +64,7 @@ export {
 export type { AuthorHostAddendum, CandidatePolicyOptions, AuthorWorkflowOptions, AuthoredWorkflow, HostOutputTypeOptions } from "./author.js";
 export {
   WORKFLOW_NODE_KINDS, GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS,
-  MECHANICAL_PREDICATES, WORKFLOW_PREDICATES, PREDICATE_FIELDS,
+  MECHANICAL_PREDICATES, WORKFLOW_PREDICATES, PREDICATE_FIELDS, FIELD_TYPES,
   EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
 } from "./vocabulary.js";
-export type { WorkflowNodeKind, WorkflowPredicateName } from "./vocabulary.js";
+export type { WorkflowNodeKind, WorkflowPredicateName, FieldType } from "./vocabulary.js";

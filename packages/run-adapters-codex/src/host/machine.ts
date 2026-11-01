@@ -19,6 +19,7 @@ import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, Mac
 import { brandMachine } from "./process.js";
 import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-adapters/host";
 import { codexPolicy } from "./policy.js";
+import { UNWATCHED } from "../scripts.js";
 
 /** The variables a child takes from this process, when they are set. */
 export const INHERITED_ENV = Object.freeze(["PATH", "LANG", "TZ"] as const);
@@ -158,8 +159,29 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
 
     const key = randomBytes(32).toString("base64url");
     const route = model.options;
+    // The code-mode `exec` the model proxy's latest answer carried: set while the answer passes, before Codex has it.
+    let announced: string | undefined;
+    let open = 0;
+    const rolloutListeners: ((line: string) => void)[] = [];
     const proxy = await startModelProxy({
-      policy: codexPolicy({ model: route.models.model, tools: options.proxy.tools, ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}) }),
+      policy: codexPolicy({
+        model: route.models.model,
+        tools: options.proxy.tools,
+        ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
+        announce: {
+          // The cost is liveness, not safety: after an overlap a never call is declined until the next single answer, which the model's
+          // next wait or exec gives.
+          // A second answer that starts while one is open (a background call beside the turn) makes every tie ambiguous until both have
+          // ended: which of them carried which exec cannot be told. A failed watch, likewise, stands for an exec not seen.
+          response: () => {
+            open += 1;
+            announced = open > 1 ? UNWATCHED : undefined;
+          },
+          exec: (callId) => void (announced = open > 1 || announced === UNWATCHED ? UNWATCHED : callId),
+          failed: () => void (announced = UNWATCHED),
+          end: () => void (open = Math.max(0, open - 1)),
+        },
+      }),
       hooks: options.proxy.hooks,
       model: route.models.model,
       origin: route.target,
@@ -179,6 +201,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       signal: lost.signal,
       modelUrl: proxy.url,
       modelKey: key,
+      announcedExec: () => announced,
+      onRolloutLine: (listener) => void rolloutListeners.push(listener),
       notes: [],
       spawn: async (spawnOptions) => {
         if (closed) throw new Error("agentrun-codex: the session machine is closed");
@@ -214,7 +238,9 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
             } catch (err) {
               if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
             }
-            return tail.read();
+            const fresh = tail.read();
+            for (const line of fresh) for (const listener of rolloutListeners) listener(line);
+            return fresh;
           },
           // A local file is read to its end on every read.
           sync: async () => {},

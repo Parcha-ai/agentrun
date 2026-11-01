@@ -1,9 +1,9 @@
-import { Ban, Check, CircleAlert, Loader, MessageCircleQuestion, Pause } from "lucide-react";
+import { Ban, Check, CircleAlert, CirclePause, Loader, MessageCircleQuestion, Pause } from "lucide-react";
 import { Chip } from "@/components/ui/chip";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { Run } from "@/lib/v2";
 
-const ICON = { Queued: Loader, Working: Loader, Completed: Check, Failed: CircleAlert, Cancelled: Ban, "Input required": MessageCircleQuestion, Stopped: Pause };
+const ICON = { Queued: Loader, Working: Loader, Completed: Check, Failed: CircleAlert, Cancelled: Ban, "Input required": MessageCircleQuestion, Stopped: Pause, Paused: CirclePause };
 
 /** The run's status as a chip: the label the console gives serve's status and state. */
 export function StatusBadge({ run }: { run: Pick<Run, "status" | "state" | "kind"> }) {

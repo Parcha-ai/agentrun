@@ -11,15 +11,24 @@ export const linuxPs: CommandRunner = (file, args) => {
   if (file.endsWith("/sysctl")) return readFileSync("/proc/sys/kernel/random/boot_id", "utf8");
   if (args.includes("-E")) {
     const words = (pid: string, name: string) => readFileSync(`/proc/${pid}/${name}`, "utf8").split("\0").filter(Boolean);
-    // `-A -o pid=,command=`: every process, its pid then its command and environment, as macOS prints them.
+    // `-A -o pid=,[ruid=,]command=`: every process, its pid (and real uid) then its command and environment, as macOS
+    // prints them. A process whose environment cannot be read (another user's) shows its command alone, as macOS does.
     if (args.includes("-A")) {
+      const withRuid = args.some((a) => a.includes("ruid="));
       return readdirSync("/proc")
         .filter((entry) => /^\d+$/.test(entry))
         .flatMap((pid) => {
           try {
-            return [`${pid} ${[...words(pid, "cmdline"), ...words(pid, "environ")].join(" ")}`];
+            let env: string[] = [];
+            try {
+              env = words(pid, "environ");
+            } catch {
+              // another user's: no environment shown
+            }
+            const ruid = withRuid ? ` ${/^Uid:\s*(\d+)/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))![1]}` : "";
+            return [`${pid}${ruid} ${[...words(pid, "cmdline"), ...env].join(" ")}`];
           } catch {
-            return []; // gone, or another user's
+            return []; // gone
           }
         })
         .join("\n");

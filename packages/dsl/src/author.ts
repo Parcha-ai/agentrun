@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { validateWorkflow, type Workflow, type WorkflowDeps, type WorkflowNode } from "./workflow.js";
 import { SYSTEM_ONE_LIMITS } from "./system-one.js";
 import {
-  WORKFLOW_NODE_KINDS, NODE_FIELDS, WORKFLOW_PREDICATES, PREDICATE_FIELDS, MECHANICAL_PREDICATES,
+  WORKFLOW_NODE_KINDS, NODE_FIELDS, WORKFLOW_PREDICATES, PREDICATE_FIELDS, MECHANICAL_PREDICATES, FIELD_TYPES,
   EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
   GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, type WorkflowNodeKind,
 } from "./vocabulary.js";
@@ -44,6 +44,8 @@ const PREDICATE_SHAPES: { readonly [Name in typeof WORKFLOW_PREDICATES[number]]:
   lt: "holds when the finite number at `path` is below `n`",
   empty: "holds when the value at `path` is an empty array, an empty string, null or absent",
   no_new_items: "takes `key`, not `path`; holds when that state key is an empty array or falsy",
+  field_type: `holds when the value at \`path\` is of \`type\`, one of ${FIELD_TYPES.join(", ")}; a number only when finite, and an absent value is of no type`,
+  not: "holds when `of`, one mechanical predicate (never `ask`), does not; `{\"predicate\": \"not\", \"of\": {\"predicate\": \"field_type\", \"path\": \"score\", \"type\": \"number\"}}` holds when score is absent or not a finite number",
   ask: "a yes/no question for the host's judge: `instructions` is the question, `state` what it sees (default: the whole state), `criteria` optional {true, false} descriptions; holds when the yes-probability is at least `gte` (in (0.5, 1], default 0.6)",
 };
 
@@ -109,6 +111,8 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 - ${code("sift")}: ${code("itemsPath")}, ${code("out")} (a question schema asked of every item; the host splits the items across requests when they exceed its limits) and ${code("as")}. ${code("keep")} {path: a question id or <id>.confidence, never a choice, gte?} keeps passing items, in order, at ${code("<as>.items")}.
 - ${code("route")} runs one of 2 or more named ${code("branches")}. Jev chooses: a non-empty ${code("state")} map, ${code("instructions")} (the one question) and up to ${SYSTEM_ONE_LIMITS.maxChoiceOptions} branches, each {criteria?, body}; ${code("unsure")} {branch, gte: a number in (0, 1]} takes that branch when the choice's confidence is below ${code("gte")}. Or the workflow already holds the choice: ${code("valuePath")} names the state string that is the branch, each branch is {body}, no question is asked, and ${code("otherwise")} (a branch) takes a missing or unknown name, which otherwise fails; a non-string fails. ${code("as")} records the choice.
 - A decoded boolean is true at yes-probability 0.5. To hold a different threshold, read ${code("<as>$answers.answers.<id>.noul")} in a code node.
+- ${code("images")} {token: reference} sends images with a decision (judge, pick, sift, a route Jev chooses, ask). Each token, such as "<page1>", must appear literally in the node's ${code("state")} or in a question's text; each reference is written as a state value is, such as "{item.pages.0.image}", and must resolve to an image path the host can read. Only a provider that takes image input answers such a node. Pass images by reference, never their bytes in state.
+- Inside a ${code("map")} with ${code("onItemFailure")} ${code("collect")}, a decision whose provider fails (rate limit, HTTP error, invalid answer, timeout) fails that item, and one sent whose outcome was lost, or one the provider refused, ends the item as a row marked ${code("needs_review")}; the other items go on.
 
 ### Control nodes
 

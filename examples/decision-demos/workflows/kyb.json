@@ -1,0 +1,373 @@
+{
+  "v": 2,
+  "name": "kyb",
+  "schemas": {
+    "Input": {
+      "type": "object",
+      "required": [
+        "company",
+        "jurisdiction",
+        "documents",
+        "as_of"
+      ],
+      "properties": {
+        "company": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The legal name the applicant gave."
+        },
+        "jurisdiction": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The US state the applicant says the company is incorporated in."
+        },
+        "documents": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "maxItems": 3,
+          "description": "In order: certificate of incorporation, IRS EIN notice, bank letter."
+        },
+        "as_of": {
+          "type": "string",
+          "description": "The review date (YYYY-MM-DD): a filing date after it is in the future."
+        }
+      },
+      "examples": [
+        {
+          "company": "Brisklow Marine Coatings, Inc.",
+          "jurisdiction": "Delaware",
+          "documents": [
+            "kyb-brisklow-coi.pdf",
+            "kyb-brisklow-ein.pdf",
+            "kyb-brisklow-bank.pdf"
+          ],
+          "as_of": "2026-10-30"
+        }
+      ]
+    },
+    "PdfPages": {
+      "type": "object",
+      "required": [
+        "name",
+        "pageCount",
+        "pages",
+        "text"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "pageCount": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "pages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "page",
+              "image"
+            ],
+            "properties": {
+              "page": {
+                "type": "integer"
+              },
+              "image": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "RegistryStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registry_status",
+        "name_exact"
+      ],
+      "properties": {
+        "registry_status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "inactive",
+            "registered_elsewhere",
+            "not_found"
+          ],
+          "description": "Is a company with the name in `company` registered with the state filing office of `jurisdiction`, and in good standing?",
+          "criteria": {
+            "active": "The state's registry lists the company, and it is active or in good standing.",
+            "inactive": "The state's registry lists the company, but it is dissolved, forfeited, revoked or otherwise not in good standing.",
+            "registered_elsewhere": "Public records show the company registered, but only in another state.",
+            "not_found": "Public sources do not establish that a company with this name is registered."
+          }
+        },
+        "name_exact": {
+          "type": "boolean",
+          "description": "Does the registry record carry exactly the name in `company`, including its suffix (Inc., LLC, Corp.)?"
+        }
+      }
+    },
+    "PacketChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "coi_altered",
+        "ein_altered",
+        "bank_altered",
+        "coi_sealed",
+        "coi_signed",
+        "bank_signed"
+      ],
+      "properties": {
+        "coi_altered": {
+          "type": "boolean",
+          "description": "Does the certificate in <coi_page> show signs of editing after issue: a field covered or pasted over, a retyped date, a value in a different typeface or misaligned?"
+        },
+        "ein_altered": {
+          "type": "boolean",
+          "description": "Does the IRS EIN notice in <ein_page> show signs of editing after issue: a field covered or pasted over, a retyped date, a value in a different typeface or misaligned?"
+        },
+        "bank_altered": {
+          "type": "boolean",
+          "description": "Does the bank letter in <bank_page> show signs of editing after issue: a field covered or pasted over, a retyped date, a value in a different typeface or misaligned?"
+        },
+        "coi_sealed": {
+          "type": "boolean",
+          "description": "Does the certificate in <coi_page> carry the filing office's seal or its certification stamp where the form places one?"
+        },
+        "coi_signed": {
+          "type": "boolean",
+          "description": "Is there a signature (handwritten or script) on every signature line of the certificate in <coi_page>?"
+        },
+        "bank_signed": {
+          "type": "boolean",
+          "description": "Is the bank letter in <bank_page> signed by a named bank officer?"
+        }
+      }
+    },
+    "CrossCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "same_entity",
+        "same_state",
+        "dates_consistent"
+      ],
+      "properties": {
+        "same_entity": {
+          "type": "boolean",
+          "description": "Do the certificate (<coi_page>), the EIN notice (<ein_page>) and the bank letter (<bank_page>) all name the same legal entity as `company`: the same words and the same suffix?"
+        },
+        "same_state": {
+          "type": "boolean",
+          "description": "Is the state of incorporation on the certificate (<coi_page>) the same as `jurisdiction`?"
+        },
+        "dates_consistent": {
+          "type": "boolean",
+          "description": "Are the dates in order: the certificate's filing date (<coi_page>) on or before the EIN notice date (<ein_page>), and both on or before the bank account's opening date (<bank_page>), all on or before `as_of`?"
+        }
+      }
+    },
+    "KybDecision": {
+      "type": "object",
+      "required": [
+        "company",
+        "decision",
+        "reasons",
+        "probabilities",
+        "evidence"
+      ],
+      "properties": {
+        "company": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "approve",
+            "reject"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "probabilities": {
+          "type": "object"
+        },
+        "evidence": {
+          "type": "array"
+        }
+      }
+    }
+  },
+  "input": {
+    "schemaId": "Input"
+  },
+  "output": {
+    "schemaId": "KybDecision",
+    "path": "decision"
+  },
+  "root": {
+    "node": "chain",
+    "steps": [
+      {
+        "node": "map",
+        "label": "render_packet",
+        "itemsPath": "documents",
+        "maxConcurrency": 3,
+        "resultPath": "pages",
+        "as": "packet",
+        "body": {
+          "node": "call",
+          "label": "render_page",
+          "via": "tool",
+          "tool": "pdf_pages",
+          "args": {
+            "path": "{item}",
+            "maxPages": 1,
+            "dpi": 110
+          },
+          "out": "PdfPages",
+          "as": "pages",
+          "deadline_s": 60
+        }
+      },
+      {
+        "node": "parallel",
+        "label": "checks",
+        "branches": [
+          {
+            "node": "judge",
+            "label": "registry_check",
+            "provider": "parallel",
+            "evidence": "if_supported",
+            "timeoutMs": 120000,
+            "state": {
+              "company": "{company}",
+              "jurisdiction": "{jurisdiction}"
+            },
+            "out": "RegistryStatus",
+            "as": "registry"
+          },
+          {
+            "node": "judge",
+            "label": "document_checks",
+            "provider": "jev",
+            "timeoutMs": 60000,
+            "images": {
+              "<coi_page>": "{packet.0.pages.0.image}",
+              "<ein_page>": "{packet.1.pages.0.image}",
+              "<bank_page>": "{packet.2.pages.0.image}"
+            },
+            "state": {
+              "company": "{company}",
+              "as_of": "{as_of}",
+              "certificate": {
+                "file": "{packet.0.name}",
+                "page": "<coi_page>"
+              },
+              "ein_notice": {
+                "file": "{packet.1.name}",
+                "page": "<ein_page>"
+              },
+              "bank_letter": {
+                "file": "{packet.2.name}",
+                "page": "<bank_page>"
+              }
+            },
+            "out": "PacketChecks",
+            "as": "documents"
+          }
+        ]
+      },
+      {
+        "node": "judge",
+        "label": "cross_check",
+        "provider": "jev",
+        "timeoutMs": 60000,
+        "images": {
+          "<coi_page>": "{packet.0.pages.0.image}",
+          "<ein_page>": "{packet.1.pages.0.image}",
+          "<bank_page>": "{packet.2.pages.0.image}"
+        },
+        "state": {
+          "company": "{company}",
+          "as_of": "{as_of}",
+          "certificate": {
+            "file": "{packet.0.name}",
+            "page": "<coi_page>"
+          },
+          "ein_notice": {
+            "file": "{packet.1.name}",
+            "page": "<ein_page>"
+          },
+          "bank_letter": {
+            "file": "{packet.2.name}",
+            "page": "<bank_page>"
+          },
+          "jurisdiction": "{jurisdiction}",
+          "registry": "{registry}"
+        },
+        "out": "CrossCheck",
+        "as": "cross"
+      },
+      {
+        "node": "code",
+        "label": "kyb_rule",
+        "as": "kyb",
+        "code": "(s) => {\n  const T = {\"documents\":{\"coi_altered\":{\"want\":\"no\",\"pass\":0.6,\"fail\":0.8,\"label\":\"the certificate looks altered\"},\"ein_altered\":{\"want\":\"no\",\"pass\":0.6,\"fail\":0.8,\"label\":\"the EIN notice looks altered\"},\"bank_altered\":{\"want\":\"no\",\"pass\":0.6,\"fail\":0.8,\"label\":\"the bank letter looks altered\"},\"coi_sealed\":{\"want\":\"yes\",\"pass\":0.7,\"fail\":0.25,\"label\":\"the certificate lacks the filing office's seal or stamp\"},\"coi_signed\":{\"want\":\"yes\",\"pass\":0.7,\"fail\":0.25,\"label\":\"a signature line on the certificate is not signed\"},\"bank_signed\":{\"want\":\"yes\",\"pass\":0.7,\"fail\":0.25,\"label\":\"the bank letter is not signed\"}},\"cross\":{\"same_entity\":{\"want\":\"yes\",\"pass\":0.8,\"fail\":0.5,\"label\":\"the documents name different entities\"},\"same_state\":{\"want\":\"yes\",\"pass\":0.8,\"fail\":0.5,\"label\":\"the state of incorporation does not match\"},\"dates_consistent\":{\"want\":\"yes\",\"pass\":0.75,\"fail\":0.4,\"label\":\"the dates are out of order\"}}};\n  const reject = []; const review = []; const p = {};\n  for (const key of [\"documents\", \"cross\"]) {\n    const raw = (s[key + \"$answers\"] || {}).answers || {};\n    for (const q of Object.keys(T[key])) {\n      const t = T[key][q];\n      const v = raw[q] && typeof raw[q].noul === \"number\" ? raw[q].noul : null;\n      p[q] = v;\n      if (v === null) { review.push(q + \": no probability came back\"); continue; }\n      const good = t.want === \"yes\" ? v >= t.pass : v < t.pass;\n      const bad = t.want === \"yes\" ? v < t.fail : v >= t.fail;\n      // A forged-looking document is a reject; a mismatch between documents is a question for a person.\n      if (bad && key === \"documents\") reject.push(t.label + \" (P(yes) \" + v.toFixed(2) + \")\");\n      else if (bad || !good) review.push(t.label + \" (P(yes) \" + v.toFixed(2) + \")\");\n    }\n  }\n  const reg = s.registry || {};\n  const regRaw = ((s[\"registry$answers\"] || {}).answers || {}).registry_status || {};\n  p.registry_status = regRaw.choice || null; p.registry_confidence = typeof regRaw.confidence === \"number\" ? regRaw.confidence : null;\n  p.name_exact = (((s[\"registry$answers\"] || {}).answers || {}).name_exact || {}).noul;\n  if (reg.registry_status === \"not_found\" && p.registry_confidence !== null && p.registry_confidence >= 0.7) reject.push(\"no registry record for the company\");\n  else if (reg.registry_status !== \"active\") review.push(\"registry status is \" + (reg.registry_status || \"unknown\"));\n  if (typeof p.name_exact === \"number\" && p.name_exact < 0.7) review.push(\"the registry name is not an exact match (P(yes) \" + p.name_exact.toFixed(2) + \")\");\n  const evidence = ((s[\"registry$answers\"] || {}).evidence || []).map((e) => ({ url: e.url, title: e.title }));\n  const action = reject.length ? \"reject\" : review.length ? \"review\" : \"approve\";\n  return { action, reasons: reject.concat(review), probabilities: p, evidence, summary: action + \": \" + (reject.concat(review).join(\"; \") || \"every check passed\") };\n}"
+      },
+      {
+        "node": "route",
+        "label": "kyb_route",
+        "valuePath": "kyb.action",
+        "as": "kyb_taken",
+        "branches": {
+          "approve": {
+            "body": {
+              "node": "code",
+              "label": "approve",
+              "as": "decision",
+              "code": "(s) => ({ company: s.company, decision: \"approve\", reasons: [], probabilities: s.kyb.probabilities, evidence: s.kyb.evidence })"
+            }
+          },
+          "reject": {
+            "body": {
+              "node": "code",
+              "label": "reject",
+              "as": "decision",
+              "code": "(s) => ({ company: s.company, decision: \"reject\", reasons: s.kyb.reasons, probabilities: s.kyb.probabilities, evidence: s.kyb.evidence })"
+            }
+          },
+          "review": {
+            "body": {
+              "node": "escalate",
+              "label": "send_to_review",
+              "when": {
+                "predicate": "field_equals",
+                "path": "kyb.action",
+                "value": "review"
+              },
+              "kind": "kyb_review",
+              "stage": "kyb",
+              "summary": "A person reviews {company}: {kyb.summary}"
+            }
+          }
+        }
+      }
+    ]
+  }
+}
