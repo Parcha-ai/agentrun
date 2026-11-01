@@ -209,8 +209,10 @@ Before every merge, in this order:
    `@parcha/pi-browser`; the number here must always equal the browser lane's `INJECTION_THRESHOLD`). A score at or over
    the threshold is refused. With no screen at all, every item is refused: "no injection screen". An item the screen could not judge (the judge is
    down, or timed out) is refused for this merge too, never held: a later run may propose it again.
-3. The review skill reads what is left and merges what is general, new and consistent with `main`. It refuses
-   duplicates, notes that contradict `main` without superseding the old note, and anything tied to one case.
+3. The grade: under a host, a grader judges the branch with `GRADE_RUBRIC` (`src/grade.ts`, the rubric's one
+   statement), each new or changed file against `main`'s index and notes and the agent's standing instructions, and
+   returns one verdict for the whole branch. The branch merges only when every item passes. Otherwise it stays
+   unmerged, with the verdict; a verdict that cannot be read is no merge.
 
 Outside AgentRun, with no injection screen, nothing merges automatically: the checker alone never stands for the screen.
 
