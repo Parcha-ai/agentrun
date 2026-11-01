@@ -1,5 +1,5 @@
 import type { Stats } from "./mission";
-import type { Agent, Definition } from "./agentForm";
+import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
 import type { ApiError, Run, RunFiles, TimelinePage, TimelineRow } from "./v2";
@@ -54,6 +54,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   }
   const agent = (id: string) => `/agents/${encodeURIComponent(id)}`;
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
+  // A create's warnings come on its answer, and the agent's page that opens next reads the agent again (a read carries
+  // none): they are kept here and put on a read of that same revision.
+  const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
     /** The owner's session; its status too, since a server without accounts answers 404. */
@@ -74,8 +77,16 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       if (cursor) q.set("cursor", cursor);
       return call<{ agents: Agent[]; next_cursor: string | null }>("GET", `/agents${q.size ? `?${q}` : ""}`);
     },
-    getAgent: async (id: string) => { const r = await callTagged<Agent>("GET", agent(id)); return { agent: r.body, etag: r.etag }; },
-    createAgent: (body: { definition: Definition; skills?: Record<string, string> }) => call<Agent>("POST", "/agents", { body }),
+    getAgent: async (id: string) => {
+      const r = await callTagged<Agent>("GET", agent(id));
+      const kept = created.get(id);
+      return { agent: kept && kept.revision === r.body.revision && !r.body.warnings ? { ...r.body, warnings: kept.warnings } : r.body, etag: r.etag };
+    },
+    createAgent: async (body: { definition: Definition; skills?: Record<string, string> }) => {
+      const made = await call<Agent>("POST", "/agents", { body });
+      if (made.warnings?.length) created.set(made.agent_id, { revision: made.revision, warnings: made.warnings });
+      return made;
+    },
     /** Saves a new revision. `etag` is the revision the edit was made on: the server refuses the save (412) when another
      *  landed first. The answer's ETag is the new revision, for the next edit. */
     updateDefinition: async (id: string, body: { definition: Partial<Definition>; note?: string; skills?: Record<string, string> }, etag: string | null) => {
