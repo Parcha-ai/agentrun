@@ -1,6 +1,6 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,26 @@ export async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   return dir;
+}
+
+/** The index.html of a built console, as Vite writes it: one module script and one stylesheet, both relative. */
+export const CONSOLE_INDEX = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><title>AgentRun</title>
+<script type="module" crossorigin src="./assets/index-Ab12Cd34.js"></script>
+<link rel="stylesheet" crossorigin href="./assets/index-Ef56Gh78.css"></head>
+<body><div id="root"></div></body></html>
+`;
+
+/** A built console for test `t` (`startServe({ console })`): CONSOLE_INDEX and its assets, in `<scratch>/console`. */
+export async function builtConsole(t) {
+  const dir = await scratch(t);
+  const root = join(dir, "console");
+  await mkdir(join(root, "assets"), { recursive: true });
+  await writeFile(join(root, "index.html"), CONSOLE_INDEX);
+  await writeFile(join(root, "assets", "index-Ab12Cd34.js"), "document.getElementById('root').textContent = 'console';\n");
+  await writeFile(join(root, "assets", "index-Ef56Gh78.css"), "body { margin: 0; }\n");
+  await writeFile(join(root, "assets", "mono-latin-400-normal-Ij90Kl12.woff2"), Buffer.from("wOF2"));
+  return root;
 }
 
 /** A server for test `t`, stopped after it, before its scratch directory goes. */

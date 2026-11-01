@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { mock, test } from "node:test";
 import * as owner from "../dist/owner.js";
 import { ROUTES } from "../dist/server.js";
-import { call, cookieOf, scratch, serve } from "./support.mjs";
+import { builtConsole, call, CONSOLE_INDEX, cookieOf, scratch, serve } from "./support.mjs";
 
 const { Owner, resetPassword, SIGN_IN_PEERS } = owner;
 
@@ -24,22 +24,25 @@ const agents = (server, cookie) => call(server.port, { path: "/v2/agents", heade
 
 /** An open server (no public address) whose owner set PASSWORD: its session cookie. */
 async function owned(t, options = {}) {
-  const server = await serve(t, { accounts: true, openSetup: true, ...options });
+  const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), ...options });
   const made = await setup(server, { password: PASSWORD });
   assert.equal(made.status, 201, made.text);
   return { ...server, cookie: cookieOf(made), made };
 }
 
-test("the first visit sets the password and signs in: the page sends a browser to setup, then to sign-in; the files are 0600 and hold no password", async (t) => {
-  const server = await serve(t, { accounts: true, openSetup: true });
+test("the first visit sets the password and signs in: the printed link lands on the console, whose session read says setup, then sign-in; the files are 0600 and hold no password", async (t) => {
+  const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t) });
   assert.match(server.setupUrl, /^http:\/\/127\.0\.0\.1:\d+\/setup$/);
-  assert.equal((await call(server.port, { path: "/" })).headers.location, "/setup");
-  assert.equal((await call(server.port, { path: "/setup" })).status, 200);
+  const session = async (cookie) => (await call(server.port, { path: "/v2/auth/session", headers: cookie ? { cookie } : {} })).json;
+  assert.deepEqual((await call(server.port, { path: "/setup" })).headers.location, "/", "the printed link sends the browser to the console, its #code kept");
+  assert.equal((await call(server.port, { path: "/" })).status, 200);
+  assert.deepEqual(await session(), { password_set: false, signed_in: false }, "the console asks for the first password");
   const made = await setup(server, { password: PASSWORD });
   assert.deepEqual([made.status, made.json.signed_in], [201, true], made.text);
   assert.equal((await agents(server, cookieOf(made))).status, 200, "the 201 carries the owner's session");
-  assert.equal((await call(server.port, { path: "/" })).headers.location, "/sign-in");
-  assert.equal((await call(server.port, { path: "/setup" })).headers.location, "/sign-in");
+  assert.deepEqual(await session(cookieOf(made)), { password_set: true, signed_in: true });
+  assert.deepEqual(await session(), { password_set: true, signed_in: false }, "another browser is asked to sign in");
+  assert.equal((await call(server.port, { path: "/setup" })).headers.location, "/");
   for (const file of ["owner.json", ".session-secret"]) assert.equal((await stat(join(server.data, file))).mode & 0o777, 0o600, file);
   const stored = JSON.parse(await readFile(join(server.data, "owner.json"), "utf8"));
   assert.ok(stored.password.N >= 2 ** 15 && stored.password.r >= 8 && stored.password.p >= 1, JSON.stringify(stored.password));
@@ -143,7 +146,7 @@ test("reset-password clears the password and ends every session; the next visit 
   const server = await owned(t);
   resetPassword(server.data);
   assert.equal((await agents(server, server.cookie)).status, 401, "a session from before is over");
-  assert.equal((await call(server.port, { path: "/" })).headers.location, "/setup");
+  assert.equal((await call(server.port, { path: "/v2/auth/session" })).json.password_set, false, "the console asks for a new password");
   assert.equal((await setup(server, { password: pw("new") })).status, 201);
   assert.equal((await signIn(server, PASSWORD)).status, 401, "the old password is gone");
   const cli = spawnSync(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "reset-password", "--data", server.data], { encoding: "utf8" });
@@ -171,10 +174,10 @@ test("every route, called with no credential, is a 401 but capabilities, the con
   }
 });
 
-test("accounts off: no owner file, no setup or sign-in, and the token works as before", async (t) => {
+test("accounts off: no owner file, no setup or sign-in routes (their old addresses only send the browser to the console), and the token works as before", async (t) => {
   const server = await serve(t);
   assert.equal(server.setupUrl, undefined);
-  for (const path of ["/setup", "/sign-in"]) assert.equal((await call(server.port, { path })).status, 404, path);
+  for (const path of ["/setup", "/sign-in"]) assert.equal((await call(server.port, { path })).headers.location, "/", path);
   for (const path of ["/v2/setup", "/v2/auth/sign-in", "/v2/auth/session"]) assert.equal((await call(server.port, { method: "POST", path, headers: page(server), body: {} })).status, 404, path);
   await assert.rejects(stat(join(server.data, "owner.json")));
   assert.equal((await call(server.port, { path: "/v2/agents", headers: { authorization: `Bearer ${server.token}` } })).status, 200);
@@ -204,13 +207,16 @@ test("the bin: accounts on with no AGENTRUN_ACCOUNTS, the first-visit line with 
 test("with accounts on, the token link signs no browser in: it sets no cookie, and a cookie made from the token is no credential, before or after signing out everywhere", async (t) => {
   const server = await owned(t);
   const link = await call(server.port, { path: `/?token=${encodeURIComponent(server.token)}` });
-  assert.deepEqual([link.status, link.headers.location, link.headers["set-cookie"]], [303, "/sign-in", undefined]);
+  assert.deepEqual([link.status, link.headers.location, link.headers["set-cookie"]], [303, "/", undefined], "the token leaves the address, and signs nothing in");
+  const kept = await call(server.port, { path: `/?view=runs&token=${encodeURIComponent(server.token)}` });
+  assert.deepEqual([kept.status, kept.headers.location], [303, "/?view=runs"], "other parameters stay");
+  assert.deepEqual([(await call(server.port, { path: "/" })).text], [CONSOLE_INDEX], "then the console, which asks for the password");
   const tokenCookie = `agentrun-${server.port}=${createHmac("sha256", server.token).update("agentrun-serve page").digest("base64url")}`;
   const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server), cookie: server.cookie }, body: {} });
   assert.equal(out.status, 200, out.text);
   for (const cookie of [tokenCookie, `${tokenCookie}; ${server.cookie}`]) {
     assert.equal((await agents(server, cookie)).status, 401, "the token's page cookie outlives no sign-out");
-    assert.equal((await call(server.port, { path: "/", headers: { cookie } })).headers.location, "/sign-in");
+    assert.equal((await call(server.port, { path: "/v2/auth/session", headers: { cookie } })).json.signed_in, false, "the console asks for the password");
   }
   assert.equal((await call(server.port, { path: "/v2/agents", headers: { authorization: `Bearer ${server.token}` } })).status, 200, "the token stays for scripts");
 });
@@ -270,12 +276,4 @@ test("a sign-in from a new address when the limit's table is full is a 429 at th
   const full = await signIn(server, PASSWORD);
   assert.deepEqual([full.status, full.json.error?.code, full.headers["retry-after"], full.headers["set-cookie"]], [429, "rate_limited", "900", undefined], full.text);
   assert.ok(lines.some((line) => / event=auth_failed route=\/v2\/auth\/sign-in reason=sign_in_table_full$/.test(line)), lines.join("\n"));
-});
-
-test("the sign-in page's forgot line names the data directory: reset-password --data DIR, and the image's /data", async (t) => {
-  const server = await owned(t);
-  const page = await call(server.port, { path: "/sign-in" });
-  assert.equal(page.status, 200);
-  assert.match(page.text, /agentrun-serve reset-password --data DIR/);
-  assert.match(page.text, /reset-password --data \/data/);
 });
