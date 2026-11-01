@@ -485,11 +485,13 @@ Every agentic run, on any harness, starts from `main` as it is when the run is m
 - `runs/<id>/learning.json` pins that commit (`seed`). It is written once: a resume or a follow-up reads the same commit,
   however `main` moves on.
 - Each `.agents/skills/<name>/SKILL.md` that commit holds is written into the run's `work/.agents/skills/` and prompted
-  after the revision's skills. A revision's skill of the same name wins, and the learned one is left out.
+  after the revision's skills. A revision's skill, or a skill file of the revision's, of the same name wins, and the
+  learned one is left out.
 - When `learnings/INDEX.md` holds a note line, its text goes into the run's instructions in a `<learned>` section.
 
-The server reads the commit with git plumbing, never the working tree; the run's process reads only the pin and those
-files, and never runs git. What the commit holds over SPEC's caps (4096 bytes for the index, 32768 for a skill), or that
+The server reads the commit with git plumbing, never the working tree, before the run is made: a commit git cannot read
+refuses the run (`500 internal`) with nothing made. The run's process reads only the pin and those files, and never
+runs git. What the commit holds over SPEC's caps (4096 bytes for the index, 32768 for a skill), or that
 is not a regular UTF-8 file, is not read, and the server's stderr names it. Workflow runs and imported runs are not
 seeded. A host without git 2.40 or later runs every agent with nothing learned, and says so once on stderr. Nothing
 writes to `main` after its first commit yet: what a run learns stays in the run.

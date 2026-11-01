@@ -129,8 +129,9 @@ async function mainOf(cwd: string, repo: string): Promise<string | undefined> {
 }
 
 /** Makes the agent's repository, or finishes one whose making stopped before main: `init` with no template, then the
- *  host's one commit on main, holding `learnings/INDEX.md` alone, made with plumbing and created only where main is not
- *  there yet. The working tree and the index then show main, written here, never checked out. Called in the queue. */
+ *  host's one commit on main, holding `learnings/INDEX.md` alone, made with plumbing. The working tree and the index show
+ *  that commit's tree first (written here, never checked out), and main is created last, only where it is not there yet:
+ *  a making that stops anywhere before leaves no main, and the next one does it all again. Called in the queue. */
 async function openAgentRepo(cwd: string, repo: string): Promise<string> {
   const known = await mainOf(cwd, repo);
   if (known) return known;
@@ -139,18 +140,19 @@ async function openAgentRepo(cwd: string, repo: string): Promise<string> {
   const blob = line(await git(cwd, repo, ["hash-object", "-w", "--no-filters", "--stdin"], NEW_INDEX));
   const learnings = line(await git(cwd, repo, ["mktree"], `100644 blob ${blob}\tINDEX.md\n`));
   const tree = line(await git(cwd, repo, ["mktree"], `040000 tree ${learnings}\tlearnings\n`));
-  const commit = line(await git(cwd, repo, ["commit-tree", tree, "-m", "host: the agent's learning repository"]));
-  await git(cwd, repo, ["update-ref", "-m", "host: the agent's learning repository", "refs/heads/main", commit, ""]);
   await mkdir(join(repo, "learnings"), { recursive: true });
   await writeFile(join(repo, INDEX), NEW_INDEX);
-  await git(cwd, repo, ["read-tree", "refs/heads/main"]);
+  await git(cwd, repo, ["read-tree", tree]);
+  const commit = line(await git(cwd, repo, ["commit-tree", tree, "-m", "host: the agent's learning repository"]));
+  await git(cwd, repo, ["update-ref", "-m", "host: the agent's learning repository", "refs/heads/main", commit, ""]);
   return commit;
 }
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 /** What commit `sha` holds for a run, read with plumbing: its index, and each skill at `.agents/skills/<name>/SKILL.md`.
- *  Only a regular file (mode 100644) under its cap, in UTF-8, is read; anything else is named in `skipped`. */
+ *  Only a regular file (mode 100644) under its cap, in UTF-8, is read; anything else is named in `skipped`. A read git
+ *  fails (an object missing, a timeout) throws: the run is not made, rather than made without what main holds. */
 async function readSeed(cwd: string, repo: string, sha: string): Promise<Seed> {
   const seed: Seed = { sha, skills: {}, skipped: [] };
   const listed = (await git(cwd, repo, ["ls-tree", "-r", "-l", "-z", sha, "--", INDEX, ".agents/skills"])).toString("utf8").split("\0").filter(Boolean);
@@ -173,9 +175,10 @@ async function readSeed(cwd: string, repo: string, sha: string): Promise<Seed> {
       seed.skipped.push(`${path} (over ${cap} bytes)`);
       continue;
     }
+    const bytes = await git(cwd, repo, ["cat-file", "blob", oid]);
     let text: string;
     try {
-      text = utf8.decode(await git(cwd, repo, ["cat-file", "blob", oid]));
+      text = utf8.decode(bytes);
     } catch {
       seed.skipped.push(`${path} (not UTF-8)`);
       continue;
@@ -198,12 +201,16 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
   });
 }
 
+/** Test seams, tests only: before a run's learned files are written. */
+export const learningTestHooks: { beforePin?: (runDir: string) => Promise<void> | void } = {};
+
 /** Writes `seed` into the run just made in `runDir`, after the store seeded it (seedRun empties `work/.agents/skills`
- *  and writes the revision's skills there): each learned skill whose folder no file of the revision's `skillFiles` is in
- *  (the revision's skill wins), then the pin, last. */
+ *  and writes the revision's skills there): each learned skill whose name no file of the revision's `skillFiles` takes,
+ *  as itself or as its folder (the revision's wins), then the pin, last. */
 export async function pinSeed(runDir: string, work: string, seed: Seed, skillFiles: Iterable<string>): Promise<Pin> {
+  await learningTestHooks.beforePin?.(runDir);
   const revision = [...skillFiles];
-  const skills = Object.keys(seed.skills).sort().filter((name) => !revision.some((file) => file.startsWith(`${name}/`)));
+  const skills = Object.keys(seed.skills).sort().filter((name) => !revision.some((file) => file === name || file.startsWith(`${name}/`)));
   for (const name of skills) {
     const dir = join(work, ".agents", "skills", name);
     await mkdir(dir, { recursive: true });

@@ -3,10 +3,11 @@
 // revision's, on pi and on another harness alike. The server is the repository's only writer, and no hook runs.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { learningTestHooks } from "../dist/learning.js";
+import { agent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const SYSTEM = new URL("./fixtures/faux-system.mjs", import.meta.url).pathname;
 const NOTE = "- L-0123456789ab: Shopify stores keep their policies at /policies/; try that path first.";
@@ -114,15 +115,50 @@ test("the pin: a run keeps the commit it was made from when main moves on, throu
   assert.ok(learnedIn(next.prompt).includes("L-abcdefabcdef"), next.prompt);
 });
 
-test("a revision's skill and a learned skill of the same name: the revision's text wins, and the learned one is skipped", { timeout: 120_000 }, async (t) => {
+test("a revision's skill and a learned skill of the same name: the revision's text wins, and the learned one is skipped; so is one a revision's file is named as", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   const own = "---\nname: find-policies\ndescription: The revision's own.\n---\nAsk the store's support desk.\n";
-  await learned(api, data, "clash", { skills: ["find-policies"] }, { "find-policies/SKILL.md": own });
+  const checklist = "---\nname: checklist\ndescription: Learned.\n---\nA learned checklist.\n";
+  const files = { "learnings/INDEX.md": `# Learnings\n${NOTE}\n`, ".agents/skills/find-policies/SKILL.md": SKILL, ".agents/skills/checklist/SKILL.md": checklist };
+  await learned(api, data, "clash", { skills: ["find-policies"] }, { "find-policies/SKILL.md": own, checklist: "the revision's own file\n" }, files);
   const { runId, prompt } = await ran(api, "clash");
   assert.deepEqual(skillsIn(prompt), [["find-policies", own.trim()]]);
-  assert.ok(!prompt.includes("Open /policies/ before searching"), prompt);
+  assert.ok(!prompt.includes("Open /policies/ before searching") && !prompt.includes("A learned checklist."), prompt);
   assert.deepEqual(pinOf(data, runId).skills, []);
-  assert.equal(readFileSync(join(data, "runs", runId, "work", ".agents", "skills", "find-policies", "SKILL.md"), "utf8"), own);
+  const skills = join(data, "runs", runId, "work", ".agents", "skills");
+  assert.equal(readFileSync(join(skills, "find-policies", "SKILL.md"), "utf8"), own);
+  assert.equal(readFileSync(join(skills, "checklist"), "utf8"), "the revision's own file\n");
+});
+
+test("a commit main holds that git cannot read refuses the run, with nothing made", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: SYSTEM });
+  await learned(api, data, "broken");
+  const repo = repoOf(data, "broken");
+  const blob = git(repo, ["rev-parse", "main:.agents/skills/find-policies/SKILL.md"]);
+  rmSync(join(repo, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+  const before = (await api("GET", "/agents/broken/runs")).body.runs.length;
+  const refused = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
+  assert.equal(refused.status, 500, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "internal");
+  assert.match(refused.body.error.message, /learning repository could not be read/);
+  assert.equal((await api("GET", "/agents/broken/runs")).body.runs.length, before, "no run was made");
+});
+
+test("a run whose learned files cannot be written ends failed in the store, never left running with no process", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: SYSTEM });
+  assert.equal((await api("POST", "/agents", agent("unwritten"))).status, 201);
+  let made;
+  learningTestHooks.beforePin = (runDir) => {
+    made = runDir.split("/").at(-1);
+    throw new Error("the disk is full");
+  };
+  t.after(() => void (learningTestHooks.beforePin = undefined));
+  const refused = await api("POST", "/agents/unwritten/runs", { input: { content: "hi" } });
+  learningTestHooks.beforePin = undefined;
+  assert.equal(refused.status, 500, JSON.stringify(refused.body));
+  const row = storeRun(data, made);
+  assert.equal(row.state, "failed");
+  assert.match(row.summary, /could not be set up: the disk is full/);
 });
 
 test("two runs of a new agent made at once: one repository made, one commit on main, and both runs seeded from it", { timeout: 120_000 }, async (t) => {
@@ -170,6 +206,7 @@ test("no hook runs on the host's git calls: neither the repository's own (its ho
     const repo = repoOf(data, id);
     assert.equal(git(repo, ["rev-list", "--count", "main"]), "1");
     assert.deepEqual(git(repo, ["ls-tree", "-r", "--name-only", "main"]).split("\n"), ["learnings/INDEX.md"]);
+    assert.equal(git(repo, ["status", "--porcelain"]), "", "the checkout shows main, finished");
   }
   assert.equal(existsSync(marker), false, existsSync(marker) ? readFileSync(marker, "utf8") : "");
   assert.equal(existsSync(join(repoOf(data, "fresh"), ".git", "hooks")), false, "no template was copied");

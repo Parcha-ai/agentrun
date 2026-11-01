@@ -1129,11 +1129,19 @@ export class Runs {
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
     };
-    await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
-    // After startRun, whose seedRun wrote the revision's skills into the run's work: the learned ones go in beside them.
-    if (seed && revision.kind === "agentic") {
-      await pinSeed(started.dir, started.workspace, seed, Object.keys(revision.body.skills));
-      for (const path of seed.skipped) warn(started.runId, `its learning repository's ${path} was not read`);
+    try {
+      await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
+      // After startRun, whose seedRun wrote the revision's skills into the run's work: the learned ones go in beside them.
+      if (seed && revision.kind === "agentic") {
+        await pinSeed(started.dir, started.workspace, seed, Object.keys(revision.body.skills));
+        for (const path of seed.skipped) warn(started.runId, `its learning repository's ${path} was not read`);
+      }
+    } catch (error) {
+      // The store has the run as running, and no process will run it: it ends failed here, never left for a later
+      // start to open with half its files.
+      const summary = `The run could not be set up: ${(error as Error).message}`;
+      await this.options.agents.request(() => this.store.carryBack(started.runId, { state: "failed", summary })).catch((undo: Error) => warn(started.runId, `not ended after its setup failed: ${undo.message}`));
+      throw error;
     }
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version);
     this.runs.set(run.id, run);
