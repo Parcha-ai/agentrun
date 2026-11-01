@@ -324,7 +324,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const caps = capabilities(env, maxRuns, await harnessOffers(env));
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts). No run uses one yet: the log says which this server has.
   const boxes = await boxRegistry(env);
-  log?.(logLine("boxes", boxesLog(boxes.offers())));
+  log?.(logLine("boxes", boxesLog(boxes.offers(), enabledBoxes(env))));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];

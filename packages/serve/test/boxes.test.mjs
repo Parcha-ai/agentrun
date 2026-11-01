@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { BOX_IDS, BOX_KEYS, boxRegistry, VM_PROVIDER } from "../dist/boxes.js";
+import { BOX_IDS, BOX_KEYS, boxesLog, boxRegistry, VM_PROVIDER } from "../dist/boxes.js";
 import { SERVER_LOCK } from "../dist/server-lock.js";
 import { startServe } from "../dist/index.js";
 import { FAUX, scratch, withEnv } from "./support.mjs";
@@ -88,6 +88,8 @@ test("docker listed: a docker that answers `docker version` is available, with i
   assert.deepEqual(docker.calls(), ["version --format {{.Server.Version}}"], "one call, the probe: building the provider runs nothing");
   assert.deepEqual(offerOf(registry, "bwrap"), { id: "bwrap", available: false, reason: NOT_YET });
   assert.deepEqual(offerOf(registry, "daytona"), { id: "daytona", available: false, reason: NOT_ENABLED });
+  // The log line says why each listed box is not there, bwrap included; a box not listed needs no reason.
+  assert.deepEqual(boxesLog(registry.offers(), new Set(["docker", "bwrap"])), { available: "docker", unavailable: BOX_IDS.filter((id) => id !== "docker").join(","), bwrap: NOT_YET });
 });
 
 test("docker listed: a docker that fails, or none on PATH, leaves it unavailable with a short reason, no stack and none of its output", async (t) => {

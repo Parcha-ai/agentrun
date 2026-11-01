@@ -79,10 +79,10 @@ export async function boxRegistry(env: NodeJS.ProcessEnv, options: { timeoutMs?:
   };
 }
 
-/** The start's log line: the boxes available, the rest, and why each box AGENTRUN_BOXES lists is not available. */
-export function boxesLog(offers: readonly BoxOffer[]): Record<string, string> {
+/** The start's log line: the boxes available, the rest, and why each box AGENTRUN_BOXES lists (`listed`) is not available. */
+export function boxesLog(offers: readonly BoxOffer[], listed: ReadonlySet<BoxId>): Record<string, string> {
   const ids = (yes: boolean) => offers.filter((offer) => offer.available === yes).map((offer) => offer.id).join(",") || "none";
-  const why = offers.filter((offer) => !offer.available && offer.reason !== NOT_ENABLED && offer.reason !== NOT_YET);
+  const why = offers.filter((offer) => !offer.available && listed.has(offer.id));
   return { available: ids(true), unavailable: ids(false), ...Object.fromEntries(why.map((offer) => [offer.id, offer.reason ?? ""])) };
 }
 
