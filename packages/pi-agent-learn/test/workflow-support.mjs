@@ -90,10 +90,11 @@ export async function runStoreWith(runs) {
       const started = await flow.start(harness, { key: run.key, workflow: run.workflow, input: run.input }, ctx, run.stop ? { stop: { action: run.stop, source: "test" } } : undefined);
       if (run.stop === "pause") {
         let answer = "not-live";
-        for (let i = 0; i < 200 && answer === "not-live"; i += 1) {
+        for (const deadline = Date.now() + 20_000; answer === "not-live" && Date.now() < deadline;) {
           answer = await flow.stop(harness, run.key, "pause", ctx);
           if (answer === "not-live") await new Promise((resolve) => setTimeout(resolve, 10));
         }
+        if (answer === "not-live") throw new Error(`${run.key} never went live, so it could not be paused`);
       } else {
         await started.wait(ctx);
         if (run.again) await (await flow.start(harness, { key: run.key, workflow: run.workflow, input: run.input }, ctx)).wait(ctx);
