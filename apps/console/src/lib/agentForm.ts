@@ -51,14 +51,17 @@ export function createBody(f: { name: string; description: string; instructions:
 
 /** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
  *  (`summary`), and, when the server says, which harnesses run it. An older server lists bare names. */
-export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; harnesses?: string[] };
+export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; harnesses?: string[]; call_only?: true; nodes?: boolean };
 
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
     if (typeof t === "string") return [{ name: t, available: true }];
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
-    const { name, available, summary, missing, harnesses } = t as { name: string; available?: boolean; summary?: unknown; missing?: string[]; harnesses?: string[] };
-    return [{ name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(missing?.length ? { missing } : {}), ...(harnesses ? { harnesses } : {}) }];
+    const { name, available, summary, missing, harnesses, call_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; missing?: string[]; harnesses?: string[]; call_only?: unknown; nodes?: unknown };
+    return [{
+      name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(missing?.length ? { missing } : {}), ...(harnesses ? { harnesses } : {}),
+      ...(call_only === true ? { call_only: true as const } : {}), ...(typeof nodes === "boolean" ? { nodes } : {}),
+    }];
   });
 }
 
@@ -66,7 +69,9 @@ export function toolOffers(raw: unknown): ToolOffer[] {
  *  (serve's runnable.ts): pi binds every tool, another harness only the file tools, and any other tool refuses its run. */
 const FILE_TOOLS = ["read", "write", "edit"];
 export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
-  return offers.filter((t) => (t.harnesses ? t.harnesses.includes(harness) : harness === "pi" || FILE_TOOLS.includes(t.name)));
+  // A call-only tool (capabilities' `call_only`) runs only in a workflow's call node: no harness binds it, and no
+  // revision names it in its tools.
+  return offers.filter((t) => !t.call_only && (t.harnesses ? t.harnesses.includes(harness) : harness === "pi" || FILE_TOOLS.includes(t.name)));
 }
 
 /** A new agent's tools: on by default, every tool its harness runs here that the server can run now. */
