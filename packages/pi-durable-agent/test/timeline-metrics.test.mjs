@@ -41,7 +41,26 @@ test("a response with no token counts is a request of unknown tokens", () => {
   assert.deepEqual([m.requests, m.unmetered, m.input, m.output], [2, 1, 1, 2]);
 });
 
-test("a cost written apart from a response: its tokens are summed when it carries usage, and unknown when it does not", () => {
+test("a response that reports no input at all was not measured: an import's zeros and a harness answer's with no booking are unknown, never 0 tokens", () => {
+  const zeros = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: total === undefined ? {} : { total } });
+  const entries = [
+    // As the importer writes a session's answers: priced by the source, no token counts.
+    assistant([call("c1", "Read")], 0, { api: "imported", provider: "anthropic", model: "claude-opus-5-5", usage: zeros(0.03) }),
+    result("c1", "Read", "file text"),
+    assistant([{ type: "text", text: "done" }], 0, { api: "imported", provider: "anthropic", model: "claude-opus-5-5", usage: zeros(0.01) }),
+    // As a harness answer is written when no booking came for it.
+    assistant([{ type: "text", text: "partial" }], 0, { api: "agentrun-adapter", provider: "codex", model: "codex", usage: zeros() }),
+    // A failed request's zeros are what it used, as its $0 is what it cost; a cached read with no fresh input was measured.
+    answer([], zeros(0), { stopReason: "error", errorMessage: "529 overloaded" }),
+    answer([{ type: "text", text: "cached" }], usage(0, 12, 5000)),
+  ];
+  const m = runMetricsOf(entries);
+  assert.deepEqual([m.requests, m.unmetered], [5, 3]);
+  assert.deepEqual(tokensOf(m), { input: 0, cacheRead: 5000, cacheWrite: 0, output: 12 });
+  assert.deepEqual(m.tools, { Read: { calls: 1, errors: 0 } }, "its calls still count");
+});
+
+test("a cost written apart from a response:its tokens are summed when it carries usage, and unknown when it does not", () => {
   const a = answer([{ type: "text", text: "a" }], usage(100, 20));
   const compacted = custom(REQUEST_COST, { request: "compaction", usd: 0.005, usage: { input: 3000, output: 400, cacheRead: 0, cacheWrite: 0 } });
   const bare = custom(REQUEST_COST, { request: "compaction", usd: 0.004 });

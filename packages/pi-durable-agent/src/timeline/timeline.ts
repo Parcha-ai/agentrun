@@ -89,7 +89,8 @@ export type RunMetrics = {
   input: number; cacheRead: number; cacheWrite: number; output: number;
   /** Model requests, as the usage row of a run that ended counts them. */
   requests: number;
-  /** Of `requests`, those whose tokens are unknown (cut before their end, or a cost written with no usage): in no sum. */
+  /** Of `requests`, those whose tokens are unknown: in no sum. A request cut before its end, a usage with no input or
+   *  output count, and one that reports no input at all (a writer's zeros for a request it did not measure). */
   unmetered: number;
   /** Requests by `provider/model`; `model` is the one with the most (the first seen of a tie), absent when none names one. */
   models: Record<string, number>; model?: string;
@@ -98,11 +99,15 @@ export type RunMetrics = {
 };
 type Tokens = Pick<RunMetrics, "input" | "cacheRead" | "cacheWrite" | "output">;
 const tokenCount = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
-/** A usage's tokens: undefined unless it has an input and an output count. A cache count it omits is 0. */
-function tokensOf(usage: unknown): Tokens | undefined {
+/** A usage's tokens: undefined unless it has an input and an output count (a cache count it omits is 0), and unless it
+ *  has some input. A request that reached a model always sent some, so a usage with none is a writer's zeros for a
+ *  request it did not measure (an imported transcript's, a harness answer's written with no booking): unknown, never 0.
+ *  `failed`: a failed request's counts are taken as they are, as its cost is. */
+function tokensOf(usage: unknown, failed = false): Tokens | undefined {
   const u = obj(usage);
   const [input, output, cacheRead, cacheWrite] = [tokenCount(u?.input), tokenCount(u?.output), u?.cacheRead === undefined ? 0 : tokenCount(u.cacheRead), u?.cacheWrite === undefined ? 0 : tokenCount(u.cacheWrite)];
-  return input === undefined || output === undefined || cacheRead === undefined || cacheWrite === undefined ? undefined : { input, cacheRead, cacheWrite, output };
+  if (input === undefined || output === undefined || cacheRead === undefined || cacheWrite === undefined) return undefined;
+  return failed || input + cacheRead + cacheWrite > 0 ? { input, cacheRead, cacheWrite, output } : undefined;
 }
 
 /** A run's model requests as its entries mark them: how many, what they cost and the tokens they used. The usage row
@@ -110,10 +115,11 @@ function tokensOf(usage: unknown): Tokens | undefined {
  *  mark (a request's mark or cost, or pi's answer to a request that never left: nothing to show), or neither. */
 function createMeter() {
   let requests = 0;
-  // The run's cost: the known sum, the costs no one knows, and the costs written as pending, still to come.
+  // The run's cost: the known sum, the costs no one knows, and the costs written as pending, still to come (each with
+  // whether its answer's tokens were unknown: its late cost's usage then stands in for them).
   let known = 0;
   let unknown = 0;
-  let pending = 0;
+  const pending: boolean[] = [];
   const addCost = (cost: unknown) => (typeof cost === "number" && Number.isFinite(cost) ? (known += cost) : (unknown += 1));
   let marked = 0;
   let inFlight = false;
@@ -126,8 +132,9 @@ function createMeter() {
   let compacting = 0;
   let compactionOpen = false;
   const tokens: Tokens = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
-  // Requests whose tokens are unknown; a pending cost's are too, until it comes with its usage.
+  // Requests whose tokens are unknown, and whether the latest answer's were.
   let unmetered = 0;
+  let lastUnmetered = false;
   const addTokens = (counted: Tokens | undefined) => {
     if (!counted) return void (unmetered += 1);
     for (const key of ["input", "cacheRead", "cacheWrite", "output"] as const) tokens[key] += counted[key];
@@ -155,15 +162,11 @@ function createMeter() {
       addTokens(tokensOf(data?.usage));
     } else if (entry.kind === REQUEST_COST_PENDING) {
       // The answer just before it was counted as a cost unknown: it is one still to come.
-      if (unknown > 0) (unknown -= 1), (pending += 1);
+      if (unknown > 0) (unknown -= 1), pending.push(lastUnmetered);
     } else if (entry.kind === REQUEST_COST_LATE) {
-      // Its answer was written before its usage came in: its tokens come with its cost, or are unknown.
+      // The answer it prices was written before its usage came in: its usage, when it has one, is that answer's tokens.
       const late = tokensOf(data?.usage);
-      if (late) addTokens(late);
-      if (pending > 0) {
-        pending -= 1;
-        if (!late) unmetered += 1;
-      }
+      if (pending.shift() && late) (unmetered -= 1), addTokens(late);
       addCost(data?.usd);
     } else if (entry.kind === REQUEST_STARTED) {
       marked += 1;
@@ -183,7 +186,9 @@ function createMeter() {
       // the end) or only the start (Anthropic's input and first token), never what the provider charged. Unknown.
       const aborted = message.stopReason === "aborted";
       addCost(aborted ? undefined : obj(obj(message.usage)?.cost)?.total);
-      addTokens(aborted ? undefined : tokensOf(message.usage));
+      const counted = aborted ? undefined : tokensOf(message.usage, message.stopReason === "error");
+      lastUnmetered = !counted;
+      addTokens(counted);
       return "answer";
     } else return undefined;
     return "mark";
@@ -199,16 +204,16 @@ function createMeter() {
     const cut = marked - open(inFlight) > answered || compacting - open(compactionOpen) > compactions;
     if (!requests && !compactions && !cut) return undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
-    return { usd: unknown > 0 || pending > 0 || cut ? null : Math.round(known * 1e6) / 1e6, requests: count };
+    return { usd: unknown > 0 || pending.length > 0 || cut ? null : Math.round(known * 1e6) / 1e6, requests: count };
   }
 
-  /** The counts of a run that ended: a request it cut, or a cost still pending, has unknown tokens. */
+  /** The counts of a run that ended: a request it cut has unknown tokens. */
   function settled(): Omit<RunMetrics, "tools"> {
     const all = usage(true)?.requests ?? 0;
     const cut = Math.max(0, marked - answered) + Math.max(0, compacting - compactions);
     let model: string | undefined;
     for (const [key, n] of models) if (model === undefined || n > models.get(model)!) model = key;
-    return { ...tokens, requests: all, unmetered: Math.min(all, unmetered + pending + cut), models: Object.fromEntries(models), ...(model !== undefined ? { model } : {}) };
+    return { ...tokens, requests: all, unmetered: Math.min(all, unmetered + cut), models: Object.fromEntries(models), ...(model !== undefined ? { model } : {}) };
   }
 
   return { push, usage, settled };

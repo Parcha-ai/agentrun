@@ -577,8 +577,9 @@ ran; runMetricsOf names the one with the most requests), and `costUsdEst` with `
 `cost_usd` and how it was made. The tokens are pi's: `input` is the input neither read from nor written to the cache,
 `cache_read` the cached input read, `cache_write` the input written to the cache, so the whole input is
 `input + cache_read + cache_write`, and the cached input is `cache_read`; `output` is the output. `requests` counts the model
-requests as the timeline's usage row does, and `unmetered` those of them whose tokens are unknown (cut before their end, or a
-cost written with no usage): they are in `requests` and in no token sum, never read as 0. `models_json` counts requests by
+requests as the timeline's usage row does, and `unmetered` those of them whose tokens are unknown (cut before their end, a usage
+with no token counts, or one that reports no input at all: a request always sends some, so that is a writer's zeros for a request
+it did not measure, as an imported transcript's are): they are in `requests` and in no token sum, never read as 0. `models_json` counts requests by
 `provider/model`. `run_tool_metrics` holds a row per tool: its calls, and how many failed (an error result, or no result at all:
 interrupted). A run opened again keeps its metrics while it runs; its next end replaces them, and an end with none leaves it none,
 as an end with no cost leaves its cost unknown. They are in `store.sqlite`, so a sum over them opens nothing under `runs/`.
@@ -706,7 +707,7 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `labelOf(tool, args, result?, extra?)` | The label of one call. An unknown tool gets `Using tool: <name>` |
 | `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
 | `inputPreview(args, max)` | The input worth showing, or `null`: a `description`, `command`, `query`, `file_path`, `url`, `path` or `code` argument, with a URL's query values dropped, cut to `max` |
-| `runMetricsOf(records)` | What a run that ended used, from the entries of all its conversations, in log order: its tokens (`input`, `cacheRead`, `cacheWrite`, `output`), its `requests` as the usage row counts them and `unmetered`, those of unknown tokens (an aborted response's partial usage is never summed), its requests by `provider/model` (`models`) and the busiest `model`, and each tool's `calls` and `errors` (`tools`). A `RunMetrics`, for the store's `carryBack` and `importRun` ([Agents in a folder](#agents-in-a-folder-the-agent-store)) |
+| `runMetricsOf(records)` | What a run that ended used, from the entries of all its conversations, in log order: its tokens (`input`, `cacheRead`, `cacheWrite`, `output`), its `requests` as the usage row counts them and `unmetered`, those of unknown tokens (an aborted response's partial usage, and a usage with no input at all, are never summed), its requests by `provider/model` (`models`) and the busiest `model`, and each tool's `calls` and `errors` (`tools`). A `RunMetrics`, for the store's `carryBack` and `importRun` ([Agents in a folder](#agents-in-a-folder-the-agent-store)) |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
 | `REQUEST_STARTED`, `REQUEST_ENDED`, `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted; and the cost of a request with no `pi.assistant` entry of its own (a compaction summary, marked `request: "compaction"`). An answer written before its cost came in is followed by `REQUEST_COST_PENDING`, and its cost comes later as `REQUEST_COST_LATE` (`usd`): it adds to the cost and is not counted as a request; the cost reads unknown while one is pending. The usage row counts each marked request and sums each cost; one with no entry or cost (cut before its answer) other than the latest still in flight makes the cost unknown. A request the host refused before it left (`REQUEST_REFUSED`) is not counted, and pi's error entry for it is not shown. A conversation with no marks reads as before |
 
