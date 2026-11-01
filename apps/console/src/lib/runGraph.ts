@@ -185,11 +185,6 @@ export function runMarks(g: RunGraph, selected: Selection): GraphMarks {
     const v = verdictOf(d, true);
     if (v) verdict[d.node] = v;
   }
-  // A paused run's working nodes and items are held: nothing new starts until it resumes.
-  if (g.run.paused) {
-    for (const [p, s] of Object.entries(status)) if (s === "working") status[p] = "held";
-    for (const list of Object.values(items)) for (const it of list) if (it.status === "working") it.status = "held";
-  }
   if (selected && selected.item != null && kindOf.get(selected.path) === "map") {
     Object.assign(status, itemStates(g, selected.path, selected.item));
     // The item's own path through its routes: the branch it took is drawn taken, the others not run.
@@ -202,6 +197,12 @@ export function runMarks(g: RunGraph, selected: Selection): GraphMarks {
       for (const n of g.graph.nodes) if (n.path.startsWith(prefix) && !(n.path === took || n.path.startsWith(`${took}/`))) status[n.path] = "not-run";
     }
     for (const d of g.decisions) if (d.node && d.item === selected.item && d.node.startsWith(`${selected.path}/body`)) { const v = verdictOf(d, true); if (v) verdict[d.node] = v; }
+  }
+  // A paused run's working nodes and items are held: nothing new starts until it resumes. Last, so a selected item's
+  // own states are held too.
+  if (g.run.paused) {
+    for (const [p, s] of Object.entries(status)) if (s === "working") status[p] = "held";
+    for (const list of Object.values(items)) for (const it of list) if (it.status === "working") it.status = "held";
   }
   return { status, taken, items, fired, verdict, meta: metaOf(g.workflow, g.graph), selected };
 }
