@@ -1,5 +1,5 @@
 import type { Stats } from "./mission";
-import type { Agent, Definition } from "./agentForm";
+import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
 import type { ApiError, Run, RunFiles, TimelinePage, TimelineRow } from "./v2";
@@ -54,6 +54,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   }
   const agent = (id: string) => `/agents/${encodeURIComponent(id)}`;
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
+  // A create's warnings come on its answer, and the agent's page that opens next reads the agent again (a read carries
+  // none): they are kept here and put on a read of that same revision, until the next save or make-current of the agent,
+  // after which they may be stale (the host can be set up since), so they go.
+  const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
     /** The owner's session; its status too, since a server without accounts answers 404. */
@@ -74,16 +78,25 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       if (cursor) q.set("cursor", cursor);
       return call<{ agents: Agent[]; next_cursor: string | null }>("GET", `/agents${q.size ? `?${q}` : ""}`);
     },
-    getAgent: async (id: string) => { const r = await callTagged<Agent>("GET", agent(id)); return { agent: r.body, etag: r.etag }; },
-    createAgent: (body: { definition: Definition; skills?: Record<string, string> }) => call<Agent>("POST", "/agents", { body }),
+    getAgent: async (id: string) => {
+      const r = await callTagged<Agent>("GET", agent(id));
+      const kept = created.get(id);
+      return { agent: kept && kept.revision === r.body.revision && !r.body.warnings ? { ...r.body, warnings: kept.warnings } : r.body, etag: r.etag };
+    },
+    createAgent: async (body: { definition: Definition; skills?: Record<string, string> }) => {
+      const made = await call<Agent>("POST", "/agents", { body });
+      if (made.warnings?.length) created.set(made.agent_id, { revision: made.revision, warnings: made.warnings });
+      return made;
+    },
     /** Saves a new revision. `etag` is the revision the edit was made on: the server refuses the save (412) when another
      *  landed first. The answer's ETag is the new revision, for the next edit. */
     updateDefinition: async (id: string, body: { definition: Partial<Definition>; note?: string; skills?: Record<string, string> }, etag: string | null) => {
       const r = await callTagged<Agent>("PUT", `${agent(id)}/definition`, { body, headers: etag ? { "if-match": etag } : {} });
+      created.delete(id);
       return { agent: r.body, etag: r.etag };
     },
     listRevisions: (id: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: string; definition: Definition }[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
-    setCurrent: (id: string, revision: string) => call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }),
+    setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
     getRun: (id: string) => call<Run>("GET", run(id)),
@@ -110,6 +123,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     resumeRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/resume`, { body: {} }),
     /** The server's own check of a workflow (the DSL's validator, no code run, nothing stored). 404 on a server without it. */
     validateWorkflow: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => call<WorkflowCheck>("POST", "/workflows/validate", { body, signal }),
+    /** GET /v2/stats with its `analytics` bounded: runs started at or after `from`, of `agent`. Every other number is the
+     *  whole store's, and an older server, which has no analytics, leaves both unread. */
+    statsOver: ({ from, agent: of }: { from?: string; agent?: string }) => {
+      const q = new URLSearchParams();
+      if (from) q.set("from", from);
+      if (of) q.set("agent", of);
+      return call<Stats>("GET", `/stats${q.size ? `?${q}` : ""}`);
+    },
     /** A run file's URL on this origin (a rendered page's image), for an <img>: the session cookie goes with it. */
     fileUrl: (id: string, path: string) => `${base}${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
