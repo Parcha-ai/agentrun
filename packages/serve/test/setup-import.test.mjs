@@ -2,7 +2,7 @@
 // on this machine only. Nothing is imported unless the owner ticks it as they set the password; ticked, the sessions
 // arrive, and the signed-in owner can read how the import stands.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
@@ -215,12 +215,16 @@ test("a setup with the box ticked still being answered when the server closes st
   const { sessionsHome } = await machine(t);
   const data = join(await scratch(t), "agents");
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome });
-  // The request is in, hashing the password, when close begins; its handler goes on after its connection is cut.
+  // Close begins as the request is in, most often while it hashes the password; its handler goes on after its
+  // connection is cut. Whichever way it fell, nothing writes the store after close.
   const asked = call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } }).catch(() => undefined);
   await sleep(10);
   await server.close();
   await asked;
   await sleep(2_000);
   assert.equal(agentsIn(data), 0, "no agent written after close");
-  assert.ok(existsSync(join(data, ".import-at-setup")), "the owner's yes is kept for the next start");
+  // Setup took the yes (the password is set) exactly when it is kept for the next start.
+  const owner = join(data, "owner.json");
+  const set = existsSync(owner) && JSON.parse(readFileSync(owner, "utf8")).password !== undefined;
+  assert.equal(existsSync(join(data, ".import-at-setup")), set, set ? "the owner's yes is kept for the next start" : "no yes was taken");
 });
