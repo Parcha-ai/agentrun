@@ -198,10 +198,18 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     if (id !== undefined && !prices.has(id)) prices.set(id, { given: (tier !== "default" && env[`${TIER_ENV[tier]}_PRICE`]) || env.AGENT_MODEL_PRICE || undefined, named: namedBy.get(tier) });
   }
   const catalog = [...prices.values()].some((price) => price.given === undefined) ? await catalogPrices() : new Map<string, Listed[]>();
+  const listedOf = (id: string, named: string | undefined): ModelCost | undefined => {
+    // A revision's ref names its provider: priced as that provider's entry for the model, whether it went whole or bare.
+    if (named !== undefined) return listedPrice(catalog.get(id.startsWith(`${named}/`) ? id.slice(named.length + 1) : id) ?? [], named);
+    // A host model set whole (`vendor/model`) the catalog does not list as it is: priced as its model, the vendor named.
+    const slash = id.indexOf("/");
+    if (catalog.has(id) || slash < 1) return listedPrice(catalog.get(id) ?? [], undefined);
+    return listedPrice(catalog.get(id.slice(slash + 1)) ?? [], id.slice(0, slash));
+  };
   const priceOf = (id: string): ModelCost => {
     const { given, named } = prices.get(id)!;
     if (given === undefined) {
-      const listed = listedOf(catalog, id, named);
+      const listed = listedOf(id, named);
       if (listed) return listed;
       unpriced.add(id);
       return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -267,16 +275,6 @@ export async function catalogPrices(): Promise<Map<string, Listed[]>> {
     listed.push({ provider: model.provider, cost: { input, output, cacheRead, cacheWrite, ...(tiers ? { tiers } : {}) } });
   }
   return out;
-}
-
-/** The catalog's price of model `id`, undefined when it does not list the model; listed at $0 is $0. */
-export function listedOf(catalog: ReadonlyMap<string, readonly Listed[]>, id: string, named: string | undefined): ModelCost | undefined {
-  // A revision's ref names its provider: priced as that provider's entry for the model, whether it went whole or bare.
-  if (named !== undefined) return listedPrice(catalog.get(id.startsWith(`${named}/`) ? id.slice(named.length + 1) : id) ?? [], named);
-  // A host model set whole (`vendor/model`) the catalog does not list as it is: priced as its model, the vendor named.
-  const slash = id.indexOf("/");
-  if (catalog.has(id) || slash < 1) return listedPrice(catalog.get(id) ?? [], undefined);
-  return listedPrice(catalog.get(id.slice(slash + 1)) ?? [], id.slice(0, slash));
 }
 
 /** A gateway model's catalog price: the paid entry of the provider its ref names, when the catalog lists one. Else, as

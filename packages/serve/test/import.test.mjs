@@ -6,14 +6,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openStore, openStoreReader } from "@parcha/pi-durable-agent";
 import { runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { startServe } from "../dist/index.js";
-import { planImport, runImport } from "../dist/import.js";
+import { importCommand, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { summaryLines } from "../dist/import-summary.js";
 import { at as minute, claudeSession, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
@@ -580,7 +580,7 @@ async function listPrice(provider, id, { input = 0, output = 0, cacheRead = 0, c
   return (input * cost.input + output * cost.output + cacheRead * cost.cacheRead + cacheWrite * cost.cacheWrite) / 1e6;
 }
 
-test("a run its source did not price gets the catalog's estimate, its cost still unknown; an unlisted model or a request of unknown tokens leaves it unknown, a source's cost is kept with none, and a model listed at $0 is $0", async (t) => {
+test("a run its source did not price gets the catalog's estimate at its own provider's price, its cost still unknown; an unlisted model, a provider the catalog does not list for it, or a request of unknown tokens leaves it unknown, a source's cost is kept with none, and a provider's $0 is $0", async (t) => {
   const { store, runs } = await importedOne(t, (home, project) => {
     codexSession(home, project, 51, { model: "gpt-5.5" });
     codexSession(home, project, 52);
@@ -588,6 +588,10 @@ test("a run its source did not price gets the catalog's estimate, its cost still
     claudeSession(home, project, 54, { unknownCost: true });
     claudeSession(home, project, 55);
     piSession(home, project, 56, { provider: "google", modelId: "gemma-4-26b-a4b-it", costs: [null, null] });
+    // A provider of its own: the catalog lists gpt-5.5, but not as this provider serves it.
+    codexSession(home, project, 57, { model: "gpt-5.5", provider: "router" });
+    // Free from this provider, though others list it paid: its own price, never another's.
+    piSession(home, project, 58, { provider: "qwen-token-plan", modelId: "deepseek-v4-pro", costs: [null, null] });
   });
   const priced = runs.map((run) => {
     const { costUsdEst, costBasis } = store.runMetrics(run.id);
@@ -602,6 +606,8 @@ test("a run its source did not price gets the catalog's estimate, its cost still
     ["codex", null, null, null],
     ["claude-code", null, Math.round(claude * 1e6) / 1e6, "catalog"],
     ["claude-code", 0.0421, null, null],
+    ["pi", null, 0, "catalog"],
+    ["codex", null, null, null],
     ["pi", null, 0, "catalog"],
   ]);
 });
@@ -670,4 +676,40 @@ test("the CLI's own note is never the person's turn: a session holding only note
   await runImport(store, plan, options(h));
   const [run] = store.listRuns();
   assert.equal(JSON.parse(readFileSync(join(data, "runs", run.id, "serve.json"), "utf8")).title, "Tidy the notes.");
+});
+
+test("a block a resumed Claude Code file repeats, at its own earlier times, adds no time at work", async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "resumed");
+  mkdirSync(project, { recursive: true });
+  const file = claudeSession(home, project, 81);
+  const once = (await readSession(file, "claude-code")).activeMs;
+  // As a resumed session writes it: its first records again, after its last.
+  const lines = readFileSync(file, "utf8").trimEnd().split("\n");
+  writeFileSync(file, `${[...lines, ...lines.slice(0, 4)].join("\n")}\n`);
+  assert.equal(once, 3 * 60_000);
+  assert.equal((await readSession(file, "claude-code")).activeMs, once);
+});
+
+test("a dry run counts a session the store holds already from its run, as the import does, though its file grew since", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const site = join(home, "code", "acme-site");
+  mkdirSync(site, { recursive: true });
+  const file = claudeSession(home, site, 82);
+  const data = join(root, "agents");
+  const block = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    return lines.slice(-5);
+  };
+  const imported = await block();
+  // The session went on after its import: a later request in its file, which the import does not take again.
+  appendFileSync(file, `${JSON.stringify({ sessionId: sessionId(82), cwd: site, type: "assistant", uuid: "later", timestamp: minute(10), message: { id: "msg_later", role: "assistant", model: "claude-sonnet-5", content: [{ type: "text", text: "Later." }], usage: { input_tokens: 700, output_tokens: 90 } } })}\n`);
+  const old = new Date(Date.now() - 60 * 60_000);
+  utimesSync(file, old, old);
+  const dry = await block("--dry-run");
+  assert.deepEqual(dry.slice(2), imported.slice(2), "the numbers the import keeps for its held run");
+  assert.equal(dry[0], imported[0]);
 });

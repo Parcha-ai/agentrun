@@ -18,7 +18,7 @@ import { type EntryLike, type RunMetrics, runMetricsOf } from "@parcha/pi-durabl
 import { readJson, RUN_META } from "./files.js";
 import { HARNESS_OF, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
-import { catalogPrices, type Listed, listedOf } from "./model.js";
+import { catalogPrices, type Listed } from "./model.js";
 import { DEFAULT_PORT } from "./server.js";
 import { secretCut } from "./secret-cut.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
@@ -59,7 +59,8 @@ export type ProjectPlan = {
   name: string;
   sessions: Session[];
 };
-/** `already`: the session files an earlier import took whole, left unread; `held`, their runs. `found`: each planned
+/** `already`: the session files an earlier import took whole, left unread; `held`, the runs an import would not take
+ *  again: theirs, and (when measuring) those of planned sessions the store holds already. `found`: each other planned
  *  session measured, when the plan was made to (`measure`). */
 export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; found?: Found[] };
 export type ImportReport = {
@@ -109,6 +110,8 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   let already = 0;
   const held: string[] = [];
   const found: Found[] = [];
+  // A session the store holds already is counted from its run, as the import would count it, not from its file now.
+  const heldBy = measure && store ? importedIn(store) : undefined;
   const projects = new Map<string, ProjectPlan>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
@@ -172,7 +175,9 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
         );
       project.sessions.push(session);
       if (measure) {
-        found.push({ source, agent: project.agentId, ...measured(session) });
+        const run = heldBy?.get(`${source}:${session.id}`);
+        if (run !== undefined) held.push(run);
+        else found.push({ source, agent: project.agentId, ...measured(session) });
         session.turns = [];
       }
     }
@@ -420,8 +425,9 @@ async function writeTimeline(storePath: string, session: Session, cut: (value: u
   return entries;
 }
 
-/** What a run's requests cost at the catalog's list prices, by their model's own provider (`listedOf`): undefined when one
- *  request's tokens are unknown or its model is not listed. A request of no tokens costs nothing at any price. */
+/** What a run's requests cost at the catalog's list prices, each at its own provider's entry for its model: undefined when
+ *  one request's tokens are unknown or its provider does not list its model (the request was served at a price no one
+ *  lists here). A provider's $0 entry is $0. A request of no tokens costs nothing at any price. */
 async function estimateOf(entries: readonly EntryLike[], metrics: RunMetrics, catalog: () => Promise<ReadonlyMap<string, readonly Listed[]>>): Promise<number | undefined> {
   if (metrics.unmetered > 0) return undefined;
   const { calculateCost } = await import("@earendil-works/pi-ai");
@@ -431,8 +437,7 @@ async function estimateOf(entries: readonly EntryLike[], metrics: RunMetrics, ca
     if (!answer?.usage) continue;
     const { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cacheWrite1h } = answer.usage;
     if (input + output + cacheRead + cacheWrite === 0) continue;
-    const id = answer.provider && answer.model ? `${answer.provider}/${answer.model}` : undefined;
-    const cost = id ? listedOf(await catalog(), id, answer.provider) : undefined;
+    const cost = answer.provider && answer.model ? (await catalog()).get(answer.model)?.find((entry) => entry.provider === answer.provider)?.cost : undefined;
     if (!cost) return undefined;
     const usage = { input, output, cacheRead, cacheWrite, ...(cacheWrite1h !== undefined ? { cacheWrite1h } : {}), totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
     total += calculateCost({ cost } as never, usage).total;

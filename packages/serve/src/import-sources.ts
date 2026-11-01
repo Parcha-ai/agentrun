@@ -215,8 +215,11 @@ export async function readSession(file: string, source: Source, { turns: keep = 
     const at = timeOf(value.timestamp);
     if (at !== undefined) {
       first ??= at;
-      if (last !== undefined) session.activeMs += Math.min(Math.max(0, at - last), ACTIVE_GAP_MS);
-      last = at;
+      // A record older than the latest (a block a resumed file repeats) moves no time: its gaps were counted once.
+      if (last === undefined || at >= last) {
+        if (last !== undefined) session.activeMs += Math.min(at - last, ACTIVE_GAP_MS);
+        last = at;
+      }
     }
     record(value, at ?? last ?? 0, session, { add, names, turns, priced, provider, current, codex });
   }
