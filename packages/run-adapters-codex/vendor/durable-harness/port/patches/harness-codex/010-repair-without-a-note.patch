@@ -1,0 +1,19 @@
+Patch: 010-repair-without-a-note
+Reason: a call the rollout has no output for gets its output from the log whenever a thread resumes, before any turn is sent, not only under a recovery note: a turn that ended without answering a call (one interrupted mid-call, or settled instead of resumed) left it dangling, and the provider refuses a history with a call unanswered; this is the hook, the repair itself is in code-mode.ts
+Upstream: ours
+Pins: a crash inside a never tool's call, then the turn closed in the log: the next send answers the dangling call from the log before the new turn, and the call is never run again
+Pins: a settled turn whose exec dangles with a completed never call does not answer a new turn's same call as recorded earlier: the new call runs
+---
+diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
+index 436c2a9..e4f76c1 100644
+--- a/packages/harness-codex/src/harness.ts
++++ b/packages/harness-codex/src/harness.ts
+@@ -1051,6 +1051,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+       await driveFiles.catchUp();
+       // A turn a crash cut off.
+       const note = recoveryNote(ctx.state());
++      // With no recovery note, calls the rollout left unanswered still get their outputs before any turn is sent.
++      if (!note && resume) await code.repairUnnoted(lines);
+       if (note) {
+         const summary = summarizeRollout(lines);
+         const owed = owedSubmissions(ctx.state(), note.turn.placed, summary.clientIds);
