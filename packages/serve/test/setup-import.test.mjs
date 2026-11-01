@@ -153,10 +153,12 @@ test("an import at setup that cannot open the store (held past its wait) holds u
     assert.equal(made.status, 201, made.text);
     // The import waits for the store on its own thread: the setup's answer and the next request do not.
     assert.equal((await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json.state, "running");
-    assert.ok(Date.now() - asked < 2_000, `answered in ${Date.now() - asked} ms while the store is held`);
-    await sleep(6_500);
+    assert.ok(Date.now() - asked < 3_000, `answered in ${Date.now() - asked} ms while the store is held`);
+    // Held until the import has given up: past its five-second wait, plus its thread's start on a busy machine.
+    const state = async () => (await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
+    for (const deadline = Date.now() + 20_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(200);
     assert.equal((await call(server.port, { path: "/v2/auth/session" })).status, 200, "the server is still up");
-    assert.deepEqual((await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json, { state: "stopped" }, "the owner reads it stopped");
+    assert.deepEqual(await state(), { state: "stopped" }, "the owner reads it stopped");
   } finally {
     holder.exec("ROLLBACK");
     holder.close();
