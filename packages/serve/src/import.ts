@@ -13,7 +13,8 @@ import { parseArgs } from "node:util";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE } from "@parcha/pi-durable-agent";
+import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE, type StoredMetrics } from "@parcha/pi-durable-agent";
+import { type EntryLike, type RunMetrics, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
 import { readJson, RUN_META } from "./files.js";
 import { HARNESS_OF, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { secretCut } from "./secret-cut.js";
@@ -310,8 +311,10 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
       },
       data: { diagnostics: [] },
     };
-  const [provider, ...id] = (model ?? "imported/unknown").split("/");
+  const [provider, ...id] = (turn.model ?? model ?? "imported/unknown").split("/");
   const cost = turn.costUsd;
+  // A request the source gave no counts for keeps zeros, which a run's metrics read as unmetered, never as 0 tokens.
+  const { input, output, cacheRead, cacheWrite } = turn.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   return {
     entry: AssistantEntry as unknown as typeof UserEntry,
     model: {
@@ -322,11 +325,11 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
       model: id.join("/") || provider,
       // No total when the source did not price the request: the timeline's sum is then unknown, never this request at 0.
       usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
+        input,
+        output,
+        cacheRead,
+        cacheWrite,
+        totalTokens: input + output + cacheRead + cacheWrite,
         cost: cost === undefined ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
       },
       stopReason: turn.calls.length ? "toolUse" : "stop",
@@ -335,8 +338,9 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
   };
 };
 
-/** The run's transcript, into a store file at `storePath`, each string with the environment's key values cut out. */
-async function writeTimeline(storePath: string, session: Session, cut: (value: unknown) => unknown): Promise<void> {
+/** The run's transcript, into a store file at `storePath`, each string with the environment's key values cut out; its
+ *  metrics, read back from the entries written, as the run's own timeline reads them. */
+async function writeTimeline(storePath: string, session: Session, cut: (value: unknown) => unknown): Promise<RunMetrics> {
   const { createModels } = await import("@earendil-works/pi-ai/models");
   const storage = await openNodeSqliteStorage(storePath);
   // No model is asked anything: the catalog is only what opening a Harness takes.
@@ -359,8 +363,10 @@ async function writeTimeline(storePath: string, session: Session, cut: (value: u
   // beside it, where nothing else may move.
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(storePath);
+  let metrics: RunMetrics;
   try {
     db.exec("PRAGMA journal_mode = DELETE");
+    metrics = runMetricsOf((db.prepare("SELECT record FROM entries ORDER BY id").all() as { record: string }[]).map((row) => JSON.parse(row.record) as EntryLike));
   } finally {
     db.close();
   }
@@ -369,6 +375,7 @@ async function writeTimeline(storePath: string, session: Session, cut: (value: u
     await chmod(file, 0o600).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
+  return metrics;
 }
 
 /** The revision of `harness` an earlier import made for the agent, else a new one (current when the agent is new). */
@@ -449,7 +456,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
       let started: { runId: string; dir: string; storePath: string } | undefined;
       try {
-        await writeTimeline(pending, session, json);
+        const metrics: StoredMetrics = { ...(await writeTimeline(pending, session, json)), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
         if (heldRun !== undefined) {
           started = { runId: heldRun, dir: join(store.dir, "runs", heldRun), storePath: store.runStorePath(heldRun) };
           if ((await mkdir(dirname(started.storePath), { recursive: true })) !== undefined) for (const made of [started.dir, dirname(started.storePath)]) await chmod(made, 0o700);
@@ -465,6 +472,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
             ...((answer ?? session.firstPrompt) ? { summary: text(answer ?? session.firstPrompt!) } : {}),
             source: session.source,
             session: session.id,
+            metrics,
           });
         }
         if (started) await rename(pending, started.storePath);

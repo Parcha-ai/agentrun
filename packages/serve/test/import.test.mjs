@@ -11,9 +11,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openStore, openStoreReader } from "@parcha/pi-durable-agent";
+import { runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { startServe } from "../dist/index.js";
 import { planImport, runImport } from "../dist/import.js";
-import { readSession } from "../dist/import-sources.js";
+import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { claudeSession, codexSession, piSession } from "./fixtures/import-sessions.mjs";
 import { client, FAUX, scratch } from "./support.mjs";
 
@@ -120,6 +121,7 @@ test("each project is one agent with a revision per harness, its CLAUDE.md or AG
   assert.equal((await api("GET", `/runs/${runs[2].id}`)).body.cost.usd, null, "Codex records no cost: unknown, never 0");
   assert.equal((await api("GET", `/runs/${runs[0].id}`)).body.cost.usd, 0.0421);
   const { body } = await api("GET", `/runs/${runs[0].id}/timeline`);
+  assert.equal(body.rows.findLast((r) => r.kind === "usage")?.usage?.requests, store.runMetrics(runs[0].id).requests, "the served usage row counts the requests the metrics do");
   const rows = body.rows.map((r) => `${r.kind}:${r.text ?? r.name ?? ""}`).join("\n");
   assert.match(rows, /^user_message:List the files\.$/m);
   assert.ok(body.rows.some((r) => r.kind === "tool_use" && r.tool_name === "Bash" && r.tool_input_preview === "ls"), "the Bash call");
@@ -412,4 +414,120 @@ test("a key value in a session file's own path is in no file the import writes, 
   const second = await runImport(store, plan, options(h));
   assert.equal(second.agents.reduce((n, a) => n + a.runs, 0), 0);
   assert.equal(store.listRuns().length, 6);
+});
+
+/** One project under a scratch home, its sessions written by `write(home, project)`, imported: the store and its runs by
+ *  source. */
+async function importedOne(t, write) {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "metered");
+  mkdirSync(project, { recursive: true });
+  write(h.at, project);
+  const data = join(root, "agents");
+  const store = openStore(data);
+  t.after(() => store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const runs = store.listRuns().sort((a, b) => a.importedFrom.session.localeCompare(b.importedFrom.session));
+  return { data, store, runs };
+}
+
+/** A run's stored metrics, checked against its own transcript: runMetricsOf of its entries, and its settled timeline's
+ *  usage row. Returns the metrics (without `at`) and the transcript's answers. */
+function metricsOf(data, store, runId) {
+  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const entries = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record));
+  db.close();
+  const { at, activeMs, effort, ...counted } = store.runMetrics(runId);
+  assert.ok(at, "written with its run");
+  assert.deepEqual(counted, runMetricsOf(entries), "the metrics are what the run's own transcript says");
+  assert.equal(timelineOf(entries, { settled: true }).findLast((r) => r.kind === "usage")?.usage.requests, counted.requests, "the timeline's usage row counts the same requests");
+  return { metrics: { ...counted, activeMs, ...(effort ? { effort } : {}) }, answers: entries.filter((e) => e.kind === "pi.assistant").map((e) => e.model[0]), kinds: entries.map((e) => e.kind) };
+}
+const tokensIn = (answer) => [answer.model, answer.usage.input, answer.usage.cacheRead, answer.usage.cacheWrite, answer.usage.output];
+
+test("a Claude Code import counts each request once, its records repeated around a parallel call's result or written twice; each answer keeps its model, a failed call its error, and the run its effort and time at work, a pause cut to the cap", async (t) => {
+  const { data, store, runs } = await importedOne(t, (home, project) => claudeSession(home, project, 31, { parallel: true, answerModel: "claude-haiku-5", pause: 60 }));
+  const { metrics, answers } = metricsOf(data, store, runs[0].id);
+  assert.deepEqual(metrics, {
+    input: 8,
+    cacheRead: 2300,
+    cacheWrite: 300,
+    output: 80,
+    requests: 2,
+    unmetered: 0,
+    models: { "anthropic/claude-sonnet-5": 1, "anthropic/claude-haiku-5": 1 },
+    model: "anthropic/claude-sonnet-5",
+    tools: { Bash: { calls: 1, errors: 0 }, Read: { calls: 1, errors: 1 } },
+    activeMs: 2 * 60_000 + ACTIVE_GAP_MS,
+    effort: "high",
+  });
+  assert.equal(ACTIVE_GAP_MS, 15 * 60_000);
+  // The first request's last record holds its final usage, not its stream's start; the answer written twice is one.
+  assert.deepEqual(answers.map(tokensIn), [["claude-sonnet-5", 3, 1000, 200, 50], ["claude-haiku-5", 5, 1300, 100, 30]]);
+  assert.deepEqual(answers[0].content.filter((b) => b.type === "toolCall").map((b) => b.name), ["Bash", "Read"]);
+  assert.deepEqual(answers[1].content, [{ type: "text", text: "The files: README.md." }]);
+});
+
+test("a Codex import counts each request once from its token_count events, or from its token_usage_records where it has them; input is OpenAI's less the cached, a call fails as its output or its completed item says, and each turn keeps its model", async (t) => {
+  const { data, store, runs } = await importedOne(t, (home, project) => {
+    codexSession(home, project, 32, { failing: true, then: "Ship it.", thenModel: "gpt-luna-6" });
+    codexSession(home, project, 33, { failing: true, then: "Ship it.", thenModel: "gpt-luna-6", usage: "records", events: false });
+  });
+  const expected = {
+    input: 300 + 100 + 200,
+    cacheRead: 600 + 900 + 1000,
+    cacheWrite: 0,
+    output: 40 + 25 + 10,
+    requests: 3,
+    unmetered: 0,
+    models: { "openai/gpt-sol-6.1": 2, "openai/gpt-luna-6": 1 },
+    model: "openai/gpt-sol-6.1",
+    tools: { shell: { calls: 3, errors: 2 } },
+    activeMs: 5 * 60_000,
+    effort: "medium",
+  };
+  for (const run of runs) {
+    const { metrics, answers } = metricsOf(data, store, run.id);
+    assert.deepEqual(metrics, expected, run.importedFrom.session);
+    // The first request's three calls are one answer; the token_count written twice, and the record, count once.
+    assert.deepEqual(answers.map(tokensIn), [["gpt-sol-6.1", 300, 600, 0, 40], ["gpt-sol-6.1", 100, 900, 0, 25], ["gpt-luna-6", 200, 1000, 0, 10]]);
+    assert.equal(answers[0].content.filter((b) => b.type === "toolCall").length, 3);
+  }
+});
+
+test("a pi import keeps each request's usage as pi wrote it, its model, its thinking level and a failed call", async (t) => {
+  const { data, store, runs } = await importedOne(t, (home, project) => piSession(home, project, 34, { answerModel: "claude-opus-5", readFails: true, thinking: "xhigh" }));
+  const { metrics, answers } = metricsOf(data, store, runs[0].id);
+  assert.deepEqual(metrics, {
+    input: 200,
+    cacheRead: 800,
+    cacheWrite: 60,
+    output: 40,
+    requests: 2,
+    unmetered: 0,
+    models: { "anthropic/claude-sonnet-5": 1, "anthropic/claude-opus-5": 1 },
+    model: "anthropic/claude-sonnet-5",
+    tools: { read: { calls: 1, errors: 1 } },
+    activeMs: 3 * 60_000,
+    effort: "xhigh",
+  });
+  assert.deepEqual(answers.map(tokensIn), [["claude-sonnet-5", 100, 400, 30, 20], ["claude-opus-5", 100, 400, 30, 20]]);
+  assert.ok(Math.abs(runs[0].costUsd - 0.005) < 1e-12, "its cost as before");
+});
+
+test("a session whose source gives no counts imports its requests as unmetered, never as 0 tokens; a Codex request still ends at its call's result", async (t) => {
+  const { data, store, runs } = await importedOne(t, (home, project) => {
+    claudeSession(home, project, 35, { usage: false });
+    codexSession(home, project, 36, { usage: "none" });
+    piSession(home, project, 37, { counted: false });
+  });
+  assert.deepEqual(runs.map((r) => r.importedFrom.source), ["claude-code", "codex", "pi"]);
+  for (const run of runs) {
+    const { metrics, answers } = metricsOf(data, store, run.id);
+    assert.deepEqual([metrics.requests, metrics.unmetered, metrics.input, metrics.cacheRead, metrics.cacheWrite, metrics.output], [2, 2, 0, 0, 0, 0], run.importedFrom.source);
+    assert.ok(answers.every((a) => a.usage.input + a.usage.cacheRead + a.usage.cacheWrite + a.usage.output === 0), "zeros written, read as unknown");
+  }
+  // With no usage to close it, the answer after the call's result is a request of its own, after that result.
+  assert.deepEqual(metricsOf(data, store, runs[1].id).kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant"]);
 });

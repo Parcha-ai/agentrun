@@ -19,8 +19,14 @@ export function writeSession(file, records, { fresh = false } = {}) {
   return file;
 }
 
-/** A Claude Code session in `cwd`: a question, a Bash call and its output, an answer, and its cost record. */
-export function claudeSession(home, cwd, n, { prompt = "List the files.", output = "README.md", cost = 0.0421, sidechain = false, interrupted = false, failed = false, env = {}, slug = cwd.replaceAll("/", "-") } = {}) {
+/** A Claude Code request's usage as the CLI writes it on each of its records. */
+const claudeUsage = (input, cacheRead, cacheWrite, output) => ({ input_tokens: input, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite, output_tokens: output, service_tier: "standard" });
+
+/** A Claude Code session in `cwd`: a question, a Bash call and its output, an answer, and its cost record. Each
+ *  request's records carry its usage (the first one the stream's start), unless `usage: false`, and the effort. With
+ *  `parallel`, the first request also reads a file, its record after the Bash call's result, and the read fails; the
+ *  answer's text record is written twice, and the answer runs on `answerModel`, `pause` minutes after the result. */
+export function claudeSession(home, cwd, n, { prompt = "List the files.", output = "README.md", cost = 0.0421, sidechain = false, interrupted = false, failed = false, env = {}, slug = cwd.replaceAll("/", "-"), usage = true, effort = "high", parallel = false, answerModel = "claude-sonnet-5", pause = 0 } = {}) {
   const id = sessionId(n);
   const base = {
     sessionId: id,
@@ -29,6 +35,22 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
     version: "2.1.0",
     isSidechain: sidechain,
     userType: "external",
+  };
+  const turn = { effort, perTurnEffort: effort };
+  const first = usage ? { usage: claudeUsage(3, 1000, 200, 50) } : {};
+  const answer = {
+    ...base,
+    ...turn,
+    type: "assistant",
+    uuid: "a4",
+    timestamp: at(3 + pause),
+    message: {
+      id: "msg_2",
+      role: "assistant",
+      model: answerModel,
+      content: [{ type: "text", text: `The files: ${output}.` }],
+      ...(usage ? { usage: claudeUsage(5, 1300, 100, 30) } : {}),
+    },
   };
   const records = [
     {
@@ -40,6 +62,7 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
     },
     {
       ...base,
+      ...turn,
       type: "assistant",
       uuid: "a1",
       timestamp: at(1),
@@ -48,10 +71,12 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
         role: "assistant",
         model: "claude-sonnet-5",
         content: [{ type: "thinking", thinking: "unseen" }],
+        ...(usage ? { usage: claudeUsage(3, 1000, 200, 1) } : {}),
       },
     },
     {
       ...base,
+      ...turn,
       type: "assistant",
       uuid: "a2",
       timestamp: at(1),
@@ -60,10 +85,12 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
         role: "assistant",
         model: "claude-sonnet-5",
         content: [{ type: "text", text: "Listing them." }],
+        ...first,
       },
     },
     {
       ...base,
+      ...turn,
       type: "assistant",
       uuid: "a3",
       timestamp: at(1),
@@ -79,6 +106,7 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
             input: { command: "ls", env },
           },
         ],
+        ...first,
       },
     },
     {
@@ -91,6 +119,34 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
         content: [{ type: "tool_result", tool_use_id: "toolu_1", content: output }],
       },
     },
+    ...(parallel
+      ? [
+          {
+            ...base,
+            ...turn,
+            type: "assistant",
+            uuid: "a3b",
+            timestamp: at(2),
+            message: {
+              id: "msg_1",
+              role: "assistant",
+              model: "claude-sonnet-5",
+              content: [{ type: "tool_use", id: "toolu_2", name: "Read", input: { file_path: "missing.md" } }],
+              ...first,
+            },
+          },
+          {
+            ...base,
+            type: "user",
+            uuid: "u2b",
+            timestamp: at(2),
+            message: {
+              role: "user",
+              content: [{ type: "tool_result", tool_use_id: "toolu_2", content: "File does not exist.", is_error: true }],
+            },
+          },
+        ]
+      : []),
     {
       ...base,
       type: "user",
@@ -113,18 +169,8 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
             content: [{ type: "text", text: "API Error: overloaded" }],
           },
         }
-      : {
-          ...base,
-          type: "assistant",
-          uuid: "a4",
-          timestamp: at(3),
-          message: {
-            id: "msg_2",
-            role: "assistant",
-            model: "claude-sonnet-5",
-            content: [{ type: "text", text: `The files: ${output}.` }],
-          },
-        },
+      : answer,
+    ...(parallel && !failed ? [answer] : []),
     ...(interrupted
       ? [
           {
@@ -147,12 +193,39 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
   return writeSession(join(home, ".claude", "projects", slug, `${id}.jsonl`), records);
 }
 
+/** A Codex request's usage as the CLI writes it: OpenAI's input_tokens holds the cached ones, its output_tokens the
+ *  reasoning. */
+const codexUsage = (input, cached, output, reasoning) => ({ input_tokens: input, cached_input_tokens: cached, cache_write_input_tokens: 0, output_tokens: output, reasoning_output_tokens: reasoning, total_tokens: input + output });
+const plus = (a, b) => Object.fromEntries(Object.keys(a).map((key) => [key, a[key] + b[key]]));
+
 /** A Codex session in `cwd`: the CLI's own context, a question, a shell call and its output, an answer; tokens only, no
  *  cost. Each of the person's turns is a user message and, as older Codex wrote it, a user_message event too; with
- *  `events: false`, as current Codex writes it, the user message alone. `then` is a second turn, with an image. */
-export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, aborted = false, events = true, then } = {}) {
+ *  `events: false`, as current Codex writes it, the user message alone. `then` is a second turn, with an image, on
+ *  `thenModel`. Each request's usage is in a token_count event (the first one written twice), with `usage: "records"`
+ *  also in a token_usage_record (the first one written twice), with `usage: "none"` in neither. With `failing`, the first
+ *  request also runs two calls that fail: one whose output says so, one whose completed item does, after its output. */
+export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, aborted = false, events = true, then, thenModel = "gpt-sol-6.1", usage = "token_count", failing = false } = {}) {
   const id = sessionId(n);
   const text = (value) => ({ type: "input_text", text: value });
+  const requests = [codexUsage(900, 600, 40, 10), codexUsage(1000, 900, 25, 5), codexUsage(1200, 1000, 10, 0)];
+  let total;
+  const counted = (minute, k, { again = false } = {}) => {
+    if (usage === "none") return [];
+    total = total ? plus(total, requests[k]) : requests[k];
+    const count = {
+      timestamp: at(minute),
+      type: "event_msg",
+      payload: { type: "token_count", info: { total_token_usage: total, last_token_usage: requests[k], model_context_window: 272000 }, rate_limits: null },
+    };
+    const record = { timestamp: at(minute), type: "token_usage_record", payload: { thread_id: id, turn_id: `turn_${k}`, response_id: `resp_${k}`, usage: requests[k] } };
+    return [...(usage === "records" ? (again ? [record, record] : [record]) : []), count, ...(again ? [count] : [])];
+  };
+  const call = (minute, callId, command) => ({
+    timestamp: at(minute),
+    type: "response_item",
+    payload: { type: "function_call", name: "shell", arguments: JSON.stringify({ command }), call_id: callId },
+  });
+  const result = (minute, callId, value) => ({ timestamp: at(minute), type: "response_item", payload: { type: "function_call_output", call_id: callId, output: value } });
   const said = (minute, content, message) => [
     {
       timestamp: at(minute),
@@ -213,29 +286,21 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
       type: "response_item",
       payload: { type: "reasoning", summary: [], encrypted_content: "unseen" },
     },
-    {
-      timestamp: at(1),
-      type: "response_item",
-      payload: {
-        type: "function_call",
-        name: "shell",
-        arguments: JSON.stringify({ command: ["npm", "test"] }),
-        call_id: "call_1",
-      },
-    },
-    {
-      timestamp: at(2),
-      type: "response_item",
-      payload: { type: "function_call_output", call_id: "call_1", output },
-    },
-    {
-      timestamp: at(2),
-      type: "event_msg",
-      payload: {
-        type: "token_count",
-        info: { total_token_usage: { input_tokens: 900, output_tokens: 40 } },
-      },
-    },
+    call(1, "call_1", ["npm", "test"]),
+    ...(failing ? [call(1, "call_2", ["npm", "run", "lint"]), call(1, "call_3", ["cat", "missing.md"])] : []),
+    result(2, "call_1", output),
+    ...(failing
+      ? [
+          result(2, "call_2", "Exit code: 1\nWall time: 0.4 seconds\nOutput:\n1 problem"),
+          result(2, "call_3", "No such file"),
+          {
+            timestamp: at(2),
+            type: "event_msg",
+            payload: { type: "item_completed", turn_id: "turn_0", item: { type: "CommandExecution", id: "call_3", status: "failed", exit_code: 1 } },
+          },
+        ]
+      : []),
+    ...counted(2, 0, { again: true }),
     {
       timestamp: at(3),
       type: "response_item",
@@ -245,13 +310,14 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
         content: [{ type: "output_text", text: `Tests: ${output}.` }],
       },
     },
+    ...counted(3, 1),
     ended(3, `Tests: ${output}.`, !then),
     ...(then
       ? [
           {
             timestamp: at(4),
             type: "turn_context",
-            payload: { cwd, model: "gpt-sol-6.1", effort: "medium" },
+            payload: { cwd, model: thenModel, effort: "medium" },
           },
           ...said(4, [text("<image name=[Image #1]>"), { type: "input_image", image_url: "data:image/png;base64,AAAA" }, text("</image>"), text(then)], then),
           {
@@ -263,6 +329,7 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
               content: [{ type: "output_text", text: "Done." }],
             },
           },
+          ...counted(5, 2),
           ended(5, "Done.", true),
         ]
       : []),
@@ -270,15 +337,17 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
   return writeSession(join(home, ".codex", "sessions", "2026", "10", "20", `rollout-2026-10-20T09-00-00-${id}.jsonl`), records);
 }
 
-/** A pi session in `cwd`: a question, a read call and its result, an answer; each request priced. */
-export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "three notes", costs = [0.002, 0.003], fresh = false } = {}) {
+/** A pi session in `cwd`: a question, a read call and its result, an answer; each request priced, its usage counted
+ *  (with `counted: false`, zeros, as pi writes a request it did not measure), the session at thinking level `thinking`.
+ *  With `answerModel`, a model change before the answer; with `readFails`, the read's result is an error. */
+export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "three notes", costs = [0.002, 0.003], fresh = false, counted = true, thinking = "high", answerModel, readFails = false } = {}) {
   const id = sessionId(n);
   const usage = (total) => ({
-    input: 100,
-    output: 20,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 120,
+    input: counted ? 100 : 0,
+    output: counted ? 20 : 0,
+    cacheRead: counted ? 400 : 0,
+    cacheWrite: counted ? 30 : 0,
+    totalTokens: counted ? 550 : 0,
     cost: total === null ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total },
   });
   const t = (minute) => T0 + minute * 60_000;
@@ -292,6 +361,7 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
       provider: "anthropic",
       modelId: "claude-sonnet-5",
     },
+    { type: "thinking_level_change", id: "e1b", parentId: "e1", timestamp: at(0), thinkingLevel: thinking },
     {
       type: "message",
       id: "e2",
@@ -336,10 +406,11 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
         toolCallId: "tc_1",
         toolName: "read",
         content: [{ type: "text", text: output }],
-        isError: false,
+        isError: readFails,
         timestamp: t(2),
       },
     },
+    ...(answerModel ? [{ type: "model_change", id: "e4b", parentId: "e4", timestamp: at(2), provider: "anthropic", modelId: answerModel }] : []),
     {
       type: "message",
       id: "e5",
@@ -349,7 +420,7 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
         role: "assistant",
         content: [{ type: "text", text: `Read: ${output}.` }],
         provider: "anthropic",
-        model: "claude-sonnet-5",
+        model: answerModel ?? "claude-sonnet-5",
         api: "anthropic-messages",
         usage: usage(costs[1]),
         stopReason: "stop",

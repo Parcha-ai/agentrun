@@ -24,6 +24,10 @@ export type ToolCall = {
   name: string;
   arguments: Record<string, unknown>;
 };
+/** A request's tokens as pi counts them: `input` is the input neither read from nor written to the cache. */
+export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number };
+/** An assistant turn is one model request: `model` the one it ran on ("provider/model"), `effort` the effort or
+ *  thinking level it ran at, `usage` its tokens; each absent when the source does not say. */
 export type Turn =
   | { role: "user"; text: string; at: number }
   | {
@@ -33,6 +37,9 @@ export type Turn =
       at: number;
       costUsd?: number;
       key?: string;
+      model?: string;
+      effort?: string;
+      usage?: Usage;
     }
   | {
       role: "toolResult";
@@ -43,6 +50,11 @@ export type Turn =
       at: number;
     };
 export type Ended = "completed" | "failed" | "stopped";
+type Answer = Extract<Turn, { role: "assistant" }>;
+
+/** The longest gap between two records counted as time at work: Claude Code's Bash tool runs a call for up to 10
+ *  minutes with nothing written, and a longer gap is a session left open. */
+export const ACTIVE_GAP_MS = 15 * 60_000;
 
 export type Session = {
   source: Source;
@@ -63,6 +75,10 @@ export type Session = {
   /** Read only when asked for: a dry run reads none. */
   turns: Turn[];
   users: number;
+  /** Time at work: the gaps between its records, each at most ACTIVE_GAP_MS. */
+  activeMs: number;
+  /** The effort or thinking level most of its requests ran at, as the source names it; with its turns only. */
+  effort?: string;
 };
 
 /** The session files of `source` under `home`, never through a link. */
@@ -111,6 +127,25 @@ const textOf = (value: unknown): string => {
     .filter(Boolean)
     .join("\n");
 };
+/** A usage's counts under the source's names for input, cache read, cache write and output; undefined unless input and
+ *  output are counts (an absent cache count is 0). `cachedIn`: the source's input holds its cache reads and writes. */
+const tokensOf = (usage: unknown, [input, cacheRead, cacheWrite, output]: readonly string[], cachedIn = false): Usage | undefined => {
+  if (!isObject(usage)) return undefined;
+  const count = (key: string, absent?: number) => {
+    const value = usage[key] ?? absent;
+    return Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined;
+  };
+  const counts = { input: count(input!), output: count(output!), cacheRead: count(cacheRead!, 0), cacheWrite: count(cacheWrite!, 0) };
+  if (counts.input === undefined || counts.output === undefined || counts.cacheRead === undefined || counts.cacheWrite === undefined) return undefined;
+  if (cachedIn) counts.input -= counts.cacheRead + counts.cacheWrite;
+  return counts.input >= 0 ? (counts as Usage) : undefined;
+};
+const CLAUDE_TOKENS = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"];
+// OpenAI's input_tokens holds the cached tokens, and its output_tokens the reasoning.
+const CODEX_TOKENS = ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens"];
+const PI_TOKENS = ["input", "cacheRead", "cacheWrite", "output"];
+const effortOf = (value: unknown): string | undefined => (typeof value === "string" && /^[\w-]{1,32}$/.test(value) ? value : undefined);
+
 const argsOf = (value: unknown): Record<string, unknown> => {
   if (isObject(value)) return value;
   if (typeof value === "string") {
@@ -135,6 +170,7 @@ export async function readSession(file: string, source: Source, { turns: keep = 
     child: false,
     turns: [],
     users: 0,
+    activeMs: 0,
   };
   const turns: Turn[] = [];
   let first: number | undefined;
@@ -142,7 +178,8 @@ export async function readSession(file: string, source: Source, { turns: keep = 
   const names = new Map<string, string>();
   const priced = { sum: 0, unknown: false };
   const provider: { name?: string } = {};
-  const codex: Into["codex"] = { events: false, held: [] };
+  const current: Into["current"] = { keyed: new Map(), seen: new Set() };
+  const codex: Into["codex"] = { events: false, held: [], records: false, responses: new Set(), items: new Map(), results: new Map() };
   const add = (turn: Turn, index = turns.length) => {
     if (turn.role === "user") {
       session.users += 1;
@@ -166,9 +203,10 @@ export async function readSession(file: string, source: Source, { turns: keep = 
     const at = timeOf(value.timestamp);
     if (at !== undefined) {
       first ??= at;
+      if (last !== undefined) session.activeMs += Math.min(Math.max(0, at - last), ACTIVE_GAP_MS);
       last = at;
     }
-    record(value, at ?? last ?? 0, session, { add, names, turns, priced, provider, codex });
+    record(value, at ?? last ?? 0, session, { add, names, turns, priced, provider, current, codex });
   }
   // Older Codex writes each of the person's turns twice, as a user_message event and as a user message; current Codex
   // writes the user message alone. One source per file, so no turn counts twice.
@@ -176,7 +214,12 @@ export async function readSession(file: string, source: Source, { turns: keep = 
   if (!session.id) session.id = source === "pi" ? basename(file, ".jsonl").split("_").pop()! : basename(file, ".jsonl");
   if (first !== undefined) session.startedAt = new Date(first).toISOString();
   if (last !== undefined) session.endedAt = new Date(last).toISOString();
+  session.activeMs = Math.round(session.activeMs);
   session.turns = turns;
+  // As the model of most requests is a run's model: the first seen of a tie.
+  const efforts = new Map<string, number>();
+  for (const turn of turns) if (turn.role === "assistant" && turn.effort) efforts.set(turn.effort, (efforts.get(turn.effort) ?? 0) + 1);
+  for (const [effort, n] of efforts) if (session.effort === undefined || n > efforts.get(session.effort)!) session.effort = effort;
   return session;
 }
 
@@ -187,13 +230,30 @@ type Into = {
   priced: { sum: number; unknown: boolean };
   /** Codex's model provider, from its session_meta, for the model its turns name. */
   provider: { name?: string };
-  /** Codex: whether the file has user_message events, and its user messages, each with its place among the turns, held to the file's end. */
-  codex: { events: boolean; held: { index: number; turn: Turn }[] };
+  /** The effort in force (Codex's turn_context, pi's thinking level); Claude Code's turns by message id, and the
+   *  records read, by uuid. */
+  current: { effort?: string; keyed: Map<string, Answer>; seen: Set<string> };
+  /** Codex: whether the file has user_message events, and its user messages, each with its place among the turns, held
+   *  to the file's end. `open`: the request the model's output items join, until a result of one of its calls; `unpaid`,
+   *  the latest request whose usage has not come (written after its calls' results at times); `records`, whether the
+   *  file has token_usage_records, with the responses they counted, and `total`, the last token_count's total; `items`,
+   *  whether each completed item failed, and `results`, each tool result by call id, with whether its output said. */
+  codex: {
+    events: boolean;
+    held: { index: number; turn: Turn }[];
+    open?: Answer;
+    unpaid?: Answer;
+    records: boolean;
+    responses: Set<string>;
+    total?: string;
+    items: Map<string, boolean>;
+    results: Map<string, { turn: Extract<Turn, { role: "toolResult" }>; stated: boolean }>;
+  };
 };
 
 const INTERRUPTED = /^\[Request interrupted by user/;
 
-function claudeRecord(value: Record<string, unknown>, at: number, session: Session, { add, names, turns }: Into): void {
+function claudeRecord(value: Record<string, unknown>, at: number, session: Session, { add, names, current }: Into): void {
   if (!session.id && str(value.sessionId)) session.id = value.sessionId as string;
   if (!session.cwd && str(value.cwd)) session.cwd = value.cwd as string;
   if (value.isSidechain === true) session.child = true;
@@ -204,6 +264,10 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
   }
   if ((value.type !== "user" && value.type !== "assistant") || !isObject(value.message)) return;
   if (value.isMeta === true || value.isCompactSummary === true || value.isVisibleInTranscriptOnly === true) return;
+  // A record written twice (a session carried on in its own file) is read once.
+  const uuid = str(value.uuid);
+  if (uuid && current.seen.has(uuid)) return;
+  if (uuid) current.seen.add(uuid);
   const message = value.message;
   if (value.type === "assistant") {
     const model = str(message.model);
@@ -223,16 +287,23 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
       }));
     for (const call of calls) names.set(call.id, call.name);
     session.state = value.isApiErrorMessage === true ? "failed" : "completed";
-    if (!text && calls.length === 0) return;
-    // One request's blocks come as records of one message id: one turn.
+    // One request's blocks come as records of one message id, a parallel call's result between two of them: one turn.
+    // Each record repeats the request's usage, the final one the most of each count (an earlier record may hold only the
+    // stream's start).
     const key = str(message.id);
-    const previous = turns.at(-1);
-    if (key && previous?.role === "assistant" && previous.key === key) {
-      previous.text = [previous.text, text].filter(Boolean).join("\n");
-      previous.calls.push(...calls);
+    const usage = tokensOf(message.usage, CLAUDE_TOKENS);
+    const held = key ? current.keyed.get(key) : undefined;
+    if (held) {
+      held.text = [held.text, text].filter(Boolean).join("\n");
+      held.calls.push(...calls);
+      if (usage) held.usage = held.usage ? { input: Math.max(held.usage.input, usage.input), output: Math.max(held.usage.output, usage.output), cacheRead: Math.max(held.usage.cacheRead, usage.cacheRead), cacheWrite: Math.max(held.usage.cacheWrite, usage.cacheWrite) } : usage;
       return;
     }
-    add({ role: "assistant", text, calls, at, ...(key ? { key } : {}) });
+    if (!key && !text && calls.length === 0) return;
+    const effort = effortOf(value.perTurnEffort) ?? effortOf(value.effort);
+    const turn: Answer = { role: "assistant", text, calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}) };
+    if (key) current.keyed.set(key, turn);
+    add(turn);
     return;
   }
   if (typeof message.content === "string") {
@@ -274,8 +345,51 @@ const typed = (text: string): boolean => !CODEX_BLOCKS.has(CODEX_BLOCK.exec(text
 /** The person's words in a Codex user message: "" when the CLI wrote all of it. */
 const wordsOf = (content: unknown): string => textOf(Array.isArray(content) ? content.filter((block) => !isObject(block) || typeof block.text !== "string" || typed(block.text)) : content);
 
-function codexRecord(value: Record<string, unknown>, at: number, session: Session, { add, names, provider, turns, codex }: Into): void {
+// The response items of the model's own output: each of one request, until its usage comes.
+const CODEX_OUTPUTS = new Set(["reasoning", "function_call", "custom_tool_call", "web_search_call", "tool_search_call"]);
+const CODEX_HEAD = /^(?:Command|Chunk ID|Exit code): /;
+const CODEX_EXIT = /^(?:Exit code: |Process exited with code )(-?\d+)$/;
+/** Whether a Codex tool call failed, as its output says, else undefined: a structured output's success flag or
+ *  metadata.exit_code, the exit code in a shell call's head (the lines before "Output:"), or how a script ended. */
+function codexFailed(output: unknown): boolean | undefined {
+  if (isObject(output) && typeof output.success === "boolean") return !output.success;
+  const text = textOf(isObject(output) && "content" in output ? output.content : output);
+  if (text.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (isObject(parsed) && isObject(parsed.metadata) && typeof parsed.metadata.exit_code === "number") return parsed.metadata.exit_code !== 0;
+    } catch {
+      // Not JSON: read as text.
+    }
+  }
+  const lines = text.split("\n", 64);
+  if (/^Script failed\b/.test(lines[0]!)) return true;
+  if (/^Script completed\b/.test(lines[0]!)) return false;
+  if (!CODEX_HEAD.test(lines[0]!)) return undefined;
+  for (const line of lines) {
+    if (line === "Output:") break;
+    const code = CODEX_EXIT.exec(line)?.[1];
+    if (code !== undefined) return code !== "0";
+  }
+  return undefined;
+}
+
+function codexRecord(value: Record<string, unknown>, at: number, session: Session, { add, names, provider, turns, current, codex }: Into): void {
   const payload = isObject(value.payload) ? value.payload : {};
+  // One request's output items are one turn; its usage, when it comes, is that turn's. A usage with no request (a
+  // compaction's, one whose output is no item read here) is a turn of its own.
+  const answer = (): Answer => {
+    const turn: Answer = { role: "assistant", text: "", calls: [], at, ...(session.model ? { model: session.model } : {}), ...(current.effort ? { effort: current.effort } : {}) };
+    add(turn);
+    return turn;
+  };
+  const request = (): Answer => codex.open ?? (codex.open = codex.unpaid = answer());
+  const answered = (usage: unknown) => {
+    const tokens = tokensOf(usage, CODEX_TOKENS, true);
+    const turn = codex.unpaid ?? answer();
+    if (tokens) turn.usage = tokens;
+    codex.open = codex.unpaid = undefined;
+  };
   if (value.type === "session_meta") {
     if (str(payload.id)) session.id = payload.id as string;
     if (str(payload.cwd)) session.cwd = payload.cwd as string;
@@ -287,12 +401,40 @@ function codexRecord(value: Record<string, unknown>, at: number, session: Sessio
     const model = str(payload.model);
     if (model) session.model = model.includes("/") ? model : `${provider.name ?? "openai"}/${model}`;
     if (!session.cwd && str(payload.cwd)) session.cwd = payload.cwd as string;
+    current.effort = effortOf(payload.effort);
+    // A new turn: a request left open (aborted) has no usage to come.
+    codex.open = codex.unpaid = undefined;
     return;
+  }
+  // Each request's usage: a token_usage_record per response where the rollout has them (they also count requests no
+  // token_count reports, such as a compaction's), else each token_count whose total moved (one that repeats the last
+  // total is no new request).
+  if (value.type === "token_usage_record") {
+    codex.records = true;
+    const id = str(payload.response_id);
+    if (id && codex.responses.has(id)) return;
+    if (id) codex.responses.add(id);
+    return answered(payload.usage);
   }
   if (value.type === "event_msg") {
     if (payload.type === "user_message") {
       codex.events = true;
       if (str(payload.message)) add({ role: "user", text: payload.message as string, at });
+    } else if (payload.type === "token_count") {
+      const info = isObject(payload.info) ? payload.info : undefined;
+      if (!info || codex.records) return;
+      const total = isObject(info.total_token_usage) ? JSON.stringify(info.total_token_usage) : undefined;
+      if (total !== undefined && total === codex.total) return;
+      codex.total = total;
+      answered(info.last_token_usage);
+    } else if (payload.type === "item_completed" && isObject(payload.item) && str(payload.item.id)) {
+      // An item's id is its call's in some Codex versions: its status then says whether the call failed.
+      const { id, status, exit_code: code } = payload.item;
+      const failed = status === "failed" || (typeof code === "number" && code !== 0) ? true : status === "completed" ? false : undefined;
+      if (failed === undefined) return;
+      codex.items.set(id as string, failed);
+      const result = codex.results.get(id as string);
+      if (result && !result.stated) result.turn.isError = failed;
     } else if (payload.type === "task_complete") session.state = "completed";
     else if (payload.type === "turn_aborted") session.state = "stopped";
     else if (payload.type === "error") session.state = "failed";
@@ -304,39 +446,42 @@ function codexRecord(value: Record<string, unknown>, at: number, session: Sessio
     if (text) codex.held.push({ index: turns.length, turn: { role: "user", text, at } });
   } else if (payload.type === "message" && payload.role === "assistant") {
     const text = textOf(payload.content);
-    if (text) add({ role: "assistant", text, calls: [], at });
-  } else if (payload.type === "function_call" || payload.type === "custom_tool_call") {
+    if (text) {
+      const turn = request();
+      turn.text = [turn.text, text].filter(Boolean).join("\n");
+    }
+  } else if (typeof payload.type === "string" && CODEX_OUTPUTS.has(payload.type)) {
+    const turn = request();
+    if (payload.type !== "function_call" && payload.type !== "custom_tool_call") return;
     const id = String(payload.call_id ?? payload.id ?? "");
     const name = String(payload.name ?? "");
     names.set(id, name);
-    add({
-      role: "assistant",
-      text: "",
-      calls: [
-        {
-          type: "toolCall",
-          id,
-          name,
-          arguments: argsOf(payload.type === "function_call" ? payload.arguments : payload.input),
-        },
-      ],
-      at,
+    turn.calls.push({
+      type: "toolCall",
+      id,
+      name,
+      arguments: argsOf(payload.type === "function_call" ? payload.arguments : payload.input),
     });
   } else if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
     const id = String(payload.call_id ?? "");
     const output = isObject(payload.output) && "content" in payload.output ? payload.output.content : payload.output;
-    add({
-      role: "toolResult",
+    const stated = codexFailed(payload.output);
+    // The model saw a result: what it writes next is another request.
+    if (codex.open?.calls.some((call) => call.id === id)) codex.open = undefined;
+    const turn = {
+      role: "toolResult" as const,
       callId: id,
       name: names.get(id) ?? "",
       text: textOf(output),
-      isError: false,
+      isError: stated ?? codex.items.get(id) ?? false,
       at,
-    });
+    };
+    codex.results.set(id, { turn, stated: stated !== undefined });
+    add(turn);
   }
 }
 
-function piRecord(value: Record<string, unknown>, at: number, session: Session, { add, priced }: Into): void {
+function piRecord(value: Record<string, unknown>, at: number, session: Session, { add, priced, current }: Into): void {
   if (value.type === "session") {
     if (str(value.id)) session.id = value.id as string;
     if (str(value.cwd)) session.cwd = value.cwd as string;
@@ -344,6 +489,10 @@ function piRecord(value: Record<string, unknown>, at: number, session: Session, 
   }
   if (value.type === "model_change") {
     if (str(value.provider) && str(value.modelId)) session.model = `${value.provider}/${value.modelId}`;
+    return;
+  }
+  if (value.type === "thinking_level_change") {
+    current.effort = effortOf(value.thinkingLevel);
     return;
   }
   if (value.type !== "message" || !isObject(value.message)) return;
@@ -381,12 +530,16 @@ function piRecord(value: Record<string, unknown>, at: number, session: Session, 
     priced.unknown ||= cost === undefined;
     session.costUsd = priced.unknown ? undefined : priced.sum;
     session.state = message.stopReason === "error" ? "failed" : message.stopReason === "aborted" ? "stopped" : "completed";
+    const tokens = tokensOf(message.usage, PI_TOKENS);
     add({
       role: "assistant",
       text,
       calls,
       at: when,
       ...(cost !== undefined ? { costUsd: cost } : {}),
+      ...(session.model ? { model: session.model } : {}),
+      ...(current.effort ? { effort: current.effort } : {}),
+      ...(tokens ? { usage: tokens } : {}),
     });
   }
 }
