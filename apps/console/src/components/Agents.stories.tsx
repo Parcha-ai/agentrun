@@ -21,14 +21,16 @@ const page = (node: React.ReactNode) => <Shell active="agents">{node}</Shell>;
 const editor = (slug: string, extra: Partial<React.ComponentProps<typeof AgentEditor>> = {}) =>
   page(<AgentEditor agent={agentFixture(slug)} revisions={revisionsOf(slug)} caps={editorCaps} onSave={async () => null} onMakeCurrent={noop} onArchive={noop} onReload={noop} onBack={noop} {...extra} />);
 
-// An agent's page over its recorded agent and runs; with `analytics`, a server whose stats carry the sample analytics.
+// An agent's page over its recorded agent and runs, with the server's efforts; with `analytics`, a server whose stats
+// carry the sample analytics.
 const agentPage = (slug: string, { runs = true, tab, analytics = false }: { runs?: boolean; tab?: "workflow" | "analytics"; analytics?: boolean } = {}) => {
   const v2 = {
     getAgent: async () => ({ agent: agentFixture(slug), etag: null }),
     listAgentRuns: async () => (runs ? recorded<unknown>(`agent.${slug}.runs`).body : { runs: [], next_cursor: null }),
     statsOver: async () => statsWith(analytics ? ANALYTICS : undefined),
   };
-  return page(<AgentPage v2={v2 as never} agentId={slug} defaultModel={editorCaps.defaultModel} go={noop} tab={tab} />);
+  const efforts = recorded<{ features: { efforts: string[] } }>("capabilities").body.features.efforts;
+  return page(<AgentPage v2={v2 as never} agentId={slug} defaultModel={editorCaps.defaultModel} efforts={efforts} go={noop} tab={tab} />);
 };
 
 export const List: Story = { render: () => page(<AgentsList agents={agentsList()} actions={{ onOpen: noop, onEdit: noop, onNew: noop, onRuns: noop, onArchive: noop }} />) };
