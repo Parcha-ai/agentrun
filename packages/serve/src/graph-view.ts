@@ -196,8 +196,10 @@ export async function runGraph(given: GraphInput) {
     }
   }
 
-  // The run's spend: its decisions', its llm calls' and its model nodes'; one unknown makes it unknown.
-  const costs: Array<number | null> = [...decisions.map((d) => d.cost_usd), ...effects.filter((e) => e.tool === "llm" && e.status === "done").map((e) => (isObject(e.output) && typeof e.output.cost_usd === "number" ? e.output.cost_usd : null)), given.modelCost];
+  // The run's spend: its decisions', its llm calls' and its model nodes'; one unknown makes it unknown. An llm call's cost
+  // is in the model nodes' once the run's rows are read at its end (its REQUEST_COST mark); before, from the node log.
+  const calls = given.ended ? [] : effects.filter((e) => e.tool === "llm" && e.status === "done").map((e) => (isObject(e.output) && typeof e.output.cost_usd === "number" ? e.output.cost_usd : null));
+  const costs: Array<number | null> = [...decisions.map((d) => d.cost_usd), ...calls, given.modelCost];
   const cost = costs.some((c) => c === null) ? null : Math.round((costs as number[]).reduce((a, b) => a + b, 0) * 1e8) / 1e8;
   const startedMs = Date.parse(given.run.startedAt);
   const endMs = given.run.endedAt ? Date.parse(given.run.endedAt) : Date.now();
