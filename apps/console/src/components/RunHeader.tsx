@@ -2,7 +2,7 @@ import { ArrowLeft, Ban, Square } from "lucide-react";
 import { useState } from "react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
-import { cost, when } from "@/lib/format";
+import { cost, isEstimate, when } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { Run } from "@/lib/v2";
 
@@ -28,7 +28,7 @@ export function RunHeader({ run, agentName, actions = {} }: { run: Run; agentNam
             <StatusBadge run={run} />
             <span className="font-mono">{run.kind} · rev {run.agent_version}</span>
             <span className="font-mono">{when(run.created_at)}</span>
-            <span className="font-mono" title={run.cost?.basis === "estimate" ? "A local estimate, not a bill" : undefined}>{cost(run.cost)}</span>
+            <span className="font-mono" title={run.cost && run.cost.usd !== null && isEstimate(run.cost) ? "A local estimate, not a bill" : undefined}>{cost(run.cost)}</span>
           </div>
         </div>
         {(view.canStop || view.canCancel) && (

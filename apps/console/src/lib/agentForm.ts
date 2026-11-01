@@ -57,6 +57,19 @@ export function toolOffers(raw: unknown): ToolOffer[] {
   });
 }
 
+/** The tools a harness runs here. The server says per tool when it can (`harnesses`); until it does, its own rule
+ *  (serve's runnable.ts): pi binds every tool, another harness only the file tools, and any other tool refuses its run. */
+const FILE_TOOLS = ["read", "write", "edit"];
+export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
+  return offers.filter((t) => (t.harnesses ? t.harnesses.includes(harness) : harness === "pi" || FILE_TOOLS.includes(t.name)));
+}
+
+/** A new agent's tools: on by default, every tool its harness runs here that the server can run now. */
+export const defaultTools = (harness: string, offers: ToolOffer[]) => toolsFor(harness, offers).filter((t) => t.available).map((t) => t.name);
+
+/** Whether an agent with these tools can reach the web: only through fetch_page. */
+export const reachesWeb = (tools: readonly string[]) => tools.includes("fetch_page");
+
 const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex" };
 const ORDER: HarnessId[] = ["pi", "claude-agent", "codex"];
 
