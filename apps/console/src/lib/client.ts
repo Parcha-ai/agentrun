@@ -123,6 +123,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     resumeRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/resume`, { body: {} }),
     /** The server's own check of a workflow (the DSL's validator, no code run, nothing stored). 404 on a server without it. */
     validateWorkflow: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => call<WorkflowCheck>("POST", "/workflows/validate", { body, signal }),
+    /** GET /v2/stats with its `analytics` bounded: runs started at or after `from`, of `agent`. Every other number is the
+     *  whole store's, and an older server, which has no analytics, leaves both unread. */
+    statsOver: ({ from, agent: of }: { from?: string; agent?: string }) => {
+      const q = new URLSearchParams();
+      if (from) q.set("from", from);
+      if (of) q.set("agent", of);
+      return call<Stats>("GET", `/stats${q.size ? `?${q}` : ""}`);
+    },
     /** A run file's URL on this origin (a rendered page's image), for an <img>: the session cookie goes with it. */
     fileUrl: (id: string, path: string) => `${base}${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
