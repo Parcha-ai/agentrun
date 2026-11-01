@@ -24,7 +24,7 @@ import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
-import { statsView } from "./stats.js";
+import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
 import { type ServerLock, takeServerLock } from "./server-lock.js";
@@ -854,8 +854,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return readFileRoute(req, res, url, await needRun(id), second!);
       case "getUsage":
         return send(res, 200, await usage(url));
-      case "getStats":
-        return send(res, 200, statsView(await agents.request(() => agents.store.stats()), runs));
+      case "getStats": {
+        const filter = analyticsFilter(url);
+        const [stats, analytics] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter)] as const);
+        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter) });
+      }
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
