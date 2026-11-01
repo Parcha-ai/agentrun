@@ -30,7 +30,7 @@ export type Usage = { input: number; output: number; cacheRead: number; cacheWri
 /** An assistant turn is one model request: `model` the one it ran on ("provider/model"), `effort` the effort or
  *  thinking level it ran at, `usage` its tokens, each absent when the source does not say; `error`, why it failed. A
  *  note is a line the harness itself wrote in the conversation: no request, nor the person's. */
-export type Turn =
+export type Turn = (
   | { role: "user"; text: string; at: number }
   | { role: "note"; author: string; text: string; at: number }
   | {
@@ -52,7 +52,11 @@ export type Turn =
       text: string;
       isError: boolean;
       at: number;
-    };
+    }
+) & {
+  /** The source's own ids of the records the turn was read from (Claude Code's uuids): a later import counts them once. */
+  uuids?: string[];
+};
 export type Ended = "completed" | "failed" | "stopped";
 type Answer = Extract<Turn, { role: "assistant" }>;
 
@@ -136,7 +140,9 @@ export async function childFiles(home: string): Promise<{ file: string; parent: 
           else if (entry.isFile() && entry.name.endsWith(".jsonl")) out.push({ file: join(dir, entry.name), parent: session.name });
         }
       };
-      await walk(join(root, project.name, session.name, "subagents"), 0);
+      // The folder itself is no link: one that points elsewhere holds no subagent of this session's.
+      const subagents = join(root, project.name, session.name, "subagents");
+      if ((await lstat(subagents).catch(() => null))?.isDirectory()) await walk(subagents, 0);
     }
   }
   return out.sort((a, b) => a.file.localeCompare(b.file));
@@ -316,6 +322,7 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
   const uuid = str(value.uuid);
   if (uuid && current.seen.has(`u:${uuid}`)) return false;
   if (uuid) current.seen.add(`u:${uuid}`);
+  const mark = uuid ? { uuids: [uuid] } : {};
   const message = value.message;
   if (value.type === "assistant") {
     const model = str(message.model);
@@ -339,7 +346,7 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
     // requested.") is no request, kept as the CLI's note.
     const failed = value.isApiErrorMessage === true;
     if (synthetic && !failed) {
-      if (text) add({ role: "note", author: "Claude Code", text, at });
+      if (text) add({ role: "note", author: "Claude Code", text, at, ...mark });
       return;
     }
     session.state = failed ? "failed" : "completed";
@@ -352,6 +359,7 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
     if (held) {
       held.text = [held.text, text].filter(Boolean).join("\n");
       held.calls.push(...calls);
+      if (uuid) held.uuids = [...(held.uuids ?? []), uuid];
       if (usage) held.usage = held.usage ? most(held.usage, usage) : usage;
       return;
     }
@@ -362,7 +370,7 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
     }
     if (!key && !text && calls.length === 0) return;
     const effort = effortOf(value.perTurnEffort) ?? effortOf(value.effort);
-    const turn: Answer = { role: "assistant", text, calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: text || "API error" } : {}) };
+    const turn: Answer = { role: "assistant", text, calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: text || "API error" } : {}), ...mark };
     if (key) {
       current.keyed.set(key, turn);
       current.seen.add(`m:${key}`);
@@ -373,16 +381,22 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
   if (typeof message.content === "string") {
     if (INTERRUPTED.test(message.content)) session.state = "stopped";
     else session.state = "completed";
-    return add({ role: "user", text: message.content, at });
+    return add({ role: "user", text: message.content, at, ...mark });
   }
   if (!Array.isArray(message.content)) return;
   const said: string[] = [];
+  let results = 0;
+  let copies = 0;
   for (const block of message.content) {
     if (!isObject(block)) continue;
     if (block.type === "text" && typeof block.text === "string") said.push(block.text);
     else if (block.type === "tool_result") {
       const id = String(block.tool_use_id ?? "");
-      if (current.copied.has(id)) continue;
+      results += 1;
+      if (current.copied.has(id)) {
+        copies += 1;
+        continue;
+      }
       add({
         role: "toolResult",
         callId: id,
@@ -390,14 +404,17 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
         text: textOf(block.content),
         isError: block.is_error === true,
         at,
+        ...mark,
       });
     }
   }
   if (said.length) {
     const text = said.join("\n");
     session.state = INTERRUPTED.test(text) ? "stopped" : "completed";
-    add({ role: "user", text, at });
+    add({ role: "user", text, at, ...mark });
   }
+  // Results of copied calls alone: a copy, which moves no time either.
+  if (results > 0 && copies === results && !said.length) return false;
 }
 
 // The blocks the Codex CLI adds to a user message, each one of its own elements whole, an AGENTS.md as a heading over its

@@ -716,14 +716,18 @@ test("a dry run counts a session the store holds already from its run, as the im
 });
 
 /** Session `n` resumed from the one at `file`, as Claude Code writes it: every record of the first, its uuid, message id
- *  and time kept, its session id the new one's; then a prompt and an answer of its own. */
-function resumed(file, n) {
+ *  and time kept, its session id the new one's; then, unless `own: false`, a prompt and an answer of its own. */
+function resumed(file, n, { own = true } = {}) {
   const copied = readFileSync(file, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line)).map((r) => (r.sessionId ? { ...r, sessionId: sessionId(n) } : r));
   const base = { sessionId: sessionId(n), cwd: copied[0].cwd, isSidechain: false, userType: "external", version: "2.1.0" };
   return writeSession(join(dirname(file), `${sessionId(n)}.jsonl`), [
     ...copied,
-    { ...base, type: "user", uuid: `own-u-${n}`, timestamp: minute(20), message: { role: "user", content: "And the tests?" } },
-    { ...base, type: "assistant", uuid: `own-a-${n}`, timestamp: minute(21), message: { id: `msg_own_${n}`, role: "assistant", model: "claude-sonnet-5", content: [{ type: "text", text: "They pass." }], usage: { input_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 60 } } },
+    ...(own
+      ? [
+          { ...base, type: "user", uuid: `own-u-${n}`, timestamp: minute(20), message: { role: "user", content: "And the tests?" } },
+          { ...base, type: "assistant", uuid: `own-a-${n}`, timestamp: minute(21), message: { id: `msg_own_${n}`, role: "assistant", model: "claude-sonnet-5", content: [{ type: "text", text: "They pass." }], usage: { input_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 60 } } },
+        ]
+      : []),
   ]);
 }
 
@@ -750,10 +754,17 @@ test("a response a resumed session's file copies counts once across the import, 
   const opts = { home, env: ENV, temp: join(root, "tmp") };
   await runImport(store, await planImport(opts, store), opts);
   resumed(original, 94);
-  await runImport(store, await planImport(opts, store), opts);
+  resumed(original, 98, { own: false });
+  const report = await runImport(store, await planImport({ ...opts, all: true }, store), { ...opts, all: true });
   const later = store.listRuns().find((run) => run.importedFrom.session === sessionId(94));
   const counted = store.runMetrics(later.id);
-  assert.deepEqual([counted.requests, counted.input, counted.output, counted.tools], [1, 50, 60, {}]);
+  assert.deepEqual([counted.requests, counted.input, counted.output, counted.tools, counted.activeMs], [1, 50, 60, {}, 60_000], "its own request, and no time for the copy");
+  const reread = new DatabaseSync(join(data, "runs", later.id, "store", "run.sqlite"), { readOnly: true });
+  const laterKinds = reread.prepare("SELECT json_extract(record, '$.kind') AS kind FROM entries ORDER BY id").all().map((r) => r.kind);
+  reread.close();
+  assert.deepEqual(laterKinds, ["pi.user", "pi.assistant"], "no copied prompt or result in its transcript");
+  assert.equal(store.listRuns().find((run) => run.importedFrom.session === sessionId(98)), undefined, "a file of copies alone is no run");
+  assert.ok(report.skipped.some((s) => s.why === "holds only records of sessions imported already"));
 });
 
 test("a session's subagents are no runs of their own: their requests, tokens and tool calls are the session's, its model and transcript its own", async (t) => {
@@ -762,15 +773,26 @@ test("a session's subagents are no runs of their own: their requests, tokens and
     claudeSubagent(home, project, 95, 1);
     codexSession(home, project, 96);
     codexSession(home, project, 97, { subagent: true, parent: sessionId(96) });
+    // A subagent's own subagent: the session's too.
+    codexSession(home, project, 99, { subagent: true, parent: sessionId(97) });
+    // A subagents folder that is a link points at what is not this session's: never followed.
+    const elsewhere = join(home, "elsewhere");
+    claudeSubagent(home, join(home, "code", "other"), 100, 2, { slug: "other" });
+    symlinkSync(join(home, ".claude", "projects", "other", sessionId(100), "subagents"), elsewhere);
+    claudeSession(home, project, 101);
+    mkdirSync(join(home, ".claude", "projects", project.replaceAll("/", "-"), sessionId(101)), { recursive: true });
+    symlinkSync(elsewhere, join(home, ".claude", "projects", project.replaceAll("/", "-"), sessionId(101), "subagents"));
   });
-  assert.deepEqual(runs.map((run) => run.importedFrom.session), [sessionId(95), sessionId(96)], "no child is a run");
+  assert.deepEqual(runs.map((run) => run.importedFrom.session), [sessionId(95), sessionId(96), sessionId(101)], "no child is a run");
   const claude = store.runMetrics(runs[0].id);
   assert.deepEqual([claude.input, claude.cacheRead, claude.output, claude.requests, claude.unmetered], [8 + 11 + 17, 2300, 80 + 13 + 19, 4, 0]);
   assert.deepEqual(claude.models, { "anthropic/claude-sonnet-5": 2, "anthropic/claude-haiku-5": 2 });
   assert.equal(claude.model, "anthropic/claude-sonnet-5", "the run's model stays its own");
   assert.deepEqual(claude.tools, { Bash: { calls: 1, errors: 0 }, Grep: { calls: 1, errors: 0 } });
   const codex = store.runMetrics(runs[1].id);
-  assert.deepEqual([codex.input, codex.cacheRead, codex.output, codex.requests, codex.tools], [800, 3000, 130, 4, { shell: { calls: 2, errors: 0 } }]);
+  assert.deepEqual([codex.input, codex.cacheRead, codex.output, codex.requests, codex.tools], [1200, 4500, 195, 6, { shell: { calls: 3, errors: 0 } }], "its subagent's and that one's own");
+  const linked = store.runMetrics(runs[2].id);
+  assert.deepEqual([linked.requests, linked.tools], [2, { Bash: { calls: 1, errors: 0 } }], "nothing through a linked folder");
   const db = new DatabaseSync(join(data, "runs", runs[0].id, "store", "run.sqlite"), { readOnly: true });
   const answers = db.prepare("SELECT COUNT(*) AS n FROM entries WHERE json_extract(record, '$.kind') = 'pi.assistant'").get().n;
   db.close();

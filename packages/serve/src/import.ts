@@ -209,7 +209,8 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
 const ownless = (session: Session) => session.copies > 0 && !session.turns.some((turn) => turn.role !== "note");
 
 /** The records and responses an import has counted, by source, for one project: first those its runs in `store` hold
- *  already (each answer's response id, as its transcript keeps it), then each file's as it is read. */
+ *  already (each answer's response id and each entry's record ids, as its transcript keeps them), then each file's as it
+ *  is read. */
 async function seenIn(store: AgentStoreReader | undefined, agentId: string): Promise<(source: Source) => Set<string>> {
   const bySource = new Map<Source, Set<string>>();
   const seen = (source: Source) => bySource.get(source) ?? bySource.set(source, new Set()).get(source)!;
@@ -219,8 +220,11 @@ async function seenIn(store: AgentStoreReader | undefined, agentId: string): Pro
     if (run.importedFrom?.source !== "claude-code" || !existsSync(store.runStorePath(run.id))) continue;
     const db = new DatabaseSync(store.runStorePath(run.id), { readOnly: true });
     try {
-      const rows = db.prepare("SELECT json_extract(record, '$.model[0].responseId') AS id FROM entries WHERE json_extract(record, '$.kind') = 'pi.assistant'").all() as { id: unknown }[];
-      for (const { id } of rows) if (typeof id === "string" && id) seen("claude-code").add(`m:${id}`);
+      const rows = db.prepare("SELECT json_extract(record, '$.model[0].responseId') AS id, json_extract(record, '$.data.record_uuids') AS uuids FROM entries").all() as { id: unknown; uuids: unknown }[];
+      for (const { id, uuids } of rows) {
+        if (typeof id === "string" && id) seen("claude-code").add(`m:${id}`);
+        if (typeof uuids === "string") for (const uuid of JSON.parse(uuids) as unknown[]) if (typeof uuid === "string") seen("claude-code").add(`u:${uuid}`);
+      }
     } finally {
       db.close();
     }
@@ -228,15 +232,25 @@ async function seenIn(store: AgentStoreReader | undefined, agentId: string): Pro
   return seen;
 }
 
-/** A session's subagents, read with the import's `seen`: each file within the cap and readable; another is passed over. */
+/** A session's subagents, theirs, and so on down, each file once, read with the import's `seen`: each within the cap and
+ *  readable; another is passed over. */
 async function readChildren(plan: Plan, session: Session, seen: Set<string>): Promise<Session[]> {
   const out: Session[] = [];
-  for (const file of plan.children.get(`${session.source}:${session.id}`) ?? []) {
-    const stats = await stat(file).catch(() => null);
-    if (!stats || stats.size > MAX_SESSION_BYTES) continue;
-    const child = await readSession(file, session.source, { seen }).catch(() => undefined);
-    if (child) out.push(child);
-  }
+  const visited = new Set<string>();
+  const under = async (id: string): Promise<void> => {
+    for (const file of plan.children.get(`${session.source}:${id}`) ?? []) {
+      if (visited.has(file)) continue;
+      visited.add(file);
+      const stats = await stat(file).catch(() => null);
+      if (!stats || stats.size > MAX_SESSION_BYTES) continue;
+      const child = await readSession(file, session.source, { seen }).catch(() => undefined);
+      if (!child) continue;
+      out.push(child);
+      // A subagent's own subagents (Codex names each one's parent thread) are the session's too.
+      if (child.id) await under(child.id);
+    }
+  };
+  await under(session.id);
   return out;
 }
 
@@ -378,7 +392,14 @@ export async function projectFiles(
   return { instructions, skills };
 }
 
+/** A turn's transcript entry, with the source's ids of the records it was read from (`record_uuids`): a later import counts
+ *  a copy of them once. */
 const message = (turn: Turn, model: string | undefined): { entry: typeof UserEntry; model: unknown; data?: unknown } => {
+  const written = entryOf(turn, model);
+  return turn.uuids?.length ? { ...written, data: { ...(written.data as object | undefined), record_uuids: turn.uuids } } : written;
+};
+
+const entryOf = (turn: Turn, model: string | undefined): { entry: typeof UserEntry; model: unknown; data?: unknown } => {
   if (turn.role === "user")
     return {
       entry: UserEntry,
