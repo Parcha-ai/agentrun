@@ -526,7 +526,10 @@ if (pulled.ok) mark = pulled.value.mark; // kept for the next pull
   pull. The box's clock is never compared with the host's: a listing sees a file restored with an old time, and
   deletions. Dotfiles come back like any file. `exclude` is applied to the listing, to deletions and to every member of
   the archive. `mirrorDeletes` removes what the box no longer has: files and links unlinked, a directory only when
-  empty. `pullAgentHome` never brings back `learning/` and never removes it.
+  empty. `pullAgentHome` never brings back `learning/` and never removes it. The host reads at most `maxListingBytes`
+  of the listing (default `MAX_LISTING_BYTES`, 64 MiB): past it the box's program is stopped and the pull is
+  `too_large`. A copy that fails after something was written still returns the mark, with
+  `stopped.reason: "copy_failed"` and the copy's error; a file asked for and not written keeps its old entry.
 - **A home file another run wrote stays.** `overwrite: "if_unchanged"` (always on in `pullAgentHome`) lets a pulled file
   replace, or a mirrored deletion remove, the host's copy only while that copy is still the bytes the mark records: the
   SHA-256 of what was seeded into the box, or of what the last pull wrote. A host copy that changed since (another run's

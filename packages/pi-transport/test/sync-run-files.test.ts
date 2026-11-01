@@ -4,6 +4,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
+	appendFileSync,
 	chmodSync,
 	existsSync,
 	linkSync,
@@ -514,5 +515,92 @@ describe("the seed-hash rule, under concurrency and change", () => {
 		expect(guarded.skipped.host_changed).toBe(0);
 		expect(readFileSync(join(host, "f"), "utf8")).toBe("v3");
 		expect(readFileSync(join(host, "new"), "utf8")).toBe("newer");
+	});
+});
+
+/** A box whose `exec` runs `map(command)` instead of the command it was given. */
+function execMapped(box: Box, map: (command: readonly string[]) => readonly string[]): Box {
+	return {
+		...packedBy(box, (command) => command),
+		exec: (command, options, ctx) => box.exec(map(command), options, ctx),
+	};
+}
+
+describe("a pull that does not finish, a listing that does not end, a file that grows", () => {
+	it("keeps the old hash of a file a limit cut off, so the next guarded pull takes it", async () => {
+		const { box, host } = await setup();
+		const inBox = join(box.facts().workspace, "home");
+		for (let i = 0; i < 6; i++) writeFileSync(join(host, `f${i}`), "v1");
+		const mark = getOrThrow(await seedAgentHome(box, { from: host, to: inBox }, context)).mark;
+		for (let i = 0; i < 6; i++) writeFileSync(join(inBox, `f${i}`), "v2");
+		const cut = getOrThrow(await pullAgentHome(box, { from: inBox, to: host, since: mark, maxEntries: 2 }, context));
+		expect(cut.stopped?.reason).toBe("max_entries");
+		expect(cut.files).toBe(2);
+		const rest = getOrThrow(await pullAgentHome(box, { from: inBox, to: host, since: cut.mark }, context));
+		expect(rest.skipped.host_changed).toBe(0);
+		expect(rest.files).toBe(4);
+		for (let i = 0; i < 6; i++) expect(readFileSync(join(host, `f${i}`), "utf8")).toBe("v2");
+	});
+
+	it("returns the mark of what it wrote when the copy fails after a write, so its own writes are not host edits", async () => {
+		const { box, host } = await setup();
+		const inBox = join(box.facts().workspace, "home");
+		writeFileSync(join(host, "a"), "v1");
+		writeFileSync(join(host, "b"), "v1");
+		const mark = getOrThrow(await seedAgentHome(box, { from: host, to: inBox }, context)).mark;
+		writeFileSync(join(inBox, "a"), "v2");
+		writeFileSync(join(inBox, "b"), "v2");
+		// The box sends a whole first member, then stalls.
+		const halfPath = join(box.facts().workspace, "half.tar");
+		writeFileSync(halfPath, member({ name: "./a", data: "v2" }));
+		const stalls = packedBy(box, () => ["sh", "-c", 'cat > /dev/null; cat -- "$1"; exec sleep 60', "sh", halfPath]);
+		const failed = getOrThrow(
+			await pullAgentHome(
+				stalls,
+				{ from: inBox, to: host, since: mark, stallMs: 500, pipe: { kind: "stream" } },
+				context,
+			),
+		);
+		expect(failed.stopped?.reason).toBe("copy_failed");
+		expect(failed.stopped?.reason === "copy_failed" && failed.stopped.error.code).toBe("timeout");
+		expect(failed.files).toBe(1);
+		writeFileSync(join(inBox, "a"), "v3");
+		const next = getOrThrow(await pullAgentHome(box, { from: inBox, to: host, since: failed.mark }, context));
+		expect(next.skipped.host_changed).toBe(0);
+		expect(readFileSync(join(host, "a"), "utf8")).toBe("v3");
+		expect(readFileSync(join(host, "b"), "utf8")).toBe("v2");
+	});
+
+	it("stops a listing past its byte limit instead of reading it to the end", async () => {
+		const { box, host, back, inBox } = await setup();
+		writeFileSync(join(host, "f"), "x");
+		getOrThrow(await seedDir(box, { from: host, to: inBox }, context));
+		const endless = execMapped(box, (command) =>
+			command[2]?.includes("find . -mindepth 1") ? ["sh", "-c", "exec yes listing-line"] : command,
+		);
+		const started = Date.now();
+		const pulled = await pullDir(endless, { from: inBox, to: back, maxListingBytes: 1024 * 1024 }, context);
+		expect(pulled.ok ? "ok" : pulled.error.code).toBe("too_large");
+		expect(Date.now() - started).toBeLessThan(20_000);
+	});
+
+	it("refuses a file that grew between the walk and the send, and reports the bytes it sent", async () => {
+		const { box, host, inBox } = await setup();
+		writeFileSync(join(host, "grows"), "1234");
+		writeFileSync(join(host, "steady"), "12");
+		const ok = getOrThrow(await seedDir(box, { from: host, to: inBox, maxBytes: 6 }, context));
+		expect(ok.bytes).toBe(6);
+		// The file grows after the walk, when the box's side starts, before a byte of it is read.
+		const growing = packedBy(
+			box,
+			(command) => {
+				appendFileSync(join(host, "grows"), "x".repeat(1000));
+				return command;
+			},
+			UNPACK_SCRIPT,
+		);
+		const seeded = await seedDir(growing, { from: host, to: join(inBox, "again"), maxBytes: 6 }, context);
+		expect(seeded.ok).toBe(false);
+		expect(seeded.ok ? "" : seeded.error.message).toMatch(/grows changed while seeded/);
 	});
 });

@@ -1,5 +1,5 @@
 export type { Manifest, ManifestEntry, Pipe, WorkspaceErrorCode } from "../home/workspace.ts";
-export { WorkspaceError } from "../home/workspace.ts";
+export { MAX_LISTING_BYTES, WorkspaceError } from "../home/workspace.ts";
 export {
 	directoryMode,
 	type ExtractOptions,
@@ -25,6 +25,7 @@ export {
 	type PullReceipt,
 	type PullSkip,
 	type PullSkipReason,
+	type PullStop,
 	pullAgentHome,
 	pullDir,
 	type SeedOptions,

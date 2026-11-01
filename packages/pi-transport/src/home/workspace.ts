@@ -135,7 +135,12 @@ export type WorkspaceOptions = {
 	readonly exclude?: readonly string[];
 	/** Deadline of each call to a box. Default 2 minutes. */
 	readonly callTimeoutMs?: number;
+	/** The most bytes a box's listing may print; past it the listing is stopped, `too_large`. Default `MAX_LISTING_BYTES`. */
+	readonly maxListingBytes?: number;
 };
+
+/** The most bytes the host reads of a box's listing (its output and its errors) before it stops the box's program: 64 MiB. */
+export const MAX_LISTING_BYTES = 64 * 1024 * 1024;
 
 /**
  * How one side of a copy moves bytes. `stream` is the program's own output (source) or input (target). `files` cuts
@@ -314,6 +319,45 @@ const REFUSED: Record<string, string> = {
 export type Listed = Omit<ManifestEntry, "sha256">;
 
 /**
+ * Run a program that takes no input and keep at most `maxBytes` of its output and errors together. Past that the
+ * program is stopped (its call is cancelled, which a provider ends) and the rest is never read: a box cannot make the
+ * host hold more of a listing than it allows.
+ */
+async function runBounded(
+	box: Box,
+	command: readonly string[],
+	timeoutMs: number,
+	maxBytes: number,
+	context: Context,
+): Promise<Result<Run, WorkspaceError>> {
+	const { context: inner, cancel } = withCancel(context);
+	const started = await box.exec(command, { timeoutMs }, inner);
+	if (!started.ok) return err(boxFailure(`could not start ${command[0] ?? "a program"}`, started.error));
+	const program = started.value;
+	void program.stdin.close().catch(() => {});
+	let held = 0;
+	let over = false;
+	const keep = async (stream: AsyncIterable<Uint8Array>) => {
+		const parts: Uint8Array[] = [];
+		for await (const part of stream) {
+			held += part.length;
+			if (held > maxBytes) {
+				over = true;
+				cancel();
+				break;
+			}
+			parts.push(part);
+		}
+		return concat(parts);
+	};
+	const [stdout, stderr, exit] = await Promise.all([keep(program.stdout), keep(program.stderr), program.wait()]);
+	if (over)
+		return err(new WorkspaceError("too_large", `${command[0] ?? "a program"} printed more than ${maxBytes} bytes`));
+	if (!exit.ok) return err(boxFailure(`${command[0] ?? "a program"} did not finish`, exit.error));
+	return ok({ exitCode: exit.value, stdout, stderr: decoder.decode(stderr) });
+}
+
+/**
  * @internal The entries under `root` in the box, in path order. A socket, device or pipe fails the listing with
  * `unsupported_entry`, unless `refused` is given: then it is put there (its `find` type letter) and left out. With
  * `tree` (a checkpoint's listing) a named pipe is an entry, and each further name of a file with more than one is a
@@ -328,11 +372,11 @@ export async function list(
 	tree = false,
 	refused?: { path: string; type: string }[],
 ): Promise<Result<Listed[], WorkspaceError>> {
-	const ran = await run(
+	const ran = await runBounded(
 		box,
 		["sh", "-c", LIST_SCRIPT, "sh", root],
-		undefined,
 		options?.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+		options?.maxListingBytes ?? MAX_LISTING_BYTES,
 		context,
 	);
 	if (!ran.ok) return ran;

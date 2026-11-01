@@ -98,6 +98,7 @@ export type SeedOptions = SyncTransport & {
 export type SeedReceipt = {
 	readonly files: number;
 	readonly directories: number;
+	/** Bytes of the files as sent. */
 	readonly bytes: number;
 	/** Entries of this machine that are not sent: links (never followed), pipes, sockets, devices. */
 	readonly skipped: Readonly<Record<SkipReason, number>>;
@@ -137,6 +138,8 @@ export type PullOptions = SyncTransport & {
 	readonly maxEntries?: number;
 	/** Called for each entry that is not written, with the reason: where a host logs it. */
 	readonly onSkip?: (skip: PullSkip) => void;
+	/** The most bytes the box's listing may print. Default `MAX_LISTING_BYTES`. */
+	readonly maxListingBytes?: number;
 };
 
 /** What a pull brought back. */
@@ -159,12 +162,18 @@ export type PullReceipt = {
 	/** The first skips, in order, by path and reason; `skipped` counts all of them. */
 	readonly skips: readonly PullSkip[];
 	/**
-	 * Set when the pull stopped at a limit or at an archive it could not read. What was written is whole and in the
-	 * mark; the rest is not, so the next pull asks for it again.
+	 * Set when the pull stopped at a limit, at an archive it could not read, or because the copy failed after something
+	 * was written (`copy_failed`, with the copy's error). What was written is whole and in the mark with its new hash;
+	 * what was not keeps its old entry, so the next pull asks for it again against the same bytes.
 	 */
-	readonly stopped?: ExtractStop;
+	readonly stopped?: PullStop;
 	readonly totalMs: number;
 };
+
+/** Why a pull stopped early: the extractor's reasons, or a copy that failed after this pull had written something. */
+export type PullStop =
+	| ExtractStop
+	| { readonly reason: "copy_failed"; readonly message: string; readonly error: WorkspaceError };
 
 const LIST_SKIPS: Readonly<Record<string, SkipReason>> = {
 	l: "symlink",
@@ -298,7 +307,11 @@ async function pullInto(
 	const listed = await list(
 		box,
 		options.from,
-		{ exclude: options.exclude, callTimeoutMs: options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS },
+		{
+			exclude: options.exclude,
+			callTimeoutMs: options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+			maxListingBytes: options.maxListingBytes,
+		},
 		context,
 		undefined,
 		false,
@@ -377,7 +390,7 @@ async function pullInto(
 	const listedTimes = new Map(changed.map((entry) => [entry.path, Number(entry.mtime)]));
 	const outcome = { files: 0, directories: 0, bytes: 0, masked: 0 };
 	const written = new Set<string>();
-	let stopped: ExtractStop | undefined;
+	let stopped: PullStop | undefined;
 	if (changed.length > 0) {
 		const extractOptions: ExtractOptions = {
 			maxBytes: options.maxBytes ?? MAX_PULL_BYTES,
@@ -411,9 +424,12 @@ async function pullInto(
 		}
 		const extracted = await opened.value.finish();
 		// The extraction stopping in the copy (a limit, an archive it cannot read) is what ended it, so the copy's own
-		// error says nothing more. Any other failure is the pull's error, also when it left the archive cut short.
-		if (!moved.ok && stoppedInCopy === undefined) return moved;
-		stopped = extracted.stopped;
+		// error says nothing more. Any other failure is the pull's error when nothing was written; after a write it is a
+		// stop, so the caller still gets the mark that names what this pull wrote.
+		if (!moved.ok && stoppedInCopy === undefined) {
+			if (extracted.written.length === 0) return moved;
+			stopped = { reason: "copy_failed", message: moved.error.message, error: moved.error };
+		} else stopped = extracted.stopped;
 		outcome.files = extracted.files;
 		outcome.directories = extracted.directories;
 		outcome.bytes = extracted.bytes;
@@ -428,14 +444,18 @@ async function pullInto(
 	}
 
 	// The next mark: what was already in step, what this pull wrote, and what the host kept as its own (asked for
-	// again only when the box changes it again). A path asked for and not written is left out, so the next pull asks
-	// for it again. Each file keeps the hash of the bytes the host and the box last agreed on.
-	const mark = current
-		.filter((entry) => !asked.has(entry.path) || written.has(entry.path) || kept.has(entry.path))
-		.map((entry) => {
-			const sha256 = entry.kind === "file" ? hashes.get(entry.path) : undefined;
-			return sha256 === undefined ? entry : { ...entry, sha256 };
-		});
+	// again only when the box changes it again). A path asked for and not written (cut off, refused) keeps its old
+	// entry and hash, the host's bytes being still those, so the next pull asks for it again against them. Each file
+	// keeps the hash of the bytes the host and the box last agreed on.
+	const before = new Map((previous?.entries ?? []).map((entry) => [entry.path, entry]));
+	const mark = current.flatMap((entry) => {
+		if (asked.has(entry.path) && !written.has(entry.path) && !kept.has(entry.path)) {
+			const old = before.get(entry.path);
+			return old === undefined ? [] : [old];
+		}
+		const sha256 = entry.kind === "file" ? hashes.get(entry.path) : undefined;
+		return [sha256 === undefined ? entry : { ...entry, sha256 }];
+	});
 	return ok({
 		mark: { entries: mark, bytes: mark.reduce((sum, entry) => sum + entry.bytes, 0) },
 		changed: changed.length,
@@ -603,7 +623,7 @@ function headersOf(entry: SeedEntry, size: number): Buffer[] {
  * The seed's archive, as a program's output. Each file is opened without following a link and checked to be a file
  * still; its header carries the size it has when opened, and exactly that many bytes follow.
  */
-function hostArchive(entries: readonly SeedEntry[], sent: Map<string, string>): Starter {
+function hostArchive(entries: readonly SeedEntry[], sent: Map<string, string>, sentBytes: { total: number }): Starter {
 	return async (context) => {
 		const { exit, settle } = exitOnce();
 		let message = "";
@@ -618,6 +638,10 @@ function hostArchive(entries: readonly SeedEntry[], sent: Map<string, string>): 
 					try {
 						const info = await file.stat();
 						if (!info.isFile()) throw new Error(`${entry.path} is no longer a file`);
+						// The size `maxBytes` was checked against is the one sent, or nothing is.
+						if (info.size !== entry.size) {
+							throw new Error(`${entry.path} changed while seeded: ${entry.size} bytes, now ${info.size}`);
+						}
 						yield* headersOf(entry, info.size);
 						const chunk = Buffer.alloc(COPY_CHUNK);
 						const hash = createHash("sha256");
@@ -630,6 +654,7 @@ function hostArchive(entries: readonly SeedEntry[], sent: Map<string, string>): 
 							done += bytesRead;
 						}
 						sent.set(entry.path, hash.digest("hex"));
+						sentBytes.total += done;
 						yield padding(info.size);
 					} finally {
 						await file.close();
@@ -707,8 +732,9 @@ export async function seedDir(
 		);
 	}
 	const sent = new Map<string, string>();
+	const sentBytes = { total: 0 };
 	const moved = await transfer(
-		hostArchive(entries, sent),
+		hostArchive(entries, sent, sentBytes),
 		undefined,
 		pipe.value.kind === "files"
 			? filesSink(box, UNPACK_FILES_SCRIPT, [options.to], pipe.value.chunkBytes)
@@ -730,7 +756,7 @@ export async function seedDir(
 	return ok({
 		files: files.length,
 		directories: entries.length - files.length,
-		bytes,
+		bytes: sentBytes.total,
 		skipped,
 		mark: { entries: marked, bytes: marked.reduce((sum, entry) => sum + entry.bytes, 0) },
 		totalMs: performance.now() - started,
