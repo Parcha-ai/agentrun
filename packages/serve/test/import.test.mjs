@@ -15,7 +15,7 @@ import { runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { startServe } from "../dist/index.js";
 import { planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
-import { claudeSession, codexSession, piSession } from "./fixtures/import-sessions.mjs";
+import { at as minute, claudeSession, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { client, FAUX, scratch } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -570,4 +570,26 @@ test("a pi request that failed imports as failed, at its 0 tokens; one cut short
   const two = metricsOf(data, store, cut.id);
   assert.deepEqual([two.metrics.requests, two.metrics.unmetered, two.metrics.input], [2, 1, 100]);
   assert.deepEqual(two.answers[1].content, [{ type: "text", text: "Read: three notes." }]);
+});
+
+test("the CLI's own note is never the person's turn: a session holding only notes is passed over without --all, and a note before the first prompt is not the run's title", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes-only");
+  mkdirSync(project, { recursive: true });
+  const base = { cwd: project, isSidechain: false, userType: "external", version: "2.1.0" };
+  const note = (n, uuid, time) => ({ ...base, sessionId: sessionId(n), type: "assistant", uuid, timestamp: minute(time), message: { id: `msg_${uuid}`, role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "No response requested." }], usage: { input_tokens: 0, output_tokens: 0 } } });
+  const slug = project.replaceAll("/", "-");
+  const only = writeSession(join(h.at, ".claude", "projects", slug, `${sessionId(71)}.jsonl`), [note(71, "n1", 0), note(71, "n2", 1)]);
+  writeSession(join(h.at, ".claude", "projects", slug, `${sessionId(72)}.jsonl`), [note(72, "n3", 0), { ...base, sessionId: sessionId(72), type: "user", uuid: "u1", timestamp: minute(1), message: { role: "user", content: "Tidy the notes." } }]);
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped.map((s) => [s.what, s.why]), [[only, "no message of the person's"]]);
+  const [session] = plan.projects.flatMap((p) => p.sessions);
+  assert.deepEqual([session.id, session.users, session.firstPrompt], [sessionId(72), 1, "Tidy the notes."]);
+  const data = join(root, "agents");
+  const store = openStore(data);
+  t.after(() => store.close());
+  await runImport(store, plan, options(h));
+  const [run] = store.listRuns();
+  assert.equal(JSON.parse(readFileSync(join(data, "runs", run.id, "serve.json"), "utf8")).title, "Tidy the notes.");
 });
