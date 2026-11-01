@@ -67,12 +67,23 @@ export function App() {
     setAuth(authMode(r, probe));
   };
   useEffect(() => { readSession().catch(() => setAuth("sign_in")); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Setup's box, offered only where the server answers with this machine's sessions (on loopback, before an owner).
+  // Setup's box, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
+  // counts read until the server has them. A read that fails once the box shows leaves it, its count unknown.
   const [offer, setOffer] = useState<ImportOffer | null>(null);
   useEffect(() => {
     if (auth !== "setup") return;
     let live = true;
-    v2.setupImport().then((r) => { if (live && r && "sessions" in r) setOffer(r); }).catch(() => {});
+    (async () => {
+      for (let shown = false; live; shown = true) {
+        const r = await v2.setupImport().then((x) => x, () => undefined);
+        if (!live) return;
+        if (r === undefined) return void (shown && setOffer({ projects: null, sessions: null }));
+        if (!r || !("counting" in r || "sessions" in r)) return;
+        setOffer(r);
+        if (!("counting" in r)) return;
+        await new Promise((done) => setTimeout(done, IMPORT_POLL_MS));
+      }
+    })();
     return () => { live = false; };
   }, [v2, auth]);
   if (auth === null) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;

@@ -23,8 +23,9 @@ export class ClientError extends Error {
  *  workflow ("" for the document itself). */
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
 
-/** `GET /v2/setup/import`'s answer: the counts before the owner is set, the import's state after. */
-export type ImportOffer = { projects: number; sessions: number };
+/** `GET /v2/setup/import`'s answer. Before the owner is set: the server can import, still counting (202), then its counts
+ *  (null for each when the count failed). After: the import's state. */
+export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null };
 export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" };
 export type SetupImport = ImportOffer | ImportState;
 

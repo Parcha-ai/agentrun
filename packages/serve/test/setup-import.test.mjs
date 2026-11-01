@@ -38,9 +38,21 @@ const agentsIn = (data) => {
   }
 };
 
-test("before its owner is set, a server on this machine says how many projects and sessions setup would import", async (t) => {
+test("before its owner is set, a server on this machine says at once that it can import (202 while it counts), then how many projects and sessions", { timeout: 60_000 }, async (t) => {
   const server = await serve(t, { accounts: true, openSetup: true, ...(await machine(t)) });
   // As the page's fetch sends it: no Origin and no body on a same-origin GET, only the browser's own Sec-Fetch-Site.
+  const read = () => call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  const first = await read();
+  assert.deepEqual([first.status, first.json], [202, { counting: true }], "the first read starts the count and does not wait for it");
+  let found = first;
+  for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
+  assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 2 }]);
+});
+
+test("a first start with countSessions counts before any read: the page's first read has the numbers", { timeout: 60_000 }, async (t) => {
+  const server = await serve(t, { accounts: true, openSetup: true, countSessions: true, ...(await machine(t)) });
+  // Long enough for a worker to count two sessions on a busy machine, with no read to start it.
+  await sleep(8_000);
   const found = await call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
   assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 2 }]);
 });
@@ -91,7 +103,7 @@ test("the counts are a read of the page only: a request with neither the browser
   assert.equal((await at({})).status, 403, "no mark and no Origin, as a script sends it");
   assert.equal((await at({ "sec-fetch-site": "cross-site" })).status, 403);
   assert.equal((await at({ origin: "https://evil.example" })).status, 403);
-  assert.equal((await at({ origin: `http://127.0.0.1:${server.port}` })).status, 200, "this server's own Origin");
+  assert.ok([200, 202].includes((await at({ origin: `http://127.0.0.1:${server.port}` })).status), "this server's own Origin");
 });
 
 /** An address of this machine's own bridge (Docker's), reachable from this host and its containers only, never a

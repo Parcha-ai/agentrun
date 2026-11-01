@@ -67,6 +67,9 @@ export type ServeOptions = {
   /** With open setup: the home whose Claude Code, Codex and pi sessions setup offers to import (default this user's),
    *  and the temp directory whose projects it leaves out (default the OS's). */
   sessionsHome?: { home: string; temp?: string };
+  /** With open setup on this machine, and no owner yet: count the sessions setup would import as the server starts, so
+   *  the offer has its numbers by the time the page opens (the CLI sets it). */
+  countSessions?: boolean;
   /** With accounts: the most addresses the sign-in limit keeps at once (default 10,000); a new one past it is a 429. */
   signInAddresses?: number;
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
@@ -357,18 +360,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
-  // on loopback), planned once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
+  // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
   // a busy store's wait and the sessions' parsing never hold up a request.
   const offersImport = options.openSetup === true && options.publicUrl === undefined && isLoopback(host);
   let closing = false;
-  const workers = new Map<Worker, Promise<unknown>>();
+  const workers = new Map<Worker, { task: ImportTask["task"]; exit: Promise<unknown> }>();
   // Once the server closes, no worker starts: a setup still being answered then leaves its yes for the next start.
   const onWorker = (task: ImportTask["task"]): Promise<ImportAnswer> =>
     closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
         workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}) } satisfies ImportTask,
       });
-      workers.set(worker, once(worker, "exit").catch(() => undefined));
+      workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
       let answer: ImportAnswer | undefined;
       worker.on("message", (message: ImportAnswer) => void (answer = message));
       worker.once("error", failed);
@@ -378,9 +381,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         else failed(new Error(`the import's worker ended (${code}) with no answer`));
       });
     });
-  let planned: Promise<ImportAnswer> | undefined;
-  // A count that failed is asked again by the next read.
-  const sessionsPlan = () => (planned ??= onWorker("plan").catch((error: unknown) => { planned = undefined; throw error; }));
+  // The count of what setup would import: started once (at start, or by the page's first read), read as it stands. One
+  // stopped (by close, or by setup) starts again on the next read; one that failed stays failed.
+  let count: { state: "counting" } | { state: "counted"; projects: number; sessions: number } | { state: "failed" } | undefined;
+  const countSessions = () => {
+    if (count) return;
+    count = { state: "counting" };
+    onWorker("plan").then(
+      (answer) => void (count = "sessions" in answer ? { state: "counted", projects: answer.projects, sessions: answer.sessions } : undefined),
+      (error: unknown) => {
+        count = { state: "failed" };
+        process.stderr.write(`agentrun-serve: the count of this machine's sessions failed: ${(error as Error).message}\n`);
+      },
+    );
+  };
+  const stopCount = () => { for (const [worker, { task }] of workers) if (task === "plan") worker.postMessage("stop"); };
   // The owner's yes, kept until the import ends: a server stopped (or killed) mid-import goes on with it at its next start.
   const importAsked = join(data, IMPORT_ASKED);
   let importing: Promise<void> | undefined;
@@ -403,6 +418,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
     })());
   if (offersImport && existsSync(importAsked)) void importAtSetup();
+  else if (offersImport && options.countSessions && owner && !owner.hasPassword()) countSessions();
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
@@ -723,6 +739,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const made = await me.setFirst(password, body.code, byToken);
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
         if (made === "code") throw new ApiError("forbidden", "that is not the setup code in the server's log, or it has expired");
+        // The count is for the offer, now answered: it stops.
+        stopCount();
         // Only on the box ticked: the owner, now set, asked for it. It runs after the answer; agents arrive as it goes.
         if (body.import === true) {
           await writeFile(importAsked, "", { mode: 0o600 });
@@ -732,12 +750,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "/setup/import": {
         if (!offersImport) throw new ApiError("not_found", "no route /v2/setup/import");
-        // Before the owner is set, to the setup page: how many projects and sessions the box would import.
+        // Before the owner is set, to the setup page: that it can import (202 while it counts), and then how many projects
+        // and sessions it would, or null for each when the count failed.
         if (!me.hasPassword()) {
           pageRead(req);
-          const counted = await sessionsPlan();
-          if (!("sessions" in counted)) throw new ApiError("not_found", "no route /v2/setup/import");
-          return send(res, 200, { projects: counted.projects, sessions: counted.sessions });
+          countSessions();
+          if (count?.state === "counted") return send(res, 200, { projects: count.projects, sessions: count.sessions });
+          if (count?.state === "failed") return send(res, 200, { projects: null, sessions: null });
+          return send(res, 202, { counting: true });
         }
         // After, to the signed-in owner: the import asked for at setup, running, done or stopped.
         if (!signedIn(req, me) || importState === undefined) throw new ApiError("not_found", "no route /v2/setup/import");
@@ -1005,7 +1025,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // after close.
       closing = true;
       for (const worker of workers.keys()) worker.postMessage("stop");
-      await Promise.all(workers.values());
+      await Promise.all([...workers.values()].map((w) => w.exit));
       await importing;
       await runs.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));

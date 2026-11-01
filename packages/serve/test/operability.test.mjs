@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { startServe } from "../dist/index.js";
@@ -19,7 +19,8 @@ const AWKWARD = "Ab+cD/ef=Gh+iJ/kl=Mn+oP/qr=St+uV/wx==";
 
 /** The bin on `data`, its stdout kept; resolves once it printed its banner. */
 async function bin(t, data, args = [], env = {}) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX, ...args], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+  // A home beside the data, not this machine's: a first start counts the sessions in its home for setup's offer.
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX, ...args], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data), ...env } });
   t.after(() => child.exitCode === null && child.kill("SIGKILL"));
   const seen = { out: "", err: "" };
   child.stdout.on("data", (chunk) => (seen.out += chunk));

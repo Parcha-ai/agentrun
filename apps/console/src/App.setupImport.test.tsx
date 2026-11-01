@@ -14,8 +14,10 @@ describe("App, setup's import of this machine's sessions", () => {
   const PASSWORD = "not-a-secret";
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const missing = (path: string) => ({ error: { code: "not_found", message: path, retryable: false } });
-  /** A server before its owner: `offer` answers GET /v2/setup/import until setup, then `after` in turn (its last again). */
-  function server({ offer, after = [] }: { offer: [number, unknown]; after?: [number, unknown][] }) {
+  /** A server before its owner: `offer` answers GET /v2/setup/import in turn until setup (its last again), then `after`
+   *  likewise. */
+  function server({ offer, after = [] }: { offer: [number, unknown] | [number, unknown][]; after?: [number, unknown][] }) {
+    const before = (Array.isArray(offer[0]) ? offer : [offer]) as [number, unknown][];
     const sent: Record<string, unknown>[] = [];
     let agentsRead = 0;
     let statsRead = 0;
@@ -25,7 +27,7 @@ describe("App, setup's import of this machine's sessions", () => {
       if (path === "/v2/auth/session") return json(200, { password_set: set, signed_in: set });
       if (path === "/v2/setup") { set = true; const body = JSON.parse(String(init?.body)); sent.push(body); return json(201, { signed_in: true, ...(body.import ? { importing: true } : {}) }); }
       if (path === "/v2/setup/import") {
-        if (!set) return json(offer[0], offer[1]);
+        if (!set) { const [status, body] = (before.length > 1 ? before.shift() : before[0])!; return json(status, body); }
         const [status, body] = (after.length > 1 ? after.shift() : after[0]) ?? [404, missing(path)];
         return json(status, body);
       }
@@ -90,6 +92,45 @@ describe("App, setup's import of this machine's sessions", () => {
     expect(await until(host, () => /Imported 2 sessions into 1 agent\./.test(host.textContent ?? ""), 6000)).toBe(true);
     expect(await until(host, () => agentsRead() > names && statsRead() > stats)).toBe(true);
   }, 15_000);
+
+  it("shows the box at once while the server counts, and fills in the counts when they arrive", async () => {
+    server({ offer: [[202, { counting: true }], [202, { counting: true }], [200, { projects: 3, sessions: 12 }]] });
+    const host = await render();
+    expect(await until(host, () => box(host))).toBeTruthy();
+    expect(host.textContent).toContain("Counting sessions…");
+    expect(box(host)!.checked).toBe(false);
+    expect(await until(host, () => /12 sessions in 3 projects/.test(host.textContent ?? ""), 5000)).toBe(true);
+    expect(host.textContent).not.toContain("Counting sessions…");
+  }, 15_000);
+
+  it("sends import: true when ticked before the counts arrive", async () => {
+    const { sent } = server({ offer: [202, { counting: true }] });
+    const host = await render();
+    await until(host, () => box(host));
+    expect(host.textContent).toContain("Counting sessions…");
+    await act(async () => { box(host)!.click(); });
+    await setPassword(host);
+    await submit(host);
+    await until(host, () => sent.length);
+    expect(sent).toEqual([{ password: PASSWORD, import: true }]);
+  });
+
+  it.each([
+    ["the server's count failed", [[202, { counting: true }], [200, { projects: null, sessions: null }]]],
+    ["a read failed after the box showed", [[202, { counting: true }], [500, { error: { code: "internal", message: "busy", retryable: true } }]]],
+  ] as [string, [number, unknown][]][])("keeps the box, its count unknown, when %s", async (_, offer) => {
+    server({ offer });
+    const host = await render();
+    expect(await until(host, () => /The count isn't known/.test(host.textContent ?? ""), 5000)).toBe(true);
+    expect(box(host)).toBeTruthy();
+  }, 15_000);
+
+  it("shows no box when the count finds no session", async () => {
+    server({ offer: [200, { projects: 0, sessions: 0 }] });
+    const host = await render();
+    await act(async () => { await new Promise((r) => setTimeout(r, 200)); });
+    expect(box(host)).toBeNull();
+  });
 
   it.each([[404, "a server that offers no import"], [403, "a read the server refuses"]])("shows no box for %i, %s", async (status) => {
     server({ offer: [status, missing("/v2/setup/import")] });

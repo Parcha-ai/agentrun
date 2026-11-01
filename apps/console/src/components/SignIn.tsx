@@ -12,7 +12,8 @@ export type SignInProps = {
    *  null. */
   onSubmit?: (password: string, code?: string, importSessions?: boolean) => Promise<string | null>;
   problem?: string | null;
-  /** In setup, the sessions a server on this machine would import (`GET /v2/setup/import`): the box shows with them. */
+  /** In setup, a server on this machine's offer to import its sessions (`GET /v2/setup/import`): the box shows with it,
+   *  counting, counted, or its count unknown. */
   offer?: ImportOffer | null;
 };
 
@@ -39,7 +40,8 @@ export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = 
   const [problem, setProblem] = useState<string | null>(initialProblem);
   const [busy, setBusy] = useState(false);
   const setup = mode === "setup";
-  const offered = setup && offer !== null && offer.sessions > 0;
+  // A count of none has nothing to offer; counting, or a count unknown, still does.
+  const offered = setup && offer !== null && !("sessions" in offer && offer.sessions === 0);
   const ready = mode !== "token_link" && password.length > 0 && (!setup || (password === again && password.length >= 12));
   const submit = async () => {
     if (!ready || !onSubmit) return;
@@ -77,7 +79,7 @@ export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = 
                 <input type="checkbox" name="import" checked={importSessions} onChange={(e) => setImportSessions(e.target.checked)} className="mt-1 size-4 accent-primary" />
                 <span>
                   <span className="block">Import this machine's Claude Code, Codex and pi sessions</span>
-                  <span className="mt-1 block text-[12px] text-[#888]">{count(offer.sessions, "session")} in {count(offer.projects, "project")}: each project becomes an agent, each session a run you can read.</span>
+                  <span className="mt-1 block text-[12px] text-[#888]" aria-live="polite">{offerNote(offer)}</span>
                 </span>
               </label>
             )}
@@ -100,6 +102,13 @@ export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = 
 }
 
 const count = (n: number, one: string) => `${n.toLocaleString("en-US")} ${one}${n === 1 ? "" : "s"}`;
+const EACH = "Each project becomes an agent, each session a run you can read.";
+/** The box's note: the counts as they stand. */
+function offerNote(offer: ImportOffer): string {
+  if ("counting" in offer) return `Counting sessions… ${EACH}`;
+  if (offer.sessions === null || offer.projects === null) return `The count isn't known. ${EACH}`;
+  return `${count(offer.sessions, "session")} in ${count(offer.projects, "project")}. ${EACH}`;
+}
 
 const input = "h-10 w-full border border-[#444] bg-black px-3 font-mono text-[14px] outline-none focus:border-[#f5f5f5]";
 
