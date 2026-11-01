@@ -22,18 +22,37 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
   return { ok: true, body };
 }
 
-type Schema = { type?: string | string[]; properties?: Record<string, Schema>; required?: string[]; items?: Schema; examples?: unknown[]; default?: unknown; enum?: unknown[]; description?: string };
+type Schema = { $ref?: string; type?: string | string[]; properties?: Record<string, Schema>; required?: string[]; items?: Schema; examples?: unknown[]; default?: unknown; enum?: unknown[]; description?: string; definitions?: Record<string, Schema> };
+
+/** A schema with its local `$ref` followed as the DSL resolves one: `#/definitions/<name>` names the input schema's own
+ *  definition, else the workflow's schema of that name. A ref it cannot follow (or a cycle) is left as it is. */
+function derefIn(root: Schema, schemas: Record<string, Schema>) {
+  return (s: Schema | undefined): Schema | undefined => {
+    const seen = new Set<string>();
+    while (s?.$ref && !seen.has(s.$ref)) {
+      seen.add(s.$ref);
+      const name = /^#\/(?:definitions|\$defs)\/(.+)$/.exec(s.$ref)?.[1]?.replace(/~1/g, "/").replace(/~0/g, "~");
+      const next = name === undefined ? undefined : root.definitions?.[name] ?? (Object.hasOwn(schemas, name) ? schemas[name] : undefined);
+      if (!next) break;
+      s = next;
+    }
+    return s;
+  };
+}
 
 /** A workflow's input to start from: its input schema's first example (or default), else the schema's shape with empty
  *  values (an object's required fields, a list empty, a string ""). Null when the workflow names no input schema. */
 export function exampleInput(workflow: unknown): { text: string; from: "example" | "shape"; fields: { name: string; note?: string }[] } | null {
   const w = workflow as { input?: { schemaId?: string }; schemas?: Record<string, Schema> } | null;
-  const schema = w?.input?.schemaId ? w.schemas?.[w.input.schemaId] : undefined;
-  if (!schema) return null;
-  const fields = Object.entries(schema.properties ?? {}).map(([name, p]) => ({ name, ...(p.description ? { note: p.description } : {}) }));
+  const declared = w?.input?.schemaId ? w.schemas?.[w.input.schemaId] : undefined;
+  if (!declared) return null;
+  const deref = derefIn(declared, w?.schemas ?? {});
+  const schema = deref(declared)!;
+  const fields = Object.entries(schema.properties ?? {}).map(([name, p]) => { const d = deref(p); return { name, ...(d?.description ? { note: d.description } : {}) }; });
   const given = schema.examples?.[0] ?? schema.default;
   if (given !== undefined) return { text: JSON.stringify(given, null, 2), from: "example", fields };
-  const shape = (s: Schema | undefined, depth = 0): unknown => {
+  const shape = (given: Schema | undefined, depth = 0): unknown => {
+    const s = deref(given);
     if (!s || depth > 4) return null;
     if (s.examples?.length) return s.examples[0];
     if (s.default !== undefined) return s.default;

@@ -12,7 +12,7 @@ export type GraphInput = { nodes: { path: string; kind: string; label?: string; 
  *  the outcome's tone (good, warn, bad). */
 export type ItemMark = { index: number; status: string; label?: string; outcome?: string; p?: number; pNote?: string; tone?: "good" | "warn" | "bad" };
 export type GraphMarks = {
-  diff?: { added?: string[]; edited?: string[]; removed?: { label: string; kind: string }[] };
+  diff?: { added?: string[]; edited?: string[]; moved?: string[]; removed?: { label: string; kind: string }[] };
   /** A state per path: done, working, failed, escalated, stopped, not-run, review, pending. */
   status?: Record<string, string>;
   fired?: string | null;
@@ -93,7 +93,7 @@ function look(ctx: Ctx, path: string) {
   const { diff = {}, status = {}, fired } = ctx.marks;
   const raw = path === fired ? "escalated" : status[path];
   const state = raw && STATES.has(raw) ? raw : "";
-  const tag = diff.added?.includes(path) ? "NEW" : diff.edited?.includes(path) ? "EDITED" : "";
+  const tag = diff.added?.includes(path) ? "NEW" : diff.edited?.includes(path) ? "EDITED" : diff.moved?.includes(path) ? "MOVED" : "";
   return { state, tag, fired: path === fired, selected: ctx.marks.selected?.path === path && ctx.marks.selected.item == null };
 }
 

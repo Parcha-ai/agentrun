@@ -11,13 +11,14 @@ import { type Issue, type Json, lineCol, lintWorkflow, nodeAtOffset, parseWithSp
 const LINE_PX = 20;
 const CHECK_MS = 400;
 
-type Check = { text: string; check: WorkflowCheck } | "unsupported" | null;
+type Check = { text: string; check: WorkflowCheck } | { text: string; failed: string } | "unsupported" | null;
 
 /** The server's check of the text, asked CHECK_MS after the last keystroke that left it parseable. A server without the
- *  route (404, 405) is not asked again, and the console's own lint stands in. Only an answer for the text on screen
- *  counts. */
+ *  route (404, 405) is not asked again, and the console's own lint stands in. A check that failed otherwise is named, the
+ *  lint stands in for it, and `retry` asks again. Only an answer for the text on screen counts. */
 function useServerCheck(text: string, value: Json | undefined, ok: boolean, tools: string[] | undefined, validate?: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => Promise<WorkflowCheck>) {
   const [check, setCheck] = useState<Check>(null);
+  const [again, setAgain] = useState(0);
   const toolsKey = (tools ?? []).join(",");
   useEffect(() => {
     if (!validate || !ok || check === "unsupported") return;
@@ -25,14 +26,19 @@ function useServerCheck(text: string, value: Json | undefined, ok: boolean, tool
     const t = setTimeout(() => {
       validate({ workflow: value, ...(tools ? { tools } : {}) }, ctl.signal).then(
         (answer) => { if (!ctl.signal.aborted) setCheck({ text, check: answer }); },
-        (e: { status?: number }) => { if (!ctl.signal.aborted && (e?.status === 404 || e?.status === 405)) setCheck("unsupported"); },
+        (e: { status?: number; message?: string }) => {
+          if (ctl.signal.aborted) return;
+          if (e?.status === 404 || e?.status === 405) setCheck("unsupported");
+          else setCheck({ text, failed: e?.message || `the server answered ${e?.status ?? "nothing"}` });
+        },
       );
     }, CHECK_MS);
     return () => { clearTimeout(t); ctl.abort(); };
-  }, [text, ok, toolsKey, validate]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (check === "unsupported" || !validate) return { mode: "lint" as const };
-  if (check && check.text === text) return { mode: "server" as const, check: check.check };
-  return { mode: "pending" as const };
+  }, [text, ok, toolsKey, validate, again]); // eslint-disable-line react-hooks/exhaustive-deps
+  const retry = () => { setCheck(null); setAgain((n) => n + 1); };
+  if (check === "unsupported" || !validate) return { mode: "lint" as const, retry };
+  if (check && check.text === text) return "failed" in check ? { mode: "failed" as const, failed: check.failed, retry } : { mode: "server" as const, check: check.check, retry };
+  return { mode: "pending" as const, retry };
 }
 
 /** A workflow's JSON beside its graph. The graph is drawn again as you type (the last text that parsed stays drawn while
@@ -73,7 +79,7 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
   const selectedPath = parsed.ok ? nodeAtOffset(parsed.spans, graph.nodes.map((n) => n.path), cursor) : null;
   const marks = useMemo<GraphMarks>(() => ({
     meta: metaOf(doc, graph),
-    diff: diff ? { added: diff.added.map((n) => n.path), edited: [...diff.changed, ...diff.rewritten].map((n) => n.next), removed: diff.removed.map(({ label, kind }) => ({ label, kind })) } : undefined,
+    diff: diff ? { added: diff.added.map((n) => n.path), edited: [...diff.changed, ...diff.rewritten].map((n) => n.next), moved: diff.moved.map((n) => n.next), removed: diff.removed.map(({ label, kind }) => ({ label, kind })) } : undefined,
     selected: selectedPath ? { path: selectedPath } : null,
   }), [doc, graph, diff, selectedPath]);
 
@@ -107,7 +113,9 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
     const s = parsed.ok ? parsed.spans.get("/root") : undefined;
     if (s && area.current) area.current.scrollTop = Math.max(0, (located(s.start).line - 2) * LINE_PX);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const changes = diff ? diff.added.length + diff.changed.length + diff.rewritten.length + diff.removed.length : 0;
+  // A reorder is a change: its nodes are moved, and the order shows in the connections between them.
+  const rewired = diff ? diff.edges.added.length + diff.edges.removed.length : 0;
+  const changes = diff ? diff.added.length + diff.changed.length + diff.rewritten.length + diff.removed.length + diff.moved.length + rewired : 0;
   const errors = rows.filter((r) => r.severity === "error").length;
 
   return (
@@ -117,7 +125,9 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
           <span className="caps text-[11px] font-semibold">workflow.json</span>
           <span className="font-mono text-[11px] text-muted-foreground">{lines} lines</span>
           <span className="flex-1" />
-          {server.mode !== "lint" && parsed.ok && <span className="font-mono text-[11px] text-muted-foreground">{server.mode === "pending" ? "checking..." : "checked by the server"}</span>}
+          {server.mode === "failed" && parsed.ok
+            ? <span className="font-mono text-[11px] text-warning-text" title={server.failed}>server check failed, showing local checks <button type="button" onClick={server.retry} className="caps ml-1 border px-1.5 text-[10px] text-foreground hover:bg-accent">Retry</button></span>
+            : server.mode !== "lint" && parsed.ok && <span className="font-mono text-[11px] text-muted-foreground">{server.mode === "pending" ? "checking..." : "checked by the server"}</span>}
           {errors ? <span className="caps inline-flex items-center gap-1 text-[11px] text-destructive-text"><CircleAlert className="size-3.5" aria-hidden /> {errors} {errors === 1 ? "problem" : "problems"}</span>
             : <span className="caps text-[11px] text-success-text">{server.mode === "server" ? "Valid" : "Valid shape"}</span>}
         </div>
@@ -159,7 +169,7 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
           <span className="caps text-[11px] font-semibold">Graph</span>
           <span className="font-mono text-[11px] text-muted-foreground">{graph.nodes.length} nodes</span>
           {diff && (changes
-            ? <span className="font-mono text-[11px]">{[diff.added.length && `${diff.added.length} new`, diff.changed.length + diff.rewritten.length && `${diff.changed.length + diff.rewritten.length} edited`, diff.removed.length && `${diff.removed.length} removed`].filter(Boolean).join(" · ")} <span className="text-muted-foreground">against {baseLabel ?? "the current revision"}</span></span>
+            ? <span className="font-mono text-[11px]">{[diff.added.length && `${diff.added.length} new`, diff.changed.length + diff.rewritten.length && `${diff.changed.length + diff.rewritten.length} edited`, diff.removed.length && `${diff.removed.length} removed`, diff.moved.length && `${diff.moved.length} moved`, !diff.moved.length && rewired && `${rewired} ${rewired === 1 ? "connection" : "connections"} changed`].filter(Boolean).join(" · ")} <span className="text-muted-foreground">against {baseLabel ?? "the current revision"}</span></span>
             : <span className="font-mono text-[11px] text-muted-foreground">Same as {baseLabel ?? "the current revision"}</span>)}
           <span className="flex-1" />
           {!parsed.ok && good.current && <span className="caps text-[11px] text-warning-text">Showing the last JSON that parsed</span>}

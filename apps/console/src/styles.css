@@ -121,6 +121,7 @@ svg.wf { display: block; max-width: 100%; height: auto; margin: 0 auto; font-fam
 .wf .removed { font: 11px "JetBrains Mono", monospace; fill: hsl(var(--muted-foreground)); }
 .wf .caption { font: 10px "JetBrains Mono", monospace; fill: hsl(var(--muted-foreground)); }
 .wf .new > .box, .wf .new > .exit-box { stroke: hsl(var(--foreground)); stroke-width: 2.4; }
+.wf .moved > .box, .wf .moved > .exit-box { stroke: hsl(var(--foreground)); stroke-width: 1.6; stroke-dasharray: 1 3; }
 .wf .edited > .box, .wf .edited > .exit-box { stroke: hsl(var(--foreground)); stroke-width: 1.6; stroke-dasharray: 4 2; }
 .wf .done > .box { fill: hsl(var(--success) / 0.10); stroke: hsl(var(--success) / 0.8); }
 .wf .done > .exit-box { fill: hsl(var(--card)); stroke: hsl(var(--border)); }

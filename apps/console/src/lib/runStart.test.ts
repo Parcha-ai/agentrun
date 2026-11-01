@@ -109,4 +109,13 @@ describe("exampleInput", () => {
     expect(e.from).toBe("shape");
     expect(exampleInput({ schemas: {} })).toBeNull();
   });
+  it("follows a local $ref to the schema it names, as the DSL resolves it", () => {
+    const w = { input: { schemaId: "In" }, schemas: {
+      In: { $ref: "#/definitions/Ticket", definitions: { Ticket: { type: "object", required: ["id", "owner"], properties: { id: { type: "string", description: "The ticket." }, owner: { $ref: "#/definitions/Person" } } } } },
+      Person: { type: "object", required: ["name"], properties: { name: { type: "string" } } },
+    } };
+    const e = exampleInput(w)!;
+    expect(JSON.parse(e.text)).toEqual({ id: "", owner: { name: "" } });
+    expect(e.fields).toEqual([{ name: "id", note: "The ticket." }, { name: "owner" }]);
+  });
 });
