@@ -734,7 +734,7 @@ export class Runs {
       await this.saveMeta(run);
       const { reflectPrompt } = await import("@parcha/agentrun-learn");
       // The one call that sends the end-of-run turn, with its origin.
-      await this.toReflect(run, "/submit", { requestId: reflectId(run.id), content: reflectPrompt({ dir, active: Object.keys(seed.notes).length }), whenBusy: "followUp" }, REFLECT_ORIGIN);
+      await this.toReflect(run, "/submit", { requestId: reflectId(run.id), content: reflectPrompt({ dir: LEARNED_DIR, active: Object.keys(seed.notes).length }), whenBusy: "followUp" }, REFLECT_ORIGIN);
       end = await this.reflectEnd(run, Date.parse(reflect.deadline));
     } catch (error) {
       if (!this.live(run) || run.cancel) return;

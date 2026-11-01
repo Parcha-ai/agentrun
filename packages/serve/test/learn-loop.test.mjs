@@ -1,14 +1,15 @@
 // An agent with learning on remembers, on pi, Claude and Codex: run 1 answers, then its end-of-run turn adds a note to
 // its copy of the folder; the note is checked, graded on the agent's own model and merged into the folder's main, whose
 // MEMORY.md lists it; and run 2 starts from it, the note's line in its instructions under `# Learned` and the file in
-// its `.learning/`. The turn never changes the job's answer.
+// its `.learning/`. The turn never changes the job's answer. The data directory's path holds a space, and the turn's
+// message names the folder relative to the run's work, never by a host path.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started } from "./learn-support.mjs";
-import { serve } from "./support.mjs";
+import { scratch, serve } from "./support.mjs";
 
 const FILE = "check-units.md";
 const NOTE = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
@@ -17,8 +18,9 @@ const LINE = "- [Check units](check-units.md) — Convert every amount to one un
 const learnedIn = (prompt) => /\n# Learned\n\n[^\n]*\n\n([\s\S]*?)(?:\n\n|\n<\/instructions>|\n?$)/.exec(prompt)?.[1];
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  test(`on ${harness}, run 1 learns and run 2 knows: the end-of-run turn's note is checked, graded and merged, MEMORY.md on main lists it, and run 2 reads it under # Learned and finds it in .learning/`, { timeout: 180_000 }, async (t) => {
-    const { api, data } = await serve(t, { learning: "on", faux: LEARN, fauxHarness: LEARN });
+  test(`on ${harness}, run 1 learns and run 2 knows, on a data directory whose path holds a space: the end-of-run turn, which names .learning/ relative to the run's work, adds a note that is checked, graded and merged, MEMORY.md on main lists it, and run 2 reads it under # Learned and finds it in .learning/`, { timeout: 180_000 }, async (t) => {
+    const data = join(await scratch(t), "learning data", "agents");
+    const { api } = await serve(t, { learning: "on", faux: LEARN, fauxHarness: LEARN, data });
     const id = `loop-${harness}`;
     await made(api, learner(id, { harness, instructions: "Say your prompt.", plan: [[FILE, NOTE]], once: true }));
 
@@ -35,7 +37,11 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     // The turn's rows are labelled learning: its message, the agent's write, and its last line, which is no answer.
     const turn = reflectRows(first.rows);
     assert.equal(turn.filter((row) => row.kind === "user_message").length, 1, "one end-of-run turn");
-    assert.match(turn.find((row) => row.kind === "user_message").summary, /^Learning: The task is done\./);
+    const asked = turn.find((row) => row.kind === "user_message");
+    assert.match(asked.summary, /^Learning: The task is done\./);
+    assert.match(asked.text, /Your notes from earlier runs are in `\.learning\/`, in your working directory/);
+    assert.doesNotMatch(asked.text, /(?:^|[\s`'"(\[])\/[^\s/]/m, "the message holds no absolute path");
+    assert.ok(!asked.text.includes(data) && !asked.text.includes("learning data"), "nor the data directory");
     assert.ok(turn.some((row) => row.tool_name === "write"), "it wrote with the agent's own tool");
     assert.equal(first.rows.filter((row) => row.kind === "final_answer").length, 1, "the job's answer is the run's only answer row");
 

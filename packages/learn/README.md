@@ -26,14 +26,15 @@ const marked = supersede(oldText, "refund-v2.md"); // the old note with status: 
 ```js
 import { reflectPrompt } from "@parcha/agentrun-learn";
 
-const prompt = reflectPrompt({ dir: "/data/runs/r1/work/.learning", active: activeNotes(notes).length });
+const prompt = reflectPrompt({ dir: ".learning", active: activeNotes(notes).length });
 ```
 
 Once a run has answered or failed, a host sends `prompt` as one more turn in the same session. It says where the
 run's copy of the folder is, the format of a note, that a memory is replaced by a new note with `supersedes`, never
 edited or deleted, that the host rebuilds `MEMORY.md`, how many index lines are left, that writing nothing is fine, and
-what not to keep. It names no harness's tool. It refuses a `dir` that is not an absolute path or holds a space or an
-unseen character.
+what not to keep. It names no harness's tool. `dir` is the copy's path relative to the run's workspace, where every
+harness's file tools resolve one, so the prompt holds no path of the host's, which a box would not see. It refuses an
+absolute `dir`, and a control or unseen character in it.
 
 ## Checking what a run proposes
 

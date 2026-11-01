@@ -62,7 +62,8 @@ export default function reply(context, faux) {
   const [first = "", last = ""] = [users[0], users.at(-1)];
   if (first.startsWith("You grade what an agent proposes to remember.")) return grade(first, faux);
   const system = systemOf(context);
-  const asked = /^The task is done\.[\s\S]*?Your notes from earlier runs are in (\S+): one file per note/.exec(last);
+  // The folder as the prompt names it, relative to the run's workspace, where pi's file tools resolve it.
+  const asked = /^The task is done\.[\s\S]*?Your notes from earlier runs are in `([^`]+)`/.exec(last);
   if (!asked) return faux.message(answerOf(system));
   const plan = planned(system);
   const done = context.messages.slice(context.messages.findLastIndex((m) => m.role === "user")).filter((m) => m.role === "toolResult").length;
@@ -72,7 +73,7 @@ export default function reply(context, faux) {
     if (/Reflect slowly\./.test(system)) return slow(faux, 60_000, "Too late.");
     if (done >= plan.length) return faux.message("Reflected.");
     const [file, content] = plan[done];
-    return faux.message(faux.toolCall("write", { path: `${asked[1]}/${file}`, content }), { stopReason: "toolUse" });
+    return faux.message(faux.toolCall("write", { path: `${asked[1]}${file}`, content }), { stopReason: "toolUse" });
   })();
 }
 

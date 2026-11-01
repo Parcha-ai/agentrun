@@ -6,18 +6,20 @@ import { INDEX_FILE, INDEX_LINES } from "./notes.js";
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
 const UNSEEN = /[\p{Cc}\p{Cf}]/u;
 
-/** The end-of-run turn's message. `dir` is the absolute path of the run's copy of the folder, and `active` how many
- *  notes are active in it, so how many lines the index has left. */
+/** The end-of-run turn's message. `dir` is the run's copy of the folder relative to the run's workspace (`.learning`),
+ *  where every harness's file tools resolve a relative path: the prompt never names a path of the host's, which a box
+ *  would not see. `active` is how many notes are active in it, so how many lines the index has left. */
 export function reflectPrompt(options: { dir: string; active: number }): string {
   const { dir, active } = options;
-  if (typeof dir !== "string" || !dir.startsWith("/") || /\s/.test(dir) || UNSEEN.test(dir)) throw new Error("the directory must be an absolute path with no spaces or unseen characters");
+  if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
   const left = Math.max(0, INDEX_LINES - active);
   return [
     "The task is done. Before the run ends, keep what this run taught you that will help in later runs, if anything.",
     "",
-    `Your notes from earlier runs are in ${dir}: one file per note, and ${INDEX_FILE}, their index. To keep something`,
-    "new, add one file there for each memory, named for its topic (`refund-policy-path.md`), in this format:",
+    `Your notes from earlier runs are in \`${dir}/\`, in your working directory: one file per note, and ${INDEX_FILE}, their`,
+    `index. To keep something new, add one file there for each memory, named for its topic (\`${dir}/refund-policy-path.md\`),`,
+    "in this format:",
     "",
     "---",
     "name: A short title",

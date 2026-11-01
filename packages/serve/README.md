@@ -661,9 +661,9 @@ git 2.40 or later is one such fault, said once on stderr.
 When a run that learns answers or fails, the server asks the same session one more turn before it lets the run go,
 whatever its harness: one message through the run's door under the fixed request id `learn-reflect-<run id>`, so a
 server that restarts mid-turn asks again and the run takes it once. The server alone sends it, with the origin
-`reflect`; no request field sets it. Before it, `work/.learning/` is laid again from the
-seed, so only the turn's own writes count. The message (packages/learn's `reflectPrompt`) names that folder, the note
-format, that a memory is replaced by a new note with `supersedes: [old.md]` and never edited or deleted, that the
+`reflect`; no request field sets it. Before it, `work/.learning/` is laid again from the seed, so only the turn's own
+writes count. The message (packages/learn's `reflectPrompt`) names that folder as `.learning/`, relative to the run's
+work, where every harness's file tools resolve it (no host path, which a box would not see), the note format, that a memory is replaced by a new note with `supersedes: [old.md]` and never edited or deleted, that the
 server rebuilds `MEMORY.md`, how many index lines are left (200 less the active notes), that writing nothing is fine,
 and what not to keep. The turn runs under the run's own cap, with no reserve, and within 5 minutes; its rows are
 labelled `learning`, and the run's answer stays the job's.
