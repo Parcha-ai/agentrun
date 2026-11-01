@@ -1,5 +1,5 @@
 // The keys a person saves for this server's tools, by name, through /v2/settings/tool-keys. DIR/tool-keys.json (0600,
-// written whole, then renamed) holds them only as AES-256-GCM ciphertext (pi-durable-agent's `seal`) under the seal
+// written whole and synced, then renamed) holds them only as AES-256-GCM ciphertext (pi-durable-agent's `seal`) under the seal
 // key the launcher hands the server (AGENTRUN_SEAL_KEY), which is never in the data directory: a copy of the directory
 // holds ciphertext alone. Each value is bound to its field's name and this format, so one moved to another name does
 // not open, and carries a check of the key it was sealed under (an HMAC of a fixed label, neither the key nor a hash of
@@ -7,10 +7,11 @@
 // value, when it is asked for. One that does not open is never a crash and never a clear fallback: it reads as not
 // set, to be entered again, and the log says why once, naming the file, never a value.
 import { createHmac } from "node:crypto";
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
+import { writeDurableSync } from "./files.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { isObject } from "./validate.js";
 
@@ -150,7 +151,8 @@ export class ToolKeys {
   }
 
   private write(fields: Record<string, unknown>): void {
-    writeFileSync(`${this.file}.partial`, `${JSON.stringify({ v: 1, fields }, null, 2)}\n`, { mode: 0o600 });
-    renameSync(`${this.file}.partial`, this.file);
+    // On disk, the file and then its directory, before the 204: a crash after it neither loses a saved key nor brings
+    // back a forgotten one.
+    writeDurableSync(this.file, `${JSON.stringify({ v: 1, fields }, null, 2)}\n`);
   }
 }

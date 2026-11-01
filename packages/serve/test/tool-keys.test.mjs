@@ -185,7 +185,7 @@ test("the page's owner saves and forgets a key with the session cookie from the 
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, KEYS);
   const server = await serve(t, { accounts: true, openSetup: true });
   const own = `http://127.0.0.1:${server.port}`;
-  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin: own }, body: { password: "not-a-secret-owner" } });
+  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin: own }, body: { password: "not-a-secret" } });
   const cookie = cookieOf(setup);
   const write = (method, origin) => call(server.port, { method, path: "/v2/settings/tool-keys/monid", headers: { cookie, "content-type": "application/json", origin }, ...(method === "PUT" ? { body: { values: { MONID_API_KEY: made() } } } : {}) });
   const monid = async () => fieldsOf((await call(server.port, { path: "/v2/settings/tool-keys", headers: { cookie } })).json).MONID_API_KEY;
