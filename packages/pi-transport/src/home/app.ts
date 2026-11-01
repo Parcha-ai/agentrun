@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import type { Harness, HarnessOptions, Registry } from "@earendil-works/pi-durable";
 import { err, ok, type Result, toError } from "@earendil-works/pi-durable/env";
+import type { BoxProvider } from "../box/box.ts";
 
 /** What an app may know about the place it runs in. The same module runs on the host and in a box. */
 export type AppContext = {
@@ -24,6 +25,11 @@ export type AppContext = {
 	 * of the host's, and it never travels in argv. Empty when the host gave none. Not copied into `process.env`.
 	 */
 	readonly env: Readonly<Record<string, string>>;
+	/**
+	 * The host's box providers, by the name the session's config names them, for `TransportHost.providers`: every box a
+	 * handle to one the host made and holds, named by its label. No credential is here. Empty when the host serves none.
+	 */
+	readonly boxes: Readonly<Record<string, BoxProvider>>;
 };
 
 /**

@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -11,6 +11,7 @@ import { err, getOrThrow, ok } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import { type Box, BoxError, type BoxProcess, type BoxProvider, type BoxSpec } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
+import { localBoxes } from "../src/box/local.ts";
 import { type BoxReceipt, type BoxReceipts, boxReceipts } from "../src/box/receipts.ts";
 import { localVault } from "../src/home/checkpoint.ts";
 import { dirStore } from "../src/home/dir-store.ts";
@@ -38,6 +39,8 @@ export type BoxPlaceSetup = {
 	readonly hostFiles?: boolean;
 	/** A runner with one pi agent turn on the host's faux model (the fixture `place-box-agent.fixture.ts`). */
 	readonly agentProgram?: RunnerProgram;
+	/** A runner whose tool box comes from the host's pool (the fixture `place-box-pool.fixture.ts`): local boxes only. */
+	readonly poolProgram?: RunnerProgram;
 };
 
 /** `inner`, with the id of every box it makes kept in `ids`: what no line of the place may name. */
@@ -133,7 +136,13 @@ async function inBoxRun(box: Box, argv: readonly string[]): Promise<void> {
 
 async function placeIn(
 	made: World,
-	more: { models?: Models; program?: RunnerProgram; receipts?: BoxReceipts; provider?: BoxProvider } = {},
+	more: {
+		models?: Models;
+		program?: RunnerProgram;
+		receipts?: BoxReceipts;
+		provider?: BoxProvider;
+		pool?: Record<string, BoxProvider>;
+	} = {},
 ): Promise<BoxPlace> {
 	return getOrThrow(
 		await boxPlace(
@@ -150,6 +159,7 @@ async function placeIn(
 				recording: "RECORD_DIR",
 				lines: (kind, data) => made.lines.push({ kind, data }),
 				...(more.receipts === undefined ? {} : { receipts: more.receipts }),
+				...(more.pool === undefined ? {} : { pool: more.pool }),
 			},
 			context,
 		),
@@ -179,6 +189,20 @@ function boxNames(made: World): unknown[] {
 		if (kind === "restore") return [(data.from as { box?: unknown }).box, (data.to as { box?: unknown }).box];
 		return [data.box];
 	});
+}
+
+/** The files under `dir` whose bytes hold `needle`, by their path from `dir`. */
+function holding(dir: string, needle: string): string[] {
+	const found: string[] = [];
+	const walk = (at: string) => {
+		for (const entry of readdirSync(at, { withFileTypes: true })) {
+			const path = join(at, entry.name);
+			if (entry.isDirectory()) walk(path);
+			else if (entry.isFile() && readFileSync(path).includes(needle)) found.push(path.slice(dir.length + 1));
+		}
+	};
+	walk(dir);
+	return found;
 }
 
 /** The commits the place's vault holds from commit 1, read as a host that starts again reads them. */
@@ -1071,6 +1095,114 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					await place.kill(recovered.runner, "process");
 					await recovered.runner.exited;
 					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			(setup.timeoutMs ?? 60_000) * 1.5,
+		);
+
+		it.skipIf(setup.poolProgram === undefined)(
+			"ends the pool's boxes at release when the host did not end them first, each with its receipt",
+			async () => {
+				const made = world(setup);
+				try {
+					const boxes = localBoxes({ root: join(dirname(made.host), "pool") });
+					const secret: BoxProvider = {
+						name: "secret",
+						create: (spec, at) => boxes.create(spec, at),
+						attach: (id, at) => boxes.attach(id, at),
+						list: (labels, at) => boxes.list(labels, at),
+					};
+					const receipts: BoxReceipt[] = [];
+					const ledger = boxReceipts({
+						prices: [
+							{ provider: "secret", kind: "none", usdPerSecond: 0.0001, source: "test", priced: "2026-10-18" },
+						],
+						write: (receipt) => receipts.push(receipt),
+					});
+					const place = await placeIn(made, { program: setup.poolProgram, pool: { secret }, receipts: ledger });
+					const runner = await place.start(orderOf(made, place, 1));
+					await firstSignal(place, 1, "kill-request");
+					// The runner made its pool box and waits with a program running in it.
+					expect(getOrThrow(await boxes.list({}, context))).toHaveLength(1);
+					await place.kill(runner, "process");
+					await runner.exited;
+					// No endPool: the release ends what the pool holds.
+					await place.release();
+					expect(getOrThrow(await boxes.list({}, context))).toEqual([]);
+					expect(receipts.map(({ provider }) => provider)).toEqual(["secret"]);
+				} finally {
+					made.remove();
+				}
+			},
+			setup.timeoutMs ?? 60_000,
+		);
+
+		it.skipIf(setup.poolProgram === undefined)(
+			"makes the pool's boxes on the host: no token reaches the home box, and a runner restored after a home-box kill finds its pool box by label",
+			async () => {
+				const made = world(setup);
+				try {
+					const root = dirname(made.host);
+					const TOKEN = "tok-SECRET-4fb1c0de9a";
+					// A provider that holds its credential as an SDK client does: on the object, in the host's memory.
+					const boxes = localBoxes({ root: join(root, "pool") });
+					const secret = {
+						token: TOKEN,
+						name: "secret",
+						create: (spec: BoxSpec, at: typeof context) => boxes.create(spec, at),
+						attach: (id: string, at: typeof context) => boxes.attach(id, at),
+						list: (labels: Readonly<Record<string, string>>, at: typeof context) => boxes.list(labels, at),
+					};
+					// The host's ledger: the home's boxes and the pool's in one numbering, each with its receipt.
+					const receipts: BoxReceipt[] = [];
+					const ledger = boxReceipts({
+						prices: ["local", "secret"].map((provider) => ({
+							provider,
+							kind: "none",
+							usdPerSecond: 0.0001,
+							source: "test",
+							priced: "2026-10-16",
+						})),
+						write: (receipt) => receipts.push(receipt),
+					});
+					const place = await placeIn(made, { program: setup.poolProgram, pool: { secret }, receipts: ledger });
+					const runner = await place.start(orderOf(made, place, 1));
+					await firstSignal(place, 1, "kill-request");
+					// The first home box, while its runner waits with a tile running in the pool box: what it saw and holds.
+					const seen = JSON.parse(readFileSync(join(place.paths.work, "seen-1.json"), "utf8")) as {
+						boxes: string[];
+					};
+					expect(seen.boxes).toEqual(["secret"]);
+					const before = holding(join(root, "boxes"), TOKEN);
+					await place.kill(runner, "box");
+					await runner.exited;
+					const recovered = await place.recover(runner, "box", orderOf(made, place, 2));
+					const exit = await recovered.runner.exited;
+					// The pool box lived on with the host: the restored runner found it by its label, the tile in it.
+					expect(exit.outcome?.record).toEqual({
+						label: "box-2",
+						attached: true,
+						tile: "tile-1",
+						boxes: ["secret"],
+					});
+					const after = holding(join(root, "boxes"), TOKEN);
+					const status = await place.status();
+					const log = await logFrom1(made);
+					// The pool ended early, before the host sums its receipts: the pool's box has its receipt, by its label.
+					await place.endPool();
+					await place.endPool();
+					expect(getOrThrow(await boxes.list({}, context))).toEqual([]);
+					expect(receipts.filter(({ provider }) => provider === "secret").map(({ box }) => box)).toEqual([
+						"box-2",
+					]);
+					await place.release();
+					expect(getOrThrow(await boxes.list({}, context))).toEqual([]);
+					// The token is in no home box (the environment its runner saw, the order's, any file), in no line of the
+					// place, in the session's log or in its status.
+					expect([...before, ...after]).toEqual([]);
+					expect(JSON.stringify({ lines: made.lines, log, status, seen })).not.toContain(TOKEN);
 				} finally {
 					made.remove();
 				}

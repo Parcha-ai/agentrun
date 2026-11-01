@@ -192,6 +192,8 @@ export type HomeOptions = {
 	readonly store: string;
 	readonly workspace: string;
 	readonly where: AppContext["where"];
+	/** The host's box providers for the app (`AppContext.boxes`): the runner's box proxy. Default none. */
+	readonly boxes?: AppContext["boxes"];
 	/** The host's own models, or the link's proxy in a box. */
 	readonly models: HarnessOptions["models"];
 	/** Where the session's tools run. Default: pi's own environment in `workspace`. */
@@ -606,6 +608,7 @@ class SessionHome implements Home {
 			root: dirname(workspace),
 			epoch: order.epoch,
 			env: { ...orderEnv },
+			boxes: this.#options.boxes ?? {},
 		});
 		if (!built.ok) return err(new HomeError("app", built.error.message, built.error));
 		const { root: _root, onOpen, onResumed, registry, ...rest } = built.value;
