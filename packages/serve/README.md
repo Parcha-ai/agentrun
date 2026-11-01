@@ -316,7 +316,7 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
-| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). |
+| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (`429` when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
@@ -326,7 +326,7 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
-| `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON. Each tool calls one of these routes in process with the caller's token. The token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
+| `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
@@ -338,16 +338,29 @@ above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap
 
 A coding agent (Claude Code, Codex) sets the server up and drives it with
 [`skills/agentrun-serve/SKILL.md`](skills/agentrun-serve/SKILL.md), shipped in this package. `GET /llms.txt`, at the
-server's root and without a credential, is the API in brief ([`src/llms.txt`](src/llms.txt)): the routes a client
-needs, the MCP endpoint and the CLI, with no data of the server's.
+server's root and without a credential, is the API in brief ([`src/llms.txt`](src/llms.txt)), with no data of the
+server's.
 
-`POST /v2/mcp` is the MCP endpoint. Its tools are `list_agents`, `get_agent`, `create_agent`, `start_run`, `list_runs`,
-`get_run`, `get_timeline`, `list_run_files`, `read_run_file` and `send_message`. Each calls the route that does the same
-in process, with the caller's token, so it checks and answers as that route does: a refusal is a tool result with
-`isError` holding the route's `error`, and `create_agent` refuses a definition exactly as `POST /v2/agents` does. A file
-comes back as text, an image or a blob, up to 4 MiB. The endpoint takes the token only (the page's session cookie is
-never taken there), refuses a browser `Origin` other than this server's own, and on loopback refuses a `Host` that is not
-a loopback name, as every route does.
+`POST /v2/mcp` is the MCP endpoint: Streamable HTTP in its simplest form, one JSON-RPC message per POST answered as JSON,
+with no stream and no session. Its ten tools:
+
+| Tool | Routes |
+| --- | --- |
+| `whoami` | `GET /capabilities`: the token checked, and what this server runs. |
+| `agents_list`, `agents_create` | `GET /agents`, `POST /agents` (the arguments are the definition). |
+| `agents_revise` | `GET /agents/{id}`, then `PUT /agents/{id}/definition` with the fields given changed, on that revision (`If-Match`). |
+| `runs_start` | `POST /agents/{id}/runs`, answered at once. |
+| `runs_get` | `GET /runs/{id}`, with `pending` (a waiting run's question, from its timeline) and `console_url`. |
+| `runs_events` | `GET /runs/{id}/timeline` with `limit` (100 by default). |
+| `runs_files` | `GET /runs/{id}/files`, or one file's text up to 64 KiB. |
+| `runs_respond`, `runs_cancel` | `POST /runs/{id}/messages`, `POST /runs/{id}/cancel`. |
+
+Each tool calls its routes in process, with the caller's token, so it checks and answers as they do: the route's JSON is
+the result's structured content (and its text), and a refusal is a result with `isError` holding the route's `error`. A
+run is started, then polled with `runs_get`; no call is held open for one, and a question a run asks waits as its
+`input_required` state, for `runs_respond` or a person in the console. The endpoint takes the Bearer token only (the
+page's session cookie is never taken there), refuses a browser `Origin` other than this server's own, and on loopback
+refuses a `Host` that is not a loopback name, as every route does.
 
 ```sh
 claude mcp add --transport http agentrun "$AGENTRUN_BASE_URL/mcp" --header "Authorization: Bearer $AGENTRUN_API_KEY"

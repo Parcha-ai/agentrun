@@ -1,101 +1,118 @@
 ---
 name: agentrun-serve
-description: Set up AgentRun Server on this machine and drive it, to create agents, run them and read their results over its HTTP API or its MCP endpoint. Use when asked to run an agent on AgentRun, start the AgentRun server, connect to it over MCP, or check what an AgentRun run did.
+description: Connect to AgentRun Server (start it when it is not running), then create agents, run them, answer their questions and read their results over its MCP endpoint or its /v2 API. Use when asked to run an agent on AgentRun, start or check the AgentRun server, connect to it over MCP, or find out what an AgentRun run did.
 ---
 
 # AgentRun Server
 
-The open platform's server for agents. One process on this machine's loopback address, port 7340, keeps agents (a
-prompt with tools, or a typed workflow) and every run of them: its timeline, its files and its cost. Drive it over HTTP
-(`/v2`) or MCP (`/v2/mcp`).
+The open platform's server for agents. One process on this machine's loopback address, port 7340 by default, keeps
+agents (a prompt with tools, or a typed workflow) and every run of them: its timeline, its files and its cost. A coding
+agent drives it over MCP (`/v2/mcp`) or HTTP (`/v2`); a person follows the same runs in its console (`/console/`).
 
-## 1. Install and start
+## 1. Check the server
 
-Node 22.19 or later. From a checkout of the repository:
+If `AGENTRUN_BASE_URL` is set, check it:
+
+```sh
+curl -sf "$AGENTRUN_BASE_URL/health"
+```
+
+If it is not set, or nothing answers, start the server from a checkout of the repository (Node 22.19 or later), in the
+background, with its data in a directory you name:
 
 ```sh
 git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.git && cd agentrun
 npm ci --ignore-scripts && npm run build
-```
-
-To try it with no key and no network, give it a faux model, which answers every request itself:
-
-```sh
-cat > faux.mjs <<'JS'
-export default (context, faux) => faux.message("The answer is 42.");
-JS
-node packages/serve/dist/cli.js --data "$PWD/.agentrun" --faux faux.mjs > serve.log 2>&1 &
-```
-
-For a real model, leave out `--faux` and set the model and its key first, for example
-`export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...` (`AGENT_MODEL_BASE_URL` points it at a
-gateway; the package README lists every way).
-
-## 2. The address and the token
-
-The server prints its address at every start, as `AGENTRUN_BASE_URL=...`. The token is made once, mode 0600, in the
-data directory, `DIR/.token` for `--data DIR` (without `--data`, the directory is `$XDG_DATA_HOME/agentrun/agents`, else
-`~/.local/share/agentrun/agents`):
-
-```sh
+node packages/serve/dist/cli.js --data "$PWD/.agentrun" > serve.log 2>&1 &
 until grep -q '^AGENTRUN_BASE_URL=' serve.log; do sleep 1; done
 export "$(grep -m1 '^AGENTRUN_BASE_URL=' serve.log)"
-export AGENTRUN_API_KEY=$(cat .agentrun/.token)
 until curl -sf "$AGENTRUN_BASE_URL/health" >/dev/null; do sleep 1; done
-H="authorization: Bearer $AGENTRUN_API_KEY"
 ```
 
-To choose the token instead, start the server with `AGENTRUN_TOKEN` set to 32 characters or more. `GET $AGENTRUN_BASE_URL/capabilities` (no token)
-says which models, tools and efforts this server has.
-
-## 3. Create an agent, run it, read the result
+It runs on the model `AGENT_MODEL` names, with that provider's key in the environment (for example
+`AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5` and `OPENROUTER_API_KEY`); the package README lists every way. To
+try it with no key and no network, add `--faux faux.mjs` with a module that answers every request itself:
 
 ```sh
-curl -s "$AGENTRUN_BASE_URL/agents" -H "$H" -H 'content-type: application/json' \
-  -d '{"definition":{"id":"calc","version":1,"name":"Calc","instructions":"Answer the question.","tools":[],"skills":[]}}'
-run=$(curl -s "$AGENTRUN_BASE_URL/agents/calc/runs" -H "$H" -H 'content-type: application/json' \
-  -H "idempotency-key: $(date +%s)-calc" -d '{"input":{"content":"What is six times seven?"},"effort":"low"}' \
-  | node -p 'JSON.parse(require("fs").readFileSync(0)).run_id')
-until curl -s "$AGENTRUN_BASE_URL/runs/$run" -H "$H" | node -e 'const r=JSON.parse(require("fs").readFileSync(0));process.exit(["completed","failed","cancelled","input_required"].includes(r.status)?0:1)'; do sleep 1; done
-curl -s "$AGENTRUN_BASE_URL/runs/$run" -H "$H"
+printf '%s\n' 'export default (context, faux) => faux.message("The answer is 42.");' > faux.mjs
 ```
 
-- A refused definition is `422 input_invalid` with `error.fields`, one entry per field to fix.
-- `status` `completed`: the answer is `result.final_answer` (a workflow's is `result.output`). `failed`: `error` says why.
-  `input_required`: the agent asked a question (its timeline's last `waiting` row); answer it with
-  `curl -s "$AGENTRUN_BASE_URL/runs/$run/messages" -H "$H" -H 'content-type: application/json' -d '{"content":"..."}'`.
-- Its steps: `curl -s "$AGENTRUN_BASE_URL/runs/$run/timeline?after=0" -H "$H"`, then `after=<next_after>` until a page
-  is `final` with `has_more` false.
-- Its files: `curl -s "$AGENTRUN_BASE_URL/runs/$run/files" -H "$H"`, then
-  `curl -s "$AGENTRUN_BASE_URL/runs/$run/files/<path>" -H "$H"`. An agent writes files with the tools it names in
-  `tools` (`write`, say).
-- `cost.usd` is null while unknown, never $0.
+## 2. Get the token
 
-## 4. Connect over MCP
+The token is made once, mode 0600, in the data directory: `DIR/.token` for `--data DIR` (without `--data`,
+`$XDG_DATA_HOME/agentrun/agents/.token`, else `~/.local/share/agentrun/agents/.token`). Read it into the environment and
+never print it, echo it or write it anywhere else:
 
-The MCP endpoint is `$AGENTRUN_BASE_URL/mcp` (Streamable HTTP, JSON answers). It takes the token as a Bearer header.
+```sh
+export AGENTRUN_API_KEY="$(cat .agentrun/.token)"
+```
+
+## 3. Connect over MCP
 
 ```sh
 claude mcp add --transport http agentrun "$AGENTRUN_BASE_URL/mcp" --header "Authorization: Bearer $AGENTRUN_API_KEY"
 codex mcp add agentrun --url "$AGENTRUN_BASE_URL/mcp" --bearer-token-env-var AGENTRUN_API_KEY
 ```
 
-Its tools: `list_agents`, `get_agent`, `create_agent`, `start_run`, `list_runs`, `get_run`, `get_timeline`,
-`list_run_files`, `read_run_file` and `send_message`. Each calls the HTTP route that does the same, so it checks and
-answers the same way: a refusal comes back as a tool error holding the route's `error`. The loop is the one above:
-`create_agent`, `start_run`, then `get_run` until the status is final or `input_required`.
+Then call `whoami` first. It checks the token and says what this server runs: its harnesses, tools, efforts, thinking
+levels, default model and console address. The other tools:
 
-To check the endpoint by hand:
+| Tool | What it does |
+| --- | --- |
+| `agents_list` | The agents, 20 at a time (`cursor` for the next page). |
+| `agents_create` | Makes an agent: `name`, `instructions`, `tools`, and optionally `id`, `harness`, `model`, `thinking`. |
+| `agents_revise` | Makes an agent's next revision with the fields you change; the rest stay. |
+| `runs_start` | Starts a run: `agent_id`, `input` (`{content: "..."}` for an agentic agent), optional `effort`. Answers at once. |
+| `runs_get` | A run's status, result or error, `pending` (its question, when it asked one) and `console_url`. |
+| `runs_events` | The run's steps, a page at a time (`after`, `limit`). |
+| `runs_files` | The files it wrote; with `path`, one file's text. |
+| `runs_respond` | Answers a run's question (`content`), or follows up after it completed. |
+| `runs_cancel` | Ends a run for good. |
+
+A refusal comes back as a tool error holding the server's `error`: `code`, `message`, and for a `422` each field to fix.
+
+## 4. Create an agent
+
+Look for one first with `agents_list`. Ask the person before you create or revise an agent, and say what it will do.
+Then `agents_create`, for example `{"name": "Release notes", "instructions": "Write release notes from the commits you are given.", "tools": ["read", "write"]}`.
+It writes files only with a tool like `write` in its `tools`; `whoami` lists the tools this server has.
+
+## 5. Run it, poll it, answer it
+
+1. `runs_start` with `{"agent_id": "...", "input": {"content": "..."}}`. It answers at once with the run, `queued`.
+2. `runs_get` every few seconds, until `status` is `completed`, `failed` or `cancelled`. Never wait on one call.
+3. `input_required` means the agent asked a question: `pending.question` holds it. Answer with `runs_respond`, or leave
+   it for the person in the console, then go on polling.
+4. `completed`: the answer is `result.final_answer` (a workflow's is `result.output`). `failed`: `error` says why.
+   `runs_files` lists what it wrote and reads a file; `runs_events` pages its steps.
+5. Tell the person the outcome, and end with the run's `console_url`, where they can see all of it.
+
+`cost.usd` is null while the cost is unknown; never report it as $0.
+
+## 6. Without MCP: the /v2 API
 
 ```sh
-curl -s "$AGENTRUN_BASE_URL/mcp" -H "$H" -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_agents","arguments":{}}}'
+H="authorization: Bearer $AGENTRUN_API_KEY"
+curl -s "$AGENTRUN_BASE_URL/agents" -H "$H" -H 'content-type: application/json' \
+  -d '{"definition":{"id":"calc","name":"Calc","instructions":"Answer the question.","tools":[]}}'
+run=$(curl -s "$AGENTRUN_BASE_URL/agents/calc/runs" -H "$H" -H 'content-type: application/json' \
+  -H "idempotency-key: calc-$(date +%s)" -d '{"input":{"content":"What is six times seven?"}}' \
+  | node -p 'JSON.parse(require("fs").readFileSync(0)).run_id')
+until curl -s "$AGENTRUN_BASE_URL/runs/$run" -H "$H" | node -e 'const r=JSON.parse(require("fs").readFileSync(0));process.exit(["completed","failed","cancelled","input_required"].includes(r.status)?0:1)'; do sleep 2; done
+curl -s "$AGENTRUN_BASE_URL/runs/$run" -H "$H"
+curl -s "$AGENTRUN_BASE_URL/runs/$run/files" -H "$H"
+curl -s "$AGENTRUN_BASE_URL/runs/$run/messages" -H "$H" -H 'content-type: application/json' -d '{"content":"..."}'
 ```
 
-## Rules
+The whole API is in `GET $AGENTRUN_BASE_URL/openapi.json`, and in brief at `/llms.txt` on the server's root
+(`curl -s "${AGENTRUN_BASE_URL%/v2}/llms.txt"`). The run's page for a person is `${AGENTRUN_BASE_URL%/v2}/console/#/runs/$run`.
 
-- The server listens on the loopback address only unless started with `--listen`; keep it there, or put TLS in front
-  of it.
-- Never print the token or write it to a file you share. A browser page from another origin cannot call `/v2/mcp`.
-- The whole API is in `GET $AGENTRUN_BASE_URL/openapi.json`, and in brief at `/llms.txt` on the server's root
-  (`curl -s "${AGENTRUN_BASE_URL%/v2}/llms.txt"`).
+## Troubleshooting
+
+- `401`: the token is not this server's. Read it again from the data directory the server was started with.
+- `403` on `/v2/mcp`: the request carried a browser `Origin` that is not the server's own. Call it from your MCP client, not a web page.
+- `405` on `/v2/mcp`: it takes POST only (no stream, no session).
+- `409 agent_not_runnable`: this server cannot run that agent yet (a harness, tool or key it lacks); `error.details` and `whoami` say which.
+- `422 input_invalid`: `error.fields` names each field to fix.
+- `429 rate_limited` from `runs_start`: the server is at its most runs at once. Start it again when one ends.
+- Keep the server on the loopback address. Started with `--listen` on another one, put TLS in front of it.

@@ -520,8 +520,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, run: Run): Promise<void> {
     const after = integerParam(url.searchParams.get("after"), "after", Number.MAX_SAFE_INTEGER);
     const waitMs = integerParam(url.searchParams.get("wait_ms"), "wait_ms", MAX_WAIT_MS);
+    // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's).
+    const asked = url.searchParams.get("limit");
+    if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= PAGE_ROWS)) throw new ApiError("bad_request", `limit is an integer from 1 to ${PAGE_ROWS}`);
+    const limit = asked === null ? PAGE_ROWS : Number(asked);
     const pageOf = async (from: number, wait: number) => {
-      const page = await runs.page(run, from, wait, PAGE_ROWS);
+      const page = await runs.page(run, from, wait, limit);
       return { run_id: run.id, status: page.status, state: page.state, reset: page.reset, rows: page.rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final: page.final, cost: runs.cost(run) };
     };
     if (!String(req.headers.accept ?? "").includes("text/event-stream")) {

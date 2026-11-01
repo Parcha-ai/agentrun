@@ -1,169 +1,235 @@
-// The MCP endpoint, POST /v2/mcp: the Model Context Protocol over Streamable HTTP, one JSON-RPC message per POST,
-// answered as JSON (no server-sent stream, no session). Its tools are the /v2 routes themselves: a call is dispatched in
-// process to the route that serves it, with the caller's token, so a tool checks and answers exactly as that route does.
-// The endpoint takes the token only, never the page's cookie, and refuses a browser Origin other than this server's own
-// (the transport's rule against DNS rebinding; on loopback the Host check comes first, in server.ts).
+// The MCP endpoint, POST /v2/mcp: the Model Context Protocol over Streamable HTTP in its simplest form, one JSON-RPC
+// message per POST, answered as JSON, stateless (no stream, no session). Its tools run the /v2 routes themselves: a tool
+// calls the route that serves it in process, with the caller's token, so it checks and answers exactly as that route
+// does, and a route's refusal is the tool's error. A run is started, then polled: no tool holds its call open for a run.
+// The endpoint takes the Bearer token only, never the page's cookie, and refuses a browser Origin other than this
+// server's own (the transport's rule against DNS rebinding; on loopback the Host check comes first, in server.ts).
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable, Writable } from "node:stream";
 import { homeBusy, storeBusy } from "./agents.js";
-import { ApiError } from "./errors.js";
+import { ApiError, invalid } from "./errors.js";
 import { isJson, ownOrigin } from "./page.js";
 import { isObject, type Json } from "./validate.js";
 
 export const MCP_PATH = "/v2/mcp";
-/** The protocol versions this endpoint speaks, newest first. `initialize` answers the client's when it is one of them. */
-export const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
+/** The protocol versions this endpoint speaks, newest first. `initialize` answers the client's when it is one of them,
+ *  else the newest, as the protocol's negotiation says. */
+export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_BODY = 1 << 20;
-/** The most a tool's answer (a file's bytes included) may hold; past it, the tool says where to read it instead. */
-export const MAX_ANSWER = 4 << 20;
+/** The most a route's answer may hold here; a file is read up to MAX_TEXT. */
+const MAX_ANSWER = 4 << 20;
+/** The most of a file `runs_files` returns as text: a client's tool output is short (Claude Code's is about 25k tokens). */
+export const MAX_TEXT = 64 << 10;
+/** `runs_events`' page when the caller names no limit: small enough for a client's tool output. */
+const EVENTS_LIMIT = 100;
 
 /** A route of this server: server.ts's `route`, which throws ApiError for a refusal. */
 export type Route = (req: IncomingMessage, res: ServerResponse, url: URL, path: string) => Promise<void>;
-type Call = { method: "GET" | "POST"; path: string; query?: Json; body?: Json; headers?: Record<string, string> };
-type Tool = { name: string; title: string; description: string; inputSchema: Json; annotations: Json; call: (args: Json) => Call };
-/** A route's answer as it would have gone out. */
-type Answered = { status: number; type: string; bytes: Buffer; tooBig: boolean };
+type Call = { method: "GET" | "POST" | "PUT"; path: string; query?: Json; body?: Json; headers?: Record<string, string> };
+/** A route's answer as it would have gone out. `tooBig`: cut off at the limit, `bytes` holding what came before. */
+type Answered = { status: number; headers: Record<string, string>; bytes: Buffer; tooBig: boolean };
+type Context = { call: (call: Call, limit?: number) => Promise<Answered>; origin: string; version: string; requestId: string };
+type Tool = { name: string; title: string; description: string; inputSchema: Json; annotations: Json; run: (args: Json, context: Context) => Promise<Json> };
 
-class ParamsError extends Error {}
+/** An argument the tool cannot take: answered as the routes answer a body they refuse (422, by field). */
+class ArgumentError extends Error {
+  constructor(readonly field: string, readonly reason: string, message: string) {
+    super(message);
+  }
+}
 const text = (args: Json, name: string): string => {
   const value = args[name];
-  if (typeof value !== "string" || !value) throw new ParamsError(`${name} is a non-empty string`);
+  if (typeof value !== "string" || !value) throw new ArgumentError(name, value === undefined ? "missing" : "wrong_type", `${name} is a non-empty string`);
   return value;
 };
 const optionalText = (args: Json, name: string): string | undefined => (args[name] === undefined ? undefined : text(args, name));
 const id = encodeURIComponent;
 const pick = (args: Json, keys: string[]): Json => Object.fromEntries(keys.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
 const without = (args: Json, keys: string[]): Json => Object.fromEntries(Object.entries(args).filter(([k]) => !keys.includes(k)));
-const keyed = (args: Json): Record<string, string> => {
-  const key = optionalText(args, "idempotency_key");
-  return key === undefined ? {} : { "idempotency-key": key };
-};
+const runLink = (origin: string, run: string) => `${origin}/console/#/runs/${id(run)}`;
+
+/** A route's JSON answer as a tool's result: the body as structured content and, for a client without it, as text; a
+ *  refusal (4xx, 5xx) as an error result holding the route's error envelope. `extra` is added to a body that is no
+ *  refusal. */
+function resultOf(answer: Answered, extra: Json = {}): Json {
+  if (answer.tooBig) return { content: [{ type: "text", text: `The answer is over ${MAX_ANSWER >> 20} MiB.` }], isError: true };
+  const refused = answer.status >= 400;
+  const parsed = answer.bytes.length ? (JSON.parse(answer.bytes.toString("utf8")) as unknown) : {};
+  const body = isObject(parsed) ? { ...parsed, ...(refused ? {} : extra) } : { value: parsed };
+  return { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body, ...(refused ? { isError: true } : {}) };
+}
+const json = (answer: Answered): Json => JSON.parse(answer.bytes.toString("utf8")) as Json;
+/** A tool that is one route: its answer is the tool's. */
+const routed = (build: (args: Json) => Call) => async (args: Json, context: Context) => resultOf(await context.call(build(args)));
 
 const READ = { readOnlyHint: true, openWorldHint: false };
-const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false };
+const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
 const AGENT_ID = { type: "string", description: "The agent's id." };
 const RUN_ID = { type: "string", description: "The run's id." };
-const PAGE = {
-  cursor: { type: "string", description: "next_cursor from the page before." },
-  limit: { type: "integer", minimum: 1, maximum: 100, description: "At most this many (default 20)." },
+const DEFINITION = {
+  instructions: { type: "string", description: "What the agent does and how: its system prompt." },
+  harness: { type: "string", enum: ["pi", "claude-agent", "codex"], description: "What runs it (default pi). whoami says which this server runs." },
+  model: { type: ["string", "null"], description: "provider/model-id. Absent, this server's default (whoami names it)." },
+  thinking: { type: ["string", "null"], description: "How hard the model thinks: one of whoami's thinking levels. Absent, the model's own." },
+  tools: { type: "array", items: { type: "string" }, description: "The tools it may use, by name (whoami lists them); [] for none. It writes files only with a tool like write." },
 };
-const IDEMPOTENCY_KEY = { type: "string", description: "Optional. The same key with the same arguments answers with the first call's result, never a second write." };
 
-/** Each tool, by the /v2 route it calls. */
+/** Each tool, by the /v2 routes it calls. Field names are the routes'. */
 export const TOOLS: Tool[] = [
   {
-    name: "list_agents", title: "List agents", annotations: READ,
-    description: "The agents on this server, a page at a time (GET /v2/agents): each one's id, kind (agentic or workflow), current revision and run counts.",
-    inputSchema: { type: "object", properties: { archived: { type: "boolean", description: "true lists only archived agents." }, ...PAGE } },
-    call: (args) => ({ method: "GET", path: "/agents", query: pick(args, ["archived", "cursor", "limit"]) }),
+    name: "whoami", title: "Check the connection", annotations: READ,
+    description: "Checks the connection and the token, and says what this server runs: its version, its address and console, the harnesses, tools, efforts, thinking levels and default model it has (GET /v2/capabilities). Call it first.",
+    inputSchema: { type: "object", properties: {} },
+    run: async (_args, context) => {
+      const answer = await context.call({ method: "GET", path: "/capabilities" });
+      if (answer.status >= 400) return resultOf(answer);
+      const caps = json(answer) as { harnesses?: { id: string; available: boolean }[]; tools?: { name: string; available: boolean }[]; models?: Json; features?: { efforts?: string[]; thinking?: string[] } };
+      const me = {
+        authenticated: true, credential: "token", server: "agentrun-serve", version: context.version,
+        base_url: `${context.origin}/v2`, console_url: `${context.origin}/console/`,
+        harnesses: (caps.harnesses ?? []).filter((h) => h.available).map((h) => h.id),
+        tools: (caps.tools ?? []).filter((t) => t.available).map((t) => t.name),
+        efforts: caps.features?.efforts ?? [], thinking: caps.features?.thinking ?? [], models: caps.models ?? {},
+      };
+      return resultOf({ ...answer, bytes: Buffer.from(JSON.stringify(me)) });
+    },
   },
   {
-    name: "get_agent", title: "Get an agent", annotations: READ,
-    description: "One agent with its current definition (GET /v2/agents/{agent_id}).",
-    inputSchema: { type: "object", required: ["agent_id"], properties: { agent_id: AGENT_ID } },
-    call: (args) => ({ method: "GET", path: `/agents/${id(text(args, "agent_id"))}` }),
+    name: "agents_list", title: "List agents", annotations: READ,
+    description: "The agents on this server, 20 at a time (GET /v2/agents): each one's id, name, kind, current definition and run counts. next_cursor, when not null, is the next page's cursor.",
+    inputSchema: { type: "object", properties: { cursor: { type: "string", description: "next_cursor from the page before." } } },
+    run: routed((args) => ({ method: "GET", path: "/agents", query: pick(args, ["cursor"]) })),
   },
   {
-    name: "create_agent", title: "Create an agent", annotations: WRITE,
-    description:
-      "Creates an agent with its first revision (POST /v2/agents), checked exactly as that route checks it: a refusal names each field. An agentic definition: {id, version: 1, name, instructions, tools: [], skills: []}, with optional description, model (provider/model-id; absent, the server's default), thinking (capabilities features.thinking) and harness (pi, claude-agent or codex). A workflow definition holds `workflow` (an agentrun-dsl document) in place of instructions. `warnings` in the answer is what this server still lacks to run it.",
+    name: "agents_create", title: "Create an agent", annotations: WRITE,
+    description: "Creates an agent (POST /v2/agents with these fields as its definition), checked as that route checks it: a refusal names each field. Ask the person before you create one. warnings in the answer is what this server still lacks to run it.",
     inputSchema: {
-      type: "object", required: ["definition"],
+      type: "object", required: ["name", "instructions"],
       properties: {
-        definition: { type: "object", description: "The definition: id, version, name, and instructions or workflow (see the description)." },
-        skills: { type: "object", additionalProperties: { type: "string" }, description: "Skill files by path, `<skill>/SKILL.md` for each name in definition.skills, each its text." },
-        note: { type: "string", description: "What this revision is, kept with it." },
+        id: { type: "string", description: "Optional: the agent's id (letters, digits, . _ -); absent, the server makes one." },
+        name: { type: "string", description: "The agent's name." },
+        description: { type: "string", description: "Optional: one line on what it is for." },
+        ...DEFINITION,
       },
     },
-    call: (args) => ({ method: "POST", path: "/agents", body: args }),
+    run: routed((args) => ({ method: "POST", path: "/agents", body: { definition: args } })),
   },
   {
-    name: "start_run", title: "Start a run", annotations: { ...WRITE, openWorldHint: true },
-    description:
-      "Starts a run of an agent's current revision, or of `revision` (POST /v2/agents/{agent_id}/runs). An agentic run's input is {content: \"the first message\"}; a workflow run's is what its workflow's input schema takes. Answers the run, queued: follow it with get_run or get_timeline.",
+    name: "agents_revise", title: "Revise an agent", annotations: WRITE,
+    description: "Makes the agent's next revision from its current definition with these fields changed (GET /v2/agents/{agent_id}, then PUT /v2/agents/{agent_id}/definition on that revision): fields you leave out stay; null clears model or thinking. Its next run runs the new revision. A revision saved in between is refused (precondition_failed), never overwritten. Its name and description stay as it was created.",
+    inputSchema: { type: "object", required: ["agent_id"], properties: { agent_id: AGENT_ID, ...DEFINITION, note: { type: "string", description: "Optional: what this revision changes." } } },
+    run: async (args, context) => {
+      const agent = text(args, "agent_id");
+      const read = await context.call({ method: "GET", path: `/agents/${id(agent)}` });
+      if (read.status >= 400) return resultOf(read);
+      const { agent_id: _agent, note, ...changes } = args;
+      const merged: Json = { ...(json(read).definition as Json), ...changes };
+      // The revision's number is the server's to give, and new instructions make an agentic revision.
+      delete merged.version;
+      if ("instructions" in changes) delete merged.workflow;
+      for (const key of Object.keys(merged)) if (merged[key] === null) delete merged[key];
+      const etag = read.headers.etag;
+      return resultOf(await context.call({ method: "PUT", path: `/agents/${id(agent)}/definition`, body: { definition: merged, ...(note === undefined ? {} : { note }) }, headers: etag ? { "if-match": etag } : {} }));
+    },
+  },
+  {
+    name: "runs_start", title: "Start a run", annotations: { ...WRITE, openWorldHint: true },
+    description: "Starts a run of the agent's current revision, or of `revision` (POST /v2/agents/{agent_id}/runs), and answers at once with the run, queued. Then call runs_get until its status is completed, failed or cancelled, or input_required (answer with runs_respond). An agentic run's input is {content: \"the first message\"}; a workflow run's is what its workflow's input schema takes.",
     inputSchema: {
       type: "object", required: ["agent_id", "input"],
       properties: {
         agent_id: AGENT_ID,
         input: { type: "object", description: "{content: string} for an agentic agent; the workflow's input for a workflow agent." },
-        effort: { type: "string", enum: ["low", "medium", "high"], description: "Optional: how hard the model thinks. Absent, the revision's own." },
+        effort: { type: "string", enum: ["low", "medium", "high"], description: "Optional: how hard the model works on this run. Absent, the revision's own." },
         revision: { type: "string", description: "Optional: a revision id of this agent to run in place of the current one." },
-        max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Optional, agentic runs only: the run ends failed (spend_cap_reached) rather than pass this cost." },
-        idempotency_key: IDEMPOTENCY_KEY,
       },
     },
-    call: (args) => ({ method: "POST", path: `/agents/${id(text(args, "agent_id"))}/runs`, body: without(args, ["agent_id", "idempotency_key"]), headers: keyed(args) }),
+    run: routed((args) => ({ method: "POST", path: `/agents/${id(text(args, "agent_id"))}/runs`, body: without(args, ["agent_id"]) })),
   },
   {
-    name: "list_runs", title: "List runs", annotations: READ,
-    description: "Runs, newest first, a page at a time: one agent's (GET /v2/agents/{agent_id}/runs), or every agent's (GET /v2/runs).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        agent_id: { ...AGENT_ID, description: "Optional: only this agent's runs." },
-        status: { type: "string", description: "Optional: only runs with this status (queued, working, input_required, completed, failed, cancelled, paused)." },
-        archived: { type: "boolean", description: "true lists only archived runs." },
-        ...PAGE,
-      },
-    },
-    call: (args) => {
-      const agent = optionalText(args, "agent_id");
-      return { method: "GET", path: agent === undefined ? "/runs" : `/agents/${id(agent)}/runs`, query: pick(args, ["status", "archived", "cursor", "limit"]) };
-    },
-  },
-  {
-    name: "get_run", title: "Get a run", annotations: READ,
-    description:
-      "A run's status and result (GET /v2/runs/{run_id}). status is queued, working, input_required (it asked a question: answer it with send_message), completed, failed, cancelled or paused. A completed run's answer is result.final_answer (agentic) or result.output (workflow); a failed run's reason is error. cost.usd is null while unknown, never $0.",
+    name: "runs_get", title: "Get a run", annotations: READ,
+    description: "A run's status and outcome (GET /v2/runs/{run_id}), with pending (the question it asked, while its status is input_required) and console_url (the run's page). status is queued, working, input_required, completed, failed, cancelled or paused. A completed run's answer is result.final_answer (agentic) or result.output (workflow); a failed run's reason is error; cost.usd is null while unknown, never $0.",
     inputSchema: { type: "object", required: ["run_id"], properties: { run_id: RUN_ID } },
-    call: (args) => ({ method: "GET", path: `/runs/${id(text(args, "run_id"))}` }),
+    run: async (args, context) => {
+      const run = text(args, "run_id");
+      const answer = await context.call({ method: "GET", path: `/runs/${id(run)}` });
+      if (answer.status >= 400) return resultOf(answer);
+      const view = json(answer);
+      return resultOf(answer, { pending: view.status === "input_required" && view.state === "waiting" ? await question(context, run) : null, console_url: runLink(context.origin, run) });
+    },
   },
   {
-    name: "get_timeline", title: "Read a run's timeline", annotations: READ,
-    description:
-      "A page of the run's timeline (GET /v2/runs/{run_id}/timeline): its messages, thinking, tool calls and answer as rows. Start at after 0; each page's next_after is the next page's after. wait_ms holds the call up to that long (at most 25000) for a change. A page with final true and has_more false is the run's last.",
+    name: "runs_events", title: "Read a run's events", annotations: READ,
+    description: `A page of the run's timeline (GET /v2/runs/{run_id}/timeline): its messages, thinking, tool calls and answer, as rows. Start with after 0; each page's next_after is the next page's after, and has_more says whether one waits. A page with final true and has_more false is the run's last. At most limit rows a page (default ${EVENTS_LIMIT}).`,
     inputSchema: {
       type: "object", required: ["run_id"],
       properties: {
         run_id: RUN_ID,
-        after: { type: "integer", minimum: 0, description: "The change number to read from: 0, or next_after from the page before." },
-        wait_ms: { type: "integer", minimum: 0, maximum: 25000, description: "Optional: wait up to this long for a change." },
+        after: { type: "integer", minimum: 0, description: "0, or next_after from the page before." },
+        limit: { type: "integer", minimum: 1, maximum: 500, description: `At most this many rows (default ${EVENTS_LIMIT}).` },
       },
     },
-    call: (args) => ({ method: "GET", path: `/runs/${id(text(args, "run_id"))}/timeline`, query: pick(args, ["after", "wait_ms"]) }),
+    run: routed((args) => ({ method: "GET", path: `/runs/${id(text(args, "run_id"))}/timeline`, query: { limit: EVENTS_LIMIT, ...pick(args, ["after", "limit"]) } })),
   },
   {
-    name: "list_run_files", title: "List a run's files", annotations: READ,
-    description: "The files the run wrote in its workspace (GET /v2/runs/{run_id}/files): each one's path, size and type.",
+    name: "runs_files", title: "Read a run's files", annotations: READ,
+    description: `What the run wrote. Without path, the list (GET /v2/runs/{run_id}/files): each file's path, size and type. With a path, that file (GET /v2/runs/{run_id}/files/{path}): its text, up to ${MAX_TEXT >> 10} KiB (truncated says when it is cut), or for a binary file its type, size and url.`,
+    inputSchema: { type: "object", required: ["run_id"], properties: { run_id: RUN_ID, path: { type: "string", description: "Optional: a path from the list." } } },
+    run: async (args, context) => {
+      const run = text(args, "run_id");
+      const path = optionalText(args, "path");
+      if (path === undefined) return resultOf(await context.call({ method: "GET", path: `/runs/${id(run)}/files` }));
+      const route = `/runs/${id(run)}/files/${path.split("/").map(id).join("/")}`;
+      const answer = await context.call({ method: "GET", path: route }, MAX_TEXT);
+      if (answer.status >= 400) return resultOf(answer);
+      const type = (answer.headers["content-type"] ?? "application/octet-stream").split(";")[0]!.trim();
+      const size = Number(answer.headers["content-length"] ?? answer.bytes.length);
+      const url = `${context.origin}/v2${route}`;
+      const textual = type.startsWith("text/") || type === "application/json" || type === "application/x-ndjson";
+      const file = { run_id: run, path, content_type: type, size_bytes: size, url, truncated: textual && answer.tooBig, text: textual ? answer.bytes.toString("utf8") : null };
+      const shown = textual ? `${file.text}${file.truncated ? `\n\n[cut at ${MAX_TEXT >> 10} KiB of ${size} bytes: read the rest at ${url}]` : ""}` : `A ${type} file of ${size} bytes: download it from ${url} with the token.`;
+      return { content: [{ type: "text", text: shown }], structuredContent: file };
+    },
+  },
+  {
+    name: "runs_respond", title: "Answer a run", annotations: { ...WRITE, openWorldHint: true },
+    description: "Sends an agentic run a message (POST /v2/runs/{run_id}/messages): the answer to the question it asked (its status is input_required; runs_get's pending holds the question), or a follow-up once it completed. mode in the answer says which. Then poll runs_get again.",
+    inputSchema: { type: "object", required: ["run_id", "content"], properties: { run_id: RUN_ID, content: { type: "string", description: "The answer, or the message." } } },
+    run: routed((args) => ({ method: "POST", path: `/runs/${id(text(args, "run_id"))}/messages`, body: without(args, ["run_id"]) })),
+  },
+  {
+    name: "runs_cancel", title: "Cancel a run", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    description: "Ends a run for good (POST /v2/runs/{run_id}/cancel): its status turns cancelled once its process has exited. It keeps what it did, and takes no more messages.",
     inputSchema: { type: "object", required: ["run_id"], properties: { run_id: RUN_ID } },
-    call: (args) => ({ method: "GET", path: `/runs/${id(text(args, "run_id"))}/files` }),
-  },
-  {
-    name: "read_run_file", title: "Read a run's file", annotations: READ,
-    description: `One of the run's files (GET /v2/runs/{run_id}/files/{path}): text as text, an image as an image, anything else as a blob. A file over ${MAX_ANSWER >> 20} MiB is refused here; read it over HTTP.`,
-    inputSchema: { type: "object", required: ["run_id", "path"], properties: { run_id: RUN_ID, path: { type: "string", description: "The file's path, as list_run_files gives it." } } },
-    call: (args) => ({ method: "GET", path: `/runs/${id(text(args, "run_id"))}/files/${text(args, "path").split("/").map(id).join("/")}` }),
-  },
-  {
-    name: "send_message", title: "Send a run a message", annotations: { ...WRITE, openWorldHint: true },
-    description:
-      "Sends an agentic run a message (POST /v2/runs/{run_id}/messages): the answer to the question it asked when its status is input_required, a steer while it works, or a follow-up once it completed. The answer's mode says which.",
-    inputSchema: { type: "object", required: ["run_id", "content"], properties: { run_id: RUN_ID, content: { type: "string", description: "The message." }, idempotency_key: IDEMPOTENCY_KEY } },
-    call: (args) => ({ method: "POST", path: `/runs/${id(text(args, "run_id"))}/messages`, body: without(args, ["run_id", "idempotency_key"]), headers: keyed(args) }),
+    run: routed((args) => ({ method: "POST", path: `/runs/${id(text(args, "run_id"))}/cancel` })),
   },
 ];
 
-const INSTRUCTIONS =
-  "Tools over this AgentRun server's agents and runs. To run an agent: create_agent (or list_agents for one that exists), then start_run, then get_run until its status is completed, failed or cancelled; input_required means it asked a question, which send_message answers. Read the answer from the run's result, its steps with get_timeline, and what it wrote with list_run_files and read_run_file.";
+/** The question a waiting run asked: its timeline's last `waiting` row, read through the timeline route. */
+async function question(context: Context, run: string): Promise<Json | null> {
+  let asked: Json | null = null;
+  for (let after = 0, pages = 0; pages < 50; pages++) {
+    const answer = await context.call({ method: "GET", path: `/runs/${id(run)}/timeline`, query: { after } });
+    if (answer.status >= 400) return null;
+    const page = json(answer) as { rows: Json[]; has_more: boolean; next_after: number };
+    for (const row of page.rows) if (row.kind === "waiting" && (asked === null || (row.seq as number) > (asked.seq as number))) asked = row;
+    if (!page.has_more) break;
+    after = page.next_after;
+  }
+  return asked && { question: asked.text ?? asked.summary, asked_at: asked.timestamp };
+}
 
-/** A route's answer as it would have gone out: its status, headers and bytes. A route that writes past `limit` is cut
- *  off there (`tooBig`): a file stream stops, and the tool says so. */
+const INSTRUCTIONS =
+  "Tools over this AgentRun server's agents and runs. Call whoami first. To run an agent: agents_list (or agents_create, after asking the person), then runs_start, then runs_get every few seconds until its status is completed, failed or cancelled. input_required means it asked a question (runs_get's pending): answer it with runs_respond, or leave it for the person in the console (console_url). Read its steps with runs_events and what it wrote with runs_files.";
+
+/** A route's answer, captured: its status, headers and bytes up to `limit`. A route that writes past it is cut off
+ *  there (`tooBig`): a file stream stops. */
 class Answer extends Writable {
   status = 200;
   headers: Record<string, string> = {};
   headersSent = false;
-  tooBig = false;
+  private tooBig = false;
   private size = 0;
   private readonly chunks: Buffer[] = [];
   readonly settled: Promise<void>;
@@ -180,8 +246,10 @@ class Answer extends Writable {
     return this;
   }
   override _write(chunk: Buffer, _encoding: BufferEncoding, next: (error?: Error | null) => void): void {
+    const room = this.limit - this.size;
     this.size += chunk.length;
-    if (this.size > this.limit) {
+    if (chunk.length > room) {
+      this.chunks.push(chunk.subarray(0, Math.max(0, room)));
       this.tooBig = true;
       return next(new Error("over the answer limit"));
     }
@@ -189,7 +257,7 @@ class Answer extends Writable {
     next();
   }
   answered(): Answered {
-    return { status: this.status, type: (this.headers["content-type"] ?? "").split(";")[0]!.trim(), bytes: Buffer.concat(this.chunks), tooBig: this.tooBig };
+    return { status: this.status, headers: this.headers, bytes: Buffer.concat(this.chunks), tooBig: this.tooBig };
   }
 }
 
@@ -211,14 +279,15 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
     res.end(body === undefined ? undefined : JSON.stringify(body));
   }
 
-  /** A tool's call, through the route that serves it, with the caller's own Authorization. */
-  async function dispatch(call: Call, authorization: string, requestId: string): Promise<Answered> {
+  /** A route's answer to `call`, made with the caller's own Authorization: a synthetic request into `route`, and a
+   *  response that captures what it writes. A refusal is the route's error envelope, as it would have gone out. */
+  async function dispatch(call: Call, authorization: string, requestId: string, limit = MAX_ANSWER): Promise<Answered> {
     const search = new URLSearchParams(Object.entries(call.query ?? {}).map(([k, v]) => [k, String(v)]));
     const target = `/v2${call.path}${search.size ? `?${search}` : ""}`;
     const body = call.body === undefined ? [] : [Buffer.from(JSON.stringify(call.body))];
     const headers = { authorization, accept: "application/json", ...(call.body === undefined ? {} : { "content-type": "application/json" }), ...call.headers };
     const req = Object.assign(Readable.from(body), { method: call.method, url: target, headers }) as unknown as IncomingMessage;
-    const res = new Answer(MAX_ANSWER);
+    const res = new Answer(limit);
     try {
       await route(req, res as unknown as ServerResponse, new URL(target, "http://serve"), call.path);
       if (!res.writableEnded && !res.destroyed) throw new Error(`${call.method} ${target} gave no answer`);
@@ -226,25 +295,9 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
     } catch (error) {
       const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
       if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: mcp: ${(error as Error)?.stack ?? String(error)}\n`);
-      return { status: known.status, type: "application/json", bytes: Buffer.from(JSON.stringify(known.body(requestId))), tooBig: false };
+      return { status: known.status, headers: { "content-type": "application/json" }, bytes: Buffer.from(JSON.stringify(known.body(requestId))), tooBig: false };
     }
     return res.answered();
-  }
-
-  /** A tool's result, from its route's answer: JSON as structured content (and as text, for a client without it), a
-   *  refusal as an error result carrying the route's error envelope, a file as text, an image or a blob. */
-  function resultOf(tool: Tool, answer: Answered, origin: string, call: Call): Json {
-    const refused = answer.status >= 400;
-    if (answer.tooBig) return { content: [{ type: "text", text: `The answer is over ${MAX_ANSWER >> 20} MiB: read it over HTTP, GET ${origin}/v2${call.path}.` }], isError: true };
-    if (tool.name === "read_run_file" && !refused) {
-      const mime = answer.type || "application/octet-stream";
-      if (mime.startsWith("text/") || mime === "application/json" || mime === "application/x-ndjson") return { content: [{ type: "text", text: answer.bytes.toString("utf8") }] };
-      if (mime.startsWith("image/")) return { content: [{ type: "image", data: answer.bytes.toString("base64"), mimeType: mime }] };
-      return { content: [{ type: "resource", resource: { uri: `${origin}/v2${call.path}`, mimeType: mime, blob: answer.bytes.toString("base64") } }] };
-    }
-    if (!answer.bytes.length) return { content: [{ type: "text", text: `Done (${answer.status}).` }], ...(refused ? { isError: true } : {}) };
-    const json = JSON.parse(answer.bytes.toString("utf8")) as unknown;
-    return { content: [{ type: "text", text: JSON.stringify(json) }], ...(isObject(json) ? { structuredContent: json } : {}), ...(refused ? { isError: true } : {}) };
   }
 
   /** One JSON-RPC request's result, or its error. */
@@ -258,21 +311,22 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
       case "ping":
         return { result: {} };
       case "tools/list":
-        return { result: { tools: TOOLS.map(({ call: _call, ...tool }) => tool) } };
+        return { result: { tools: TOOLS.map(({ run: _run, ...tool }) => tool) } };
       case "tools/call": {
         if (!isObject(params) || typeof params.name !== "string") return { error: { code: -32602, message: "tools/call takes {name, arguments}" } };
         const tool = TOOLS.find((t) => t.name === params.name);
         if (!tool) return { error: { code: -32602, message: `no tool ${params.name}: tools/list names them` } };
-        if (params.arguments !== undefined && !isObject(params.arguments)) return { error: { code: -32602, message: "arguments is an object" } };
-        let call: Call;
+        const authorization = String(req.headers.authorization);
+        const context: Context = { call: (call, limit) => dispatch(call, authorization, requestId, limit), origin: ownOrigin(req), version, requestId };
         try {
-          call = tool.call((params.arguments as Json | undefined) ?? {});
+          if (params.arguments !== undefined && !isObject(params.arguments)) throw new ArgumentError("arguments", "wrong_type", "arguments is an object");
+          return { result: await tool.run((params.arguments as Json | undefined) ?? {}, context) };
         } catch (error) {
-          if (error instanceof ParamsError) return { error: { code: -32602, message: `${tool.name}: ${error.message}` } };
-          throw error;
+          // An argument the tool cannot take is the tool's error, as the protocol asks, in the routes' own 422 shape.
+          if (!(error instanceof ArgumentError)) throw error;
+          const body = invalid([{ field: error.field, reason: error.reason, message: error.message }]).body(requestId);
+          return { result: { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body, isError: true } };
         }
-        const answer = await dispatch(call, String(req.headers.authorization), requestId);
-        return { result: resultOf(tool, answer, ownOrigin(req), call) };
       }
     }
     return { error: { code: -32601, message: `no method ${method} here: this server offers initialize, ping, tools/list and tools/call` } };
@@ -292,6 +346,7 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
     const requestId = String(res.getHeader("x-request-id") ?? "");
     const origin = req.headers.origin;
     if (origin !== undefined && origin.toLowerCase() !== ownOrigin(req)) return reply(res, 403, rpcError(null, -32600, "this Origin may not call this server's MCP endpoint"));
+    // The token only: the page's session cookie is not taken here (server.ts answers this path before the page).
     const authorization = req.headers.authorization;
     if (authorization === undefined || !authorized(authorization)) {
       authFailed(MCP_PATH, authorization === undefined ? "no_credential" : "wrong_token");
@@ -311,17 +366,17 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
     }
     if (Array.isArray(message)) return reply(res, 400, rpcError(null, -32600, "a batch is not taken: send one message per request"));
     if (!isObject(message) || message.jsonrpc !== "2.0") return reply(res, 400, rpcError(null, -32600, "not a JSON-RPC 2.0 message"));
-    const id = typeof message.id === "string" || typeof message.id === "number" ? message.id : null;
+    const rpcId = typeof message.id === "string" || typeof message.id === "number" ? message.id : null;
     if (!("method" in message)) {
       // A response to a request of ours (this server sends none): taken, with no body, when it is one.
-      if (!("id" in message) || ("result" in message) === ("error" in message)) return reply(res, 400, rpcError(id, -32600, "not a JSON-RPC request, notification or response"));
+      if (!("id" in message) || ("result" in message) === ("error" in message)) return reply(res, 400, rpcError(rpcId, -32600, "not a JSON-RPC request, notification or response"));
       return reply(res, 202);
     }
-    if (typeof message.method !== "string") return reply(res, 400, rpcError(id, -32600, "method is a string"));
+    if (typeof message.method !== "string") return reply(res, 400, rpcError(rpcId, -32600, "method is a string"));
     // A notification: taken, with no body.
     if (!("id" in message)) return reply(res, 202);
-    if (id === null) return reply(res, 400, rpcError(null, -32600, "a request's id is a string or a number"));
+    if (rpcId === null) return reply(res, 400, rpcError(null, -32600, "a request's id is a string or a number"));
     const answered = await handle(message.method, message.params, req, requestId);
-    return reply(res, 200, { jsonrpc: "2.0", id, ...answered });
+    return reply(res, 200, { jsonrpc: "2.0", id: rpcId, ...answered });
   };
 }

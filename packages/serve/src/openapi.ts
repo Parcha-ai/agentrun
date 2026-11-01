@@ -172,7 +172,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     post: {
       operationId: "callMcp", tags: ["local"], summary: "The MCP endpoint: this API's tools, for a coding agent",
       description:
-        "The Model Context Protocol over Streamable HTTP: one JSON-RPC 2.0 message per POST (initialize, ping, tools/list, tools/call), answered as JSON, with no stream (any other method is 405) and no session. The tools list, read and create agents, start runs, read a run, its timeline and its files, and send a run a message; each one calls one of this API's routes in process, with the caller's token, and answers as that route does (a refusal is a result with isError and the route's error). The token only: the page's session cookie is never taken here, and a browser Origin other than this server's own is 403. A refusal of the request itself carries a JSON-RPC error.",
+        "The Model Context Protocol over Streamable HTTP: one JSON-RPC 2.0 message per POST (initialize, ping, tools/list, tools/call), answered as JSON, stateless: no stream (any other method is 405) and no session. Ten tools: whoami, agents_list, agents_create, agents_revise, runs_start, runs_get, runs_events, runs_files, runs_respond and runs_cancel. Each calls this API's routes in process, with the caller's token, and answers as they do: the route's JSON as structured content, a refusal as a result with isError and the route's error. A run is started, then polled; no call is held open for one. The token only: the page's session cookie is never taken here, and a browser Origin other than this server's own is 403. A refusal of the request itself carries a JSON-RPC error.",
       requestBody: { required: true, content: { "application/json": { schema: RPC_MESSAGE } } },
       responses: {
         "200": json(RPC_ANSWER, "The request's answer: its result, or its JSON-RPC error."),
@@ -536,6 +536,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // What this server changes in a contract operation, by the addition that made it.
   update["x-agentrun-serve-changed"] = { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" };
   const changed = ["PUT /agents/{agent_id}/definition"];
+  // A timeline page of at most `limit` rows: the contract's pages hold up to 500, more than a small client reads at once.
+  const timeline = (doc.paths["/runs/{run_id}/timeline"] as Json).get as Json;
+  timeline.parameters = [...(timeline.parameters as Json[]), { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } }];
+  timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1" };
+  changed.push("GET /runs/{run_id}/timeline");
   // A workflow run pauses here (POST /runs/{run_id}/pause): its status reads `paused` until it is resumed.
   const runStatus = schemas.RunStatus as Json & { enum?: string[] };
   if (Array.isArray(runStatus.enum) && !runStatus.enum.includes("paused")) {
