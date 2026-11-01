@@ -670,7 +670,7 @@ export const WORKFLOWS = { "doc-valid": docValid, "batch-20": batch20, kyb, "mer
 for (const { workflow, inputs: names } of Object.values(USE_CASES)) WORKFLOWS[workflow].schemas.Input.examples = [inputs[names[0]]];
 export const INPUTS = inputs;
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.main) {
   mkdirSync(`${here}workflows`, { recursive: true });
   mkdirSync(`${here}inputs`, { recursive: true });
   for (const [name, wf] of Object.entries(WORKFLOWS)) writeFileSync(`${here}workflows/${name}.json`, `${JSON.stringify(wf, null, 2)}\n`);
