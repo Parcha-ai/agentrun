@@ -1,4 +1,5 @@
 // A faux model for the tests and the conformance scenarios: replies chosen from the conversation, no key, no network.
+import { SLIDES } from "./faux-harness.mjs";
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
 
 /** Resolves after `ms`, or as an aborted reply as soon as the turn is stopped. */
@@ -14,6 +15,13 @@ const untilExists = async (file) => {
 };
 
 export default function reply(context, faux) {
+  // pi's whole system prompt: its system messages, their sections included.
+  const system = context.messages.filter((m) => m.role === "system").map((m) => [textOf(m), ...Object.values(m.sections ?? {})].join("\n")).join("\n");
+  // Writes the run's deck with the write tool, then answers as "Say your system." does (pack-job.test.mjs).
+  if (system.includes("Make the slides, then say your system.")) {
+    if (context.messages.at(-1)?.role !== "toolResult") return faux.message(faux.toolCall("write", { path: "slides.html", content: SLIDES }), { stopReason: "toolUse" });
+    return faux.message(`Thinking ${faux.reasoning}.\nNative: none\n${system}`);
+  }
   const users = context.messages.filter((m) => m.role === "user").map(textOf);
   const [first = "", last = ""] = [users[0], users.at(-1)];
   const answered = context.messages.at(-1)?.role === "toolResult";

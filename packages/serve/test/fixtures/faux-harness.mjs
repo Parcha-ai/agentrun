@@ -2,7 +2,10 @@
 // agent's instructions say. The script is read again at every open, so what a later process does can depend on a file.
 import { existsSync } from "node:fs";
 
-export function script(spec) {
+/** The deck a "Make the slides" run writes, here and in faux-model.mjs. */
+export const SLIDES = "<!doctype html>\n<title>The quarter</title>\n<section><h1>The quarter</h1><p>Revenue rose.</p></section>\n";
+
+export function script(spec, given = {}) {
   const text = spec.system.join("\n");
   // As real harnesses do, a request that goes on calls a tool, and the turn's last request is its answer.
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
@@ -13,6 +16,8 @@ export function script(spec) {
   const page = /Fetch (\S+) and say its title(?: with (\w+))?\./.exec(text);
   if (page) return [{ call: page[2] ?? "fetch_page", args: { url: page[1] }, usd: 0.001 }, { say: "Fetched.", usd: 0.001 }];
   if (/Say your thinking\./.test(text)) return [{ say: `Thinking ${spec.thinking}.`, usd: 0.001 }];
+  // Writes the run's deck with the write tool, then answers as "Say your system." does (pack-job.test.mjs).
+  if (/Make the slides, then say your system\./.test(text)) return [{ call: "write", args: { path: "slides.html", content: SLIDES }, usd: 0.001 }, { say: `Thinking ${spec.thinking}.\nNative: ${(given.skills ?? []).map((skill) => skill.name).join(", ") || "none"}\n${text}`, usd: 0.001 }];
   if (/Price unknown\./.test(text)) return [{ say: "Priced unknown.", usd: null }];
   // A chat whose second turn has a request of unknown price.
   if (/Second turn unpriced\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: null }, { end: true, usd: 0.001 }];
