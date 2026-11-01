@@ -549,9 +549,8 @@ Under a cap, whatever cannot be priced is refused, never passed as $0:
   bounds a request. One whose output costs nothing at every price tier keeps a known worst case, and passes.
 - An input that could not be measured.
 - A spend no one knows: a cost that is not a number, a cost still pending, and on pi a request a stop or a crash cut
-  with no held figure (below). Every later request of the run is refused. On claude-agent and codex the model proxy
-  books a response cut short (a stop or a crash included) at an unknown cost, so a capped run cut mid-request there
-  refuses its next request.
+  with no held figure (below). Every later request of the run is refused. `claude-agent` and `codex` runs also continue
+  after a cut, at the worst case the cap held, as pi does.
 
 On pi a request stopped before its end (`POST /runs/{id}/stop`, or a summary that failed) or cut by a crash (its process
 gone mid-request) counts at the worst case the cap held for it, the most the provider can have billed, never at the cut
