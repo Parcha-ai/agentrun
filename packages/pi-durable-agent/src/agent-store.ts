@@ -61,6 +61,26 @@ export type StoreStats = {
   byAgent: Array<{ id: string; name: string; runs: number }>;
   running: string[];
 };
+/** Runs counted together in `analytics`: how many, how many completed and failed (escalated included), how many have
+ *  metrics, their tokens (input, cache read, cache write and output, summed) and their cost as `stats` sums it (`costUsd`,
+ *  null when no run ended with one; `unknownCostRuns` the rest). */
+export type AnalyticsGroup = { runs: number; completed: number; failed: number; runsWithMetrics: number; tokens: number; costUsd: number | null; unknownCostRuns: number };
+/** What `analytics` answers: the runs not archived, started in [`from`, `to`) and of `agent` when given, summed from their
+ *  rows and their metrics. A running run's metrics are its last end's: it counts as a run without them. */
+export type StoreAnalytics = {
+  totals: AnalyticsGroup & { input: number; cacheRead: number; cacheWrite: number; output: number; requests: number; unmetered: number };
+  /** `wallMs` sums ended − started over the `endedRuns`; `activeMs` sums the metrics' activeMs over the `activeRuns` that have one. */
+  time: { endedRuns: number; wallMs: number; activeRuns: number; activeMs: number };
+  /** By the revision's harness (`pi` when it names none, `workflow` for a workflow revision), then the metrics' effort (null when unset). */
+  byHarnessEffort: Array<AnalyticsGroup & { harness: string; effort: string | null }>;
+  /** By the UTC date the run started, oldest first. */
+  byDay: Array<AnalyticsGroup & { day: string }>;
+  /** `live`, run here, or the source an imported run came from: `live` first. */
+  bySource: Array<AnalyticsGroup & { source: "live" | ImportSource }>;
+  /** The 20 tools with the most calls (by name on a tie), each with how many failed. */
+  tools: Array<{ tool: string; calls: number; errors: number }>;
+};
+export type AnalyticsFilter = { from?: string; to?: string; agent?: string };
 export type NewRevision =
   | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; note?: string }
   | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; note?: string };
@@ -349,6 +369,49 @@ export class AgentStoreReader {
         stats.cost.unknown += runs.total - known;
       }
       return stats;
+    } finally {
+      this.db.exec("COMMIT");
+    }
+  }
+  /** The runs' metrics summed (StoreAnalytics), with their counts and cost, from `run_metrics`, `run_tool_metrics`,
+   *  `runs` and `revisions` alone, read in one snapshot; nothing under `runs/` is opened. `from` and `to` are ISO times in
+   *  UTC. A store without the metrics tables answers its runs with none. */
+  analytics(filter: AnalyticsFilter = {}): StoreAnalytics {
+    const params = { from: filter.from === undefined ? null : checkTime(filter.from, "from"), to: filter.to === undefined ? null : checkTime(filter.to, "to"), agent: filter.agent === undefined ? null : checkId(filter.agent, "agent") };
+    const metric = (column: string) => (this.metrics ? `m.${column}` : "NULL");
+    // Each run in scope once, with its group keys and, when it has ended, its metrics.
+    const scope = `WITH scope AS (SELECT r.id, r.state, r.started_at, r.ended_at, r.cost_usd,
+        CASE WHEN v.kind = 'workflow' THEN 'workflow' ELSE COALESCE(json_extract(v.body_json, '$.harness'), 'pi') END AS harness,
+        ${this.imports ? "COALESCE(i.source, 'live')" : "'live'"} AS source, ${this.metrics ? "m.run_id IS NOT NULL" : "0"} AS metered,
+        ${["input", "cache_read", "cache_write", "output", "requests", "unmetered", "active_ms", "effort"].map((c) => `${metric(c)} AS ${c}`).join(", ")}
+      FROM runs r JOIN revisions v ON v.id = r.revision_id
+        ${this.metrics ? "LEFT JOIN run_metrics m ON m.run_id = r.id AND r.state <> 'running'" : ""} ${this.imports ? "LEFT JOIN run_imports i ON i.run_id = r.id" : ""}
+      WHERE ${this.runArchivedAtSql()} IS NULL AND (:from IS NULL OR r.started_at >= :from) AND (:to IS NULL OR r.started_at < :to) AND (:agent IS NULL OR r.agent_id = :agent))`;
+    const group = `COUNT(*) AS runs, SUM(state = 'completed') AS completed, SUM(state IN ('failed', 'escalated')) AS failed, SUM(metered) AS metered,
+      SUM(COALESCE(input + cache_read + cache_write + output, 0)) AS tokens, SUM(CASE WHEN state <> 'running' THEN cost_usd END) AS cost_usd,
+      SUM(state <> 'running' AND cost_usd IS NOT NULL) AS known`;
+    const n = (value: unknown) => Number(value ?? 0);
+    const counted = (g: Record<string, unknown>): AnalyticsGroup => ({
+      runs: n(g.runs), completed: n(g.completed), failed: n(g.failed), runsWithMetrics: n(g.metered), tokens: n(g.tokens),
+      costUsd: n(g.known) > 0 ? Number(g.cost_usd) : null, unknownCostRuns: n(g.runs) - n(g.known),
+    });
+    const all = (sql: string) => this.db.prepare(`${scope} ${sql}`).all(params) as Array<Record<string, unknown>>;
+    this.db.exec("BEGIN");
+    try {
+      const t = all(`SELECT ${group}, SUM(input) AS input, SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write, SUM(output) AS output, SUM(requests) AS requests, SUM(unmetered) AS unmetered,
+          SUM(state <> 'running' AND ended_at IS NOT NULL) AS ended, SUM(CASE WHEN state <> 'running' AND ended_at IS NOT NULL THEN MAX(0, ROUND((julianday(ended_at) - julianday(started_at)) * 86400000)) END) AS wall_ms,
+          SUM(active_ms IS NOT NULL) AS active_runs, SUM(active_ms) AS active_ms FROM scope`)[0]!;
+      return {
+        totals: { ...counted(t), input: n(t.input), cacheRead: n(t.cache_read), cacheWrite: n(t.cache_write), output: n(t.output), requests: n(t.requests), unmetered: n(t.unmetered) },
+        time: { endedRuns: n(t.ended), wallMs: n(t.wall_ms), activeRuns: n(t.active_runs), activeMs: n(t.active_ms) },
+        byHarnessEffort: all(`SELECT harness, effort, ${group} FROM scope GROUP BY harness, effort ORDER BY harness, effort`).map((g) => ({ harness: g.harness as string, effort: (g.effort as string | null) ?? null, ...counted(g) })),
+        byDay: all(`SELECT substr(started_at, 1, 10) AS day, ${group} FROM scope GROUP BY day ORDER BY day`).map((g) => ({ day: g.day as string, ...counted(g) })),
+        bySource: all(`SELECT source, ${group} FROM scope GROUP BY source ORDER BY source <> 'live', source`).map((g) => ({ source: g.source as "live" | ImportSource, ...counted(g) })),
+        tools: this.metrics
+          ? all(`SELECT t.tool, SUM(t.calls) AS calls, SUM(t.errors) AS errors FROM run_tool_metrics t JOIN scope s ON s.id = t.run_id WHERE s.metered GROUP BY t.tool ORDER BY calls DESC, t.tool LIMIT 20`)
+            .map((r) => ({ tool: r.tool as string, calls: n(r.calls), errors: n(r.errors) }))
+          : [],
+      };
     } finally {
       this.db.exec("COMMIT");
     }

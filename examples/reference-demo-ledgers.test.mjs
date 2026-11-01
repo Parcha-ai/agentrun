@@ -152,6 +152,13 @@ test('attach: a box a tool reconnects to has its crossings and its transport lin
   assert.ok(crossed.includes('transport.box.exec') && crossed.includes('transport.box.destroy'));
   assert.ok(kept.some(([, kind]) => kind === 'box.ended'));
 });
+test('a tapped provider says whether it binds mounts exactly as the provider under it does', () => {
+  const plain = { name: 'plain', create: async () => ({ ok: false, error: { code: 'unsupported' } }), attach: async () => ({ ok: true, value: undefined }), list: async () => ({ ok: true, value: [] }) };
+  const options = { cross: () => false, window: { open: 0 } };
+  assert.equal(tapBox({ ...plain, mounts: true }, options).mounts, true);
+  assert.equal(tapBox({ ...plain, mounts: false }, options).mounts, false);
+  assert.equal('mounts' in tapBox(plain, options), false);
+});
 test('a box that will not be destroyed is not recorded as ended, and the failure comes back to the caller', async () => {
   const kept = [];
   const stuck = { id: 'b1', facts: () => ({}), exec: async () => ({ ok: true, value: {} }), upload: async () => ({ ok: true }), download: async () => ({ ok: true }), status: async () => ({ ok: true, value: { state: 'running' } }), destroy: async () => ({ ok: false, error: { code: 'unavailable' } }) };

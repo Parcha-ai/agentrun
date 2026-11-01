@@ -69,6 +69,9 @@ current_gen() { sed -n "s/^GEN='\(.*\)'\$/\1/p" "$D/spec.sh" 2>/dev/null; }
 MYGEN=$GEN
 stale() { [ "$(current_gen)" != "$MYGEN" ]; }
 # Every process started from $SELF reads this directory again: none starts unless it and the spool are still the launcher's own.
+# Each is given its starter's generation as its last argument and takes it as its own (run, supervise and watch below), never
+# the spec's: by the time it reads the spec a later launch of the name may have written it, and then it is a leftover of the
+# earlier launch and does nothing.
 detach() { own_dirs || exit 13; ( $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
 # The same, with this process's frame on the new process's stdin (a pipe from the builtin printf: no argv holds it).
 detach_framed() { own_dirs || exit 13; ( send_frame | $SETSID sh "$SELF" "$@" >/dev/null 2>&1 & ); }
@@ -167,7 +170,7 @@ run() {
 ensure_watch() {
   [ ! -e "$D/done" ] || return 0
   alive "$(rd watch.pid)" "$(rd watch.ticks)" && return 0
-  detach watch "$D"
+  detach watch "$D" "$MYGEN"
   # The watchdog is part of the launcher: the program starts, and a caller is told so, only once it has registered.
   i=0
   while [ "$i" -lt 50 ] && ! alive "$(rd watch.pid)" "$(rd watch.ticks)"; do
@@ -182,7 +185,7 @@ start_one() {
   wr starts $n
   wr started.at "$(now)"
   write_live starting "" "$(rd lastexit)" || exit 0
-  if [ "$FRAMED" = 1 ]; then detach_framed run "$D" $n; else detach run "$D" $n; fi
+  if [ "$FRAMED" = 1 ]; then detach_framed run "$D" $n "$MYGEN"; else detach run "$D" $n "$MYGEN"; fi
   i=0
   while [ ! -e "$D/pid.$n" ] && [ "$i" -lt 50 ]; do
     sleep $TICK
@@ -262,6 +265,7 @@ watch() {
   lock
   other=$(rd watch.pid)
   if [ -n "$other" ] && [ "$other" != "$$" ] && alive "$other" "$(rd watch.ticks)"; then unlock; exit 0; fi
+  if stale; then unlock; exit 0; fi
   wr watch.pid $$
   wr watch.ticks "$(ticks $$)"
   unlock
@@ -273,7 +277,7 @@ watch() {
     # (the launch reads lost; a caller that holds them again launches it again).
     if ! alive "$(rd launcher.pid)" "$(rd launcher.ticks)"; then
       if [ "$FRAMED" = 1 ]; then watch_over; fi
-      detach supervise "$D"
+      detach supervise "$D" "$MYGEN"
     fi
     trim_log
   done
@@ -733,7 +737,7 @@ start_launch() {
     command -v base64 >/dev/null 2>&1 || { echo "UNSUPPORTED this box has no base64 to decode the launch's stdin"; exit 10; }
     read_frame || { echo "INVALID the launch frame is malformed (this launch carries stdin or secrets: launch it with them)"; exit 7; }
   fi
-  if [ "$FRAMED" = 1 ]; then detach_framed supervise "$D"; else detach supervise "$D"; fi
+  if [ "$FRAMED" = 1 ]; then detach_framed supervise "$D" "$MYGEN"; else detach supervise "$D" "$MYGEN"; fi
 }
 
 # A stop's hook (beforeStop), after the drain and before the final kill: in a session of its own, bounded by HOOK_TENTHS;
@@ -780,9 +784,9 @@ case "$MODE" in
   trim) trim_log ;;
   centis) centis ;;
   clear) clear_dir ;;
-  run) if [ "$FRAMED" = 1 ]; then read_frame || exit 7; fi; run "$3" ;;
-  supervise) if [ "$FRAMED" = 1 ]; then read_frame || exit 7; fi; supervise ;;
-  watch) watch ;;
+  run) MYGEN=$4; if [ "$FRAMED" = 1 ]; then read_frame || exit 7; fi; run "$3" ;;
+  supervise) MYGEN=$3; if [ "$FRAMED" = 1 ]; then read_frame || exit 7; fi; supervise ;;
+  watch) MYGEN=$3; watch ;;
   start) start_launch ;;
   stop) stop_for "$3" "$4" ;;
   status) status ;;

@@ -5,7 +5,7 @@ import { cpSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync 
 import path from "node:path";
 import { test } from "node:test";
 import {
-  AgentHomeError, createAgentHome, localHostKey, MAX_SESSION_COOKIE_AGE_MS, packHome, projectForExport, SECRET_KINDS, sessionVault, startRun, VAULT_KEYS_FILE,
+  AgentHomeError, createAgentHome, localHostKey, MAX_SESSION_COOKIE_AGE_MS, packHome, projectForExport, seal, SECRET_KINDS, sessionVault, startRun, unseal, VAULT_KEYS_FILE,
 } from "../dist/index.js";
 import { put, LeasesDoc, RunsDoc, VaultDoc } from "../dist/kinds.js";
 import { documentKinds } from "../dist/pack-shared.js";
@@ -529,4 +529,16 @@ test("an error about a malformed origin names only the fault: a fixed message, w
   const state = { ...chromeState(), localStorage: { [`https://${secret}.example`]: { k: 1 } } };
   await assert.rejects(vault.capture({ sessionKey: "x", origins: [A], state }), (error) => named(error, LOCAL_STORAGE_FAULT), "localStorage");
   assert.equal((await vault.list()).some((entry) => entry.sessionKey === "x"), false, "nothing was saved");
+});
+
+test("seal and unseal, shared with a host, are the vault's format: IV, ciphertext and tag, opened by the test's own reading, and bound to their key and aad", () => {
+  const key = randomBytes(32);
+  const sealed = seal(key, Buffer.from(marker("shared")), "host|v1|NAME");
+  const decipher = createDecipheriv("aes-256-gcm", key, sealed.subarray(0, 12)).setAAD(Buffer.from("host|v1|NAME"));
+  decipher.setAuthTag(sealed.subarray(sealed.length - 16));
+  assert.equal(Buffer.concat([decipher.update(sealed.subarray(12, sealed.length - 16)), decipher.final()]).toString(), marker("shared"));
+  assert.equal(unseal(key, sealed, "host|v1|NAME").toString(), marker("shared"));
+  assert.throws(() => unseal(key, sealed, "host|v1|OTHER"), "another aad does not open it");
+  assert.throws(() => unseal(randomBytes(32), sealed, "host|v1|NAME"), "nor another key");
+  assert.ok(!holds(sealed, marker("shared")));
 });
