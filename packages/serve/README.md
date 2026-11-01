@@ -471,6 +471,29 @@ the answer is sent, so a retry after a restart gets the first answer.
 A completed agentic run's `result` is `{output: null, final_answer}`; a completed workflow run's is
 `{output: <the workflow's output>, final_answer: null}`.
 
+## Learning
+
+Each agent has a learning repository, `DATA/homes/<agent id>/learning/`: plain git with `main` checked out, laid out as
+[`packages/learn`'s SPEC](../learn/SPEC.md) says (`learnings/INDEX.md`, one line per note, `learnings/L-<12 hex>.md`,
+`.agents/skills/<name>/SKILL.md`, `memos/<run id>.md`). The server makes it when the agent's first agentic run is made,
+with one commit on `main` that holds only `learnings/INDEX.md` (a `# Learnings` line), and is its only writer. Every git
+call it makes there runs with the repository's hooks and fsmonitor off, no replace refs, no lazy fetch and no system or
+global config, one at a time per agent. The agent's definition stays in the store: the repository holds what it learned.
+
+Every agentic run, on any harness, starts from `main` as it is when the run is made:
+
+- `runs/<id>/learning.json` pins that commit (`seed`). It is written once: a resume or a follow-up reads the same commit,
+  however `main` moves on.
+- Each `.agents/skills/<name>/SKILL.md` that commit holds is written into the run's `work/.agents/skills/` and prompted
+  after the revision's skills. A revision's skill of the same name wins, and the learned one is left out.
+- When `learnings/INDEX.md` holds a note line, its text goes into the run's instructions in a `<learned>` section.
+
+The server reads the commit with git plumbing, never the working tree; the run's process reads only the pin and those
+files, and never runs git. What the commit holds over SPEC's caps (4096 bytes for the index, 32768 for a skill), or that
+is not a regular UTF-8 file, is not read, and the server's stderr names it. Workflow runs and imported runs are not
+seeded. A host without git 2.40 or later runs every agent with nothing learned, and says so once on stderr. Nothing
+writes to `main` after its first commit yet: what a run learns stays in the run.
+
 ## Spend cap
 
 An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process

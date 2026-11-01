@@ -2,7 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { Json } from "./validate.js";
 
 /** The server's own file in each run's directory: the run's title, input and how it was asked to run. */
@@ -15,6 +15,15 @@ export const RUN_CANCELLED = "cancelled";
 export const RUN_LAUNCHING = "launching";
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
+
+/** The directory under the data directory that holds each agent's home. */
+export const HOMES_DIR = "homes";
+/** An agent's home: `<data>/homes/<agent id>`. */
+export function homeOf(data: string, agentId: string): string {
+  return join(data, HOMES_DIR, agentId);
+}
+/** The paths in an agent's home that only the host writes. */
+export const HOME_HOST_OWNED = ["learning"];
 
 /** The file parsed as JSON, or null when it is missing, unreadable, or not whole JSON (a half-written file). */
 export const readJson = (path: string): Promise<Json | null> =>

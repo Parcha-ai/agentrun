@@ -22,6 +22,7 @@ import { readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
+import { readPin } from "./learning.js";
 import { completer } from "./llm.js";
 import { imageLoader } from "./pdf-pages.js";
 import { type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
@@ -37,13 +38,18 @@ export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
 /** A call node's tool failure, as the value its effect completed with (runEffect below). */
 const TOOL_FAILED = "agentrun_serve_tool_failed";
 
-/** The revision's instructions, then each skill's `<name>/SKILL.md` from the run's workspace, by name. */
-export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: string): Promise<string> {
+/** The revision's instructions, then what the run's pin in `root` says it learned (learning.ts): the index of its notes,
+ *  in a `<learned>` section. Then each skill's `<name>/SKILL.md` from the run's workspace, by name: the revision's, then
+ *  the learned ones the pin lists. Every harness's run is prompted with it, so each starts from the same seed. */
+export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: string, root?: string): Promise<string> {
+  const pin = root === undefined ? undefined : await readPin(root);
+  const own = skillNames(skillFiles);
   const skills = await Promise.all(
     // Through no link (workspace.ts): a skill directory, or its SKILL.md, linked out of the workspace is refused.
-    skillNames(skillFiles).map(async (name) => `<skill name="${name}">\n${(await readWorkText(work, [".agents", "skills", ...name.split("/"), "SKILL.md"].join("/"))).trim()}\n</skill>`),
+    [...own, ...(pin?.skills ?? []).filter((name) => !own.includes(name))].map(async (name) => `<skill name="${name}">\n${(await readWorkText(work, [".agents", "skills", ...name.split("/"), "SKILL.md"].join("/"))).trim()}\n</skill>`),
   );
-  return [instructions.trim(), ...(skills.length ? ["Your skills follow. Use the one that fits the step you are on.", ...skills] : [])].join("\n\n");
+  const learned = pin?.learned ? [`<learned>\n${pin.learned.trim()}\n</learned>`] : [];
+  return [instructions.trim(), ...learned, ...(skills.length ? ["Your skills follow. Use the one that fits the step you are on.", ...skills] : [])].join("\n\n");
 }
 
 /** claude-agent's model and pi-ai's catalog that prices it: its own settings, never the gateway's (adapters.ts). */
@@ -83,7 +89,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const registry = createRegistry();
   registry.install(CodingTools);
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
-    const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work);
+    const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work, where.root);
     const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const, thinking: thinkingFor(revision.body.harness, thinkingLevel) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
@@ -130,7 +136,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work);
+    const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work, where.root);
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => marked.open(durable) } as unknown as AppOptions;
   }
   const meta = await readJson(join(where.root, RUN_META));

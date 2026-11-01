@@ -18,6 +18,7 @@ import { HARNESS_LOG_EVENT } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
+import { learningBlocker, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
@@ -376,6 +377,8 @@ export class Runs {
   private starting = 0;
   /** The start sweep of the boxes runs left: once, before any run opens a box (sweepOnce). */
   private swept?: Promise<void>;
+  /** Why this host keeps no learning repository, said once. */
+  private learningOff?: string;
   constructor(private readonly options: RunsOptions) {}
 
   private get store() {
@@ -1100,7 +1103,24 @@ export class Runs {
     }
   }
 
+  /** What an agentic run of `agentId` starts from: its learning repository's main (learning.ts), the repository made
+   *  first when it is absent. Undefined on a host without the git learning needs, which is said once. A repository that
+   *  cannot be made or read refuses the start. */
+  private async seedFor(agentId: string): Promise<Seed | undefined> {
+    const blocked = await learningBlocker(process.env);
+    if (blocked) {
+      if (this.learningOff !== blocked) process.stderr.write(`agentrun-serve: runs start with nothing learned: ${blocked}\n`);
+      this.learningOff = blocked;
+      return undefined;
+    }
+    return seedOf(this.options.agents.dir, agentId).catch((error: Error) => {
+      throw new ApiError("internal", `The agent ${agentId}'s learning repository could not be read: ${error.message}`);
+    });
+  }
+
   private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+    // Read before the run is made, so a learning repository that cannot be read leaves nothing behind.
+    const seed = revision.kind === "agentic" ? await this.seedFor(entry.agent.id) : undefined;
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
@@ -1110,6 +1130,11 @@ export class Runs {
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
     };
     await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
+    // After startRun, whose seedRun wrote the revision's skills into the run's work: the learned ones go in beside them.
+    if (seed && revision.kind === "agentic") {
+      await pinSeed(started.dir, started.workspace, seed, Object.keys(revision.body.skills));
+      for (const path of seed.skipped) warn(started.runId, `its learning repository's ${path} was not read`);
+    }
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version);
     this.runs.set(run.id, run);
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
