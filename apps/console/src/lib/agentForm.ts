@@ -49,16 +49,16 @@ export function createBody(f: { name: string; description: string; instructions:
   };
 }
 
-/** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, and, when the
- *  server says, which harnesses run it. An older server lists bare names. */
-export type ToolOffer = { name: string; available: boolean; missing?: string[]; harnesses?: string[] };
+/** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
+ *  (`summary`), and, when the server says, which harnesses run it. An older server lists bare names. */
+export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; harnesses?: string[] };
 
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
     if (typeof t === "string") return [{ name: t, available: true }];
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
-    const { name, available, missing, harnesses } = t as { name: string; available?: boolean; missing?: string[]; harnesses?: string[] };
-    return [{ name, available: available !== false, ...(missing?.length ? { missing } : {}), ...(harnesses ? { harnesses } : {}) }];
+    const { name, available, summary, missing, harnesses } = t as { name: string; available?: boolean; summary?: unknown; missing?: string[]; harnesses?: string[] };
+    return [{ name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(missing?.length ? { missing } : {}), ...(harnesses ? { harnesses } : {}) }];
   });
 }
 
@@ -72,8 +72,11 @@ export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
 /** A new agent's tools: on by default, every tool its harness runs here that the server can run now. */
 export const defaultTools = (harness: string, offers: ToolOffer[]) => toolsFor(harness, offers).filter((t) => t.available).map((t) => t.name);
 
-/** Whether an agent with these tools can reach the web: only through fetch_page. */
-export const reachesWeb = (tools: readonly string[]) => tools.includes("fetch_page");
+/** The tools that reach the web: a page read (fetch_page, web_fetch) or a search (web_search). The server's capabilities
+ *  mark no tool as one, so they are named here. */
+export const WEB_TOOLS: readonly string[] = ["fetch_page", "web_fetch", "web_search"];
+/** Whether an agent with these tools can reach the web: through any of WEB_TOOLS. */
+export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TOOLS.includes(t));
 
 const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex" };
 const ORDER: HarnessId[] = ["pi", "claude-agent", "codex"];

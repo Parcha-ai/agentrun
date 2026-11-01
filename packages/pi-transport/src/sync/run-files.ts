@@ -301,6 +301,7 @@ async function pullInto(
 		{ exclude: options.exclude, callTimeoutMs: options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS },
 		context,
 		undefined,
+		false,
 		refused,
 	);
 	if (!listed.ok) return listed;
@@ -718,7 +719,7 @@ export async function seedDir(
 	if (!moved.ok) return moved;
 	// The first mark: the box's own listing (its times are the box's) of what was sent, with the hash of each file as
 	// it was sent. What the box already held is left out, so the first pull asks for it.
-	const listed = await list(box, options.to, { callTimeoutMs: options.callTimeoutMs }, context, undefined, []);
+	const listed = await list(box, options.to, { callTimeoutMs: options.callTimeoutMs }, context, undefined, false, []);
 	if (!listed.ok) return listed;
 	const sentDirectories = new Set(entries.filter((entry) => entry.kind === "directory").map((entry) => entry.path));
 	const marked = listed.value.flatMap((entry) => {

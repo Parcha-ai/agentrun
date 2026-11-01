@@ -727,21 +727,32 @@ says what the host keeps so that it loses no more.
 
 `pullCheckpoint({ session, place, home, epoch, vault, ... })` takes one moment of a session off its box. It holds the
 session (a short drain), makes a sealed copy of the store in the box (`checkpointStore`), takes the workspace manifest,
-pulls the store (`moveFile`) and the files that changed since the previous checkpoint (`moveChanged`) into the vault,
+pulls the store (`moveFile`) and the content of the files that changed since the previous checkpoint into the vault,
 checks all of it, and lets the session go. The session is held through the pull because a file it writes meanwhile
 would no longer match the manifest. `holdMs` bounds the hold (120 s by default): every phase of the pull draws on the same clock, and a pull that outruns it is skipped (`failed`) and lets the session go. A checkpoint exists only when the
 store and the files are both on the host and verified; a store without its files is never kept. The vault
-(`localVault(directory)`: put `begin`/`commit`, `latest`, `get`, `prune`) is the host's disk, a generation per
-checkpoint made with hard links so that a generation costs its delta, and the newest 3 are kept (`keep`).
+(`localVault(directory)`: put `begin`/`commit`, `latest`, `get`, `prune`, and `holds`/`keep`/`content` for file contents)
+is the host's disk, a generation per checkpoint, and the newest 3 are kept (`keep`).
 A pull that does not complete is skipped, never half kept: `busy` (the session did not come to rest, with what held
 it), `changed` (a file moved on), `too_large` (`workspace.maxBytes`) or `failed`; the previous checkpoint stays the
 latest. `checkpointStats()` counts the checkpoints taken and the skips by reason, for a panel that says "checkpoint
 skipped: still running".
 
+A box is not trusted, and a checkpoint is what a box made, so the host never unpacks it. The box sends the bytes of the
+files the pull asks for, end to end, never names or an archive; the vault keeps each file's content once, as a plain
+file named by its SHA-256 and checked against it, so a generation costs its delta. The tree is the record's manifest:
+directories, symbolic links, hard links (`ManifestEntry.link`), named pipes (`kind: "fifo"`), modes (setuid included)
+and times are data the host never makes into anything. A listing with a path outside the tree (absolute, `..`, or
+through a link) is refused before a byte moves (`failed`). A restore writes a tar stream from the record and the
+contents, and the new box's own `tar` makes the tree, links included, there and nowhere else; the tree is then listed
+and hashed in the box against the record. A generation an earlier version kept as a tree the host unpacked is
+`refused` (`VaultError`, named in `no_checkpoint`): it is never read, unpacked or restored, a pull after it takes the
+workspace afresh, and `prune` removes it.
+
 `recoverHome` gains `vault` and `replace(place, context)`. When the lease's box is **gone** (`Box.status` says
 `ended`, or the provider no longer has it; a timeout or an error is never gone), the host's `replace` makes a box for
-the same environment, the newest checkpoint that still checks out (an older generation when it does not) is copied in
-and verified, the lease is taken at the next epoch (move id `restore-<epoch>`, the checkpoint's seal) and the home
+the same environment, the newest checkpoint that still checks out (its store and every content read again; an older
+generation when it does not) is made in it and verified, the lease is taken at the next epoch (move id `restore-<epoch>`, the checkpoint's seal) and the home
 resumes there. `recoverHome` never makes boxes. With no usable checkpoint it fails with `no_checkpoint` and changes
 nothing. The resume order's `move` says `kind: "restore"` and carries the checkpoint's `head` (`Seal.head`): commits of
 the lost box at or after it are gone and their sequence numbers are taken again, so whoever records the session's
