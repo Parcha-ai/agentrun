@@ -556,3 +556,18 @@ test("a Claude Code API error is a request that failed, at its 0 tokens, never u
   assert.equal(rows(interrupted.id).findLast((r) => r.kind === "user_message").summary, "Claude Code: No response requested.");
   assert.equal((await readSession(noted, "claude-code")).users, 2, "the note is not the person's");
 });
+
+test("a pi request that failed imports as failed, at its 0 tokens; one cut short keeps its text but not the start of its counts, so it is unmetered", async (t) => {
+  const { data, store, runs } = await importedOne(t, (home, project) => {
+    piSession(home, project, 40, { ended: "error" });
+    piSession(home, project, 41, { ended: "aborted" });
+  });
+  const [failed, cut] = runs;
+  assert.deepEqual([failed.state, cut.state], ["failed", "stopped"]);
+  const one = metricsOf(data, store, failed.id);
+  assert.deepEqual([one.metrics.requests, one.metrics.unmetered, one.metrics.input], [2, 0, 100]);
+  assert.deepEqual([one.answers[1].stopReason, one.answers[1].errorMessage], ["error", "529 overloaded"]);
+  const two = metricsOf(data, store, cut.id);
+  assert.deepEqual([two.metrics.requests, two.metrics.unmetered, two.metrics.input], [2, 1, 100]);
+  assert.deepEqual(two.answers[1].content, [{ type: "text", text: "Read: three notes." }]);
+});

@@ -27,8 +27,8 @@ export type ToolCall = {
 /** A request's tokens as pi counts them: `input` is the input neither read from nor written to the cache. */
 export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number };
 /** An assistant turn is one model request: `model` the one it ran on ("provider/model"), `effort` the effort or
- *  thinking level it ran at, `usage` its tokens, each absent when the source does not say; `failed`, an API error.
- *  A note is a line the harness itself wrote in the conversation: no request, nor the person's. */
+ *  thinking level it ran at, `usage` its tokens, each absent when the source does not say; `error`, why it failed. A
+ *  note is a line the harness itself wrote in the conversation: no request, nor the person's. */
 export type Turn =
   | { role: "user"; text: string; at: number }
   | { role: "note"; author: string; text: string; at: number }
@@ -42,7 +42,7 @@ export type Turn =
       model?: string;
       effort?: string;
       usage?: Usage;
-      failed?: boolean;
+      error?: string;
     }
   | {
       role: "toolResult";
@@ -312,7 +312,7 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
     }
     if (!key && !text && calls.length === 0) return;
     const effort = effortOf(value.perTurnEffort) ?? effortOf(value.effort);
-    const turn: Answer = { role: "assistant", text, calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { failed } : {}) };
+    const turn: Answer = { role: "assistant", text, calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: text || "API error" } : {}) };
     if (key) current.keyed.set(key, turn);
     add(turn);
     return;
@@ -541,7 +541,8 @@ function piRecord(value: Record<string, unknown>, at: number, session: Session, 
     priced.unknown ||= cost === undefined;
     session.costUsd = priced.unknown ? undefined : priced.sum;
     session.state = message.stopReason === "error" ? "failed" : message.stopReason === "aborted" ? "stopped" : "completed";
-    const tokens = tokensOf(message.usage, PI_TOKENS);
+    // A request cut before its end has only the start of its counts: unknown, as a live run's.
+    const tokens = message.stopReason === "aborted" ? undefined : tokensOf(message.usage, PI_TOKENS);
     add({
       role: "assistant",
       text,
@@ -551,6 +552,7 @@ function piRecord(value: Record<string, unknown>, at: number, session: Session, 
       ...(session.model ? { model: session.model } : {}),
       ...(current.effort ? { effort: current.effort } : {}),
       ...(tokens ? { usage: tokens } : {}),
+      ...(message.stopReason === "error" ? { error: str(message.errorMessage) ?? "unknown error" } : {}),
     });
   }
 }

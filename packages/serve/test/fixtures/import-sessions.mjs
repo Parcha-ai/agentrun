@@ -354,8 +354,9 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
 
 /** A pi session in `cwd`: a question, a read call and its result, an answer; each request priced, its usage counted
  *  (with `counted: false`, zeros, as pi writes a request it did not measure), the session at thinking level `thinking`.
- *  With `answerModel`, a model change before the answer; with `readFails`, the read's result is an error. */
-export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "three notes", costs = [0.002, 0.003], fresh = false, counted = true, thinking = "high", answerModel, readFails = false } = {}) {
+ *  With `answerModel`, a model change before the answer; with `readFails`, the read's result is an error. `ended`: how the
+ *  answer's request ended ("error": no answer, zero usage; "aborted": cut, its counts only the start). */
+export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "three notes", costs = [0.002, 0.003], fresh = false, counted = true, thinking = "high", answerModel, readFails = false, ended = "stop" } = {}) {
   const id = sessionId(n);
   const usage = (total) => ({
     input: counted ? 100 : 0,
@@ -433,12 +434,13 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
       timestamp: at(3),
       message: {
         role: "assistant",
-        content: [{ type: "text", text: `Read: ${output}.` }],
+        content: ended === "error" ? [] : [{ type: "text", text: `Read: ${output}.` }],
         provider: "anthropic",
         model: answerModel ?? "claude-sonnet-5",
         api: "anthropic-messages",
-        usage: usage(costs[1]),
-        stopReason: "stop",
+        usage: ended === "error" ? { ...usage(0), input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } : usage(costs[1]),
+        stopReason: ended,
+        ...(ended === "error" ? { errorMessage: "529 overloaded" } : {}),
         timestamp: t(3),
       },
     },

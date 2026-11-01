@@ -326,7 +326,7 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
     entry: AssistantEntry as unknown as typeof UserEntry,
     model: {
       role: "assistant",
-      content: turn.failed ? [] : [...(turn.text ? [{ type: "text", text: turn.text }] : []), ...turn.calls],
+      content: turn.error !== undefined ? [] : [...(turn.text ? [{ type: "text", text: turn.text }] : []), ...turn.calls],
       api: "imported",
       provider,
       model: id.join("/") || provider,
@@ -340,7 +340,7 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
         cost: cost === undefined ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
       },
       // A failed request's zero counts are its counts, as a live run's failed request's are.
-      ...(turn.failed ? { stopReason: "error", errorMessage: turn.text || "API error" } : { stopReason: turn.calls.length ? "toolUse" : "stop" }),
+      ...(turn.error !== undefined ? { stopReason: "error", errorMessage: turn.error } : { stopReason: turn.calls.length ? "toolUse" : "stop" }),
       timestamp: turn.at,
     },
   };
