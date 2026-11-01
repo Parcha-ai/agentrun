@@ -13,11 +13,14 @@ const SHAPES: readonly (readonly [string, RegExp])[] = [
 /** The kinds of secret-shaped text in `text`. */
 export const secretShapes = (text: string): string[] => SHAPES.filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind);
 
-/** `text` with each of `values` (as written, and as JSON writes it) and each secret-shaped run replaced by "[redacted]":
- *  what the checker prints never holds a secret, wherever it was found, a file's name and the branch's included. */
+/** `text` with each of `values` (as written, as JSON writes it, and in each form the matcher finds as it stands: hex in
+ *  any case, base64) and each secret-shaped run replaced by "[redacted]": what the checker prints never holds a secret,
+ *  wherever it was found, a file's name and the branch's included. */
 export function redactSecrets(text: string, values: readonly string[]): string {
   let out = text;
-  const forms = values.filter((v) => v.length > 0).flatMap((v) => [v, JSON.stringify(v).slice(1, -1)]);
+  const given = values.filter((v) => v.length > 0);
+  for (const value of given.filter(longEnough)) out = out.replace(new RegExp(needlesOf(value).hex, "gi"), "[redacted]");
+  const forms = given.flatMap((v) => [v, asJson(v), ...(longEnough(v) ? needlesOf(v).plain : [])]);
   for (const form of [...new Set(forms)].sort((a, b) => b.length - a.length)) out = out.split(form).join("[redacted]");
   for (const [, pattern] of SHAPES) out = out.replace(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`), "[redacted]");
   return out;
@@ -45,13 +48,21 @@ function percentDecode(text: string, plusIsSpace: boolean): string {
   return (plusIsSpace ? text.replaceAll("+", " ") : text).replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => Buffer.from(run.replaceAll("%", ""), "hex").toString("utf8"));
 }
 
-/** A matcher for `values` in a text: plain, split by whitespace, percent or form encoded, base64 or hex. Values shorter
- *  than MIN_SECRET are left out. */
+const asJson = (value: string) => JSON.stringify(value).slice(1, -1);
+
+/** What a matcher looks for of `value`: its forms as they stand in a squeezed text (plain, as JSON writes it, base64 or
+ *  base64url), and its hex, in any case. */
+function needlesOf(value: string): { plain: string[]; hex: string } {
+  const raw = Buffer.from(value, "utf8");
+  return { plain: [...new Set([squeeze(value), squeeze(asJson(value)), ...base64Needles(raw)])], hex: raw.toString("hex") };
+}
+
+const longEnough = (value: string) => [...value].length >= MIN_SECRET;
+
+/** A matcher for `values` in a text: plain, split by whitespace, as JSON writes it, percent or form encoded, base64 or
+ *  hex. Values shorter than MIN_SECRET are left out. */
 export function valueMatcher(values: readonly string[]): (text: string) => boolean {
-  const needles = values.filter((value) => [...value].length >= MIN_SECRET).map((value) => {
-    const raw = Buffer.from(value, "utf8");
-    return { plain: [squeeze(value), ...base64Needles(raw)], hex: raw.toString("hex") };
-  });
+  const needles = values.filter(longEnough).map(needlesOf);
   if (!needles.length) return () => false;
   return (text) => {
     const views = [...new Set([squeeze(text), squeeze(percentDecode(text, false)), squeeze(percentDecode(text, true))])];

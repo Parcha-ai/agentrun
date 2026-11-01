@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkBranch, NO_TOOL_LIST } from "../dist/index.js";
-import { BRANCH, HOST_TOOLS, NOTE_ID, OLD_NOTE, RUN, cleanFiles, index, memo, note, skill, workflow } from "./support.mjs";
+import { BRANCH, HOST_TOOLS, NOTE_ID, OLD_NOTE, RUN, cleanFiles, index, memo, note, readme, skill, workflow } from "./support.mjs";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
@@ -195,6 +195,32 @@ test("a secret's value is printed nowhere: not in a file's name, not in the bran
     assert.equal(out.status, 1, out.stdout + out.stderr);
     assert.match(out.stdout, /\[redacted\]/, "control: the problems are reported, redacted");
     assert.equal((out.stdout + out.stderr).includes(value), false, `${json ? "JSON" : "text"} output holds the value`);
+  }
+});
+
+test("a value refused in a path, the branch's name or a detail, in hex of any case or base64, is printed in neither report", async (t) => {
+  const value = "Zq9sEcReT77xKp";
+  const hex = Buffer.from(value).toString("hex");
+  const b64 = Buffer.from(value).toString("base64url");
+  const files = {
+    ...cleanFiles(),
+    [`memos/${RUN}.md`]: memo({ proposed: ["learnings/L-7c21e0a4b9d3.md (new)", ".agents/skills/ (new)", "workflows/ (new)"] }),
+    [`.agents/skills/${hex}/SKILL.md`]: skill(),
+    [`workflows/${hex}/workflow.json`]: workflow(),
+    [`workflows/${hex}/README.md`]: readme,
+    [`notes/${hex.toUpperCase()}.txt`]: "a file named for a secret\n",
+  };
+  const { dir, tools } = await repo(t, files, { branch: `runs/${b64}` });
+  for (const json of [true, false]) {
+    const out = cli(dir, ["check", "--base", "main", "--tools", tools, "--refuse-values-from-env", "STORE_PASS", ...(json ? ["--json"] : [])], { STORE_PASS: value });
+    assert.equal(out.status, 1, out.stdout + out.stderr);
+    const printed = out.stdout + out.stderr;
+    for (const form of [value, hex, b64]) assert.equal(printed.toLowerCase().includes(form.toLowerCase()), false, `${json ? "JSON" : "text"} output holds ${form}`);
+    if (!json) continue;
+    const named = found(JSON.parse(out.stdout));
+    for (const problem of [["secret_value", undefined], ["secret_value", ".agents/skills/[redacted]/SKILL.md"], ["skill", ".agents/skills/[redacted]/SKILL.md"], ["secret_value", "workflows/[redacted]/workflow.json"], ["secret_value", "notes/[redacted].txt"]]) {
+      assert.ok(named.some(([rule, path]) => rule === problem[0] && path === problem[1]), `${JSON.stringify(problem)} in ${JSON.stringify(named)}`);
+    }
   }
 });
 
