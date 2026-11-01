@@ -27,6 +27,8 @@ export const MONID_API = "https://api.monid.ai";
 /** The most characters of one answer the model reads. */
 export const CLIP = 60_000;
 const TERMINAL = ["COMPLETED", "FAILED", "BLOCKED", "STOPPED", "TIMED_OUT"];
+/** The shortest limit a read of a run gets near the deadline: it outlives the deadline by this much at most. */
+const MIN_READ_MS = 100;
 
 /** monid's answer, or `error` saying why there is none, with the HTTP `status` when one came. */
 export type MonidAnswer = Json & { error?: string };
@@ -116,8 +118,9 @@ export function monidClient(options: MonidOptions) {
         if (signal?.aborted) return stop(runId, "was stopped by the caller");
         if (Date.now() >= deadline) return stop(runId, `did not end in ${waitMs / 1000} s`);
         await sleep(Math.max(0, Math.min(pollMs, deadline - Date.now())), signal);
-        if (signal?.aborted) continue;
-        const polled = await call("GET", `/v1/runs/${encodeURIComponent(runId)}`, undefined, signal);
+        // Past the deadline, or stopped, the stop goes now: a read here would hold it while the paid run goes on.
+        if (signal?.aborted || Date.now() >= deadline) continue;
+        const polled = await call("GET", `/v1/runs/${encodeURIComponent(runId)}`, undefined, signal, Math.min(requestMs, Math.max(MIN_READ_MS, deadline - Date.now())));
         // A read is safe to repeat: no answer, a 429 or a 5xx is read again until the deadline; any other refusal ends it.
         if (polled.status === 200) record = polled.body;
         else if (polled.status >= 400 && polled.status < 500 && polled.status !== 429) return { ...failure(polled.status, polled.body), runId };
@@ -127,15 +130,22 @@ export function monidClient(options: MonidOptions) {
 }
 
 /** `answer` as the model reads it: JSON, cut at CLIP characters, the whole then filed under `work`'s evidence/monid/
- *  (by run id, else by `label` and the time) and the cut saying where. */
+ *  (by run id, else by `label` and the time) and the cut saying where. A copy that cannot be filed (a full disk) still
+ *  answers, cut and saying so: the answer may have been paid for. */
 export async function monidText(answer: MonidAnswer, work: string, label: string): Promise<string> {
   const text = JSON.stringify(answer);
   if (text.length <= CLIP) return text;
   const runId = typeof answer.runId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(answer.runId) ? answer.runId : undefined;
   const name = `${runId ?? `${label}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`}.json`;
-  await mkdir(join(work, "evidence", "monid"), { recursive: true });
-  await writeFile(join(work, "evidence", "monid", name), text);
-  return `${text.slice(0, CLIP)}\n[cut at ${CLIP} of ${text.length} characters; the whole answer is in the run's files at evidence/monid/${name}]`;
+  const cut = `${text.slice(0, CLIP)}\n[cut at ${CLIP} of ${text.length} characters; `;
+  try {
+    await mkdir(join(work, "evidence", "monid"), { recursive: true });
+    await writeFile(join(work, "evidence", "monid", name), text);
+  } catch (error) {
+    // The error's code only (ENOSPC, ENOTDIR): its message names the server's paths.
+    return `${cut}the whole answer could not be saved (${(error as NodeJS.ErrnoException)?.code ?? "write failed"})]`;
+  }
+  return `${cut}the whole answer is in the run's files at evidence/monid/${name}]`;
 }
 
 type Kind = "discover" | "inspect" | "run";

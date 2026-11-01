@@ -1,7 +1,7 @@
 // monid's catalog on one key: the client against the tests' fake monid (fixtures/faux-monid.mjs), the three table tools in
 // capabilities and at a save, and a pi run whose model calls them by their wire names. No network, no real key.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { wireName } from "../dist/catalog.js";
@@ -68,6 +68,43 @@ test("a run its caller stops is asked to stop at monid and answers so; one that 
   const outlasted = await monid({ waitMs: 50, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }).run({ provider: "faux", endpoint: "/slow" });
   assert.match(outlasted.error, /did not end in 0\.05 s; monid was asked to stop it/);
   assert.equal(calls.at(-1).path, `/v1/runs/${outlasted.runId}/stop`);
+});
+
+test("at the deadline the stop goes at once: after a sleep that spent the whole wait nothing is read, and a slow read is cut at the deadline", async () => {
+  const waitMs = 300;
+  let from = calls.length;
+  let start = Date.now();
+  const spent = await monid({ waitMs, sleep: () => new Promise((resolve) => setTimeout(resolve, waitMs + 20)) }).run({ provider: "faux", endpoint: "/slow" });
+  assert.match(spent.error, /did not end in 0\.3 s; monid was asked to stop it/);
+  assert.deepEqual(sent(from), ["POST /v1/run", `POST /v1/runs/${spent.runId}/stop`], "no read past the deadline");
+  assert.ok(Date.now() - start < waitMs + 200, `stopped ${Date.now() - start} ms after the start`);
+  // Each read hangs until its limit: the one the deadline leaves, never the 30 s a read gets on its own.
+  const reads = [];
+  const slowReads = (url, init = {}) => {
+    if ((init.method ?? "GET") !== "GET") return fakeMonid(url, init);
+    const read = { at: Date.now() };
+    reads.push(read);
+    return new Promise((_, reject) => init.signal.addEventListener("abort", () => reject((read.cut = Date.now(), init.signal.reason)), { once: true }));
+  };
+  from = calls.length;
+  start = Date.now();
+  // A read's limit is an unref'd timer, as a socket would hold the loop: this holds it in the socket's place.
+  const held = setInterval(() => {}, 1_000);
+  const slow = await monid({ waitMs, fetch: slowReads }).run({ provider: "faux", endpoint: "/slow" }).finally(() => clearInterval(held));
+  assert.match(slow.error, /did not end in 0\.3 s; monid was asked to stop it/);
+  assert.deepEqual(sent(from), ["POST /v1/run", `POST /v1/runs/${slow.runId}/stop`]);
+  assert.ok(reads.length >= 1 && reads.every((read) => read.cut !== undefined && read.cut - start <= waitMs + 150), JSON.stringify(reads.map((read) => [read.at - start, read.cut - start])));
+  assert.ok(Date.now() - start < waitMs + 250, `stopped ${Date.now() - start} ms after the start`);
+});
+
+test("a cut answer whose whole copy cannot be filed still answers, cut and saying so", async (t) => {
+  const work = await scratch(t);
+  await mkdir(join(work, "evidence"), { recursive: true });
+  await writeFile(join(work, "evidence", "monid"), "a file where the directory would go");
+  const huge = await monid().run({ provider: "faux", endpoint: "/huge" });
+  const text = await monidText(huge, work, "run");
+  assert.equal(text.indexOf("\n[cut at"), CLIP);
+  assert.match(text, /the whole answer could not be saved \(E[A-Z]+\)\]$/);
 });
 
 test("a run's answer over 60,000 characters is cut, the whole of it filed as evidence/monid/<run id>.json", async (t) => {
