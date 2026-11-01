@@ -44,10 +44,10 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
     ...base,
     ...turn,
     type: "assistant",
-    uuid: "a4",
+    uuid: `a4-${n}`,
     timestamp: at(3 + pause),
     message: {
-      id: "msg_2",
+      id: `msg_2_${n}`,
       role: "assistant",
       model: answerModel,
       content: [{ type: "text", text: `The files: ${output}.` }],
@@ -58,7 +58,7 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
     {
       ...base,
       type: "user",
-      uuid: "u1",
+      uuid: `u1-${n}`,
       timestamp: at(0),
       message: { role: "user", content: prompt },
     },
@@ -66,10 +66,10 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
       ...base,
       ...turn,
       type: "assistant",
-      uuid: "a1",
+      uuid: `a1-${n}`,
       timestamp: at(1),
       message: {
-        id: "msg_1",
+        id: `msg_1_${n}`,
         role: "assistant",
         model: "claude-sonnet-5",
         content: [{ type: "thinking", thinking: "unseen" }],
@@ -80,10 +80,10 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
       ...base,
       ...turn,
       type: "assistant",
-      uuid: "a2",
+      uuid: `a2-${n}`,
       timestamp: at(1),
       message: {
-        id: "msg_1",
+        id: `msg_1_${n}`,
         role: "assistant",
         model: "claude-sonnet-5",
         content: [{ type: "text", text: "Listing them." }],
@@ -94,10 +94,10 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
       ...base,
       ...turn,
       type: "assistant",
-      uuid: "a3",
+      uuid: `a3-${n}`,
       timestamp: at(1),
       message: {
-        id: "msg_1",
+        id: `msg_1_${n}`,
         role: "assistant",
         model: "claude-sonnet-5",
         content: [
@@ -114,7 +114,7 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
     {
       ...base,
       type: "user",
-      uuid: "u2",
+      uuid: `u2-${n}`,
       timestamp: at(2),
       message: {
         role: "user",
@@ -127,10 +127,10 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
             ...base,
             ...turn,
             type: "assistant",
-            uuid: "a3b",
+            uuid: `a3b-${n}`,
             timestamp: at(2),
             message: {
-              id: "msg_1",
+              id: `msg_1_${n}`,
               role: "assistant",
               model: "claude-sonnet-5",
               content: [{ type: "tool_use", id: "toolu_2", name: "Read", input: { file_path: "missing.md" } }],
@@ -140,7 +140,7 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
           {
             ...base,
             type: "user",
-            uuid: "u2b",
+            uuid: `u2b-${n}`,
             timestamp: at(2),
             message: {
               role: "user",
@@ -152,7 +152,7 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
     {
       ...base,
       type: "user",
-      uuid: "u3",
+      uuid: `u3-${n}`,
       timestamp: at(2),
       isMeta: true,
       message: { role: "user", content: "a hook's note, not the person's" },
@@ -161,12 +161,12 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
       ? {
           ...base,
           type: "assistant",
-          uuid: "a4",
+          uuid: `a4-${n}`,
           timestamp: at(3),
           isApiErrorMessage: true,
           error: "rate_limit",
           message: {
-            id: "msg_2",
+            id: `msg_2_${n}`,
             role: "assistant",
             model: "<synthetic>",
             content: [{ type: "text", text: "API Error: overloaded" }],
@@ -180,7 +180,7 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
           {
             ...base,
             type: "user",
-            uuid: "u4",
+            uuid: `u4-${n}`,
             timestamp: at(4),
             message: { role: "user", content: "[Request interrupted by user]" },
           },
@@ -189,9 +189,9 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
                 {
                   ...base,
                   type: "assistant",
-                  uuid: "a5",
+                  uuid: `a5-${n}`,
                   timestamp: at(4),
-                  message: { id: "msg_3", role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "No response requested." }], usage: claudeUsage(0, 0, 0, 0) },
+                  message: { id: `msg_3_${n}`, role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "No response requested." }], usage: claudeUsage(0, 0, 0, 0) },
                 },
               ]
             : []),
@@ -219,7 +219,7 @@ const plus = (a, b) => Object.fromEntries(Object.keys(a).map((key) => [key, a[ke
  *  `thenModel` (else `model`). Each request's usage is in a token_count event (the first one written twice), with `usage: "records"`
  *  also in a token_usage_record (the first one written twice), with `usage: "none"` in neither. With `failing`, the first
  *  request also runs two calls that fail: one whose output says so, one whose completed item does, after its output. */
-export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, aborted = false, events = true, then, model = "gpt-sol-6.1", thenModel = model, usage = "token_count", failing = false, provider = "openai" } = {}) {
+export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, parent = sessionId(n + 1000), aborted = false, events = true, then, model = "gpt-sol-6.1", thenModel = model, usage = "token_count", failing = false, provider = "openai" } = {}) {
   const id = sessionId(n);
   const text = (value) => ({ type: "input_text", text: value });
   const requests = [codexUsage(900, 600, 40, 10), codexUsage(1000, 900, 25, 5), codexUsage(1200, 1000, 10, 0)];
@@ -232,7 +232,7 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
       type: "event_msg",
       payload: { type: "token_count", info: { total_token_usage: total, last_token_usage: requests[k], model_context_window: 272000 }, rate_limits: null },
     };
-    const record = { timestamp: at(minute), type: "token_usage_record", payload: { thread_id: id, turn_id: `turn_${k}`, response_id: `resp_${k}`, usage: requests[k] } };
+    const record = { timestamp: at(minute), type: "token_usage_record", payload: { thread_id: id, turn_id: `turn_${k}`, response_id: `resp_${n}_${k}`, usage: requests[k] } };
     return [...(usage === "records" ? (again ? [record, record] : [record]) : []), count, ...(again ? [count] : [])];
   };
   const call = (minute, callId, command) => ({
@@ -275,7 +275,7 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
         source: subagent
           ? {
               subagent: {
-                thread_spawn: { parent_thread_id: sessionId(n + 1000) },
+                thread_spawn: { parent_thread_id: parent },
               },
             }
           : "cli",
@@ -447,4 +447,18 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
   ];
   const dir = `--${cwd.replace(/^\//, "").replaceAll("/", "-")}--`;
   return writeSession(join(home, ".pi", "agent", "sessions", dir, `2026-10-20T09-00-00-000Z_${id}.jsonl`), records, { fresh });
+}
+
+/** A Claude Code subagent's session under parent session `n`, as the CLI writes it in <session id>/subagents/: its
+ *  task, a Grep call and its result, and its answer, each request with its usage, on `model`. */
+export function claudeSubagent(home, cwd, n, k, { model = "claude-haiku-5", slug = cwd.replaceAll("/", "-") } = {}) {
+  const base = { sessionId: sessionId(n), cwd, isSidechain: true, userType: "external", version: "2.1.0", agentId: `a${k}` };
+  const usage = (input, output) => ({ input_tokens: input, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: output });
+  const records = [
+    { ...base, type: "user", uuid: `s${k}-u1-${n}`, timestamp: at(1), message: { role: "user", content: "Find the config." } },
+    { ...base, type: "assistant", uuid: `s${k}-a1-${n}`, timestamp: at(1), message: { id: `msg_sub${k}_1_${n}`, role: "assistant", model, content: [{ type: "tool_use", id: `toolu_sub${k}`, name: "Grep", input: { pattern: "config" } }], usage: usage(11, 13) } },
+    { ...base, type: "user", uuid: `s${k}-u2-${n}`, timestamp: at(2), message: { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_sub${k}`, content: "config.json" }] } },
+    { ...base, type: "assistant", uuid: `s${k}-a2-${n}`, timestamp: at(2), message: { id: `msg_sub${k}_2_${n}`, role: "assistant", model, content: [{ type: "text", text: "It is config.json." }], usage: usage(17, 19) } },
+  ];
+  return writeSession(join(home, ".claude", "projects", slug, sessionId(n), "subagents", `agent-a${k}.jsonl`), records);
 }

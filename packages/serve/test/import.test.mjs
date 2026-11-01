@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openStore, openStoreReader } from "@parcha/pi-durable-agent";
@@ -16,7 +16,7 @@ import { startServe } from "../dist/index.js";
 import { importCommand, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { summaryLines } from "../dist/import-summary.js";
-import { at as minute, claudeSession, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
+import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { client, FAUX, scratch } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -447,7 +447,7 @@ function metricsOf(data, store, runId) {
 }
 const tokensIn = (answer) => [answer.model, answer.usage.input, answer.usage.cacheRead, answer.usage.cacheWrite, answer.usage.output];
 
-test("a Claude Code import counts each request once, its records repeated around a parallel call's result or written twice; each answer keeps its model, a failed call its error, and the run its effort and time at work, a pause cut to the cap", async (t) => {
+test("a Claude Code import counts each request once, its records repeated around a parallel call's result or written twice; each answer keeps its model, a failed call its error, and the run its effort and time at work, a pause past the cap counting nothing", async (t) => {
   const { data, store, runs } = await importedOne(t, (home, project) => claudeSession(home, project, 31, { parallel: true, answerModel: "claude-haiku-5", pause: 60 }));
   const { metrics, answers } = metricsOf(data, store, runs[0].id);
   assert.deepEqual(metrics, {
@@ -460,7 +460,8 @@ test("a Claude Code import counts each request once, its records repeated around
     models: { "anthropic/claude-sonnet-5": 1, "anthropic/claude-haiku-5": 1 },
     model: "anthropic/claude-sonnet-5",
     tools: { Bash: { calls: 1, errors: 0 }, Read: { calls: 1, errors: 1 } },
-    activeMs: 2 * 60_000 + ACTIVE_GAP_MS,
+    // The 61-minute pause before the answer is past ACTIVE_GAP_MS: it counts nothing, as WakaTime counts it.
+    activeMs: 2 * 60_000,
     effort: "high",
   });
   assert.equal(ACTIVE_GAP_MS, 15 * 60_000);
@@ -712,4 +713,66 @@ test("a dry run counts a session the store holds already from its run, as the im
   const dry = await block("--dry-run");
   assert.deepEqual(dry.slice(2), imported.slice(2), "the numbers the import keeps for its held run");
   assert.equal(dry[0], imported[0]);
+});
+
+/** Session `n` resumed from the one at `file`, as Claude Code writes it: every record of the first, its uuid, message id
+ *  and time kept, its session id the new one's; then a prompt and an answer of its own. */
+function resumed(file, n) {
+  const copied = readFileSync(file, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line)).map((r) => (r.sessionId ? { ...r, sessionId: sessionId(n) } : r));
+  const base = { sessionId: sessionId(n), cwd: copied[0].cwd, isSidechain: false, userType: "external", version: "2.1.0" };
+  return writeSession(join(dirname(file), `${sessionId(n)}.jsonl`), [
+    ...copied,
+    { ...base, type: "user", uuid: `own-u-${n}`, timestamp: minute(20), message: { role: "user", content: "And the tests?" } },
+    { ...base, type: "assistant", uuid: `own-a-${n}`, timestamp: minute(21), message: { id: `msg_own_${n}`, role: "assistant", model: "claude-sonnet-5", content: [{ type: "text", text: "They pass." }], usage: { input_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 60 } } },
+  ]);
+}
+
+test("a response a resumed session's file copies counts once across the import, in the file that holds it first, and once still when a later import finds the copy", async (t) => {
+  // One import finds both.
+  const one = await importedOne(t, (home, project) => resumed(claudeSession(home, project, 91), 92));
+  const [first, copy] = one.runs.map((run) => one.store.runMetrics(run.id));
+  assert.deepEqual([first.requests, first.input, first.output], [2, 8, 80], "the first session keeps its own");
+  assert.deepEqual([copy.requests, copy.input, copy.output, copy.tools, copy.activeMs], [1, 50, 60, {}, 60_000], "the resumed one adds only its own request, and no time for the copy");
+  const db = new DatabaseSync(join(one.data, "runs", one.runs[1].id, "store", "run.sqlite"), { readOnly: true });
+  const kinds = db.prepare("SELECT json_extract(record, '$.kind') AS kind FROM entries ORDER BY id").all().map((r) => r.kind);
+  db.close();
+  assert.deepEqual(kinds, ["pi.user", "pi.assistant"], "its transcript is its own turns");
+
+  // A later import finds the copy: the run held already is counted, not the copy.
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "metered");
+  mkdirSync(project, { recursive: true });
+  const original = claudeSession(home, project, 93);
+  const data = join(root, "agents");
+  const store = openStore(data);
+  t.after(() => store.close());
+  const opts = { home, env: ENV, temp: join(root, "tmp") };
+  await runImport(store, await planImport(opts, store), opts);
+  resumed(original, 94);
+  await runImport(store, await planImport(opts, store), opts);
+  const later = store.listRuns().find((run) => run.importedFrom.session === sessionId(94));
+  const counted = store.runMetrics(later.id);
+  assert.deepEqual([counted.requests, counted.input, counted.output, counted.tools], [1, 50, 60, {}]);
+});
+
+test("a session's subagents are no runs of their own: their requests, tokens and tool calls are the session's, its model and transcript its own", async (t) => {
+  const { data, store, runs } = await importedOne(t, (home, project) => {
+    claudeSession(home, project, 95);
+    claudeSubagent(home, project, 95, 1);
+    codexSession(home, project, 96);
+    codexSession(home, project, 97, { subagent: true, parent: sessionId(96) });
+  });
+  assert.deepEqual(runs.map((run) => run.importedFrom.session), [sessionId(95), sessionId(96)], "no child is a run");
+  const claude = store.runMetrics(runs[0].id);
+  assert.deepEqual([claude.input, claude.cacheRead, claude.output, claude.requests, claude.unmetered], [8 + 11 + 17, 2300, 80 + 13 + 19, 4, 0]);
+  assert.deepEqual(claude.models, { "anthropic/claude-sonnet-5": 2, "anthropic/claude-haiku-5": 2 });
+  assert.equal(claude.model, "anthropic/claude-sonnet-5", "the run's model stays its own");
+  assert.deepEqual(claude.tools, { Bash: { calls: 1, errors: 0 }, Grep: { calls: 1, errors: 0 } });
+  const codex = store.runMetrics(runs[1].id);
+  assert.deepEqual([codex.input, codex.cacheRead, codex.output, codex.requests, codex.tools], [800, 3000, 130, 4, { shell: { calls: 2, errors: 0 } }]);
+  const db = new DatabaseSync(join(data, "runs", runs[0].id, "store", "run.sqlite"), { readOnly: true });
+  const answers = db.prepare("SELECT COUNT(*) AS n FROM entries WHERE json_extract(record, '$.kind') = 'pi.assistant'").get().n;
+  db.close();
+  assert.equal(answers, 2, "the transcript holds the session's own answers");
 });

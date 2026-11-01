@@ -16,7 +16,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { type EntryLike, type RunMetrics, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
 import { readJson, RUN_META } from "./files.js";
-import { HARNESS_OF, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
+import { childFiles, HARNESS_OF, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
 import { catalogPrices, type Listed } from "./model.js";
 import { DEFAULT_PORT } from "./server.js";
@@ -60,9 +60,10 @@ export type ProjectPlan = {
   sessions: Session[];
 };
 /** `already`: the session files an earlier import took whole, left unread; `held`, the runs an import would not take
- *  again: theirs, and (when measuring) those of planned sessions the store holds already. `found`: each other planned
- *  session measured, when the plan was made to (`measure`). */
-export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; found?: Found[] };
+ *  again: theirs, and (when measuring) those of planned sessions the store holds already. `children`: the files of each
+ *  session's subagents, by `source:session`, whose usage is the session's. `found`: each other planned session measured,
+ *  when the plan was made to (`measure`). */
+export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, string[]>; found?: Found[] };
 export type ImportReport = {
   agents: {
     id: string;
@@ -110,8 +111,8 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   let already = 0;
   const held: string[] = [];
   const found: Found[] = [];
-  // A session the store holds already is counted from its run, as the import would count it, not from its file now.
-  const heldBy = measure && store ? importedIn(store) : undefined;
+  const children = new Map<string, string[]>();
+  const child = (key: string, file: string) => void children.set(key, [...(children.get(key) ?? []), file]);
   const projects = new Map<string, ProjectPlan>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
@@ -136,9 +137,13 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
         continue;
       }
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
-      const session = await readSession(file, source, { turns: measure }).catch((error: unknown) => void skipped.push(unread(file, error)));
+      const session = await readSession(file, source, { turns: false }).catch((error: unknown) => void skipped.push(unread(file, error)));
       if (!session) continue;
-      if (session.child) continue;
+      // A subagent's session is no run of its own: its usage is its parent's, when its file names the parent.
+      if (session.child) {
+        if (session.parent) child(`${source}:${session.parent}`, file);
+        continue;
+      }
       if (!session.cwd) {
         skipped.push({ what: file, why: "no project directory in it" });
         continue;
@@ -174,22 +179,84 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
           }),
         );
       project.sessions.push(session);
-      if (measure) {
-        const run = heldBy?.get(`${source}:${session.id}`);
-        if (run !== undefined) held.push(run);
-        else found.push({ source, agent: project.agentId, ...measured(session) });
-        session.turns = [];
-      }
     }
+    if (source === "claude-code") for (const { file, parent } of await childFiles(home)) child(`${source}:${parent}`, file);
   }
   for (const project of projects.values()) project.sessions.sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? ""));
-  return {
-    projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)),
-    skipped,
-    already,
-    held,
-    ...(measure ? { found } : {}),
-  };
+  const plan: Plan = { projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children };
+  if (!measure) return plan;
+  // Measured in the import's own order, a record or response counted once across files, each session with its
+  // subagents; a session the store holds already from its run, as the import counts it, not from its file now.
+  const heldBy = store ? importedIn(store) : undefined;
+  for (const project of plan.projects) {
+    const seen = await seenIn(store, project.agentId);
+    for (const listed of project.sessions) {
+      const run = heldBy?.get(`${listed.source}:${listed.id}`);
+      if (run !== undefined) {
+        held.push(run);
+        continue;
+      }
+      const session = await readSession(listed.file, listed.source, { seen: seen(listed.source) }).catch(() => undefined);
+      if (!session || ownless(session)) continue;
+      const subagents = await readChildren(plan, session, seen(listed.source));
+      found.push({ source: listed.source, agent: project.agentId, ...measured(session, subagents) });
+    }
+  }
+  return { ...plan, found };
+}
+
+/** A session that holds only records an earlier file of the import holds (a resumed session's copy of them). */
+const ownless = (session: Session) => session.copies > 0 && !session.turns.some((turn) => turn.role !== "note");
+
+/** The records and responses an import has counted, by source, for one project: first those its runs in `store` hold
+ *  already (each answer's response id, as its transcript keeps it), then each file's as it is read. */
+async function seenIn(store: AgentStoreReader | undefined, agentId: string): Promise<(source: Source) => Set<string>> {
+  const bySource = new Map<Source, Set<string>>();
+  const seen = (source: Source) => bySource.get(source) ?? bySource.set(source, new Set()).get(source)!;
+  if (!store?.readAgent(agentId)) return seen;
+  const { DatabaseSync } = await import("node:sqlite");
+  for (const run of store.listRuns({ agent: agentId })) {
+    if (run.importedFrom?.source !== "claude-code" || !existsSync(store.runStorePath(run.id))) continue;
+    const db = new DatabaseSync(store.runStorePath(run.id), { readOnly: true });
+    try {
+      const rows = db.prepare("SELECT json_extract(record, '$.model[0].responseId') AS id FROM entries WHERE json_extract(record, '$.kind') = 'pi.assistant'").all() as { id: unknown }[];
+      for (const { id } of rows) if (typeof id === "string" && id) seen("claude-code").add(`m:${id}`);
+    } finally {
+      db.close();
+    }
+  }
+  return seen;
+}
+
+/** A session's subagents, read with the import's `seen`: each file within the cap and readable; another is passed over. */
+async function readChildren(plan: Plan, session: Session, seen: Set<string>): Promise<Session[]> {
+  const out: Session[] = [];
+  for (const file of plan.children.get(`${session.source}:${session.id}`) ?? []) {
+    const stats = await stat(file).catch(() => null);
+    if (!stats || stats.size > MAX_SESSION_BYTES) continue;
+    const child = await readSession(file, session.source, { seen }).catch(() => undefined);
+    if (child) out.push(child);
+  }
+  return out;
+}
+
+/** A run's metrics with its subagents' requests in them: their tokens, requests, models and tool calls. The run's model
+ *  stays its own. */
+function withChildren(own: RunMetrics, children: readonly RunMetrics[]): RunMetrics {
+  const sum = { ...own, models: { ...own.models }, tools: Object.fromEntries(Object.entries(own.tools).map(([name, tool]) => [name, { ...tool }])) };
+  for (const child of children) {
+    for (const key of ["input", "cacheRead", "cacheWrite", "output", "requests", "unmetered"] as const) sum[key] += child[key];
+    for (const [name, n] of Object.entries(child.models)) sum.models[name] = (sum.models[name] ?? 0) + n;
+    for (const [name, tool] of Object.entries(child.tools)) {
+      const into = (sum.tools[name] ??= { calls: 0, errors: 0 });
+      into.calls += tool.calls;
+      into.errors += tool.errors;
+    }
+  }
+  if (sum.model === undefined) {
+    for (const [name, n] of Object.entries(sum.models)) if (sum.model === undefined || n > sum.models[sum.model]!) sum.model = name;
+  }
+  return sum;
 }
 
 /** A project's instructions file and skill folders, read through no link and within their caps. Each file left out is
@@ -353,6 +420,8 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
       api: "imported",
       provider,
       model: id.join("/") || provider,
+      // The source's own id for the response: a later import counts it once, whichever file holds it.
+      ...(turn.key ? { responseId: turn.key } : {}),
       // No total when the source did not price the request: the timeline's sum is then unknown, never this request at 0.
       usage: {
         input,
@@ -377,10 +446,11 @@ const entriesOf = (session: Session): EntryLike[] =>
     return { kind: entry.kind, model: [model], ...(data ? { data } : {}) } as EntryLike;
   });
 
-/** What a session read whole used, and when it asked: its metrics and time at work, and its requests by hour. */
-function measured(session: Session): Pick<Found, "metrics" | "hours"> {
+/** What a session read whole used, its subagents' requests with it, and when it asked: its metrics and time at work,
+ *  and its own requests by hour. */
+function measured(session: Session, children: readonly Session[] = []): Pick<Found, "metrics" | "hours"> {
   return {
-    metrics: { ...runMetricsOf(entriesOf(session)), activeMs: session.activeMs },
+    metrics: { ...withChildren(runMetricsOf(entriesOf(session)), children.map((child) => runMetricsOf(entriesOf(child)))), activeMs: session.activeMs },
     hours: hoursOf(session.turns.flatMap((turn) => (turn.role === "assistant" ? [turn.at] : []))),
   };
 }
@@ -510,6 +580,8 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
     const order = [...new Set(project.sessions.map((s) => s.source))].sort((a, b) => (a === latest.source ? 1 : 0) - (b === latest.source ? 1 : 0));
     for (const source of order) revisions.set(source, await revisionFor(store, project.agentId, source, files, project.sessions.findLast((s) => s.source === source && s.model)?.model, text, created && source === latest.source));
     const line = { id: project.agentId, name: project.name, cwd: project.cwd, created, runs: 0, already: 0, finished: 0 };
+    // A record or response counted once across the import's files, those its runs here hold already included.
+    const seen = await seenIn(store, project.agentId);
     for (const listed of project.sessions) {
       const heldRun = held.get(`${listed.source}:${listed.id}`);
       if (heldRun !== undefined && existsSync(store.runStorePath(heldRun))) {
@@ -518,17 +590,23 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       }
       // Its size and time before the read: a file that changes during it is read again next time.
       const stats = await stat(listed.file).catch(() => null);
-      const session = stats ? await readSession(listed.file, listed.source).catch((error: unknown) => void report.skipped.push(unread(listed.file, error))) : void report.skipped.push({ what: listed.file, why: "gone since it was listed" });
+      const session = stats ? await readSession(listed.file, listed.source, { seen: seen(listed.source) }).catch((error: unknown) => void report.skipped.push(unread(listed.file, error))) : void report.skipped.push({ what: listed.file, why: "gone since it was listed" });
       if (!session || !stats) continue;
+      if (heldRun === undefined && ownless(session)) {
+        report.skipped.push({ what: listed.file, why: "holds only records of sessions imported already" });
+        continue;
+      }
+      const subagents = (await readChildren(plan, session, seen(listed.source))).map(entriesOf);
       const read: SourceFile = { path_sha256: hash(listed.file), size: stats.size, mtime_ms: stats.mtimeMs };
       // The transcript is whole before its run is: written beside the store, then moved into the run's directory.
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
       let started: { runId: string; dir: string; storePath: string } | undefined;
       try {
         const entries = await writeTimeline(pending, session, json);
-        const metrics: StoredMetrics = { ...runMetricsOf(entries), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
+        // Its subagents' requests are the run's too: in its metrics, though its transcript is its own.
+        const metrics: StoredMetrics = { ...withChildren(runMetricsOf(entries), subagents.map(runMetricsOf)), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
         // A session its source did not price: the catalog's estimate, beside its cost (unknown), never written as it.
-        const estimate = session.costUsd === undefined ? await estimateOf(entries, metrics, catalog) : undefined;
+        const estimate = session.costUsd === undefined ? await estimateOf([...entries, ...subagents.flat()], metrics, catalog) : undefined;
         if (estimate !== undefined) Object.assign(metrics, { costUsdEst: estimate, costBasis: "catalog" });
         if (heldRun !== undefined) {
           started = { runId: heldRun, dir: join(store.dir, "runs", heldRun), storePath: store.runStorePath(heldRun) };

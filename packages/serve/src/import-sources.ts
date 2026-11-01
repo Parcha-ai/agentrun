@@ -1,7 +1,7 @@
 // The sessions Claude Code, Codex and pi keep under a person's home, read as one shape: where each ran, on which model,
 // when, how it ended, what it cost when the source says, and its turns. Each reader reads one JSONL file a line at a
 // time; a line that is not JSON, or not a record it knows, is passed over.
-//   Claude Code  ~/.claude/projects/<cwd slug>/<session id>.jsonl (a subagent's file, in <session id>/subagents/, is not read)
+//   Claude Code  ~/.claude/projects/<cwd slug>/<session id>.jsonl, its subagents' in <session id>/subagents/ (childFiles)
 //   Codex        ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
 //   pi           ~/.pi/agent/sessions/--<cwd>--/<time>_<session id>.jsonl
 import { createReadStream, type Dirent } from "node:fs";
@@ -56,8 +56,8 @@ export type Turn =
 export type Ended = "completed" | "failed" | "stopped";
 type Answer = Extract<Turn, { role: "assistant" }>;
 
-/** The longest gap between two records counted as time at work: Claude Code's Bash tool runs a call for up to 10
- *  minutes with nothing written, and a longer gap is a session left open. */
+/** The longest gap between two records counted as time at work, as WakaTime counts it: a longer gap is a session left
+ *  open and counts nothing. Claude Code's Bash tool runs a call for up to 10 minutes with nothing written. */
 export const ACTIVE_GAP_MS = 15 * 60_000;
 
 export type Session = {
@@ -74,13 +74,17 @@ export type Session = {
   /** The whole session's cost, when the source records it; absent is unknown. */
   costUsd?: number;
   firstPrompt?: string;
-  /** A subagent's or another session's child: not imported. */
+  /** A subagent's or another session's child: not imported as a run; its usage is its parent's. */
   child: boolean;
+  /** A child's parent session, when its file names it (Codex's parent thread). */
+  parent?: string;
   /** Read only when asked for: a dry run reads none. */
   turns: Turn[];
   users: number;
-  /** Time at work: the gaps between its records, each at most ACTIVE_GAP_MS. */
+  /** Time at work: the gaps between its records of at most ACTIVE_GAP_MS each. */
   activeMs: number;
+  /** Records it holds that were read already (in an earlier file of the import, or earlier in this one): copies. */
+  copies: number;
   /** The effort or thinking level most of its requests ran at, as the source names it; with its turns only. */
   effort?: string;
 };
@@ -114,6 +118,28 @@ export async function sessionFiles(home: string, source: Source): Promise<string
   const files: string[] = [];
   for (const file of out.sort()) if ((await lstat(file).catch(() => null))?.isFile()) files.push(file);
   return files;
+}
+
+/** Claude Code's subagents' session files under `home`, in <session id>/subagents/ (a workflow's a folder deeper), each
+ *  with the session it ran under: the folder it sits in. Never through a link. */
+export async function childFiles(home: string): Promise<{ file: string; parent: string }[]> {
+  const entries = async (dir: string): Promise<Dirent[]> => readdir(dir, { withFileTypes: true }).catch(() => []);
+  const root = join(home, ".claude", "projects");
+  const out: { file: string; parent: string }[] = [];
+  for (const project of await entries(root)) {
+    if (!project.isDirectory()) continue;
+    for (const session of await entries(join(root, project.name))) {
+      if (!session.isDirectory()) continue;
+      const walk = async (dir: string, depth: number): Promise<void> => {
+        for (const entry of await entries(dir)) {
+          if (entry.isDirectory() && depth < 3) await walk(join(dir, entry.name), depth + 1);
+          else if (entry.isFile() && entry.name.endsWith(".jsonl")) out.push({ file: join(dir, entry.name), parent: session.name });
+        }
+      };
+      await walk(join(root, project.name, session.name, "subagents"), 0);
+    }
+  }
+  return out.sort((a, b) => a.file.localeCompare(b.file));
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -172,8 +198,10 @@ const argsOf = (value: unknown): Record<string, unknown> => {
   return {};
 };
 
-/** One session file of `source`, read whole; `turns: false` keeps only what a listing shows. */
-export async function readSession(file: string, source: Source, { turns: keep = true }: { turns?: boolean } = {}): Promise<Session> {
+/** One session file of `source`, read whole; `turns: false` keeps only what a listing shows. `seen`: the records and
+ *  responses an import has read already, across its files; a record in it (a copy a resumed session's file carries) adds
+ *  nothing, and this file's are added to it. */
+export async function readSession(file: string, source: Source, { turns: keep = true, seen }: { turns?: boolean; seen?: Set<string> } = {}): Promise<Session> {
   const session: Session = {
     source,
     id: "",
@@ -183,6 +211,7 @@ export async function readSession(file: string, source: Source, { turns: keep = 
     turns: [],
     users: 0,
     activeMs: 0,
+    copies: 0,
   };
   const turns: Turn[] = [];
   let first: number | undefined;
@@ -190,7 +219,7 @@ export async function readSession(file: string, source: Source, { turns: keep = 
   const names = new Map<string, string>();
   const priced = { sum: 0, unknown: false };
   const provider: { name?: string } = {};
-  const current: Into["current"] = { keyed: new Map(), seen: new Set() };
+  const current: Into["current"] = { keyed: new Map(), seen: seen ?? new Set(), copied: new Set() };
   const codex: Into["codex"] = { events: false, held: [], records: false, responses: new Set(), items: new Map(), results: new Map() };
   const add = (turn: Turn, index = turns.length) => {
     if (turn.role === "user") {
@@ -213,15 +242,17 @@ export async function readSession(file: string, source: Source, { turns: keep = 
     }
     if (!isObject(value)) continue;
     const at = timeOf(value.timestamp);
-    if (at !== undefined) {
+    // A copy of a record read already moves no time: its time was counted where it was first read.
+    const copy = record(value, at ?? last ?? 0, session, { add, names, turns, priced, provider, current, codex }) === false;
+    if (copy) session.copies += 1;
+    if (at !== undefined && !copy) {
       first ??= at;
-      // A record older than the latest (a block a resumed file repeats) moves no time: its gaps were counted once.
+      // A record older than the latest (a block a resumed file repeats) moves no time either.
       if (last === undefined || at >= last) {
-        if (last !== undefined) session.activeMs += Math.min(at - last, ACTIVE_GAP_MS);
+        if (last !== undefined && at - last <= ACTIVE_GAP_MS) session.activeMs += at - last;
         last = at;
       }
     }
-    record(value, at ?? last ?? 0, session, { add, names, turns, priced, provider, current, codex });
   }
   // Older Codex writes each of the person's turns twice, as a user_message event and as a user message; current Codex
   // writes the user message alone. One source per file, so no turn counts twice.
@@ -245,9 +276,10 @@ type Into = {
   priced: { sum: number; unknown: boolean };
   /** Codex's model provider, from its session_meta, for the model its turns name. */
   provider: { name?: string };
-  /** The effort in force (Codex's turn_context, pi's thinking level); Claude Code's turns by message id, and the
-   *  records read, by uuid. */
-  current: { effort?: string; keyed: Map<string, Answer>; seen: Set<string> };
+  /** The effort in force (Codex's turn_context, pi's thinking level); Claude Code's turns by message id in this file; the
+   *  records and messages read, in this file and those the import read before ("u:" uuid, "m:" message id); and the
+   *  calls of messages that were copies, whose results are copies too. */
+  current: { effort?: string; keyed: Map<string, Answer>; seen: Set<string>; copied: Set<string> };
   /** Codex: whether the file has user_message events, and its user messages, each with its place among the turns, held
    *  to the file's end. `open`: the request the model's output items join, until a result of one of its calls; `unpaid`,
    *  the latest request whose usage has not come (written after its calls' results at times); `records`, whether the
@@ -268,7 +300,8 @@ type Into = {
 
 const INTERRUPTED = /^\[Request interrupted by user/;
 
-function claudeRecord(value: Record<string, unknown>, at: number, session: Session, { add, names, current }: Into): void {
+/** Claude Code's record; false for one read already (the import's earlier file, or this file's own repeat). */
+function claudeRecord(value: Record<string, unknown>, at: number, session: Session, { add, names, current }: Into): boolean | void {
   if (!session.id && str(value.sessionId)) session.id = value.sessionId as string;
   if (!session.cwd && str(value.cwd)) session.cwd = value.cwd as string;
   if (value.isSidechain === true) session.child = true;
@@ -279,10 +312,10 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
   }
   if ((value.type !== "user" && value.type !== "assistant") || !isObject(value.message)) return;
   if (value.isMeta === true || value.isCompactSummary === true || value.isVisibleInTranscriptOnly === true) return;
-  // A record written twice (a session carried on in its own file) is read once.
+  // A record written twice (a session carried on in its own file, or copied into a resumed one's) is read once.
   const uuid = str(value.uuid);
-  if (uuid && current.seen.has(uuid)) return;
-  if (uuid) current.seen.add(uuid);
+  if (uuid && current.seen.has(`u:${uuid}`)) return false;
+  if (uuid) current.seen.add(`u:${uuid}`);
   const message = value.message;
   if (value.type === "assistant") {
     const model = str(message.model);
@@ -322,10 +355,18 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
       if (usage) held.usage = held.usage ? most(held.usage, usage) : usage;
       return;
     }
+    // A message an earlier file of the import holds: counted there, never again; its calls' results are copies too.
+    if (key && current.seen.has(`m:${key}`)) {
+      for (const call of calls) current.copied.add(call.id);
+      return false;
+    }
     if (!key && !text && calls.length === 0) return;
     const effort = effortOf(value.perTurnEffort) ?? effortOf(value.effort);
     const turn: Answer = { role: "assistant", text, calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: text || "API error" } : {}) };
-    if (key) current.keyed.set(key, turn);
+    if (key) {
+      current.keyed.set(key, turn);
+      current.seen.add(`m:${key}`);
+    }
     add(turn);
     return;
   }
@@ -341,6 +382,7 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
     if (block.type === "text" && typeof block.text === "string") said.push(block.text);
     else if (block.type === "tool_result") {
       const id = String(block.tool_use_id ?? "");
+      if (current.copied.has(id)) continue;
       add({
         role: "toolResult",
         callId: id,
@@ -407,10 +449,11 @@ function codexRecord(value: Record<string, unknown>, at: number, session: Sessio
     return turn;
   };
   const request = (): Answer => codex.open ?? (codex.open = codex.unpaid = answer());
-  const answered = (usage: unknown) => {
+  const answered = (usage: unknown, response?: string) => {
     const tokens = tokensOf(usage, CODEX_TOKENS, true);
     const turn = codex.unpaid ?? answer();
     if (tokens) turn.usage = tokens;
+    if (response) turn.key = response;
     codex.open = codex.unpaid = undefined;
   };
   if (value.type === "session_meta") {
@@ -418,6 +461,9 @@ function codexRecord(value: Record<string, unknown>, at: number, session: Sessio
     if (str(payload.cwd)) session.cwd = payload.cwd as string;
     if (str(payload.model_provider)) provider.name = payload.model_provider as string;
     if (str(payload.parent_thread_id) || (isObject(payload.source) && isObject(payload.source.subagent))) session.child = true;
+    const spawn = isObject(payload.source) && isObject(payload.source.subagent) && isObject(payload.source.subagent.thread_spawn) ? payload.source.subagent.thread_spawn : undefined;
+    const parent = str(payload.parent_thread_id) ?? str(spawn?.parent_thread_id);
+    if (parent) session.parent = parent;
     return;
   }
   if (value.type === "turn_context") {
@@ -437,7 +483,7 @@ function codexRecord(value: Record<string, unknown>, at: number, session: Sessio
     const id = str(payload.response_id);
     if (id && codex.responses.has(id)) return;
     if (id) codex.responses.add(id);
-    return answered(payload.usage);
+    return answered(payload.usage, id);
   }
   if (value.type === "event_msg") {
     if (payload.type === "user_message") {
