@@ -2,7 +2,12 @@ import type { ClientError } from "./client";
 
 export type HarnessId = "pi" | "claude-agent" | "codex";
 export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; skills: string[]; tools: string[]; [field: string]: unknown };
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number } };
+/** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
+ *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
+export type SaveWarning = { field: string; reason: string; message: string };
+/** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
+ *  the agent's page that opens after it (client.ts). */
+export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[] };
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow">> & { workflowText?: string };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
@@ -44,16 +49,16 @@ export function createBody(f: { name: string; description: string; instructions:
   };
 }
 
-/** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, and, when the
- *  server says, which harnesses run it. An older server lists bare names. */
-export type ToolOffer = { name: string; available: boolean; missing?: string[]; harnesses?: string[] };
+/** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
+ *  (`summary`), and, when the server says, which harnesses run it. An older server lists bare names. */
+export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; harnesses?: string[] };
 
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
     if (typeof t === "string") return [{ name: t, available: true }];
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
-    const { name, available, missing, harnesses } = t as { name: string; available?: boolean; missing?: string[]; harnesses?: string[] };
-    return [{ name, available: available !== false, ...(missing?.length ? { missing } : {}), ...(harnesses ? { harnesses } : {}) }];
+    const { name, available, summary, missing, harnesses } = t as { name: string; available?: boolean; summary?: unknown; missing?: string[]; harnesses?: string[] };
+    return [{ name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(missing?.length ? { missing } : {}), ...(harnesses ? { harnesses } : {}) }];
   });
 }
 
@@ -67,8 +72,11 @@ export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
 /** A new agent's tools: on by default, every tool its harness runs here that the server can run now. */
 export const defaultTools = (harness: string, offers: ToolOffer[]) => toolsFor(harness, offers).filter((t) => t.available).map((t) => t.name);
 
-/** Whether an agent with these tools can reach the web: only through fetch_page. */
-export const reachesWeb = (tools: readonly string[]) => tools.includes("fetch_page");
+/** The tools that reach the web: a page read (fetch_page, web_fetch) or a search (web_search). The server's capabilities
+ *  mark no tool as one, so they are named here. */
+export const WEB_TOOLS: readonly string[] = ["fetch_page", "web_fetch", "web_search"];
+/** Whether an agent with these tools can reach the web: through any of WEB_TOOLS. */
+export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TOOLS.includes(t));
 
 const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex" };
 const ORDER: HarnessId[] = ["pi", "claude-agent", "codex"];
@@ -90,4 +98,10 @@ export function saveError(e: ClientError): SaveProblem {
   if (e.status === 412 || e.code === "precondition_failed") return { kind: "conflict", message: e.message };
   if (e.status === 422 && e.fields?.length) return { kind: "invalid", message: e.message, fields: Object.fromEntries(e.fields.map((f) => [f.field, f.message])) };
   return { kind: "other", message: e.message };
+}
+
+/** The warnings that name `field` of the definition, or a part of it (`tools` takes `definition.tools[2]`). */
+export function warningsFor(warnings: SaveWarning[] | undefined, field: string): SaveWarning[] {
+  const at = `definition.${field}`;
+  return (warnings ?? []).filter((w) => w.field === at || w.field.startsWith(`${at}[`) || w.field.startsWith(`${at}.`) || w.field.startsWith(`${at}/`));
 }

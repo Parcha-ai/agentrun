@@ -3,8 +3,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -263,10 +263,15 @@ describe("the CLI on a local directory", () => {
       assert.equal(await main(["run", "--dir", "/tmp/x", "--region", "r", "--mount-root", "/mnt", "--app", "a.ts"]), 2);
       assert.equal(await main(["run", "--dir", "/tmp/x"]), 2, "run --dir needs --app");
       assert.equal(await main(["status", "--dir", "/tmp/x", "--disk", "dsk-1"]), 2);
+      assert.equal(await main(["run", "--dir", "/tmp/x", "--app", "a.ts", "--box-mode", "docker"]), 2, "an unknown box mode");
+      assert.equal(await main(["run", "--dir", join(tmpdir(), `pdd-unavailable-${process.pid}`), "--app", "a.ts", "--box-mode", "unavailable"]), 78, "no box to run in");
     } finally {
       process.stderr.write = write;
     }
     assert.match(written.join(""), /--dir is a run on a local directory: it takes no --disk\n/);
     assert.match(written.join(""), /it takes no --region, --mount-root\n/);
+    assert.match(written.join(""), /--box-mode is one of bwrap, seatbelt, provider, unsandboxed, unavailable\n/);
+    assert.match(written.join(""), /"error":"BOX_UNAVAILABLE".*held until a server with a box opens it/);
+    assert.equal(existsSync(join(tmpdir(), `pdd-unavailable-${process.pid}`)), false, "the refused run's directory was made");
   });
 });

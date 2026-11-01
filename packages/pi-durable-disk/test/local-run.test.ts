@@ -2,15 +2,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { localRun } from "../src/local-run.ts";
+import { readLocalRunStatus } from "../src/index.ts";
 import { openDurableRun, RunError } from "../src/run.ts";
-import { parseRunRecord, RUN_JSON } from "../src/status.ts";
+import { parseRunRecord, RUN_JSON, type BoxMode } from "../src/status.ts";
 import { reapOrRefuse } from "../src/commands.ts";
-import { FencedError, HeldError } from "../src/errors.ts";
+import { BoxUnavailableError, FencedError, HeldError } from "../src/errors.ts";
 import { processTable } from "../src/process-table.ts";
 import { alive, ctx, killQuietly, scratchRoot, scriptedHarness, startCommand } from "./_run-support.ts";
 
@@ -70,6 +71,90 @@ describe("localRun", () => {
       const run = await open();
       assert.equal(existsSync(join(root, "commands")), false, "the records are cleared");
       await run.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("each open records the box it was given in run.json, exactly, and an open given none records none", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("local-box-mode");
+    const root = join(dir.root, "run");
+    const scripted = scriptedHarness();
+    const open = (boxMode?: BoxMode) =>
+      openDurableRun({ disk: "dsk-local", region: "local", id: "boxed" }, { ...localRun(root), ...(boxMode ? { boxMode } : {}), harness: { models: scripted.models, registry: scripted.registry } });
+    const box = () => JSON.parse(readFileSync(join(root, "run.json"), "utf8")).box;
+    try {
+      for (const mode of ["unsandboxed", "bwrap", "provider", "seatbelt"] as const) {
+        const run = await open(mode);
+        assert.deepEqual(box(), { mode }, `while ${mode} runs`);
+        await run.release();
+        assert.deepEqual(box(), { mode }, `kept through the release (${mode})`);
+        assert.deepEqual((await readLocalRunStatus(root))?.box, { mode }, `read back as the record says (${mode})`);
+      }
+      await (await open()).release();
+      assert.equal(box(), undefined, "an open given no box records none");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("an open given an unavailable box is refused by name before anything is claimed, run or written; a boxed open then proceeds", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("local-box-unavailable");
+    const root = join(dir.root, "run");
+    const scripted = scriptedHarness();
+    const open = (boxMode: BoxMode) =>
+      openDurableRun({ disk: "dsk-local", region: "local", id: "unavailable" }, { ...localRun(root), boxMode, harness: { models: scripted.models, registry: scripted.registry } });
+    const refused = (error: unknown) => error instanceof BoxUnavailableError && error.code === "BOX_UNAVAILABLE" && error.exitCode === 78 && /held until a server with a box opens it/.test(error.message);
+    /** Every entry under the run's directory (the claim, owner.lock, the store, run.json, work/), its size, time and, for a
+     *  file, its bytes: what a refused open must leave as it was. */
+    const snapshot = (at: string): string[] =>
+      readdirSync(at, { withFileTypes: true }).flatMap((entry) => {
+        const path = join(at, entry.name);
+        const s = statSync(path);
+        return [`${path} ${s.size} ${s.mtimeMs} ${entry.isFile() ? readFileSync(path, "base64") : "dir"}`, ...(entry.isDirectory() ? snapshot(path) : [])];
+      });
+    try {
+      await assert.rejects(open("unavailable"), refused);
+      assert.equal(existsSync(root), false, "a new run's directory was made");
+      await (await open("bwrap")).release();
+      const before = snapshot(root);
+      const generation = JSON.parse(readFileSync(join(root, "run.json"), "utf8")).generation;
+      await assert.rejects(open("unavailable"), refused);
+      assert.deepEqual(snapshot(root), before, "the claim, the lease, the store or run.json changed");
+      const run = await open("bwrap");
+      const record = JSON.parse(readFileSync(join(root, "run.json"), "utf8"));
+      assert.equal(record.generation, generation + 1, "the refused open took no generation");
+      assert.deepEqual(record.box, { mode: "bwrap" });
+      await run.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("a boxed open after an unboxed one runs the host's commands reap first and is held while the unboxed incarnation's command lives", { timeout: 60_000 }, async (t) => {
+    if (process.getuid?.() === 0) return t.skip("runs only as an unprivileged user");
+    const survivor = rootProcess();
+    if (survivor === undefined) return t.skip("no root-owned process to stand in for a survivor");
+    const dir = scratchRoot("local-box-switch");
+    const root = join(dir.root, "run");
+    const scripted = scriptedHarness();
+    const open = (boxMode: BoxMode) =>
+      openDurableRun({ disk: "dsk-local", region: "local", id: "switch" }, { ...localRun(root), boxMode, harness: { models: scripted.models, registry: scripted.registry } });
+    const box = () => JSON.parse(readFileSync(join(root, "run.json"), "utf8")).box;
+    try {
+      await (await open("unsandboxed")).release();
+      // The unboxed incarnation's command, on this host, outlives its SIGKILL.
+      const boot = processTable().bootId()!;
+      const record = join(root, "commands", `${survivor.pid}-${survivor.start}.json`);
+      mkdirSync(join(root, "commands"), { recursive: true });
+      writeFileSync(record, JSON.stringify({ boot, leader: survivor, members: [] }));
+      await assert.rejects(open("bwrap"), (error: unknown) => error instanceof HeldError && error.code === "COMMANDS_ALIVE");
+      assert.deepEqual(box(), { mode: "unsandboxed" }, "a held open records nothing: run.json still tells the last open's box");
+      assert.ok(existsSync(record), "its record stays");
+      // Gone: the boxed open proceeds and records its box.
+      writeFileSync(record, JSON.stringify({ boot, leader: { pid: survivor.pid, start: survivor.start + 1 }, members: [] }));
+      await (await open("bwrap")).release();
+      assert.deepEqual(box(), { mode: "bwrap" });
     } finally {
       dir.remove();
     }

@@ -6,11 +6,12 @@
 // none is answered by Jev.
 //
 // The server chooses the keys (decisionKeysOf) and hands them over once, by name, on an inherited pipe
-// (`DECISION_KEY_FD_ENV` names it), at each launch of a workflow run. The run's process reads them into its providers
-// and nowhere else; no provider reads a key from the environment. The TypeSafe and Parallel keys never enter a run's
-// environment, which the run's tools and its model's provider read (`ToolHost.env`, a call node's effect): the server
-// drops the variables from the run's process. On the OpenRouter route the Jev key is also the model gateway's key,
-// which the run's process holds for its model nodes.
+// (`DECISION_KEY_FD_ENV` names it), at each launch of a workflow run, and Parallel's alone at each launch of an agentic
+// run whose revision names web_fetch. The run's process reads them once (handedKeys) into its providers and web_fetch's
+// Parallel extract (web-fetch.ts), and nowhere else; no provider reads a key from the environment. The TypeSafe and
+// Parallel keys never enter a run's environment, which the run's tools and its model's provider read (`ToolHost.env`, a
+// call node's effect): the server drops the variables from the run's process. On the OpenRouter route the Jev key is
+// also the model gateway's key, which the run's process holds for its model nodes.
 import { closeSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
@@ -129,26 +130,32 @@ export function providersNamed(nodes: readonly Record<string, unknown>[]): strin
   return [...ids];
 }
 
-/** The keys the server handed the run's process, by name, read once and the descriptor closed; empty when none were. */
+let keysHanded: Record<string, string> | undefined;
+/** The keys the server handed the run's process, by name: read at the first call and the descriptor closed, and the
+ *  same object at every later one (the decision providers' and web_fetch's), so the descriptor is read and closed once
+ *  whoever asks first. Empty when none were handed, or when the first read failed. */
 export function handedKeys(env: NodeJS.ProcessEnv): Record<string, string> {
+  if (keysHanded) return keysHanded;
+  keysHanded = {};
   const fd = Number(env[DECISION_KEY_FD_ENV]);
-  if (!Number.isSafeInteger(fd) || fd < 3) return {};
+  if (!Number.isSafeInteger(fd) || fd < 3) return keysHanded;
   try {
     const keys: unknown = JSON.parse(readFileSync(fd, "utf8"));
-    return Object.fromEntries([JEV_KEY_ENV, JEV_OPENROUTER_KEY_ENV, PARALLEL_KEY_ENV].flatMap((name) => (typeof (keys as Record<string, unknown>)?.[name] === "string" ? [[name, (keys as Record<string, string>)[name]]] : [])));
+    return (keysHanded = Object.fromEntries([JEV_KEY_ENV, JEV_OPENROUTER_KEY_ENV, PARALLEL_KEY_ENV].flatMap((name) => (typeof (keys as Record<string, unknown>)?.[name] === "string" ? [[name, (keys as Record<string, string>)[name]]] : []))));
   } finally {
     closeSync(fd);
   }
 }
 
-const fauxFetch = async (env: NodeJS.ProcessEnv, name: string) =>
+/** Under --faux only: the fetch the module `env[name]` names, in place of a provider's API (the tests' fake). */
+export const fauxFetch = async (env: NodeJS.ProcessEnv, name: string) =>
   env[FAUX_ENV] && env[name] ? ((await import(pathToFileURL(env[name]).href)) as { default: typeof fetch }).default : undefined;
 
 /** In a run's process: the decision providers its workflow's typed questions are answered by, on the keys the server
  *  handed it (Jev's, Parallel's), and the one a node that names none gets; undefined when it handed none. Called once per
- *  process, since the handed keys can be read once. The run's judge (`judgeFromProviders`) and its checks before any
- *  node runs take this one registry, so a node's provider and timeoutMs hold, and a node naming a provider it lacks is
- *  refused before the run instead of being asked of another. Each provider sends a request once: one that fails after it
+ *  process, on the keys handedKeys read once for it and web_fetch alike. The run's judge (`judgeFromProviders`) and its
+ *  checks before any node runs take this one registry, so a node's provider and timeoutMs hold, and a node naming a
+ *  provider it lacks is refused before the run instead of being asked of another. Each provider sends a request once: one that fails after it
  *  was sent may have been answered and billed, so the decision escalates as interrupted instead of being asked again. */
 export async function decisionProvidersOf(env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
   const handed = handedKeys(env);

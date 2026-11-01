@@ -9,7 +9,7 @@
 // `learnings/INDEX.md`), resolves main's commit and reads it with plumbing, never the working tree. Once the store has
 // seeded the run's directory with the revision's skills, the server writes the skills that commit holds into the run's
 // work and pins the commit in the run's directory (`learning.json`), with the index the run reads. The run's process
-// reads that pin and those files (app.ts promptOf) and never runs git, so it may run anywhere its directory is.
+// reads that pin and those files (withLearned, for app.ts) and never runs git, so it may run anywhere its directory is.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -239,4 +239,19 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
     throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
   }
   return pin as Pin;
+}
+
+/** A run's instructions and skill files, with what its pin in `runDir` says it learned: the index after the
+ *  instructions, in a `<learned>` section, and each learned skill's `<name>/SKILL.md` (pinSeed wrote it into the run's
+ *  work) after the revision's files, unless the revision holds that file. Every harness gets them as it gets the
+ *  revision's (app.ts): claude-agent loads the ones its adapter takes and its prompt inlines the rest; every other
+ *  prompt inlines them all (skills.ts). */
+export async function withLearned(runDir: string, instructions: string, skillFiles: Iterable<string>): Promise<{ instructions: string; skillFiles: string[] }> {
+  const pin = await readPin(runDir);
+  const files = [...skillFiles];
+  const learned = (pin?.skills ?? []).map((name) => `${name}/SKILL.md`).filter((path) => !files.includes(path));
+  return {
+    instructions: pin?.learned ? `${instructions.trim()}\n\n<learned>\n${pin.learned.trim()}\n</learned>` : instructions,
+    skillFiles: [...files, ...learned],
+  };
 }

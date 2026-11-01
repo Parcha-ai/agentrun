@@ -19,17 +19,17 @@ import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { readJson, RUN_META } from "./files.js";
-import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
+import { adapterFor, claudeModel, claudeSkillCheck, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
-import { readPin } from "./learning.js";
+import { withLearned } from "./learning.js";
 import { completer } from "./llm.js";
 import { imageLoader } from "./pdf-pages.js";
 import { type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
-import { isObject, skillNames } from "./validate.js";
-import { readWorkText } from "./workspace.js";
+import { promptOf, systemOf } from "./skills.js";
+import { isObject } from "./validate.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
  *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
@@ -38,19 +38,7 @@ export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
 /** A call node's tool failure, as the value its effect completed with (runEffect below). */
 const TOOL_FAILED = "agentrun_serve_tool_failed";
 
-/** The revision's instructions, then what the run's pin in `root` says it learned (learning.ts): the index of its notes,
- *  in a `<learned>` section. Then each skill's `<name>/SKILL.md` from the run's workspace, by name: the revision's, then
- *  the learned ones the pin lists. Every harness's run is prompted with it, so each starts from the same seed. */
-export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: string, root?: string): Promise<string> {
-  const pin = root === undefined ? undefined : await readPin(root);
-  const own = skillNames(skillFiles);
-  const skills = await Promise.all(
-    // Through no link (workspace.ts): a skill directory, or its SKILL.md, linked out of the workspace is refused.
-    [...own, ...(pin?.skills ?? []).filter((name) => !own.includes(name))].map(async (name) => `<skill name="${name}">\n${(await readWorkText(work, [".agents", "skills", ...name.split("/"), "SKILL.md"].join("/"))).trim()}\n</skill>`),
-  );
-  const learned = pin?.learned ? [`<learned>\n${pin.learned.trim()}\n</learned>`] : [];
-  return [instructions.trim(), ...learned, ...(skills.length ? ["Your skills follow. Use the one that fits the step you are on.", ...skills] : [])].join("\n\n");
-}
+export { promptOf };
 
 /** claude-agent's model and pi-ai's catalog that prices it: its own settings, never the gateway's (adapters.ts). */
 async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
@@ -82,23 +70,29 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
-  // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves.
+  // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves, and
+  // gets a start mark of its own, which its error entry answers.
   const marked = await markRequests(chosen.models, cancelledIn(where.root));
-  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced });
+  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced, refused: marked.refused });
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   const registry = createRegistry();
   registry.install(CodingTools);
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
-    const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work, where.root);
-    const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const, thinking: thinkingFor(revision.body.harness, thinkingLevel) };
+    const harness = revision.body.harness;
+    // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
+    // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts). The learned skills the run's pin lists
+    // go with the revision's, and its index into the instructions (learning.ts).
+    const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
+    const seeded = await withLearned(where.root, revision.body.instructions, Object.keys(revision.body.skills));
+    const { system: instructions, native } = await systemOf(seeded.instructions, seeded.skillFiles, where.work, check);
+    const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
     // The harness's own files (its homes, its working state) go in a private directory beside the workspace, never in it.
     const dir = join(where.root, "harness");
     await mkdir(dir, { recursive: true, mode: 0o700 });
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
-    const harness = revision.body.harness;
-    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}) });
+    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
     const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never, { listed: !chosen.unpriced.has(model!.modelId) });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
@@ -136,7 +130,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work, where.root);
+    const seeded = await withLearned(where.root, revision.body.instructions, Object.keys(revision.body.skills));
+    const instructions = await promptOf(seeded.instructions, seeded.skillFiles, where.work);
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => marked.open(durable) } as unknown as AppOptions;
   }
   const meta = await readJson(join(where.root, RUN_META));

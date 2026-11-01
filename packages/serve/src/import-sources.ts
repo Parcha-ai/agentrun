@@ -142,12 +142,13 @@ export async function readSession(file: string, source: Source, { turns: keep = 
   const names = new Map<string, string>();
   const priced = { sum: 0, unknown: false };
   const provider: { name?: string } = {};
-  const add = (turn: Turn) => {
+  const codex: Into["codex"] = { events: false, held: [] };
+  const add = (turn: Turn, index = turns.length) => {
     if (turn.role === "user") {
       session.users += 1;
       session.firstPrompt ??= turn.text;
     }
-    if (keep) turns.push(turn);
+    if (keep) turns.splice(index, 0, turn);
   };
   const record = source === "claude-code" ? claudeRecord : source === "codex" ? codexRecord : piRecord;
   const lines = createInterface({
@@ -167,8 +168,11 @@ export async function readSession(file: string, source: Source, { turns: keep = 
       first ??= at;
       last = at;
     }
-    record(value, at ?? last ?? 0, session, { add, names, turns, priced, provider });
+    record(value, at ?? last ?? 0, session, { add, names, turns, priced, provider, codex });
   }
+  // Older Codex writes each of the person's turns twice, as a user_message event and as a user message; current Codex
+  // writes the user message alone. One source per file, so no turn counts twice.
+  if (!codex.events) codex.held.forEach(({ index, turn }, k) => add(turn, index + k));
   if (!session.id) session.id = source === "pi" ? basename(file, ".jsonl").split("_").pop()! : basename(file, ".jsonl");
   if (first !== undefined) session.startedAt = new Date(first).toISOString();
   if (last !== undefined) session.endedAt = new Date(last).toISOString();
@@ -183,6 +187,8 @@ type Into = {
   priced: { sum: number; unknown: boolean };
   /** Codex's model provider, from its session_meta, for the model its turns name. */
   provider: { name?: string };
+  /** Codex: whether the file has user_message events, and its user messages, each with its place among the turns, held to the file's end. */
+  codex: { events: boolean; held: { index: number; turn: Turn }[] };
 };
 
 const INTERRUPTED = /^\[Request interrupted by user/;
@@ -258,7 +264,17 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
   }
 }
 
-function codexRecord(value: Record<string, unknown>, at: number, session: Session, { add, names, provider }: Into): void {
+// The blocks the Codex CLI adds to a user message, each one of its own elements whole, an AGENTS.md as a heading over its
+// <INSTRUCTIONS>; and the bare tags around an image. Only these: a prompt the person wrote as a tagged element is theirs,
+// and a block the CLI adds later reads as text until it is named here.
+const CODEX_BLOCK = /^\s*(?:#[^\n]*\n\s*)?<([A-Za-z_]+)(?:\s[^>]*)?>[\s\S]*<\/\1>\s*$/;
+const CODEX_BLOCKS = new Set(["environment_context", "user_instructions", "INSTRUCTIONS", "turn_aborted", "subagent_notification", "skill", "user_shell_command", "user_action", "recommended_plugins", "codex_internal_context"]);
+const IMAGE_TAG = /^\s*<\/?image\b[^>]*>\s*$/;
+const typed = (text: string): boolean => !CODEX_BLOCKS.has(CODEX_BLOCK.exec(text)?.[1] ?? "") && !IMAGE_TAG.test(text);
+/** The person's words in a Codex user message: "" when the CLI wrote all of it. */
+const wordsOf = (content: unknown): string => textOf(Array.isArray(content) ? content.filter((block) => !isObject(block) || typeof block.text !== "string" || typed(block.text)) : content);
+
+function codexRecord(value: Record<string, unknown>, at: number, session: Session, { add, names, provider, turns, codex }: Into): void {
   const payload = isObject(value.payload) ? value.payload : {};
   if (value.type === "session_meta") {
     if (str(payload.id)) session.id = payload.id as string;
@@ -274,14 +290,19 @@ function codexRecord(value: Record<string, unknown>, at: number, session: Sessio
     return;
   }
   if (value.type === "event_msg") {
-    if (payload.type === "user_message" && str(payload.message)) add({ role: "user", text: payload.message as string, at });
-    else if (payload.type === "task_complete") session.state = "completed";
+    if (payload.type === "user_message") {
+      codex.events = true;
+      if (str(payload.message)) add({ role: "user", text: payload.message as string, at });
+    } else if (payload.type === "task_complete") session.state = "completed";
     else if (payload.type === "turn_aborted") session.state = "stopped";
     else if (payload.type === "error") session.state = "failed";
     return;
   }
   if (value.type !== "response_item") return;
-  if (payload.type === "message" && payload.role === "assistant") {
+  if (payload.type === "message" && payload.role === "user") {
+    const text = wordsOf(payload.content);
+    if (text) codex.held.push({ index: turns.length, turn: { role: "user", text, at } });
+  } else if (payload.type === "message" && payload.role === "assistant") {
     const text = textOf(payload.content);
     if (text) add({ role: "assistant", text, calls: [], at });
   } else if (payload.type === "function_call" || payload.type === "custom_tool_call") {
