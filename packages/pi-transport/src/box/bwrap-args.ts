@@ -9,7 +9,8 @@
  * - the system read-only (`/usr`, the `/bin`, `/sbin` and `/lib*` beside it or linked into it, and a named part of
  *   `/etc`), a private `/proc`, `/dev` and `/tmp`, and the root itself remounted read-only;
  * - its own `/etc/passwd`, `/etc/group` and `/etc/hosts`, which the spawner writes on fixed descriptors (`bwrapFiles`);
- * - nothing else of the host: no home, no data root, no `/run`, no socket;
+ * - nothing else of the host: no home, no data root, no `/run`, no socket. A home or a hidden path that lies inside a
+ *   bound system directory is masked there by an empty tmpfs;
  * - no network but a loopback of its own (`--unshare-net`). `open` would share this host's network namespace, its
  *   loopback services and abstract sockets included, so it is refused, and so is an allowlist;
  * - no capability (`--cap-drop ALL`), no further user namespace (`--disable-userns`), a session of its own, a hostname
@@ -203,27 +204,41 @@ function shapeRefusal(path: unknown, what: string): BoxError | undefined {
 	return undefined;
 }
 
+/**
+ * The paths a box never sees: the server's homes and the caller's hidden paths, each as named and, when it exists, as
+ * resolved through its links. `invalid` for one that is not absolute: passing it over would show what it names.
+ */
+type Guarded = { readonly named: readonly string[]; readonly resolved: readonly string[] };
+
+function guardedPaths(host: BwrapHost, fs: BwrapHostFs): Guarded | BoxError {
+	// A home of `/` (a service user's) protects nothing a root of its own would not: `/` is never bound whole.
+	const homes = (host.homes ?? defaultHomes()).filter((home) => home !== "/");
+	const given = [
+		...homes.map((path) => ["a home", path] as const),
+		...(host.hidden ?? []).map((path) => ["a hidden path", path] as const),
+	];
+	const named = new Set<string>();
+	const resolved = new Set<string>();
+	for (const [what, path] of given) {
+		if (typeof path !== "string" || !path.startsWith("/")) {
+			return invalid(`${what} ${JSON.stringify(path)} is not an absolute path`);
+		}
+		const name = posix.resolve(path);
+		named.add(name);
+		const real = fs.real(name);
+		if (real !== undefined) resolved.add(real);
+	}
+	return { named: [...named], resolved: [...resolved] };
+}
+
 /** The roots a workspace is checked against, each as given and as resolved. */
 type Forbidden = { readonly under: readonly string[]; readonly holds: readonly string[] };
 
 function forbiddenRoots(host: BwrapHost, fs: BwrapHostFs): Forbidden | BoxError {
-	const both = (path: string) => {
-		const real = fs.real(path);
-		return real === undefined || real === path ? [path] : [path, real];
-	};
-	// A home of `/` (a service user's) protects nothing a root of its own would not: `/` is never bound whole.
-	const homes = (host.homes ?? defaultHomes()).filter((home) => home !== "/");
-	const named = [
-		...homes.map((path) => ["a home", path] as const),
-		...(host.hidden ?? []).map((path) => ["a hidden path", path] as const),
-	];
-	// A path to protect that is not absolute is refused, never passed over: passing it over would bind what it names.
-	for (const [what, path] of named) {
-		if (typeof path !== "string" || !path.startsWith("/"))
-			return invalid(`${what} ${JSON.stringify(path)} is not an absolute path`);
-	}
+	const guarded = guardedPaths(host, fs);
+	if (guarded instanceof BoxError) return guarded;
 	return {
-		under: [...NEVER_UNDER, ...named.map(([, path]) => posix.resolve(path)).flatMap(both)],
+		under: [...NEVER_UNDER, ...new Set([...guarded.named, ...guarded.resolved])],
 		holds: [...NEVER_HOLDS],
 	};
 }
@@ -301,8 +316,28 @@ function boxEnv(spec: BwrapSpec, workdir: string): Map<string, string> | BoxErro
 	return env;
 }
 
-/** The read-only system: a directory bound as resolved, or a merged-`/usr` link made again in the box. */
-function systemMounts(fs: BwrapHostFs): string[][] | BoxError {
+/**
+ * The read-only system: a directory bound as resolved, or a merged-`/usr` link made again in the box; then the part of
+ * `/etc`; then an empty tmpfs over every guarded directory those binds would show.
+ *
+ * A guarded path that is or holds a system root or `/etc` is refused: masking it would leave the box without its
+ * system. A part of `/etc` that is, or lies in, a guarded path is left out. A guarded directory inside a bound directory
+ * is masked at its place in the box, after the bind. Its resolved form is the one masked: a named path with a link in it
+ * reaches its contents only through that form, and a path that does not exist has nothing to show (each exec's
+ * arguments are built again, and mask it once it does). A guarded file there is refused: a tmpfs masks a directory.
+ */
+function systemMounts(fs: BwrapHostFs, guarded: Guarded): string[][] | BoxError {
+	const protectedPaths = [...guarded.named, ...guarded.resolved];
+	for (const root of [...BWRAP_SYSTEM, "/etc"]) {
+		// A root that is a link is made again in the box, never bound: only a directory's resolved source is bound.
+		const real = fs.kind(root) === "dir" ? fs.real(root) : undefined;
+		const hit = protectedPaths.find((path) => isUnder(root, path) || (real !== undefined && isUnder(real, path)));
+		if (hit !== undefined) {
+			return invalid(
+				`the protected path ${hit} is or holds ${root}, which a box binds: masking it would leave the box without its system`,
+			);
+		}
+	}
 	const mounts: string[][] = [];
 	for (const path of BWRAP_SYSTEM) {
 		const kind = fs.kind(path);
@@ -327,15 +362,33 @@ function systemMounts(fs: BwrapHostFs): string[][] | BoxError {
 		if (real !== path && !isUnder(real, "/usr") && !(isUnder(real, "/etc") && real !== "/etc")) {
 			return invalid(`this host's ${path} resolves to ${real}, outside /etc and /usr`);
 		}
+		if (protectedPaths.some((guard) => isUnder(real, guard) || isUnder(path, guard))) continue;
 		mounts.push(["--ro-bind", real, path]);
 	}
-	return mounts;
+	const masks: string[] = [];
+	for (const [option, source, destination] of mounts) {
+		if (option !== "--ro-bind" || fs.kind(source!) !== "dir") continue;
+		for (const path of guarded.resolved) {
+			if (path === source || !isUnder(path, source!)) continue;
+			if (fs.kind(path) !== "dir") {
+				return invalid(
+					`the protected path ${path} is not a directory, and lies in ${destination}, which a box binds: a box masks only a directory there, so protect the directory that holds it`,
+				);
+			}
+			masks.push(posix.join(destination!, path.slice(source!.length)));
+		}
+	}
+	// The outermost masks only: one hides everything under it.
+	const outermost = [...new Set(masks)].filter(
+		(mask, _, all) => !all.some((other) => other !== mask && isUnder(mask, other)),
+	);
+	return [...mounts, ...outermost.map((mask) => ["--tmpfs", mask])];
 }
 
 /**
  * The whole argv of `bwrap` for one command of a box, its own path not included: the flags, the box's own mounts, the
- * system read-only, the files on descriptors, the workspace, the root remounted read-only, the working directory, the
- * environment, `--` and the command.
+ * system read-only with every guarded directory in it masked, the files on descriptors, the workspace, the root
+ * remounted read-only, the working directory, the environment, `--` and the command.
  *
  * `unsupported` for a network other than `none` (absent means `none`); `invalid` for a workspace, a working directory,
  * an environment or a command it will not build. Nothing is spawned.
@@ -362,7 +415,9 @@ export function bwrapArgs(spec: BwrapSpec, host: BwrapHost): Result<string[], Bo
 	if (command.some((part) => typeof part !== "string" || part.includes("\0"))) {
 		return err(invalid("the command holds a part that is not a string without NUL bytes"));
 	}
-	const system = systemMounts(fs);
+	const guarded = guardedPaths(host, fs);
+	if (guarded instanceof BoxError) return err(guarded);
+	const system = systemMounts(fs, guarded);
 	if (system instanceof BoxError) return err(system);
 	return ok([
 		...BWRAP_FLAGS,
@@ -406,10 +461,11 @@ export function bwrapFiles(
 /**
  * Checks an argv against the allowlist, structurally and then exactly: `undefined` when it may be spawned, otherwise
  * `invalid` naming the first fault. The rules hold whatever built the argv: every flag once, `--cap-drop ALL`, the
- * box's own mounts before any bind, the system read-only and only it, one writable bind and that one the working
- * directory, the files only on their descriptors, the root remounted read-only after the last mount, `--clearenv` before
- * every `--setenv`, no option outside the set this module uses, and a command after `--`. Then the argv must be the one
- * `bwrapArgs` builds for `spec` and `host`, element by element.
+ * box's own mounts before any bind, the system read-only and only it, no read-only bind that shows a home or a hidden
+ * path unless an empty tmpfs masks it after the bind (and no tmpfs anywhere else), one writable bind and that one the
+ * working directory, the files only on their descriptors, the root remounted read-only after the last mount,
+ * `--clearenv` before every `--setenv`, no option outside the set this module uses, and a command after `--`. Then the
+ * argv must be the one `bwrapArgs` builds for `spec` and `host`, element by element.
  */
 export function checkBwrapArgs(argv: readonly string[], spec: BwrapSpec, host: BwrapHost): BoxError | undefined {
 	const refuse = (why: string) => invalid(`the bwrap argv is refused: ${why}`);
@@ -476,12 +532,32 @@ function mountRefusal(mounts: readonly string[][], chdir: string, host: BwrapHos
 	if (binds.length !== 1) {
 		return `a box has one --bind, its workspace, and this argv has ${binds.length}${binds.length > 1 ? ` (${binds.map((m) => `${m[1]} to ${m[2]}`).join(", ")})` : ""}`;
 	}
+	const guarded = guardedPaths(host, host.fs ?? realFs);
+	if (guarded instanceof BoxError) return guarded.message;
+	// The masks this argv needs, from its own read-only binds and not from the builder: each guarded directory inside a
+	// bound directory, at its place in the box, with the position of the bind that shows it.
+	const masks = new Map<string, number>();
+	for (const [n, mount] of mounts.entries()) {
+		if (mount[0] !== "--ro-bind") continue;
+		const [, source, destination] = mount as [string, string, string];
+		for (const path of guarded.resolved) {
+			if (path !== source && isUnder(path, source)) masks.set(posix.join(destination, path.slice(source.length)), n);
+		}
+	}
 	const destinations = new Set<string>();
+	const masked = new Set<string>();
 	for (const [n, mount] of mounts.entries()) {
 		const [option, first, second] = mount as [string, string, string | undefined];
 		if (option === "--proc" || option === "--dev" || option === "--tmpfs") {
-			if (!PRIVATE.some(([o, p]) => o === option && p === first))
-				return `${option} ${first} is not one of the box's own mounts`;
+			const own = PRIVATE.some(([o, p]) => o === option && p === first);
+			if (!own && option !== "--tmpfs") return `${option} ${first} is not one of the box's own mounts`;
+			if (!own && !masks.has(first)) {
+				return `--tmpfs ${first} is neither one of the box's own mounts nor a mask of a protected path`;
+			}
+			if (!own) {
+				if (masked.has(first)) return `--tmpfs ${first} twice`;
+				masked.add(first);
+			}
 			// A mount made after a bind under it hides that bind.
 			const hidden = mounts
 				.slice(0, n)
@@ -539,6 +615,20 @@ function mountRefusal(mounts: readonly string[][], chdir: string, host: BwrapHos
 		if (roots instanceof BoxError) return roots.message;
 		const place = placeRefusal(first, roots, "the workspace");
 		if (place !== undefined) return place.message;
+	}
+	// No read-only bind shows a guarded path: none is or lies in one, and every guarded directory inside one is masked by
+	// a --tmpfs after it, at its own place or at a mask that holds it.
+	for (const mount of mounts) {
+		if (mount[0] !== "--ro-bind") continue;
+		const [, source, destination] = mount as [string, string, string];
+		const shown = [...guarded.named, ...guarded.resolved].find((path) => isUnder(source, path));
+		if (shown !== undefined) return `--ro-bind ${source} to ${destination} shows ${shown}, which a box never sees`;
+	}
+	for (const [mask, after] of masks) {
+		const covered = mounts.some(
+			(m, n) => n > after && m[0] === "--tmpfs" && masks.has(m[1]!) && isUnder(mask, m[1]!),
+		);
+		if (!covered) return `the box would show the protected ${mask}: no --tmpfs masks it after the bind that shows it`;
 	}
 	if (count("--remount-ro", "/") !== 1) return "--remount-ro / is missing";
 	for (const [fd, path] of BWRAP_DATA) {

@@ -566,7 +566,7 @@ describe("checkBwrapArgs", () => {
 			a[n - 2] === "--ro-bind-data" && part === "/etc/passwd" ? "/etc/shadow" : part,
 		);
 		refused(passwd, /--ro-bind-data 3 \/etc\/shadow is not one of the box's files/);
-		refused(insert("--tmpfs", "/home"), /--tmpfs \/home is not one of the box's own mounts/);
+		refused(insert("--tmpfs", "/home"), /--tmpfs \/home is neither one of the box's own mounts nor a mask/);
 		refused(insert("--proc", "/proc2"), /--proc \/proc2 is not one of the box's own mounts/);
 		refused(without("--proc", 1), /--proc \/proc is missing or made twice/);
 		refused(insert("--tmpfs", "/tmp"), /--tmpfs \/tmp is missing or made twice/);
@@ -653,6 +653,125 @@ describe("checkBwrapArgs", () => {
 	it("answers a spec it would not build with that refusal", () => {
 		const error = checkBwrapArgs(argv(), { ...spec, network: "open" }, host());
 		expect(error?.code).toBe("unsupported");
+	});
+});
+
+describe("a protected path inside the system", () => {
+	/** The merged host with a provider's records, a link to them, a file and a home under /usr, and a directory in /etc. */
+	const GUARDED: Readonly<Record<string, Entry>> = {
+		...MERGED,
+		"/usr/local/records": DIR,
+		"/usr/local/records/inner": DIR,
+		"/usr/local/records.json": FILE,
+		"/usr/local/home-of-server": DIR,
+		"/usr/share/zoneinfo": DIR,
+		"/etc/ssl/certs/private": DIR,
+		"/data/records-link": { kind: "link", to: "/usr/local/records", real: "/usr/local/records" },
+		"/data/usr-link": { kind: "link", to: "/usr", real: "/usr" },
+	};
+	const at = (argv: readonly string[], ...mount: string[]) =>
+		options(argv).findIndex((o) => o.length === mount.length && o.every((part, n) => part === mount[n]));
+
+	it("masks a hidden directory under /usr with an empty tmpfs after the /usr bind and before the root is remounted", () => {
+		const h = host({ hidden: ["/usr/local/records"] }, GUARDED);
+		const argv = built({}, h);
+		const mask = at(argv, "--tmpfs", "/usr/local/records");
+		expect(mask).toBeGreaterThan(at(argv, "--ro-bind", "/usr", "/usr"));
+		expect(mask).toBeLessThan(at(argv, "--remount-ro", "/"));
+		expect(
+			options(argv)
+				.filter((o) => o[0] === "--tmpfs")
+				.map((o) => o[1]),
+		).toEqual(["/tmp", "/dev/shm", "/usr/local/records"]);
+		expect(checkBwrapArgs(argv, {}, h)).toBeUndefined();
+	});
+
+	it("masks a hidden path reached through a link at the place its contents are, and a home under a system directory", () => {
+		const linked = host({ hidden: ["/data/records-link"] }, GUARDED);
+		const argv = built({}, linked);
+		expect(at(argv, "--tmpfs", "/usr/local/records")).toBeGreaterThan(at(argv, "--ro-bind", "/usr", "/usr"));
+		expect(checkBwrapArgs(argv, {}, linked)).toBeUndefined();
+		const home = host({ homes: [HOME, "/usr/local/home-of-server"] }, GUARDED);
+		const homeArgv = built({}, home);
+		expect(at(homeArgv, "--tmpfs", "/usr/local/home-of-server")).toBeGreaterThan(
+			at(homeArgv, "--ro-bind", "/usr", "/usr"),
+		);
+		expect(checkBwrapArgs(homeArgv, {}, home)).toBeUndefined();
+	});
+
+	it("masks only the outermost of nested paths, one inside a split host's /bin, and one inside a bound part of /etc", () => {
+		const nested = built({}, host({ hidden: ["/usr/local/records/inner", "/usr/local/records"] }, GUARDED));
+		expect(options(nested).filter((o) => o[0] === "--tmpfs" && o[1]!.startsWith("/usr"))).toEqual([
+			["--tmpfs", "/usr/local/records"],
+		]);
+		const split: Record<string, Entry> = { "/usr": DIR, "/bin": DIR, "/bin/secret": DIR, "/data/box/ws": DIR };
+		const h = host({ hidden: ["/bin/secret"] }, split);
+		const argv = built({}, h);
+		expect(at(argv, "--tmpfs", "/bin/secret")).toBeGreaterThan(at(argv, "--ro-bind", "/bin", "/bin"));
+		expect(checkBwrapArgs(argv, {}, h)).toBeUndefined();
+		const etc = host({ hidden: ["/etc/ssl/certs/private"] }, GUARDED);
+		const etcArgv = built({}, etc);
+		expect(at(etcArgv, "--tmpfs", "/etc/ssl/certs/private")).toBeGreaterThan(
+			at(etcArgv, "--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs"),
+		);
+		expect(checkBwrapArgs(etcArgv, {}, etc)).toBeUndefined();
+	});
+
+	it("leaves out a part of /etc whose source lies in a protected path, and masks that path in /usr", () => {
+		const h = host({ hidden: ["/usr/share/zoneinfo"] }, GUARDED);
+		const argv = built({}, h);
+		expect(options(argv).some((o) => o[2] === "/etc/localtime")).toBe(false);
+		expect(at(argv, "--tmpfs", "/usr/share/zoneinfo")).toBeGreaterThan(at(argv, "--ro-bind", "/usr", "/usr"));
+		expect(checkBwrapArgs(argv, {}, h)).toBeUndefined();
+	});
+
+	it("refuses a protected path that is or holds a system root, as named or through a link, and a protected file inside one", () => {
+		for (const hidden of ["/usr", "/etc", "/lib", "/data/usr-link"]) {
+			const error = refusal({}, host({ hidden: [hidden] }, GUARDED));
+			expect(error.message, hidden).toMatch(
+				/^the protected path \/\S+ is or holds \/\S+, which a box binds: masking it would leave the box without its system$/,
+			);
+		}
+		expect(refusal({}, host({ homes: ["/usr"] }, GUARDED)).message).toMatch(
+			/the protected path \/usr is or holds \/usr/,
+		);
+		expect(refusal({}, host({ hidden: ["/usr/local/records.json"] }, GUARDED)).message).toMatch(
+			/the protected path \/usr\/local\/records\.json is not a directory, and lies in \/usr/,
+		);
+		// A protected path that does not exist yet has nothing to show: no mask, and the box is built.
+		const later = built({}, host({ hidden: ["/usr/local/not-yet"] }, GUARDED));
+		expect(options(later).some((o) => o[1] === "/usr/local/not-yet")).toBe(false);
+	});
+
+	it("refuses an argv that drops a mask, moves it before its bind, repeats it, or adds a tmpfs anywhere else", () => {
+		const h = host({ hidden: ["/usr/local/records"] }, GUARDED);
+		const argv = built({}, h);
+		const mask = argv.findIndex((part, n) => part === "--tmpfs" && argv[n + 1] === "/usr/local/records");
+		const dropped = [...argv.slice(0, mask), ...argv.slice(mask + 2)];
+		const shown =
+			/the box would show the protected \/usr\/local\/records: no --tmpfs masks it after the bind that shows it/;
+		expect(checkBwrapArgs(dropped, {}, h)?.message).toMatch(shown);
+		const usr = dropped.findIndex((part, n) => part === "--ro-bind" && dropped[n + 2] === "/usr");
+		const early = [...dropped.slice(0, usr), "--tmpfs", "/usr/local/records", ...dropped.slice(usr)];
+		expect(checkBwrapArgs(early, {}, h)?.message).toMatch(shown);
+		const twice = [...argv.slice(0, mask), "--tmpfs", "/usr/local/records", ...argv.slice(mask)];
+		expect(checkBwrapArgs(twice, {}, h)?.message).toMatch(/--tmpfs \/usr\/local\/records twice/);
+		for (const elsewhere of ["/usr/share", "/usr/local", "/usr", "/etc/ssl/certs"]) {
+			const extra = [...argv.slice(0, mask), "--tmpfs", elsewhere, ...argv.slice(mask)];
+			expect(checkBwrapArgs(extra, {}, h)?.message, elsewhere).toMatch(
+				new RegExp(`--tmpfs ${elsewhere.replaceAll("/", "\\/")} is neither one of the box's own mounts nor a mask`),
+			);
+		}
+	});
+
+	it("finds a missing mask from the argv's own binds, whatever built it: an argv built without the hidden path is refused for it", () => {
+		const unguarded = built({}, host({}, GUARDED));
+		expect(checkBwrapArgs(unguarded, {}, host({ hidden: ["/usr/local/records"] }, GUARDED))?.message).toMatch(
+			/the box would show the protected \/usr\/local\/records/,
+		);
+		expect(checkBwrapArgs(unguarded, {}, host({ hidden: ["/usr/share/zoneinfo"] }, GUARDED))?.message).toMatch(
+			/--ro-bind \/usr\/share\/zoneinfo\/Etc\/UTC to \/etc\/localtime shows \/usr\/share\/zoneinfo, which a box never sees/,
+		);
 	});
 });
 
