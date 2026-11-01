@@ -73,3 +73,40 @@ describe("AgentEditPage", () => {
     expect(page.host.textContent).toContain("could not be reloaded");
   });
 });
+
+describe("AgentEditPage, a new decision agent", () => {
+  it("creates a workflow agent from the starter decision workflow, with no harness, and opens it on its Workflow step", async () => {
+    const { DECISION_STARTER } = await import("@/lib/decisionStarter");
+    const made: Agent = { agent_id: "gambling-check", kind: "workflow", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] } };
+    let sent: { definition: Record<string, unknown> } | undefined;
+    let went: string | undefined;
+    const v2 = {
+      createAgent: async (body: { definition: Record<string, unknown> }) => { sent = body; return made; },
+      getAgent: async () => ({ agent: made, etag: "r1" }),
+      listRevisions: async () => ({ revisions: [{ revision: "r1", version: 1, current: true, note: null, created_at: "2026-11-01T00:00:00Z" }], next_cursor: null }),
+      validateWorkflow: async () => ({ ok: true, issues: [], warnings: [] }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const page = (agentId: string | null) => createElement(AgentEditPage, { v2: v2 as never, caps: { ...caps, decisions: true } as never, agentId, go: (hash: string) => { went = hash; } });
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
+    act(() => root!.render(page(null)));
+    await act(async () => { button(/Settings/)!.click(); });
+    await act(async () => { host.querySelector<HTMLInputElement>('input[type=radio][value="decision"]')!.click(); });
+    await act(async () => { button(/Context/)!.click(); });
+    await act(async () => {
+      const name = host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "Gambling check");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { button(/^Create$/)!.click(); });
+    await settle();
+    expect(sent?.definition).toEqual({ version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] });
+    expect(went).toBe("#/agents/gambling-check");
+    // The page the create went to: the new workflow agent, opened on its Workflow step.
+    act(() => root!.render(page("gambling-check")));
+    await settle();
+    expect(host.querySelector('button[aria-current="step"]')?.textContent).toMatch(/Workflow/);
+  });
+});

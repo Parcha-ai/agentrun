@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createBody, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers } from "./agentForm";
+import { createBody, DECISION, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers } from "./agentForm";
+import { DECISION_STARTER } from "./decisionStarter";
 import { ClientError } from "./client";
 import agent from "../fixtures/agent.invoice-checker.json";
 import workflow from "../fixtures/agent.support-triage.json";
@@ -94,6 +95,33 @@ describe("harnessOptions", () => {
   });
   it("offers nothing the server does not list", () => {
     expect(harnessOptions([{ id: "pi", available: true }]).map((h) => h.id)).toEqual(["pi"]);
+  });
+});
+
+describe("a decision agent", () => {
+  it("is offered on create after the harnesses, as a choice and never a harness id: available when the server runs decision workflows, else disabled with why", () => {
+    expect(DECISION).toBe("decision");
+    expect(harnessOptions(caps.body.harnesses, { available: true }).map((h) => h.id)).toEqual(["pi", "claude-agent", "codex", "decision"]);
+    expect(harnessOptions(caps.body.harnesses, { available: true }).at(-1)).toEqual({ id: "decision", label: "Decision", available: true, reason: undefined });
+    const off = harnessOptions([{ id: "pi", available: true }], { available: false }).at(-1)!;
+    expect([off.id, off.available]).toEqual(["decision", false]);
+    expect(off.reason).toMatch(/decision workflows/);
+    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain("decision");
+  });
+
+  it("is created as a workflow revision from the starter decision workflow: no instructions, harness, thinking or model, and no tools", () => {
+    const body = createBody({ name: "Gambling check", description: "Is a payment for gambling?", instructions: "Typed before the choice.", harness: DECISION, tools: ["read"], thinking: "high", model: "faux/faux-1" });
+    expect(body).toEqual({ definition: { version: 1, name: "Gambling check", description: "Is a payment for gambling?", workflow: DECISION_STARTER, skills: [], tools: [] } });
+    expect(body.definition.workflow).not.toBe(DECISION_STARTER);
+    expect(createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [] }).definition).not.toHaveProperty("description");
+  });
+
+  it("starts from a decision workflow with an example input: a typed question, a threshold, and a person for an unclear answer", () => {
+    const steps = DECISION_STARTER.root.steps.map((s) => s.node);
+    expect(steps).toEqual(["judge", "code", "route"]);
+    expect(JSON.stringify(DECISION_STARTER.root)).toContain('"node":"escalate"');
+    expect(DECISION_STARTER.schemas.Input.examples).toHaveLength(1);
+    expect(DECISION_STARTER.root.steps[0]).not.toHaveProperty("provider");
   });
 });
 
