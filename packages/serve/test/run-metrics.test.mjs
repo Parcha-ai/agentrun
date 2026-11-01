@@ -76,7 +76,8 @@ test("a run its server's successor ends keeps the effort its process ran at, not
   const dir = await scratch(t);
   const data = join(dir, "agents");
   // The first server in a process of its own, at the host level high, so it can die as a crash kills it.
-  const first = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENT_THINKING: "high" } });
+  // A home of its own: a first start counts the sessions in its home for setup's offer, and this machine's are not the test's.
+  const first = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dir, AGENT_THINKING: "high" } });
   t.after(() => first.kill("SIGKILL"));
   let out = "";
   first.stdout.on("data", (chunk) => (out += chunk));
