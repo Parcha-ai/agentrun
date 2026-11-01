@@ -1136,7 +1136,8 @@ export class Runs {
     if (options.inputs) {
       // Listed from here, so a request may reach it while it copies: `preparing` holds it until its files are in.
       const prepared = this.prepare(run, started.workspace, options.inputs).finally(() => void (run.preparing = undefined));
-      run.preparing = prepared.then(() => undefined);
+      // Never rejected: a request waiting on it reads how the start ended from the run; the start's own error is the create's.
+      run.preparing = prepared.then(() => undefined, () => undefined);
       if (!(await prepared)) return run;
     }
     this.launch(run);
@@ -1156,8 +1157,9 @@ export class Runs {
    *  mark, and the next start fails the run rather than run it on part of its files. Copied whole, the mark goes, and the
    *  launch makes its own. False when the copy failed, and the run ended so (or was cancelled meanwhile). */
   private async prepare(run: Run, work: string, inputs: (work: string) => Promise<unknown>): Promise<boolean> {
-    this.markLaunching(run);
     try {
+      // The mark itself may fail (a full disk): the run ends as when the copy does.
+      this.markLaunching(run);
       await inputs(work);
     } catch (error) {
       this.reportedBack(run);

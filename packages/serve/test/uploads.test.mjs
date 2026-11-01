@@ -228,6 +228,30 @@ test("a run whose files are still being copied does not start for a message mean
   assert.equal(await readFile(join(work, "inputs", "notes.txt"), "utf8"), "copied before the start\n");
 });
 
+test("a copy that fails ends the run failed with why, starts no process, and the server keeps serving", async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const notes = await upload(server, "notes.txt", Buffer.from("never copied\n"));
+  assert.equal((await api("POST", "/agents", agent("unlucky"))).status, 201);
+  uploadTestHooks.beforeCopy = () => {
+    throw new Error("no space left on the test's disk");
+  };
+  t.after(() => void (uploadTestHooks.beforeCopy = undefined));
+  const run = await api("POST", "/agents/unlucky/runs", { input: { content: "Hello." }, file_ids: [notes.file_id] });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const read = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.deepEqual([read.status, read.error?.code], ["failed", "run_failed"], JSON.stringify(read));
+  assert.match(read.error.message, /could not be copied into its workspace: no space left on the test's disk/);
+  const dir = join(server.data, "runs", run.body.run_id);
+  assert.deepEqual([await stat(join(dir, "process.log")).catch(() => null), await stat(join(dir, "launching")).catch(() => null)], [null, null], "no process, and no launch mark left");
+  const message = await api("POST", `/runs/${run.body.run_id}/messages`, { content: "Go on." });
+  assert.equal(message.status, 409, "a failed run takes no message");
+  uploadTestHooks.beforeCopy = undefined;
+  const next = await api("POST", "/agents/unlucky/runs", { input: { content: "Hello." }, file_ids: [notes.file_id] });
+  assert.equal(next.status, 202);
+  await follow(api, next.body.run_id, ["completed"]);
+});
+
 test("a name taken already gets the next suffix, the same for the same files in the same order", async (t) => {
   const server = await serve(t);
   const { api } = server;
