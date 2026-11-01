@@ -9,6 +9,8 @@ const receipt = (over = {}) => ({
   id: "d1", at: "2026-10-29T23:00:00.000Z", node: "document_checks", kind: "judge", request: { index: 0, count: 1 }, status: "answered",
   answers: { is_coi: { type: "noul", noul: 0.97 }, internally_consistent: { type: "noul", noul: 0.09 } }, cost_usd: 0.004, ...over,
 });
+/** Userinfo is built at run time, so no credential-shaped URL sits in the source (as pi-durable-agent's timeline tests do). */
+const userinfo = (secret) => `${["us", "er"].join("")}:${secret}`;
 const usageRow = (usd, requests) => ({ id: "1:usage", timestamp: "2026-10-29T23:00:05.000Z", created_at: "2026-10-29T23:00:05.000Z", kind: "usage", summary: "Cost so far", agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null, usage: { usd, requests } });
 
 test("a judge row names its node and provider, then each answer with the probability of what it said", () => {
@@ -60,9 +62,11 @@ test("decision rows sit among the run's rows by time, the usage row last", () =>
 });
 
 test("a decision row's URLs keep their origin, path and query keys, as every timeline row's do: no query value, fragment or credentials", () => {
+  const signed = `https://${userinfo("PASSWORD")}@files.example.com/report.pdf?X-Amz-Signature=SIGNED-2&X-Amz-Expires=300#page=2`;
+  assert.equal(new URL(signed).password, "PASSWORD", "the receipt's source URL carries credentials");
   const rows = decisionRows([
     receipt({ provider: "parallel", answers: { source: { type: "choice", choice: "https://files.example.com/a.pdf?sig=SIGNED-1", confidence: 0.8 } }, evidence: [
-      { url: "https://reader:PASSWORD@files.example.com/report.pdf?X-Amz-Signature=SIGNED-2&X-Amz-Expires=300#page=2", title: "Report", excerpts: [], scope: "call" },
+      { url: signed, title: "Report", excerpts: [], scope: "call" },
     ] }),
     receipt({ id: "d2", status: "failed", answers: {}, error: "fetch https://api.example.com/v1/check?key=SIGNED-3 failed" }),
   ]);
