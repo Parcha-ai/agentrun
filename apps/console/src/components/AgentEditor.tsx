@@ -1,4 +1,4 @@
-import { Archive, ArrowLeft, ArrowRight, Check, FileText, History, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
+import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -8,7 +8,8 @@ import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string };
+/** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
+export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string; definition?: Agent["definition"] };
 export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
@@ -69,6 +70,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<SaveProblem | null>(initialProblem);
   const [saved, setSaved] = useState(false);
+  // A workflow agent's past revision, opened from History as its read-only graph.
+  const [viewing, setViewing] = useState<Revision | null>(null);
+  const goTo = (s: Step) => { setViewing(null); setStep(s); };
   const fieldError = (field: string) => (problem?.kind === "invalid" ? problem.fields[`definition.${field}`] : undefined);
   // What the save's answer said this host lacks to run the revision: all of it above the form, and each beside the field
   // it names (one the form does not show, such as a place, only above).
@@ -127,7 +131,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         <ol className={cn("flex shrink-0 gap-1 overflow-x-auto border-b p-3 md:flex-col md:gap-0 md:border-b-0 md:border-r md:p-4", step === "workflow" ? "md:w-[76px]" : "md:w-[240px]")}>
           {steps.map((s, i) => (
             <li key={s.id} className="shrink-0">
-              <button type="button" aria-current={step === s.id ? "step" : undefined} onClick={() => setStep(s.id)}
+              <button type="button" aria-current={step === s.id ? "step" : undefined} onClick={() => goTo(s.id)}
                 className={cn("flex w-full items-start gap-3 border-l-2 px-3 py-2.5 text-left font-mono", step === s.id ? "border-l-foreground bg-foreground/5" : "border-l-transparent text-muted-foreground hover:text-foreground")}>
                 <span className={cn("inline-flex size-6 shrink-0 items-center justify-center border text-[11px] font-bold", step === s.id ? "border-foreground bg-foreground text-background" : i < at ? "border-border-strong" : "border-border")}>
                   {i < at ? <Check className="size-3" aria-hidden /> : i + 1}
@@ -228,13 +232,27 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             </div>
           )}
 
-          {step === "history" && (
+          {step === "history" && viewing && (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <Button size="sm" variant="ghost" onClick={() => setViewing(null)}><ArrowLeft aria-hidden /> Back to History</Button>
+                <span className="caps text-[12px]">rev {viewing.version}</span>
+                <span className="min-w-0 flex-1 text-[14px]">{viewing.note ?? <span className="text-muted-foreground">No note</span>}</span>
+                <span className="font-mono text-[11px] text-muted-foreground">{when(viewing.created_at)}</span>
+                <Button size="sm" onClick={() => onMakeCurrent?.(viewing.revision)} disabled={!onMakeCurrent}>Make current</Button>
+              </div>
+              <WorkflowEditor readOnly text={JSON.stringify(viewing.definition?.workflow, null, 2)} onText={() => {}} base={d!.workflow} baseLabel={current ? `rev ${current.version}, the current one` : "the current revision"} />
+            </div>
+          )}
+
+          {step === "history" && !viewing && (
             <ul className="max-w-3xl border">
               {revisions.map((r) => (
                 <li key={r.revision} className="flex flex-wrap items-center gap-3 border-b px-4 py-3 last:border-b-0">
                   <span className="caps w-14 text-[12px]">rev {r.version}</span>
                   <span className="min-w-0 flex-1 text-[14px]">{r.note ?? <span className="text-muted-foreground">No note</span>}</span>
                   <span className="font-mono text-[11px] text-muted-foreground">{when(r.created_at)}</span>
+                  {workflow && !r.current && r.definition?.workflow !== undefined && <Button size="sm" variant="ghost" onClick={() => setViewing(r)} aria-label={`View rev ${r.version}`}><Eye aria-hidden /> View</Button>}
                   {r.current ? <Chip tone="success">Current</Chip> : <Button size="sm" onClick={() => onMakeCurrent?.(r.revision)} disabled={!onMakeCurrent}>Make current</Button>}
                 </li>
               ))}
@@ -243,12 +261,12 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         </section>
       </div>
       <footer className="flex flex-wrap items-center gap-3 border-t px-5 py-3 md:px-8">
-        <Button size="sm" variant="ghost" disabled={at === 0} onClick={() => setStep(steps[at - 1].id)}><ArrowLeft aria-hidden /> Previous</Button>
+        <Button size="sm" variant="ghost" disabled={at === 0} onClick={() => goTo(steps[at - 1].id)}><ArrowLeft aria-hidden /> Previous</Button>
         {step !== "history" && <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={creating ? "" : "What changed (a note on this revision)"} aria-label="Revision note" className={cn(input, "h-9 min-w-0 flex-1 py-0", creating && "invisible")} />}
         {step === "history" && <span className="flex-1" />}
         {saved && <span className="caps text-[11px] text-success-text">Saved</span>}
-        {at < steps.length - 1 && <Button size="sm" onClick={() => setStep(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
-        <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>
+        {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
+        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>}
       </footer>
     </div>
   );
