@@ -1,13 +1,15 @@
-// A run's work/ as this server reads it (the console's file view and listing, a skill's SKILL.md): never through a link.
-// Each read goes through pi-durable-disk's confinement, which walks down from work/ on held directory handles without
-// following, so a component swapped for a link between a check and the open is refused, not followed. On top of it: the
-// path must be work/ joined with its own names (a link anywhere on the way, even one pointing inside work/, is refused),
-// only regular files and directories are read, and a file with a second hard link is refused, since it could be one of
-// this server's own files linked in.
+// A run's work/ as this server reads it (the console's file view and listing, a skill's SKILL.md), and an agent's home as
+// it reads and writes it: never through a link. Each read and write goes through pi-durable-disk's confinement, which
+// walks down from the root on held directory handles without following, so a component swapped for a link between a
+// check and the open is refused, not followed. On top of it: the path must be the root joined with its own names (a link
+// anywhere on the way, even one pointing inside the root, is refused), only regular files and directories are read, and a
+// file with a second hard link is refused, since it could be one of this server's own files linked in.
+import { randomBytes } from "node:crypto";
 import { constants, readFileSync, realpathSync, type Stats } from "node:fs";
-import { access, type FileHandle, lstat, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { access, type FileHandle, lstat, readdir, unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { Confinement } from "@parcha/pi-durable-disk/internals";
+import { syncDir, writeDurable } from "./files.js";
 
 /** Why a path under work/ is not read: it is missing, a link is on the way (or is the entry), it is not a regular file,
  *  it has another hard link, it is larger than the reader takes, or it is unreadable to this server (a tool in the box
@@ -36,6 +38,9 @@ export const workspaceTestHooks: {
   afterOpen?: (path: string) => Promise<void> | void;
   afterSizeCheck?: (path: string) => Promise<void> | void;
 } = {};
+
+/** How many directories deep `walkWork` goes by default. */
+export const WALK_DEPTH = 16;
 
 const confinementOf = (work: string) => {
   const real = realpathSync(work);
@@ -105,7 +110,7 @@ export async function readWorkBytes(work: string, rel: string, { maxBytes }: { m
  * working copy). `skip` leaves a name (and what is below it) out unreported; `visit` returning false stops the walk.
  * Directories are entered down to `depth` levels.
  */
-export async function walkWork(work: string, visit: (path: string, stats: Stats, readable: boolean) => boolean | void, { skip = () => false, depth = 16, refused = () => {} }: { skip?: (name: string) => boolean; depth?: number; refused?: (path: string, reason: RefusedReason) => void } = {}): Promise<void> {
+export async function walkWork(work: string, visit: (path: string, stats: Stats, readable: boolean) => boolean | void, { skip = () => false, depth = WALK_DEPTH, refused = () => {} }: { skip?: (name: string) => boolean; depth?: number; refused?: (path: string, reason: RefusedReason) => void } = {}): Promise<void> {
   const { real, confinement } = confinementOf(work);
   const into = async (rel: string, level: number): Promise<boolean> => {
     const abs = rel ? join(real, rel) : real;
@@ -165,6 +170,80 @@ export async function walkWork(work: string, visit: (path: string, stats: Stats,
     }
   };
   await into("", 0);
+}
+
+/** A write's or a removal's failure that is a refusal: a link on the way (the confinement's refusal), a directory that
+ *  is missing or this server may not enter, or a file where a directory is on the way (a directory where the file is).
+ *  Any other failure, a full disk say, is thrown as it is. */
+const REFUSALS: Readonly<Record<string, RefusedReason>> = { permission_denied: "link", ELOOP: "link", ENOENT: "missing", EACCES: "unreadable", ENOTDIR: "not_regular", EISDIR: "not_regular" };
+const refusing = (rel: string) => (error: unknown): never => {
+  const reason = error instanceof WorkRefused ? error.reason : REFUSALS[(error as NodeJS.ErrnoException)?.code ?? ""];
+  throw reason ? new WorkRefused(rel, reason) : error;
+};
+
+/** Pins the directory holding `rel` under `work` for writing, every directory on the way reached through no link (and,
+ *  with `parents`, made when missing). Close the pin. */
+async function pinForWrite(work: string, rel: string, parents: boolean) {
+  const { real, confinement } = confinementOf(work);
+  const abs = join(real, rel);
+  const refuse = refusing(rel);
+  // Checked before the walk makes any directory, so none is made through a link.
+  const { canonical } = await confinement.locate(abs, rel, "write", false).catch(refuse);
+  if (canonical !== abs) throw new WorkRefused(rel, "link");
+  // Whether the walk is to make a directory (the file's own is missing).
+  const making = parents && !(await lstat(dirname(abs)).catch(() => null));
+  const pin = await confinement.pinEntry(abs, rel, { access: "write", follow: false, parents }).catch(refuse);
+  if (pin.canonical !== abs) {
+    await pin.close();
+    throw new WorkRefused(rel, "link");
+  }
+  return { pin, refuse, real, making };
+}
+
+/** What is at the pinned entry, by lstat: nothing (undefined), else a regular file, or refused. */
+async function entryOf(pin: { entry: string }, refuse: (error: unknown) => never, rel: string): Promise<Stats | undefined> {
+  const stats = await lstat(pin.entry).catch((error) => ((error as NodeJS.ErrnoException)?.code === "ENOENT" ? undefined : refuse(error)));
+  if (stats && !stats.isFile()) throw new WorkRefused(rel, stats.isSymbolicLink() ? "link" : "not_regular");
+  return stats;
+}
+
+/**
+ * Writes `bytes` to `rel` under `work` whole and durably (files.ts writeDurable), as a file of `mode`: through a temporary
+ * file in the same directory, a dot-name of the server's own, renamed over the file. The directories on the way are made
+ * when missing, and each is synced into its parent before this resolves. A link on the way or at the file, or a directory
+ * there, is refused: never followed and never replaced. Answers the stats of the file this call wrote.
+ */
+export async function writeWorkFile(work: string, rel: string, bytes: Uint8Array, mode = 0o600): Promise<Stats> {
+  const { pin, refuse, real, making } = await pinForWrite(work, rel, true);
+  try {
+    await entryOf(pin, refuse, rel);
+    // A link swapped in after that check is replaced by the rename, never written through.
+    const stats = await writeDurable(pin.entry, bytes, mode, `${pin.dir}/.agentrun-${process.pid}-${randomBytes(6).toString("hex")}.tmp`).catch(refuse);
+    // writeDurable synced the file's own directory; a directory made above it survives a crash once its parent is synced.
+    if (making) {
+      let at = real;
+      for (const name of dirname(rel).split("/")) {
+        await syncDir(at);
+        at = join(at, name);
+      }
+    }
+    return stats;
+  } finally {
+    await pin.close();
+  }
+}
+
+/** Removes the regular file `rel` under `work`, reached through no link: refused when it is missing, a link, or not a
+ *  regular file. A directory it leaves empty stays. */
+export async function removeWorkFile(work: string, rel: string): Promise<void> {
+  const { pin, refuse } = await pinForWrite(work, rel, false);
+  try {
+    if (!(await entryOf(pin, refuse, rel))) throw new WorkRefused(rel, "missing");
+    // unlink never follows the name it removes: a link swapped in after the check is removed, not its target.
+    await unlink(pin.entry).catch(refuse);
+  } finally {
+    await pin.close();
+  }
 }
 
 /** Throws unless the kernel refuses a hard link to a file the linker cannot write (fs.protected_hardlinks = 1): with a

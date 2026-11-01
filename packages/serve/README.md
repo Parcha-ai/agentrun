@@ -321,6 +321,7 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
+| `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
 | `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`; `failed` includes escalated. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, failed, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. The query bounds `analytics` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; a poll never answers `home_busy` (`stale: true` marks a last whole view). An agentic run has none (`404`). |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
@@ -332,6 +333,21 @@ Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` an
 feature, and capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
 browser sign-ins (`sign_ins: false`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
+
+## Agent home
+
+Each agent has a home, a directory of its own at `<data>/homes/<agent_id>/`, kept across its runs; runs do not see it
+yet. `GET /v2/agents/{id}/home/files` lists every file in it, recursively, in the shape of a run's file list (with
+`agent_id` in place of `run_id`), and a home never written to lists none. Below it, a file's own path: `GET` reads the
+file as a run's file is read, and `PUT` writes the raw body as the file, whole (a temporary file renamed over it,
+`0600`), making the directories on the way and the home itself on the first write, and answers its entry; of two writes
+at once, the last wins. A body over `capabilities.home.max_file_bytes` (`limits.max_body_bytes`) is `413`.
+`DELETE` removes a file (`204`; `404` when it is not there) and leaves an emptied directory in place. Paths are checked
+as a run's are, a write goes at most 16 directories deep (as deep as the list goes), and a link anywhere on the way is
+never followed: a read is `404`, a write or a delete
+`403 system_file_forbidden`. `learning/` is written by the server alone: listed with `host_owned: true` and read, but a
+`PUT` or `DELETE` at or under it, however the path is spelled (`./learning/x`), is `403`. An archived agent's home is
+read and written as its definition is. `GET` and `PUT /agents/{id}/home`, the contract's packed home, stay `501`.
 
 ## Harnesses
 
@@ -627,10 +643,10 @@ carries no cost at all, as from a provider that does not price the model. The te
   that check is not runnable (`409`), and a model that
   calls it anyway, as an agent or as a workflow's model node, is answered that the tool is not available and runs
   nothing. There is no sandbox box in this phase, so shell stays off.
-- Files are served from `work/` only. A path with an empty, `.` or `..` segment, a backslash or a NUL is
-  `400 invalid_file_path`; a segment that starts with `.` (the run's skills under `.agents/`) is
-  `403 system_file_forbidden`; a symlink on the way is `404`. Every answer is `nosniff`, and HTML carries a CSP with
-  `sandbox` and `default-src 'none'`.
+- Files are served from a run's `work/` and an agent's home only. A path with an empty, `.` or `..` segment, a
+  backslash or a NUL is `400 invalid_file_path`; a segment that starts with `.` (the run's skills under `.agents/`) is
+  `403 system_file_forbidden`; a symlink on the way is `404` (a write or a delete in a home through one, `403`). Every
+  answer is `nosniff`, and HTML carries a CSP with `sandbox` and `default-src 'none'`.
 
 ## Test
 

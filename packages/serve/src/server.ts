@@ -4,7 +4,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { extname, join, resolve } from "node:path";
+import { dirname, extname, join, posix, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
@@ -12,6 +12,7 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
+import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir } from "./files.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
@@ -27,7 +28,7 @@ import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
-import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
+import { openWorkFile, removeWorkFile, WALK_DEPTH, walkWork, WorkRefused, writeWorkFile } from "./workspace.js";
 import { type ServerLock, takeServerLock } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -158,6 +159,10 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/home$/, name: "importHome", capability: "home.import" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/home\/files$/, name: "listHomeFiles" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "readHomeFile" },
+  { method: "PUT", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "writeHomeFile" },
+  { method: "DELETE", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "deleteHomeFile" },
   { method: "GET", pattern: /^\/runs$/, name: "listAllRuns" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/timeline$/, name: "getTimeline" },
@@ -220,6 +225,9 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
      *  `models.default`, `models.strong`) with the tools it names of `node_tools`; a node that names no thinking level
      *  thinks at the run's effort, or medium. */
     workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS, ...(decisionsOf(env).some((offer) => offer.available) ? [DECISION_ADAPTER] : [])], decisions: { providers: decisionsOf(env) } },
+    /** Each agent's home (its files under `/agents/{id}/home/files`): on this server's disk, the paths in it only the host
+     *  writes, and the largest file a PUT takes (`limits.max_body_bytes`). */
+    home: { disk: "local", host_owned: [...HOME_HOST_OWNED], max_file_bytes: MAX_BODY },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
       /** This server's own routes, outside the contract: an archived agent or run is hidden from the lists (`?archived=true`
@@ -362,9 +370,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
-  async function bodyOf(req: IncomingMessage): Promise<Json> {
-    const type = String(req.headers["content-type"] ?? "");
-    if (!type.startsWith("application/json")) throw new ApiError("unsupported_media_type", "the body must be application/json");
+  /** The body's bytes, at most MAX_BODY of them. */
+  async function bytesOf(req: IncomingMessage): Promise<Buffer> {
     const chunks: Buffer[] = [];
     let size = 0;
     // An oversized body is read to its end before the refusal, so the client gets the answer and not a reset.
@@ -373,9 +380,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (size <= MAX_BODY) chunks.push(chunk as Buffer);
     }
     if (size > MAX_BODY) throw new ApiError("payload_too_large", `the body is over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
+    return Buffer.concat(chunks);
+  }
+
+  async function bodyOf(req: IncomingMessage): Promise<Json> {
+    const type = String(req.headers["content-type"] ?? "");
+    if (!type.startsWith("application/json")) throw new ApiError("unsupported_media_type", "the body must be application/json");
+    const bytes = await bytesOf(req);
     let value: unknown;
     try {
-      value = JSON.parse(Buffer.concat(chunks).toString("utf8") || "null");
+      value = JSON.parse(bytes.toString("utf8") || "null");
     } catch {
       throw new ApiError("bad_request", "the body is not JSON");
     }
@@ -551,42 +565,56 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- files ----------------------------------------------------------------------------------------------------------
 
-  /** The run's files, through no link (workspace.ts): each regular file's own size and time, a dot-name left out. */
-  async function walk(base: string): Promise<{ path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[]> {
-    const out: { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[] = [];
-    if (!(await lstat(base).catch(() => null))?.isDirectory()) return out;
-    // work/ unreadable as a whole lists nothing; what the walk could not read in it is left out.
+  type FileView = { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true; host_owned?: true };
+  const fileView = (path: string, st: { size: number; mtimeMs: number }): FileView => ({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null });
+
+  /** The files under `base` (a run's work/, an agent's home), through no link (workspace.ts): each regular file's own size
+   *  and time, a dot-name left out. `deep` when a directory below WALK_DEPTH was there and not entered. */
+  async function walk(base: string): Promise<{ files: FileView[]; deep: boolean }> {
+    const out: FileView[] = [];
+    let deep = false;
+    if (!(await lstat(base).catch(() => null))?.isDirectory()) return { files: out, deep };
+    // The directory unreadable as a whole lists nothing; what the walk could not read in it is left out.
     await walkWork(base, (path, st, readable) => {
-      if (st.isFile()) out.push({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null, ...(readable ? {} : { unreadable: true }) });
+      if (st.isFile()) out.push({ ...fileView(path, st), ...(readable ? {} : { unreadable: true }) });
+      else if (st.isDirectory() && path.split("/").length > WALK_DEPTH) deep = true;
       return out.length <= FILE_LIST_CAP;
     }, { skip: (name) => name.startsWith(".") }).catch((error) => {
       if (!(error instanceof WorkRefused)) throw error;
     });
-    return out;
+    return { files: out, deep };
   }
 
-  async function readFileRoute(req: IncomingMessage, res: ServerResponse, url: URL, run: Run, raw: string): Promise<void> {
-    let rel: string;
+  /** A file path as the URL sends it, each segment percent-decoded. */
+  function decodedPath(raw: string): string {
     try {
-      rel = raw.split("/").map(decodeURIComponent).join("/");
+      return raw.split("/").map(decodeURIComponent).join("/");
     } catch {
       throw new ApiError("invalid_file_path", "the path is not percent-encoded right");
     }
+  }
+
+  /** `rel`, refused unless it is a relative path of names; a segment that starts with . is `own`'s. */
+  function checkedPath(rel: string, own: string): string {
     const parts = rel.split("/");
     if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || parts.some((p) => p === "" || p === "." || p === "..")) throw new ApiError("invalid_file_path", "the path has an empty, . or .. segment, a backslash, a NUL or a leading /");
-    if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", "a path segment that starts with . is the run's own, not a file it wrote");
-    const work = join(run.dir, "work");
-    if (!(await lstat(work).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
+    if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", `a path segment that starts with . is ${own}`);
+    return rel;
+  }
+
+  /** The file `rel` under `root`, raw; `unreadable` says why one this server cannot read is private. */
+  async function sendFile(req: IncomingMessage, res: ServerResponse, url: URL, root: string, rel: string, unreadable: string): Promise<void> {
+    if (!(await lstat(root).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
     // Through no link, held from the open to the last byte (workspace.ts): a name swapped for one is refused, not followed.
-    const opened = await openWorkFile(work, rel).catch((error) => {
-      if (error instanceof WorkRefused && error.reason === "unreadable") throw new ApiError("system_file_forbidden", "This file was created private by a tool in the run's box: this server cannot read it.", { details: { reason: "unreadable" } });
+    const opened = await openWorkFile(root, rel).catch((error) => {
+      if (error instanceof WorkRefused && error.reason === "unreadable") throw new ApiError("system_file_forbidden", `This file was created private by ${unreadable}: this server cannot read it.`, { details: { reason: "unreadable" } });
       return null;
     });
     if (!opened) throw new ApiError("not_found", "no such file");
     const { handle, stats: st } = opened;
     const type = TYPES[extname(rel).slice(1).toLowerCase()] ?? "application/octet-stream";
     const download = url.searchParams.get("download") === "1" || !INLINE.has(type);
-    const name = parts.at(-1)!.replace(/[^\w.-]/g, "_");
+    const name = rel.split("/").at(-1)!.replace(/[^\w.-]/g, "_");
     res.writeHead(200, {
       "content-type": type,
       "content-length": st.size,
@@ -601,6 +629,47 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     await pipeline(handle.createReadStream(), res).catch(() => undefined);
     await handle.close().catch(() => undefined);
+  }
+
+  // ---- an agent's home --------------------------------------------------------------------------------------------------
+
+  /** The host-owned path of the home that `path` is at or under, if any. */
+  const hostOwnedOf = (path: string) => HOME_HOST_OWNED.find((owned) => path === owned || path.startsWith(`${owned}/`));
+
+  /** A path in an agent's home as its routes take it, checked as a run's file path is, and at most 1024 characters with
+   *  no segment over 255 bytes. A write anywhere in a host-owned path is refused first, on the path as normalized, so
+   *  `./learning/x` and `a/../learning/x` are refused as learning/ is; and a write goes no deeper than the list does. */
+  function homePath(raw: string, write: boolean): string {
+    const rel = decodedPath(raw);
+    const owned = write ? hostOwnedOf(posix.normalize(rel).replace(/^\/+/, "")) : undefined;
+    if (owned) throw new ApiError("system_file_forbidden", `${owned}/ is written by the server, not through the API`, { details: { reason: "host_owned" } });
+    checkedPath(rel, "the server's own, not a file of the home");
+    if (rel.length > 1024 || rel.split("/").some((p) => Buffer.byteLength(p) > 255)) throw new ApiError("invalid_file_path", "the path is over 1024 characters, or a segment of it over 255 bytes");
+    if (write && rel.split("/").length - 1 > WALK_DEPTH) throw new ApiError("invalid_file_path", `a file is written at most ${WALK_DEPTH} directories deep, as deep as the list goes`);
+    return rel;
+  }
+
+  /** The agent's home, `homes/<agent_id>/`: null while nothing was ever written to it, made with homes/ (0700) when
+   *  `make`. Neither is ever a link: a read finds no home there, and a write is refused. */
+  async function homeDir(agentId: string, make: boolean): Promise<string | null> {
+    const home = homeOf(data, agentId);
+    for (const dir of [join(data, HOMES_DIR), home]) {
+      // One made is synced into its parent, so a write in it that is answered survives a crash of the machine.
+      if (make && (await mkdir(dir, { mode: 0o700 }).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "EEXIST" ? false : Promise.reject(error))))) await syncDir(dirname(dir));
+      if ((await lstat(dir).catch(() => null))?.isDirectory()) continue;
+      if (make) throw new WorkRefused(dir, "link");
+      return null;
+    }
+    return home;
+  }
+
+  /** A write to the home or a removal from it refused (workspace.ts), as its answer. */
+  function homeRefusal(error: unknown): never {
+    if (!(error instanceof WorkRefused)) throw error;
+    if (error.reason === "link") throw new ApiError("system_file_forbidden", "A link is on the way to this path, or is the file: this server follows none.", { details: { reason: "link" } });
+    if (error.reason === "unreadable") throw new ApiError("system_file_forbidden", "This server may not enter a directory on the way to this path.", { details: { reason: "unreadable" } });
+    if (error.reason === "not_regular") throw new ApiError("invalid_file_path", "the path names a directory, or runs through a file");
+    throw new ApiError("not_found", "no such file");
   }
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
@@ -838,8 +907,41 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "listRunFiles": {
         const run = await needRun(id);
-        const files = (await walk(join(run.dir, "work"))).sort((a, b) => a.path.localeCompare(b.path));
-        return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: files.length > FILE_LIST_CAP });
+        const { files, deep } = await walk(join(run.dir, "work"));
+        files.sort((a, b) => a.path.localeCompare(b.path));
+        return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP });
+      }
+      // An archived agent's home is read and written as any other's: as its definition is.
+      case "listHomeFiles": {
+        await needAgent(id);
+        const home = await homeDir(id, false);
+        const { files, deep } = home ? await walk(home) : { files: [], deep: false };
+        const listed = files.map((file) => (hostOwnedOf(file.path) ? { ...file, host_owned: true as const } : file)).sort((a, b) => a.path.localeCompare(b.path));
+        return send(res, 200, { agent_id: id, files: listed.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || listed.length > FILE_LIST_CAP });
+      }
+      case "readHomeFile": {
+        await needAgent(id);
+        const rel = homePath(second!, false);
+        const home = await homeDir(id, false);
+        if (!home) throw new ApiError("not_found", "no such file");
+        return sendFile(req, res, url, home, rel, "another user");
+      }
+      case "writeHomeFile": {
+        await needAgent(id);
+        const rel = homePath(second!, true);
+        const bytes = await bytesOf(req);
+        // Each write lands whole (a temporary file renamed over the old one); of two at once, the last rename wins.
+        const st = await homeDir(id, true).then((home) => writeWorkFile(home!, rel, bytes)).catch(homeRefusal);
+        return send(res, 200, fileView(rel, st));
+      }
+      case "deleteHomeFile": {
+        await needAgent(id);
+        const rel = homePath(second!, true);
+        const home = await homeDir(id, false);
+        if (!home) throw new ApiError("not_found", "no such file");
+        await removeWorkFile(home, rel).catch(homeRefusal);
+        res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        return void res.end();
       }
       case "validateWorkflow": {
         const body = await bodyOf(req);
@@ -863,8 +965,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "pauseRun":
       case "resumeRun":
         return send(res, 200, await runs.pause(await needRun(id), found.name === "pauseRun"));
-      case "readRunFile":
-        return readFileRoute(req, res, url, await needRun(id), second!);
+      case "readRunFile": {
+        const run = await needRun(id);
+        return sendFile(req, res, url, join(run.dir, "work"), checkedPath(decodedPath(second!), "the run's own, not a file it wrote"), "a tool in the run's box");
+      }
       case "getUsage":
         return send(res, 200, await usage(url));
       case "getStats": {
