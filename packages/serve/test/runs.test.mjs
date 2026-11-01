@@ -232,27 +232,51 @@ test("after a restart the runs are read from the agent home: status, result and 
   assert.equal(JSON.parse(await readFile(join(data, "runs", run_id, "serve.json"), "utf8")).title, "What is six times seven?");
 });
 
-test("the runs index carries a run's effort as the served document says, from the run and, after a restart, from its saved meta; a run started with none has none", async (t) => {
+test("a run, and every run summary in both runs indexes, meet the served document whole, live and after a restart: the index carries a run's effort, a failed run's error and an archived run's archived_at", { timeout: 60_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  // Closed by the test before its restart; a failure before then still closes it, so the file never hangs open.
+  let oneOpen = true;
+  t.after(() => (oneOpen ? one.close() : undefined));
   const api = client(one.baseUrl, one.token);
+  const doc = (await api("GET", "/openapi.json")).body;
+  const meets = (name, value, what) => assert.deepEqual(schemaProblems(doc, { $ref: `#/components/schemas/${name}` }, value), [], `${what}, a ${name}: ${JSON.stringify(value)}`);
   const plain = await startRun(api, "calc", "What is six times seven?");
   const high = await api("POST", "/agents/calc/runs", { input: { content: "And seven times six?" }, effort: "high" });
   assert.equal(high.status, 202, JSON.stringify(high.body));
   assert.equal(high.body.effort, "high");
-  for (const id of [plain.run_id, high.body.run_id]) await follow(api, id, ["completed"]);
-  const doc = (await api("GET", "/openapi.json")).body;
-  const want = { [plain.run_id]: "none", [high.body.run_id]: "high" };
-  const efforts = async (call, path) => {
-    const runs = (await call("GET", path)).body.runs;
-    for (const r of runs) if (Object.hasOwn(r, "effort")) assert.deepEqual(schemaProblems(doc, doc.components.schemas.RunSummary.properties.effort, r.effort), [], JSON.stringify(r));
-    return Object.fromEntries(runs.map((r) => [r.run_id, Object.hasOwn(r, "effort") ? r.effort : "none"]));
+  const failed = await startRun(api, "broken", "Fail now.");
+  const gone = (await api("POST", "/agents/calc/runs", { input: { content: "Archive me." } })).body;
+  for (const run of [plain, high.body, failed, gone]) meets("Run", run, "a started run");
+  for (const id of [plain.run_id, high.body.run_id, gone.run_id]) await follow(api, id, ["completed"]);
+  await follow(api, failed.run_id, ["failed"]);
+  const archived = await api("POST", `/runs/${gone.run_id}/archive`);
+  meets("Run", archived.body, "an archived run");
+  assert.equal(typeof archived.body.archived_at, "string");
+  const want = { [plain.run_id]: "none", [high.body.run_id]: "high", [failed.run_id]: "none" };
+  const index = async (call, path) => {
+    const page = (await call("GET", path)).body;
+    meets("RunList", page, path);
+    return page.runs;
   };
-  for (const path of ["/agents/calc/runs", "/runs"]) assert.deepEqual(await efforts(api, path), want, path);
+  const check = async (call, when) => {
+    for (const path of ["/agents/calc/runs", "/runs"]) {
+      const runs = await index(call, path);
+      const listed = Object.fromEntries(runs.map((r) => [r.run_id, Object.hasOwn(r, "effort") ? r.effort : "none"]));
+      assert.deepEqual(listed, Object.fromEntries(Object.entries(want).filter(([id]) => path === "/runs" || id !== failed.run_id)), `${path} ${when}`);
+    }
+    const errored = (await index(call, "/agents/broken/runs"))[0];
+    assert.equal(errored.error.code, "run_failed", `the failed run's error ${when}`);
+    const hidden = await index(call, "/agents/calc/runs?archived=true");
+    assert.deepEqual(hidden.map((r) => [r.run_id, typeof r.archived_at]), [[gone.run_id, "string"]], `the archived run ${when}`);
+    for (const id of Object.keys(want)) meets("Run", (await call("GET", `/runs/${id}`)).body, `a run ${when}`);
+  };
+  await check(api, "live");
   await one.close();
+  oneOpen = false;
   const two = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => two.close());
-  for (const path of ["/agents/calc/runs", "/runs"]) assert.deepEqual(await efforts(client(two.baseUrl, two.token), path), want, `${path} after a restart`);
+  await check(client(two.baseUrl, two.token), "after a restart");
 });
 
 test("a run's process never sees the server's token, by name or by value, nor a model key in its environment (each comes over its pipe); the AGENT_MODEL variables still reach it", async (t) => {
