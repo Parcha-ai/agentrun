@@ -16,6 +16,7 @@ import { createRegistry, type Extension, type Harness, type Tx } from "@earendil
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
+import { CodingTools } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { readJson, RUN_META } from "./files.js";
@@ -26,7 +27,7 @@ import { completer } from "./llm.js";
 import { imageLoader } from "./pdf-pages.js";
 import { type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
-import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
+import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { isObject, skillNames } from "./validate.js";
 import { readWorkText } from "./workspace.js";
 

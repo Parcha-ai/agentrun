@@ -1,12 +1,14 @@
 // The tools a revision may name here: one closed table. Each entry is how the run's process binds the name and which
 // environment variables it needs. A name outside the table cannot be named, and nothing is loaded from anywhere else.
-// `bash` is not in it: a run gets no shell on this machine.
+// `bash` is not in it, and a run's process registers none: its file tools come from coding-tools.ts, pi's coding tools
+// without `bash`, the only coding tools serve installs. A run gets no shell on this machine.
 import type { TSchema } from "@earendil-works/pi-ai";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
-import { ArchilCodingTools, type AppContext } from "@parcha/pi-durable-disk";
+import type { AppContext } from "@parcha/pi-durable-disk";
+import { CodingTools } from "./coding-tools.js";
 import { FETCH_PAGE_TOOL, fetchOptions, fetchPage, fetchPageTool } from "./fetch-page.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
@@ -38,10 +40,6 @@ export const askPerson = defineTool({
     return forModel(asked(question), { details: { question }, control: { terminate: true } });
   },
 });
-
-// pi-durable-disk's types name the pi-durable it resolves, which a build at another pi version (the pi-floor legs) can
-// hold apart from this package's own: the extension crosses that boundary as a value, typed on this side.
-export const CodingTools = ArchilCodingTools as unknown as Extension;
 
 /** What a tool's binding gets from the run's process. */
 export type ToolHost = {
