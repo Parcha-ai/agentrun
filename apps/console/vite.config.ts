@@ -26,7 +26,7 @@ export default defineConfig({
       },
     },
   },
-  resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
+  resolve: { alias: { "@dsl": fileURLToPath(new URL("../../packages/dsl/src", import.meta.url)), "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   build: { outDir: "dist", assetsInlineLimit: 0 },
   test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"] },
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { curlFor, keeper, startBody, started, submitStart } from "./runStart";
+import { curlFor, exampleInput, keeper, startBody, started, submitStart } from "./runStart";
 
 describe("startBody", () => {
   it("starts an agentic run with its first message as content, and only the options given", () => {
@@ -91,5 +91,31 @@ describe("submitStart", () => {
   it("answers with what the server answered", async () => {
     const k = keeper(() => "k1");
     expect(await submitStart(k, "agent-1", body, async () => ({ status: 202, runId: "r1" }))).toEqual({ status: 202, runId: "r1" });
+  });
+});
+
+describe("exampleInput", () => {
+  it("takes the input schema's first example, and names its fields", () => {
+    const w = { input: { schemaId: "In" }, schemas: { In: { type: "object", properties: { documents: { type: "array", description: "The files." } }, examples: [{ documents: ["a.pdf"] }] } } };
+    const e = exampleInput(w)!;
+    expect(JSON.parse(e.text)).toEqual({ documents: ["a.pdf"] });
+    expect(e.from).toBe("example");
+    expect(e.fields).toEqual([{ name: "documents", note: "The files." }]);
+  });
+  it("without an example, gives the schema's shape with its required fields empty", () => {
+    const w = { input: { schemaId: "In" }, schemas: { In: { type: "object", required: ["company", "documents"], properties: { company: { type: "string" }, documents: { type: "array" }, note: { type: "string" } } } } };
+    const e = exampleInput(w)!;
+    expect(JSON.parse(e.text)).toEqual({ company: "", documents: [] });
+    expect(e.from).toBe("shape");
+    expect(exampleInput({ schemas: {} })).toBeNull();
+  });
+  it("follows a local $ref to the schema it names, as the DSL resolves it", () => {
+    const w = { input: { schemaId: "In" }, schemas: {
+      In: { $ref: "#/definitions/Ticket", definitions: { Ticket: { type: "object", required: ["id", "owner"], properties: { id: { type: "string", description: "The ticket." }, owner: { $ref: "#/definitions/Person" } } } } },
+      Person: { type: "object", required: ["name"], properties: { name: { type: "string" } } },
+    } };
+    const e = exampleInput(w)!;
+    expect(JSON.parse(e.text)).toEqual({ id: "", owner: { name: "" } });
+    expect(e.fields).toEqual([{ name: "id", note: "The ticket." }, { name: "owner" }]);
   });
 });

@@ -1,8 +1,8 @@
 import { ArrowRight, Copy, Play } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
-import { curlFor, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
+import { curlFor, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { cn } from "@/lib/utils";
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
@@ -33,6 +33,16 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const agent = agents.find((a) => a.agent_id === agentId);
   const kind = agent?.kind ?? "agentic";
   const [text, setText] = useState("");
+  const example = kind === "workflow" ? exampleInput(agent?.definition.workflow) : null;
+  // A workflow agent opens with its example input (its schema's, else its fields empty), replaced on a switch of agent
+  // unless it was edited.
+  const prefilled = useRef("");
+  useEffect(() => {
+    if (text.trim() && text !== prefilled.current) return;
+    const next = example?.text ?? "";
+    prefilled.current = next;
+    setText(next);
+  }, [agentId, example?.text]); // eslint-disable-line react-hooks/exhaustive-deps
   const [revision, setRevision] = useState("");
   const [effort, setEffort] = useState("");
   const [cap, setCap] = useState("");
@@ -81,6 +91,12 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               <>
                 <Label name={kind === "agentic" ? "input.content" : "input"} required error={!built.ok && built.field === "input" && text ? built.message : undefined}>
                   <textarea value={text} onChange={(e) => setText(e.target.value)} rows={kind === "agentic" ? 4 : 7} placeholder={placeholder} className={field} />
+                  {example && (
+                    <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                      {example.from === "example" ? "The workflow's example input. Edit it, then start." : "The workflow's input, its fields empty. Fill them in, then start."}
+                      {example.fields.length > 0 && <> Fields: {example.fields.map((f, k) => <span key={f.name} title={f.note}>{k ? ", " : ""}<span className="text-foreground">{f.name}</span></span>)}.</>}
+                    </p>
+                  )}
                 </Label>
                 <Label name="revision" note="Empty runs the current revision.">
                   <select value={revision} onChange={(e) => setRevision(e.target.value)} className={field}>

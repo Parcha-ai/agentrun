@@ -82,3 +82,106 @@
   .report th { @apply caps text-[11px] text-muted-foreground; }
   .report a { @apply text-primary underline underline-offset-2; }
 }
+
+/* The workflow graph (src/lib/wfGraph.ts, after pi-durable-agent's serve page.css): who works colours a card's swatch, a
+   run's state its box, and an item's cell. Decision providers: Jev pink, Parallel teal, OpenRouter indigo. Outside a layer: Tailwind keeps it whole. */
+:root { --wf-jev: 322 58% 51%; --wf-parallel: 174 72% 33%; --wf-openrouter: 239 70% 60%; --wf-tool: 207 70% 41%; --wf-exit: 251 55% 53%; }
+.dark { --wf-jev: 318 73% 61%; --wf-parallel: 172 66% 50%; --wf-openrouter: 234 89% 74%; --wf-tool: 206 83% 65%; --wf-exit: 253 100% 81%; }
+svg.wf { display: block; max-width: 100%; height: auto; margin: 0 auto; font-family: "JetBrains Mono", monospace; }
+.wf .wire { fill: none; stroke: hsl(var(--border-strong) / 0.55); stroke-width: 1.5; }
+.wf .exit-wire { stroke: hsl(var(--wf-exit)); }
+.wf .branch.taken, .wf .wire.taken { stroke: hsl(var(--foreground)); stroke-width: 2.5; }
+.wf .frame { fill: none; stroke: hsl(var(--border-strong) / 0.7); stroke-dasharray: 4 3; }
+.wf .box { fill: hsl(var(--card)); stroke: hsl(var(--border-strong) / 0.6); stroke-width: 1.2; transition: fill .4s, stroke .4s; }
+.wf .swatch { fill: hsl(var(--muted-foreground)); }
+.wf .who-agent .swatch { fill: hsl(var(--primary)); }
+.wf .who-jev .swatch { fill: hsl(var(--wf-jev)); }
+.wf .who-parallel .swatch { fill: hsl(var(--wf-parallel)); }
+.wf .who-openrouter .swatch { fill: hsl(var(--wf-openrouter)); }
+.wf .who-tool .swatch { fill: hsl(var(--wf-tool)); }
+.wf .who-control .swatch { fill: hsl(var(--foreground)); }
+.wf .label { font: 600 12.5px "JetBrains Mono", monospace; fill: hsl(var(--foreground)); }
+.wf .kind, .wf .model { font: 10.5px "JetBrains Mono", monospace; fill: hsl(var(--muted-foreground)); }
+.wf .branch-name { font: 600 10.5px "JetBrains Mono", monospace; fill: hsl(var(--muted-foreground)); }
+.wf .branch-name.taken { fill: hsl(var(--foreground)); }
+.wf .exit-box { fill: hsl(var(--wf-exit) / 0.12); stroke: hsl(var(--wf-exit)); stroke-width: 1; }
+.wf .exit-text { font: 10.5px "JetBrains Mono", monospace; fill: hsl(var(--foreground)); }
+.wf .tag-box { fill: hsl(var(--foreground)); }
+.wf .tag { font: 600 9px "JetBrains Mono", monospace; letter-spacing: .06em; fill: hsl(var(--background)); }
+.wf .badge-box { fill: none; stroke: hsl(var(--border-strong)); }
+.wf .badge { font: 600 8.5px "JetBrains Mono", monospace; letter-spacing: .06em; fill: hsl(var(--muted-foreground)); }
+.wf .chip-box { fill: hsl(var(--wf-jev) / 0.14); stroke: hsl(var(--wf-jev) / 0.6); }
+.wf .chip { font: 600 9px "JetBrains Mono", monospace; letter-spacing: .06em; fill: hsl(var(--wf-jev)); text-transform: uppercase; }
+.wf .who-parallel .chip-box { fill: hsl(var(--wf-parallel) / 0.14); stroke: hsl(var(--wf-parallel) / 0.6); }
+.wf .who-parallel .chip { fill: hsl(var(--wf-parallel)); }
+.wf .who-openrouter .chip-box { fill: hsl(var(--wf-openrouter) / 0.14); stroke: hsl(var(--wf-openrouter) / 0.6); }
+.wf .who-openrouter .chip { fill: hsl(var(--wf-openrouter)); }
+.wf .state { font: 600 9px "JetBrains Mono", monospace; letter-spacing: .06em; fill: hsl(var(--muted-foreground)); text-transform: uppercase; }
+.wf .verdict { font: 600 10.5px "JetBrains Mono", monospace; fill: hsl(var(--foreground)); }
+.wf .removed { font: 11px "JetBrains Mono", monospace; fill: hsl(var(--muted-foreground)); }
+.wf .caption { font: 10px "JetBrains Mono", monospace; fill: hsl(var(--muted-foreground)); }
+.wf .new > .box, .wf .new > .exit-box { stroke: hsl(var(--foreground)); stroke-width: 2.4; }
+.wf .moved > .box, .wf .moved > .exit-box { stroke: hsl(var(--foreground)); stroke-width: 1.6; stroke-dasharray: 1 3; }
+.wf .edited > .box, .wf .edited > .exit-box { stroke: hsl(var(--foreground)); stroke-width: 1.6; stroke-dasharray: 4 2; }
+.wf .done > .box { fill: hsl(var(--success) / 0.10); stroke: hsl(var(--success) / 0.8); }
+.wf .done > .exit-box { fill: hsl(var(--card)); stroke: hsl(var(--border)); }
+.wf .done > .state { fill: hsl(var(--success-text)); }
+.wf .working > .box, .wf .working > .exit-box { stroke: hsl(var(--primary)); stroke-width: 2.4; animation: wf-pulse 1.6s ease-in-out infinite; animation-delay: var(--wf-phase, 0s); }
+.wf .working > .state { fill: hsl(var(--primary)); }
+.wf .failed > .box, .wf .failed > .exit-box { fill: hsl(var(--destructive) / 0.12); stroke: hsl(var(--destructive)); stroke-width: 2; }
+.wf .failed > .state { fill: hsl(var(--destructive-text)); }
+.wf .review > .box { fill: hsl(var(--warning) / 0.10); stroke: hsl(var(--warning)); stroke-width: 2; }
+.wf .review > .state { fill: hsl(var(--warning-text)); }
+.wf .escalated > .box, .wf .escalated > .exit-box { stroke: hsl(var(--wf-exit)); stroke-width: 2; }
+.wf .escalated > .state { fill: hsl(var(--wf-exit)); }
+.wf .stopped > .box, .wf .stopped > .exit-box { stroke: hsl(var(--muted-foreground)); stroke-width: 1.6; }
+.wf .fired > .exit-box { fill: hsl(var(--wf-exit)); }
+.wf .fired > .exit-text { fill: hsl(var(--background)); font-weight: 600; }
+.wf .not-run { opacity: .4; }
+.wf .pending > .box { stroke-dasharray: 3 3; }
+.wf .sel { fill: none; stroke: hsl(var(--primary)); stroke-width: 1.5; }
+.wf g.card, .wf g.exit, .wf .cell { cursor: pointer; }
+.wf g.card:hover > .box { stroke: hsl(var(--foreground) / 0.8); }
+.wf .cell { fill: hsl(var(--card)); stroke: hsl(var(--border-strong) / 0.7); stroke-width: 1; transition: fill .4s, stroke .4s; }
+.wf .cell:hover { stroke: hsl(var(--foreground)); }
+.wf .cell.done { fill: hsl(var(--success) / 0.75); stroke: hsl(var(--success)); }
+.wf .cell.working { fill: hsl(var(--primary) / 0.25); stroke: hsl(var(--primary)); animation: wf-cell 1.6s ease-in-out infinite; animation-delay: var(--wf-phase, 0s); }
+.wf .cell.failed { fill: hsl(var(--destructive) / 0.8); stroke: hsl(var(--destructive)); }
+.wf .cell.review { fill: hsl(var(--warning) / 0.8); stroke: hsl(var(--warning)); }
+.wf .cell.escalated { fill: hsl(var(--wf-exit) / 0.7); stroke: hsl(var(--wf-exit)); }
+.wf .cell.stopped, .wf .cell.not-run { fill: none; stroke-dasharray: 2 2; }
+.wf .cell.picked { stroke: hsl(var(--foreground)); stroke-width: 2.5; }
+@keyframes wf-pulse { 0%, 100% { stroke-opacity: 1; } 50% { stroke-opacity: .35; } }
+@keyframes wf-cell { 0%, 100% { fill-opacity: .25; } 50% { fill-opacity: .7; } }
+/* Named item cells: a left edge in the outcome's tone, the name, the outcome and its probability. */
+.wf .rcell { cursor: pointer; }
+.wf .rcell .cell { fill: hsl(var(--card)); stroke: hsl(var(--border-strong) / 0.6); }
+.wf .rcell .cell-edge { fill: hsl(var(--border-strong)); }
+.wf .rcell .cell-name { font: 600 10px "JetBrains Mono", monospace; fill: hsl(var(--foreground)); }
+.wf .rcell .cell-out { font: 10px "JetBrains Mono", monospace; fill: hsl(var(--muted-foreground)); }
+.wf .rcell .cell-p { font: 600 10px "JetBrains Mono", monospace; fill: hsl(var(--foreground)); font-variant-numeric: tabular-nums; }
+.wf .rcell:hover .cell { stroke: hsl(var(--foreground)); }
+.wf .rcell.done .cell { fill: hsl(var(--success) / 0.06); stroke: hsl(var(--success) / 0.5); }
+.wf .rcell.done .cell-edge { fill: hsl(var(--success)); }
+.wf .rcell.working .cell { fill: hsl(var(--primary) / 0.10); stroke: hsl(var(--primary)); animation: wf-pulse 1.6s ease-in-out infinite; animation-delay: var(--wf-phase, 0s); }
+.wf .rcell.working .cell-edge { fill: hsl(var(--primary)); }
+.wf .rcell.working .cell-out { fill: hsl(var(--primary)); }
+.wf .rcell.pending .cell { stroke-dasharray: 3 3; fill: none; }
+.wf .rcell.pending .cell-name, .wf .rcell.not-run .cell-name { fill: hsl(var(--muted-foreground)); font-weight: 400; }
+.wf .rcell.not-run, .wf .rcell.stopped { opacity: .5; }
+.wf .rcell.tone-good .cell { fill: hsl(var(--success) / 0.14); stroke: hsl(var(--success) / 0.8); }
+.wf .rcell.tone-good .cell-edge { fill: hsl(var(--success)); }
+.wf .rcell.tone-good .cell-out { fill: hsl(var(--success-text)); font-weight: 600; }
+.wf .rcell.tone-warn .cell { fill: hsl(var(--warning) / 0.16); stroke: hsl(var(--warning)); }
+.wf .rcell.tone-warn .cell-edge { fill: hsl(var(--warning)); }
+.wf .rcell.tone-warn .cell-out { fill: hsl(var(--warning-text)); font-weight: 600; }
+.wf .rcell.tone-bad .cell { fill: hsl(var(--destructive) / 0.16); stroke: hsl(var(--destructive)); }
+.wf .rcell.tone-bad .cell-edge { fill: hsl(var(--destructive)); }
+.wf .rcell.tone-bad .cell-out { fill: hsl(var(--destructive-text)); font-weight: 600; }
+.wf .rcell.picked .cell { stroke: hsl(var(--foreground)); stroke-width: 2.5; }
+/* Held: a paused run's node or item that had started; it waits, still, until the run resumes. */
+.wf .held > .box { stroke: hsl(var(--warning)); stroke-width: 2; stroke-dasharray: 5 3; }
+.wf .held > .state { fill: hsl(var(--warning-text)); }
+.wf .rcell.held .cell { fill: hsl(var(--warning) / 0.08); stroke: hsl(var(--warning)); stroke-dasharray: 4 2; }
+.wf .rcell.held .cell-edge { fill: hsl(var(--warning)); }
+.wf .rcell.held .cell-out { fill: hsl(var(--warning-text)); }
