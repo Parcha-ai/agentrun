@@ -25,6 +25,7 @@ import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { statsView } from "./stats.js";
+import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
 
@@ -173,6 +174,9 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/quotes$/, name: "createQuote", capability: "quotes" },
   { method: "GET", pattern: /^\/usage$/, name: "getUsage" },
   { method: "GET", pattern: /^\/stats$/, name: "getStats" },
+  { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
+  { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
+  { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
@@ -205,7 +209,7 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
     secrets: {
       names: [...SECRET_NAMES],
       handoff: "pipe",
-      condition: "Started by its launcher (the package's agentrun-serve, the image's entrypoint), the server takes each secret named here over a pipe and holds it in memory only, and every run's process gets all of them but the server's own token over a pipe of its own, whatever its harness and tools: none of them is in any process's environment or command line. The launcher runs before any run's process exists; the image starts it as PID 1. Started another way (node dist/cli.js), the server reads them from its environment, where a process of its user can read them.",
+      condition: "Started by its launcher (the package's agentrun-serve, the image's entrypoint), the server takes each secret named here over a pipe and holds it in memory only, and every run's process gets all of them but the server's own token and seal key over a pipe of its own, whatever its harness and tools: none of them is in any process's environment or command line. The launcher runs before any run's process exists; the image starts it as PID 1. Started another way (node dist/cli.js), the server reads them from its environment, where a process of its user can read them.",
       limit: "In memory is not out of reach: a process of the same user can read another's memory (/proc/<pid>/mem) where the kernel lets it attach. Linux's Yama ptrace_scope of 1 or more refuses that to all but a process's own ancestors; a host at 0 exposes the secrets to a run's own code. A run's process holds its model keys in memory, since it calls the model itself. A harness's CLI (codex, claude-agent) holds a key of its own for its session's model proxy in its environment: not a provider's key, but one a process of the same user could spend through that run's proxy while the session lives. Started as the package's bin on a host, until it execs, the launcher and any subshell it forks show the caller's environment, secrets included, to a process of the same user (/proc keeps a process's environment as it was at its exec). A run's process gets its secrets over a socket, read and closed as it starts; another process can take a socket only through pidfd_getfd, which the same ptrace rule refuses.",
     },
     /** What a workflow revision's run gets: each model node runs on the model of its tier (`models.fast`,
@@ -230,6 +234,9 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
       sign_ins: false,
       vault: false,
       query: false,
+      /** GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept sealed under the launcher's seal key
+       *  (tool-keys.ts); with none handed over, nothing is kept, never in the clear. */
+      tool_keys: { routes: true, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
     /** This server's own: where its OpenAPI document is, beside this one. */
@@ -327,6 +334,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         await rename(`${keptFile}.partial`, keptFile);
       }));
   const host = options.host ?? "127.0.0.1";
+  const toolKeys = new ToolKeys(data, env, (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
+  // A stored key that does not open is said once at the start, never a refusal to start.
+  toolKeys.view();
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
@@ -840,6 +850,15 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         return send(res, 200, await usage(url));
       case "getStats":
         return send(res, 200, statsView(await agents.request(() => agents.store.stats()), runs));
+      case "listToolKeys":
+        return send(res, 200, toolKeys.view());
+      case "saveToolKey":
+        // Never through `idempotent`: its record keeps the body, and this body is the values.
+        toolKeys.save(id, await bodyOf(req));
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "deleteToolKey":
+        toolKeys.remove(id);
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
