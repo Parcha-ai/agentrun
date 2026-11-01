@@ -9,8 +9,10 @@
 // listing of the last pull, which the caller keeps as the mark: a path is fetched when it is new or any of those
 // fields differ. A box's clock is not this machine's, a file restored with an old time (`tar -x`, `cp -p`, a checkout)
 // is older than any mark, and a deletion has no time at all; a listing sees all three, and it is the one the session
-// checkpoints already take (`manifestSince`). Nothing is hashed: the box is not trusted, so a hash it computes proves
-// nothing, and the archive is checked on its own terms by the extractor.
+// checkpoints already take (`manifestSince`). The box never hashes: it is not trusted, so a hash it computes proves
+// nothing. The host hashes what it sends and what it writes, and the mark keeps those hashes: with
+// `overwrite: "if_unchanged"` a pulled file replaces the host's copy only while that copy is still those bytes.
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import type { Context } from "@earendil-works/chord";
@@ -58,7 +60,6 @@ import {
 	noSkips,
 	openExtractor,
 	removeEntries,
-	type Skip,
 	type SkipReason,
 } from "./extract.ts";
 
@@ -99,31 +100,39 @@ export type SeedReceipt = {
 	readonly bytes: number;
 	/** Entries of this machine that are not sent: links (never followed), pipes, sockets, devices. */
 	readonly skipped: Readonly<Record<SkipReason, number>>;
+	/** The first pull's `since`: the box's listing of `to` after the seed, with the SHA-256 of each file sent. */
+	readonly mark: Manifest;
 	readonly totalMs: number;
 };
+
+/** Why a pull left an entry alone: the extractor's reasons, and `host_changed` (see `PullOptions.overwrite`). */
+export type PullSkipReason = SkipReason | "host_changed";
+export type PullSkip = { readonly path: string; readonly reason: PullSkipReason; readonly target?: string };
 
 export type PullOptions = SyncTransport & {
 	/** The directory in the box. */
 	readonly from: string;
 	/** The directory of this machine it comes back to, created when absent. */
 	readonly to: string;
-	/** The mark of the last pull into `to` (`PullReceipt.mark`). Absent: everything is new. */
+	/** The mark of the seed or the last pull into `to` (`SeedReceipt.mark`, `PullReceipt.mark`). Absent: everything is new. */
 	readonly since?: Manifest;
 	/** Paths never pulled back, in the pattern language of `WorkspaceOptions.exclude`. Never removed either. */
 	readonly exclude?: readonly string[];
 	/** Remove from `to` what the box no longer has since the mark. Default `false`: a pull only adds and replaces. */
 	readonly mirrorDeletes?: boolean;
 	/**
-	 * When `to` already has a file at a path the box changed: `box` replaces it (the default, for a directory the host
-	 * does not write while a box holds it); `newer` keeps the host's when its modification time is later.
+	 * `always` (the default, for a directory the host does not write while a box holds it): a pulled file replaces the
+	 * host's copy and a mirrored deletion removes it. `if_unchanged`: only while the host's copy is still the bytes the
+	 * mark's SHA-256 records (what was seeded, or what the last pull wrote), or there is none. A host copy that changed
+	 * since stays, the box's file is not fetched, and the skip is `host_changed`. No clock is compared.
 	 */
-	readonly keep?: "box" | "newer";
+	readonly overwrite?: "always" | "if_unchanged";
 	/** The most bytes one pull's archive may carry, headers and names included. Default `MAX_PULL_BYTES`. */
 	readonly maxBytes?: number;
 	/** The most members one pull may carry, written or skipped. Default `MAX_PULL_ENTRIES`. */
 	readonly maxEntries?: number;
 	/** Called for each entry that is not written, with the reason: where a host logs it. */
-	readonly onSkip?: (skip: Skip) => void;
+	readonly onSkip?: (skip: PullSkip) => void;
 };
 
 /** What a pull brought back. */
@@ -142,9 +151,9 @@ export type PullReceipt = {
 	readonly keptDirectories: number;
 	/** Files whose mode lost a bit to the cap. */
 	readonly masked: number;
-	readonly skipped: Readonly<Record<SkipReason, number>>;
+	readonly skipped: Readonly<Record<PullSkipReason, number>>;
 	/** The first skips, in order, by path and reason; `skipped` counts all of them. */
-	readonly skips: readonly Skip[];
+	readonly skips: readonly PullSkip[];
 	/**
 	 * Set when the pull stopped at a limit or at an archive it could not read. What was written is whole and in the
 	 * mark; the rest is not, so the next pull asks for it again.
@@ -246,9 +255,9 @@ export async function pullDir(
 	const started = performance.now();
 	const pipe = pipeOf(box, options.pipe, options.chunkBytes);
 	if (!pipe.ok) return pipe;
-	const skipped = noSkips();
-	const skips: Skip[] = [];
-	const skip = (entry: Skip) => {
+	const skipped: Record<PullSkipReason, number> = { ...noSkips(), host_changed: 0 };
+	const skips: PullSkip[] = [];
+	const skip = (entry: PullSkip) => {
 		skipped[entry.reason] += 1;
 		if (skips.length < MAX_NAMED_SKIPS) skips.push(entry);
 		options.onSkip?.(entry);
@@ -286,19 +295,42 @@ export async function pullDir(
 		bytes: current.reduce((sum, entry) => sum + entry.bytes, 0),
 	};
 	const previous = options.since === undefined ? undefined : withoutExcluded(options.since, excluded);
-	const changed = changedEntries(previous, currentManifest);
+	const hashes = new Map(
+		(previous?.entries ?? []).flatMap((entry) => (entry.sha256 ? [[entry.path, entry.sha256]] : [])),
+	);
+	const listing = previous && { ...previous, entries: previous.entries.map(({ sha256: _, ...entry }) => entry) };
+	let changed = changedEntries(listing, currentManifest);
+	// A host copy that is not the bytes the mark records was changed here since: under `if_unchanged` it stays.
+	const guard = options.overwrite === "if_unchanged";
+	const hostChanged = async (path: string) => {
+		const hash = await hostHash(options.to, path);
+		return typeof hash === "string" && hash !== hashes.get(path);
+	};
+	const kept = new Set<string>();
+	if (guard) {
+		for (const entry of changed) {
+			if (entry.kind !== "file" || !(await hostChanged(entry.path))) continue;
+			kept.add(entry.path);
+			skip({ path: entry.path, reason: "host_changed" });
+		}
+		changed = changed.filter((entry) => !kept.has(entry.path));
+	}
 
 	let removed = 0;
 	let keptDirectories = 0;
 	if (options.mirrorDeletes === true && previous !== undefined) {
 		const now = new Map(current.map((entry) => [entry.path, entry.kind]));
-		const gone = previous.entries
-			.filter((entry) => {
-				const kind = now.get(entry.path);
-				// A path that changed kind goes first, so the new entry does not meet the old one.
-				return kind === undefined || kind !== entry.kind;
-			})
-			.map((entry) => entry.path);
+		const gone: string[] = [];
+		for (const entry of previous.entries) {
+			const kind = now.get(entry.path);
+			// A path that changed kind goes first, so the new entry does not meet the old one.
+			if (kind !== undefined && kind === entry.kind) continue;
+			if (guard && entry.kind === "file" && (await hostChanged(entry.path))) {
+				skip({ path: entry.path, reason: "host_changed" });
+				continue;
+			}
+			gone.push(entry.path);
+		}
 		if (gone.length > 0) {
 			const done = await removeEntries(options.to, gone, skip);
 			if (!done.ok) return done;
@@ -317,7 +349,6 @@ export async function pullDir(
 		const extractOptions: ExtractOptions = {
 			maxBytes: options.maxBytes ?? MAX_PULL_BYTES,
 			maxEntries: options.maxEntries ?? MAX_PULL_ENTRIES,
-			keep: options.keep ?? "box",
 			admit: (path, kind) => asked.get(path) === kind && !excluded(path),
 			mtimeOf: (path) => listedTimes.get(path),
 			onSkip: skip,
@@ -355,13 +386,24 @@ export async function pullDir(
 		outcome.bytes = extracted.bytes;
 		outcome.masked = extracted.masked;
 		for (const path of extracted.written) written.add(path);
-		// A file the host kept as newer is settled until the box changes it again.
-		for (const path of extracted.kept) written.add(path);
+		if (guard) {
+			for (const path of extracted.written) {
+				const hash = asked.get(path) === "file" ? await hostHash(options.to, path) : undefined;
+				if (typeof hash === "string") hashes.set(path, hash);
+				else hashes.delete(path);
+			}
+		}
 	}
 
-	// The next mark: what was already in step, and what this pull wrote. A path asked for and not written is left out,
-	// so the next pull asks for it again.
-	const mark = current.filter((entry) => !asked.has(entry.path) || written.has(entry.path));
+	// The next mark: what was already in step, what this pull wrote, and what the host kept as its own (asked for
+	// again only when the box changes it again). A path asked for and not written is left out, so the next pull asks
+	// for it again. Each file keeps the hash of the bytes the host and the box last agreed on.
+	const mark = current
+		.filter((entry) => !asked.has(entry.path) || written.has(entry.path) || kept.has(entry.path))
+		.map((entry) => {
+			const sha256 = entry.kind === "file" ? hashes.get(entry.path) : undefined;
+			return sha256 === undefined ? entry : { ...entry, sha256 };
+		});
 	return ok({
 		mark: { entries: mark, bytes: mark.reduce((sum, entry) => sum + entry.bytes, 0) },
 		changed: changed.length,
@@ -375,12 +417,38 @@ export async function pullDir(
 	});
 }
 
+/**
+ * The SHA-256 of the regular file at `path` under `root`, opened without following a link; `undefined` when there is
+ * none, `null` when something else is there (the extractor decides about it).
+ */
+async function hostHash(root: string, path: string): Promise<string | null | undefined> {
+	const at = Buffer.concat([Buffer.from(`${root}/`), Buffer.from(encodePath(path))]);
+	const file = await open(at, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(
+		(error: unknown) => {
+			if ((error as { code?: unknown }).code === "ENOENT") return undefined;
+			return null;
+		},
+	);
+	if (file === undefined || file === null) return file;
+	try {
+		if (!(await file.stat()).isFile()) return null;
+		const hash = createHash("sha256");
+		for await (const chunk of file.createReadStream({ autoClose: false })) hash.update(chunk);
+		return hash.digest("hex");
+	} finally {
+		await file.close();
+	}
+}
+
 function withoutExcluded(manifest: Manifest, excluded: (path: string) => boolean): Manifest {
 	const entries = manifest.entries.filter((entry) => !excluded(entry.path));
 	return { entries, bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0) };
 }
 
-/** `pullDir` for an agent's home: `HOST_OWNED_HOME` is always excluded, and a newer host file is kept by default. */
+/**
+ * `pullDir` for an agent's home: `HOST_OWNED_HOME` is always excluded, and `overwrite` is always `if_unchanged`, so a
+ * home file another run wrote since this box was seeded is never reverted.
+ */
 export function pullAgentHome(
 	box: Box,
 	options: PullOptions,
@@ -388,7 +456,7 @@ export function pullAgentHome(
 ): Promise<Result<PullReceipt, WorkspaceError>> {
 	return pullDir(
 		box,
-		{ keep: "newer", ...options, exclude: [...(options.exclude ?? []), ...HOST_OWNED_HOME] },
+		{ ...options, overwrite: "if_unchanged", exclude: [...(options.exclude ?? []), ...HOST_OWNED_HOME] },
 		context,
 	);
 }
@@ -503,7 +571,7 @@ function headersOf(entry: SeedEntry, size: number): Buffer[] {
  * The seed's archive, as a program's output. Each file is opened without following a link and checked to be a file
  * still; its header carries the size it has when opened, and exactly that many bytes follow.
  */
-function hostArchive(entries: readonly SeedEntry[]): Starter {
+function hostArchive(entries: readonly SeedEntry[], sent: Map<string, string>): Starter {
 	return async (context) => {
 		const { exit, settle } = exitOnce();
 		let message = "";
@@ -520,13 +588,16 @@ function hostArchive(entries: readonly SeedEntry[]): Starter {
 						if (!info.isFile()) throw new Error(`${entry.path} is no longer a file`);
 						yield* headersOf(entry, info.size);
 						const chunk = Buffer.alloc(COPY_CHUNK);
-						let sent = 0;
-						while (sent < info.size) {
-							const { bytesRead } = await file.read(chunk, 0, Math.min(COPY_CHUNK, info.size - sent), sent);
+						const hash = createHash("sha256");
+						let done = 0;
+						while (done < info.size) {
+							const { bytesRead } = await file.read(chunk, 0, Math.min(COPY_CHUNK, info.size - done), done);
 							if (bytesRead === 0) throw new Error(`${entry.path} shrank while it was seeded`);
+							hash.update(chunk.subarray(0, bytesRead));
 							yield Buffer.from(chunk.subarray(0, bytesRead));
-							sent += bytesRead;
+							done += bytesRead;
 						}
+						sent.set(entry.path, hash.digest("hex"));
 						yield padding(info.size);
 					} finally {
 						await file.close();
@@ -603,8 +674,9 @@ export async function seedDir(
 			),
 		);
 	}
+	const sent = new Map<string, string>();
 	const moved = await transfer(
-		hostArchive(entries),
+		hostArchive(entries, sent),
 		undefined,
 		pipe.value.kind === "files"
 			? filesSink(box, UNPACK_FILES_SCRIPT, [options.to], pipe.value.chunkBytes)
@@ -613,11 +685,18 @@ export async function seedDir(
 		context,
 	);
 	if (!moved.ok) return moved;
+	// The first mark: the box's own listing (its times are the box's), with the hash of each file as it was sent.
+	const listed = await list(box, options.to, { callTimeoutMs: options.callTimeoutMs }, context, undefined, []);
+	if (!listed.ok) return listed;
+	const marked = listed.value
+		.filter((entry) => entry.kind !== "symlink")
+		.map((entry) => (sent.has(entry.path) ? { ...entry, sha256: sent.get(entry.path) as string } : entry));
 	return ok({
 		files: files.length,
 		directories: entries.length - files.length,
 		bytes,
 		skipped,
+		mark: { entries: marked, bytes: marked.reduce((sum, entry) => sum + entry.bytes, 0) },
 		totalMs: performance.now() - started,
 	});
 }

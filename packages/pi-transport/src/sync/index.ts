@@ -23,6 +23,8 @@ export {
 	HOST_OWNED_HOME,
 	type PullOptions,
 	type PullReceipt,
+	type PullSkip,
+	type PullSkipReason,
 	pullAgentHome,
 	pullDir,
 	type SeedOptions,

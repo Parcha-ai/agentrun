@@ -142,7 +142,7 @@ describe("an agent's home", () => {
 
 		// The host's own copy is the agent's home itself: pull into it.
 		execFileSync("cp", ["-a", `${host}/.`, back]);
-		const first = getOrThrow(await pullAgentHome(box, { from: inBox, to: back }, context));
+		const first = getOrThrow(await pullAgentHome(box, { from: inBox, to: back, since: seeded.mark }, context));
 		expect(first.mark.entries.some((entry) => entry.path.startsWith("learning"))).toBe(false);
 		const learningBefore = tree(join(back, "learning"));
 
@@ -168,20 +168,67 @@ describe("an agent's home", () => {
 		expect(existsSync(join(back, "learning/planted.md"))).toBe(false);
 	});
 
-	it("keeps a host file newer than the box's", async () => {
-		const { box, host, back } = await setup();
+	it("never reverts another run's write: run A's pull of an untouched or changed copy leaves run B's", async () => {
+		const { box: a, host } = await setup();
+		const b = getOrThrow(await provider.create({ maxLifetimeMs: 600_000 }, context));
+		boxes.push(b);
+		const inA = join(a.facts().workspace, "home");
+		const inB = join(b.facts().workspace, "home");
+		writeFileSync(join(host, "notes.md"), "v1");
+		writeFileSync(join(host, "todo.md"), "v1");
+		const markA = getOrThrow(await seedAgentHome(a, { from: host, to: inA }, context)).mark;
+		const markB = getOrThrow(await seedAgentHome(b, { from: host, to: inB }, context)).mark;
+		expect(markA.entries.find((entry) => entry.path === "notes.md")?.sha256).toMatch(/^[0-9a-f]{64}$/);
+
+		// B's write lands first: the host's copy is still what was seeded, so it is replaced.
+		writeFileSync(join(inB, "notes.md"), "B's write");
+		writeFileSync(join(inB, "todo.md"), "B's write");
+		const pulledB = getOrThrow(await pullAgentHome(b, { from: inB, to: host, since: markB }, context));
+		expect(readFileSync(join(host, "notes.md"), "utf8")).toBe("B's write");
+
+		// A touched notes.md without changing it, rewrote todo.md, and removed nothing yet: neither reverts B.
+		utimesSync(join(inA, "notes.md"), 4_102_444_800, 4_102_444_800);
+		writeFileSync(join(inA, "todo.md"), "A's write");
+		const pulledA = getOrThrow(await pullAgentHome(a, { from: inA, to: host, since: markA }, context));
+		expect(readFileSync(join(host, "notes.md"), "utf8")).toBe("B's write");
+		expect(readFileSync(join(host, "todo.md"), "utf8")).toBe("B's write");
+		expect(pulledA.files).toBe(0);
+		expect(pulledA.skipped.host_changed).toBe(2);
+		expect(pulledA.skips.map((skip) => `${skip.path}:${skip.reason}`).sort()).toEqual([
+			"notes.md:host_changed",
+			"todo.md:host_changed",
+		]);
+		// A's deletion is not mirrored over B's write either, and the mark asks for nothing again.
+		rmSync(join(inA, "notes.md"));
+		const again = getOrThrow(
+			await pullAgentHome(a, { from: inA, to: host, since: pulledA.mark, mirrorDeletes: true }, context),
+		);
+		expect(again).toMatchObject({ changed: 0, removed: 0 });
+		expect(again.skipped.host_changed).toBe(1);
+		expect(readFileSync(join(host, "notes.md"), "utf8")).toBe("B's write");
+
+		// B's own next write still lands: its mark holds the hash of what its last pull wrote.
+		writeFileSync(join(inB, "notes.md"), "B's second write");
+		getOrThrow(await pullAgentHome(b, { from: inB, to: host, since: pulledB.mark }, context));
+		expect(readFileSync(join(host, "notes.md"), "utf8")).toBe("B's second write");
+	});
+
+	it("never reads the box's clock: a skewed box changes nothing about which copy wins", async () => {
+		const { box, host } = await setup();
 		const inBox = join(box.facts().workspace, "home");
-		writeFileSync(join(host, "profile.md"), "v1");
-		getOrThrow(await seedAgentHome(box, { from: host, to: inBox }, context));
-		const first = getOrThrow(await pullAgentHome(box, { from: inBox, to: back }, context));
-		writeFileSync(join(inBox, "profile.md"), "box v2");
-		utimesSync(join(inBox, "profile.md"), 1_600_000_000, 1_600_000_000);
-		writeFileSync(join(back, "profile.md"), "host v2, written later");
-		const second = getOrThrow(await pullAgentHome(box, { from: inBox, to: back, since: first.mark }, context));
-		expect(second.skipped.host_newer).toBe(1);
-		expect(readFileSync(join(back, "profile.md"), "utf8")).toBe("host v2, written later");
-		const third = getOrThrow(await pullAgentHome(box, { from: inBox, to: back, since: second.mark }, context));
-		expect(third.changed).toBe(0);
+		writeFileSync(join(host, "stale-clock.md"), "v1");
+		writeFileSync(join(host, "fast-clock.md"), "v1");
+		const mark = getOrThrow(await seedAgentHome(box, { from: host, to: inBox }, context)).mark;
+		// The box's clock is decades behind on one file and ahead on the other; the host edited the second meanwhile.
+		writeFileSync(join(inBox, "stale-clock.md"), "box v2");
+		utimesSync(join(inBox, "stale-clock.md"), 100, 100);
+		writeFileSync(join(inBox, "fast-clock.md"), "box v2");
+		utimesSync(join(inBox, "fast-clock.md"), 4_102_444_800, 4_102_444_800);
+		writeFileSync(join(host, "fast-clock.md"), "host edit");
+		const pulled = getOrThrow(await pullAgentHome(box, { from: inBox, to: host, since: mark }, context));
+		expect(readFileSync(join(host, "stale-clock.md"), "utf8")).toBe("box v2");
+		expect(readFileSync(join(host, "fast-clock.md"), "utf8")).toBe("host edit");
+		expect(pulled.skips).toEqual([{ path: "fast-clock.md", reason: "host_changed" }]);
 	});
 });
 
@@ -285,9 +332,9 @@ describe("a box that sends what it was not asked for", () => {
 		mkdirSync(join(host, "learning"));
 		writeFileSync(join(host, "learning/rules.md"), "host-owned");
 		writeFileSync(join(host, "profile.md"), "v1");
-		getOrThrow(await seedAgentHome(box, { from: host, to: inBox }, context));
+		const seeded = getOrThrow(await seedAgentHome(box, { from: host, to: inBox }, context));
 		execFileSync("cp", ["-a", `${host}/.`, back]);
-		const first = getOrThrow(await pullAgentHome(box, { from: inBox, to: back }, context));
+		const first = getOrThrow(await pullAgentHome(box, { from: inBox, to: back, since: seeded.mark }, context));
 		writeFileSync(join(inBox, "profile.md"), "v2 from the box");
 		const archivePath = join(box.facts().workspace, "hostile.tar");
 		writeFileSync(

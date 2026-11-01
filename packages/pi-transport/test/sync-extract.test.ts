@@ -486,9 +486,9 @@ describe("exclude patterns", () => {
 	it("anchors a pattern that starts with / at the root: /learning is the top-level learning only", () => {
 		const excluded = excluder(["/learning"]);
 		expect(["learning", "learning/rules.md", "learning/a/b"].every(excluded)).toBe(true);
-		expect(["notes/learning", "notes/learning/x", ".learning", "learning.md", "work/.learning/x"].some(excluded)).toBe(
-			false,
-		);
+		expect(
+			["notes/learning", "notes/learning/x", ".learning", "learning.md", "work/.learning/x"].some(excluded),
+		).toBe(false);
 		const anywhere = excluder(["learning"]);
 		expect(anywhere("notes/learning/x")).toBe(true);
 	});
