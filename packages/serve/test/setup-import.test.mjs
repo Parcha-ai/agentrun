@@ -240,3 +240,19 @@ test("a setup with the box ticked still being answered when the server closes st
   const set = existsSync(owner) && JSON.parse(readFileSync(owner, "utf8")).password !== undefined;
   assert.equal(existsSync(join(data, ".import-at-setup")), set, set ? "the owner's yes is kept for the next start" : "no yes was taken");
 });
+
+test("a server that fails to listen takes up no import and starts no count: it has no close to stop them", { timeout: 60_000 }, async (t) => {
+  const { sessionsHome } = await machine(t);
+  const data = join(await scratch(t), "agents");
+  mkdirSync(data, { recursive: true });
+  // The owner's yes from a server stopped mid-import, and a port another process holds.
+  writeFileSync(join(data, ".import-at-setup"), "", { mode: 0o600 });
+  const { createServer } = await import("node:net");
+  const taken = createServer();
+  await new Promise((done) => taken.listen(0, "127.0.0.1", done));
+  t.after(() => taken.close());
+  await assert.rejects(startServe({ data, port: taken.address().port, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, countSessions: true, sessionsHome }), /EADDRINUSE/);
+  await sleep(3_000);
+  assert.equal(agentsIn(data), 0, "nothing imported by a server that never started");
+  assert.ok(existsSync(join(data, ".import-at-setup")), "the yes is kept for a start that listens");
+});

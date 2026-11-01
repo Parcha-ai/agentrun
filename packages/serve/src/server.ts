@@ -417,8 +417,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (!closing) process.stderr.write(`agentrun-serve: the import at setup stopped (the next start goes on with it): ${(error as Error).message}\n`);
       }
     })());
-  if (offersImport && existsSync(importAsked)) void importAtSetup();
-  else if (offersImport && options.countSessions && owner && !owner.hasPassword()) countSessions();
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
@@ -1005,6 +1003,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   });
   const port = options.port ?? DEFAULT_PORT;
   await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done())));
+  // Only a server that started takes up the import its owner asked for, or counts for setup's offer: one that failed to
+  // listen hands back no close to stop them.
+  if (offersImport && existsSync(importAsked)) void importAtSetup();
+  else if (offersImport && options.countSessions && owner && !owner.hasPassword()) countSessions();
   const address = server.address() as AddressInfo;
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...(options.allowHosts ?? [])].map((h) => `${h.toLowerCase()}:${address.port}`));
   // An address of every interface is reached on this machine at its loopback one.
