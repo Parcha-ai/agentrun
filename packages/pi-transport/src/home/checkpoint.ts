@@ -384,8 +384,13 @@ export function localVault(directory: string): CheckpointVault {
 		},
 		async holds(session, sha256, bytes) {
 			const path = contentPath(session, sha256);
-			const found = path === undefined ? undefined : statSync(path, { throwIfNoEntry: false });
-			return found?.isFile() === true && found.size === bytes;
+			try {
+				const found = path === undefined ? undefined : statSync(path, { throwIfNoEntry: false });
+				return found?.isFile() === true && found.size === bytes;
+			} catch {
+				// A content the vault cannot look at is one it does not hold: the pull sends it again.
+				return false;
+			}
 		},
 		async keep(session, sha256, bytes) {
 			const path = contentPath(session, sha256);
@@ -723,6 +728,8 @@ export async function pullCheckpoint(
 		callTimeoutMs: Math.min(options.workspace?.callTimeoutMs ?? left(), left()),
 	});
 	let committed: Result<Checkpoint, CheckpointSkipped>;
+	/** The generation this pull began and has not committed or discarded: a call that throws leaves none in the making. */
+	let begunNotDone: PendingCheckpoint | undefined;
 	try {
 		committed = await (async (): Promise<Result<Checkpoint, CheckpointSkipped>> => {
 			const manifest = await treeSince(place.box, place.workspace, previous?.manifest, calls(), context);
@@ -748,6 +755,7 @@ export async function pullCheckpoint(
 			const begun = await vault.begin(session, context);
 			if (!begun.ok) return skip("failed", begun.error.message, [], begun.error);
 			const pending = begun.value;
+			begunNotDone = pending;
 			const fail = async (error: Error, reason: SkipReason) => {
 				await vault.discard(pending);
 				return skip(reason, error.message, [], error);
@@ -821,9 +829,13 @@ export async function pullCheckpoint(
 				context,
 			);
 			if (!recorded.ok) return fail(recorded.error, "failed");
+			begunNotDone = undefined;
 			bytes = held.value.seal.bytes + files.value.bytes;
 			return ok(recorded.value);
 		})();
+	} catch (cause) {
+		if (begunNotDone !== undefined) await vault.discard(begunNotDone);
+		throw cause;
 	} finally {
 		await home.abandon(withoutAbortSignal(context));
 	}

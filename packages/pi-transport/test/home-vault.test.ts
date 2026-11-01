@@ -464,6 +464,38 @@ describe("the vault's contents", () => {
 	});
 });
 
+describe("a pull whose vault throws", () => {
+	it("leaves no generation in the making, so the vault's contents can still be swept", async () => {
+		const fx = await source();
+		writeFileSync(join(fx.place.workspace, "a.txt"), "alpha");
+		const directory = fresh("vault");
+		const inner = localVault(directory);
+		const broken: CheckpointVault = {
+			...inner,
+			holds: async () => {
+				throw new Error("the disk did not answer");
+			},
+		};
+		getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault: inner }, context),
+		);
+		// The second pull asks whether the vault holds the unchanged file's content, and the vault throws.
+		await expect(
+			pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault: broken }, context),
+		).rejects.toThrow(/the disk did not answer/);
+		expect(readdirSync(join(directory, "s")).filter((name) => name.startsWith("gen-"))).toEqual([
+			"gen-00000001",
+			"gen-00000001.json",
+		]);
+		// A content no record names goes at the next sweep: nothing is in the making.
+		const writer = getOrThrow(await inner.keep("s", sha("stray"), 5, context));
+		await writer.write(Buffer.from("stray"));
+		getOrThrow(await writer.end());
+		getOrThrow(await inner.prune("s", 1, context));
+		expect(await inner.holds("s", sha("stray"), 5, context)).toBe(false);
+	});
+});
+
 describe("a generation an earlier version kept", () => {
 	it("is refused by name, never read or restored, and goes when a new checkpoint is kept", async () => {
 		const fx = await source();
