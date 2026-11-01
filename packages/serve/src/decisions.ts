@@ -1,8 +1,9 @@
 // Decision providers: the models a workflow's judge, pick, sift, route and ask nodes ask, through the DSL's `runJudge`.
-// This server runs two, each when its environment names the provider's key: Jev (TypeSafe's System One), on
+// This server runs three, each when its environment names the provider's key: Jev (TypeSafe's System One), on
 // TYPESAFE_API_KEY (the route to use), or for Jev through OpenRouter OPENROUTER_API_KEY, else an OpenRouter model
-// gateway's AGENT_MODEL_API_KEY; and Parallel Decisions, on PARALLEL_API_KEY. A node names its provider
-// (`provider: "parallel"`); one that names none is answered by Jev.
+// gateway's AGENT_MODEL_API_KEY; Parallel Decisions, on PARALLEL_API_KEY; and OpenRouter's Decisions models, on the
+// same OpenRouter key Jev's OpenRouter route reads. A node names its provider (`provider: "parallel"`); one that names
+// none is answered by Jev.
 //
 // The server chooses the keys (decisionKeysOf) and hands them over once, by name, on an inherited pipe
 // (`DECISION_KEY_FD_ENV` names it), at each launch of a workflow run. The run's process reads them into its providers
@@ -32,10 +33,14 @@ export const FAUX_JEV_ENV = "AGENTRUN_SERVE_FAUX_JEV";
 /** Under --faux only: a module whose default export is the fetch the Parallel provider sends through, in place of
  *  Parallel's API (the tests' fake). */
 export const FAUX_PARALLEL_ENV = "AGENTRUN_SERVE_FAUX_PARALLEL";
+/** Under `faux` only (startServe's `fauxOpenrouter`): a module whose default export is the fetch the OpenRouter decisions
+ *  provider sends through, in place of OpenRouter's System One API (`@parcha/agentrun-decisions/testing/faux-system-one`
+ *  is one). */
+export const FAUX_OPENROUTER_ENV = "AGENTRUN_SERVE_FAUX_OPENROUTER";
 
 /** One decision provider as capabilities lists it: whether this server runs it, when not why, and what to know when
  *  it runs in a way the operator should hear of. */
-export type DecisionOffer = { id: "jev" | "parallel"; available: boolean; reason?: string; note?: string };
+export type DecisionOffer = { id: "jev" | "parallel" | "openrouter"; available: boolean; reason?: string; note?: string };
 
 const isSet = (value: string | undefined) => typeof value === "string" && value.trim() !== "";
 
@@ -62,11 +67,14 @@ export function jevKey(env: NodeJS.ProcessEnv): { route: "typesafe" | "openroute
 export const jevRoute = (env: NodeJS.ProcessEnv) => jevKey(env)?.route;
 
 /** The keys the server hands a workflow run's process, by name: Jev's, as TYPESAFE_API_KEY or, on the OpenRouter route,
- *  as OPENROUTER_API_KEY whichever variable holds it; and Parallel's. */
+ *  as OPENROUTER_API_KEY whichever variable holds it; an OpenRouter key (openRouterKeyEnv) as OPENROUTER_API_KEY for
+ *  OpenRouter's Decisions models, on either Jev route; and Parallel's. */
 export function decisionKeysOf(env: NodeJS.ProcessEnv): Record<string, string> {
   const jev = jevKey(env);
+  const openrouter = openRouterKeyEnv(env);
   return {
     ...(jev ? { [jev.route === "typesafe" ? JEV_KEY_ENV : JEV_OPENROUTER_KEY_ENV]: jev.key } : {}),
+    ...(openrouter ? { [JEV_OPENROUTER_KEY_ENV]: env[openrouter]! } : {}),
     ...(isSet(env[PARALLEL_KEY_ENV]) ? { [PARALLEL_KEY_ENV]: env[PARALLEL_KEY_ENV]! } : {}),
   };
 }
@@ -81,12 +89,20 @@ export const parallelMissing = `This server's environment does not set ${PARALLE
  *  a run's process holds. */
 export const jevGatewayNote = (env: NodeJS.ProcessEnv) => `Jev runs on ${openRouterKeyEnv(env)}, the model gateway key on this server, which a run's processes hold in their environment for its model nodes. Set ${JEV_KEY_ENV} to keep the decision key out of them.`;
 
+/** Why OpenRouter's decision models do not run here, naming the variable to set. */
+export const openrouterMissing = `This server's environment does not set ${JEV_OPENROUTER_KEY_ENV} (or ${JEV_GATEWAY_KEY_ENV} with AGENT_MODEL_BASE_URL on openrouter.ai), which a decision node naming the provider "openrouter" needs.`;
+
+/** What to know of OpenRouter's decision models here: the key they run on, which a run's process holds as the model
+ *  gateway's, and that images go only to a model the catalog lists with image input, untested live. */
+export const openrouterNote = (env: NodeJS.ProcessEnv) => `Any OpenRouter Decisions model, named by the node's model (required), on ${openRouterKeyEnv(env)}, the model gateway key on this server, which a run's processes hold in their environment. Images are experimental: sent only to a model OpenRouter's catalog lists with image input.`;
+
 /** What this server offers of each decision provider. */
 export function decisionsOf(env: NodeJS.ProcessEnv): DecisionOffer[] {
   const route = jevRoute(env);
   const jev: DecisionOffer = route === "typesafe" ? { id: "jev", available: true } : route === "openrouter" ? { id: "jev", available: true, note: jevGatewayNote(env) } : { id: "jev", available: false, reason: jevMissing };
   const parallel: DecisionOffer = isSet(env[PARALLEL_KEY_ENV]) ? { id: "parallel", available: true } : { id: "parallel", available: false, reason: parallelMissing };
-  return [jev, parallel];
+  const openrouter: DecisionOffer = openRouterKeyEnv(env) ? { id: "openrouter", available: true, note: openrouterNote(env) } : { id: "openrouter", available: false, reason: openrouterMissing };
+  return [jev, parallel, openrouter];
 }
 
 /** Why provider `id` does not run here and the variables that would make it run; undefined when it runs, and no `needs`
@@ -94,7 +110,8 @@ export function decisionsOf(env: NodeJS.ProcessEnv): DecisionOffer[] {
 export function providerMissing(env: NodeJS.ProcessEnv, id: string): { message: string; needs?: string[] } | undefined {
   if (id === DEFAULT_DECISION_PROVIDER) return jevRoute(env) ? undefined : { message: jevMissing, needs: [JEV_KEY_ENV] };
   if (id === "parallel") return isSet(env[PARALLEL_KEY_ENV]) ? undefined : { message: parallelMissing, needs: [PARALLEL_KEY_ENV] };
-  return { message: `This server's decision providers are jev and parallel; this workflow also names the provider ${id}.` };
+  if (id === "openrouter") return openRouterKeyEnv(env) ? undefined : { message: openrouterMissing, needs: [JEV_OPENROUTER_KEY_ENV] };
+  return { message: `This server's decision providers are jev, parallel and openrouter; this workflow also names the provider ${id}.` };
 }
 
 /** The providers a workflow's typed questions are answered by (`nodes` from workflowNodes): each decision node's and
@@ -144,6 +161,10 @@ export async function decisionProvidersOf(env: NodeJS.ProcessEnv): Promise<{ pro
   if (handed[PARALLEL_KEY_ENV] !== undefined) {
     const [{ parallelProvider }, faux] = await Promise.all([import("@parcha/agentrun-decisions"), fauxFetch(env, FAUX_PARALLEL_ENV)]);
     providers.parallel = parallelProvider({ apiKey: handed[PARALLEL_KEY_ENV], ...(faux ? { fetch: faux } : {}) });
+  }
+  if (handed[JEV_OPENROUTER_KEY_ENV] !== undefined) {
+    const [{ openrouterProvider }, faux] = await Promise.all([import("@parcha/agentrun-decisions"), fauxFetch(env, FAUX_OPENROUTER_ENV)]);
+    providers.openrouter = openrouterProvider({ apiKey: handed[JEV_OPENROUTER_KEY_ENV], ...(faux ? { fetch: faux } : {}), app: { title: "AgentRun Server" } });
   }
   return Object.keys(providers).length ? { providers, default: DEFAULT_DECISION_PROVIDER } : undefined;
 }

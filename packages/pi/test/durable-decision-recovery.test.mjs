@@ -143,3 +143,16 @@ test('decisionRecovery: a row keeps the provider that answered, the sources it c
   assert.deepEqual(await decisions.decision('a'), answered, 'the replayed receipt is the one recorded, provider and sources included');
   await harness.close(ctx);
 });
+
+test('decisionRecovery: a row keeps the images a request carried by digest, the state the judge saw and the cost basis, and the replay has them again', async () => {
+  const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(root, 'images-')), 'run.sqlite')), { registry: createRegistry(), models: {} }, ctx);
+  const runtime = { commit: (change, context) => harness.commit(change, context), snapshot: (...args) => harness.snapshot(...args) };
+  const decisions = decisionRecovery({ key: 'run-1', runtime, context: ctx });
+  const images = [{ token: 'page1', ref: 'pages/coi-acme/1.png', sha256: 'a'.repeat(64), mime: 'image/png', bytes: 1234 }];
+  const answered = receiptOf('a', { provider: 'jev', cost_basis: 'estimate', images, state: { doc: 'coi-acme.pdf', page: 'page1' }, state_truncated: false });
+  await decisions.recordDecision(answered, exchange);
+  const [row] = await readDecisions(harness, ctx);
+  assert.deepEqual([row.images, row.state, row.state_truncated, row.cost_basis], [images, { doc: 'coi-acme.pdf', page: 'page1' }, false, 'estimate']);
+  assert.deepEqual(await decisions.decision('a'), answered, 'the replayed receipt carries the image digests, the state seen and the cost basis');
+  await harness.close(ctx);
+});

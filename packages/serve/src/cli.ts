@@ -9,7 +9,7 @@ import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--all]
 
@@ -21,6 +21,10 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --allow-host NAME another Host name to accept (repeatable)
   --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else from this host's memory: (memory - 128 MiB)
                     / 72 MiB, at least 1); over it a new run is 429
+  --documents DIR   a read-only directory of documents a workflow's pdf_pages calls read by file name (default
+                    AGENTRUN_SERVE_DOCUMENTS)
+  --allow-code-nodes run workflows' code nodes, in the run's process with no sandbox (default off, or
+                    AGENTRUN_SERVE_CODE_NODES=1); off, a workflow with one saves with a warning and its runs are refused
   --drain-timeout D how long a busy run may finish its turn when the server stops (default 30s; the image's is 6s, inside
                     Docker's 10 s grace); a run cut off resumes at the next start
 
@@ -76,6 +80,8 @@ try {
       "allow-host": { type: "string", multiple: true, default: [] },
       "max-runs": { type: "string" },
       "drain-timeout": { type: "string" },
+      documents: { type: "string" },
+      "allow-code-nodes": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -114,7 +120,7 @@ try {
   serve = await startServe({
     data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
-    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), log: (line) => void process.stdout.write(`${line}\n`),
+    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     ...(accounts ? { accounts, openSetup: !publicUrl, ...(publicUrl ? { publicUrl } : {}) } : {}),
   });
 } catch (error) {
