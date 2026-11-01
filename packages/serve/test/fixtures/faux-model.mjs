@@ -100,6 +100,19 @@ export default function reply(context, faux) {
     if (answered) return faux.message("I wrote report.md.");
     return faux.message(faux.toolCall("write", { path: "report.md", content: "# Report\n\nThe answer is 42.\n" }), { stopReason: "toolUse" });
   }
+  // A call that succeeds, then one that fails (the file is not there), then the answer.
+  if (first.includes("Write a note, then read a missing one")) {
+    if (results === 0) return faux.message(faux.toolCall("write", { path: "note.md", content: "noted" }), { stopReason: "toolUse" });
+    if (results === 1) return faux.message(faux.toolCall("read", { path: "missing.md" }), { stopReason: "toolUse" });
+    return faux.message("Wrote one, missed one.");
+  }
+  // One request that calls a tool, then the run's process exits on the next, without releasing the run.
+  if (first.includes("Crash after one request")) {
+    if (results === 0) return faux.message(faux.toolCall("write", { path: "note.md", content: "noted" }), { stopReason: "toolUse" });
+    process.exit(3);
+  }
+  // A tool name past what the agent store keeps (256 characters): pi answers that no such tool exists.
+  if (first.includes("Call a tool with a long name")) return results === 0 ? faux.message(faux.toolCall("t".repeat(300), {}), { stopReason: "toolUse" }) : faux.message("Called it.");
   if (last.includes("Take your time")) return slow(faux, 60_000, "Done slowly.");
   // Answers only once it is stopped: the answer lands after the stop, the race the server must not read as an answer.
   if (first.includes("Answer when stopped") && users.length === 1) return new Promise((resolve) => faux.signal?.addEventListener("abort", () => resolve(faux.message("Stopped, but here is the answer.")), { once: true }));
