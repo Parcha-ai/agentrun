@@ -3,7 +3,7 @@
 // of every token sum; each tool's calls pair with their results by conversation and call id, as the timeline's do.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { METRIC_NAMES, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf } from "../dist/timeline/index.js";
+import { METRIC_NAMES, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const usage = (input, output, cacheRead = 0, cacheWrite = 0, total = 0.01) => ({ input, output, cacheRead, cacheWrite, totalTokens: input + output, cost: { total } });
@@ -97,6 +97,28 @@ test("a request cut before its answer counts, at unknown tokens; one the host re
   const r = runMetricsOf(refused);
   assert.deepEqual([r.requests, r.unmetered, r.models], [1, 0, { "anthropic/claude-opus-5-5": 1 }]);
   assert.equal(r.requests, rowCount(refused));
+});
+
+test("a call a harness answer asked for, written after that answer as its continuation: shown under the answer and counted as a call, never as a request", () => {
+  // As serve writes an answer that asks for two tools: the answer at its first call's end, then the second call.
+  const first = answer([{ type: "text", text: "Writing both." }, call("c1", "write", { path: "a.md" })], usage(100, 20));
+  const entries = [
+    user("Write two files."),
+    first,
+    result("c1", "write", "ok"),
+    custom(REQUEST_CONTINUED, { key: "k", request: 1 }),
+    assistant([call("c2", "write", { path: "b.md" })], 0, { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: {} } }),
+    result("c2", "write", "ok"),
+    answer([{ type: "text", text: "Wrote both." }], usage(140, 5)),
+  ];
+  const m = runMetricsOf(entries);
+  assert.deepEqual([m.requests, m.unmetered, m.input, m.output, m.tools, m.models], [2, 0, 240, 25, { write: { calls: 2, errors: 0 } }, { "anthropic/claude-opus-5-5": 2 }]);
+  assert.equal(m.requests, rowCount(entries));
+  const rows = timelineOf(entries, { settled: true });
+  assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => [r.tool_use_id, r.round]), [["c1", first.id], ["c2", first.id]], "the continuation's call shows under the answer it continues");
+  assert.deepEqual(rows.findLast((r) => r.kind === "usage")?.usage, { usd: 0.02, requests: 2 }, "no request, and no unknown cost, of its own");
+  assert.deepEqual(rows.filter((r) => r.kind === "tool_result" && r.tool_status !== "success"), [], "no call reads as interrupted");
+  assert.equal(rows.find((r) => r.kind === "final_answer")?.text, "Wrote both.");
 });
 
 test("tools: each result counts a call of its call's tool, an error result a failure; a call with no result was interrupted, a failure", () => {
