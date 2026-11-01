@@ -262,7 +262,16 @@ test('a host box\'s label is claimed by the run\'s process: the same again in th
   assert.throws(() => hostLedger({ dir }).claimHost({ provider: 'home', key: '0', run: 'life-b' }, from), /restarted/, 'another supervisor life would renumber: refused');
   assert.throws(() => hostLedger({ dir }).claimHost({ provider: 'away', key: '0', run: 'life-a' }, from), /box-1 on home, not on away/, 'one key on another provider is not the same box: refused');
   assert.equal(hostLedger({ dir }).claimHost({ provider: 'home', key: '1', run: 'life-a' }, from), 'box-2');
-  for (const bad of ['not json', '{}', '{"provider":"home","key":"x","run":"a"}', '{"provider":"","key":"0","run":"a"}', '{"provider":"home","key":"0"}']) assert.throws(() => parseHostBox(bad), /HOST_BOX/, bad);
+  for (const bad of ['not json', '{}', '{"provider":"home","key":"","run":"a"}', '{"provider":"home","key":"a b","run":"a"}', '{"provider":"home","key":"a//b","run":"a"}', '{"provider":"home","key":"/a","run":"a"}', `{"provider":"home","key":"${'k'.repeat(201)}","run":"a"}`, '{"provider":"","key":"0","run":"a"}', '{"provider":"home","key":"0"}']) assert.throws(() => parseHostBox(bad), /HOST_BOX/, bad);
+  // The key's bounds, each refused by its own rule: a segment holds only plain-name characters (never ~, the claim file's stand-in
+  // for /), at most 5 segments, at most 200 characters in all (here two segments each within the 100 a segment may hold).
+  const hostBoxWith = (key) => JSON.stringify({ provider: 'home', key, run: 'a' });
+  for (const [why, key] of [['a ~ in a segment', 'life-a/0~1/0123456789abcdef'], ['6 segments', 'a/b/c/d/e/f'], ['201 characters', `${'a'.repeat(100)}/${'b'.repeat(100)}`]]) assert.throws(() => parseHostBox(hostBoxWith(key)), /HOST_BOX must be/, why);
+  assert.equal(parseHostBox(hostBoxWith(`${'a'.repeat(100)}/${'b'.repeat(99)}`)).key.length, 200, 'a 200-character key parses');
+  assert.equal(parseHostBox(hostBoxWith('a/b/c/d/e')).key, 'a/b/c/d/e', '5 segments parse');
+  // A key the host driver minted for the box at its create (Amendment 2): plain names joined by /.
+  assert.deepEqual(parseHostBox(JSON.stringify({ provider: 'home', key: 'life-a/0/0123456789abcdef', run: 'life-a' })), { provider: 'home', key: 'life-a/0/0123456789abcdef', run: 'life-a' });
+  assert.equal(hostLedger({ dir }).claimHost({ provider: 'home', key: 'life-a/2/0123456789abcdef', run: 'life-a' }, from), 'box-3', 'a minted key is claimed as one file');
 });
 
 test('(A) a host box key is claimed exclusively, before its label: a key another supervisor life claimed first refuses this one even before that life\'s label has landed, so two lives starting together never both label one box', async (t) => {

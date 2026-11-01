@@ -110,6 +110,26 @@ test('box cleanup: a run\'s boxes carry its label, tool-made ones too, and clean
   assert.equal(RUN_LABEL, 'agentrun-run');
   await b1.value.destroy(ctx);
 });
+test('box cleanup ends a HOST box (one with a host key) THROUGH the supervisor\'s tap, so its box.ended is in the recording, and only tool boxes through the raw provider, when both are the same vendor\'s', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-hostboxes-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { hostTap } = await import('../packages/harness/dist/host-tap.js');
+  const spec = { name: 'x', boxes: { kind: 'local' } };
+  const raw = localBoxes({ root: join(tmp, 'boxes') });
+  const lines = [];
+  const tap = hostTap({ line: (kind, data) => lines.push([kind, data]), runLabelKey: RUN_LABEL, runLabel: 'run-A', gen: () => 1 });
+  const hosts = tap.provider(raw);
+  const files = new Map();
+  await tap.unheld({ signal: new AbortController().signal, read: async (path) => (files.has(path) ? new TextEncoder().encode(files.get(path)) : null), list: async () => [], put: async (path, text) => { files.set(path, text); } }, { attempt: 1, box: { provider: raw.name, key: '0', run: 'run-A' } });
+  const host = await hosts.create({ maxLifetimeMs: 60_000, labels: { 'agentrun-host-key': 'run-A/0/feedface' } }, ctx);
+  assert.ok(host.ok);
+  tap.bound('run-A/0/feedface', 'box-1');
+  const tool = await tapBox(raw, { cross: () => false, window: { open: 0 }, runLabel: 'run-A' }).create({ maxLifetimeMs: 60_000, labels: {} }, ctx);
+  assert.ok(tool.ok);
+  await destroyBoxes(spec, 'run-A', tmp, false, tap);
+  assert.deepEqual((await raw.list({ [RUN_LABEL]: 'run-A' }, ctx)).value, [], 'both boxes are gone');
+  assert.deepEqual(lines.filter(([kind]) => kind === 'box.ended').map(([, data]) => data), [{ gen: 1, box: 'box-1', provider: raw.name, killed: false }], 'the host box ended through the tap');
+});
 test('a crossing taken while any tool call is between its dispatch and its kept answer is never a run kill point, at any seam', (t) => {
   const kills = [];
   const real = process.kill;
