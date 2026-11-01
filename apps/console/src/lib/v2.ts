@@ -5,7 +5,9 @@ export type RunState = "working" | "waiting" | "idle";
 
 export type ApiError = { code: string; message: string; retryable: boolean; request_id?: string };
 
-export type Cost = { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null };
+/** `source` (a serve extension): "reported" when every part of the cost is a provider's own report, else "estimate".
+ *  An older server leaves it out, and then `basis` says whether the number is an estimate. */
+export type Cost = { usd: number | null; basis: string; source?: "reported" | "estimate"; charge_state: string | null; cap_usd: number | null };
 
 export type Run = {
   run_id: string;

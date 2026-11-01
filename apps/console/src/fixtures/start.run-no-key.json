@@ -1,0 +1,40 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v2/agents/meeting-notes/runs",
+    "body": {
+      "input": {
+        "content": "No key."
+      }
+    }
+  },
+  "status": 202,
+  "headers": {
+    "content-type": "application/json",
+    "location": "/v2/runs/01a184ad-1fee-751e-8e06-5a02b17177de"
+  },
+  "body": {
+    "run_id": "01a184ad-1fee-751e-8e06-5a02b17177de",
+    "agent_id": "meeting-notes",
+    "agent_version": 2,
+    "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+    "kind": "agentic",
+    "sha": null,
+    "status": "queued",
+    "state": "working",
+    "title": "No key.",
+    "created_at": "2026-10-28T22:41:42.727Z",
+    "updated_at": "2026-10-28T22:41:42.992Z",
+    "ended_at": null,
+    "result": null,
+    "error": null,
+    "cost": {
+      "usd": 0,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "archived_at": null,
+    "poll_after_ms": 1000
+  }
+}
