@@ -1,6 +1,6 @@
 // The small JSON files the server reads and writes beside the agent store.
 import { randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, fsyncSync, openSync, renameSync, type Stats, unlinkSync, writeSync } from "node:fs";
 import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Json } from "./validate.js";
@@ -38,13 +38,25 @@ export async function writeWhole(path: string, text: string, mode = 0o600): Prom
   await rename(temp, path);
 }
 
+/** Syncs the directory `path`, so the entries made in it survive a crash of the machine. */
+export async function syncDir(path: string): Promise<void> {
+  const dir = await open(path, constants.O_RDONLY | constants.O_DIRECTORY);
+  try {
+    await dir.sync();
+  } finally {
+    await dir.close();
+  }
+}
+
 /** Writes `text` (or bytes) to `path` whole and durably: the temporary file is synced before the rename, and the
  *  directory after it, so once this resolves a crash, even of the machine, leaves the new text in place, never the old or
- *  none. `temp` is the temporary file, created only if nothing is there yet: a link planted at it is never written through. */
-export async function writeDurable(path: string, text: string | Uint8Array, mode = 0o600, temp = tempOf(path)): Promise<void> {
+ *  none. `temp` is the temporary file, created only if nothing is there yet: a link planted at it is never written through.
+ *  Answers the stats of the file it wrote, read before the rename: a write of `path` that lands after it is not them. */
+export async function writeDurable(path: string, text: string | Uint8Array, mode = 0o600, temp = tempOf(path)): Promise<Stats> {
   // Its own temporary file: a box's record can be let go by two settlements at once (a run's archive and its agent's).
   const bytes = typeof text === "string" ? Buffer.from(text) : text;
   const file = await open(temp, "wx", mode);
+  let stats: Stats;
   try {
     // Every byte, or an error: a short write (a disk nearly full) is never synced and renamed as if whole.
     for (let at = 0; at < bytes.length; ) {
@@ -53,6 +65,7 @@ export async function writeDurable(path: string, text: string | Uint8Array, mode
       at += bytesWritten;
     }
     await file.sync();
+    stats = await file.stat();
   } catch (error) {
     await file.close();
     await unlink(temp).catch(() => {});
@@ -63,12 +76,8 @@ export async function writeDurable(path: string, text: string | Uint8Array, mode
     await unlink(temp).catch(() => {});
     throw error;
   });
-  const dir = await open(dirname(path), "r");
-  try {
-    await dir.sync();
-  } finally {
-    await dir.close();
-  }
+  await syncDir(dirname(path));
+  return stats;
 }
 
 /** writeDurable, synchronously: on disk, the file and then its directory synced, when it returns. For a record that

@@ -305,7 +305,8 @@ file as a run's file is read, and `PUT` writes the raw body as the file, whole (
 `0600`), making the directories on the way and the home itself on the first write, and answers its entry; of two writes
 at once, the last wins. A body over `capabilities.home.max_file_bytes` (`limits.max_body_bytes`) is `413`.
 `DELETE` removes a file (`204`; `404` when it is not there) and leaves an emptied directory in place. Paths are checked
-as a run's are, and a link anywhere on the way is never followed: a read is `404`, a write or a delete
+as a run's are, a write goes at most 16 directories deep (as deep as the list goes), and a link anywhere on the way is
+never followed: a read is `404`, a write or a delete
 `403 system_file_forbidden`. `learning/` is written by the server alone: listed with `host_owned: true` and read, but a
 `PUT` or `DELETE` at or under it, however the path is spelled (`./learning/x`), is `403`. An archived agent's home is
 read and written as its definition is. `GET` and `PUT /agents/{id}/home`, the contract's packed home, stay `501`.

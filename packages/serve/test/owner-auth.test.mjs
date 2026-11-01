@@ -157,11 +157,14 @@ test("every route, called with no credential, is a 401 but capabilities, the con
   const server = await owned(t);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
-    const body = route.method === "GET" || route.method === "HEAD" ? undefined : {};
-    const anonymous = await call(server.port, { method: route.method, path, headers: body ? page(server) : {}, body });
+    const safe = route.method === "GET" || route.method === "HEAD";
+    // A DELETE sends no body (Node's client would send one unframed, which the server cannot parse), and from the page it
+    // still says JSON from the page's origin, as every write does.
+    const body = safe || route.method === "DELETE" ? undefined : {};
+    const anonymous = await call(server.port, { method: route.method, path, headers: safe ? {} : page(server), body });
     if (["getCapabilities", "getOpenapi", "getHealth"].includes(route.name)) assert.ok([200, 503].includes(anonymous.status), `${route.method} ${path}: ${anonymous.status}`);
     else assert.equal(anonymous.status, 401, `${route.method} ${path} with no credential: ${anonymous.text}`);
-    for (const headers of [{ ...(body ? page(server) : {}), cookie: server.cookie }, { ...(body ? json : {}), authorization: `Bearer ${server.token}` }]) {
+    for (const headers of [{ ...(safe ? {} : page(server)), cookie: server.cookie }, { ...(safe ? {} : json), authorization: `Bearer ${server.token}` }]) {
       const res = await call(server.port, { method: route.method, path, headers, body });
       assert.ok(![401, 403].includes(res.status), `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
     }

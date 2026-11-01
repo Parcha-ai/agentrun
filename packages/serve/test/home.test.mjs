@@ -2,8 +2,8 @@
 // written and deleted through /v2/agents/{id}/home/files. Never through a link, never outside the home, and never into a
 // path only the server writes (learning/).
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { lstat, mkdir, readdir, readFile, rename, stat, symlink, writeFile } from "node:fs/promises";
+import { existsSync, readlinkSync } from "node:fs";
+import { lstat, mkdir, open, readdir, readFile, realpath, rename, stat, symlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -174,6 +174,40 @@ test("learning/ is the server's: a PUT or DELETE there is 403 however the path i
   // A name that only starts like it is the client's.
   assert.equal((await put(server, "learning2/x.md", "x")).status, 200);
   assert.equal((await files(server)).body.files.find((f) => f.path === "learning2/x.md").host_owned, undefined);
+});
+
+test("a write goes as deep as the list does: 16 directories, written and listed; 17 refused; a deeper one planted on disk marks the list truncated", async (t) => {
+  const server = await served(t);
+  const at = (n) => `${Array.from({ length: n }, (_, i) => `d${i}`).join("/")}/x.txt`;
+  assert.equal((await put(server, at(16), "deep")).status, 200);
+  assert.deepEqual(refused(await put(server, at(17), "deeper")), [400, "invalid_file_path"]);
+  const first = (await files(server)).body;
+  assert.deepEqual([first.files.map((f) => f.path), first.truncated], [[at(16)], false]);
+  await mkdir(join(server.home, ...Array.from({ length: 17 }, (_, i) => `d${i}`)), { recursive: true });
+  await writeFile(join(server.home, at(17)), "planted");
+  const listed = (await files(server)).body;
+  assert.deepEqual([listed.files.map((f) => f.path), listed.truncated], [[at(16)], true], "the list says it stopped short");
+});
+
+test("a write that makes directories syncs each into its parent before it is answered: the data directory, homes/, the home and every one on the way", { skip: process.platform !== "linux" && "reads descriptors from /proc" }, async (t) => {
+  const server = await served(t);
+  const probe = await open(join(server.data, ".probe"), "w");
+  const FileHandle = Object.getPrototypeOf(probe);
+  await probe.close();
+  const synced = [];
+  const realSync = FileHandle.sync;
+  FileHandle.sync = async function () {
+    synced.push(readlinkSync(`/proc/self/fd/${this.fd}`));
+    return realSync.call(this);
+  };
+  t.after(() => void (FileHandle.sync = realSync));
+  assert.equal((await put(server, "a/b/c.txt", "c")).status, 200);
+  const data = await realpath(server.data);
+  const dirs = synced.filter((path) => !path.endsWith(".tmp"));
+  for (const dir of [data, join(data, "homes"), join(data, "homes", "keeper"), join(data, "homes", "keeper", "a"), join(data, "homes", "keeper", "a", "b")]) assert.ok(dirs.includes(dir), `${dir} is synced: ${JSON.stringify(dirs)}`);
+  synced.length = 0;
+  assert.equal((await put(server, "a/b/d.txt", "d")).status, 200);
+  assert.deepEqual(synced.filter((path) => !path.endsWith(".tmp")), [join(data, "homes", "keeper", "a", "b")], "a write in a directory already there syncs that one alone");
 });
 
 test("a body over the cap is 413 and writes nothing; one at the cap is taken", async (t) => {

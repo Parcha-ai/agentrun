@@ -4,7 +4,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { extname, join, posix, resolve } from "node:path";
+import { dirname, extname, join, posix, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
@@ -12,7 +12,7 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { HOME_HOST_OWNED, HOMES_DIR, homeOf } from "./files.js";
+import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir } from "./files.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
@@ -27,7 +27,7 @@ import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runna
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { statsView } from "./stats.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
-import { openWorkFile, removeWorkFile, walkWork, WorkRefused, writeWorkFile } from "./workspace.js";
+import { openWorkFile, removeWorkFile, WALK_DEPTH, walkWork, WorkRefused, writeWorkFile } from "./workspace.js";
 
 export const CONTRACT = "agentrun.v2/0";
 export const DEFAULT_PORT = 7340;
@@ -540,18 +540,20 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const fileView = (path: string, st: { size: number; mtimeMs: number }): FileView => ({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null });
 
   /** The files under `base` (a run's work/, an agent's home), through no link (workspace.ts): each regular file's own size
-   *  and time, a dot-name left out. */
-  async function walk(base: string): Promise<FileView[]> {
+   *  and time, a dot-name left out. `deep` when a directory below WALK_DEPTH was there and not entered. */
+  async function walk(base: string): Promise<{ files: FileView[]; deep: boolean }> {
     const out: FileView[] = [];
-    if (!(await lstat(base).catch(() => null))?.isDirectory()) return out;
+    let deep = false;
+    if (!(await lstat(base).catch(() => null))?.isDirectory()) return { files: out, deep };
     // The directory unreadable as a whole lists nothing; what the walk could not read in it is left out.
     await walkWork(base, (path, st, readable) => {
       if (st.isFile()) out.push({ ...fileView(path, st), ...(readable ? {} : { unreadable: true }) });
+      else if (st.isDirectory() && path.split("/").length > WALK_DEPTH) deep = true;
       return out.length <= FILE_LIST_CAP;
     }, { skip: (name) => name.startsWith(".") }).catch((error) => {
       if (!(error instanceof WorkRefused)) throw error;
     });
-    return out;
+    return { files: out, deep };
   }
 
   /** A file path as the URL sends it, each segment percent-decoded. */
@@ -607,13 +609,14 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   /** A path in an agent's home as its routes take it, checked as a run's file path is, and at most 1024 characters with
    *  no segment over 255 bytes. A write anywhere in a host-owned path is refused first, on the path as normalized, so
-   *  `./learning/x` and `a/../learning/x` are refused as learning/ is. */
+   *  `./learning/x` and `a/../learning/x` are refused as learning/ is; and a write goes no deeper than the list does. */
   function homePath(raw: string, write: boolean): string {
     const rel = decodedPath(raw);
     const owned = write ? hostOwnedOf(posix.normalize(rel).replace(/^\/+/, "")) : undefined;
     if (owned) throw new ApiError("system_file_forbidden", `${owned}/ is written by the server, not through the API`, { details: { reason: "host_owned" } });
     checkedPath(rel, "the server's own, not a file of the home");
     if (rel.length > 1024 || rel.split("/").some((p) => Buffer.byteLength(p) > 255)) throw new ApiError("invalid_file_path", "the path is over 1024 characters, or a segment of it over 255 bytes");
+    if (write && rel.split("/").length - 1 > WALK_DEPTH) throw new ApiError("invalid_file_path", `a file is written at most ${WALK_DEPTH} directories deep, as deep as the list goes`);
     return rel;
   }
 
@@ -622,10 +625,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   async function homeDir(agentId: string, make: boolean): Promise<string | null> {
     const home = homeOf(data, agentId);
     for (const dir of [join(data, HOMES_DIR), home]) {
-      if (make)
-        await mkdir(dir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "EEXIST") throw error;
-        });
+      // One made is synced into its parent, so a write in it that is answered survives a crash of the machine.
+      if (make && (await mkdir(dir, { mode: 0o700 }).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "EEXIST" ? false : Promise.reject(error))))) await syncDir(dirname(dir));
       if ((await lstat(dir).catch(() => null))?.isDirectory()) continue;
       if (make) throw new WorkRefused(dir, "link");
       return null;
@@ -877,15 +878,17 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       }
       case "listRunFiles": {
         const run = await needRun(id);
-        const files = (await walk(join(run.dir, "work"))).sort((a, b) => a.path.localeCompare(b.path));
-        return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: files.length > FILE_LIST_CAP });
+        const { files, deep } = await walk(join(run.dir, "work"));
+        files.sort((a, b) => a.path.localeCompare(b.path));
+        return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP });
       }
       // An archived agent's home is read and written as any other's: as its definition is.
       case "listHomeFiles": {
         await needAgent(id);
         const home = await homeDir(id, false);
-        const files = (home ? await walk(home) : []).map((file) => (hostOwnedOf(file.path) ? { ...file, host_owned: true as const } : file)).sort((a, b) => a.path.localeCompare(b.path));
-        return send(res, 200, { agent_id: id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: files.length > FILE_LIST_CAP });
+        const { files, deep } = home ? await walk(home) : { files: [], deep: false };
+        const listed = files.map((file) => (hostOwnedOf(file.path) ? { ...file, host_owned: true as const } : file)).sort((a, b) => a.path.localeCompare(b.path));
+        return send(res, 200, { agent_id: id, files: listed.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || listed.length > FILE_LIST_CAP });
       }
       case "readHomeFile": {
         await needAgent(id);

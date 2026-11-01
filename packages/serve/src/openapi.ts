@@ -147,7 +147,7 @@ const HOME_FILE = {
 };
 const HOME_FILES = {
   type: "object", additionalProperties: false, required: ["agent_id", "files", "complete", "truncated"],
-  properties: { agent_id: ref("schemas/Id"), files: { type: "array", items: HOME_FILE }, complete: { type: "boolean", description: "Always true here: the home is on this server's disk." }, truncated: { type: "boolean", description: "The list stopped at the server's cap." } },
+  properties: { agent_id: ref("schemas/Id"), files: { type: "array", items: HOME_FILE }, complete: { type: "boolean", description: "Always true here: the home is on this server's disk." }, truncated: { type: "boolean", description: "The list stopped at the server's cap: its count of files, or a directory more than 16 deep." } },
 };
 /** Where an agent's home's files are listed; each file's own path is below it. */
 const HOME_FILES_AT = "/agents/{agent_id}/home/files";
@@ -158,7 +158,7 @@ const HOME_PATH = {
 };
 const RAW = { "application/octet-stream": { schema: { type: "string", contentMediaType: "application/octet-stream" } }, "*/*": { schema: { type: "string" } } };
 const HOME_PATHS = "A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`.";
-const HOME_WRITES = "A path at or under one of `capabilities.home.host_owned` (`learning/`), as normalized, so `./learning/x` too, is `403 system_file_forbidden` with `details.reason` `host_owned`. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's.";
+const HOME_WRITES = "A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`), as normalized, so `./learning/x` too, is `403 system_file_forbidden` with `details.reason` `host_owned`. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's.";
 
 /** This server's own routes, outside the contract. */
 const EXTENSIONS: Record<string, Record<string, Json>> = {
