@@ -318,11 +318,17 @@ the form to use.
 
 ## Place
 
-A definition may name where its runs execute: `{"mode": "runner"}`, `{"mode": "tool-box", "box": ...}` (the agent on the
-host, its tools in the box: `bwrap`, `docker`, `modal` or `daytona`) or `{"mode": "sandbox", "box": ...}` (the whole run
-in the box: `docker`, `modal` or `daytona`). Any other shape is `422 input_invalid` on `definition.place`. A definition
-that names none runs in this host's default (`capabilities.places.default`, `runner` here), and its answers show no
-place; one that names a place keeps it, `runner` included. An edit that names no place keeps the agent's.
+A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
+`bwrap`, `docker`, `modal` or `daytona`. A runner has no shell. In a sandbox the agent's file and shell tools (`read`,
+`write`, `edit`, `bash`) run in the named box, while the agent's loop, its log and every key stay on the server, whatever
+its harness. Any other shape is `422 input_invalid` on `definition.place`. A definition that names none runs in this
+host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one that names a place keeps
+it, `runner` included. An edit that names no place keeps the agent's.
+
+A run may narrow a sandbox agent to `runner`, never widen a runner agent into a sandbox. The run request's field for it
+comes later. A harness's own tools in the box, when they come, will be an option of `sandbox` (such as
+`native_tools: true`), never a third mode.
+
 `GET /v2/capabilities` lists `places`: the modes, the default, and each box with `available` and, when not, the `reason`.
 This server has no box yet: a definition naming one saves with a warning on `definition.place`, and a run of it is
 `409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place` and `capabilities.places`

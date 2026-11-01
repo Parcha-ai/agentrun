@@ -1,19 +1,18 @@
-// Where a revision's runs execute: `runner` (no box and no shell), `tool-box` (the agent on the host, its tools in a box)
-// or `sandbox` (the whole run in a box). A revision keeps the place it names, an explicit runner included, since the
-// default is this host's; one that names none keeps none, so a revision written before this field keeps its id. Which
-// boxes this server has is said in capabilities, and a revision whose box it does not have saves with a warning and is
-// refused at run time.
+// Where a revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in
+// the named box, while its loop, its log and every key stay on the server). A revision keeps the place it names, an
+// explicit runner included, since the default is this host's; one that names none keeps none, so a revision written
+// before this field keeps its id. Which boxes this server has is said in capabilities, and a revision whose box it does
+// not have saves with a warning and is refused at run time. A harness's own tools in the box, when they come, are an
+// option of sandbox, never a third mode.
 import type { InputIssue } from "./errors.js";
 
-export const PLACE_MODES = ["runner", "tool-box", "sandbox"] as const;
+export const PLACE_MODES = ["runner", "sandbox"] as const;
 export type PlaceMode = (typeof PLACE_MODES)[number];
 export const BOXES = ["bwrap", "docker", "modal", "daytona"] as const;
 export type BoxId = (typeof BOXES)[number];
-/** The boxes a whole run fits in: bwrap boxes a tool's process, not the run's. */
-export const SANDBOX_BOXES: readonly BoxId[] = ["docker", "modal", "daytona"];
 export const DEFAULT_PLACE_MODE: PlaceMode = "runner";
 
-export type Place = { mode: "runner" } | { mode: "tool-box"; box: BoxId } | { mode: "sandbox"; box: Exclude<BoxId, "bwrap"> };
+export type Place = { mode: "runner" } | { mode: "sandbox"; box: BoxId };
 
 /** One box as capabilities lists it: whether this server has it, and when not, why. */
 export type BoxOffer = { id: BoxId; available: boolean; reason?: string };
@@ -37,9 +36,7 @@ export function placeIssues(place: unknown, field: string): InputIssue[] {
   if (extra.length) return bad("not_allowed", `${field} keeps only mode and box, not ${extra.join(" or ")}`, `Remove ${extra.map((key) => `${field}.${key}`).join(" and ")}.`);
   if (!listed(PLACE_MODES, place.mode)) return bad(place.mode === undefined ? "missing" : "not_an_option", `${field}.mode is one of ${PLACE_MODES.join(", ")}`);
   if (place.mode === "runner") return place.box === undefined ? [] : bad("not_allowed", "a runner place uses no box", `Remove ${field}.box.`);
-  const boxes = place.mode === "sandbox" ? SANDBOX_BOXES : BOXES;
-  if (place.box === undefined) return bad("missing", `a ${place.mode} place names its box: one of ${boxes.join(", ")}`);
-  if (place.mode === "sandbox" && place.box === "bwrap") return bad("not_an_option", `a sandbox place runs the whole run in its box, which bwrap does not: one of ${boxes.join(", ")}`);
-  if (!listed(boxes, place.box)) return bad("not_an_option", `${field}.box is one of ${boxes.join(", ")}`);
+  if (place.box === undefined) return bad("missing", `a sandbox place names its box: one of ${BOXES.join(", ")}`);
+  if (!listed(BOXES, place.box)) return bad("not_an_option", `${field}.box is one of ${BOXES.join(", ")}`);
   return [];
 }

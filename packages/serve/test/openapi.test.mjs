@@ -209,7 +209,7 @@ test("live answers meet the served document: capabilities, and an agent made, re
   const { api } = await serve(t);
   const check = (name, value) => assert.deepEqual(schemaProblems(doc, { $ref: `#/components/schemas/${name}` }, value), [], `${name}: ${JSON.stringify(value)}`);
   check("Capabilities", (await api("GET", "/capabilities")).body);
-  for (const [id, body] of [["on-pi", agent("on-pi", { model: "faux/faux-1", thinking: "high" })], ["on-claude", agent("on-claude", { harness: "claude-agent" })], ["in-runner", agent("in-runner", { place: { mode: "runner" } })], ["in-tool-box", agent("in-tool-box", { place: { mode: "tool-box", box: "bwrap" } })], ["in-sandbox", agent("in-sandbox", { place: { mode: "sandbox", box: "daytona" } })], ["on-codex", flowAgent("on-codex", undefined, { harness: "codex" })]]) {
+  for (const [id, body] of [["on-pi", agent("on-pi", { model: "faux/faux-1", thinking: "high" })], ["on-claude", agent("on-claude", { harness: "claude-agent" })], ["in-runner", agent("in-runner", { place: { mode: "runner" } })], ["in-bwrap", agent("in-bwrap", { place: { mode: "sandbox", box: "bwrap" } })], ["in-sandbox", agent("in-sandbox", { place: { mode: "sandbox", box: "daytona" } })], ["on-codex", flowAgent("on-codex", undefined, { harness: "codex" })]]) {
     const { warnings: _, ...made } = (await api("POST", "/agents", body)).body;
     const read = (await api("GET", `/agents/${id}`)).body;
     if (id !== "on-codex") {
@@ -220,10 +220,10 @@ test("live answers meet the served document: capabilities, and an agent made, re
     // A workflow definition keeps no instructions, which v2/0 requires of every definition: the one gap left, for v2/1.
     for (const answer of [made, read]) assert.deepEqual([...new Set(schemaProblems(doc, { $ref: "#/components/schemas/Agent" }, answer))], ["$.definition.instructions: is required"]);
   }
-  // The document's place takes no box a sandbox cannot be, as the server refuses it.
+  // The document's place takes the two modes the server takes, and refuses what it refuses.
   const place = doc.components.schemas.DefinitionInput.properties.place;
-  assert.deepEqual(schemaProblems(doc, place, { mode: "sandbox", box: "docker" }), []);
-  assert.notDeepEqual(schemaProblems(doc, place, { mode: "sandbox", box: "bwrap" }), []);
+  for (const box of ["bwrap", "docker"]) assert.deepEqual(schemaProblems(doc, place, { mode: "sandbox", box }), []);
+  assert.notDeepEqual(schemaProblems(doc, place, { mode: "tool-box", box: "bwrap" }), []);
   assert.notDeepEqual(schemaProblems(doc, place, { mode: "runner", box: "docker" }), []);
   // The same check sees a field the document does not hold: the positive control.
   assert.notDeepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, { ...(await api("GET", "/capabilities")).body, unheard_of: 1 }), []);

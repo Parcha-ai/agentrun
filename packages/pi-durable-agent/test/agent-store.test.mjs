@@ -62,8 +62,8 @@ test("a revision keeps the place it names, {mode, box?}, in its body and so its 
   assert.notEqual(runner.id, plain.id, "the place is part of the body, so of the id");
   const boxed = await store.commitRevision(agent.id, { ...A, place: { box: "docker", mode: "sandbox" } });
   assert.deepEqual(store.readRevision(boxed.id).body.place, { mode: "sandbox", box: "docker" }, "read back as written");
-  const flow = await store.commitRevision(agent.id, { ...WF, place: { mode: "tool-box", box: "bwrap" } });
-  assert.deepEqual(flow.body.place, { mode: "tool-box", box: "bwrap" });
+  const flow = await store.commitRevision(agent.id, { ...WF, place: { mode: "sandbox", box: "bwrap" } });
+  assert.deepEqual(flow.body.place, { mode: "sandbox", box: "bwrap" });
   for (const place of ["runner", null, {}, { mode: "Runner" }, { mode: "sandbox", box: "" }, { mode: "sandbox", box: 3 }, { mode: "runner", home: "x" }]) await assert.rejects(store.commitRevision(agent.id, { ...A, place }), refused("invalid", /place/), JSON.stringify(place));
   assert.equal(store.listRevisions(agent.id).length, 4);
   store.close();

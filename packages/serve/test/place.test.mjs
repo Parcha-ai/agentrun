@@ -1,5 +1,4 @@
-// The place a revision names: runner, tool-box or sandbox, the last two with their box. A revision keeps the place it
-// names, an explicit runner included; one that names none keeps none, so a revision written before the field reads and
+// The place a revision names: runner, or sandbox with its box. A revision keeps the place it names, an explicit runner included; one that names none keeps none, so a revision written before the field reads and
 // runs as it did. A box this server does not have (none yet) saves with a warning, and a run of it is refused 409
 // agent_not_runnable naming the box. Capabilities lists the modes, the default and each box.
 import assert from "node:assert/strict";
@@ -19,10 +18,7 @@ const storedBodies = (data) => {
 };
 
 const BOXED = [
-  { mode: "tool-box", box: "bwrap" },
-  { mode: "tool-box", box: "docker" },
-  { mode: "tool-box", box: "modal" },
-  { mode: "tool-box", box: "daytona" },
+  { mode: "sandbox", box: "bwrap" },
   { mode: "sandbox", box: "docker" },
   { mode: "sandbox", box: "modal" },
   { mode: "sandbox", box: "daytona" },
@@ -56,7 +52,7 @@ test("an explicit runner place is stored and echoed, is another revision than no
   await follow(api, run.body.run_id, ["completed"]);
 });
 
-test("each tool-box and sandbox place is stored and echoed as given, on an agentic and a workflow revision", async (t) => {
+test("a sandbox place on each box, bwrap included, is stored and echoed as given, on an agentic and a workflow revision", async (t) => {
   const { api, data } = await serve(t);
   for (const [index, place] of BOXED.entries()) {
     const made = await api("POST", "/agents", agent(`boxed-${index}`, { place }));
@@ -76,12 +72,11 @@ test("a place of the wrong shape is a 422 at definition.place with a plain messa
   const bad = [
     ["runner", "wrong_type", /is an object/],
     [null, "wrong_type", /is an object/],
-    [{}, "missing", /mode is one of runner, tool-box, sandbox/],
-    [{ mode: "elsewhere" }, "not_an_option", /mode is one of runner, tool-box, sandbox/],
-    [{ mode: "tool-box" }, "missing", /names its box: one of bwrap, docker, modal, daytona/],
-    [{ mode: "sandbox" }, "missing", /names its box: one of docker, modal, daytona/],
-    [{ mode: "tool-box", box: "podman" }, "not_an_option", /box is one of bwrap, docker, modal, daytona/],
-    [{ mode: "sandbox", box: "bwrap" }, "not_an_option", /bwrap does not/],
+    [{}, "missing", /mode is one of runner, sandbox/],
+    [{ mode: "elsewhere" }, "not_an_option", /mode is one of runner, sandbox/],
+    [{ mode: "tool-box", box: "bwrap" }, "not_an_option", /mode is one of runner, sandbox/],
+    [{ mode: "sandbox" }, "missing", /names its box: one of bwrap, docker, modal, daytona/],
+    [{ mode: "sandbox", box: "podman" }, "not_an_option", /box is one of bwrap, docker, modal, daytona/],
     [{ mode: "runner", box: "docker" }, "not_allowed", /runner place uses no box/],
     [{ mode: "runner", home: "/data" }, "not_allowed", /keeps only mode and box, not home/],
     [{ mode: "sandbox", box: "docker", region: "eu" }, "not_allowed", /keeps only mode and box, not region/],
@@ -95,16 +90,16 @@ test("a place of the wrong shape is a 422 at definition.place with a plain messa
   }
   assert.equal((await api("GET", "/agents")).body.agents.length, 0);
   const made = await api("POST", "/agents", agent("good"));
-  const edit = await api("PUT", "/agents/good/definition", { definition: { instructions: "Answer.", place: { mode: "sandbox", box: "bwrap" } } }, { "if-match": `"${made.body.revision}"` });
+  const edit = await api("PUT", "/agents/good/definition", { definition: { instructions: "Answer.", place: { mode: "tool-box", box: "bwrap" } } }, { "if-match": `"${made.body.revision}"` });
   assert.equal(edit.status, 422, JSON.stringify(edit.body));
   assert.ok(edit.body.error.fields.some((i) => i.field === "definition.place" && i.reason === "not_an_option"));
   assert.equal((await api("GET", "/agents/good")).body.revisions, 1);
 });
 
-test("a tool-box or sandbox place saves with a warning naming its box, and a run of it is 409 agent_not_runnable naming the box: nothing starts", async (t) => {
+test("a sandbox place saves with a warning naming its box, and a run of it is 409 agent_not_runnable naming the box: nothing starts", async (t) => {
   const { api } = await serve(t);
   for (const [id, body, box, input] of [
-    ["tooled", agent("tooled", { place: { mode: "tool-box", box: "bwrap" } }), "bwrap", { content: "hi" }],
+    ["bwrapped", agent("bwrapped", { place: { mode: "sandbox", box: "bwrap" } }), "bwrap", { content: "hi" }],
     ["sandboxed", agent("sandboxed", { place: { mode: "sandbox", box: "modal" } }), "modal", { content: "hi" }],
     ["flow", flowAgent("flow", undefined, { place: { mode: "sandbox", box: "daytona" } }), "daytona", { question: "q" }],
   ]) {
@@ -141,8 +136,8 @@ test("an edit that names no place keeps the agent's; one that names another plac
 
 test("an edit identical to the current revision is a no-op, whether it names the place or leaves it out", async (t) => {
   const { api } = await serve(t);
-  const made = (await api("POST", "/agents", agent("same", { place: { mode: "tool-box", box: "docker" } }))).body;
-  for (const definition of [{ instructions: "Answer.", place: { box: "docker", mode: "tool-box" } }, { instructions: "Answer." }]) {
+  const made = (await api("POST", "/agents", agent("same", { place: { mode: "sandbox", box: "docker" } }))).body;
+  for (const definition of [{ instructions: "Answer.", place: { box: "docker", mode: "sandbox" } }, { instructions: "Answer." }]) {
     const again = await api("PUT", "/agents/same/definition", { definition }, { "if-match": `"${made.revision}"` });
     assert.equal(again.status, 200, JSON.stringify(again.body));
     assert.equal(again.body.revision, made.revision, JSON.stringify(definition));
@@ -175,7 +170,7 @@ test("capabilities lists the place modes, this host's default, and each box: non
   const { api } = await serve(t);
   const { places } = (await api("GET", "/capabilities")).body;
   assert.deepEqual(Object.keys(places), ["modes", "default", "boxes"]);
-  assert.deepEqual(places.modes, ["runner", "tool-box", "sandbox"]);
+  assert.deepEqual(places.modes, ["runner", "sandbox"], "one boxed mode: no tool-box");
   assert.equal(places.default, "runner");
   assert.deepEqual(places.boxes.map((b) => [b.id, b.available]), [["bwrap", false], ["docker", false], ["modal", false], ["daytona", false]]);
   for (const box of places.boxes) assert.equal(box.reason, `${box.id} is not set up on this server.`);

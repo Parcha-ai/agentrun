@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
-import { BOXES, PLACE_MODES, SANDBOX_BOXES } from "./place.js";
+import { BOXES, PLACE_MODES } from "./place.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 
 type Json = Record<string, unknown>;
@@ -309,10 +309,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     place: {
       oneOf: [
         { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
-        { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "tool-box" }, box: { enum: [...BOXES] } } },
-        { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...SANDBOX_BOXES] } } },
+        { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOXES] } } },
       ],
-      description: "Where the revision's runs execute: `runner` (no box), `tool-box` (the agent on the host, its tools in the box) or `sandbox` (the whole run in the box). Absent, this host's default (capabilities.places.default), and an answer shows none; a revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes).",
+      description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent, this host's default (capabilities.places.default), and an answer shows none; a revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes).",
       "x-agentrun-serve": "place/1",
     },
   },
