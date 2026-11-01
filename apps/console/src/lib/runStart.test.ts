@@ -1,0 +1,121 @@
+import { describe, expect, it } from "vitest";
+import { curlFor, exampleInput, keeper, startBody, started, submitStart } from "./runStart";
+
+describe("startBody", () => {
+  it("starts an agentic run with its first message as content, and only the options given", () => {
+    expect(startBody("agentic", { text: "Summarize the standup." })).toEqual({ ok: true, body: { input: { content: "Summarize the standup." } } });
+    expect(startBody("agentic", { text: "Go.", revision: "r1", effort: "high", maxCostUsd: "0.50" })).toEqual({
+      ok: true, body: { input: { content: "Go." }, revision: "r1", effort: "high", max_cost_usd: 0.5 },
+    });
+  });
+
+  it("starts a workflow run with its typed input as JSON, and never a spend cap (the server refuses one)", () => {
+    expect(startBody("workflow", { text: '{"subject":"Where is my invoice?","body":"Cannot find it."}', maxCostUsd: "1" })).toEqual({
+      ok: true, body: { input: { subject: "Where is my invoice?", body: "Cannot find it." } },
+    });
+  });
+
+  it("refuses an empty message, input that is not JSON, and a cap that is not a positive number", () => {
+    expect(startBody("agentic", { text: "  " })).toMatchObject({ ok: false, field: "input" });
+    expect(startBody("workflow", { text: "{subject:" })).toMatchObject({ ok: false, field: "input" });
+    expect(startBody("agentic", { text: "Go.", maxCostUsd: "-1" })).toMatchObject({ ok: false, field: "max_cost_usd" });
+    expect(startBody("agentic", { text: "Go.", maxCostUsd: "0" })).toMatchObject({ ok: false, field: "max_cost_usd" });
+  });
+});
+
+describe("keeper", () => {
+  it("keeps one Idempotency-Key per request: a retry of the same request reuses it, a changed request gets a new one", () => {
+    let n = 0;
+    const keys = keeper(() => `k${++n}`);
+    const a = { input: { content: "Go." } };
+    expect(keys.keyFor("agent-1", a)).toBe("k1");
+    expect(keys.keyFor("agent-1", { input: { content: "Go." } })).toBe("k1");
+    expect(keys.keyFor("agent-1", { input: { content: "Go now." } })).toBe("k2");
+    expect(keys.keyFor("agent-2", { input: { content: "Go now." } })).toBe("k3");
+  });
+  it("starts fresh after a run started, so the next start is a new run", () => {
+    let n = 0;
+    const keys = keeper(() => `k${++n}`);
+    keys.keyFor("a", { input: { content: "Go." } });
+    keys.done();
+    expect(keys.keyFor("a", { input: { content: "Go." } })).toBe("k2");
+  });
+});
+
+describe("curlFor", () => {
+  it("is the request as cURL, with the token from the environment, never a value", () => {
+    const c = curlFor("http://127.0.0.1:7340", "meeting-notes", { input: { content: "It's done." } }, "k1");
+    expect(c).toContain("curl -X POST 'http://127.0.0.1:7340/v2/agents/meeting-notes/runs'");
+    expect(c).toContain('-H "Authorization: Bearer $AGENTRUN_TOKEN"');
+    expect(c).toContain("-H 'Idempotency-Key: k1'");
+    expect(c).toContain(`-d '{"input":{"content":"It'\\''s done."}}'`);
+  });
+});
+
+describe("started", () => {
+  it("a run started only on a 2xx: a lost answer (no status) or a refusal keeps the key for the retry", () => {
+    expect(started(202)).toBe(true);
+    expect(started(200)).toBe(true);
+    expect(started(0)).toBe(false);
+    expect(started(409)).toBe(false);
+    expect(started(503)).toBe(false);
+    expect(started(302)).toBe(false);
+    expect(started(304)).toBe(false);
+  });
+});
+
+describe("submitStart", () => {
+  const body = { input: { content: "Go." } };
+  const sender = (statuses: number[]) => {
+    const keys: string[] = [];
+    return { keys, send: async (_a: string, _b: unknown, key: string) => { keys.push(key); return { status: statuses.shift()! }; } };
+  };
+  it("keeps the key after a lost answer or a refusal, so the retry is the same request and cannot start a second run", async () => {
+    for (const refused of [0, 409, 422, 503]) {
+      let n = 0;
+      const k = keeper(() => `k${++n}`);
+      const s = sender([refused, 202]);
+      await submitStart(k, "agent-1", body, s.send);
+      await submitStart(k, "agent-1", body, s.send);
+      expect(s.keys).toEqual(["k1", "k1"]);
+    }
+  });
+  it("resets the key once a run started, so the next start is a new run", async () => {
+    let n = 0;
+    const k = keeper(() => `k${++n}`);
+    const s = sender([202, 202]);
+    await submitStart(k, "agent-1", body, s.send);
+    await submitStart(k, "agent-1", body, s.send);
+    expect(s.keys).toEqual(["k1", "k2"]);
+  });
+  it("answers with what the server answered", async () => {
+    const k = keeper(() => "k1");
+    expect(await submitStart(k, "agent-1", body, async () => ({ status: 202, runId: "r1" }))).toEqual({ status: 202, runId: "r1" });
+  });
+});
+
+describe("exampleInput", () => {
+  it("takes the input schema's first example, and names its fields", () => {
+    const w = { input: { schemaId: "In" }, schemas: { In: { type: "object", properties: { documents: { type: "array", description: "The files." } }, examples: [{ documents: ["a.pdf"] }] } } };
+    const e = exampleInput(w)!;
+    expect(JSON.parse(e.text)).toEqual({ documents: ["a.pdf"] });
+    expect(e.from).toBe("example");
+    expect(e.fields).toEqual([{ name: "documents", note: "The files." }]);
+  });
+  it("without an example, gives the schema's shape with its required fields empty", () => {
+    const w = { input: { schemaId: "In" }, schemas: { In: { type: "object", required: ["company", "documents"], properties: { company: { type: "string" }, documents: { type: "array" }, note: { type: "string" } } } } };
+    const e = exampleInput(w)!;
+    expect(JSON.parse(e.text)).toEqual({ company: "", documents: [] });
+    expect(e.from).toBe("shape");
+    expect(exampleInput({ schemas: {} })).toBeNull();
+  });
+  it("follows a local $ref to the schema it names, as the DSL resolves it", () => {
+    const w = { input: { schemaId: "In" }, schemas: {
+      In: { $ref: "#/definitions/Ticket", definitions: { Ticket: { type: "object", required: ["id", "owner"], properties: { id: { type: "string", description: "The ticket." }, owner: { $ref: "#/definitions/Person" } } } } },
+      Person: { type: "object", required: ["name"], properties: { name: { type: "string" } } },
+    } };
+    const e = exampleInput(w)!;
+    expect(JSON.parse(e.text)).toEqual({ id: "", owner: { name: "" } });
+    expect(e.fields).toEqual([{ name: "id", note: "The ticket." }, { name: "owner" }]);
+  });
+});

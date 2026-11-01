@@ -11,7 +11,7 @@
 //  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn.
 import type { DriveContext, SessionState } from "./host/kernel.js";
 import type { SessionMachine } from "./host/process.js";
-import { openTurn, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
+import { openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
 // cycle with harness.ts: read repairOutput only inside functions, never at module top level (pinned by "code mode and the harness
 // load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
 import { repairOutput } from "./harness.js";
@@ -82,14 +82,17 @@ export const waitStoppedText = (cell: string) =>
 
 type Tie = { callId: string; exec: string | null; since?: number };
 
-/** What the log holds of one nested call: the session's record, and the rollout's completion line. */
-function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>, tie: { callId: string }): NestedFact {
+/** What the log holds of one nested call: the session's record, the rollout's completion line, and what the turn's recovery note
+ *  calls it (`told`, by call id). */
+function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>, tie: { callId: string }, told: ReadonlyMap<string, NestedFact["told"]> = new Map()): NestedFact {
   const e = state.effects.get(toolKey(tie.callId));
+  const status = told.get(tie.callId);
   return {
     callId: tie.callId,
     tool: e ? e.name.replace(/^tool\./, "") : (rolled.get(tie.callId)?.tool ?? "a tool"),
     ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? (e.error?.message ?? "") : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact["store"]> } : {}),
     ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
+    ...(status ? { told: status } : {}),
   };
 }
 
@@ -200,7 +203,8 @@ export function codeMode(deps: CodeModeDeps) {
       const rolled = completedNested(lines);
       // Each cut-off exec lists its own calls. A call whose script could not be told when it ran (an answer the proxy did not see to its end)
       // is listed once, apart, in the LAST cut-off exec's output, if it ran in this interrupted turn.
-      const listed = recoveryFacts(execs, ties, since, (tie) => factOf(state, rolled, tie));
+      const told = new Map((recoveryNote(state)?.calls ?? []).map((c) => [c.callId, c.status] as const));
+      const listed = recoveryFacts(execs, ties, since, (tie) => factOf(state, rolled, tie, told));
       dangling.forEach((c, i) => {
         if (!isExec(c)) {
           // Code mode's `wait` on a cell had started: the generic answer, that the call never started, would be false.

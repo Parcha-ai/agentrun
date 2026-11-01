@@ -1,0 +1,40 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents/meeting-notes"
+  },
+  "status": 200,
+  "headers": {
+    "etag": "\"a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567\"",
+    "content-type": "application/json"
+  },
+  "body": {
+    "agent_id": "meeting-notes",
+    "definition": {
+      "id": "meeting-notes",
+      "version": 2,
+      "name": "Meeting notes",
+      "description": "Summarizes a meeting transcript into decisions, action items and open questions.",
+      "instructions": "Summarize the meeting transcript in three sections: Decisions, Action items (with owners), Open questions. No preamble.",
+      "thinking": "low",
+      "harness": "pi",
+      "skills": [],
+      "tools": []
+    },
+    "kind": "agentic",
+    "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+    "revisions": 2,
+    "source": null,
+    "skills": [],
+    "sign_ins": [],
+    "runs": {
+      "count": 8,
+      "live": 1
+    },
+    "region": "local",
+    "home_etag": "\"a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567\"",
+    "archived_at": null,
+    "created_at": "2026-10-28T22:28:57.408Z",
+    "updated_at": "2026-10-28T22:28:57.642Z"
+  }
+}

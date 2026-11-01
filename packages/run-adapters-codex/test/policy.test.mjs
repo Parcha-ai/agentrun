@@ -5,8 +5,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { after, test } from 'node:test';
-import { startModelProxy } from '@parcha/agentrun-adapters/host';
+import * as host from '@parcha/agentrun-adapters/host';
 import { codexPolicy, usageOf } from '../dist/host/policy.js';
+
+const { startModelProxy } = host;
 
 const KEY = 'session-key-for-tests';
 const fixture = (name) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
@@ -27,7 +29,7 @@ async function proxy({ tools = ['lookup'], announce, answer = () => new Response
     origin: 'https://provider.invalid',
     credential: () => 'provider-secret',
     price: (_model, u) => (u.input + u.output + u.cacheRead) / 1e6,
-    fetch: async (url, init) => { forwarded.push({ url, headers: init.headers, body: JSON.parse(init.body) }); return answer(); },
+    fetch: async (url, init) => { forwarded.push({ url, headers: init.headers, body: JSON.parse(init.body), raw: init.body }); return answer(); },
   }, KEY);
   after(() => p.close());
   return { p, forwarded, asked, reports };
@@ -61,9 +63,60 @@ test("the recorded request reaches the provider as the policy shapes it: the ses
   assert.deepEqual([f.body.model, f.body.store, f.body.max_output_tokens, f.body.include], ['session-model', false, 32_000, ['reasoning.encrypted_content']]);
   // web search, the CLI's built-ins and its multi-agent namespace are not the session's: only `lookup` is offered.
   assert.deepEqual(f.body.tools.map((t) => `${t.type}:${t.name}`), ['function:lookup']);
-  assert.deepEqual(asked, [{ model: 'session-model' }], "the runner is asked about the applied body's model");
+  assert.deepEqual(asked, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(f.raw, 'utf8') }], "the runner is asked about the applied body's model, with its input bound: the sent body's bytes");
   const sent = JSON.stringify(f);
   for (const id of ['<x-codex-installation-id>', '<session_id>', 'sid', 'tid', 'rid', 'wid', 'codex_exec', KEY]) assert.ok(!sent.includes(id), `${id} does not reach the provider`);
+});
+
+test("the Responses API adds no billed input the body does not carry: the input bound is the sent body's bytes, tools or not", async () => {
+  const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
+  for (const body of [{}, { tools: [{ type: 'function', name: 'lookup' }], tool_choice: 'required' }, RECORDED_REQUEST]) assert.equal(policy.serverInputOverhead(body), 0);
+  const { p, forwarded, asked } = await proxy();
+  await send(p.url, { body: { ...RECORDED_REQUEST, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }] } });
+  assert.deepEqual(asked.map((r) => r.inputTokensMax), [Buffer.byteLength(forwarded[0].raw, 'utf8')]);
+});
+
+// A tool's output may hold an image; the Responses API bills it by its area, not its bytes.
+const imageItem = { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=' };
+const withImages = (n) => ({ ...RECORDED_REQUEST, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }], input: [...RECORDED_REQUEST.input, { type: 'function_call_output', call_id: 'c1', output: Array.from({ length: n }, () => imageItem) }] });
+
+test("each image adds the most one image is billed as on the Responses API, 73,800 tokens (30,000 patches x 2.46), through the shared figures", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
+  assert.equal(host.OPENAI_IMAGE_TOKENS_MAX, 73_800);
+  assert.deepEqual([withImages(1), withImages(3)].map((body) => policy.serverInputOverhead(body)), [73_800, 3 * 73_800]);
+  assert.equal(policy.serverInputOverhead(withImages(1)), host.providerInputOverhead?.('openai-responses', { tools: true, images: 1 }), 'the policy and the shared function agree');
+});
+
+test("a body with a file input (billed by its pages, with no stated bound) leaves the input bound unmeasured, so a cap treats it as unknown", async () => {
+  const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
+  const withFile = { ...RECORDED_REQUEST, input: [...RECORDED_REQUEST.input, { type: 'message', role: 'user', content: [{ type: 'input_file', file_data: 'data:application/pdf;base64,JVBERi0=' }] }] };
+  assert.throws(() => policy.serverInputOverhead(withFile), /no stated bound/);
+  const { p, asked } = await proxy();
+  await send(p.url, { body: withFile });
+  assert.equal(asked.length, 1);
+  assert.ok('inputTokensMax' in asked[0] && asked[0].inputTokensMax === undefined, JSON.stringify(asked[0]));
+});
+
+test("a request whose body fits what is left, but not with its image's allowance, is refused before it is sent", async () => {
+  const body = withImages(1);
+  const sentBy = async (room) => {
+    const sent = [];
+    const p = await startModelProxy({
+      policy: codexPolicy({ model: 'session-model', tools: ['lookup'] }), model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', price: () => 0.001, log: () => {},
+      hooks: { beforeRequest: async (r) => { if (r.inputTokensMax === undefined || r.inputTokensMax > room(r)) throw new Error('over what is left'); }, afterRequest: async () => {} },
+      fetch: async (_url, init) => { sent.push(init.body); return new Response(RECORDED_STREAM, { status: 200, headers: { 'content-type': 'text/event-stream' } }); },
+    }, KEY);
+    after(() => p.close());
+    await send(p.url, { body });
+    return sent;
+  };
+  // Room for the body's bytes and all of the image's allowance but one token: refused, the provider sees nothing.
+  let bytes;
+  const refused = await sentBy((r) => { bytes = r.inputTokensMax - 73_800; return bytes + 73_800 - 1; });
+  assert.equal(refused.length, 0);
+  const passed = await sentBy(() => bytes + 73_800);
+  assert.equal(passed.length, 1);
+  assert.equal(Buffer.byteLength(passed[0], 'utf8'), bytes, 'the bound is the sent body\'s bytes plus the image allowance');
 });
 
 test("the recorded stream's usage is booked from response.completed, read as JSON", async () => {

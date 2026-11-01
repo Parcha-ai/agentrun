@@ -63,7 +63,7 @@ test("the contract's operations are as vendored; this server's own are added and
   for (const { path, method, op } of operations(doc)) {
     const original = vendored.get(`${method} ${path}`);
     if (!original) {
-      assert.equal(op["x-agentrun-serve"], true, `${method.toUpperCase()} ${path} is this server's own, and marked`);
+      assert.ok(op["x-agentrun-serve"] === true || /^[a-z]+\/\d+$/.test(op["x-agentrun-serve"]), `${method.toUpperCase()} ${path} is this server's own, and marked`);
       own.push(`${method.toUpperCase()} ${path}`);
       continue;
     }
@@ -105,11 +105,28 @@ test("the contract's operations are as vendored; this server's own are added and
         continue;
       }
       assert.match(property["x-agentrun-serve"], /^[a-z]+\/\d+$/, `${at}.${field} names its addition`);
+      // An addition inside one (a later mark on a property of this server's own) is listed too.
+      const inner = (object, where) => {
+        for (const [name, nested] of Object.entries(object.properties ?? {})) {
+          if (nested["x-agentrun-serve"] !== undefined) marked.push(`${where}.${name}`);
+          inner(nested, `${where}.${name}`);
+        }
+      };
+      inner(property, `${at}.${field}`);
       delete schema.properties[field];
       marked.push(`${at}.${field}`);
     }
   };
-  for (const [name, schema] of Object.entries(components.schemas)) strip(schema, name);
+  for (const [name, schema] of Object.entries(components.schemas)) {
+    // A contract enum this server widens (RunStatus's `paused`) is marked on the schema, each value it adds listed.
+    if (schema["x-agentrun-serve"] !== undefined && Array.isArray(schema.enum)) {
+      const original = VENDORED.components.schemas[name].enum;
+      for (const value of schema.enum.filter((v) => !original.includes(v))) marked.push(`${name}.${value}`);
+      schema.enum = schema.enum.filter((v) => original.includes(v));
+      delete schema["x-agentrun-serve"];
+    }
+    strip(schema, name);
+  }
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
   assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details].sort(), "info lists the contract properties it notes");
@@ -199,4 +216,12 @@ test("live answers meet the served document: capabilities, and an agent made, re
   }
   // The same check sees a field the document does not hold: the positive control.
   assert.notDeepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, { ...(await api("GET", "/capabilities")).body, unheard_of: 1 }), []);
+});
+
+test("the decision providers' widening to parallel is its own addition, decisions/2, and info lists it", async (t) => {
+  const { doc } = await served(t);
+  const decisions = doc.components.schemas.Capabilities.properties.workflows.properties.decisions;
+  assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
+  assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
+  assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
 });

@@ -44,6 +44,18 @@ export type RunRow = { id: string; agent: string; revision: string; kind: Revisi
 export type ImportedRun = { agent: string; revision: string; state: "completed" | "failed" | "stopped"; startedAt: string; endedAt: string; costUsd?: number; summary?: string } & ImportedFrom;
 /** What can be archived. */
 export type ArchiveKind = "agent" | "run";
+type RunCounts = Record<RunState, number> & { total: number };
+/** `usd` sums the costs of the `known` runs, those that ended with one; null when there are none, never 0. A run still
+ *  running, or one that ended with no cost, is `unknown`. */
+type CostSum = { usd: number | null; known: number; unknown: number };
+/** What `stats` answers. Every number but `archivedAgents` and `archivedRuns` leaves out what is archived; a run of an
+ *  archived agent is archived with it. `byAgent`: each agent by name, with its run count; `running`: the ids of the runs
+ *  still running. */
+export type StoreStats = {
+  agents: number; archivedAgents: number; runs: RunCounts; archivedRuns: number; cost: CostSum;
+  byAgent: Array<{ id: string; name: string; runs: number }>;
+  running: string[];
+};
 export type NewRevision =
   | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; note?: string }
   | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; note?: string };
@@ -83,6 +95,7 @@ CREATE TABLE IF NOT EXISTS runs (
   summary     TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_by_agent ON runs(agent_id, started_at);
+CREATE INDEX IF NOT EXISTS runs_by_state ON runs(state);
 CREATE TABLE IF NOT EXISTS archive_changes (
   seq      INTEGER PRIMARY KEY,
   kind     TEXT NOT NULL CHECK (kind IN ('agent', 'run')),
@@ -109,8 +122,8 @@ BEGIN SELECT RAISE(ABORT, 'an import is written once'); END;
 CREATE TRIGGER IF NOT EXISTS imported_runs_stay_ended BEFORE UPDATE ON runs WHEN EXISTS (SELECT 1 FROM run_imports i WHERE i.run_id = OLD.id)
 BEGIN SELECT RAISE(ABORT, 'an imported run is read-only'); END;`;
 
-// archive_changes and run_imports came after version 1 without a new version: an earlier version opens the file and
-// ignores the tables. run_imports' trigger on runs is in the file, so that version still cannot change an imported run.
+// archive_changes, runs_by_state and run_imports came after version 1 without a new version: an earlier version opens
+// the file and ignores them. run_imports' trigger on runs is in the file, so that version still cannot change an imported run.
 const STORE_VERSION = 1;
 const SQLITE_READONLY_ROLLBACK = 776;
 const SQLITE_CONSTRAINT = 19;
@@ -126,6 +139,7 @@ const checkId = (id: unknown, what: string): string => {
   return id;
 };
 const revisionHash = (r: { agent: string; parent: string | null; kind: string; body: unknown }) => sha256(canonical({ agent: r.agent, parent: r.parent, kind: r.kind, body: r.body }));
+const RUN_STATES: readonly RunState[] = ["running", "completed", "failed", "stopped", "escalated"];
 
 const importedFromOf = (r: Record<string, unknown>): { importedFrom?: ImportedFrom } =>
   r.import_source ? { importedFrom: { source: r.import_source as ImportSource, session: r.import_session as string } } : {};
@@ -229,6 +243,48 @@ export class AgentStoreReader {
       FROM runs r JOIN agents a ON a.id = r.agent_id JOIN revisions v ON v.id = r.revision_id ${imported.join} WHERE r.id = :id`).get({ id: checkId(runId, "run") }) as Record<string, unknown> | undefined;
     if (!r) return undefined;
     return { id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}), agentName: r.agent_name as string, ...(r.note ? { note: r.note as string } : {}), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}), ...importedFromOf(r) };
+  }
+  /** Counts and cost sums over the whole store, each an SQL aggregate over `store.sqlite`'s indexes, read in one
+   *  snapshot; nothing under `runs/` is opened. */
+  stats(): StoreStats {
+    const notArchived = `${this.runArchivedAtSql()} IS NULL`;
+    this.db.exec("BEGIN");
+    try {
+      const agents = this.db.prepare(`SELECT a.id, a.name, ${this.archivedAtSql("agent", "a.id")} IS NOT NULL AS archived FROM agents a ORDER BY a.name, a.id`).all() as Array<Record<string, unknown>>;
+      // One pass over runs_by_agent: a run's own archive state is a group key, so it is looked up once per run.
+      const groups = this.db.prepare(`SELECT agent_id, archived, COUNT(*) AS total, ${RUN_STATES.map((state) => `SUM(state = '${state}') AS ${state}`).join(", ")},
+          SUM(CASE WHEN state <> 'running' THEN cost_usd END) AS cost_usd, SUM(state <> 'running' AND cost_usd IS NOT NULL) AS known
+        FROM (SELECT r.agent_id, r.state, r.cost_usd, ${this.archivedAtSql("run", "r.id")} IS NOT NULL AS archived FROM runs r) GROUP BY agent_id, archived`).all() as Array<Record<string, unknown>>;
+      const running = (this.db.prepare(`SELECT r.id FROM runs r WHERE r.state = 'running' AND ${notArchived}`).all() as Array<{ id: string }>).map((r) => r.id);
+      const counts = (r?: Record<string, unknown>): RunCounts => ({ total: Number(r?.total ?? 0), ...(Object.fromEntries(RUN_STATES.map((state) => [state, Number(r?.[state] ?? 0)])) as Record<RunState, number>) });
+      const shown = new Map<string, Record<string, unknown>>();
+      const hidden = new Map<string, number>();
+      for (const g of groups) {
+        if (g.archived) hidden.set(g.agent_id as string, Number(g.total));
+        else shown.set(g.agent_id as string, g);
+      }
+      const stats: StoreStats = { agents: 0, archivedAgents: 0, runs: counts(), archivedRuns: 0, cost: { usd: null, known: 0, unknown: 0 }, byAgent: [], running };
+      for (const a of agents) {
+        const g = shown.get(a.id as string);
+        const runs = counts(g);
+        stats.archivedRuns += hidden.get(a.id as string) ?? 0;
+        if (a.archived) {
+          stats.archivedAgents += 1;
+          stats.archivedRuns += runs.total;
+          continue;
+        }
+        const known = Number(g?.known ?? 0);
+        stats.agents += 1;
+        stats.byAgent.push({ id: a.id as string, name: a.name as string, runs: runs.total });
+        for (const key of ["total", ...RUN_STATES] as const) stats.runs[key] += runs[key];
+        if (known > 0) stats.cost.usd = (stats.cost.usd ?? 0) + Number(g!.cost_usd);
+        stats.cost.known += known;
+        stats.cost.unknown += runs.total - known;
+      }
+      return stats;
+    } finally {
+      this.db.exec("COMMIT");
+    }
   }
   /** One agent with every revision and its body, newest first, `current` marked: one statement. Each revision is hash-verified as `readRevision` verifies it. Undefined for an unknown agent. */
   readAgent(agentId: string): { agent: Agent; revisions: Array<Revision & { current: boolean }> } | undefined {

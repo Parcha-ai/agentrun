@@ -1,0 +1,53 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents/01a18490-2e24-7b3f-890e-91b7fd0dbd78/revisions"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "revisions": [
+      {
+        "revision": "55dd5d20803a2d690898bff78cbab1782729c036459f131b9efaa79e1151109b",
+        "version": 2,
+        "parent": "509fef8eb74e9ddd9194d7dad6c4ee217be5ee61e552989abf62891548829a28",
+        "kind": "agentic",
+        "current": true,
+        "note": "Quote the line",
+        "created_at": "2026-10-28T22:10:04.160Z",
+        "definition": {
+          "id": "01a18490-2e24-7b3f-890e-91b7fd0dbd78",
+          "version": 2,
+          "name": "Changelog checker",
+          "description": "Checks a changelog entry against the merged change.",
+          "instructions": "Read the change and its changelog entry. Say what the entry gets wrong, in one list. Quote the line you mean.",
+          "harness": "pi",
+          "skills": [],
+          "tools": []
+        }
+      },
+      {
+        "revision": "509fef8eb74e9ddd9194d7dad6c4ee217be5ee61e552989abf62891548829a28",
+        "version": 1,
+        "parent": null,
+        "kind": "agentic",
+        "current": false,
+        "note": null,
+        "created_at": "2026-10-28T22:10:04.013Z",
+        "definition": {
+          "id": "01a18490-2e24-7b3f-890e-91b7fd0dbd78",
+          "version": 1,
+          "name": "Changelog checker",
+          "description": "Checks a changelog entry against the merged change.",
+          "instructions": "Read the change and its changelog entry. Say what the entry gets wrong, in one list.",
+          "harness": "pi",
+          "skills": [],
+          "tools": []
+        }
+      }
+    ],
+    "next_cursor": null
+  }
+}

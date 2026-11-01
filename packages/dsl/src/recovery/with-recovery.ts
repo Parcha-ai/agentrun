@@ -1,11 +1,11 @@
+import { chargedCost, DecisionProviderError } from "../decision-provider.js";
 import { validateAnswers } from "../system-one.js";
 import { EscalationSignal, type WorkflowDeps } from "../workflow.js";
 import { canonicalHash } from "./canonical-hash.js";
 import type { openRecovery, RecoveryEffectParams } from "./driver.js";
 
-/** The escalation kind of a run whose decision was asked by an earlier process and never answered there: it is routed to
- *  review instead of being asked, and paid for, again. Its stage is `decision`. */
-export const DECISION_INTERRUPTED = "decision_interrupted";
+import { DECISION_INTERRUPTED } from "../decision-receipts.js";
+export { DECISION_INTERRUPTED };
 
 /** A recovery driver, as `openRecovery` returns it. */
 export type RecoveryDriver = Awaited<ReturnType<typeof openRecovery>>;
@@ -63,7 +63,7 @@ export function withRecovery(driver: RecoveryDriver, deps: RecoveryAdapters, opt
       if (decided) return decided.result as Awaited<ReturnType<typeof runJudge>>;
       await driver.seam();
       const decisionId = params.decisionId ?? canonicalHash(["decision-request", params.executionPath, params.kind, params.questions, params.state]);
-      const open = driver.admitDecision(params.executionPath, { decision_id: decisionId, kind: params.kind, label: params.label, model: null,
+      const open = driver.admitDecision(params.executionPath, { decision_id: decisionId, kind: params.kind, label: params.label, model: params.model ?? null,
         request_sha256: canonicalHash({ kind: params.kind, label: params.label, state: params.state, questions: params.questions }) });
       if (open) {
         // An earlier process asked and its answer never reached a receipt: never asked again, booked once at an unknown
@@ -80,6 +80,19 @@ export function withRecovery(driver: RecoveryDriver, deps: RecoveryAdapters, opt
         let result: Awaited<ReturnType<typeof runJudge>>;
         try { result = await runJudge(params); }
         catch (error) {
+          // A request sent whose outcome was lost may have been answered and billed: it is interrupted, never asked again,
+          // and its estimate (or an unknown cost, which makes the spend read incomplete) is booked with that outcome.
+          const charge = chargedCost(error);
+          if (error instanceof DecisionProviderError && error.code === "outcome_unknown") {
+            driver.decisionEnded(params.executionPath, decisionId, "interrupted", charge ?? null, () => driver.recordQuestionSpend(charge ?? null));
+            throw error;
+          }
+          // An answer rejected after it was paid for failed, and its cost (or an unknown one) is booked with that outcome:
+          // the next process asks again.
+          if (charge !== undefined) {
+            driver.decisionEnded(params.executionPath, decisionId, "failed", charge, () => driver.recordQuestionSpend(charge));
+            throw error;
+          }
           // A cut call (a cancel, the run's failure) has no outcome: a later open finds it asked and unanswered. A call
           // that ended on its own failed, and the next process asks again.
           if (!driver.signal.aborted && !params.signal?.aborted) driver.decisionEnded(params.executionPath, decisionId, "failed", null);

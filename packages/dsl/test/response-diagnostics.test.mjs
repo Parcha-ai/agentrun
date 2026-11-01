@@ -38,7 +38,7 @@ test('valid primitive identity, fractional scores, arbitrary keys and tolerance 
   const answers = { [secret]: answer(), score: score(), n: { type: 'noul', noul: 0 } };
   const before = structuredClone(answers); validateAnswers(questions, answers); assert.deepEqual(answers, before);
   // Full-precision values carry no rounding allowance: the score must match Σ level·p within 1e-5.
-  const preciseScore = () => ({ ...score(), score: 0.3877, probabilities: { 0: 0.6123, 1: 0.3877 } });
+  const preciseScore = () => ({ ...score(), score: 0.38765433, probabilities: { 0: 0.61234567, 1: 0.38765433 } });
   for (const delta of [-0.000009, 0.000009]) {
     const s = preciseScore(); s.score += delta; validateAnswers({ x: scoreQuestion }, { x: s });
   }
@@ -47,7 +47,7 @@ test('valid primitive identity, fractional scores, arbitrary keys and tolerance 
     assert.throws(() => validateAnswers({ x: scoreQuestion }, { x: s }), e => e.responseReason === 'score_consistency');
   }
   // Full-precision values carry no rounding allowance: the sum must be 1 within 1e-5.
-  const precise = () => ({ ...answer(), probabilities: { yes: 0.6123, no: 0.3877 } });
+  const precise = () => ({ ...answer(), probabilities: { yes: 0.61234567, no: 0.38765433 } });
   for (const delta of [-0.000009, 0.000009]) {
     const a = precise(); a.probabilities.no += delta; validateAnswers({ x: question }, { x: a });
   }
@@ -91,6 +91,13 @@ test('two-place rounding drift from System One is accepted without rewriting the
   const flat = p => ({ type: 'choice', choice: 'o0', confidence: 0, probabilities: Object.fromEntries(Object.keys(wide).map(k => [k, p])) });
   assert.throws(() => validateAnswers({ x: { type: 'choice', instructions: 'Fictional', criteria: wide } }, { x: flat(0.009) }), e => e.responseReason === 'probability_mass');
   validateAnswers({ x: { type: 'choice', instructions: 'Fictional', criteria: wide } }, { x: flat(0.005) });
+});
+
+test('four-place rounding drift (an OpenRouter Decisions model) is accepted; a sum no four-place rounding explains is not', () => {
+  // Verbatim cloudflare/clef answer through OpenRouter, 2026-10-30: the probabilities sum to 0.9999.
+  const risk = { type: 'choice', instructions: 'What risk tier fits this merchant?', criteria: { low: 'Low risk', medium: 'Medium risk', high: 'High risk' } };
+  validateAnswers({ risk }, { risk: { type: 'choice', choice: 'medium', probabilities: { low: 0.2967, medium: 0.6661, high: 0.0371 }, confidence: 0.2997 } });
+  assert.throws(() => validateAnswers({ risk }, { risk: { type: 'choice', choice: 'medium', probabilities: { low: 0.2967, medium: 0.6651, high: 0.0371 }, confidence: 0.2997 } }), e => e.responseReason === 'probability_mass');
 });
 
 test('a Score rounded to two places is accepted when some unrounded distribution explains it', () => {

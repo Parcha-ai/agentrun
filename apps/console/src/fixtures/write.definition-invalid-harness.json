@@ -1,0 +1,37 @@
+{
+  "request": {
+    "method": "PUT",
+    "path": "/v2/agents/01a18490-2e24-7b3f-890e-91b7fd0dbd78/definition",
+    "body": {
+      "definition": {
+        "version": 3,
+        "name": "Changelog checker",
+        "description": "Checks a changelog entry against the merged change.",
+        "instructions": "Read the change and its changelog entry. Say what the entry gets wrong, in one list.",
+        "skills": [],
+        "tools": [],
+        "harness": "hermes"
+      }
+    },
+    "if_match": "\"509fef8eb74e9ddd9194d7dad6c4ee217be5ee61e552989abf62891548829a28\""
+  },
+  "status": 422,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "code": "input_invalid",
+      "message": "definition.harness is one of pi, claude-agent, codex",
+      "retryable": false,
+      "request_id": "req_8690656aa1ec917d",
+      "fields": [
+        {
+          "field": "definition.harness",
+          "reason": "not_an_option",
+          "message": "definition.harness is one of pi, claude-agent, codex"
+        }
+      ]
+    }
+  }
+}

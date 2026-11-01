@@ -24,6 +24,51 @@ export default function reply(context, faux) {
   // Files the page as evidence with browser_read, then delivers the record.
   const read = first.includes("Read the example page");
   if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
+    // A node that says whether anything it can reach holds a decision key (Jev's or Parallel's): this process's
+    // environment (as its tools get it), the environment the kernel shows, the descriptor the server hands the keys on,
+    // and a program it starts.
+    // "..., once <file> exists." holds it until the test has made that file.
+    const canary = JSON.stringify(context);
+    if (canary.includes("Report the canary")) {
+      if (answered) return faux.message("Submitted.");
+      const gate = /Report the canary once (\S+?) exists\./.exec(canary)?.[1];
+      return (async () => {
+        const [{ CANARY: JEV }, { CANARY: PARALLEL }, { readFile }, { readFileSync, readlinkSync }, { spawnSync }] = await Promise.all([import("./faux-jev.mjs"), import("./faux-parallel.mjs"), import("node:fs/promises"), import("node:fs"), import("node:child_process")]);
+        const holds = (text) => typeof text === "string" && (text.includes(JEV) || text.includes(PARALLEL));
+        if (gate) await untilExists(gate);
+        const environ = await readFile("/proc/self/environ", "utf8").catch(() => "");
+        const fd = process.env.AGENTRUN_SERVE_DECISION_KEY_FD;
+        const sub = spawnSync("sh", ["-c", `${fd ? `[ -e /proc/$$/fd/${fd} ] && echo FD_OPEN; ` : ""}env`], { encoding: "utf8" });
+        // Whether the descriptor is a Unix socket, as the handed one is (one end of a socket pair): Node opens 3 to about
+        // 20 for itself, none a Unix socket, and a closed low number is soon one of them. Here and in a Node program it starts.
+        const handedSocket = (fd) => {
+          try {
+            const inode = /^socket:\[(\d+)\]$/.exec(readlinkSync(`/proc/self/fd/${fd}`))?.[1];
+            return inode !== undefined && readFileSync("/proc/self/net/unix", "utf8").split("\n").some((line) => line.trim().split(/\s+/)[6] === inode);
+          } catch {
+            return false;
+          }
+        };
+        // And a Node program, as a tool's effect would start one: what its environment holds and whether it got the
+        // descriptor.
+        const node = spawnSync(process.execPath, ["-e", `const { readFileSync, readlinkSync } = require("fs"); process.stdout.write(JSON.stringify({ leaked: Object.values(process.env).some((v) => v && (v.includes(${JSON.stringify(JEV)}) || v.includes(${JSON.stringify(PARALLEL)}))), fd_open: ${fd ? `(${handedSocket})(${fd})` : "false"} }))`], { encoding: "utf8" });
+        const nodeSaw = JSON.parse(node.stdout || "{}");
+        // The env this process gives its tools (ToolHost.env, made by withSecrets from the secrets fd 3 handed over):
+        // the module the run preloaded, so the same instance and the same secrets.
+        const secrets = await import(new URL("../../dist/secrets.js", import.meta.url).href);
+        const hostEnv = secrets.withSecrets(process.env);
+        return faux.message(faux.toolCall("submit", {
+          leaked: Object.values(process.env).some(holds) || holds(environ),
+          key_set: process.env.TYPESAFE_API_KEY !== undefined || process.env.PARALLEL_API_KEY !== undefined,
+          fd_open: fd ? handedSocket(fd) : false,
+          sub_leaked: holds(sub.stdout),
+          sub_fd_open: sub.stdout.includes("FD_OPEN"),
+          node_leaked: nodeSaw.leaked !== false,
+          node_fd_open: nodeSaw.fd_open !== false,
+          host_env_leaked: ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"].some((name) => holds(hostEnv[name]) || holds(secrets.secret(name))),
+        }), { stopReason: "toolUse" });
+      })();
+    }
     if ((browse || read) && results === 0) return faux.message(faux.toolCall(read ? "browser_read" : "snapshot", {}), { stopReason: "toolUse" });
     if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");

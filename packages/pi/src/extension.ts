@@ -8,8 +8,8 @@ import {
   createGrepToolDefinition, createFindToolDefinition, createLsToolDefinition,
   VERSION as PI_VERSION, type ExtensionAPI, type ExtensionContext, type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
-import { formatWorkflowTree, inspectWorkflow, AUTHOR_SKILL_NAME, type WorkflowDeps } from '@parcha/agentrun-dsl';
-import { createJevRunner, jevProviderFromEnv } from '@parcha/agentrun-jev';
+import { formatWorkflowTree, inspectWorkflow, judgeFromProviders, AUTHOR_SKILL_NAME, type WorkflowDeps } from '@parcha/agentrun-dsl';
+import { jevProvider, jevProviderFromEnv } from '@parcha/agentrun-jev';
 import { createPiHostRunner, PI_MODEL_SETUP_MESSAGE } from './host-session.js';
 import { piHostLine } from './pi-host.js';
 import { workflowToolContext } from './tool-context.js';
@@ -312,14 +312,20 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       onEvent: event => { if (event.type === 'tool_execution_start') countTool(); },
     }) : undefined;
     let judge: NonNullable<WorkflowDeps['runJudge']> | undefined;
+    let decisionProviders: WorkflowDeps['decisionProviders'];
     if (adapters.includes('runJudge')) {
       if (configuration.createJudge) {
         judge = configuration.createJudge({ signal });
         if (typeof judge !== 'function') throw new Error('Host judge factory must return a runner');
       } else {
         // The provider is the one the environment's keys select, as for the Jev adapter: OpenRouter only when its key is the one set.
-        try { judge = createJevRunner({ signal, maxAttempts: 1, provider: jevProviderFromEnv(process.env) }); }
+        let jev;
+        try { jev = jevProvider({ signal, provider: jevProviderFromEnv(process.env) }); }
         catch { throw new OperatorError('AgentRun requires Jev configuration for this workflow. Set TYPESAFE_API_KEY (and, for a gateway, TYPESAFE_BASE_URL), or OPENROUTER_API_KEY for Jev through OpenRouter, before running.'); }
+        // Jev is this host's one decision provider. The run's checks get the same registry as its judge, so a node naming
+        // another provider is refused before the run, and a node's timeoutMs bounds its request.
+        decisionProviders = { providers: { jev }, default: 'jev' };
+        judge = judgeFromProviders(decisionProviders);
       }
     }
     return {
@@ -333,6 +339,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         if (!judge) throw new OperatorError('Workflow Jev adapter was not admitted');
         return judge(request);
       },
+      ...(decisionProviders ? { decisionProviders } : {}),
       runEffect: async ({ node, input, signal: effectSignal }) => {
         countTool();
         const tool = tools.find(tool => tool.name === node.tool);

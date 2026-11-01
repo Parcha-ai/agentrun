@@ -547,6 +547,13 @@ once, like revisions: the database refuses an `UPDATE` or a `DELETE`. An item's 
 earlier version wrote opens and reads with nothing archived, gets the table from the first `openStore`, and an earlier version still
 opens a store that has it and ignores it.
 
+`store.stats()` counts the whole store in one read: agents, runs by state and in all, each agent (by name, then id) with
+its run count, the cost summed over the runs that ended with one (`usd`, null when none did, never 0) beside how many runs
+have no known cost (running, or ended without one), and the ids of the running runs. What is archived is left out of every
+number but `archivedAgents` and `archivedRuns`. Each number is an SQL aggregate over `store.sqlite` through its indexes
+(`runs_by_agent`, `runs_by_state`); nothing under `runs/` is opened. `runs_by_state` came, like `archive_changes`,
+without a new store version.
+
 A session another harness ran on this machine comes in as a run that has already ended:
 `store.importRun({ agent, revision, state, startedAt, endedAt, costUsd?, summary?, source, session })` writes its `runs` row at the
 source's own times and its `run_imports` row (the source, `claude-code`, `codex` or `pi`, and the session's own id) in one
@@ -629,7 +636,7 @@ exists to check them. [Errors](#errors) says what each code means.
 | `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })` | The session vault: `capture`, `restore`, `forget`, `forgetAll`, `list` and `handedOut` ([Saved browser sessions](#saved-browser-sessions-the-vault)) | `invalid`: a host key that is not `{ id, wrap, unwrap }`, a cap that is not above 0 and at most 24 hours, an empty `runId`; its calls: a bad session key, origin, captured state or `capturedAt`. `key`: a host key that does not open the vault. `busy`: with `runId`, another live run holds the session's save lease. `format`: a key file or a saved session that does not read or decrypt, or a saved session whose row's origins or `capturedAt` were changed. A refused call writes nothing |
 | `localHostKey(id, bytes)` | A `HostKey` held in this process: 32 bytes, AES-256-GCM | `invalid`: an id that is not letters, digits, `.`, `_`, `:` or `-`, or not 32 bytes |
 | `VAULT_KEYS_FILE`, `MAX_SESSION_COOKIE_AGE_MS` | `vault.keys`, and 24 hours | |
-| `openStore(dir, { busyTimeoutMs? })` | The agent store in `dir`, created if missing (`busyTimeoutMs`: how long a call waits synchronously for another connection to let go of the store before it throws SQLite's busy error, default 5000; opening it always waits up to 5 s): `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent?, ifCurrent? })` (`ifCurrent`, the current revision the caller read or null, makes it a compare-and-swap), `setCurrent(agent, revision)`, `setArchived(kind, id, archived)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id. `stale`: the agent's current revision is not `ifCurrent`, checked in the commit's own transaction; nothing is written |
+| `openStore(dir, { busyTimeoutMs? })` | The agent store in `dir`, created if missing (`busyTimeoutMs`: how long a call waits synchronously for another connection to let go of the store before it throws SQLite's busy error, default 5000; opening it always waits up to 5 s): `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent?, ifCurrent? })` (`ifCurrent`, the current revision the caller read or null, makes it a compare-and-swap), `setCurrent(agent, revision)`, `setArchived(kind, id, archived)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `stats()`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id. `stale`: the agent's current revision is not `ifCurrent`, checked in the commit's own transaction; nothing is written |
 | `openStoreReader(dir, { busyTimeoutMs? })` | The same reads on a read-only handle (`busyTimeoutMs` as `openStore`'s) (`store.sqlite` in place, no copy), plus `runStorePath(runId)`; it writes nothing | `missing`: no `store.sqlite` in `dir`; `busy`: a store with an unfinished write; `format`: a store a newer version wrote |
 | `AgentStore`, `AgentStoreReader`, `STORE_FILE` | The two classes `openStore` and `openStoreReader` return, and `store.sqlite` | |
 | `AgentHomeError` | The one error class of this package ([Errors](#errors)) | |
@@ -649,7 +656,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
-- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.
@@ -702,14 +709,15 @@ It loads `@parcha/agentrun-dsl` and `@parcha/agentrun-pi` only when one of its f
 
 | Export | Does |
 |---|---|
-| `checkWorkflowBody(body)` | Refuses, as `invalid`, a workflow revision's body a store must not commit, naming the node's path and never a value from the body |
+| `checkWorkflowBody(body)` | Refuses, as `invalid`, a workflow revision's body a store must not commit, naming the node's path; the error's `issues` are `workflowIssues`' list |
+| `workflowIssues(workflow, tools?)` | Every issue a save would refuse, as `{ issues: [{ path, code, message }], warnings }`: the DSL's validation (code not run), a call node's tool not in `tools` (`TOOL_NOT_LISTED`; `tools` absent checks none), and what the durable runner refuses before any step. It writes nothing |
 | `runWorkflowRevision(options)` | Runs the revision's workflow as one durable workflow task on the run's store and waits: `{ outcome, carry }`, `startWorkflowRevision` then `workflowCarry` |
 | `startWorkflowRevision(options)` | The first half: starts the run's workflow task and waits for its `outcome`, reading no file. A workflow that uses a tool the host does not register, or does not take the input, is refused with no task; the run reopened under another revision is refused (`RUN_STORE_BINDING_MISMATCH`); reopened as itself it resumes, or answers how it ended |
 | `workflowCarry(run, outcome)` | The second half: `{ state, summary }` for the store's `carryBack`, read with `readWorkflowRun`. It fails while another connection holds the store file exclusively, as a `pi-durable-disk run` process does until it exits |
 | `readWorkflowRun(run)` | The run as its store shows it, read-only: no write, no lock, no Harness. With `run.state` (the runs row's) ended and no write-ahead log beside the store, it opens the store as an immutable file and makes no file in the run's directory. Working means live: an ended run's interrupted nodes read `stopped`, or `failed` when the run failed. A run in the driver's keyed layout is refused as `format` |
 | `revisionGraph(revision, parent?)` | The revision's graph (the DSL's `workflowGraph`), and the DSL's `graphDiff` from its parent when the parent is a workflow revision; an agentic parent, or none, gives no diff |
 
-Its types: `WorkflowBody`, `WorkflowRunStart` (the part of a store's started run it reads), `WorkflowRunView`,
+Its types: `WorkflowBody`, `WorkflowIssue`, `WorkflowRunStart` (the part of a store's started run it reads), `WorkflowRunView`,
 `RunState`, `RunNodeState` (the DSL's `NodeState` and `stopped`), and the DSL's `WorkflowGraph`, `GraphDiff`, `NodeState`
 and `WorkflowOutcome`.
 

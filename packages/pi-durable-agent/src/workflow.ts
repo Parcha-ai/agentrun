@@ -37,24 +37,47 @@ export async function checkWorkflowBody(body: unknown): Promise<void> {
   if (!isRecord(body) || !isRecord(body.workflow)) throw invalid("a workflow revision's body must be an object holding its workflow as an object");
   const { tools = [] } = body;
   if (!Array.isArray(tools) || !tools.every((tool) => typeof tool === "string")) throw invalid("a workflow revision's tools must be a list of tool names");
-  const workflow = body.workflow as Workflow;
+  const { issues } = await workflowIssues(body.workflow, tools);
+  const issue = issues[0];
+  if (!issue) return;
+  // Every issue rides on the refusal, each with its message, for a caller that shows them by path.
+  const message = issue.code === "TOOL_NOT_LISTED" ? `the call node at ${issue.path} uses a tool the revision does not list`
+    : issue.code === "DUPLICATE_LABEL" ? "the workflow names two nodes with one label, and the durable runner needs each label once"
+    : issue.code.startsWith("DURABLE_") ? `the durable runner refuses the workflow before any step: ${issue.code.slice("DURABLE_".length)}`
+    : `the workflow is not valid at ${issue.path || "its root"}: ${issue.code}`;
+  throw Object.assign(invalid(message), { issues });
+}
+
+/** One thing wrong with a workflow, at its JSON Pointer path (empty for its root). */
+export type WorkflowIssue = { path: string; code: string; message: string };
+
+/**
+ * Every issue a save of `workflow` as a workflow revision listing `tools` would refuse, and the DSL's warnings: the DSL's
+ * structural validation (code not run, no input), a call node `via: "tool"` whose tool is not in `tools`
+ * (`TOOL_NOT_LISTED`; `tools` undefined lists every tool), and what the durable runner refuses before any step (only
+ * once the DSL found nothing). It writes nothing.
+ */
+export async function workflowIssues(workflow: unknown, tools?: readonly string[]): Promise<{ issues: WorkflowIssue[]; warnings: string[] }> {
+  if (!isRecord(workflow)) return { issues: [{ path: "", code: "NODE_FIELD_INVALID", message: "the workflow must be an object" }], warnings: [] };
   const { inspectWorkflow, validateWorkflow } = await import("@parcha/agentrun-dsl");
-  const checked = validateWorkflow(workflow, { executeCode: false });
-  if (!checked.ok) {
-    const issue = checked.issues[0];
-    throw invalid(`the workflow is not valid at ${issue?.path || "its root"}: ${issue?.code ?? "invalid"}`);
-  }
-  for (const entry of inspectWorkflow(workflow).nodes) {
-    if (entry.kind !== "call") continue;
-    const node = entry.path.split("/").slice(1).reduce<any>((at, part) => at?.[part.replace(/~1/g, "/").replace(/~0/g, "~")], workflow);
-    if (node?.via === "tool" && !tools.includes(node.tool)) throw invalid(`the call node at ${entry.path} uses a tool the revision does not list`);
+  const checked = validateWorkflow(workflow as Workflow, { executeCode: false });
+  const issues: WorkflowIssue[] = checked.ok ? [] : checked.issues.map(({ path, code, message }) => ({ path, code, message }));
+  const warnings = [...((checked as { warnings?: string[] }).warnings ?? [])];
+  if (issues.length) return { issues, warnings };
+  if (tools) {
+    for (const entry of inspectWorkflow(workflow as Workflow).nodes) {
+      if (entry.kind !== "call") continue;
+      const node = entry.path.split("/").slice(1).reduce<any>((at, part) => at?.[part.replace(/~1/g, "/").replace(/~0/g, "~")], workflow);
+      if (node?.via === "tool" && !tools.includes(node.tool)) issues.push({ path: entry.path, code: "TOOL_NOT_LISTED", message: `call node "${node.label}" uses the tool ${node.tool}, which the revision does not list in its tools` });
+    }
   }
   // What the durable runner refuses before any step (each label once), asked of the runner itself on a memory store.
   const { memoryStore, openRecovery } = await import("@parcha/agentrun-dsl/recovery");
-  const driver = await openRecovery(memoryStore(), workflow, { key: "check" });
+  const driver = await openRecovery(memoryStore(), workflow as Workflow, { key: "check" });
   const refusal = driver.preStepRefusal;
   await driver.close();
-  if (refusal) throw invalid(refusal.kind === "duplicate_label" ? "the workflow names two nodes with one label, and the durable runner needs each label once" : `the durable runner refuses the workflow before any step: ${refusal.code}`);
+  if (refusal) issues.push(refusal.kind === "duplicate_label" ? { path: "", code: "DUPLICATE_LABEL", message: refusal.message } : { path: "", code: `DURABLE_${refusal.code}`, message: refusal.message });
+  return { issues, warnings };
 }
 
 /** How a run of a workflow revision ended, as the store's `carryBack` takes it. */
@@ -131,12 +154,15 @@ export async function workflowCarry(run: Pick<WorkflowRunStart, "runId" | "store
   return { state, summary: summary.filter(Boolean).join("; ") || `${state} before any node completed` };
 }
 
+const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
+
 /** A node's state in a run: the DSL's, and `stopped` for a node an ended run interrupted. */
 export type RunNodeState = NodeState | "stopped";
 
 /** A workflow run as its store shows it: the workflow's graph and each node's state; once the run ended, how it ended,
- *  the node it escalated at (its path in the graph and its label), and the workflow's output when it completed. */
-export type WorkflowRunView = { graph: WorkflowGraph; status: Record<string, RunNodeState>; outcome?: RunState; escalatedAt?: { path: string; label: string }; output?: unknown };
+ *  the node it escalated at (its path in the graph and its label), the escalation's kind, label and summary as its
+ *  escalate node wrote them, and the workflow's output when it completed. */
+export type WorkflowRunView = { graph: WorkflowGraph; status: Record<string, RunNodeState>; outcome?: RunState; escalatedAt?: { path: string; label: string }; escalation?: { kind: string | null; label: string | null; summary: string | null }; output?: unknown };
 
 /** A workflow revision's graph, for a page, and, when its parent is a workflow revision too, what changed from it (the
  *  DSL's `graphDiff`). An agentic parent, or none, gives no diff. */
@@ -162,7 +188,7 @@ export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "sto
   // The run's task holds how it ended: its id is on the run's entry, its record in pi-durable's task table. The task is
   // read before the journal, so a task found terminal means the journal read after it is final.
   const task = durableDoc<{ task?: unknown }>(run.storePath, "agentrun.task", run.runId, { immutable })?.task;
-  let ended: { status?: string; result?: { status?: string; output?: unknown; escalation?: { executionPath?: unknown } } } | undefined;
+  let ended: { status?: string; result?: { status?: string; output?: unknown; escalation?: { executionPath?: unknown; kind?: unknown; label?: unknown; summary?: unknown } } } | undefined;
   if (typeof task === "number") {
     const db = new DatabaseSync(immutable ? `${pathToFileURL(run.storePath).href}?immutable=1` : run.storePath, { readOnly: true, timeout: 5000 });
     try {
@@ -188,6 +214,7 @@ export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "sto
     graph, status,
     ...(outcome ? { outcome } : {}),
     ...(fired ? { escalatedAt: { path: fired.path, label: fired.label } } : {}),
+    ...(result?.escalation ? { escalation: { kind: text(result.escalation.kind), label: text(result.escalation.label), summary: text(result.escalation.summary) } } : {}),
     ...(result?.status === "complete" ? { output: result.output } : {}),
   };
 }
