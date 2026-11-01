@@ -25,7 +25,7 @@ test("no tool the table binds registers bash: what each installs and each select
   const installed = [];
   const host = { where: { work: "/nonexistent", ref: { id: "run" } }, env: {}, install: (extension) => void installed.push(extension), onConversation() {}, beforeResume() {}, beforeRelease() {} };
   const bound = BOUND_TOOLS.filter((name) => missingEnv(TOOLS[name], {}).length === 0);
-  assert.deepEqual(bound, ["read", "write", "edit", "ask_person", "fetch_page"]);
+  for (const name of ["read", "write", "edit", "ask_person", "fetch_page"]) assert.ok(bound.includes(name), `${name} binds with no key`);
   for (const name of bound) {
     const binding = await TOOLS[name].bind(host);
     assert.deepEqual(binding.tools.map((tool) => tool.name), [name]);

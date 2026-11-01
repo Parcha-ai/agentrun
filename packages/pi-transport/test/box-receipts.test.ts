@@ -200,6 +200,9 @@ describe("box receipts", () => {
 			const ledger = boxReceipts({ prices: PRICES, write: (receipt) => made.written.push(receipt) });
 			const once = ledger.wrap(made.raw);
 			expect(ledger.wrap(once)).toBe(once);
+			// What a provider says it takes stays readable through the ledger.
+			expect(once.mounts).toBe(made.raw.mounts);
+			expect(ledger.wrap({ ...made.raw, mounts: true }).mounts).toBe(true);
 			const box = getOrThrow(await ledger.wrap(once).create({ maxLifetimeMs: 60_000 }, context));
 			const foreign = getOrThrow(await made.raw.create({ maxLifetimeMs: 60_000 }, context));
 			expect(ledger.labelOf(made.raw.name, box.id)).toBe("box-1");

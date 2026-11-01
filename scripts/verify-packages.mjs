@@ -22,6 +22,9 @@ const exec = promisify(execFile);
 const piFlag = process.argv.indexOf('--pi');
 const legPi = piFlag === -1 ? undefined : process.argv[piFlag + 1];
 assert.ok(piFlag === -1 || /^\d+\.\d+\.\d+$/.test(legPi ?? ''), `--pi takes a plain x.y.z version, got ${legPi}`);
+// `--console`: the server's packed dist must carry the console (apps/console, built before the server's build, which copies
+// it in). Its files are scanned like every packed file either way.
+const requireConsole = process.argv.includes('--console');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const receiptDir = join(root, '.release');
 const [major, minor] = process.versions.node.split('.').map(Number);
@@ -402,6 +405,11 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
   assert.deepEqual(smoke, runtimeSmokeChecks);
   receipt.runtimeSmoke = smoke;
   assert.match((await offlineNode(['node_modules/@parcha/agentrun-serve/dist/cli.js', '--help'])).stdout, /^usage: agentrun-serve /, 'the installed agentrun-serve bin prints its usage');
+  if (requireConsole) {
+    const index = await readFile(join(consumer, 'node_modules/@parcha/agentrun-serve/dist/console/index.html'), 'utf8').catch(() => '');
+    assert.match(index, /\ssrc="\.\/assets\/[^"]+\.js"/, 'the installed agentrun-serve has the console, dist/console/index.html');
+    receipt.checks.push('The installed agentrun-serve carries the console (dist/console/index.html); its files passed the same scans.');
+  }
   assert.match((await offlineNode(['node_modules/@parcha/agentrun-learn/dist/cli.js', '--help'])).stdout, /^usage: agentrun-learn check /, 'the installed agentrun-learn bin prints its usage');
   // The reference example runs in the consumer as a stranger would run it: its pages are served by the browser's fake backend on
   // loopback, so its preload admits loopback only.

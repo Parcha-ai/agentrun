@@ -17,10 +17,10 @@ export const FETCH_PAGE_TOOL = "fetch_page";
 export const FAUX_WEB_ENV = "AGENTRUN_SERVE_FAUX_WEB";
 export const TEXT_CAP = 60_000;
 export const LINKS_CAP = 200;
-const TITLE_CAP = 500;
-const TIMEOUT_MS = 30_000;
+export const TITLE_CAP = 500;
+export const TIMEOUT_MS = 30_000;
 
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 /** The page at `url` as a Page. `options` are the guard's resolver and fetch, for a test; a signal ends it early. */
 export async function fetchPage(url: unknown, options: Omit<PublicFetchOptions, "maxBytes"> = {}): Promise<Page> {
@@ -48,17 +48,20 @@ export async function fetchOptions(env: NodeJS.ProcessEnv, fauxEnv: string): Pro
   return ((await import(pathToFileURL(faux).href)) as { default: () => Omit<PublicFetchOptions, "maxBytes" | "signal"> }).default();
 }
 
+/** A page tool's one argument, `url`. */
+export const URL_PARAMETERS = {
+  type: "object",
+  additionalProperties: false,
+  properties: { url: { type: "string", minLength: 1, description: "An absolute http(s) URL." } },
+  required: ["url"],
+} as unknown as TSchema;
+
 /** The agent's tool: the Page as JSON text. */
 export const fetchPageTool = (options: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">>) =>
   defineTool({
     name: FETCH_PAGE_TOOL,
     description: "Fetch one web page from a public host and read it. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text (cut at 60,000 characters) and the absolute links it holds. A private or local address, a port other than 80 or 443, a scheme other than http(s), or a page that is not text is refused (ok false, with refused saying why).",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      properties: { url: { type: "string", minLength: 1, description: "An absolute http(s) URL." } },
-      required: ["url"],
-    } as unknown as TSchema,
+    parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {
       const page = await fetchPage((args as { url?: unknown }).url, { ...(await options()), ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });

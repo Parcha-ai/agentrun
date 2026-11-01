@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { AgentEditor } from "@/components/AgentEditor";
+import { AgentPage } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";
 import { Shell } from "@/components/Shell";
 import { agentFixture, agentsList, archivedAgents, editorCaps, recorded, revisionsOf } from "@/fixtures";
@@ -19,11 +20,20 @@ const page = (node: React.ReactNode) => <Shell active="agents">{node}</Shell>;
 const editor = (slug: string, extra: Partial<React.ComponentProps<typeof AgentEditor>> = {}) =>
   page(<AgentEditor agent={agentFixture(slug)} revisions={revisionsOf(slug)} caps={editorCaps} onSave={async () => null} onMakeCurrent={noop} onArchive={noop} onReload={noop} onBack={noop} {...extra} />);
 
-export const List: Story = { render: () => page(<AgentsList agents={agentsList()} actions={{ onOpen: noop, onNew: noop, onRuns: noop, onArchive: noop }} />) };
-export const ListArchived: Story = { render: () => page(<AgentsList agents={archivedAgents()} archived actions={{ onOpen: noop, onArchive: noop }} />) };
+// An agent's page over its recorded agent and runs.
+const agentPage = (slug: string, { runs = true, tab }: { runs?: boolean; tab?: "workflow" } = {}) => {
+  const v2 = { getAgent: async () => ({ agent: agentFixture(slug), etag: null }), listAgentRuns: async () => (runs ? recorded<unknown>(`agent.${slug}.runs`).body : { runs: [], next_cursor: null }) };
+  return page(<AgentPage v2={v2 as never} agentId={slug} defaultModel={editorCaps.defaultModel} go={noop} tab={tab} />);
+};
+
+export const List: Story = { render: () => page(<AgentsList agents={agentsList()} actions={{ onOpen: noop, onEdit: noop, onNew: noop, onRuns: noop, onArchive: noop }} />) };
+export const ListArchived: Story = { render: () => page(<AgentsList agents={archivedAgents()} archived actions={{ onOpen: noop, onEdit: noop, onArchive: noop }} />) };
 export const ListEmpty: Story = { render: () => page(<AgentsList agents={[]} actions={{ onNew: noop }} />) };
 export const ListLoading: Story = { render: () => page(<AgentsList agents={null} />) };
 export const ListError: Story = { render: () => page(<AgentsList agents={null} error={`${recorded<{ error: { code: string; message: string } }>("error.unauthenticated").body.error.code}: ${recorded<{ error: { message: string } }>("error.unauthenticated").body.error.message}`} />) };
+export const AgentRuns: Story = { render: () => agentPage("invoice-checker") };
+export const AgentNoRuns: Story = { render: () => agentPage("invoice-checker", { runs: false }) };
+export const AgentWorkflowGraph: Story = { render: () => agentPage("support-triage", { tab: "workflow" }) };
 export const NewAgent: Story = { render: () => page(<AgentEditor agent={null} caps={editorCaps} onSave={async () => null} onBack={noop} />) };
 export const EditContext: Story = { render: () => editor("invoice-checker") };
 export const EditTools: Story = { render: () => editor("invoice-checker", { step: "tools" }) };
@@ -32,4 +42,6 @@ export const EditHistory: Story = { render: () => editor("invoice-checker", { st
 export const EditConflict: Story = { render: () => editor("invoice-checker", { problem: asProblem("write.definition-put-stale") }) };
 export const EditInvalidHarness: Story = { render: () => editor("invoice-checker", { step: "settings", problem: asProblem("write.definition-invalid-harness") }) };
 export const EditWorkflow: Story = { render: () => editor("support-triage") };
+// A save the server took that this host can't run yet: what its answer's warnings said, above the form and at the field.
+export const SavedWithWarnings: Story = { render: () => page(<AgentEditor agent={{ ...agentFixture("invoice-checker"), warnings: [{ field: "definition.model", reason: "not_set_up_here", message: "pi-ai finds no key for openai in this environment (OpenAI API key): set it where agentrun-serve starts." }] }} revisions={revisionsOf("invoice-checker")} caps={editorCaps} step="settings" onSave={async () => null} onBack={noop} />) };
 export const Phone: Story = { render: () => editor("invoice-checker", { step: "settings" }), globals: { viewport: { value: "mobile1" } } };

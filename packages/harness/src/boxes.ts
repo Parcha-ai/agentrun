@@ -394,6 +394,8 @@ export function tapBox(boxes: Boxes, options: {
   const labelled = <S extends { labels?: Readonly<Record<string, string>> }>(spec: S): S => (options.runLabel ? { ...spec, labels: { ...spec.labels, [RUN_LABEL]: options.runLabel } } : spec);
   const tapped: BoxProvider = {
     name: provider.name,
+    // What the provider under the tap takes stays readable through it: a caller asks before it hands a spec with mounts.
+    ...(provider.mounts === undefined ? {} : { mounts: provider.mounts }),
     list: (labels, context) => provider.list(labels, context),
     // A box a tool reconnects to is the run's too: it is wrapped, so its commands are crossings and its life is on the recording, under the label it already has.
     attach: async (id, context) => {
