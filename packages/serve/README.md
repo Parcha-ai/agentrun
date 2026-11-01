@@ -496,16 +496,18 @@ Under a cap, whatever cannot be priced is refused, never passed as $0:
 - A model whose output is priced and that names no output ceiling (no max output tokens and no context window): nothing
   bounds a request. One whose output costs nothing at every price tier keeps a known worst case, and passes.
 - An input that could not be measured.
-- A spend no one knows: a request a crash cut (marked as sent with no answer, and it may have been billed), a cost that
-  is not a number, a cost still pending. Every later request of the run is refused. On claude-agent and codex the model
-  proxy books a response cut short (a stop included) at an unknown cost, so a capped run stopped mid-request there
+- A spend no one knows: a cost that is not a number, a cost still pending, and on pi a request a stop or a crash cut
+  with no held figure (below). Every later request of the run is refused. On claude-agent and codex the model proxy
+  books a response cut short (a stop or a crash included) at an unknown cost, so a capped run cut mid-request there
   refuses its next request.
 
-On pi a request stopped before its end (`POST /runs/{id}/stop`, or a summary that failed) counts at the worst case the
-cap held for it, the most the provider can have billed, never at the cut stream's own usage (the Responses API reports
-none until the end). The figure is written on the request's end mark (`agentrun.request_ended`, `heldUsd`), so a later
-process counts it the same: a capped pi run stopped and sent another message goes on while its cap allows. A stopped
-request from a store written before serve kept the figure has none, and is a spend no one knows.
+On pi a request stopped before its end (`POST /runs/{id}/stop`, or a summary that failed) or cut by a crash (its process
+gone mid-request) counts at the worst case the cap held for it, the most the provider can have billed, never at the cut
+stream's own usage (the Responses API reports none until the end). The figure is written on the request's start mark
+(`agentrun.request_started`) and on the end mark of one stopped (`agentrun.request_ended`), as `heldUsd`, so a later
+process counts it the same: a capped pi run stopped and sent another message, or opened again after its process died,
+goes on while its cap allows. A cut request from a store written before serve kept the figure has none, and is a spend
+no one knows.
 
 Pricing the whole output ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's
 worst case is about $0.96, so any cap under about $1 refuses the first request; set a cap above one request's ceiling.

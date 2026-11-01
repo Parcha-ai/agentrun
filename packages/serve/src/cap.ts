@@ -13,7 +13,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-adapters/host";
-import { type EntryLike, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { type EntryLike, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
 /** A run's cap in USD, passed to its process. */
@@ -56,19 +56,43 @@ const costOf = (entry: EntryLike): number => {
   return typeof cost === "number" && Number.isFinite(cost) ? cost : 0;
 };
 
+/** A held figure as a mark carries it: a finite number, else none. */
+const figureOf = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+
+/** How many requests of each kind `entries` leave open, marked as sent with no answer, cost or end: counted as the run's
+ *  timeline counts them (pi-durable-agent's meter: every start, less those withdrawn, against the answers after the first
+ *  mark, and a summary's starts against its costs), so the two agree on how many were cut. */
+function openRequests(entries: readonly EntryLike[]): { generation: number; compaction: number } {
+  let [marked, answered, refused, compacting, compactions] = [0, 0, 0, 0, 0];
+  for (const entry of entries) {
+    const message = entry.model?.[0] as { stopReason?: unknown } | undefined;
+    const data = (entry.data ?? {}) as Record<string, unknown>;
+    const summary = data.request === "compaction";
+    if (entry.kind === REQUEST_REFUSED) refused += 1;
+    else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") refused -= 1;
+    else if (entry.kind === REQUEST_STARTED) summary ? (compacting += 1) : (marked += 1);
+    else if (entry.kind === REQUEST_ENDED) { if (data.unsent === true) summary ? (compacting -= 1) : (marked -= 1); }
+    else if (entry.kind === REQUEST_COST) compactions += 1;
+    else if (entry.kind === "pi.assistant" && message && marked > 0) answered += 1;
+  }
+  return { generation: Math.max(0, marked - answered), compaction: Math.max(0, compacting - compactions) };
+}
+
 /** What the run's store says its model requests cost, across every conversation in it: known or not as the run's own
  *  timeline says (pi-durable-agent's timelineOf), read as a settled run, since the process that wrote it is gone, and
- *  then the full amount, never the timeline's total rounded for display. Every response,
- *  and each cost written apart from one (a compaction summary's; a harness request's that came in after its answer).
- *  Every rule the timeline keeps for a cost no one knows holds here: a request or compaction marked as sent with no
- *  answer (a crash cut it, and it may have been billed), a cost that is not a number, a cost still pending. Two readings
- *  are the cap's own, on its copy of the entries (the run's shown cost is the timeline's, unchanged): a request stopped
- *  before its end counts at the figure its end mark holds (HELD_FIELD), and with none is cut, at an unknown cost; and
- *  this cap's refusals are left out, as none left. Unknown is null, which a cap never reads as $0. */
+ *  then the full amount, never the timeline's total rounded for display. Every response, and each cost written apart
+ *  from one (a compaction summary's; a harness request's that came in after its answer). A cost that is not a number, or
+ *  one still pending, leaves it unknown, as the timeline says. Three readings are the cap's own, on its copy of the
+ *  entries (the run's shown cost is the timeline's, unchanged): a request stopped before its end counts at the figure its
+ *  end mark holds (HELD_FIELD), and one a crash cut (marked as sent, no answer, no end) at the figure its start mark
+ *  holds, each the worst case the cap held for it; without that figure either stays cut, at an unknown cost. And this
+ *  cap's refusals are left out, as none left. Unknown is null, which a cap never reads as $0. */
 export function spentIn(storeFile: string): number | null {
   if (!existsSync(storeFile)) return 0;
   const db = new DatabaseSync(storeFile, { readOnly: true });
   const entries: EntryLike[] = [];
+  // What the cap held for each request, as its start mark says (undefined: it says none), a generation's and a summary's.
+  const starts = { generation: [] as (number | undefined)[], compaction: [] as (number | undefined)[] };
   let marked = false;
   try {
     for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) {
@@ -77,7 +101,10 @@ export function spentIn(storeFile: string): number | null {
       // A request this cap refused never left, and costs nothing: its mark and pi's error entry for it (an older store
       // has the entry alone, which the timeline would count as answering an earlier request a crash cut).
       if (refusedHere(entry) || (entry.kind === REQUEST_STARTED && data[CAP_REFUSED_FIELD] === true)) continue;
-      if (entry.kind === REQUEST_STARTED) marked = true;
+      if (entry.kind === REQUEST_STARTED) {
+        marked = true;
+        starts[data.request === "compaction" ? "compaction" : "generation"].push(figureOf(data[HELD_FIELD]));
+      }
       // pi's entry for a marked request stopped before its end (what had streamed of it): the request is counted by its
       // marks instead, at the figure its end holds, or cut. Before the first mark (an older run) it stays unknown.
       if (marked && entry.kind === "pi.assistant" && (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason === "aborted") continue;
@@ -91,6 +118,19 @@ export function spentIn(storeFile: string): number | null {
     }
   } finally {
     db.close();
+  }
+  // A request still open is one a crash cut, with no answer and no end: it counts at what the cap held for it, as its start
+  // mark says. Which start an answer closed the marks do not say when requests overlap, so each open one counts at one of
+  // the largest figures, which bounds it above; any start without a figure (an older store) leaves them all cut, unknown.
+  const open = openRequests(entries);
+  for (const kind of ["generation", "compaction"] as const) {
+    const figures = starts[kind];
+    if (!open[kind] || figures.some((figure) => figure === undefined)) continue;
+    for (const figure of (figures as number[]).sort((a, b) => b - a).slice(0, open[kind])) {
+      entries.push(kind === "compaction"
+        ? { kind: REQUEST_COST, data: { request: "compaction", usd: figure } }
+        : { kind: "pi.assistant", model: [{ role: "assistant", content: [], stopReason: "stop", usage: { cost: { total: figure } }, timestamp: 0 }] });
+    }
   }
   // The timeline says whether the spend is known; the amount is summed here, as it is, since the timeline rounds its total
   // for display (to the millionth of a dollar), and a cap must not lose what that drops.

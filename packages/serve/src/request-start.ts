@@ -8,11 +8,11 @@
 // cost is written as REQUEST_COST: the run's total, and /usage with it, include it, and one cut before its answer reads
 // unknown. Both are wrapped here: `streamSimple` for the generation's requests, `completeSimple` for the summary.
 //
-// Under a cap (cap.ts), each request comes with the worst case the cap held for it, and the end mark of one stopped
-// before its end (or a summary that failed) carries that figure (`heldUsd`): the cap counts the request at it, in a later
-// process too. The timeline does not read it, so the run's shown cost is unknown as before. A request the cap refused
-// gets a start mark of its own (`capRefused`), written before pi writes its error entry, so that entry answers its own
-// mark and never stands for an earlier request a stop or a crash cut.
+// Under a cap (cap.ts), each request comes with the worst case the cap held for it, and its start mark carries that
+// figure (`heldUsd`), as does the end mark of one stopped before its end (or a summary that failed): the cap counts a
+// request a stop or a crash cut at it, in a later process too. The timeline does not read it, so the run's shown cost
+// is unknown as before. A request the cap refused gets a start mark of its own (`capRefused`), written before pi writes
+// its error entry, so that entry answers its own mark and never stands for an earlier request a stop or a crash cut.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -75,7 +75,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     void (async () => {
       if (cancelled()) return refused();
       try {
-        await mark(REQUEST_STARTED);
+        await mark(REQUEST_STARTED, heldOf(options));
       } catch (error) {
         const message = failed(model, `the model request was not sent: its mark could not be written (${reason(error)})`);
         outer.push({ type: "error", reason: "error", error: message });
@@ -113,7 +113,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     // A cancelled run sends no summary either; pi writes no entry for a failed summary, so nothing needs marking.
     if (cancelled()) return refuse(model, "summary request", options?.signal, false);
     try {
-      await mark(REQUEST_STARTED, COMPACTION);
+      await mark(REQUEST_STARTED, { ...COMPACTION, ...heldOf(options) });
     } catch (error) {
       return failed(model, `the model request was not sent: its mark could not be written (${reason(error)})`);
     }

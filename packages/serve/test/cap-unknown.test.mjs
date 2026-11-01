@@ -6,7 +6,7 @@
 // ceiling: nothing bounds a request's worst case. A model whose output costs nothing has a known worst case with or
 // without a ceiling, and passes.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,6 +38,8 @@ const compactionStarted = { kind: REQUEST_STARTED, data: { request: "compaction"
 const ended = (heldUsd, extra = {}) => ({ kind: REQUEST_ENDED, data: { ...extra, ...(heldUsd === undefined ? {} : { heldUsd }) } });
 /** The start mark written for a request the cap refused. */
 const refusedStart = { kind: REQUEST_STARTED, data: { capRefused: true } };
+/** A start mark with what the cap held for the request, as a capped run writes it. */
+const startedHeld = (heldUsd, extra = {}) => ({ kind: REQUEST_STARTED, data: { ...extra, heldUsd } });
 /** pi's answer entry: `cost` its usage's cost, `stopReason` how it ended. */
 const answer = (cost, stopReason = "stop") => ({ kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "ok" }], usage: { cost }, stopReason, timestamp: 0 }] });
 /** pi's answer to a request the cap refused: an error entry for a request that never left, with no mark of its own. */
@@ -63,6 +65,28 @@ test("a spend the store cannot say is unknown (null), never $0: a request a cras
     "a request a stop cut with no figure, then the cap's refusal with its own mark": [started, answer({ total: 0.001 }), started, ended(), refusedStart, refused],
   };
   for (const [why, entries] of Object.entries(cases)) assert.equal(spentIn(storeOf(t, entries)), null, why);
+});
+
+test("a request a crash cut (marked as sent, no answer, no end) counts at the figure its start mark holds, whatever of it pi wrote, a summary's too", (t) => {
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  const answered = [startedHeld(0.001), answer({ total: 0.001 })];
+  assert.equal(round(spentIn(storeOf(t, [...answered, startedHeld(0.4)]))), 0.401, "cut before any content");
+  assert.equal(round(spentIn(storeOf(t, [...answered, startedHeld(0.4), answer({ total: 0 }, "aborted")]))), 0.401, "what had streamed of it, written aborted by the next process");
+  assert.equal(round(spentIn(storeOf(t, [...answered, startedHeld(0.4), startedHeld(0.002), answer({ total: 0.002 })]))), 0.403, "and then the next process's request, answered");
+  assert.equal(round(spentIn(storeOf(t, [...answered, startedHeld(0.2, { request: "compaction" })]))), 0.201, "a summary a crash cut");
+  // Requests that overlap leave which one was cut unsaid: each open one counts at one of the largest figures, never less.
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.5), startedHeld(0.4), answer({ total: 0.001 })]))), 0.501);
+});
+
+test("a cut request is unknown when its start mark holds no figure (an older store), and one request is counted once whatever marks and entry it has", (t) => {
+  assert.equal(spentIn(storeOf(t, [startedHeld(0.001), answer({ total: 0.001 }), started])), null, "a start with no figure, cut");
+  assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), startedHeld(0.4)])), null, "a figure on the cut one, but a start without one: which was cut is not certain");
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  for (const [why, entries] of Object.entries({
+    "start, aborted entry, end": [startedHeld(0.4), answer({ total: 0 }, "aborted"), ended(0.4)],
+    "start, end, aborted entry": [startedHeld(0.4), ended(0.4), answer({ total: 0 }, "aborted")],
+    "start, end": [startedHeld(0.4), ended(0.4)],
+  })) assert.equal(round(spentIn(storeOf(t, entries))), 0.4, why);
 });
 
 test("a request stopped before its end counts at the figure its end mark holds, what the cap held for it, wherever pi's entry for it falls", (t) => {
@@ -170,6 +194,20 @@ test("pi under a cap: an answer whose cost is unknown makes what the run has spe
 
 // $1 a million output tokens and nothing for input, a ceiling of 1,000: each request's worst case is $0.001 exactly.
 const outputOnly = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+
+test("after a crash, the cut request's held worst case is spent: the next request goes while that leaves room, and is refused once it does not", async (t) => {
+  // One request's worst case is $0.001; the crash cut one, held at that.
+  const spent = spentIn(storeOf(t, [startedHeld(0.001)]));
+  assert.equal(spent, 0.001);
+  for (const [cap, sends] of [[0.0025, 1], [0.0015, 0]]) {
+    const { models, sent } = fakeModels();
+    const next = (await capModels(models, cap, spent)).streamSimple(outputOnly, context);
+    assert.equal(sent.length, sends, `a cap of $${cap}`);
+    if (sends) sent[0].end({ total: 0 });
+    else assert.match((await next.result()).errorMessage, /^spend_cap_reached: .*could cost up to \$0\.001000, and with \$0\.001000 spent/);
+    await next.result();
+  }
+});
 
 test("the spend a reopened run reads is the full amount, never the timeline's total rounded for display: $0.0000004 spent is $0.0000004, and a request it leaves no room for is refused", async (t) => {
   // Below the six decimals the timeline shows: rounded, it would read $0.
@@ -349,4 +387,49 @@ test("a capped pi run refused for room with no stop: its cost stays the known to
   const asWritten = meterOf(entries);
   assert.deepEqual(asWritten, meterOf(entries.filter((entry) => !isRefusalMark(entry))), "the usage row, requests and unmetered, as without the mark");
   assert.equal(asWritten.usage.usd, first);
+});
+
+const SIGNAL = new URL("./fixtures/faux-signal.mjs", import.meta.url).pathname;
+
+/** Waits for `check`, up to `ms`. */
+async function until(what, check, ms = 30_000) {
+  for (const end = Date.now() + ms; !(await check()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, what);
+}
+
+/** A run under `cap` killed (SIGKILL, its own pid) while its first request is in flight; serve opens it again. */
+async function killedMidRequest(t, cap) {
+  const dir = mkdtempSync(join(tmpdir(), "cap-crash-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const [signal, go] = [join(dir, "signal"), join(dir, "go")];
+  const server = await serve(t, { faux: SIGNAL });
+  assert.equal((await server.api("POST", "/agents", agent("crashed"))).status, 201);
+  const runId = (await server.api("POST", "/agents/crashed/runs", { input: { content: `Signal ${signal}, then answer once ${go} exists.` }, max_cost_usd: cap })).body.run_id;
+  await until("the first request is in flight", () => existsSync(signal));
+  const pid = Number(readFileSync(signal, "utf8"));
+  rmSync(signal);
+  process.kill(pid, "SIGKILL");
+  return { ...server, runId, signal, go, pid };
+}
+
+test("a capped pi run whose process is killed mid-request is opened again and goes on: the cut request counts at the worst case held for it", { timeout: 120_000 }, async (t) => {
+  const { api, data, runId, signal, go, pid } = await killedMidRequest(t, 10);
+  // The next process reads the cut request from the store, at $1.64 held, and sends the turn's request again.
+  await until("the request is sent again, or the run ends", async () => existsSync(signal) || ["failed", "cancelled"].includes((await view(api, runId)).status));
+  assert.ok(existsSync(signal), JSON.stringify((await view(api, runId)).error));
+  assert.notEqual(Number(readFileSync(signal, "utf8")), pid, "by a new process");
+  writeFileSync(go, "");
+  const run = await finished(api, runId);
+  assert.deepEqual([run.status, run.result?.final_answer], ["completed", "Answered after the crash."], JSON.stringify(run.error));
+  assert.equal(run.cost.usd, null, "the cut request's cost shows unknown");
+  const spent = spentIn(storeFileOf(data, runId));
+  assert.ok(spent >= FAUX_WORST && spent < FAUX_WORST * 1.5, `the cap counts the cut request at its held worst case: $${spent}`);
+});
+
+test("a capped pi run whose process is killed mid-request, when the held worst case leaves no room: the next process refuses the request with the cap's message", { timeout: 120_000 }, async (t) => {
+  // $2 holds one request's $1.64, not two.
+  const { api, runId, signal } = await killedMidRequest(t, 2);
+  const run = await finished(api, runId);
+  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
+  assert.match(run.error.message, /could cost up to \$1\.638400, and with \$1\.638400 spent/);
+  assert.equal(existsSync(signal), false, "the request is not sent again");
 });
