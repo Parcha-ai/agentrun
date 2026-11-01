@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test as nodeTest } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
@@ -21,7 +21,8 @@ const alive = processAlive;
  *  when it prints its banner, which it does once it listens: its address and key lines, whole. A server that exits first
  *  fails the test with what it said. No clock: a slow start, on a loaded machine, is still a start. */
 async function serverProcess(data) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"] });
+  // A home beside the data, not this machine's: a first start counts the sessions in its home for setup's offer.
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data) } });
   let out = "";
   let err = "";
   // Read to the end, so the server never blocks on a full pipe; its last lines say why, should it exit before it listens.

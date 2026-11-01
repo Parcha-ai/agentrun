@@ -183,8 +183,10 @@ test("accounts off: no owner file, no setup or sign-in, and the token works as b
 test("the bin: accounts on with no AGENTRUN_ACCOUNTS, the first-visit line with no public address, the code line with one, none with AGENTRUN_ACCOUNTS=0", { timeout: 60_000 }, async (t) => {
   const bin = async (env, done) => {
     const { spawn } = await import("node:child_process");
-    const data = join(await scratch(t), "agents");
-    const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_PUBLIC_URL: "", RENDER_EXTERNAL_URL: "", AGENTRUN_ACCOUNTS: "", ...env } });
+    const root = await scratch(t);
+    const data = join(root, "agents");
+    // A home of its own: a first start counts the sessions in its home for setup's offer, and this machine's are not the test's.
+    const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: root, AGENTRUN_PUBLIC_URL: "", RENDER_EXTERNAL_URL: "", AGENTRUN_ACCOUNTS: "", ...env } });
     t.after(() => child.kill("SIGTERM"));
     let out = "";
     for await (const chunk of child.stdout) {
@@ -242,8 +244,10 @@ test("the sign-in limit keeps a bounded table: expired addresses are swept, a fu
 test("on Render the setup takes the code: with RENDER_EXTERNAL_URL and no AGENTRUN_PUBLIC_URL, setup with no code is a 403 and with the printed code a 201; AGENTRUN_PUBLIC_URL wins when both are set", { timeout: 60_000 }, async (t) => {
   const { spawn } = await import("node:child_process");
   const start = async (env) => {
-    const data = join(await scratch(t), "agents");
-    const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_PUBLIC_URL: "", AGENTRUN_ACCOUNTS: "", ...env } });
+    const root = await scratch(t);
+    const data = join(root, "agents");
+    // A home of its own: a first start counts the sessions in its home for setup's offer, and this machine's are not the test's.
+    const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: root, AGENTRUN_PUBLIC_URL: "", AGENTRUN_ACCOUNTS: "", ...env } });
     t.after(() => child.kill("SIGTERM"));
     let out = "";
     for await (const chunk of child.stdout) {

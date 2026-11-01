@@ -11,7 +11,7 @@ import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
-import { allPages, type Capabilities, ClientError, createClient, type RunsFilter } from "@/lib/client";
+import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, type RunsFilter } from "@/lib/client";
 import { appendRuns } from "@/lib/idempotency";
 import type { Run, RunStatus } from "@/lib/v2";
 
@@ -57,6 +57,18 @@ function setupCodeOnce(): string | null {
   return capturedSetup.code;
 }
 
+/** How often the console reads an import under way, and how many failed reads in a row end its watch. */
+export const IMPORT_POLL_MS = 1000;
+const IMPORT_READ_TRIES = 30;
+
+/** The import asked for at setup, as a line. */
+function importLine(s: ImportState): string {
+  if (s.state === "running") return "Importing this machine's sessions: agents appear as they arrive.";
+  if (s.state === "stopped") return "The import of this machine's sessions stopped. It goes on when the server starts again.";
+  const runs = `${s.runs.toLocaleString("en-US")} session${s.runs === 1 ? "" : "s"}`;
+  return `Imported ${runs} into ${s.agents.toLocaleString("en-US")} agent${s.agents === 1 ? "" : "s"}${s.skipped ? `; ${s.skipped.toLocaleString("en-US")} left out` : ""}.`;
+}
+
 /** The console over the server it is served from, behind its sign-in: agents, runs, and a run followed live. */
 export function App() {
   const v2 = useMemo(() => createClient(), []);
@@ -70,11 +82,30 @@ export function App() {
     setAuth(authMode(r, probe));
   };
   useEffect(() => { readSession().catch(() => setAuth("sign_in")); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Setup's box, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
+  // counts read until the server has them. A read that fails once the box shows leaves it, its count unknown.
+  const [offer, setOffer] = useState<ImportOffer | null>(null);
+  useEffect(() => {
+    if (auth !== "setup") return;
+    let live = true;
+    (async () => {
+      for (let shown = false; live; shown = true) {
+        const r = await v2.setupImport().then((x) => x, () => undefined);
+        if (!live) return;
+        if (r === undefined) return void (shown && setOffer({ projects: null, sessions: null }));
+        if (!r || !("counting" in r || "sessions" in r)) return;
+        setOffer(r);
+        if (!("counting" in r)) return;
+        await new Promise((done) => setTimeout(done, IMPORT_POLL_MS));
+      }
+    })();
+    return () => { live = false; };
+  }, [v2, auth]);
   if (auth === null) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
   if (auth !== "signed_in") {
     return (
-      <SignIn key={auth} mode={auth} code={setupCode} onSubmit={async (password, code) => {
-        try { await (auth === "setup" ? v2.setup(password, code) : v2.signIn(password)); setAuth("signed_in"); return null; }
+      <SignIn key={auth} mode={auth} code={setupCode} offer={offer} onSubmit={async (password, code, importSessions) => {
+        try { await (auth === "setup" ? v2.setup(password, code, importSessions) : v2.signIn(password)); setAuth("signed_in"); return null; }
         catch (e) {
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
           if (e instanceof ClientError && e.status === 403 && auth === "setup") { await readSession().catch(() => {}); }
@@ -105,9 +136,33 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [error, setError] = useState<string | null>(null);
   const asked = useRef(0);
   const go = (hash: string) => { location.hash = hash; };
-  useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
+  // The import asked for at setup (here, or before the server restarted): read until it ends, a failed read tried again.
+  // One that ends while this page watches has what the page shows read again (`refreshed`).
+  const [imported, setImported] = useState<ImportState | null>(null);
+  const [refreshed, setRefreshed] = useState(0);
   useEffect(() => {
-    v2.capabilities().then(setCaps).catch(() => {});
+    let live = true;
+    (async () => {
+      let watched = false;
+      for (let failed = 0; live && failed < IMPORT_READ_TRIES; ) {
+        const s = await v2.setupImport().then((r) => r, () => undefined);
+        if (!live) return;
+        if (s === undefined) failed += 1;
+        else {
+          failed = 0;
+          if (!s || !("state" in s)) return;
+          setImported(s);
+          if (s.state !== "running") return void (watched && setRefreshed((n) => n + 1));
+          watched = true;
+        }
+        await new Promise((r) => setTimeout(r, IMPORT_POLL_MS));
+      }
+    })();
+    return () => { live = false; };
+  }, [v2]);
+  useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
+  useEffect(() => { v2.capabilities().then(setCaps).catch(() => {}); }, [v2]);
+  useEffect(() => {
     // Every page of agents, for their names.
     (async () => {
       const all: Record<string, string> = {};
@@ -119,7 +174,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       }
       setNames(all);
     })().catch(() => {});
-  }, [v2]);
+  }, [v2, refreshed]);
   const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
   useEffect(() => {
     if (where.section !== "runs" || where.run) return;
@@ -129,7 +184,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, null, runsFilter) : v2.listRuns(50, null, runsFilter))
       .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); } })
       .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
-  }, [v2, where]);
+  }, [v2, where, refreshed]);
   const agentName = (id: string) => names[id] ?? id;
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string } } | null;
   // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
@@ -152,7 +207,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         setPick((p) => (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
       })
       .catch((e) => setStartError(e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)));
-  }, [v2, where.section, retry]);
+  }, [v2, where.section, retry, refreshed]);
   useEffect(() => {
     if (where.section !== "mission") return;
     let live = true;
@@ -163,7 +218,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .catch((e) => { if (live) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); })
       .finally(() => { if (live) setMissionReading(false); });
     return () => { live = false; };
-  }, [v2, where.section, missionTry, statsRange, statsAgent]);
+  }, [v2, where.section, missionTry, statsRange, statsAgent, refreshed]);
   const revsAsked = useRef(0);
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
@@ -188,6 +243,12 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }}>
       {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
+      {imported && (
+        <p className="flex items-center gap-3 border-b bg-card px-5 py-3 font-mono text-[13px] md:px-8" role="status">
+          <span className="flex-1">{importLine(imported)}</span>
+          {imported.state !== "running" && <button type="button" className="caps border px-2 py-1 text-[11px] hover:bg-accent" onClick={() => setImported(null)}>Dismiss</button>}
+        </p>
+      )}
       {where.section === "playground" && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "mission"
@@ -197,7 +258,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
         : where.section === "agents"
-        ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} go={go} />
+        ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} defaultModel={editorCaps.defaultModel} go={go} />
           : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={editorCaps} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />

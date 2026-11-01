@@ -19,6 +19,8 @@ import { HARNESS_OF, readSession, type Session, SOURCES, type Source, sessionFil
 import { secretCut } from "./secret-cut.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 
+/** In the data directory while an import the owner asked for at setup has not ended: the server's next start goes on with it. */
+export const IMPORT_ASKED = ".import-at-setup";
 /** A session file written to this recently may still be running: it is left for a later import. */
 export const LIVE_MS = 10 * 60_000;
 /** The most of one session file read. */
@@ -45,6 +47,9 @@ export type ImportOptions = {
   now?: number;
   /** The temp directory whose projects are left out (default the OS's). */
   temp?: string;
+  /** Stops the import between two session files, planned or taken (a server shutting down): what is written stays, and
+   *  the next import goes on from there. */
+  signal?: AbortSignal;
 };
 export type Skipped = { what: string; why: string };
 export type ProjectPlan = {
@@ -94,7 +99,7 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 
 /** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Reads no turns,
  *  and no file `store`'s imports already read whole and that has not changed since. */
-export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir() }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
+export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), signal }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
   const skipped: Skipped[] = [];
   const seen = store ? await filesIn(store) : new Map<string, SourceFile>();
   let already = 0;
@@ -102,6 +107,7 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
     for (const file of await sessionFiles(home, source)) {
+      if (signal?.aborted) break;
       const stats = await stat(file).catch(() => null);
       if (!stats) continue;
       if (sameFile(seen.get(hash(file)), stats)) {
@@ -420,6 +426,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
   const report: ImportReport = { agents: [], skipped: [...plan.skipped], already: plan.already };
   const held = importedIn(store);
   for (const project of plan.projects) {
+    if (options.signal?.aborted) break;
     const created = !store.readAgent(project.agentId);
     if (created)
       store.createAgent({
@@ -435,6 +442,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
     for (const source of order) revisions.set(source, await revisionFor(store, project.agentId, source, files, project.sessions.findLast((s) => s.source === source && s.model)?.model, text, created && source === latest.source));
     const line = { id: project.agentId, name: project.name, cwd: project.cwd, created, runs: 0, already: 0, finished: 0 };
     for (const listed of project.sessions) {
+      if (options.signal?.aborted) break;
       const heldRun = held.get(`${listed.source}:${listed.id}`);
       if (heldRun !== undefined && existsSync(store.runStorePath(heldRun))) {
         line.already += 1;
