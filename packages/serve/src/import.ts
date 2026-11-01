@@ -298,6 +298,13 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
         timestamp: turn.at,
       },
     };
+  // The harness's own line, as an interrupt is written: a user's entry, by its author, so no request.
+  if (turn.role === "note")
+    return {
+      entry: UserEntry,
+      model: { role: "user", content: [{ type: "text", text: turn.text }], timestamp: turn.at },
+      data: { author: turn.author },
+    };
   if (turn.role === "toolResult")
     return {
       entry: ToolResultEntry as unknown as typeof UserEntry,
@@ -319,7 +326,7 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
     entry: AssistantEntry as unknown as typeof UserEntry,
     model: {
       role: "assistant",
-      content: [...(turn.text ? [{ type: "text", text: turn.text }] : []), ...turn.calls],
+      content: turn.failed ? [] : [...(turn.text ? [{ type: "text", text: turn.text }] : []), ...turn.calls],
       api: "imported",
       provider,
       model: id.join("/") || provider,
@@ -332,7 +339,8 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
         totalTokens: input + output + cacheRead + cacheWrite,
         cost: cost === undefined ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
       },
-      stopReason: turn.calls.length ? "toolUse" : "stop",
+      // A failed request's zero counts are its counts, as a live run's failed request's are.
+      ...(turn.failed ? { stopReason: "error", errorMessage: turn.text || "API error" } : { stopReason: turn.calls.length ? "toolUse" : "stop" }),
       timestamp: turn.at,
     },
   };

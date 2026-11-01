@@ -531,3 +531,28 @@ test("a session whose source gives no counts imports its requests as unmetered, 
   // With no usage to close it, the answer after the call's result is a request of its own, after that result.
   assert.deepEqual(metricsOf(data, store, runs[1].id).kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant"]);
 });
+
+test("a Claude Code API error is a request that failed, at its 0 tokens, never unmetered; a turn the CLI wrote itself is no request, kept as its note", async (t) => {
+  let noted;
+  const { data, store, runs } = await importedOne(t, (home, project) => {
+    claudeSession(home, project, 38, { failed: true });
+    noted = claudeSession(home, project, 39, { interrupted: true, noted: true });
+  });
+  const [failed, interrupted] = runs;
+  assert.deepEqual([failed.state, interrupted.state], ["failed", "stopped"], "the CLI's note ends no request");
+  const one = metricsOf(data, store, failed.id);
+  assert.deepEqual([one.metrics.requests, one.metrics.unmetered, one.metrics.input, one.metrics.output, one.metrics.models], [2, 0, 3, 50, { "anthropic/claude-sonnet-5": 2 }]);
+  assert.deepEqual([one.answers[1].stopReason, one.answers[1].errorMessage, one.answers[1].content], ["error", "API Error: overloaded", []]);
+  const two = metricsOf(data, store, interrupted.id);
+  assert.deepEqual([two.metrics.requests, two.metrics.unmetered], [2, 0]);
+  assert.deepEqual(two.kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant", "pi.user", "pi.user"]);
+  const rows = (id) => {
+    const db = new DatabaseSync(join(data, "runs", id, "store", "run.sqlite"), { readOnly: true });
+    const entries = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record));
+    db.close();
+    return timelineOf(entries, { settled: true });
+  };
+  assert.ok(rows(failed.id).some((r) => r.kind === "error" && r.summary === "Model request failed: API Error: overloaded"));
+  assert.equal(rows(interrupted.id).findLast((r) => r.kind === "user_message").summary, "Claude Code: No response requested.");
+  assert.equal((await readSession(noted, "claude-code")).users, 2, "the note is not the person's");
+});

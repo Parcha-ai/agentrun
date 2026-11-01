@@ -27,9 +27,11 @@ export type ToolCall = {
 /** A request's tokens as pi counts them: `input` is the input neither read from nor written to the cache. */
 export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number };
 /** An assistant turn is one model request: `model` the one it ran on ("provider/model"), `effort` the effort or
- *  thinking level it ran at, `usage` its tokens; each absent when the source does not say. */
+ *  thinking level it ran at, `usage` its tokens, each absent when the source does not say; `failed`, an API error.
+ *  A note is a line the harness itself wrote in the conversation: no request, nor the person's. */
 export type Turn =
   | { role: "user"; text: string; at: number }
+  | { role: "note"; author: string; text: string; at: number }
   | {
       role: "assistant";
       text: string;
@@ -40,6 +42,7 @@ export type Turn =
       model?: string;
       effort?: string;
       usage?: Usage;
+      failed?: boolean;
     }
   | {
       role: "toolResult";
@@ -271,7 +274,8 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
   const message = value.message;
   if (value.type === "assistant") {
     const model = str(message.model);
-    if (model && model !== "<synthetic>") session.model = `anthropic/${model}`;
+    const synthetic = model === "<synthetic>";
+    if (model && !synthetic) session.model = `anthropic/${model}`;
     const blocks = Array.isArray(message.content) ? message.content : [{ type: "text", text: textOf(message.content) }];
     const text = blocks
       .filter((b) => isObject(b) && b.type === "text")
@@ -286,7 +290,14 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
         arguments: argsOf(b.input),
       }));
     for (const call of calls) names.set(call.id, call.name);
-    session.state = value.isApiErrorMessage === true ? "failed" : "completed";
+    // The CLI's own turns (model <synthetic>): one marked an API error is a request that failed; any other ("No response
+    // requested.") is no request, kept as the CLI's note.
+    const failed = value.isApiErrorMessage === true;
+    if (synthetic && !failed) {
+      if (text) add({ role: "note", author: "Claude Code", text, at });
+      return;
+    }
+    session.state = failed ? "failed" : "completed";
     // One request's blocks come as records of one message id, a parallel call's result between two of them: one turn.
     // Each record repeats the request's usage, the final one the most of each count (an earlier record may hold only the
     // stream's start).
@@ -301,7 +312,7 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
     }
     if (!key && !text && calls.length === 0) return;
     const effort = effortOf(value.perTurnEffort) ?? effortOf(value.effort);
-    const turn: Answer = { role: "assistant", text, calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}) };
+    const turn: Answer = { role: "assistant", text, calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { failed } : {}) };
     if (key) current.keyed.set(key, turn);
     add(turn);
     return;

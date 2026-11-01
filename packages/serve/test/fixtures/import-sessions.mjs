@@ -25,8 +25,10 @@ const claudeUsage = (input, cacheRead, cacheWrite, output) => ({ input_tokens: i
 /** A Claude Code session in `cwd`: a question, a Bash call and its output, an answer, and its cost record. Each
  *  request's records carry its usage (the first one the stream's start), unless `usage: false`, and the effort. With
  *  `parallel`, the first request also reads a file, its record after the Bash call's result, and the read fails; the
- *  answer's text record is written twice, and the answer runs on `answerModel`, `pause` minutes after the result. */
-export function claudeSession(home, cwd, n, { prompt = "List the files.", output = "README.md", cost = 0.0421, sidechain = false, interrupted = false, failed = false, env = {}, slug = cwd.replaceAll("/", "-"), usage = true, effort = "high", parallel = false, answerModel = "claude-sonnet-5", pause = 0 } = {}) {
+ *  answer's text record is written twice, and the answer runs on `answerModel`, `pause` minutes after the result. With
+ *  `failed`, the answer is the CLI's API-error turn; with `noted`, the CLI's own "No response requested." follows the
+ *  interrupt. */
+export function claudeSession(home, cwd, n, { prompt = "List the files.", output = "README.md", cost = 0.0421, sidechain = false, interrupted = false, failed = false, noted = false, env = {}, slug = cwd.replaceAll("/", "-"), usage = true, effort = "high", parallel = false, answerModel = "claude-sonnet-5", pause = 0 } = {}) {
   const id = sessionId(n);
   const base = {
     sessionId: id,
@@ -162,11 +164,13 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
           uuid: "a4",
           timestamp: at(3),
           isApiErrorMessage: true,
+          error: "rate_limit",
           message: {
             id: "msg_2",
             role: "assistant",
             model: "<synthetic>",
             content: [{ type: "text", text: "API Error: overloaded" }],
+            usage: claudeUsage(0, 0, 0, 0),
           },
         }
       : answer,
@@ -180,6 +184,17 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
             timestamp: at(4),
             message: { role: "user", content: "[Request interrupted by user]" },
           },
+          ...(noted
+            ? [
+                {
+                  ...base,
+                  type: "assistant",
+                  uuid: "a5",
+                  timestamp: at(4),
+                  message: { id: "msg_3", role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "No response requested." }], usage: claudeUsage(0, 0, 0, 0) },
+                },
+              ]
+            : []),
         ]
       : []),
     {
