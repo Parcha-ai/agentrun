@@ -527,26 +527,51 @@ A completed agentic run's `result` is `{output: null, final_answer}`; a complete
 ## Spend cap
 
 An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process
-before each model request, the agent's and a compaction's alike: what the run has spent so far plus the request's worst
-case must stay within it, or the request is not sent and the run ends `failed` with `spend_cap_reached`. The worst
-case is the request's input tokens at the input price plus its max output tokens at the output price, the max output
-tokens being the ones the request sends (the model's, clamped to what its context window leaves). The input is priced
-at the higher of the model's input and cache-write prices, since the provider may bill any of it as a cache write. The
-input tokens are pi-ai's estimate (`estimateContextTokens`: the tokens the last response reported, plus about one token
-per 3.5 characters after it), which may run low on code or non-English text; the server's check after each response
-catches what it misses. Spent so far is read from the run's store each time its process starts, so it survives a
-restart, plus each response since; a request in flight holds its worst case until it answers. A model with no price (a
-gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`) cannot be kept within a cap: under one its first
-request is refused before anything is sent, and the run ends `spend_cap_reached` at $0; with no cap its run's cost reads
-`null`. Pricing the whole output ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's worst case is about $0.96,
-so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
+before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
+the worst case of each request still in flight, plus this request's worst case must stay within it, or the request is
+not sent and the run ends `failed` with `spend_cap_reached`. A request's worst case is its input bound at the higher of
+the model's input and cache-write prices (the provider may bill any of the input as a cache write), plus the model's
+whole output ceiling at its output price: its max output tokens, else its context window, clamped on pi to what the
+window leaves. A request asking for fewer output tokens is held at the ceiling all the same, since a thinking budget can
+raise any request to it. The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
+a token of less than one byte, and an image's base64 is far more bytes than its tokens), plus what the provider adds
+server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent and codex uses; there
+the proxy measures each request's body. A request in flight holds its worst case until it answers, so requests sent side
+by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
+survives a restart, plus each response since.
+
+Under a cap, whatever cannot be priced is refused, never passed as $0:
+
+- A model serve has no price for (a gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`): its first
+  request is refused before anything is sent, and the run ends `spend_cap_reached` at $0. With no cap its run's cost
+  reads `null`. A model the catalog lists at $0 is a known $0, and passes any cap.
+- A model whose output is priced and that names no output ceiling (no max output tokens and no context window): nothing
+  bounds a request. One whose output costs nothing at every price tier keeps a known worst case, and passes.
+- An input that could not be measured.
+- A spend no one knows: a cost that is not a number, a cost still pending, and on pi a request a stop or a crash cut
+  with no held figure (below). Every later request of the run is refused. On claude-agent and codex the model proxy
+  books a response cut short (a stop or a crash included) at an unknown cost, so a capped run cut mid-request there
+  refuses its next request.
+
+On pi a request stopped before its end (`POST /runs/{id}/stop`, or a summary that failed) or cut by a crash (its process
+gone mid-request) counts at the worst case the cap held for it, the most the provider can have billed, never at the cut
+stream's own usage (the Responses API reports none until the end). The figure is written on the request's start mark
+(`agentrun.request_started`) and on the end mark of one stopped (`agentrun.request_ended`), as `heldUsd`, so a later
+process counts it the same: a capped pi run stopped and sent another message, or opened again after its process died,
+goes on while its cap allows. A cut request from a store written before serve kept the figure has none, and is a spend
+no one knows.
+
+Pricing the whole output ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's
+worst case is about $0.96, so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
 
 The server also checks the run's cost after each response, as a backstop, and stops a run whose cost passed its cap.
 Either way the run keeps the answer it paid for: a run the cap stopped has `result: {output: null, final_answer}`, the
 newest answer it received, beside its `error`; one stopped before any answer has `result: null`.
 
 A run's `cost.usd` is $0 before its first model request (a run cancelled before one included), and `null` when a
-response reported no price: no request costs nothing, but a request of unknown price is unknown, never $0.
+response reported no price or a request was cut before its end (a stop, a cancel, a crash): no request costs nothing,
+but a request of unknown price is unknown, never $0. A stopped request shows `null` whether or not its cap counted it at
+its held worst case.
 
 ## The faux model
 
