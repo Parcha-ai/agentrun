@@ -713,8 +713,9 @@ with the token, an archived agent's too:
   time; a cursor reads the same commit its first page did.
 - `GET .../learning/files/{file}`: one note (or `MEMORY.md`) on `main` as `text/markdown`, with its `ETag`, the note's
   git blob id.
-- `PUT .../learning/files/{file}` with the note's whole text edits it under `If-Match: <etag>`, or creates it under
-  `If-None-Match: *` (201); `POST .../learning/files/{file}/retire` under `If-Match` sets `status: retired`. A stale
+- `PUT .../learning/files/{file}` with the note's whole text (as `text/markdown` or `text/plain`, or as
+  `application/json` `{text}`, the form the console's page sends under its session) edits it under `If-Match: <etag>`,
+  or creates it under `If-None-Match: *` (201); `POST .../learning/files/{file}/retire` under `If-Match` sets `status: retired`. A stale
   ETag, or a name already taken, is 412; neither header (or `If-Match: *`) is 428 `precondition_required`. The note
   passes the same structural checks as a run's (packages/learn's `checkNote`), and no grader: a refusal is 400 with
   `problems`, and nothing is written. Each write is one commit on `main` in the agent's queue, `learning: <edited,

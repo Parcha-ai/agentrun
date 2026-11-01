@@ -318,8 +318,15 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "writeLearningFile", tags: ["agents"], summary: "Edit a note (If-Match) or create one (If-None-Match: *)",
       description: `The body is the note's whole text, front matter included; a person may set any field, \`status\` too (an active note is in the index). With neither header, 428. ${WRITE_DESCRIPTION}`,
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH, { name: "If-None-Match", in: "header", required: false, description: "`*`: create the note, only if the name is not taken, else 412.", schema: { type: "string", const: "*" } }],
-      requestBody: { required: true, content: { "text/markdown": { schema: { type: "string" } }, "text/plain": { schema: { type: "string" } } } },
-      responses: { "200": NOTE_TEXT("Edited: the note as it now is."), "201": NOTE_TEXT("Created: the note."), ...WRITE_ERRORS, ...errors(413, 415) }, ...MARK,
+      requestBody: {
+        required: true,
+        description: "The note's whole text: as text, or as JSON `{text}`, the form the console's page sends under its session (a write from the page is JSON from its own origin). A JSON body that is not an object is 400; a missing or wrong `text`, or another field, is 422 by field.",
+        content: {
+          "text/markdown": { schema: { type: "string" } }, "text/plain": { schema: { type: "string" } },
+          "application/json": { schema: closed({ text: { type: "string", description: "The note's whole text, front matter included." } }) },
+        },
+      },
+      responses: { "200": NOTE_TEXT("Edited: the note as it now is."), "201": NOTE_TEXT("Created: the note."), ...WRITE_ERRORS, ...errors(413, 415, 422) }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/files/{file}/retire": {

@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, made, objects, repoOf, settled, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, follow, serve } from "./support.mjs";
+import { agent, call, follow, serve } from "./support.mjs";
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 const SOURCES = note("Quote sources", "Name the page each figure came from");
@@ -204,4 +204,48 @@ test("a person sees what the agent learned and controls it: the view, the log by
   const [mine, stats] = await counted();
   assert.deepEqual(mine, stats);
   assert.equal((await write(`${files}/zz-later.md`, note("Later", "Written while archived"), { "if-match": blob("zz-later.md") })).status, 200);
+});
+
+test("the console's page writes a note under its session as JSON {text} from its own origin: an edit and a create land as a Bearer text write does; text under the cookie alone is refused and changes nothing; a JSON body out of shape is refused by field", { timeout: 60_000 }, async (t) => {
+  const { api, data, port, token } = await serve(t);
+  await made(api, learner("paged"));
+  const repo = repoOf(data, "paged");
+  const files = "/v2/agents/paged/learning/files";
+  const cookie = (await call(port, { path: `/?token=${token}` })).headers["set-cookie"][0].split(";")[0];
+  const origin = `http://127.0.0.1:${port}`;
+  const page = (method, path, body, headers = {}) => call(port, { method, path, headers: { cookie, origin, "content-type": "application/json", ...headers }, body });
+  const head = () => git(repo, ["rev-parse", "main"]);
+
+  // A create, then an edit, as the page sends them: one commit each by a person, answered as text with the new ETag.
+  const created = await page("PUT", `${files}/from-page.md`, { text: ASK }, { "if-none-match": "*" });
+  assert.deepEqual([created.status, created.text, created.headers["content-type"]], [201, ASK, "text/markdown; charset=utf-8"]);
+  assert.equal(created.headers.etag, `"${git(repo, ["rev-parse", "main:from-page.md"])}"`);
+  const edited = await page("PUT", `${files}/from-page.md`, { text: EDITED }, { "if-match": created.headers.etag });
+  assert.deepEqual([edited.status, edited.text], [200, EDITED]);
+  assert.ok(edited.headers.etag !== created.headers.etag && edited.headers.etag === `"${git(repo, ["rev-parse", "main:from-page.md"])}"`);
+  assert.deepEqual(git(repo, ["log", "-2", "--format=%s %(trailers:key=Changed-By,valueonly)", "main"]).split("\n").filter(Boolean), ["learning: edited by a person: from-page.md user", "learning: created by a person: from-page.md user"]);
+  assert.equal((await page("PUT", `${files}/from-page.md`, { text: ASK }, { "if-match": created.headers.etag })).status, 412, "the same precondition");
+  assert.equal((await page("PUT", `${files}/from-page.md`, { text: ASK })).status, 428);
+
+  // Text under the cookie alone is no credential (the page's write rule), and changes nothing; with the Bearer it lands.
+  const before = head();
+  for (const type of ["text/plain", "text/markdown"]) {
+    const sent = await call(port, { method: "PUT", path: `${files}/from-page.md`, headers: { cookie, origin, "content-type": type, "if-match": edited.headers.etag }, body: ASK });
+    assert.equal(sent.status, 401, type);
+  }
+  assert.equal(head(), before, "nothing written");
+  const scripted = await call(port, { method: "PUT", path: `${files}/from-page.md`, headers: { authorization: `Bearer ${token}`, "content-type": "text/markdown", "if-match": edited.headers.etag }, body: ASK });
+  assert.deepEqual([scripted.status, scripted.text], [200, ASK]);
+
+  // A JSON body out of shape: not an object is 400; a missing or wrong text, or another field, 422 by field.
+  const etag = scripted.headers.etag;
+  for (const [body, status, fields] of [["not json", 400, undefined], [JSON.stringify(["text"]), 400, undefined], [{}, 422, ["text"]], [{ text: 7 }, 422, ["text"]], [{ text: ASK, note: "x" }, 422, ["note"]], [{ text: "\ud800" }, 422, ["text"]]]) {
+    const res = await page("PUT", `${files}/from-page.md`, body, { "if-match": etag });
+    assert.deepEqual([res.status, res.json?.error.fields?.map((f) => f.field)], [status, fields], JSON.stringify(body));
+  }
+  assert.equal(head(), git(repo, ["rev-parse", "main"]));
+  assert.equal(`"${git(repo, ["rev-parse", "main:from-page.md"])}"`, etag, "nothing written");
+  // The page's retire is JSON too.
+  const retired = await page("POST", `${files}/from-page.md/retire`, {}, { "if-match": etag });
+  assert.deepEqual([retired.status, git(repo, ["show", "main:MEMORY.md"])], [200, ""]);
 });

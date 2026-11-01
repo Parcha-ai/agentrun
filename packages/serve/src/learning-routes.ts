@@ -14,7 +14,7 @@ import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { buildIndex, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, redactSecrets, retire, secretShapes, valueMatcher } from "@parcha/agentrun-learn";
-import { ApiError } from "./errors.js";
+import { ApiError, invalid } from "./errors.js";
 import { readJson } from "./files.js";
 import { agentFolder, checkOut, git, homeDir, learningRepo, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readPin, withAgentRepo } from "./learning.js";
 import type { Run } from "./runs.js";
@@ -202,10 +202,14 @@ export function sendNote(res: ServerResponse, status: number, note: { text: stri
   res.end(note.text);
 }
 
-/** A PUT's body: the note's whole text, `text/markdown` or `text/plain`, read to its end; over `max` bytes is 413. */
+/** A PUT's body, read to its end (over `max` bytes is 413): the note's whole text, as `text/markdown` or `text/plain`, or
+ *  as `application/json` `{text}`, the one form the console's page may send under its session (page.ts: a write from
+ *  the page is JSON from its own origin). A JSON body that is not an object is 400; one whose `text` is missing or not
+ *  text, or with another field, is 422 by field, as every JSON body here. */
 export async function noteBody(req: IncomingMessage, max: number): Promise<Buffer> {
   const type = String(req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
-  if (type !== "text/markdown" && type !== "text/plain") throw new ApiError("unsupported_media_type", "the body is the note's whole text, front matter included: text/markdown or text/plain");
+  const json = type === "application/json";
+  if (!json && type !== "text/markdown" && type !== "text/plain") throw new ApiError("unsupported_media_type", "the body is the note's whole text, front matter included: text/markdown or text/plain, or application/json {text}");
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -213,7 +217,19 @@ export async function noteBody(req: IncomingMessage, max: number): Promise<Buffe
     if (size <= max) chunks.push(chunk as Buffer);
   }
   if (size > max) throw new ApiError("payload_too_large", `the body is over ${max} bytes`, { details: { limit: "max_body_bytes" } });
-  return Buffer.concat(chunks);
+  if (!json) return Buffer.concat(chunks);
+  let value: unknown;
+  try {
+    value = JSON.parse(Buffer.concat(chunks).toString("utf8") || "null");
+  } catch {
+    throw new ApiError("bad_request", "the body is not JSON");
+  }
+  if (!isObject(value)) throw new ApiError("bad_request", "the body is not a JSON object");
+  const issues = Object.keys(value).filter((key) => key !== "text").map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
+  // A lone surrogate is no text: UTF-8 would carry it as U+FFFD, a note other than the one sent.
+  if (typeof value.text !== "string" || /\p{Cs}/u.test(value.text)) issues.push({ field: "text", reason: value.text === undefined ? "missing" : "wrong_type", message: "text is the note's whole text, front matter included" });
+  if (issues.length) throw invalid(issues);
+  return Buffer.from(value.text as string, "utf8");
 }
 
 const refused = (problems: Problem[]) => new ApiError("bad_request", `The note does not pass the checks: ${[...new Set(problems.map((problem) => problem.rule))].join(", ")}.`, { problems });
