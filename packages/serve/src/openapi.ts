@@ -539,6 +539,13 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // What this server changes in a contract operation, by the addition that made it.
   update["x-agentrun-serve-changed"] = { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" };
   const changed = ["PUT /agents/{agent_id}/definition"];
+  // A workflow run's decisions are rows of its timeline here (decision-rows.ts), of a kind the contract does not list.
+  const timelineKind = schemas.TimelineKind as Json & { enum?: string[] };
+  if (Array.isArray(timelineKind.enum) && !timelineKind.enum.includes("decision")) {
+    timelineKind.enum = [...timelineKind.enum, "decision"];
+    timelineKind["x-agentrun-serve"] = "decision-rows/1";
+    fields.push("TimelineKind.decision");
+  }
   // A workflow run pauses here (POST /runs/{run_id}/pause): its status reads `paused` until it is resumed.
   const runStatus = schemas.RunStatus as Json & { enum?: string[] };
   if (Array.isArray(runStatus.enum) && !runStatus.enum.includes("paused")) {

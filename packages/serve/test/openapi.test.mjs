@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
+import { decisionRows } from "../dist/decision-rows.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -224,4 +225,22 @@ test("the decision providers' widening to parallel is its own addition, decision
   assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
   assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
+});
+
+test("the served TimelineKind holds every kind pi-durable-agent's timeline declares, decision among them as decision-rows/1, and a decision row meets TimelineRow", async (t) => {
+  const { doc } = await served(t);
+  // The kinds as the timeline's built declaration has them, comments dropped: the rows this server serves are its.
+  const declaration = await readFile(new URL("timeline.d.ts", import.meta.resolve("@parcha/pi-durable-agent/timeline")), "utf8");
+  const union = /export type TimelineKind =([^;]+);/.exec(declaration.replace(/\/\*[\s\S]*?\*\//g, ""))?.[1] ?? "";
+  const declared = [...union.matchAll(/"([a-z_]+)"/g)].map(([, kind]) => kind);
+  assert.ok(declared.includes("decision") && declared.includes("usage"), `the timeline's kinds are read: ${declared}`);
+  const kinds = doc.components.schemas.TimelineKind;
+  assert.deepEqual([...kinds.enum].sort(), [...declared].sort(), "a client that validates rows against the document takes every kind this server serves");
+  assert.equal(kinds["x-agentrun-serve"], "decision-rows/1");
+  assert.ok(doc.info["x-agentrun-serve"].fields.includes("TimelineKind.decision"), "info names it among the marked properties");
+  // A decision row as this server builds it, a batched sift with many sources, meets the served row: its kind and its caps.
+  const answers = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`item_${i}`, { type: "noul", noul: 0.9 }]));
+  const evidence = Array.from({ length: 100 }, (_, i) => ({ url: `https://example.org/filing/${i}?sig=${i}`, title: `Filing ${i}`, excerpts: [], scope: "call" }));
+  const [row] = decisionRows([{ id: "d1", at: "2026-10-29T23:00:00.000Z", node: "sift_docs", kind: "sift", request: { index: 0, count: 1 }, status: "answered", answers, evidence, cost_usd: null }]);
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/TimelineRow" }, { ...row, seq: 0 }), []);
 });
