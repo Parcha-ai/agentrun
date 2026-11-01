@@ -19,6 +19,9 @@ import { firstLine } from "./misses.js";
 import { base64Chars } from "./primitives.js";
 import { lookTiming } from "./timing.js";
 import type { CodeGlobal } from "./see.js";
+import type { JevImage, JevPort, JevResult } from "./ports.js";
+
+export type { JevImage, JevPort, JevResult } from "./ports.js";
 
 /** A question as TypeSafe's API takes it. A `box` question's `image` is the index of the image it finds a thing in
  *  (default 0), so its answer gives that image's fragment. */
@@ -36,18 +39,6 @@ export type JudgeAnswer = { readonly answers: Readonly<Record<string, Json>>; re
 /** `vision.judge` as a code-mode global: the contract's words and `execute`, which asks Jev typed questions about images. */
 export type JudgeGlobal = CodeGlobal<typeof VISION_JUDGE, JudgeAnswer>;
 
-/** One image a request carries: PNG or JPEG file bytes and their type. */
-export type JevImage = { readonly bytes: Uint8Array; readonly mime: "image/png" | "image/jpeg" };
-/** Jev's answer to one request as the port gives it: the typed answers, the model, its tokens, and its price, null when
- *  the port does not know it. */
-export type JevResult = { readonly answers: unknown; readonly model?: string | null; readonly usage?: { readonly input_tokens: number; readonly output_tokens: number } | null; readonly cost_usd?: number | null };
-/** Jev as the host reaches it: `judge` is the port `@parcha/agentrun-jev`'s `createJevRunner` returns, which owns the
- *  transport, the images header and the price; `assets` maps each reference written in the state or a question to its
- *  image. `model` is the one to ask (default `JEV_MODEL`). */
-export type JevPort = {
-  judge(params: { readonly label: string; readonly kind: string; readonly state: unknown; readonly questions: Readonly<Record<string, unknown>>; readonly assets?: Readonly<Record<string, JevImage>>; readonly model?: string; readonly signal?: AbortSignal }): Promise<JevResult>;
-  readonly model?: string;
-};
 
 const TYPES = ["choice", "noul", "score", "box"];
 /** Jev's limits as a fit: PNG or baseline JPEG, upright, each side 280 to 1,568 px, a file under 16 MiB. */
