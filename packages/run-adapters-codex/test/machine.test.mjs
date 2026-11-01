@@ -241,3 +241,25 @@ test("a machine acquired again announces nothing until its own proxy has seen an
     await second.close();
   }
 });
+
+test("files the host seeds (a session's skills) are in the machine's directories from the start and again after every wipe; a seed path that leaves its directory is refused", async () => {
+  const enc = (text) => new TextEncoder().encode(text);
+  const dir = scratch();
+  const seed = { 'codex-home': [{ path: 'skills/cite/SKILL.md', bytes: enc('cite') }, { path: 'skills/cite/reference/sources.md', bytes: enc('sources') }] };
+  const acquire = localMachine({ dir, proxy: { hooks, tools: [] }, seed });
+  const machine = await acquire({ ctx: { runId: 'r-seed' }, model: gatewayHandler(route) });
+  try {
+    const home = machine.dirs['codex-home'];
+    const read = (path) => readFileSync(join(home, path), 'utf8');
+    assert.deepEqual([read('skills/cite/SKILL.md'), read('skills/cite/reference/sources.md')], ['cite', 'sources'], 'at acquire');
+    writeFileSync(join(home, 'skills', 'cite', 'SKILL.md'), 'changed');
+    writeFileSync(join(home, 'stale.txt'), 'from an earlier drive');
+    await machine.files.wipe();
+    assert.deepEqual([read('skills/cite/SKILL.md'), read('skills/cite/reference/sources.md')], ['cite', 'sources'], 'written again after the wipe');
+    assert.equal(existsSync(join(home, 'stale.txt')), false, 'the wipe still wipes everything else');
+  } finally {
+    await machine.close();
+  }
+  const leaving = localMachine({ dir: scratch(), proxy: { hooks, tools: [] }, seed: { 'codex-home': [{ path: '../escape', bytes: enc('x') }] } });
+  await assert.rejects(leaving({ ctx: { runId: 'r-leave' }, model: gatewayHandler(route) }), /leaves the session/);
+});
