@@ -25,21 +25,20 @@ export type Thinking = (typeof THINKING_LEVELS)[number];
 export type PackSkills = { skills: string[] };
 /** One effort's row: its skills, and the thinking level a run at that effort gets, if the pack sets one. */
 export type PackEffort = PackSkills & { thinking?: Thinking };
-/** One output type: its writer skills, the file it lands in, and the writer skills that replace them at an effort. */
-export type PackOutput = PackSkills & { file?: string; effort?: Partial<Record<Effort, PackSkills>> };
+/** One output type: its writer skills, and the file it lands in. */
+export type PackOutput = PackSkills & { file?: string };
 /** A profile pack, version 1. */
-export type Pack = { version: 1; name: string; effort: Record<Effort, PackEffort>; outputs: Record<string, PackOutput>; default_output?: string };
+export type Pack = { version: 1; name: string; effort: Record<Effort, PackEffort>; outputs: Record<string, PackOutput> };
 
-/** What a run asks of a pack: its effort (medium when absent) and its output type (the pack's default when absent). */
+/** What a run asks of a pack: its effort (medium when absent) and its output type (none when absent). */
 export type PackAsk = { effort?: Effort; output?: string };
 /** A pack read for one run: the effort, its thinking level if the pack sets one, every skill to load in order, and the
- *  output type with its file, if the run writes one. */
-export type ResolvedPack = { effort: Effort; thinking?: Thinking; skills: string[]; output?: { type: string; file?: string } };
+ *  output type with its file, if it writes one, and its writer skills. */
+export type ResolvedPack = { effort: Effort; thinking?: Thinking; skills: string[]; output?: { type: string; file?: string; skills: string[] } };
 
-const PACK_FIELDS = ["version", "name", "effort", "outputs", "default_output"];
+const PACK_FIELDS = ["version", "name", "effort", "outputs"];
 const EFFORT_FIELDS = ["skills", "thinking"];
-const OUTPUT_FIELDS = ["skills", "file", "effort"];
-const OVERRIDE_FIELDS = ["skills"];
+const OUTPUT_FIELDS = ["skills", "file"];
 
 const issue = (field: string, reason: string, message: string, fix?: string): InputIssue => ({ field, reason, message, ...(fix ? { fix } : {}) });
 /** `key` under `at`; at the top of a pack with no `at`, the key alone. */
@@ -79,14 +78,14 @@ function skillsRow(value: unknown, fields: readonly string[], at: string, out: I
   return value;
 }
 
-/** An object keyed by effort, each row checked by `row`; `every` asks for all three. */
-function byEffort(value: unknown, at: string, every: boolean, out: InputIssue[], row: (value: unknown, at: string) => void): void {
+/** An object keyed by effort, each of the three rows checked by `row`. */
+function byEffort(value: unknown, at: string, out: InputIssue[], row: (value: unknown, at: string) => void): void {
   if (value === undefined) return void out.push(issue(at, "missing", `${at} is required`));
   if (!isObject(value)) return void out.push(issue(at, "wrong_type", `${at} is not an object of efforts`));
   for (const key of Object.keys(value)) {
     if (!(EFFORTS as readonly string[]).includes(key)) out.push(issue(under(at, key), "not_allowed", `${key} is not an effort: an effort is one of ${EFFORTS.join(", ")}`, `Remove ${under(at, key)}.`));
   }
-  for (const effort of EFFORTS) if (every || Object.hasOwn(value, effort)) row(own(value, effort), under(at, effort));
+  for (const effort of EFFORTS) row(own(value, effort), under(at, effort));
 }
 
 /**
@@ -119,7 +118,7 @@ export function packIssues(value: unknown, { at = "" } = {}): InputIssue[] {
   if (value.name === undefined) out.push(issue(name, "missing", `${name} is required`));
   else if (typeof value.name !== "string") out.push(issue(name, "wrong_type", `${name} is not a string`));
   else if (!PACK_NAME.test(value.name)) out.push(issue(name, "bad_format", `${name} must match ${PACK_NAME.source}`));
-  byEffort(value.effort, under(at, "effort"), true, out, (row, field) => {
+  byEffort(value.effort, under(at, "effort"), out, (row, field) => {
     const checked = skillsRow(row, EFFORT_FIELDS, field, out);
     if (checked?.thinking !== undefined && !(THINKING_LEVELS as readonly unknown[]).includes(checked.thinking)) {
       out.push(issue(under(field, "thinking"), "not_an_option", `${under(field, "thinking")} is one of ${THINKING_LEVELS.join(", ")}: thinking is never off`));
@@ -136,15 +135,6 @@ export function packIssues(value: unknown, { at = "" } = {}): InputIssue[] {
       if (!OUTPUT_TYPE.test(type)) out.push(issue(field, "bad_format", `the output type ${JSON.stringify(type)} must match ${OUTPUT_TYPE.source}`));
       const checked = skillsRow(output, OUTPUT_FIELDS, field, out);
       if (checked?.file !== undefined) fileIssue(checked.file, under(field, "file"), out);
-      if (checked?.effort !== undefined) byEffort(checked.effort, under(field, "effort"), false, out, (row, place) => void skillsRow(row, OVERRIDE_FIELDS, place, out));
-    }
-  }
-  const fallback = under(at, "default_output");
-  if (value.default_output !== undefined) {
-    if (typeof value.default_output !== "string") out.push(issue(fallback, "wrong_type", `${fallback} is not an output type`));
-    else if (isObject(value.outputs) && !Object.hasOwn(value.outputs, value.default_output)) {
-      const types = Object.keys(value.outputs);
-      out.push(issue(fallback, "not_an_option", `${fallback} is one of the pack's output types: ${types.length ? types.join(", ") : "it names none"}`, `Name a key of ${outputs}, or remove ${fallback}.`));
     }
   }
   return out;
@@ -152,10 +142,9 @@ export function packIssues(value: unknown, { at = "" } = {}): InputIssue[] {
 
 /**
  * `pack` (one packIssues finds nothing wrong with) read for a run at `effort` asked for `output`: the effort row's
- * skills, then the output's writer skills (its skills at that effort if it names some there, else its own), each skill
- * once at its first place. With no output asked, the pack's default_output; with neither, no output and no writer.
- * `thinking` is there only when the effort row sets one, so the caller keeps its own level otherwise. An effort that is
- * not one, or an output type the pack does not name, is an issue on `effort` or `output`.
+ * skills, then the output's writer skills, each skill once at its first place. With no output asked, no output and no
+ * writer. `thinking` is there only when the effort row sets one, so the caller keeps its own level otherwise. An effort
+ * that is not one, or an output type the pack does not name, is an issue on `effort` or `output`.
  */
 export function resolvePack(pack: Pack, { effort = "medium", output }: PackAsk = {}): ResolvedPack | { issues: InputIssue[] } {
   const issues: InputIssue[] = [];
@@ -167,13 +156,12 @@ export function resolvePack(pack: Pack, { effort = "medium", output }: PackAsk =
   }
   if (issues.length) return { issues };
   const row = pack.effort[effort];
-  const type = output ?? pack.default_output;
-  const writer = type === undefined ? undefined : pack.outputs[type];
-  const writers = writer ? (writer.effort?.[effort]?.skills ?? writer.skills) : [];
+  const writer = output === undefined ? undefined : pack.outputs[output];
+  const writers = writer?.skills ?? [];
   return {
     effort,
     ...(row.thinking !== undefined ? { thinking: row.thinking } : {}),
     skills: [...new Set([...row.skills, ...writers])],
-    ...(type !== undefined && writer ? { output: { type, ...(writer.file !== undefined ? { file: writer.file } : {}) } } : {}),
+    ...(output !== undefined && writer ? { output: { type: output, ...(writer.file !== undefined ? { file: writer.file } : {}), skills: [...writers] } } : {}),
   };
 }

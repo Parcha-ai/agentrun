@@ -17,10 +17,9 @@ const pack = () => ({
     high: { skills: ["web-research", "deep-dive", "cite-sources"], thinking: "xhigh" },
   },
   outputs: {
-    report: { skills: ["write-report", "cite-sources"], file: "report.md", effort: { low: { skills: ["write-brief"] } } },
+    report: { skills: ["write-report", "cite-sources"], file: "report.md" },
     memo: { skills: ["write-memo"] },
   },
-  default_output: "report",
 });
 
 /** The pack with `edit` applied to a fresh copy. */
@@ -56,22 +55,23 @@ test("a skill name is lowercase letters, digits and dashes, at most 64: the long
 });
 
 test("each effort resolves to its row's skills, then the output's writer skills, with its row's thinking", () => {
-  assert.deepEqual(resolvePack(pack(), { effort: "low" }), {
+  const output = { type: "report", file: "report.md", skills: ["write-report", "cite-sources"] };
+  assert.deepEqual(resolvePack(pack(), { effort: "low", output: "report" }), {
     effort: "low",
     thinking: "low",
-    skills: ["quick-look", "write-brief"],
-    output: { type: "report", file: "report.md" },
+    skills: ["quick-look", "write-report", "cite-sources"],
+    output,
   });
-  assert.deepEqual(resolvePack(pack(), { effort: "medium" }), {
+  assert.deepEqual(resolvePack(pack(), { effort: "medium", output: "report" }), {
     effort: "medium",
     skills: ["web-research", "cite-sources", "write-report"],
-    output: { type: "report", file: "report.md" },
+    output,
   });
-  assert.deepEqual(resolvePack(pack(), { effort: "high" }), {
+  assert.deepEqual(resolvePack(pack(), { effort: "high", output: "report" }), {
     effort: "high",
     thinking: "xhigh",
     skills: ["web-research", "deep-dive", "cite-sources", "write-report"],
-    output: { type: "report", file: "report.md" },
+    output,
   });
 });
 
@@ -82,23 +82,16 @@ test("effort defaults to medium, and a row with no thinking leaves thinking out"
   assert.deepEqual(resolvePack(pack(), {}), resolved);
 });
 
-test("the asked output wins over default_output; an output with no file has none in the result", () => {
+test("an output with no file has none in the result", () => {
   assert.deepEqual(resolvePack(pack(), { output: "memo" }), {
     effort: "medium",
     skills: ["web-research", "cite-sources", "write-memo"],
-    output: { type: "memo" },
+    output: { type: "memo", skills: ["write-memo"] },
   });
 });
 
-test("with no output asked and no default_output there is no output and no writer", () => {
-  const p = edited((p) => delete p.default_output);
-  assert.deepEqual(packIssues(p), []);
-  assert.deepEqual(resolvePack(p, { effort: "high" }), { effort: "high", thinking: "xhigh", skills: ["web-research", "deep-dive", "cite-sources"] });
-});
-
-test("an output's per-effort skills replace its writer skills at that effort only", () => {
-  assert.deepEqual(resolvePack(pack(), { effort: "low", output: "report" }).skills, ["quick-look", "write-brief"]);
-  assert.deepEqual(resolvePack(pack(), { effort: "high", output: "report" }).skills, ["web-research", "deep-dive", "cite-sources", "write-report"]);
+test("with no output asked there is no output and no writer", () => {
+  assert.deepEqual(resolvePack(pack(), { effort: "high" }), { effort: "high", thinking: "xhigh", skills: ["web-research", "deep-dive", "cite-sources"] });
 });
 
 test("skills are de-duplicated keeping each one's first place, in order", () => {
@@ -111,8 +104,9 @@ test("skills are de-duplicated keeping each one's first place, in order", () => 
 
 test("resolvePack leaves the pack as it was, and its result shares no list with it", () => {
   const p = pack();
-  const resolved = resolvePack(p, { effort: "high" });
+  const resolved = resolvePack(p, { effort: "high", output: "report" });
   resolved.skills.push("extra");
+  resolved.output.skills.push("extra");
   assert.deepEqual(p, pack());
 });
 
@@ -123,10 +117,7 @@ test("an output type the pack does not name is not_an_option on output, naming t
     assert.match(resolved.issues[0].message, /report/);
     assert.match(resolved.issues[0].message, /memo/);
   }
-  const none = resolvePack(edited((p) => {
-    p.outputs = {};
-    delete p.default_output;
-  }), { output: "report" });
+  const none = resolvePack(edited((p) => (p.outputs = {})), { output: "report" });
   assert.deepEqual(none.issues.map((i) => [i.field, i.reason]), [["output", "not_an_option"]]);
 });
 
@@ -142,21 +133,21 @@ test("a pack that is not an object is wrong_type at the pack itself", () => {
   }
 });
 
-test("unknown keys are refused at every level", () => {
+test("unknown keys are refused at every level, a default output and an output's per-effort writers among them", () => {
   const p = edited((p) => {
     p.extra = true;
+    p.default_output = "report";
     p.effort.extreme = { skills: [] };
     p.effort.low.extra = 1;
     p.outputs.report.extra = 1;
-    p.outputs.report.effort.extreme = { skills: [] };
-    p.outputs.report.effort.low.thinking = "high";
+    p.outputs.report.effort = { low: { skills: ["write-brief"] } };
   });
   assert.deepEqual(refusals(p), [
+    ["default_output", "not_allowed"],
     ["effort.extreme", "not_allowed"],
     ["effort.low.extra", "not_allowed"],
     ["extra", "not_allowed"],
-    ["outputs.report.effort.extreme", "not_allowed"],
-    ["outputs.report.effort.low.thinking", "not_allowed"],
+    ["outputs.report.effort", "not_allowed"],
     ["outputs.report.extra", "not_allowed"],
   ]);
 });
@@ -167,13 +158,11 @@ test("each required field is missing by name: version, name, effort, outputs, ea
     delete p.effort.medium;
     delete p.effort.low.skills;
     delete p.outputs.memo.skills;
-    p.outputs.report.effort.low = {};
   });
   assert.deepEqual(refusals(p), [
     ["effort.low.skills", "missing"],
     ["effort.medium", "missing"],
     ["outputs.memo.skills", "missing"],
-    ["outputs.report.effort.low.skills", "missing"],
   ]);
 });
 
@@ -189,25 +178,18 @@ test("values of the wrong type are wrong_type where they are", () => {
     p.effort.medium.skills = "web-research";
     p.effort.high.skills = ["web-research", 7];
     p.outputs.report.file = 7;
-    p.outputs.report.effort = [];
     p.outputs.memo = "write-memo";
-    p.default_output = 7;
   });
   assert.deepEqual(refusals(p), [
-    ["default_output", "wrong_type"],
     ["effort.high.skills[1]", "wrong_type"],
     ["effort.low", "wrong_type"],
     ["effort.medium.skills", "wrong_type"],
     ["name", "wrong_type"],
     ["outputs.memo", "wrong_type"],
-    ["outputs.report.effort", "wrong_type"],
     ["outputs.report.file", "wrong_type"],
   ]);
   assert.deepEqual(refusals(edited((p) => (p.effort = []))), [["effort", "wrong_type"]]);
-  assert.deepEqual(refusals(edited((p) => {
-    p.outputs = [];
-    delete p.default_output;
-  })), [["outputs", "wrong_type"]]);
+  assert.deepEqual(refusals(edited((p) => (p.outputs = []))), [["outputs", "wrong_type"]]);
 });
 
 test("a pack name is lowercase letters, digits and dashes, at most 64", () => {
@@ -231,7 +213,7 @@ test("a skill name outside the strict name rule is bad_format, by its place in t
   const upper = "Web-Research";
   const bad = [nested, spaced, dotted, upper, "", "-lead", "under_score", "s".repeat(65), "/abs", "../up", "a/../b", ".", "a\\b", "a\u0000b", "a\n"];
   assert.deepEqual(refusals(edited((p) => (p.effort.low.skills = bad))), bad.map((_, i) => [`effort.low.skills[${i}]`, "bad_format"]).sort(byField));
-  assert.deepEqual(refusals(edited((p) => (p.outputs.report.effort.low.skills = ["../up"]))), [["outputs.report.effort.low.skills[0]", "bad_format"]]);
+  assert.deepEqual(refusals(edited((p) => (p.outputs.report.skills = ["../up"]))), [["outputs.report.skills[0]", "bad_format"]]);
 });
 
 test("a skill named twice in one list is a duplicate at its second place", () => {
@@ -253,10 +235,6 @@ test("an output file is a plain relative path in the workspace", () => {
   assert.deepEqual(refusals(edited((p) => (p.outputs.report.file = "f".repeat(MAX_OUTPUT_FILE + 1)))), [["outputs.report.file", "too_long"]]);
 });
 
-test("default_output names one of the pack's outputs", () => {
-  for (const name of ["slides", "constructor", "toString"]) assert.deepEqual(refusals(edited((p) => (p.default_output = name))), [["default_output", "not_an_option"]], name);
-});
-
 test("lists and outputs are bounded", () => {
   assert.equal(MAX_PACK_SKILLS, 32);
   assert.equal(MAX_PACK_OUTPUTS, 32);
@@ -265,7 +243,6 @@ test("lists and outputs are bounded", () => {
   assert.deepEqual(packIssues(edited((p) => (p.effort.low.skills = skills(MAX_PACK_SKILLS)))), []);
   assert.deepEqual(refusals(edited((p) => (p.effort.low.skills = skills(MAX_PACK_SKILLS + 1)))), [["effort.low.skills", "too_many"]]);
   assert.deepEqual(refusals(edited((p) => (p.outputs.memo.skills = skills(MAX_PACK_SKILLS + 1)))), [["outputs.memo.skills", "too_many"]]);
-  assert.deepEqual(refusals(edited((p) => (p.outputs.report.effort.low.skills = skills(MAX_PACK_SKILLS + 1)))), [["outputs.report.effort.low.skills", "too_many"]]);
   const outputs = (n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`out-${i}`, { skills: [] }]));
   assert.deepEqual(packIssues(edited((p) => (p.outputs = { ...outputs(MAX_PACK_OUTPUTS - 1), report: { skills: [] } }))), []);
   assert.deepEqual(refusals(edited((p) => (p.outputs = { ...outputs(MAX_PACK_OUTPUTS), report: { skills: [] } }))), [["outputs", "too_many"]]);
@@ -293,10 +270,8 @@ test("every issue is collected, not only the first", () => {
     p.effort.low.skills = ["../x"];
     p.effort.medium.thinking = "off";
     p.outputs.report.file = "/abs";
-    p.default_output = "slides";
   });
   assert.deepEqual(refusals(p), [
-    ["default_output", "not_an_option"],
     ["effort.low.skills[0]", "bad_format"],
     ["effort.medium.thinking", "not_an_option"],
     ["name", "bad_format"],
