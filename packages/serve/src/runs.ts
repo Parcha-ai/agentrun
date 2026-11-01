@@ -173,6 +173,9 @@ export type Run = {
   relaunches: number;
   /** Its newest launch has not reported back: its mark (RUN_LAUNCHING) is on disk. */
   launching?: boolean;
+  /** Its files being copied into its work/ before its first launch, until they are: nothing launches it meanwhile (a
+   *  request that would waits for it), and nothing but a cancel settles it. */
+  preparing?: Promise<void>;
   settled: boolean;
   settling?: Promise<void>;
   /** The newest write of its serve.json: one at a time, in order. */
@@ -283,6 +286,9 @@ export function statusOf(run: Run): { status: Status; state: State } {
 
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
+/** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. */
+export type StartOptions = { input: Json; title: string; effort?: string; maxCostUsd?: number; inputs?: (work: string) => Promise<unknown> };
+
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
@@ -748,6 +754,14 @@ export class Runs {
     const deadline = Date.now() + timeoutMs;
     // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
     await this.sweepOnce();
+    // And for its files, which its start copies before it launches it: within the time left.
+    const copying = run.preparing;
+    if (copying) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([copying, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, deadline - Date.now()))))]);
+      clearTimeout(timer);
+      if (run.preparing === copying) throw new ApiError("unavailable", "the run's files are still being copied into its workspace", { retry_after_ms: 1000 }, { "retry-after": "1" });
+    }
     for (let launched = false; ; await sleep(100)) {
       const record = await this.record(run);
       // Checked after the read: a settle may end the run while it is read, and nothing starts a run that ended.
@@ -816,7 +830,7 @@ export class Runs {
   }
 
   private launch(run: Run): void {
-    if (run.child || this.closing || run.cancel || run.outcome || run.finishing) return;
+    if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing) return;
     // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts).
     const secrets = handover(RUN_SECRETS);
     const env: NodeJS.ProcessEnv = {
@@ -936,6 +950,9 @@ export class Runs {
   /** `exited`: the process this server supervised exited. Exiting on an error before it released fails the run; going
    *  any other way before the run ended (killed, or found gone at a start) opens it again. */
   private async settleOnce(run: Run, code: number | null, exited: boolean): Promise<void> {
+    // A run whose files are still being copied has had no process yet: its start launches it, and only a cancel ends it
+    // first (a recovery that lists it meanwhile must not fail it for its launch mark).
+    if (run.preparing && !run.cancel) return;
     run.feed?.abort();
     run.feed = undefined;
     run.working = false;
@@ -1141,7 +1158,8 @@ export class Runs {
     this.starting++;
   }
 
-  async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  /** `inputs` copies the run's files into its work/ (uploads.ts), after the store made it and before its process starts. */
+  async create(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
     await this.sweepOnce();
     await this.takePlace();
     try {
@@ -1154,7 +1172,7 @@ export class Runs {
     }
   }
 
-  private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  private async start(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
@@ -1169,6 +1187,13 @@ export class Runs {
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;
     this.refresh(run);
+    if (options.inputs) {
+      // Listed from here, so a request may reach it while it copies: `preparing` holds it until its files are in.
+      const prepared = this.prepare(run, started.workspace, options.inputs).finally(() => void (run.preparing = undefined));
+      // Never rejected: a request waiting on it reads how the start ended from the run; the start's own error is the create's.
+      run.preparing = prepared.then(() => undefined, () => undefined);
+      if (!(await prepared)) return run;
+    }
     this.launch(run);
     if (revision.kind === "workflow") return run;
     void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => {
@@ -1180,6 +1205,31 @@ export class Runs {
       else if (!run.cancel) void this.settle(run, 1, true);
     });
     return run;
+  }
+
+  /** Copies the run's files into its work/ under the launch mark: a server that goes down while it copies leaves the
+   *  mark, and the next start fails the run rather than run it on part of its files. Copied whole, the mark goes, and the
+   *  launch makes its own. False when the copy failed, and the run ended so (or was cancelled meanwhile). */
+  private async prepare(run: Run, work: string, inputs: (work: string) => Promise<unknown>): Promise<boolean> {
+    try {
+      // The mark itself may fail (a full disk): the run ends as when the copy does.
+      this.markLaunching(run);
+      await inputs(work);
+    } catch (error) {
+      run.submitted = 0;
+      // Cancelled while it copied: it ends so.
+      if (!(run.outcome || run.cancel)) {
+        run.error = { code: "run_failed", message: `The run's files could not be copied into its workspace: ${(error as Error).message}`, retryable: false };
+        await this.carryBack(run, "failed");
+      }
+      // The mark goes only once the store has the run's end: a server that goes down before then finds it, and fails the
+      // run rather than launch it on part of its files.
+      const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
+      if (row && row.state !== "running") this.reportedBack(run);
+      return false;
+    }
+    this.reportedBack(run);
+    return true;
   }
 
   private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number): Promise<void> {

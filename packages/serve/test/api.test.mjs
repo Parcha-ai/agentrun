@@ -8,14 +8,15 @@ import { capabilities, ERROR_STATUS, startServe } from "../dist/index.js";
 import { EFFORT_ENV, thinkingOf } from "../dist/model.js";
 import { agent, answerFlow, client, flowAgent, scratch, serve, withEnv } from "./support.mjs";
 
-test("capabilities answer without a credential and say what this server offers: local, no quotes, no home moves, no upload limit", async (t) => {
+test("capabilities answer without a credential and say what this server offers: local, no quotes, no home moves, uploads up to their limits", async (t) => {
   withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "PARALLEL_API_KEY"]);
   const { baseUrl } = await serve(t);
   const { status, body } = await client(baseUrl)("GET", "/capabilities");
   assert.equal(status, 200);
   assert.equal(body.backend, "local");
   assert.equal(body.contract, "agentrun.v2/0");
-  assert.equal(body.limits.max_upload_bytes, null);
+  assert.equal(body.limits.max_upload_bytes, 50 * 2 ** 20);
+  assert.equal(body.limits.max_files_per_run, 20);
   assert.deepEqual(body.models, { source: "faux", fast: "faux/faux-1", default: "faux/faux-1", strong: "faux/faux-1" });
   assert.equal(body.features.quotes, false);
   assert.deepEqual(body.features.home, { export: false, import: false, check: false });
@@ -36,7 +37,7 @@ test("capabilities answer without a credential and say what this server offers: 
   const withJev = (await client((await serve(t)).baseUrl)("GET", "/capabilities")).body.workflows;
   assert.deepEqual([withJev.adapters, withJev.decisions.providers], [["runNode", "runEffect", "runJudge"], [{ id: "jev", available: true }, { id: "parallel", available: false, reason: withJev.decisions.providers[1]?.reason }, { id: "openrouter", available: false, reason: withJev.decisions.providers[2]?.reason }]]);
   assert.deepEqual(body.features.thinking, ["low", "medium", "high", "xhigh", "max"]);
-  assert.equal(body.features.files.upload, false);
+  assert.deepEqual(body.features.files, { upload: true, read: true, range: false, during_run: true });
   assert.deepEqual(body.regions, [{ id: "local", jurisdiction: null, state: "live" }]);
 });
 
@@ -224,8 +225,6 @@ test("every feature declared off answers 501 unsupported_here naming it, before 
     ["runs.kill", "POST", "/runs/x/kill", {}],
     ["home.export", "GET", "/agents/x/home", undefined, { accept: "application/json" }],
     ["home.import", "PUT", "/agents/x/home", {}],
-    ["files.upload", "POST", "/files", { path: "a.txt", size_bytes: 1 }],
-    ["files.upload", "PUT", "/files/x", {}],
   ];
   for (const [capability, method, path, body, headers] of probes) {
     const [group, name] = capability.split(".");
