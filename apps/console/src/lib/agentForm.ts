@@ -1,4 +1,5 @@
 import type { ClientError } from "./client";
+import { DECISION_STARTER } from "./decisionStarter";
 
 export type HarnessId = "pi" | "claude-agent" | "codex";
 export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; skills: string[]; tools: string[]; [field: string]: unknown };
@@ -34,8 +35,17 @@ export function same(a: unknown, b: unknown): boolean {
   return ka.length === kb.length && ka.every((k) => same((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
 }
 
-/** The body that creates an agent: its first revision, with what the form names and no skills yet. */
+/** The picker's choice that makes a decision agent: a workflow revision from the starter decision workflow. It is a
+ *  choice in the form only, never a harness id: the revision names no harness, so its model nodes run on the default. */
+export const DECISION = "decision";
+
+/** The body that creates an agent: its first revision, with what the form names and no skills yet. A decision agent is
+ *  the starter decision workflow (a copy), with no instructions, harness, thinking, model or tools: a workflow revision
+ *  keeps none of those beside its workflow. */
 export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; thinking?: string; model?: string }): { definition: Definition } {
+  if (f.harness === DECISION) {
+    return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: structuredClone(DECISION_STARTER), skills: [], tools: [] } };
+  }
   return {
     definition: {
       version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness,
@@ -74,12 +84,15 @@ const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", c
 const ORDER: HarnessId[] = ["pi", "claude-agent", "codex"];
 
 /** The harness choices: pi, Claude and Codex as the server lists them (`GET /v2/capabilities` `harnesses`), each one the
- *  server does not run shown disabled with its reason. A harness the server does not list is not offered. */
-export function harnessOptions(harnesses: { id: string; available: boolean; reason?: string }[]) {
-  return ORDER.flatMap((id) => {
+ *  server does not run shown disabled with its reason. A harness the server does not list is not offered. With
+ *  `decision` (a new agent), Decision follows them: available when the server runs decision workflows. */
+export function harnessOptions(harnesses: { id: string; available: boolean; reason?: string }[], decision?: { available: boolean }) {
+  const options: { id: string; label: string; available: boolean; reason?: string }[] = ORDER.flatMap((id) => {
     const h = harnesses.find((x) => x.id === id);
     return h ? [{ id, label: LABEL[id], available: h.available, reason: h.reason }] : [];
   });
+  if (decision) options.push({ id: DECISION, label: "Decision", available: decision.available, reason: decision.available ? undefined : "This server runs no decision workflows: it has no decision provider's key." });
+  return options;
 }
 
 export type SaveProblem = { kind: "conflict"; message: string } | { kind: "invalid"; message: string; fields: Record<string, string> } | { kind: "other"; message: string };

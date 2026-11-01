@@ -111,9 +111,10 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
   }, [v2, where]);
   const agentName = (id: string) => names[id] ?? id;
-  const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string } } | null;
-  // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
-  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
+  const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string }; workflows?: { adapters?: string[] } } | null;
+  // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both. It
+  // runs decision workflows when its workflows take the runJudge adapter.
+  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default, decisions: c?.workflows?.adapters?.includes("runJudge") ?? false };
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/" }[s]);
   // The agents both start screens pick from, every page of them.
   const [agents, setAgents] = useState<Agent[] | null>(null);
