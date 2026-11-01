@@ -3,5 +3,5 @@ export { foldLabel, inputPreview, labelOf, registerLabel, registerTurnEnding, ty
 export { renderText } from "./render-text.js";
 export {
   CAPS, METRIC_NAMES, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf, timelineReducer,
-  type AgentEventLike, type EntryLike, type RunMetrics, type TimelineEvent, type TimelineKind, type TimelineOptions, type ToolMetrics,
+  type AgentEventLike, type DecisionLike, type EntryLike, type RunMetrics, type TimelineEvent, type TimelineKind, type TimelineOptions, type ToolMetrics,
 } from "./timeline.js";

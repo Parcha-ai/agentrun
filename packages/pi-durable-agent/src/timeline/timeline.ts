@@ -227,9 +227,24 @@ function createMeter() {
     return { usd: unknown > 0 || pending.length > 0 || cut ? null : Math.round(known * 1e6) / 1e6, requests: count };
   }
 
+  // A workflow's decision requests (Jev, Parallel), from its receipts: requests of their own, beside its entries'.
+  let decided = 0;
+  function decide(row: DecisionLike): void {
+    decided += 1;
+    const name = str(row.model);
+    if (name) {
+      const key = metricName(str(row.provider) ? `${str(row.provider)}/${name}` : name);
+      models.set(key, (models.get(key) ?? 0) + 1);
+    }
+    // A cancelled request's tokens are unknown, as an aborted answer's are; so are those of one whose spend its driver's
+    // state keeps, which no record here holds.
+    const u = obj(row.usage);
+    addTokens(row.status === "cancelled" || row.driver_spend === true || !u ? undefined : tokensOf({ input: u.input_tokens, output: u.output_tokens }, row.status === "failed"));
+  }
+
   /** The counts of a run that ended: a request it cut has unknown tokens. */
   function settled(): Omit<RunMetrics, "tools"> {
-    const all = usage(true)?.requests ?? 0;
+    const all = (usage(true)?.requests ?? 0) + decided;
     const cut = Math.max(0, marked - answered) + Math.max(0, compacting - compactions);
     let model: string | undefined;
     for (const [key, n] of models) if (model === undefined || n > models.get(model)!) model = key;
@@ -237,7 +252,7 @@ function createMeter() {
     return { ...tokens, requests: all, unmetered: Math.min(all, unmetered + cut), models: kept, ...(model !== undefined ? { model } : {}) };
   }
 
-  return { push, usage, settled };
+  return { push, decide, usage, settled };
 }
 
 type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean };
@@ -489,10 +504,16 @@ export function timelineOf(entries: readonly EntryLike[], options: TimelineOptio
   return usage ? [...projector.rows(), usage] : [...projector.rows()];
 }
 
+/** A workflow's decision receipt as its run's store keeps it (`@parcha/agentrun-pi/durable`'s DecisionRow): the fields
+ *  runMetricsOf reads. */
+export type DecisionLike = { usage?: unknown; model?: unknown; provider?: unknown; status?: unknown; driver_spend?: unknown };
+
 /** What a run that ended used, from the entries of every conversation of its store, in log order (`SELECT record FROM
  *  entries ORDER BY id`): its model requests and their tokens, counted as its usage row counts them (a cut request's
- *  tokens are unknown), and its tool calls. Pure, like timelineOf. */
-export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
+ *  tokens are unknown), and its tool calls. `decisions`, a workflow run's decision receipts: each a request, its
+ *  `usage` (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, unmetered. Pure, like
+ *  timelineOf. */
+export function runMetricsOf(records: readonly EntryLike[], decisions: readonly DecisionLike[] = []): RunMetrics {
   const meter = createMeter();
   const seen = new Set<string>();
   // Each call by `conversation:id`, its tool's name as kept, and whether a result closed it, as the timeline pairs them.
@@ -531,6 +552,7 @@ export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
     }
   }
   for (const call of calls.values()) if (!call.done) tally(call.name, true);
+  for (const row of decisions) meter.decide(row);
   const ordered = new Map([...tools].sort(([a], [b]) => order.get(a)! - order.get(b)!));
   return { ...meter.settled(), tools: keepBusiest(ordered, (t) => t.calls, (a, b) => ({ calls: a.calls + b.calls, errors: a.errors + b.errors }), METRIC_NAMES.otherTools) };
 }
