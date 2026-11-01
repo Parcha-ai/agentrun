@@ -58,6 +58,8 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
+| `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
+| `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -235,7 +237,14 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 
+| `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/`, the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
+| `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
+
 There is no `bash`: a run gets no shell (see [Safety](#safety)).
+
+A call tool that fails on its own (an unreadable PDF, a model's refusal) fails its call node; inside a `map` with
+`onItemFailure: "collect"` it fails that item, and the other items go on. A cancel or the node's deadline still
+stops the run.
 
 `fetch_page` reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
 every address it resolves to is checked, and the connection is dialled at the address checked, so a loopback, private,
@@ -276,6 +285,9 @@ the sessions it still holds are released at Browserbase.
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
 | `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`; `failed` includes escalated. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. |
+| `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; a poll never answers `home_busy` (`stale: true` marks a last whole view). An agentic run has none (`404`). |
+| `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
+| `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
@@ -316,7 +328,14 @@ typed answers and their probabilities.
 - Parallel Decisions, through `@parcha/agentrun-decisions`, answers a node that says `provider: "parallel"`, with web
   citations as its evidence. Set `PARALLEL_API_KEY`. Each request is booked at Parallel's list price as an estimate,
   and one whose outcome was lost after sending is never sent again: the run escalates it as interrupted.
-- `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev" | "parallel", available,
+- OpenRouter's Decisions models answer a node that says `provider: "openrouter"` and names its model in `model`
+  (`liquid/d1`, `perplexity/pplx-decider-v1.2`, `cloudflare/clef`, `typesafe/jev-1.14`). They run on the OpenRouter key
+  Jev's OpenRouter route reads (`OPENROUTER_API_KEY`, else `AGENT_MODEL_API_KEY` with `AGENT_MODEL_BASE_URL` on
+  openrouter.ai), handed to the run's process on the decision descriptor as Jev's is. That key is also the model
+  gateway's, which a run's process holds. Images to them are experimental.
+- A decision node's `images` are files of the run's `work/`, such as the pages `pdf_pages` draws: the run's process
+  reads them and sends them with the request. The receipt keeps each image's SHA-256, never its bytes.
+- `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev" | "parallel" | "openrouter", available,
   reason?, note?}]`), and `runJudge` is among `workflows.adapters` once any of them runs here. On the OpenRouter route,
   jev's `note` names the variable Jev runs on (`OPENROUTER_API_KEY` or `AGENT_MODEL_API_KEY`) and says that it is the
   model gateway's key.
@@ -326,8 +345,10 @@ typed answers and their probabilities.
   "not_set_up_here", needs: ["PARALLEL_API_KEY"]}}`. A provider this server does not have refuses the save, `422`.
 - Each question's receipt is a row of the run's store (`agentrun.decisions`) before its answer acts, and a resumed run
   takes an answered one instead of asking again.
-- Jev's API reports no cost. A receipt keeps its cost unknown (`null`), and so does the run: its `cost.usd` reads
-  `null`, never `0`, while any of its decisions' costs is unknown.
+- Jev's API reports token counts and no price, so each answered decision is booked at TypeSafe's published price
+  ($0.042 per million input tokens; output tokens are free) as an estimate, and the run's `cost.usd` is its decisions'
+  sum, with `basis: "estimate"`. A decision whose cost is unknown (no token counts, the OpenRouter route, or a call that
+  failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
 - The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
   server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands the values to a workflow
   run's process once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS

@@ -48,6 +48,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: node scripts/changes.mjs --check --base "$BASE_SHA"
       - run: npm install --global npm@11.21.0 --ignore-scripts
+      - name: Install poppler, Ghostscript and ffmpeg
+        # agentrun-serve's pdf_pages draws pages with poppler, and its tests make their PDFs with Ghostscript and a wide
+        # PNG with ffmpeg: the durable shard runs serve's suite.
+        if: matrix.shard == 'durable'
+        run: |
+          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
+          pdftoppm -v && gs --version && ffmpeg -version | head -1
       - run: npm ci --ignore-scripts
       - run: npm run build
       - if: matrix.shard == 'checks'
@@ -202,6 +211,14 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
+      - name: Install poppler, Ghostscript and ffmpeg
+        # The first suites run agentrun-serve's, whose pdf_pages tests need them (as the durable test shard does).
+        if: matrix.suites == 'first'
+        run: |
+          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
+          pdftoppm -v && gs --version && ffmpeg -version | head -1
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: The clean consumer and the reference example at the leg's pi

@@ -5,9 +5,9 @@ import type { StoreStats } from "@parcha/pi-durable-agent";
 import { type Runs, type Status, statusOf } from "./runs.js";
 
 type Bucket = "active" | "needs_input" | "status_unknown";
-/** Where a running row this server holds is counted, by its status. One it holds as ended, its end not yet written to
+/** Where a running row this server holds is counted, by its status (a paused workflow run is held, so active). One it holds as ended, its end not yet written to
  *  the store, is neither active nor waiting: unknown. */
-const BUCKET: Record<Status, Bucket> = { queued: "active", working: "active", input_required: "needs_input", completed: "status_unknown", failed: "status_unknown", cancelled: "status_unknown" };
+const BUCKET: Record<Status, Bucket> = { queued: "active", working: "active", paused: "active", input_required: "needs_input", completed: "status_unknown", failed: "status_unknown", cancelled: "status_unknown" };
 
 /** As GET /usage rounds its sums; null stays null. */
 const round = (usd: number | null) => (usd === null ? null : Math.round(usd * 1e6) / 1e6);

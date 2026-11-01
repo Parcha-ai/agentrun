@@ -117,7 +117,16 @@ test("the contract's operations are as vendored; this server's own are added and
       marked.push(`${at}.${field}`);
     }
   };
-  for (const [name, schema] of Object.entries(components.schemas)) strip(schema, name);
+  for (const [name, schema] of Object.entries(components.schemas)) {
+    // A contract enum this server widens (RunStatus's `paused`) is marked on the schema, each value it adds listed.
+    if (schema["x-agentrun-serve"] !== undefined && Array.isArray(schema.enum)) {
+      const original = VENDORED.components.schemas[name].enum;
+      for (const value of schema.enum.filter((v) => !original.includes(v))) marked.push(`${name}.${value}`);
+      schema.enum = schema.enum.filter((v) => original.includes(v));
+      delete schema["x-agentrun-serve"];
+    }
+    strip(schema, name);
+  }
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
   assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details].sort(), "info lists the contract properties it notes");
@@ -213,6 +222,6 @@ test("the decision providers' widening to parallel is its own addition, decision
   const { doc } = await served(t);
   const decisions = doc.components.schemas.Capabilities.properties.workflows.properties.decisions;
   assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
-  assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel"]);
+  assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
 });

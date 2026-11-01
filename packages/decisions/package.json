@@ -2,13 +2,14 @@
   "name": "@parcha/agentrun-decisions",
   "version": "0.1.0-beta.28",
   "private": true,
-  "description": "Third-party decision models as DecisionProviders for the AgentRun DSL: Parallel Decisions, answering typed questions (yes/no, choice, score) grounded in live web evidence, behind the DSL's runJudge seam.",
+  "description": "Third-party decision models as DecisionProviders for the AgentRun DSL: Parallel Decisions (typed questions grounded in live web evidence) and OpenRouter's Decisions models (any of them by name), behind the DSL's runJudge seam.",
   "keywords": [
     "agentrun",
     "decisions",
     "parallel",
     "workflow",
-    "judge"
+    "judge",
+    "openrouter"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -22,6 +23,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./testing/faux-system-one": {
+      "types": "./dist/testing/faux-system-one.d.ts",
+      "default": "./dist/testing/faux-system-one.js"
     },
     "./package.json": "./package.json"
   },

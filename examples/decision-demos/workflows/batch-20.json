@@ -1,0 +1,451 @@
+{
+  "v": 2,
+  "name": "batch-20",
+  "schemas": {
+    "Input": {
+      "type": "object",
+      "required": [
+        "documents",
+        "as_of"
+      ],
+      "properties": {
+        "documents": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "The documents to review, file names under the run's documents."
+        },
+        "as_of": {
+          "type": "string",
+          "description": "The review date (YYYY-MM-DD): a filing date after it is in the future."
+        }
+      },
+      "examples": [
+        {
+          "documents": [
+            "coi-bramblewick-tidal-instruments.pdf",
+            "coi-quarry-lantern-software.pdf",
+            "coi-quillmere-harbor-robotics.pdf",
+            "coi-ashgrove-vireo-labs.pdf",
+            "coi-ferncastle-biotics.pdf",
+            "coi-marrowfield-bakeworks.pdf",
+            "coi-tessaline-freight-systems.pdf",
+            "coi-calloway-pinnacle-mining.pdf",
+            "coi-wrenfield-acoustics.pdf",
+            "ein-quarry-lantern-software.pdf",
+            "ein-osterby-orchard-supply.pdf",
+            "ein-pellucid-harbor-analytics.pdf",
+            "ein-dunmore-kiln-works.pdf",
+            "ein-hollowmere-textiles.pdf",
+            "ein-vantablue-logistics.pdf",
+            "bank-bramblewick-tidal-instruments.pdf",
+            "bank-tessaline-freight-systems.pdf",
+            "bank-osterby-orchard-supply.pdf",
+            "bank-ashgrove-vireo-labs.pdf",
+            "bank-quorvane-medical-devices.pdf"
+          ],
+          "as_of": "2026-10-30"
+        }
+      ]
+    },
+    "PdfPages": {
+      "type": "object",
+      "required": [
+        "name",
+        "pageCount",
+        "pages",
+        "text"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "pageCount": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "pages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "page",
+              "image"
+            ],
+            "properties": {
+              "page": {
+                "type": "integer"
+              },
+              "image": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "LlmResult": {
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usage": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "DocumentChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "doc_type",
+        "looks_altered",
+        "issuer_marks",
+        "signed",
+        "name_consistent",
+        "date_not_future"
+      ],
+      "properties": {
+        "doc_type": {
+          "type": "string",
+          "enum": [
+            "certificate_of_incorporation",
+            "ein_letter",
+            "bank_letter",
+            "other"
+          ],
+          "description": "What kind of document is shown in <page_1>?",
+          "criteria": {
+            "certificate_of_incorporation": "A certificate or articles of incorporation (or formation) filed with a US state's filing office.",
+            "ein_letter": "An IRS notice assigning an Employer Identification Number (CP 575 or similar).",
+            "bank_letter": "A bank's letter confirming a business account (account verification or reference letter).",
+            "other": "Any other document, or a page that cannot be read."
+          }
+        },
+        "looks_altered": {
+          "type": "boolean",
+          "description": "Does <page_1> show signs that someone edited the document after it was issued: a field covered over or pasted on, a date typed over another, a box with a visible edge or shadow, or a value misaligned or in a different typeface from the text around it?"
+        },
+        "issuer_marks": {
+          "type": "boolean",
+          "description": "Does <page_1> carry the issuer's marks for a document of its kind: for a certificate or articles of incorporation, the filing office's seal or certification stamp; for a bank letter, the bank's letterhead; for an IRS EIN notice (CP 575), the IRS header and the notice number?"
+        },
+        "signed": {
+          "type": "boolean",
+          "description": "Is every signature line in <page_1> signed with a handwritten or script signature? A document with no signature lines, such as an IRS EIN notice (CP 575), counts as yes."
+        },
+        "name_consistent": {
+          "type": "boolean",
+          "description": "Is the company's name legible, and is it the same name (same words, same suffix such as Inc., LLC or Corp.) everywhere it appears in <page_1>: heading, body and certification?"
+        },
+        "date_not_future": {
+          "type": "boolean",
+          "description": "Is every filing, notice or execution date shown in <page_1> on or before the date in `as_of`?"
+        }
+      }
+    },
+    "Review": {
+      "type": "object",
+      "required": [
+        "document",
+        "doc_type",
+        "verdict",
+        "decided_by",
+        "reasons",
+        "probabilities"
+      ],
+      "properties": {
+        "document": {
+          "type": "string"
+        },
+        "doc_type": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "valid",
+            "invalid",
+            "review"
+          ]
+        },
+        "decided_by": {
+          "type": "string"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "probabilities": {
+          "type": "object"
+        },
+        "second_look": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
+    "Result": {
+      "type": "object",
+      "required": [
+        "tally",
+        "reviews",
+        "report_template",
+        "report_llm"
+      ],
+      "properties": {
+        "tally": {
+          "type": "object"
+        },
+        "reviews": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Review"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "unreadable": {
+          "type": "array"
+        },
+        "report_template": {
+          "type": "string"
+        },
+        "report_llm": {
+          "type": "string"
+        },
+        "report_llm_model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "report_llm_cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  "input": {
+    "schemaId": "Input"
+  },
+  "output": {
+    "schemaId": "Result",
+    "path": "result"
+  },
+  "root": {
+    "node": "chain",
+    "steps": [
+      {
+        "node": "map",
+        "label": "review_documents",
+        "itemsPath": "documents",
+        "maxConcurrency": 4,
+        "onItemFailure": "collect",
+        "failedAs": "unreadable",
+        "resultPath": "review",
+        "as": "reviews",
+        "body": {
+          "node": "chain",
+          "steps": [
+            {
+              "node": "call",
+              "label": "render_page",
+              "via": "tool",
+              "tool": "pdf_pages",
+              "args": {
+                "path": "{item}",
+                "maxPages": 1,
+                "dpi": 110
+              },
+              "out": "PdfPages",
+              "as": "pages",
+              "deadline_s": 60
+            },
+            {
+              "node": "judge",
+              "label": "inspect_document",
+              "provider": "jev",
+              "timeoutMs": 60000,
+              "images": {
+                "<page_1>": "{pages.pages.0.image}"
+              },
+              "state": {
+                "file": "{pages.name}",
+                "page_image": "<page_1>",
+                "as_of": "{as_of}",
+                "text_layer": "{pages.text}"
+              },
+              "out": "DocumentChecks",
+              "as": "checks"
+            },
+            {
+              "node": "code",
+              "label": "apply_thresholds",
+              "as": "triage",
+              "code": "(s) => {\n  const T = {\"looks_altered\":{\"want\":\"no\",\"pass\":0.6,\"fail\":0.8,\"label\":\"looks altered\"},\"issuer_marks\":{\"want\":\"yes\",\"pass\":0.7,\"fail\":0.25,\"label\":\"missing the issuer's seal, stamp or header\"},\"signed\":{\"want\":\"yes\",\"pass\":0.7,\"fail\":0.25,\"label\":\"a signature line is not signed\"},\"name_consistent\":{\"want\":\"yes\",\"pass\":0.7,\"fail\":0.3,\"label\":\"the company name differs between places\"},\"date_not_future\":{\"want\":\"yes\",\"pass\":0.7,\"fail\":0.3,\"label\":\"a date is in the future\"}};\n  const raw = (s[\"checks$answers\"] || {}).answers || {};\n  const p = {}; const failed = []; const unsure = [];\n  for (const q of Object.keys(T)) {\n    const t = T[q];\n    const v = raw[q] && typeof raw[q].noul === \"number\" ? raw[q].noul : null;\n    p[q] = v;\n    if (v === null) { unsure.push(q + \": no probability came back\"); continue; }\n    const good = t.want === \"yes\" ? v >= t.pass : v < t.pass;\n    const bad = t.want === \"yes\" ? v < t.fail : v >= t.fail;\n    if (bad) failed.push(t.label + \" (\" + q + \" \" + v.toFixed(2) + \")\");\n    else if (!good) unsure.push(q + \" is unclear (P(yes) \" + v.toFixed(2) + \")\");\n  }\n  const kind = (s.checks || {}).doc_type;\n  if (kind === \"other\") failed.push(\"not a certificate, EIN notice or bank letter\");\n  return { action: failed.length ? \"fail\" : unsure.length ? \"borderline\" : \"pass\", failed, unsure, unsure_text: unsure.join(\"; \"), p };\n}"
+            },
+            {
+              "node": "route",
+              "label": "triage_route",
+              "valuePath": "triage.action",
+              "as": "triage_taken",
+              "branches": {
+                "pass": {
+                  "body": {
+                    "node": "code",
+                    "label": "accept",
+                    "as": "verdict",
+                    "code": "(s) => ({ status: \"valid\", by: \"thresholds\" })"
+                  }
+                },
+                "fail": {
+                  "body": {
+                    "node": "code",
+                    "label": "reject",
+                    "as": "verdict",
+                    "code": "(s) => ({ status: \"invalid\", by: \"thresholds\" })"
+                  }
+                },
+                "borderline": {
+                  "body": {
+                    "node": "route",
+                    "label": "second_look",
+                    "provider": "jev",
+                    "timeoutMs": 60000,
+                    "images": {
+                      "<page_1>": "{pages.pages.0.image}"
+                    },
+                    "state": {
+                      "file": "{pages.name}",
+                      "page_image": "<page_1>",
+                      "as_of": "{as_of}",
+                      "unclear_checks": "{triage.unsure}"
+                    },
+                    "instructions": "A first pass could not settle the checks in `unclear_checks`. Looking at <page_1> again with those in mind: is this document genuine, complete and unaltered, so that it can be accepted as issued, as of `as_of`?",
+                    "branches": {
+                      "valid": {
+                        "criteria": "Genuine, complete and unaltered: nothing on the page contradicts that it was issued as shown.",
+                        "body": {
+                          "node": "code",
+                          "label": "accept_on_second_look",
+                          "as": "verdict",
+                          "code": "(s) => ({ status: \"valid\", by: \"second_look\" })"
+                        }
+                      },
+                      "doubtful": {
+                        "criteria": "Something on the page is wrong, missing or cannot be confirmed from the image.",
+                        "body": {
+                          "node": "code",
+                          "label": "hold_for_review",
+                          "as": "verdict",
+                          "code": "(s) => ({ status: \"review\", by: \"second_look\" })"
+                        }
+                      }
+                    },
+                    "unsure": {
+                      "branch": "doubtful",
+                      "gte": 0.75
+                    },
+                    "as": "second_look"
+                  }
+                }
+              }
+            },
+            {
+              "node": "code",
+              "label": "record",
+              "as": "review",
+              "code": "(s) => ({ document: s.item, doc_type: s.checks.doc_type, verdict: s.verdict.status, decided_by: s.verdict.by,\n  reasons: s.verdict.status === \"invalid\" ? s.triage.failed : s.verdict.status === \"review\" ? s.triage.unsure : [],\n  probabilities: s.triage.p,\n  second_look: s.second_look ? { taken: s.second_look.taken, unsure: s.second_look.unsure } : null })"
+            }
+          ]
+        }
+      },
+      {
+        "node": "code",
+        "label": "tally",
+        "as": "tally",
+        "code": "(s) => { const rows = s.reviews.filter((r) => r); const n = (v) => rows.filter((r) => r.verdict === v).length;\n  return { total: s.documents.length, valid: n(\"valid\"), invalid: n(\"invalid\"), review: n(\"review\"), unreadable: (s.unreadable || []).length }; }"
+      },
+      {
+        "node": "parallel",
+        "label": "write_reports",
+        "branches": [
+          {
+            "node": "code",
+            "label": "template_report",
+            "as": "report_template",
+            "code": "(s) => {\n  const rows = s.reviews.filter((r) => r);\n  const mark = { valid: \"VALID\", invalid: \"INVALID\", review: \"REVIEW\" };\n  const kind = { certificate_of_incorporation: \"Certificate of incorporation\", ein_letter: \"IRS EIN notice\", bank_letter: \"Bank letter\", other: \"Other\" };\n  const lines = [];\n  lines.push(\"# Document review: \" + rows.length + \" of \" + s.documents.length + \" documents read\");\n  lines.push(\"\");\n  lines.push(\"As of \" + s.as_of + \". Valid \" + s.tally.valid + \", invalid \" + s.tally.invalid + \", sent to review \" + s.tally.review + \", unreadable \" + s.tally.unreadable + \".\");\n  lines.push(\"\");\n  lines.push(\"| # | Document | Kind | Verdict | Decided by | Why |\");\n  lines.push(\"|---|---|---|---|---|---|\");\n  rows.forEach((r, i) => lines.push(\"| \" + (i + 1) + \" | \" + r.document + \" | \" + (kind[r.doc_type] || r.doc_type) + \" | \" + mark[r.verdict] + \" | \" + r.decided_by + \" | \" + (r.reasons.join(\"; \") || \"all checks passed\") + \" |\"));\n  for (const f of s.unreadable || []) lines.push(\"| - | \" + s.documents[f.item_index] + \" | - | UNREADABLE | \" + f.label + \" | \" + f.message + \" |\");\n  return lines.join(\"\\n\");\n}"
+          },
+          {
+            "node": "chain",
+            "steps": [
+              {
+                "node": "code",
+                "label": "llm_prompt",
+                "as": "llm_prompt",
+                "code": "(s) => {\n  const rows = s.reviews.filter((r) => r).map((r) => ({ document: r.document, kind: r.doc_type, verdict: r.verdict, decided_by: r.decided_by, reasons: r.reasons, probabilities: r.probabilities }));\n  return [\n    \"DOCUMENT REVIEW REPORT REQUEST\",\n    \"Review date: \" + s.as_of,\n    \"Totals: \" + JSON.stringify(s.tally),\n    \"Write the report document by document, in the order given. For each document: one heading with its file name, its verdict in capitals (VALID, INVALID or REVIEW), and two or three plain sentences saying what the checks found and what a reviewer should do next. Quote probabilities as given; do not invent findings that are not in the record. End with a short summary paragraph.\",\n    \"RECORDS (JSON):\",\n    JSON.stringify(rows),\n    \"UNREADABLE (JSON):\",\n    JSON.stringify((s.unreadable || []).map((f) => ({ document: s.documents[f.item_index], step: f.label, error: f.message }))),\n  ].join(\"\\n\");\n}"
+              },
+              {
+                "node": "call",
+                "label": "llm_report",
+                "via": "tool",
+                "tool": "llm",
+                "deadline_s": 180,
+                "out": "LlmResult",
+                "as": "report_llm",
+                "args": {
+                  "prompt": "{llm_prompt}",
+                  "system": "You write document review reports for a KYB analyst. Plain, short, factual. Markdown.",
+                  "maxTokens": 4000
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "node": "code",
+        "label": "deliver",
+        "as": "result",
+        "code": "(s) => ({ tally: s.tally, reviews: s.reviews, unreadable: s.unreadable || [], report_template: s.report_template, report_llm: s.report_llm.text,\n  report_llm_model: s.report_llm.model === undefined ? null : s.report_llm.model, report_llm_cost_usd: s.report_llm.cost_usd === undefined ? null : s.report_llm.cost_usd })"
+      }
+    ]
+  }
+}

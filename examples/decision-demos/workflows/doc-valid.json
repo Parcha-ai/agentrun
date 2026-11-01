@@ -1,0 +1,275 @@
+{
+  "v": 2,
+  "name": "doc-valid",
+  "schemas": {
+    "Input": {
+      "type": "object",
+      "required": [
+        "documents",
+        "as_of"
+      ],
+      "properties": {
+        "documents": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "maxItems": 1,
+          "description": "One certificate of incorporation, a file name under the run's documents."
+        },
+        "as_of": {
+          "type": "string",
+          "description": "The review date (YYYY-MM-DD): a filing date after it is in the future."
+        }
+      },
+      "examples": [
+        {
+          "documents": [
+            "coi-bramblewick-tidal-instruments.pdf"
+          ],
+          "as_of": "2026-10-30"
+        }
+      ]
+    },
+    "PdfPages": {
+      "type": "object",
+      "required": [
+        "name",
+        "pageCount",
+        "pages",
+        "text"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "pageCount": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "pages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "page",
+              "image"
+            ],
+            "properties": {
+              "page": {
+                "type": "integer"
+              },
+              "image": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "CertificateChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "is_certificate",
+        "looks_altered",
+        "seal_present",
+        "signature_present",
+        "name_consistent",
+        "date_not_future"
+      ],
+      "properties": {
+        "is_certificate": {
+          "type": "boolean",
+          "description": "Is the document in <page_1> a certificate of incorporation or articles of incorporation filed with a US state's filing office (not an IRS letter, a bank letter or another kind of document)?"
+        },
+        "looks_altered": {
+          "type": "boolean",
+          "description": "Does <page_1> show signs that someone edited the document after it was issued: a field covered over or pasted on, a date typed over another, a box with a visible edge or shadow, or a value misaligned or in a different typeface from the text around it?"
+        },
+        "seal_present": {
+          "type": "boolean",
+          "description": "Does <page_1> carry the filing office's seal or its certification stamp where the form places one?"
+        },
+        "signature_present": {
+          "type": "boolean",
+          "description": "Is there a signature (handwritten or script) on every signature line in <page_1>?"
+        },
+        "name_consistent": {
+          "type": "boolean",
+          "description": "Is the company's name legible, and is it the same name (same words, same suffix such as Inc., LLC or Corp.) everywhere it appears in <page_1>: heading, body and certification?"
+        },
+        "date_not_future": {
+          "type": "boolean",
+          "description": "Is every filing, notice or execution date shown in <page_1> on or before the date in `as_of`?"
+        }
+      }
+    },
+    "Decision": {
+      "type": "object",
+      "required": [
+        "document",
+        "verdict",
+        "decided_by",
+        "reasons",
+        "probabilities"
+      ],
+      "properties": {
+        "document": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "valid",
+            "invalid"
+          ]
+        },
+        "decided_by": {
+          "type": "string"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "probabilities": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "input": {
+    "schemaId": "Input"
+  },
+  "output": {
+    "schemaId": "Decision",
+    "path": "decision"
+  },
+  "root": {
+    "node": "chain",
+    "steps": [
+      {
+        "node": "call",
+        "label": "render_page",
+        "via": "tool",
+        "tool": "pdf_pages",
+        "args": {
+          "path": "{documents.0}",
+          "maxPages": 1,
+          "dpi": 110
+        },
+        "out": "PdfPages",
+        "as": "pages",
+        "deadline_s": 60
+      },
+      {
+        "node": "judge",
+        "label": "inspect_certificate",
+        "provider": "jev",
+        "timeoutMs": 60000,
+        "images": {
+          "<page_1>": "{pages.pages.0.image}"
+        },
+        "state": {
+          "file": "{pages.name}",
+          "page_image": "<page_1>",
+          "as_of": "{as_of}",
+          "text_layer": "{pages.text}"
+        },
+        "out": "CertificateChecks",
+        "as": "checks"
+      },
+      {
+        "node": "code",
+        "label": "apply_thresholds",
+        "as": "triage",
+        "code": "(s) => {\n  const T = {\"is_certificate\":{\"want\":\"yes\",\"pass\":0.8,\"fail\":0.2,\"label\":\"not a certificate of incorporation\"},\"looks_altered\":{\"want\":\"no\",\"pass\":0.6,\"fail\":0.8,\"label\":\"looks altered\"},\"seal_present\":{\"want\":\"yes\",\"pass\":0.7,\"fail\":0.25,\"label\":\"no seal or certification stamp\"},\"signature_present\":{\"want\":\"yes\",\"pass\":0.7,\"fail\":0.25,\"label\":\"a signature is missing\"},\"name_consistent\":{\"want\":\"yes\",\"pass\":0.7,\"fail\":0.3,\"label\":\"the company name differs between places\"},\"date_not_future\":{\"want\":\"yes\",\"pass\":0.7,\"fail\":0.3,\"label\":\"a date is in the future\"}};\n  const raw = (s[\"checks$answers\"] || {}).answers || {};\n  const p = {}; const failed = []; const unsure = [];\n  for (const q of Object.keys(T)) {\n    const t = T[q];\n    const v = raw[q] && typeof raw[q].noul === \"number\" ? raw[q].noul : null;\n    p[q] = v;\n    if (v === null) { unsure.push(q + \": no probability came back\"); continue; }\n    const good = t.want === \"yes\" ? v >= t.pass : v < t.pass;\n    const bad = t.want === \"yes\" ? v < t.fail : v >= t.fail;\n    if (bad) failed.push(t.label + \" (\" + q + \" \" + v.toFixed(2) + \")\");\n    else if (!good) unsure.push(q + \" is unclear (P(yes) \" + v.toFixed(2) + \")\");\n  }\n  \n  return { action: failed.length ? \"fail\" : unsure.length ? \"borderline\" : \"pass\", failed, unsure, unsure_text: unsure.join(\"; \"), p };\n}"
+      },
+      {
+        "node": "route",
+        "label": "triage_route",
+        "valuePath": "triage.action",
+        "as": "triage_taken",
+        "branches": {
+          "pass": {
+            "body": {
+              "node": "code",
+              "label": "accept",
+              "as": "verdict",
+              "code": "(s) => ({ status: \"valid\", by: \"thresholds\" })"
+            }
+          },
+          "fail": {
+            "body": {
+              "node": "code",
+              "label": "reject",
+              "as": "verdict",
+              "code": "(s) => ({ status: \"invalid\", by: \"thresholds\" })"
+            }
+          },
+          "borderline": {
+            "body": {
+              "node": "route",
+              "label": "second_look",
+              "provider": "jev",
+              "timeoutMs": 60000,
+              "images": {
+                "<page_1>": "{pages.pages.0.image}"
+              },
+              "state": {
+                "file": "{pages.name}",
+                "page_image": "<page_1>",
+                "as_of": "{as_of}",
+                "unclear_checks": "{triage.unsure}"
+              },
+              "instructions": "A first pass could not settle the checks in `unclear_checks`. Looking at <page_1> again with those in mind: is this document genuine, complete and unaltered, so that it can be accepted as issued, as of `as_of`?",
+              "branches": {
+                "valid": {
+                  "criteria": "Genuine, complete and unaltered: nothing on the page contradicts that it was issued as shown.",
+                  "body": {
+                    "node": "code",
+                    "label": "accept_on_second_look",
+                    "as": "verdict",
+                    "code": "(s) => ({ status: \"valid\", by: \"second_look\" })"
+                  }
+                },
+                "doubtful": {
+                  "criteria": "Something on the page is wrong, missing or cannot be confirmed from the image.",
+                  "body": {
+                    "node": "escalate",
+                    "label": "send_to_review",
+                    "when": {
+                      "predicate": "field_equals",
+                      "path": "second_look.taken",
+                      "value": "doubtful"
+                    },
+                    "kind": "document_review",
+                    "stage": "doc-valid",
+                    "summary": "A person reviews {pages.name}: the first pass was unsure ({triage.unsure_text}) and the second look did not clear it."
+                  }
+                }
+              },
+              "unsure": {
+                "branch": "doubtful",
+                "gte": 0.75
+              },
+              "as": "second_look"
+            }
+          }
+        }
+      },
+      {
+        "node": "code",
+        "label": "decide",
+        "as": "decision",
+        "code": "(s) => ({ document: s.pages.name, verdict: s.verdict.status, decided_by: s.verdict.by, reasons: s.verdict.status === \"valid\" ? [] : s.triage.failed, probabilities: s.triage.p })"
+      }
+    ]
+  }
+}
