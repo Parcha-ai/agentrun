@@ -35,11 +35,13 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   /** A request and its response's ETag (an agent's current revision, for the next If-Match). `text`: the body as text
    *  whatever its type (a run's file is its bytes, never parsed). */
   async function callTagged<T>(method: string, path: string, { body, headers = {}, signal, text = false }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<{ body: T; etag: string | null; status: number }> {
+    // Every write is JSON, a bodiless DELETE too: the server takes the cookie on a write only with this type.
+    const json = body !== undefined || (method !== "GET" && method !== "HEAD");
     const res = await f(`${base}${path}`, {
       method,
       signal,
       credentials: "same-origin",
-      headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
+      headers: { accept: "application/json", ...(json ? { "content-type": "application/json" } : {}), ...headers },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
