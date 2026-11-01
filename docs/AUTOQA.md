@@ -30,7 +30,8 @@ npm run build -w @parcha/agentrun-serve         # rebuild serve after the consol
 ```
 
 Start it with the launcher, which hands secrets to the server over a pipe:
-`packages/serve/launcher/agentrun-serve --data DIR --port N --listen 127.0.0.1 [--drain-timeout 8s]`.
+`packages/serve/launcher/agentrun-serve --data DIR --port N [--drain-timeout 8s]`, on its default loopback listen
+address.
 `node packages/serve/dist/cli.js` also works, but then the secrets stay in the environment.
 
 The banner prints `AGENTRUN_BASE_URL`, then the token (on the first start only), then `Open <url>/` and
@@ -41,7 +42,7 @@ there and never print it.
 | --- | --- |
 | `TMPDIR`, `--data` | Use a fresh data dir and a temp dir of its own per run, so no earlier run's state is read. |
 | `XDG_CONFIG_HOME` | The launcher writes `agentrun/seal.key` there. Point it at a QA dir so `~/.config` is never touched. |
-| `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Gateway for the pi and codex harnesses (OpenAI Responses). Point them at your gateway (`http://127.0.0.1:<port>/v1`, say) and set `AGENT_MODEL` to a small, cheap model for smokes. |
+| `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Gateway for the pi and codex harnesses (OpenAI Responses). Point them at your gateway (its `/v1` base URL) and set `AGENT_MODEL` to a small, cheap model for smokes. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | The claude-agent harness only, on Anthropic Messages. Your gateway may serve `/v1/messages` too. |
 | `AGENTRUN_MAX_RUNS` | Cap concurrent runs (3 is plenty for QA). |
 | `PARALLEL_API_KEY`, `BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID`, `TYPESAFE_API_KEY` | Optional. They unlock web_fetch via Parallel, the `browser` tool, and Jev decisions. Without them those rows are UNTESTED. |
@@ -95,7 +96,8 @@ Each row: entry point, then what makes it pass.
     reply or stop until …", or the model may end its turn with a progress note before the signal and the case proves
     nothing.
 14. **web_fetch**: a revision naming `web_fetch`, fetching `https://example.com` → `ok:true` with `via: direct` (or
-    `parallel` with the key). `http://127.0.0.1/` and `169.254.169.254` → `refused: … not a public host`.
+    `parallel` with the key). A loopback URL and the link-local cloud metadata address → `refused: … not a public
+    host`.
 15. **Workflow run**: create an agent from `packages/dsl/skills/author/examples/review-release-notes.json`, run it on
     its `.input.json` → `completed`, with `result.output.changes` length 2. `GET /runs/{id}/graph` → `totals`.
 16. **Stats/analytics**: `GET /v2/stats` → `analytics.{totals,time,by_harness_effort,by_day,by_source,tools}`.
@@ -130,7 +132,7 @@ Each row: entry point, then what makes it pass.
 
 ## Host caveats
 
-- Bind 127.0.0.1 on a free port. The catalog needs no Docker, cloud previews or deploys.
+- Bind to loopback on a free port. The catalog needs no Docker, cloud previews or deploys.
 - Kill only PIDs you started (the server, or a run's `holder.pid` after checking its ppid and cmdline). Never
   `pkill -f`.
 - A fresh checkout or worktree per pass, never one in use for other work. Do not run the full test suites (CI is the
