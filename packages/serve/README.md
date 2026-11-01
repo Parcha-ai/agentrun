@@ -311,6 +311,12 @@ dots (`anthropic/claude-sonnet-5.5`) and takes Anthropic's own id (`claude-sonne
 direct. A model with more than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is refused, naming
 the form to use.
 
+`claude-agent` loads the revision's skills itself: the model is shown each as `agentrun:<name>`, loads one with the Skill
+tool and reads its other files with `read_skill_file`, and the system prompt holds the instructions alone. A skill the
+adapter does not take (a name that is not lowercase letters, digits and dashes, a `SKILL.md` without front matter giving
+its `name` and a `description`, a file path that is not plain or is deeper than five segments) stays inlined in the
+system prompt, as every skill is on `pi` and `codex`; so do all of them when together they hold more than 1 MiB.
+
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
 `serve/1`), and lists them in `info.x-agentrun-serve.fields`.
