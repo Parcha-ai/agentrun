@@ -76,9 +76,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
-  // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves.
+  // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves, and
+  // gets a start mark of its own, which its error entry answers.
   const marked = await markRequests(chosen.models, cancelledIn(where.root));
-  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced });
+  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced, refused: marked.refused });
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   const registry = createRegistry();
   registry.install(CodingTools);
