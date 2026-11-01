@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentPage } from "./AgentPage";
 import { agentFixture, archivedAgents, editorCaps, recorded } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
-import { ANALYTICS } from "@/lib/analytics.sample";
+import { ANALYTICS, statsWith } from "./AgentAnalytics.sample";
 import type { Run } from "@/lib/v2";
 
 // An agent's own page: its current revision's settings in the header, its runs, and a workflow agent's graph, read-only.
@@ -21,7 +21,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   const asked: string[] = [];
   const statsAsked: string[] = [];
   const v2 = {
-    agentStats: async (id: string, from?: string) => { statsAsked.push(`stats ${id}${from ? ` from ${from}` : ""}`); return stats(); },
+    statsOver: async ({ from, agent: of }: { from?: string; agent?: string }) => { statsAsked.push(`stats ${of}${from ? ` from ${from}` : ""}`); return stats(); },
     getAgent: async (id: string) => { asked.push(`agent ${id}`); return { agent, etag: null }; },
     listAgentRuns: async (id: string, _limit: number, cursor?: string | null, archived?: boolean) => {
       asked.push(`runs ${id}${cursor ? ` after ${cursor}` : ""}${archived ? " archived" : ""}`);
@@ -144,14 +144,14 @@ describe("AgentPage", () => {
   });
 
   it("shows an Analytics tab only when the server's stats for this agent carry analytics", async () => {
-    const page = await open(agentFixture("invoice-checker"), { stats: async () => ({ analytics: ANALYTICS }) });
+    const page = await open(agentFixture("invoice-checker"), { stats: async () => statsWith(ANALYTICS) });
     expect(page.tabs()).toEqual(["Runs", "Analytics"]);
     expect(page.statsAsked).toEqual(["stats invoice-checker"]);
     await page.click(/^Analytics$/);
     expect(page.went).toEqual(["#/agents/invoice-checker/analytics"]);
     act(() => root?.unmount());
     // An older server's stats have no analytics, and one without stats fails them: no tab, and nothing in its place.
-    for (const stats of [async () => ({ agents: 1 }), async () => { throw new Error("no route GET /v2/stats"); }]) {
+    for (const stats of [async () => statsWith(), async () => { throw new Error("no route GET /v2/stats"); }]) {
       const older = await open(agentFixture("invoice-checker"), { stats });
       expect(older.tabs()).toEqual(["Runs"]);
       expect(older.host.textContent).not.toMatch(/analytics/i);
@@ -163,14 +163,15 @@ describe("AgentPage", () => {
     let answer!: (v: unknown) => void;
     let calls = 0;
     // The page's read waits; the tab's own read, once it opens, answers at once.
-    const page = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: () => (++calls === 1 ? new Promise((r) => (answer = r)) : Promise.resolve({ analytics: ANALYTICS })) });
+    const page = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: () => (++calls === 1 ? new Promise((r) => (answer = r)) : Promise.resolve(statsWith(ANALYTICS))) });
     // Waiting for the stats: no other tab's content is read meanwhile.
     expect(page.host.querySelector('ul[aria-label="Runs"]')).toBeNull();
     expect(page.asked).toEqual(["agent invoice-checker"]);
-    await act(async () => { answer({ analytics: ANALYTICS }); });
+    await act(async () => { answer(statsWith(ANALYTICS)); });
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(page.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Analytics");
-    expect(page.host.querySelector('ul[aria-label="Totals"]')).toBeTruthy();
+    expect(page.host.querySelector('[role="radiogroup"][aria-label="Range"]')).toBeTruthy();
+    expect(page.host.textContent).toContain("Success by harness and effort");
     act(() => root?.unmount());
     const older = await open(agentFixture("invoice-checker"), { tab: "analytics" });
     expect(older.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");

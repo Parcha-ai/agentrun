@@ -42,7 +42,7 @@ export function AgentPage({ v2, agentId, defaultModel, go, tab }: { v2: Client; 
     let live = true;
     setAgent(null); setError(null); setAnalytics(undefined);
     v2.getAgent(agentId).then((r) => { if (live) setAgent(r.agent); }, (e) => { if (live) setError(problemOf(e)); });
-    v2.agentStats(agentId).then((r) => { if (live) setAnalytics(r.analytics !== undefined); }, () => { if (live) setAnalytics(false); });
+    v2.statsOver({ agent: agentId }).then((r) => { if (live) setAnalytics(r.analytics !== undefined); }, () => { if (live) setAnalytics(false); });
     return () => { live = false; };
   }, [v2, agentId]);
   if (error) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">The agent could not be read: {error}</p>;

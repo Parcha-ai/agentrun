@@ -5,7 +5,7 @@ import { AgentsList } from "@/components/AgentsList";
 import { Shell } from "@/components/Shell";
 import { agentFixture, agentsList, archivedAgents, editorCaps, recorded, revisionsOf } from "@/fixtures";
 import { saveError } from "@/lib/agentForm";
-import { ANALYTICS } from "@/lib/analytics.sample";
+import { ANALYTICS, statsWith } from "@/components/AgentAnalytics.sample";
 import { ClientError } from "@/lib/client";
 
 // The agents surface on agents and refusals AgentRun Server returned (src/fixtures), in the shell.
@@ -26,7 +26,7 @@ const agentPage = (slug: string, { runs = true, tab, analytics = false }: { runs
   const v2 = {
     getAgent: async () => ({ agent: agentFixture(slug), etag: null }),
     listAgentRuns: async () => (runs ? recorded<unknown>(`agent.${slug}.runs`).body : { runs: [], next_cursor: null }),
-    agentStats: async () => (analytics ? { analytics: ANALYTICS } : {}),
+    statsOver: async () => statsWith(analytics ? ANALYTICS : undefined),
   };
   return page(<AgentPage v2={v2 as never} agentId={slug} defaultModel={editorCaps.defaultModel} go={noop} tab={tab} />);
 };

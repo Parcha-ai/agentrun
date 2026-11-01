@@ -1,4 +1,3 @@
-import type { Analytics } from "./analytics";
 import type { Stats } from "./mission";
 import type { Agent, Definition } from "./agentForm";
 import type { RunGraph } from "./runGraph";
@@ -70,12 +69,6 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     listRuns: (limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
     /** `archived`: the archived runs only (an archived agent's runs are all archived with it). */
     listAgentRuns: (id: string, limit = 50, cursor?: string | null, archived = false) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}${archived ? "&archived=true" : ""}`),
-    /** `GET /v2/stats` for one agent: its `analytics` (absent from an older server) over its runs started from `from`. */
-    agentStats: (id: string, from?: string) => {
-      const q = new URLSearchParams({ agent: id });
-      if (from) q.set("from", from);
-      return call<{ analytics?: Analytics }>("GET", `/stats?${q}`);
-    },
     listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
       const q = new URLSearchParams();
       if (archived) q.set("archived", "true");

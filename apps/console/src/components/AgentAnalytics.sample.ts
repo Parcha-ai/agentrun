@@ -1,4 +1,4 @@
-import type { Analytics } from "./analytics";
+import type { Analytics, Stats } from "@/lib/mission";
 
 /** A hand-written `analytics` for one agent, for tests and stories: eight runs, five with metrics, two requests
  *  unmetered, three runs' cost unknown, two efforts on one harness, three tools and four days. */
@@ -19,3 +19,9 @@ export const ANALYTICS: Analytics = {
   by_source: [{ source: "live", runs: 8, completed: 5, failed: 2, runs_with_metrics: 5, tokens: 1_250_000, cost_usd: 0.75, unknown_cost_runs: 3 }],
   tools: [{ tool: "read", calls: 30, errors: 0 }, { tool: "shell", calls: 12, errors: 4 }, { tool: "fetch", calls: 3, errors: 1 }],
 };
+
+/** The whole answer around `analytics`: the store's counts and cost, whose basis the tab reads. */
+export const statsWith = (analytics?: Analytics): Stats => ({
+  agents: 3, runs: { total: 20, active: 0, needs_input: 0, failed: 2, status_unknown: 0 }, per_agent: [], cost: { usd: 2.5, basis: "estimate", unknown_runs: 4 },
+  ...(analytics ? { analytics } : {}),
+});
