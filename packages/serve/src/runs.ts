@@ -17,7 +17,7 @@ import { registerLabel, registerTurnEnding, timelineOf, timelineReducer, type Ti
 import { HARNESS_LOG_EVENT } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
+import { LAUNCH_LOST, type PinnedRevision, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, RUN_REVISION, writeDurable, writeWhole } from "./files.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
@@ -1110,6 +1110,11 @@ export class Runs {
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
     };
     await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
+    // What the run's process reads instead of the agent store (app.ts). It sits beside work/, out of reach of the run's file
+    // tools, which are confined to work/: the agent cannot change the revision it runs. Synced, so a machine's crash
+    // leaves the whole file or none, never an empty one the process would refuse.
+    const pinned: PinnedRevision = { run: { id: started.runId, agent: started.agentId, revision: started.revision.id }, revision: started.revision };
+    await writeDurable(join(started.dir, RUN_REVISION), `${JSON.stringify(pinned)}\n`);
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version);
     this.runs.set(run.id, run);
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });

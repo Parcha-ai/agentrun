@@ -1,5 +1,6 @@
-// The app `pi-durable-disk run --app` loads for each run serve starts. It reads the run's revision from the agent store
-// (`<data>/store.sqlite`, the run being `<data>/runs/<id>`) and runs it on the model model.ts chooses:
+// The app `pi-durable-disk run --app` loads for each run serve starts. It reads the run's pinned revision from the run's
+// own directory (`revision.json`, which serve writes when it starts the run; a run started before has none and reads the
+// agent store, `<data>/store.sqlite`, the run being `<data>/runs/<id>`) and runs it on the model model.ts chooses:
 //   - agentic: the root agent with the revision's instructions and skills, and the tools it names, bound from the
 //     closed table in tools.ts;
 //   - workflow: the revision's workflow, started with startWorkflowRevision of @parcha/pi-durable-agent/workflow on
@@ -9,16 +10,16 @@
 //     it back once this process has exited: this process holds the run's store until then.
 // First: the secrets serve hands this process over a pipe, read and the pipe closed before anything else runs.
 import { authContextOf, withSecrets } from "./secrets.js";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
 import { createRegistry, type Extension, type Harness, type Tx } from "@earendil-works/pi-durable";
-import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
+import { openStoreReader, type Revision, RUN_STORE_FILE } from "@parcha/pi-durable-agent";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
-import { readJson, RUN_META } from "./files.js";
+import { type PinnedRevision, readJson, RUN_META, RUN_REVISION } from "./files.js";
 import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
@@ -54,8 +55,15 @@ async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
   return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
-/** The run's row and its pinned revision, read from the store the run's directory sits in. */
-function revisionOf(where: AppContext): { run: RunRow; revision: Revision } {
+/** The run's row and its pinned revision: from the `revision.json` serve writes in the run's directory before its first
+ *  process starts, so this process never opens the agent store. A run started before serve wrote that file has none,
+ *  and reads both from the store its directory sits in (`<data>/runs/<id>`). */
+async function revisionOf(where: AppContext): Promise<PinnedRevision> {
+  const text = await readFile(join(where.root, RUN_REVISION), "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (text !== undefined) return pinnedOf(text);
   const reader = openStoreReader(resolve(where.root, "..", ".."));
   try {
     const id = basename(resolve(where.root));
@@ -67,8 +75,23 @@ function revisionOf(where: AppContext): { run: RunRow; revision: Revision } {
   }
 }
 
+/** `revision.json`'s run and revision. A file that is not whole JSON, or whose run does not pin the revision it holds, is
+ *  refused: the store is never asked in its place. */
+function pinnedOf(text: string): PinnedRevision {
+  let pinned: unknown;
+  try {
+    pinned = JSON.parse(text);
+  } catch {}
+  const run = isObject(pinned) && isObject(pinned.run) ? pinned.run : undefined;
+  const revision = isObject(pinned) && isObject(pinned.revision) ? pinned.revision : undefined;
+  if (!run || !revision || typeof run.id !== "string" || typeof run.agent !== "string" || typeof revision.id !== "string" || run.revision !== revision.id || (revision.kind !== "agentic" && revision.kind !== "workflow") || !isObject(revision.body)) {
+    throw new Error(`the run's ${RUN_REVISION} is not its row and pinned revision`);
+  }
+  return { run: { id: run.id, agent: run.agent, revision: revision.id }, revision: revision as unknown as Revision };
+}
+
 export default async function app(where: AppContext): Promise<AppOptions> {
-  const { run, revision } = revisionOf(where);
+  const { run, revision } = await revisionOf(where);
   // This process's reading of its environment, with its secrets: never a child's (secrets.ts).
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];

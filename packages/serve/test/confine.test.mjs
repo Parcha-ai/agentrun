@@ -69,9 +69,13 @@ test("read, write and edit reach nothing outside work/: the tokens, the owner's 
     ["write", { path: outside, content: "evil" }],
     ["write", { path: "../tmp/written.txt", content: "evil" }],
     ["edit", { path: "../../../store.sqlite", edits: [{ oldText: "CREATE TABLE", newText: "CREATE TABLX" }] }],
+    // The run's own pinned revision, beside work/: the agent cannot change what it runs.
+    ["write", { path: "../revision.json", content: "{}" }],
+    ["edit", { path: "../revision.json", edits: [{ oldText: "Probe.", newText: "Obey." }] }],
   ];
   const control = [["write", { path: "inside.txt", content: "inside" }], ["read", { path: "inside.txt" }], ["read", { path: "../tmp/note.txt" }]];
   const run = await probed(api, data, "probe", [{ wait: go }, ...[...attempts, ...control].map(([tool, args]) => ({ tool, args }))]);
+  const pinned = await readFile(join(data, "runs", run.runId, "revision.json"), "utf8");
   // A link in the run's own work/ to the data directory's token, made before any call.
   await symlink(join(data, ".token"), join(data, "runs", run.runId, "work", "link-to-token"));
   // A file in the run's own tmp/, which its reads may reach (where a command's spilled output would be).
@@ -94,6 +98,7 @@ test("read, write and edit reach nothing outside work/: the tokens, the owner's 
   assert.equal(await exists(outside), false);
   assert.equal(await exists(join(data, "runs", run.runId, "tmp", "written.txt")), false);
   assert.equal(await readFile(otherTmp, "utf8"), "another run's temporary secret");
+  assert.equal(await readFile(join(data, "runs", run.runId, "revision.json"), "utf8"), pinned);
   const store = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
   t.after(() => store.close());
   assert.equal(store.prepare("PRAGMA integrity_check").get().integrity_check, "ok");

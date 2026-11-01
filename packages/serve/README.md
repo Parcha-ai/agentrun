@@ -438,8 +438,10 @@ cookie to every server on the same host name, whatever its port, so another app 
 1. `POST /agents/{id}/runs` starts the run in the store (`startRun`, which pins the revision and seeds
    `DIR/runs/<id>/`), then its process: `pi-durable-disk run --dir DIR/runs/<id> --app <this package's app> --serve 0` on
    loopback, behind a token of its own (`DIR/.door-token`), with its stderr in `runs/<id>/process.log`. The run's input
-   is in `runs/<id>/serve.json`.
-2. The app reads the run's revision from the store.
+   is in `runs/<id>/serve.json`, and its row and pinned revision in `runs/<id>/revision.json` (0600, written before the
+   process starts).
+2. The app reads the run's revision from `revision.json`, not from the store. A run started before the server wrote
+   that file has none, and its process reads the store as before.
    - An agentic revision runs as the root agent: its instructions and skills, its model, and the tools it names of the
      workspace's `read`, `write` and `edit`, and `ask_person`, which ends the turn; the timeline then shows a `waiting`
      row, and the run is `input_required` and `waiting` until a message answers it. `bash` is not bound, so a

@@ -3,10 +3,16 @@ import { randomBytes } from "node:crypto";
 import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { Revision, RunRow } from "@parcha/pi-durable-agent";
 import type { Json } from "./validate.js";
 
 /** The server's own file in each run's directory: the run's title, input and how it was asked to run. */
 export const RUN_META = "serve.json";
+/** The run's row and its pinned revision in its directory, as the agent store's `readRun` and `readRevision` give them,
+ *  written before its first process starts: the run's process reads them here, never from the store. */
+export const RUN_REVISION = "revision.json";
+/** What `RUN_REVISION` holds: of the run's row, the fields the run's process uses. */
+export type PinnedRevision = { run: Pick<RunRow, "id" | "agent" | "revision">; revision: Revision };
 /** A cancelled run's mark in its directory, written before its process is told: the run's process sends no model
  *  request once it is there, however the cancel and the process's start interleave. */
 export const RUN_CANCELLED = "cancelled";
