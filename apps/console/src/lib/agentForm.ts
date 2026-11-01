@@ -2,7 +2,12 @@ import type { ClientError } from "./client";
 
 export type HarnessId = "pi" | "claude-agent" | "codex";
 export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; skills: string[]; tools: string[]; [field: string]: unknown };
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number } };
+/** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
+ *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
+export type SaveWarning = { field: string; reason: string; message: string };
+/** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
+ *  the agent's page that opens after it (client.ts). */
+export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[] };
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow">> & { workflowText?: string };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
@@ -90,4 +95,10 @@ export function saveError(e: ClientError): SaveProblem {
   if (e.status === 412 || e.code === "precondition_failed") return { kind: "conflict", message: e.message };
   if (e.status === 422 && e.fields?.length) return { kind: "invalid", message: e.message, fields: Object.fromEntries(e.fields.map((f) => [f.field, f.message])) };
   return { kind: "other", message: e.message };
+}
+
+/** The warnings that name `field` of the definition, or a part of it (`tools` takes `definition.tools[2]`). */
+export function warningsFor(warnings: SaveWarning[] | undefined, field: string): SaveWarning[] {
+  const at = `definition.${field}`;
+  return (warnings ?? []).filter((w) => w.field === at || w.field.startsWith(`${at}[`) || w.field.startsWith(`${at}.`) || w.field.startsWith(`${at}/`));
 }

@@ -236,6 +236,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
+| `web_fetch` | Read one web page from a public host through Parallel's extract, else fetched as `fetch_page` fetches it: `{url}` in, `fetch_page`'s Page plus `via`, `"parallel"` or `"direct"` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/`, the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
@@ -258,12 +259,47 @@ reads why, and a workflow can branch on it. An agent gets the Page as JSON text;
 tool: "fetch_page"` gets it as its output (`args: {url}`, `out` a schema of that shape). A call node naming a tool the
 table cannot run that way is refused before the run starts (`409`).
 
+`web_fetch` answers the same Page with `via` added, on every harness. Where the server sets `PARALLEL_API_KEY`, the
+page is read through Parallel's extract (`POST https://api.parallel.ai/v1/extract`, its full content as the text, about
+$0.001 a URL) and `via` is `"parallel"`, with status 200 and the absolute links of its markdown. Without the key, or
+when Parallel lists the URL in its errors, answers with no content, a 5xx or not within 60 s, it is `fetch_page`'s
+fetch, `via: "direct"`; a 401 or 403 stops Parallel for the rest of the run. A URL passes the guard's own check before
+anything is sent to Parallel: a URL `fetch_page` refuses is refused here too and never leaves the machine. The key
+reaches an agentic run only when its revision names `web_fetch`, on the run's decision descriptor (see
+[Decision workflows](#decision-workflows)), read once into the run process's memory: never into its environment, a child or a file.
+
 The `browser` tool runs Browserbase sessions, never a Chrome on this machine. The keys come from the server's
 environment and reach the run's process as the rest of it does. A session's custody (its lease, its tag, what it was
 doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
 reads at once included. There is no recording and no live view. When the run is let go (its work done, or a SIGTERM)
 the sessions it still holds are released at Browserbase.
+
+## Tool keys
+
+A tool's key comes from one of two places. The server's own environment, through its launcher: `PARALLEL_API_KEY`,
+`MONID_API_KEY` and `BROWSERBASE_API_KEY` are among the secrets it hands the server over its pipe. Or the page, by
+name: `PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one, field by field (`parallel` takes
+`PARALLEL_API_KEY`, `monid` `MONID_API_KEY`, `browserbase` `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`), and
+`DELETE` forgets it. `GET /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and
+each field's `set` and `source` (`server`, `stored` or null): never a value, nor any part of one. A field the server is
+started with is the server's, and wins: saving it is `409 key_set_by_server`. A value is text of at most 1024 bytes
+with no control character (`422` otherwise).
+
+A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
+name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal
+key. With `AGENTRUN_SEAL_KEY` not set, the launcher keeps it in `agentrun/seal.key` under `$XDG_CONFIG_HOME` (or
+`~/.config`), making it the first time: 32 random bytes in base64, 0600 in a 0700 directory, and one another user can
+read is refused, not changed. It is outside the data directory on purpose: a copy or a backup of the data directory
+holds the keys as ciphertext alone, and opens nowhere without the seal key. With no seal key (started with no launcher and
+no `AGENTRUN_SEAL_KEY`, or with no home directory) nothing is saved, never in the clear: `409 no_sealing_key`, and capabilities' `features.tool_keys.at_rest` is
+`unavailable` (`sealed` otherwise).
+
+A stored value that does not open is never a reason not to start. It reads `set: false, stored_unreadable: true`, and
+`reenter` names those fields with why: `seal_key_missing`, `seal_key_changed` (a lost `seal.key` is made anew, so it
+shows as this) or `file_unreadable`. The log says so once, naming the condition and the file, never a value; a `PUT` of
+the value seals it again under the current key. In a container, `~/.config` is the container's own and goes with it:
+pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new container opens the keys the volume holds.
 
 ## What it serves
 
@@ -290,6 +326,7 @@ the sessions it still holds are released at Browserbase.
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; a poll never answers `home_busy` (`stale: true` marks a last whole view). An agentic run has none (`404`). |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
+| `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
@@ -327,6 +364,12 @@ by it: a revision's `anthropic/<model-id>`, its dots as dashes. A gateway such a
 dots (`anthropic/claude-sonnet-5.5`) and takes Anthropic's own id (`claude-sonnet-5-5`), so one name works through it and
 direct. A model with more than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is refused, naming
 the form to use.
+
+`claude-agent` loads the revision's skills itself: the model is shown each as `agentrun:<name>`, loads one with the Skill
+tool and reads its other files with `read_skill_file`, and the system prompt holds the instructions alone. A skill the
+adapter does not take (a name that is not lowercase letters, digits and dashes, a `SKILL.md` without front matter giving
+its `name` and a `description`, a file path that is not plain or is deeper than five segments) stays inlined in the
+system prompt, as every skill is on `pi` and `codex`; so do all of them when together they hold more than 1 MiB.
 
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
@@ -368,9 +411,10 @@ typed answers and their probabilities.
   failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
 - The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
   server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands the values to a workflow
-  run's process once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS
-  refuses a high one), at each launch, a resume after a restart included. The process reads them into its decision
-  providers, closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an
+  run's process, and Parallel's alone to an agentic run whose revision names `web_fetch`, once, by name, on an
+  inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each
+  launch, a resume after a restart included. The process reads them once into its decision providers and `web_fetch`,
+  closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an
   environment, an argument list or a file, and no program the run starts inherits it. With no key, no descriptor is
   opened. On the OpenRouter route Jev's key comes on the same descriptor, never from the run's environment; that key is
   also the model gateway's key, which a run's process holds for its model nodes.
@@ -429,6 +473,14 @@ token itself, and it lasts until the browser closes. Without it, `/` is a page t
 data (`/api/*` and `/v2`) takes the cookie in place of `Authorization: Bearer`: for a `GET`, and for any other method
 only when the request's `Origin` is the page's own origin and its body is `application/json`. A request that sends an
 `Authorization` header is checked on that header alone.
+
+### The console
+
+The console (`apps/console` in the repository) is at `/console/` on the same origin, with the page's CSP and security
+headers. Its files are public, like the page's; it shows its own setup and sign-in screens, and its `/v2` calls take the
+owner's session cookie under the same rules. The server's build copies the console's build (`npm ci && npm run build` in
+`apps/console`, run first) into `dist/console`; the image always carries it. A server built without it answers
+`/console/` with a 404 that says so.
 
 ## Your password
 
@@ -491,26 +543,51 @@ A completed agentic run's `result` is `{output: null, final_answer}`; a complete
 ## Spend cap
 
 An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process
-before each model request, the agent's and a compaction's alike: what the run has spent so far plus the request's worst
-case must stay within it, or the request is not sent and the run ends `failed` with `spend_cap_reached`. The worst
-case is the request's input tokens at the input price plus its max output tokens at the output price, the max output
-tokens being the ones the request sends (the model's, clamped to what its context window leaves). The input is priced
-at the higher of the model's input and cache-write prices, since the provider may bill any of it as a cache write. The
-input tokens are pi-ai's estimate (`estimateContextTokens`: the tokens the last response reported, plus about one token
-per 3.5 characters after it), which may run low on code or non-English text; the server's check after each response
-catches what it misses. Spent so far is read from the run's store each time its process starts, so it survives a
-restart, plus each response since; a request in flight holds its worst case until it answers. A model with no price (a
-gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`) cannot be kept within a cap: under one its first
-request is refused before anything is sent, and the run ends `spend_cap_reached` at $0; with no cap its run's cost reads
-`null`. Pricing the whole output ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's worst case is about $0.96,
-so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
+before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
+the worst case of each request still in flight, plus this request's worst case must stay within it, or the request is
+not sent and the run ends `failed` with `spend_cap_reached`. A request's worst case is its input bound at the higher of
+the model's input and cache-write prices (the provider may bill any of the input as a cache write), plus the model's
+whole output ceiling at its output price: its max output tokens, else its context window, clamped on pi to what the
+window leaves. A request asking for fewer output tokens is held at the ceiling all the same, since a thinking budget can
+raise any request to it. The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
+a token of less than one byte, and an image's base64 is far more bytes than its tokens), plus what the provider adds
+server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent and codex uses; there
+the proxy measures each request's body. A request in flight holds its worst case until it answers, so requests sent side
+by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
+survives a restart, plus each response since.
+
+Under a cap, whatever cannot be priced is refused, never passed as $0:
+
+- A model serve has no price for (a gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`): its first
+  request is refused before anything is sent, and the run ends `spend_cap_reached` at $0. With no cap its run's cost
+  reads `null`. A model the catalog lists at $0 is a known $0, and passes any cap.
+- A model whose output is priced and that names no output ceiling (no max output tokens and no context window): nothing
+  bounds a request. One whose output costs nothing at every price tier keeps a known worst case, and passes.
+- An input that could not be measured.
+- A spend no one knows: a cost that is not a number, a cost still pending, and on pi a request a stop or a crash cut
+  with no held figure (below). Every later request of the run is refused. On claude-agent and codex the model proxy
+  books a response cut short (a stop or a crash included) at an unknown cost, so a capped run cut mid-request there
+  refuses its next request.
+
+On pi a request stopped before its end (`POST /runs/{id}/stop`, or a summary that failed) or cut by a crash (its process
+gone mid-request) counts at the worst case the cap held for it, the most the provider can have billed, never at the cut
+stream's own usage (the Responses API reports none until the end). The figure is written on the request's start mark
+(`agentrun.request_started`) and on the end mark of one stopped (`agentrun.request_ended`), as `heldUsd`, so a later
+process counts it the same: a capped pi run stopped and sent another message, or opened again after its process died,
+goes on while its cap allows. A cut request from a store written before serve kept the figure has none, and is a spend
+no one knows.
+
+Pricing the whole output ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's
+worst case is about $0.96, so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
 
 The server also checks the run's cost after each response, as a backstop, and stops a run whose cost passed its cap.
 Either way the run keeps the answer it paid for: a run the cap stopped has `result: {output: null, final_answer}`, the
 newest answer it received, beside its `error`; one stopped before any answer has `result: null`.
 
 A run's `cost.usd` is $0 before its first model request (a run cancelled before one included), and `null` when a
-response reported no price: no request costs nothing, but a request of unknown price is unknown, never $0.
+response reported no price or a request was cut before its end (a stop, a cancel, a crash): no request costs nothing,
+but a request of unknown price is unknown, never $0. A stopped request shows `null` whether or not its cap counted it at
+its held worst case.
 
 ## The faux model
 

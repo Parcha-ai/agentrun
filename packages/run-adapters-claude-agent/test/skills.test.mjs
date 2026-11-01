@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { createHarnessRunner } from '@parcha/agentrun-adapters';
+import { createHarnessRunner, skillProblems as sharedSkillProblems } from '@parcha/agentrun-adapters';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { CLAUDE_AGENT_CLI_SKILL_NAMES, CLAUDE_AGENT_SDK_VERSION, claudeAgentAdapter, skillProblems, verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
 import { fakeAnthropic } from '@parcha/agentrun-claude-agent/testing';
@@ -180,6 +180,7 @@ test("after loading a skill, the model reads one of its files with read_skill_fi
 
 test('the skills are checked when the adapter is made: a plain name, a SKILL.md that names it with a description, plain relative paths, 1 MiB in all', () => {
   const md = (name, extra = 'description: d') => `---\nname: ${name}\n${extra}\n---\nbody\n`;
+  assert.equal(skillProblems, sharedSkillProblems, "the Claude adapter's check is @parcha/agentrun-adapters' own, re-exported");
   assert.deepEqual(skillProblems([SKILL]), []);
   const wrong = (skill) => skillProblems([skill]).join('; ');
   assert.match(wrong({ name: 'Bad Name', files: { 'SKILL.md': md('Bad Name') } }), /not lowercase letters, digits and dashes/);

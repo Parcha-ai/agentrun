@@ -1,0 +1,55 @@
+{
+  "method": "POST",
+  "path": "/v1/messages?beta=true",
+  "headers": {
+    "user-agent": "claude-cli/2.1.286 (external, sdk-ts, agent-sdk/0.3.286)",
+    "anthropic-version": "2023-06-01",
+    "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,effort-2025-11-24"
+  },
+  "body": {
+    "model": "claude-sonnet-5-5",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Perform a web search for the query: agentrun"
+          }
+        ]
+      }
+    ],
+    "system": [
+      {
+        "type": "text",
+        "text": "x-anthropic-billing-header: cc_version=2.1.286.846; cc_entrypoint=sdk-ts;"
+      },
+      {
+        "type": "text",
+        "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+      },
+      {
+        "type": "text",
+        "text": "You are an assistant for performing a web search tool use"
+      }
+    ],
+    "tools": [
+      {
+        "type": "web_search_20250305",
+        "name": "web_search",
+        "max_uses": 8
+      }
+    ],
+    "tool_choice": {
+      "type": "auto"
+    },
+    "metadata": {
+      "user_id": "{\"device_id\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"account_uuid\":\"\",\"session_id\":\"00000000-0000-4000-8000-000000000000\"}"
+    },
+    "max_tokens": 128000,
+    "output_config": {
+      "effort": "medium"
+    },
+    "stream": true
+  }
+}
