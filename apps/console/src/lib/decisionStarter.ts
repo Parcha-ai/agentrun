@@ -1,7 +1,10 @@
 // The workflow a new decision agent starts from. Adapted from the repository's smallest decision demo
 // (examples/decision-demos/workflows/jury.json): one typed question (a judge node) on the server's decision provider
-// (Jev, the default, or Parallel where Jev does not run) instead of four jurors on two providers. A clear answer decides
-// the case; an unclear one goes to a person. Edit it in the Workflow step once the agent is created.
+// (Jev, the default, or Parallel where Jev does not run) instead of four jurors on two providers. Its answer decides the
+// case; an unclear answer, or one below the confidence the decision needs, stops the run for a person (escalate nodes
+// and their predicates). It has no code node: a server runs code nodes only when its operator allows them
+// (--allow-code-nodes), and refuses the run of a workflow that holds one otherwise. Edit it in the Workflow step once the
+// agent is created.
 
 /** The starter decision workflow (agentrun-dsl v2). */
 export const DECISION_STARTER = {
@@ -47,33 +50,20 @@ export const DECISION_STARTER = {
         },
       ],
     },
-    Vote: {
+    Verdict: {
       type: "object",
       additionalProperties: false,
-      required: ["is_gambling"],
+      required: ["verdict"],
       properties: {
-        is_gambling: {
-          type: "boolean",
+        verdict: {
+          type: "string",
+          enum: ["gambling", "not_gambling", "unclear"],
           description: "Is the payment described in `payment` a payment for gambling: staking money or a paid currency on a game of chance or skill for a chance to win money or prizes redeemable for money, including sweepstakes casinos and social casinos that pay out cash prizes?",
-        },
-      },
-    },
-    Decision: {
-      type: "object",
-      required: ["case_id", "decision", "why", "p"],
-      properties: {
-        case_id: {
-          type: "string",
-        },
-        decision: {
-          type: "string",
-          enum: ["gambling", "not_gambling"],
-        },
-        why: {
-          type: "string",
-        },
-        p: {
-          type: "number",
+          criteria: {
+            gambling: "It is a payment for gambling, as described.",
+            not_gambling: "It pays for something else: goods, services or a transfer with no stake on a game.",
+            unclear: "What the payment says about itself is not enough to tell.",
+          },
         },
       },
     },
@@ -82,8 +72,8 @@ export const DECISION_STARTER = {
     schemaId: "Input",
   },
   output: {
-    schemaId: "Decision",
-    path: "decision",
+    schemaId: "Verdict",
+    path: "judged",
   },
   root: {
     node: "chain",
@@ -96,52 +86,47 @@ export const DECISION_STARTER = {
           case_id: "{case_id}",
           payment: "{payment}",
         },
-        out: "Vote",
-        as: "vote",
+        out: "Verdict",
+        as: "judged",
       },
       {
-        node: "code",
-        label: "threshold",
-        as: "verdict",
-        code: "(s) => {\n  const a = ((s[\"vote$answers\"] || {}).answers || {}).is_gambling;\n  const p = a && typeof a.noul === \"number\" ? a.noul : null;\n  if (p === null) return { action: \"human_review\", why: \"the judge gave no probability\", p };\n  if (p >= 0.7) return { action: \"auto_yes\", why: \"likely gambling (p \" + p.toFixed(2) + \")\", p };\n  if (p < 0.3) return { action: \"auto_no\", why: \"likely not gambling (p \" + p.toFixed(2) + \")\", p };\n  return { action: \"human_review\", why: \"unclear (p \" + p.toFixed(2) + \")\", p };\n}",
+        node: "escalate",
+        label: "unclear",
+        when: {
+          predicate: "field_equals",
+          path: "judged.verdict",
+          value: "unclear",
+        },
+        kind: "review",
+        stage: "decision",
+        summary: "A person decides case {case_id}: what the payment says is not enough to tell.",
       },
       {
-        node: "route",
-        label: "outcome",
-        valuePath: "verdict.action",
-        as: "outcome_taken",
-        branches: {
-          auto_yes: {
-            body: {
-              node: "code",
-              label: "decide_gambling",
-              as: "decision",
-              code: "(s) => ({ case_id: s.case_id, decision: \"gambling\", why: s.verdict.why, p: s.verdict.p })",
-            },
-          },
-          auto_no: {
-            body: {
-              node: "code",
-              label: "decide_not_gambling",
-              as: "decision",
-              code: "(s) => ({ case_id: s.case_id, decision: \"not_gambling\", why: s.verdict.why, p: s.verdict.p })",
-            },
-          },
-          human_review: {
-            body: {
-              node: "escalate",
-              label: "person_decides",
-              when: {
-                predicate: "field_equals",
-                path: "verdict.action",
-                value: "human_review",
-              },
-              kind: "review",
-              stage: "decision",
-              summary: "A person decides case {case_id}: {verdict.why}.",
-            },
+        node: "escalate",
+        label: "no-confidence",
+        when: {
+          predicate: "not",
+          of: {
+            predicate: "field_type",
+            path: "judged$answers.answers.verdict.confidence",
+            type: "number",
           },
         },
+        kind: "review",
+        stage: "decision",
+        summary: "A person decides case {case_id}: the judge gave no confidence.",
+      },
+      {
+        node: "escalate",
+        label: "low-confidence",
+        when: {
+          predicate: "lt",
+          path: "judged$answers.answers.verdict.confidence",
+          n: 0.7,
+        },
+        kind: "review",
+        stage: "decision",
+        summary: "A person decides case {case_id}: the judge leaned {judged.verdict}, below the confidence this decision needs.",
       },
     ],
   },

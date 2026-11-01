@@ -148,7 +148,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               </Field>
               {deciding ? (
                 <Field label="Workflow">
-                  <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">A decision agent is a workflow. It starts from a starter decision workflow: one typed question, a threshold, and a person when the answer is unclear. Create it, then edit its nodes in the Workflow step.</p>
+                  <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">A decision agent is a workflow. It starts from a starter decision workflow: one typed question, and a person when the answer is unclear or not confident enough. Create it, then edit its nodes in the Workflow step.</p>
                 </Field>
               ) : workflow ? (
                 <Field label="Workflow" note="This agent is a workflow. Edit its nodes in the Workflow step: the graph redraws as you type and the server checks it.">

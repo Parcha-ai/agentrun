@@ -142,12 +142,30 @@ describe("a decision agent", () => {
     expect(DECISION_STARTER.root.steps[0]).not.toHaveProperty("provider");
   });
 
-  it("starts from a decision workflow with an example input: a typed question, a threshold, and a person for an unclear answer", () => {
+  it("starts from a decision workflow with an example input: a typed question, then a person for an unclear or low-confidence answer", () => {
     const steps = DECISION_STARTER.root.steps.map((s) => s.node);
-    expect(steps).toEqual(["judge", "code", "route"]);
-    expect(JSON.stringify(DECISION_STARTER.root)).toContain('"node":"escalate"');
+    expect(steps).toEqual(["judge", "escalate", "escalate", "escalate"]);
+    expect(DECISION_STARTER.root.steps.slice(1).map((s) => (s as { when: { predicate: string } }).when.predicate)).toEqual(["field_equals", "not", "lt"]);
     expect(DECISION_STARTER.schemas.Input.examples).toHaveLength(1);
     expect(DECISION_STARTER.root.steps[0]).not.toHaveProperty("provider");
+  });
+
+  // A server runs a code node only when its operator allows them (--allow-code-nodes), and refuses the run of a
+  // workflow that holds one otherwise: a starter with one would make agents whose every run a default server refuses.
+  it("has no code node anywhere, on any provider, so a default server runs it", () => {
+    const kinds = (node: unknown): string[] => {
+      if (Array.isArray(node)) return node.flatMap(kinds);
+      if (!node || typeof node !== "object") return [];
+      const own = typeof (node as { node?: unknown }).node === "string" ? [(node as { node: string }).node] : [];
+      return [...own, ...Object.values(node).flatMap(kinds)];
+    };
+    for (const provider of [undefined, "parallel"]) {
+      const workflow = createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [], decisionProvider: provider }).definition.workflow;
+      const nodes = kinds((workflow as { root: unknown }).root);
+      expect(nodes).toContain("judge");
+      expect(nodes).not.toContain("code");
+      expect(JSON.stringify(workflow)).not.toMatch(/"via":"(?:executor|shell)"/);
+    }
   });
 });
 
