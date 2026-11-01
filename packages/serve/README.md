@@ -413,6 +413,14 @@ data (`/api/*` and `/v2`) takes the cookie in place of `Authorization: Bearer`: 
 only when the request's `Origin` is the page's own origin and its body is `application/json`. A request that sends an
 `Authorization` header is checked on that header alone.
 
+### The console
+
+The console (`apps/console` in the repository) is at `/console/` on the same origin, with the page's CSP and security
+headers. Its files are public, like the page's; it shows its own setup and sign-in screens, and its `/v2` calls take the
+owner's session cookie under the same rules. The server's build copies the console's build (`npm ci && npm run build` in
+`apps/console`, run first) into `dist/console`; the image always carries it. A server built without it answers
+`/console/` with a 404 that says so.
+
 ## Your password
 
 AgentRun Server is for one person, who signs in to the page with a password (`AGENTRUN_ACCOUNTS=0` turns this off). With
