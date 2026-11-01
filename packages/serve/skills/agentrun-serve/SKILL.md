@@ -24,7 +24,7 @@ To try it with no key and no network, give it a faux model, which answers every 
 cat > faux.mjs <<'JS'
 export default (context, faux) => faux.message("The answer is 42.");
 JS
-node packages/serve/dist/cli.js --faux faux.mjs > serve.log 2>&1 &
+node packages/serve/dist/cli.js --data "$PWD/.agentrun" --faux faux.mjs > serve.log 2>&1 &
 ```
 
 For a real model, leave out `--faux` and set the model and its key first, for example
@@ -34,12 +34,13 @@ gateway; the package README lists every way).
 ## 2. The address and the token
 
 The server prints its address at every start, as `AGENTRUN_BASE_URL=...`. The token is made once, mode 0600, in the
-data directory (`--data DIR` puts it in `DIR/.token`):
+data directory, `DIR/.token` for `--data DIR` (without `--data`, the directory is `$XDG_DATA_HOME/agentrun/agents`, else
+`~/.local/share/agentrun/agents`):
 
 ```sh
 until grep -q '^AGENTRUN_BASE_URL=' serve.log; do sleep 1; done
 export "$(grep -m1 '^AGENTRUN_BASE_URL=' serve.log)"
-export AGENTRUN_API_KEY=$(cat ~/.local/share/agentrun/agents/.token)
+export AGENTRUN_API_KEY=$(cat .agentrun/.token)
 until curl -sf "$AGENTRUN_BASE_URL/health" >/dev/null; do sleep 1; done
 H="authorization: Bearer $AGENTRUN_API_KEY"
 ```

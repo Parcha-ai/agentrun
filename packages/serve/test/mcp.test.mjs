@@ -174,6 +174,18 @@ test("the protocol's own refusals: an unknown method or tool, a missing argument
   assert.deepEqual([broken.status, broken.body.error.code], [400, -32700]);
   assert.equal((await mcp.post({ jsonrpc: "1.0", id: 1, method: "ping" })).status, 400);
   assert.equal((await mcp.post({ jsonrpc: "2.0", id: null, method: "ping" })).status, 400, "a request's id is never null");
+  // A method that is not a string, or a message that is neither a request, a notification nor a response, is an error.
+  const notText = await mcp.post({ jsonrpc: "2.0", id: 7, method: 123 });
+  assert.deepEqual([notText.status, notText.body.id, notText.body.error.code], [400, 7, -32600]);
+  for (const odd of [{ jsonrpc: "2.0", id: 8 }, { jsonrpc: "2.0", id: 9, result: {}, error: { code: 1, message: "x" } }, { jsonrpc: "2.0", result: {} }]) {
+    const res = await mcp.post(odd);
+    assert.deepEqual([res.status, res.body.error.code], [400, -32600], JSON.stringify(odd));
+  }
+  // A response, and a notification, are taken with no body.
+  for (const taken of [{ jsonrpc: "2.0", id: 5, result: {} }, { jsonrpc: "2.0", id: 6, error: { code: -1, message: "no" } }, { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 1 } }]) {
+    const res = await mcp.post(taken);
+    assert.deepEqual([res.status, res.text], [202, ""], JSON.stringify(taken));
+  }
   const version = await mcp.post({ jsonrpc: "2.0", id: 1, method: "ping" }, { "mcp-protocol-version": "1999-01-01" });
   assert.deepEqual([version.status, version.body.error.code], [400, -32600]);
   assert.equal((await mcp.post({ jsonrpc: "2.0", id: 1, method: "ping" }, { "mcp-protocol-version": "2025-03-26" })).status, 200);

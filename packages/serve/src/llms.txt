@@ -2,7 +2,7 @@
 
 > The open platform's server for agents: make an agent (a prompt with tools, or a typed workflow), run it, and read what it did, over one HTTP API at `/v2`, an MCP endpoint at `/v2/mcp`, and a CLI. Every run is kept: its timeline, its files and its cost.
 
-The API's routes take `Authorization: Bearer <token>`, all but `GET /v2/health`, `GET /v2/capabilities` and `GET /v2/openapi.json`; this file needs none. The token is in the server's data directory (`<data>/.token`, by default `~/.local/share/agentrun/agents/.token`), or is `AGENTRUN_TOKEN` when the server was started with it. Links below are relative to this server.
+The API's routes take `Authorization: Bearer <token>`, all but `GET /v2/health`, `GET /v2/capabilities` and `GET /v2/openapi.json`; this file needs none. The token is in the server's data directory, `<data>/.token` (`--data DIR`; without it, `$XDG_DATA_HOME/agentrun/agents`, else `~/.local/share/agentrun/agents`), or is `AGENTRUN_TOKEN` when the server was started with it. Links below are relative to this server.
 
 ## API
 

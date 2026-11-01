@@ -311,10 +311,17 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
     }
     if (Array.isArray(message)) return reply(res, 400, rpcError(null, -32600, "a batch is not taken: send one message per request"));
     if (!isObject(message) || message.jsonrpc !== "2.0") return reply(res, 400, rpcError(null, -32600, "not a JSON-RPC 2.0 message"));
-    // A notification (no id) or a response to a request of ours (this server sends none): taken, with no body.
-    if (typeof message.method !== "string" || !("id" in message)) return reply(res, 202);
-    if (typeof message.id !== "string" && typeof message.id !== "number") return reply(res, 400, rpcError(null, -32600, "a request's id is a string or a number"));
+    const id = typeof message.id === "string" || typeof message.id === "number" ? message.id : null;
+    if (!("method" in message)) {
+      // A response to a request of ours (this server sends none): taken, with no body, when it is one.
+      if (!("id" in message) || ("result" in message) === ("error" in message)) return reply(res, 400, rpcError(id, -32600, "not a JSON-RPC request, notification or response"));
+      return reply(res, 202);
+    }
+    if (typeof message.method !== "string") return reply(res, 400, rpcError(id, -32600, "method is a string"));
+    // A notification: taken, with no body.
+    if (!("id" in message)) return reply(res, 202);
+    if (id === null) return reply(res, 400, rpcError(null, -32600, "a request's id is a string or a number"));
     const answered = await handle(message.method, message.params, req, requestId);
-    return reply(res, 200, { jsonrpc: "2.0", id: message.id, ...answered });
+    return reply(res, 200, { jsonrpc: "2.0", id, ...answered });
   };
 }
