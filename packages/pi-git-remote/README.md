@@ -6,7 +6,9 @@ working tree is involved. No hook, filter, merge driver, fsmonitor or credential
 runs. A credential stays in the host's memory and reaches git only on file descriptor 3.
 
 The core is plain Node over the git CLI. It does not import pi, so any host can use it. It is the base for agents that
-learn in a repository: a run proposes on `runs/<id>`, a curator merges to `main`, a bad lesson is reverted.
+learn in a repository: a run proposes on `runs/<id>`, a curator merges to `main`, a bad lesson is reverted. It runs on
+Linux and macOS: git's credential helper here is a shell function that reads `/dev/fd/3`, a timed-out git is killed with
+its process group, and the extension reads the checkout's files with `O_NOFOLLOW`.
 
 ## Quickstart (no key, no network)
 
@@ -61,6 +63,7 @@ only, and only if the branch has not moved since the write began; `push` sends a
 
 | Method | What it does |
 |---|---|
+| `fetch()` | Fetches the remote now, and the push URL when it has one. The methods that read a branch already fetch first. |
 | `resolve(ref)` | The commit a branch or a full sha names. A local commit not yet pushed wins, unless the remote moved past it or away from it: the remote is the source of truth. With a push URL, the newer of the two remote tips counts. |
 | `checkout(ref, { into })` | Copies the regular files of `ref` into the empty directory `into`, never executable. It skips symlinks, submodules, paths git's index refuses, both spellings of a case collision, and files over the size cap, and names each one in `skipped`. A tree over `maxTreeEntries` files is refused whole. `into` may not be inside the host repository. |
 | `branches(prefix)` | The branches whose names start with `prefix` (`""`, or a branch name and a slash such as `runs/`), here and on the remote, each at the commit `resolve` gives, sorted by name. |
@@ -68,8 +71,8 @@ only, and only if the branch has not moved since the write began; `push` sends a
 | `commitTo(branch, { files, message, trailers, parent, allowEmpty })` | One commit with `files` applied (`null` deletes a path), built on the branch's tip, or on main for a new branch. `parent` names the commit to build on; a branch whose tip is elsewhere fails with `conflict`. A branch that already holds a commit with the same `Run-Id` trailer, locally or on the remote, gets no new commit, so a restarted host with an empty repository commits nothing twice. No change, no commit, unless `allowEmpty` asks for one whose message and trailers are the record. |
 | `push(sha, branch)` | Sends a commit by sha to `refs/heads/<branch>`. Never forced. A remote that moved is a `conflict`; a remote that refuses the ref is `refused`. |
 | `merge(from, into)` | A fast-forward when possible, else a merge commit from `git merge-tree`. A conflict names the paths and moves nothing. |
-| `revert(sha, on)` | A commit on `on` that undoes `sha`, an older commit included. Reverting twice changes nothing the second time; a conflict moves nothing. |
-| `log({ ref, path, trailer, max })` | Commits newest first, with their trailers; filter by path or by a trailer key and value. |
+| `revert(sha, on, { trailers })` | A commit on `on` that undoes `sha`, an older commit included, with `trailers` and a `Reverts: <sha>` trailer. Reverting twice changes nothing the second time; a conflict moves nothing. |
+| `log({ ref, path, trailer, max })` | Commits newest first, with their trailers; filter by path or by a trailer key and value. A `ref` with no commit gives an empty list. |
 
 ## What never runs
 
@@ -228,7 +231,7 @@ for one session, or `pi install npm:@parcha/pi-git-remote` to keep it. The sessi
 | `stateDir`: the host repository, checkouts and seed records | | `git-remote` in pi's agent directory |
 
 An embedding host passes the same names as options, which win over the flags, which win over the `gitRemote` key of pi's
-`settings.json`. It can also pass a `Remote` with a credential callback, `limits` for package A's caps, and `onEnd` to hear how
+`settings.json`. It can also pass a `Remote` with a credential callback, `limits` for the caps in [Limits](#limits), and `onEnd` to hear how
 each end went:
 
 ```ts

@@ -68,7 +68,8 @@ export type Seeded = {
 export type EndOutcome = {
   readonly sessionId: string;
   readonly branch: string;
-  /** The commit on the session branch that holds this session's changes; undefined when there was nothing to commit. */
+  /** The session branch's tip after this end, which holds the session's changes; undefined only when the branch did not
+   *  exist and there was nothing to commit. */
   readonly sha?: string;
   /** True when this end made the commit; false when it found the changes already committed or none to commit. */
   readonly created: boolean;
