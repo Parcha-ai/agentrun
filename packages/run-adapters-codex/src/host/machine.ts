@@ -19,6 +19,7 @@ import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, Mac
 import { brandMachine } from "./process.js";
 import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-adapters/host";
 import { codexPolicy, withWebSearches } from "./policy.js";
+import type { TomlValue } from "../config.js";
 import { UNWATCHED } from "../scripts.js";
 
 /** The variables a child takes from this process, when they are set. */
@@ -33,6 +34,9 @@ export interface LocalMachineOptions {
   confine?: ConfineChild;
   /** How a child is tied to this process (default what the machine supports; tests force the shim). */
   parentWatch?: ParentWatch;
+  /** Codex's own web search, live: Codex's config says `web_search = "live"` (`configure`), and the proxy admits the tool
+   *  Codex then sends and adds each search to the price. Default off. */
+  webSearch?: "live";
   /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits; its route comes
    *  from the harness. */
   proxy: {
@@ -40,8 +44,6 @@ export interface LocalMachineOptions {
     tools: readonly string[];
     price?: ModelProxyOptions["price"];
     maxOutputTokens?: number;
-    /** Codex's own web search, live: the proxy admits its tool and adds each search to the price. */
-    webSearch?: "live";
     log?: ModelProxyOptions["log"];
     fetch?: typeof fetch;
   };
@@ -165,13 +167,14 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     let announced: string | undefined;
     let open = 0;
     const rolloutListeners: ((line: string) => void)[] = [];
-    const price = options.proxy.price && options.proxy.webSearch === "live" ? withWebSearches(options.proxy.price) : options.proxy.price;
+    const search = options.webSearch === "live";
+    const price = options.proxy.price && search ? withWebSearches(options.proxy.price) : options.proxy.price;
     const proxy = await startModelProxy({
       policy: codexPolicy({
         model: route.models.model,
         tools: options.proxy.tools,
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
-        ...(options.proxy.webSearch ? { webSearch: options.proxy.webSearch } : {}),
+        ...(search ? { webSearch: "live" as const } : {}),
         announce: {
           // The cost is liveness, not safety: after an overlap a never call is declined until the next single answer, which the model's
           // next wait or exec gives.
@@ -207,6 +210,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelKey: key,
       announcedExec: () => announced,
       onRolloutLine: (listener) => void rolloutListeners.push(listener),
+      ...(search ? { configure: (config: Record<string, TomlValue>) => void (config.web_search = "live") } : {}),
       notes: [],
       spawn: async (spawnOptions) => {
         if (closed) throw new Error("agentrun-codex: the session machine is closed");

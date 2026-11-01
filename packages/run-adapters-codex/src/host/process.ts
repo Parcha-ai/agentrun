@@ -1,6 +1,7 @@
 // The process-harness names the copied Codex harness imports: the copied layer from @parcha/agentrun-adapters/process,
 // and, written for AgentRun, the session machine's types (a local machine, machine.ts), its brand, the model route the
 // harness describes for its model proxy (the policy), and model-step tracking (nothing to track locally).
+import type { TomlValue } from "../config.js";
 import type { DriveContext } from "./kernel.js";
 
 export {
@@ -75,6 +76,9 @@ export interface SessionMachine {
   announcedExec?(): string | undefined;
   /** Told each line the rollout's tail reads, as it reads it: the harness's view of code mode follows the log from here. */
   onRolloutLine?(listener: (line: string) => void): void;
+  /** Given Codex's `config.toml` settings before the harness writes them, to set what the session's own options decide
+   *  and the harness does not (its web search, a key reserved from callers). */
+  configure?(config: Record<string, TomlValue>): void;
   fsync(): Promise<void>;
   close(): Promise<void>;
 }

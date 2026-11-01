@@ -12,6 +12,9 @@ import { createHarnessRunner } from '@parcha/agentrun-adapters';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { codexAdapter } from '@parcha/agentrun-codex';
 import { findCodex } from '../dist/binary.js';
+import { checkConfig, codexConfig, toToml } from '../dist/config.js';
+import { localMachine } from '../dist/host/machine.js';
+import { CODEX_ROUTES, gatewayHandler } from '../dist/host/process.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 
 const binary = verifyCodexBinary(findCodex());
@@ -30,6 +33,34 @@ const sse = (n, items, searches) => [
 const SEARCH = { type: 'web_search_call', id: 'ws_1', status: 'completed', action: { type: 'search', query: 'capital of France' } };
 const SUBMIT = { type: 'function_call', name: 'submit', arguments: JSON.stringify({ value: { answer: 'Paris' } }), call_id: 'call_submit' };
 const SAY = { type: 'message', role: 'assistant', id: 'msg_2', status: 'completed', content: [{ type: 'output_text', text: 'done', annotations: [] }] };
+
+test("the machine sets Codex's web search to live only when asked, and a caller still may not set web_search itself", async () => {
+  const route = { routes: CODEX_ROUTES, models: { model: 'gpt-5.4-mini' }, credential: () => 'provider-secret', target: 'https://provider.invalid' };
+  const base = { model: 'm', baseUrl: 'http://127.0.0.1:1/v1', envKey: 'KEY', contextWindow: 1000 };
+  /** The config.toml the harness writes on a machine with `webSearch`: its config, through the machine's configure hook. */
+  const written = async (webSearch) => {
+    const acquire = localMachine({ dir: mkdtempSync(join(ROOT, 'machine-')), ...(webSearch ? { webSearch } : {}), proxy: { hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, tools: [] } });
+    const machine = await acquire({ ctx: { runId: 'r' }, model: gatewayHandler(route) });
+    try {
+      const config = codexConfig(base);
+      machine.configure?.(config);
+      return { hook: typeof machine.configure, toml: toToml(config) };
+    } finally {
+      await machine.close();
+    }
+  };
+  const off = await written(undefined);
+  const on = await written('live');
+  assert.deepEqual([off.hook, on.hook], ['undefined', 'function'], 'off, the config is written as the harness made it');
+  assert.equal(off.toml, toToml(codexConfig(base)));
+  assert.match(off.toml, /^web_search = "disabled"$/m);
+  // On differs by that one line, and the session's provider needs no capability for it.
+  assert.equal(on.toml, off.toml.replace('web_search = "disabled"\n', 'web_search = "live"\n'));
+  assert.notEqual(on.toml, off.toml);
+  for (const config of [{ web_search: 'live' }, { tools: { web_search: true } }, { 'tools.web_search': true }]) {
+    assert.throws(() => checkConfig(config), /config\.(tools\.)?web_search is set by the harness/, JSON.stringify(config));
+  }
+});
 
 test('webSearch is "live" or absent', () => {
   for (const webSearch of ['cached', 'indexed', true]) {

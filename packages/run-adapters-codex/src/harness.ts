@@ -126,16 +126,10 @@ export interface CodexHarnessOptions {
   /**
    * Codex's own shell and `apply_patch` (and `view_image`), on `/workspace`
    * in the session's VM. Default false (tool-less: `tools` are its only
-   * tools). Image generation, sub-agents and plugins stay off either way,
-   * and web search unless `webSearch` turns it on.
+   * tools). Image generation, web search, sub-agents and plugins stay off
+   * either way.
    */
   builtins?: boolean;
-  /**
-   * Codex's own web search, live: `web_search = "live"` in its config, so the
-   * model is offered the provider's hosted `web_search` tool (the session's
-   * model proxy must admit it). Default off.
-   */
-  webSearch?: 'live';
   /**
    * Codex's sandbox for its commands, in the VM (the Codex SDK's word; this
    * option was `sandbox`). Needs `builtins: true`. Default: `workspace-write`
@@ -510,7 +504,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         contextWindow: options.contextWindow ?? 272_000,
         cwd,
         ...(spec.env ? { commandEnv: spec.env } : {}),
-        ...(options.webSearch ? { webSearch: options.webSearch } : {}),
         extra: {
           sandbox_mode: sandboxMode,
           ...(sandboxMode === 'workspace-write' ? { sandbox_workspace_write: { network_access: true, writable_roots: [cwd, home] } } : {}),
@@ -518,6 +511,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
           ...(options.config ?? {}),
         },
       });
+      machine.configure?.(config);
       await machine.files.upload('codex-home', [
         { path: 'config.toml', bytes: new TextEncoder().encode(toToml(config)) },
         ...(resume ? [{ path: resume.path, bytes: rolloutBytes }] : []),

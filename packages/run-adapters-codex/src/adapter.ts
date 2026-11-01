@@ -148,7 +148,6 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         credential: async () => options.provider.credential(),
         gatewayUrl: options.provider.origin,
         contextWindow: options.contextWindow ?? 272_000,
-        ...(options.webSearch ? { webSearch: options.webSearch } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.standIn ? { test: { command: options.standIn.command, args: options.standIn.args ?? [] } } : {}),
         machine: {
@@ -156,13 +155,13 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           acquire: localMachine({
             dir,
             ...(options.confine ? { confine: options.confine } : {}),
+            ...(options.webSearch ? { webSearch: options.webSearch } : {}),
             proxy: {
               hooks: io.models,
               tools: spec.tools.map((t) => t.name),
               ...(options.log ? { log: options.log } : {}),
               ...(options.price ? { price: options.price } : {}),
               ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
-              ...(options.webSearch ? { webSearch: options.webSearch } : {}),
               ...(options.fetch ? { fetch: options.fetch } : {}),
             },
           }),

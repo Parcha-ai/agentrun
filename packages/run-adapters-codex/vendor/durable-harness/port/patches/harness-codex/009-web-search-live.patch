@@ -1,64 +1,17 @@
 Patch: 009-web-search-live
-Reason: a session may turn on Codex's own web search, live: the harness passes its webSearch option to the config, which then sets web_search = "live" (the pinned CLI offers the provider's hosted web_search tool through the session's custom provider, with no provider capability to set); off, the config is as before, and web_search stays a key a caller may not set
+Reason: a session may turn on Codex's own web search, live, which sets web_search = "live" in Codex's config, a key the harness reserves; the harness hands the config it generated to its machine's optional configure hook before writing it, and the machine (this package's own, host/machine.ts) sets the setting there, so the harness carries one line and no web search logic
 Upstream: ours
-Pins: the config sets Codex's web search to live only when asked, and a caller still may not set web_search itself
 Pins: web search live through the pinned binary: the run completes past a web_search_call, the proxy forwards the recorded live tool, and the search is booked
 ---
-diff --git a/packages/harness-codex/src/config.ts b/packages/harness-codex/src/config.ts
-index 6d87a7f..b08cce7 100644
---- a/packages/harness-codex/src/config.ts
-+++ b/packages/harness-codex/src/config.ts
-@@ -83,6 +83,13 @@ export interface CodexConfigOptions {
-    * else), less any name the policy excludes.
-    */
-   commandEnv?: Readonly<Record<string, string>>;
-+  /**
-+   * Codex's own web search, live (`web_search = "live"`): through the
-+   * session's provider the CLI then offers the model the provider's hosted
-+   * `web_search` tool, with external web access. Default off (`"disabled"`:
-+   * no web search tool at all).
-+   */
-+  webSearch?: 'live';
-   /** Merged over the generated config, last. */
-   extra?: Record<string, TomlValue>;
- }
-@@ -109,7 +116,7 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
-     model_provider: 'gateway',
-     model_context_window: options.contextWindow,
-     sandbox_mode: 'read-only',
--    web_search: 'disabled',
-+    web_search: options.webSearch === 'live' ? 'live' : 'disabled',
-     check_for_update_on_startup: false,
-     shell_environment_policy: {
-       inherit: SHELL_ENVIRONMENT_POLICY.inherit,
 diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
-index 436c2a9..3cf645a 100644
+index 436c2a9..f581121 100644
 --- a/packages/harness-codex/src/harness.ts
 +++ b/packages/harness-codex/src/harness.ts
-@@ -123,10 +123,16 @@ export interface CodexHarnessOptions {
-   /**
-    * Codex's own shell and `apply_patch` (and `view_image`), on `/workspace`
-    * in the session's VM. Default false (tool-less: `tools` are its only
--   * tools). Image generation, web search, sub-agents and plugins stay off
--   * either way.
-+   * tools). Image generation, sub-agents and plugins stay off either way,
-+   * and web search unless `webSearch` turns it on.
-    */
-   builtins?: boolean;
-+  /**
-+   * Codex's own web search, live: `web_search = "live"` in its config, so the
-+   * model is offered the provider's hosted `web_search` tool (the session's
-+   * model proxy must admit it). Default off.
-+   */
-+  webSearch?: 'live';
-   /**
-    * Codex's sandbox for its commands, in the VM (the Codex SDK's word; this
-    * option was `sandbox`). Needs `builtins: true`. Default: `workspace-write`
-@@ -501,6 +507,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
-         contextWindow: options.contextWindow ?? 272_000,
-         cwd,
-         ...(spec.env ? { commandEnv: spec.env } : {}),
-+        ...(options.webSearch ? { webSearch: options.webSearch } : {}),
-         extra: {
-           sandbox_mode: sandboxMode,
-           ...(sandboxMode === 'workspace-write' ? { sandbox_workspace_write: { network_access: true, writable_roots: [cwd, home] } } : {}),
+@@ -508,6 +508,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+           ...(options.config ?? {}),
+         },
+       });
++      machine.configure?.(config);
+       await machine.files.upload('codex-home', [
+         { path: 'config.toml', bytes: new TextEncoder().encode(toToml(config)) },
+         ...(resume ? [{ path: resume.path, bytes: rolloutBytes }] : []),
