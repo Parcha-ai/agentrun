@@ -50,4 +50,6 @@ export const EditHistory: Story = { render: () => editor("invoice-checker", { st
 export const EditConflict: Story = { render: () => editor("invoice-checker", { problem: asProblem("write.definition-put-stale") }) };
 export const EditInvalidHarness: Story = { render: () => editor("invoice-checker", { step: "settings", problem: asProblem("write.definition-invalid-harness") }) };
 export const EditWorkflow: Story = { render: () => editor("support-triage") };
+// A save the server took that this host can't run yet: what its answer's warnings said, above the form and at the field.
+export const SavedWithWarnings: Story = { render: () => page(<AgentEditor agent={{ ...agentFixture("invoice-checker"), warnings: [{ field: "definition.model", reason: "not_set_up_here", message: "pi-ai finds no key for openai in this environment (OpenAI API key): set it where agentrun-serve starts." }] }} revisions={revisionsOf("invoice-checker")} caps={editorCaps} step="settings" onSave={async () => null} onBack={noop} />) };
 export const Phone: Story = { render: () => editor("invoice-checker", { step: "settings" }), globals: { viewport: { value: "mobile1" } } };
