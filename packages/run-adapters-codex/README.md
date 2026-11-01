@@ -17,8 +17,8 @@ const runNode = createHarnessRunner(
 );
 ```
 
-- **The host's tools only.** Codex's app-server runs with its built-in tools off: no shell, no file edits, no web (unless
-  `webSearch` turns on the provider's own, below), no images, no sub-agents. A classic model is offered exactly the host's tools (and the runner's `submit`); a code-mode
+- **The host's tools only.** Codex's app-server runs with its built-in tools off: no shell, no file edits, no web, no
+  images, no sub-agents. A classic model is offered exactly the host's tools (and the runner's `submit`); a code-mode
   model is offered code mode's `exec` and `wait`, whose runtime has no Node modules, no process and no network, and
   reaches the host's tools by their own names, as nested calls of the script it writes. The proxy passes `exec` and
   `wait` and drops the sub-agent and user-input tools Codex lists beside them; it keeps parallel tool calls off for a
@@ -36,14 +36,24 @@ const runNode = createHarnessRunner(
   it never holds the provider key. The proxy forwards `POST /v1/responses` only, fixes the model, stores nothing at the
   provider, drops any tool that is not the session's, and asks the runner before every paid request, so the turn cap and
   the host's budget hold. Each response's usage comes back to the runner.
-- **Web search, when asked.** `webSearch: "live"` sets `web_search = "live"` in Codex's config; the proxy then passes
-  exactly the hosted tool Codex sends for it (`{ type: "web_search", external_web_access: true }`, recorded in
-  `test/fixtures/responses-request-web-search-live.json`) and refuses any other web search tool. Each search a response
-  ran (`tool_usage.web_search.num_requests`) is added to its price at OpenAI's $0.01 a call; a model with no known search
-  price books an unknown cost. A request that offers web search has no input bound, so a cap treats its input as unknown.
+- **Web search, when asked.** The one exception to the above: `webSearch: "live"` sets `web_search = "live"` in Codex's
+  config; the proxy then passes exactly the hosted tool Codex sends for it (`{ type: "web_search", external_web_access:
+  true }`, recorded in `test/fixtures/responses-request-web-search-live.json`) and refuses any other web search tool.
+  Each search a response ran (`tool_usage.web_search.num_requests`) is added to its price at OpenAI's $0.01 a call; a
+  model with no known search price books an unknown cost. A request that offers web search has no input bound, so a cap
+  treats its input as unknown.
 - **A private, empty machine.** A session runs in its own directories with an empty working directory. Codex's
   environment is an allowlist (`PATH`, `LANG`, `TZ`, its own homes and the proxy key); nothing else of the host's
   reaches it, and its process group ends with the session.
+- **The host's skills, and no others.** `codexAdapter({ skills: [{ name, files }] })`: Codex lists each skill to the model
+  by its name and description, and the model reads its `SKILL.md` and the files it names with `read_skill_file` (it has
+  no shell). The skills are written into the session's `CODEX_HOME` at the start of every drive, where Codex lists a
+  user's skills even in a turn with its built-ins off (it lists none from a working directory's `.agents/skills` there).
+  Codex's bundled skills (imagegen, openai-docs, skill-creator, skill-installer, ...) are off in every session, with
+  skills or without. The skills are checked when the adapter is made, by `skillProblems` of `@parcha/agentrun-adapters`,
+  the Claude adapter's check: a lowercase name, a `SKILL.md` whose front matter names it and describes it, plain
+  relative paths, 1 MiB in all. Codex itself skips a skill with no front matter or no description and lists one under
+  its front matter's name, so each of those is refused here instead.
 - **Durable.** A session's records are in the store the host lends (Codex's rollout mirrored line by line, every tool
   call an effect recorded before it runs). A session a process died inside resumes from its records: a `safe` tool runs
   again, a `never` tool's cut-off call is reported to the model as interrupted and never repeated.

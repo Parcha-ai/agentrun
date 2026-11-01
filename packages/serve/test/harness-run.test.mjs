@@ -8,11 +8,13 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
+const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer;
 
@@ -236,14 +238,32 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.equal(results.length, 1, JSON.stringify(results));
     assert.match(results[0][0], /Public page/, "the page's title, read through the guarded fetch");
   });
+
+  test(`web_fetch runs on ${harness} as a host tool: the run is handed Parallel's key and reads the page through Parallel`, { timeout: 60_000 }, async (t) => {
+    const calls = join(await scratch(t), "parallel.jsonl");
+    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, ["AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT"]);
+    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB, fauxParallel: FAUX_PARALLEL });
+    const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title with web_fetch.", tools: ["web_fetch"] }));
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    assert.doesNotMatch(JSON.stringify(saved.body), /not bound yet/, "no warning that the tool is pi's only");
+    const run = await api("POST", `/agents/web-${harness}/runs`, { input: { content: "hi" } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const results = toolResults(rows);
+    assert.equal(results.length, 1, JSON.stringify(results));
+    assert.match(results[0][0], /"title":"Read by Parallel".*"via":"parallel"/s, "read through Parallel's extract");
+    const sent = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.urls]), [["/v1/extract", true, ["http://public.example/"]]], "on the key the server handed the run");
+  });
 }
 
-test("capabilities say which harnesses run each tool: the file tools and fetch_page on every harness, the rest on pi", async (t) => {
+test("capabilities say which harnesses run each tool: the file tools, fetch_page and web_fetch on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
   const every = ["pi", "claude-agent", "codex"];
-  for (const name of ["read", "write", "edit", "fetch_page"]) assert.deepEqual(tools[name], every, name);
-  for (const [name, harnesses] of Object.entries(tools)) if (!["read", "write", "edit", "fetch_page"].includes(name)) assert.deepEqual(harnesses, ["pi"], name);
+  const host = ["read", "write", "edit", "fetch_page", "web_fetch"];
+  for (const name of host) assert.deepEqual(tools[name], every, name);
+  for (const [name, harnesses] of Object.entries(tools)) if (!host.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });
 
 test("pi's confinement holds for another harness's read: a link out of the workspace is refused with pi's words", { timeout: 90_000 }, async (t) => {

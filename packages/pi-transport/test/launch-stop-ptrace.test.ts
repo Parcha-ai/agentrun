@@ -419,7 +419,7 @@ describe("a stop in progress", () => {
 			join(dir, "spec.sh"),
 			'GEN=\'g1\'\nrun_program() {\n  : > "$D/stop.req"\n  echo \'{"phase":"stopping"}\' > "$D/state"\n  exit 0\n}\n',
 		);
-		const ran = spawnSync("sh", [scriptMeasuring(scope("1\n")), "run", dir, "1"], {
+		const ran = spawnSync("sh", [scriptMeasuring(scope("1\n")), "run", dir, "1", "g1"], {
 			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
 		});
 		expect(ran.status).toBe(0);
