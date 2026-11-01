@@ -25,7 +25,7 @@ import { serialWriter } from "./serial.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
-/** The pinned CLI's tools the copied harness leaves undecided, off by name in every session. */
+/** The pinned CLI's tools the copied harness leaves undecided, off by name in every session (WebSearch unless `webSearch`). */
 export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch"]);
 
 /** The local plugin the session's skills are served from: the model sees each as `agentrun:<name>`, and may load it by
@@ -102,6 +102,11 @@ export interface ClaudeAgentAdapterOptions {
    *  others: never the CLI's bundled ones or any in a home directory. Written into each session's private directory.
    *  Default none. */
   skills?: readonly ClaudeAgentSkill[];
+  /** Claude's own WebSearch, and nothing else of the CLI's: the model may call it, and the CLI runs each call as a request
+   *  of its own through the session's model proxy with Anthropic's web search server tool, the one hosted tool that proxy
+   *  then admits. Each search the provider reports is booked at `CLAUDE_WEB_SEARCH_USD` on top of `price`, into the
+   *  session's cost and so its spend cap. WebFetch stays off (it would fetch from the CLI's own process). Default off. */
+  webSearch?: boolean;
   /** Diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /**
@@ -290,6 +295,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   const maxImageBytes = options.maxImageBytes ?? CLAUDE_AGENT_MAX_IMAGE_BYTES;
   if (!Number.isSafeInteger(maxImageBytes) || maxImageBytes < 1 || maxImageBytes > MAX_IMAGE_BYTES_CEILING) throw new Error(`agentrun-claude-agent: maxImageBytes must be a whole number of bytes from 1 to ${MAX_IMAGE_BYTES_CEILING}`);
   const skills = options.skills ?? [];
+  const webSearch = options.webSearch === true;
   const skillsWrong = skillProblems(skills);
   if (skillsWrong.length) throw new Error(`agentrun-claude-agent: ${skillsWrong.join("; ")}`);
   const headersWrong = hostHeaderProblems(options.provider.headers);
@@ -336,14 +342,16 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
 
       const calls = new CallsInFlight();
+      // The CLI's own tools offered to the model: Skill only when the session has skills, WebSearch only when it is on.
+      const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
       const acquire = localMachine({
         dir,
         ...(options.confine ? { confine: options.confine } : {}),
         proxy: {
           hooks: io.models,
           tools: tools.map((t) => t.name),
-          // The Skill tool is offered to the model only when the session has skills.
-          ...(skills.length ? { builtins: ["Skill"] } : {}),
+          ...(builtins.length ? { builtins } : {}),
+          ...(webSearch ? { webSearch: true } : {}),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(options.provider.auth ? { auth: options.provider.auth } : {}),
@@ -359,7 +367,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         name: CLAUDE_AGENT_ID,
         sandbox: {
           attach: (ctx, request) => acquire({ ctx, ...(request.model ? { model: request.model } : {}), ...(request.deadline === undefined ? {} : { deadline: request.deadline }) }),
-          // No provider-hosted tool and no command of its own: the CLI reaches nothing but its model proxy.
+          // No command of its own: the CLI reaches nothing but its model proxy (a web search, when on, is the provider's).
           network: "deny-all",
           // The runner's turn cap and the host's beforeRequest bound the spend.
           budget: { turnUsd: Infinity, sessionUsd: Infinity },
@@ -367,8 +375,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         tools: tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
-        // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists).
-        disallowedTools: [...CLAUDE_AGENT_ALSO_OFF],
+        // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists), but WebSearch when it is on.
+        disallowedTools: CLAUDE_AGENT_ALSO_OFF.filter((name) => !(webSearch && name === "WebSearch")),
+        ...(webSearch ? { providerTools: ["web_search" as const] } : {}),
         model: modelFor(spec),
         ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
