@@ -186,11 +186,23 @@ function objectAt(text: string, start: number): string | undefined {
 const PAID_END = new Set(["response.completed", "response.incomplete"]);
 
 /**
+ * The end of the stream's last event when its line was cut at the window's start (a line longer than the window): the
+ * text after the last line break, past a closing `data: [DONE]`. A line kept from its start (`data:`) is not one: it was
+ * read whole, or it was cut short at the stream's end, and is not read. Undefined when there is none.
+ */
+function cutEnd(text: string): string | undefined {
+  const last = text.split("\n").map((line) => line.trim()).filter((line) => line && line !== "data: [DONE]" && !line.startsWith("event:") && !line.startsWith(":")).at(-1);
+  return last === undefined || last.startsWith("data:") ? undefined : last;
+}
+
+/**
  * The value of `key` in the response an answer ends with: a stream's `response.completed` (or `response.incomplete`),
  * each `data:` line parsed on its own, or a whole JSON body's. The proxy keeps only the first and last 64 KiB of a long
  * answer, and the completed event carries the whole response (its tools and encrypted reasoning), so its line can be cut
  * at the window's start: then the last `"<key>":{` in the text (the response's, which a JSON string cannot contain
- * unescaped) is read as one JSON object. No completed event, or no `key` in it, is undefined.
+ * unescaped) is read as one JSON object. The usage is looked for in all the text kept; `tool_usage` only in the cut end
+ * of the last event (`cutEnd`), since the events before the terminal one carry a `tool_usage` of their own (a count of
+ * 0 as the response starts). No completed event, or no `key` in it, is undefined.
  */
 function endValue(text: string, key: "usage" | "tool_usage"): unknown {
   let found: unknown;
@@ -218,10 +230,12 @@ function endValue(text: string, key: "usage" | "tool_usage"): unknown {
       if (isPlain(body) && body.object === "response") return body[key];
     } catch {}
   }
+  const scope = key === "usage" ? text : cutEnd(text);
+  if (scope === undefined) return undefined;
   const mark = `"${key}":{`;
-  const at = text.lastIndexOf(mark);
+  const at = scope.lastIndexOf(mark);
   if (at < 0) return undefined;
-  const json = objectAt(text, at + mark.length - 1);
+  const json = objectAt(scope, at + mark.length - 1);
   if (json === undefined) return undefined;
   try {
     return JSON.parse(json);
@@ -235,8 +249,8 @@ export function usageOf(text: string): ProxyUsage | undefined {
   return usageFrom(endValue(text, "usage"));
 }
 
-/** The web searches a Responses answer ran, as its end reports them (`tool_usage.web_search.num_requests`, what OpenAI
- *  bills per call), or undefined when it does not say. */
+/** The web searches a Responses answer ran, as its terminal event reports them (`tool_usage.web_search.num_requests`,
+ *  what OpenAI bills per call), or undefined when that event's own count cannot be read: an unknown cost, never 0. */
 export function webSearchesOf(text: string): number | undefined {
   const used = endValue(text, "tool_usage");
   const search = isPlain(used) ? used.web_search : undefined;

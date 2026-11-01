@@ -585,3 +585,29 @@ test("web search live: the runner books each search into the session's spend, an
   assert.deepEqual([two.statuses, two.forwarded], [[200, 400], 1]);
   assert.ok(Math.abs(two.spent - (TOKENS_USD + 0.02)) < 1e-12, String(two.spent));
 });
+
+test("web search live: the count is the terminal event's own; an earlier event's 0 never stands in for one the window cut or the event left out", async () => {
+  const usage = { input_tokens: 10, output_tokens: 2 };
+  const pad = 'e'.repeat(100 * 1024);
+  const reasoning = { type: 'reasoning', encrypted_content: pad, summary: [] };
+  // The response's first events carry a tool_usage of their own, with no search yet.
+  const started = { object: 'response', status: 'in_progress', usage: null, tool_usage: { web_search: { num_requests: 0 } } };
+  const book = async (response) => {
+    const events = [{ type: 'response.created', response: started }, { type: 'response.in_progress', response: started }, { type: 'response.completed', response: { object: 'response', status: 'completed', ...response, usage } }];
+    const q = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini', answer: streamed(`${sse(events)}data: [DONE]\n\n`) });
+    assert.equal((await send(q.p.url, { body: LIVE_REQUEST })).status, 200);
+    await settled();
+    const [{ input, output, webSearches, usd }] = q.reports;
+    return { input, output, webSearches, usd: usd === null ? null : Math.round(usd * 1e9) / 1e9 };
+  };
+  const unknown = { input: 10, output: 2, webSearches: null, usd: null };
+  const two = { input: 10, output: 2, webSearches: 2, usd: 0.020012 };
+  // A completed event longer than the window, its count between the two windows the proxy keeps: unknown.
+  assert.deepEqual(await book({ output: [reasoning], tool_usage: { web_search: { num_requests: 3 } }, instructions: pad }), unknown);
+  // Its count readable, whole or at the end of a line longer than the window: N searches at $0.01.
+  assert.deepEqual(await book({ tool_usage: { web_search: { num_requests: 2 } } }), two);
+  assert.deepEqual(await book({ output: [reasoning], tool_usage: { web_search: { num_requests: 2 } } }), two);
+  // A completed event with no tool_usage, whole or longer than the window: unknown.
+  assert.deepEqual(await book({}), unknown);
+  assert.deepEqual(await book({ output: [reasoning] }), unknown);
+});
