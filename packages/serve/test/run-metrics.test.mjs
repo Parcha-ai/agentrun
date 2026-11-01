@@ -2,16 +2,21 @@
 // conversation of its store, the effort it ran at, and on a harness other than pi the model its revision names. A
 // follow-up's end writes them again, and a run whose process died gets them from what its store holds.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { processAlive } from "@parcha/agentrun-adapters/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
-import { agent, answerFlow, flowAgent, follow, serve, startRun, storeRun, withEnv } from "./support.mjs";
+import { startServe } from "../dist/index.js";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const EFFORT_NAMES = ["AGENT_THINKING", "AGENTRUN_SERVE_EFFORT"];
+const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function metricsOf(data, runId) {
   const reader = openStoreReader(data);
@@ -64,6 +69,38 @@ test("the effort stored is the one the run's process took: the run's, else its r
   const run = await api("POST", "/agents/low/runs", { input: { content: "hi" }, effort: "medium" });
   for (const id of [host, revision, run.body.run_id]) await follow(api, id, ["completed"]);
   assert.deepEqual([host, revision, run.body.run_id].map((id) => metricsOf(data, id).effort), ["xhigh", "low", "medium"]);
+});
+
+test("a run its server's successor ends keeps the effort its process ran at, not the successor's host level", async (t) => {
+  withEnv(t, { AGENT_THINKING: "low" }, EFFORT_NAMES);
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  // The first server in a process of its own, at the host level high, so it can die as a crash kills it.
+  const first = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENT_THINKING: "high" } });
+  t.after(() => first.kill("SIGKILL"));
+  let out = "";
+  first.stdout.on("data", (chunk) => (out += chunk));
+  for (let i = 0; !/AGENTRUN_API_KEY=/.test(out); i++) {
+    assert.ok(i < 200, `the server did not start: ${out}`);
+    await sleep(50);
+  }
+  const api = client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], (await readFile(join(data, ".token"), "utf8")).trim());
+  const go = join(dir, "go");
+  const runId = await started(api, "later", {}, { input: { content: `Answer once ${go} exists.` } });
+  for (let i = 0; (await api("GET", `/runs/${runId}`)).body.status !== "working"; i++) {
+    assert.ok(i < 200, "the run works");
+    await sleep(50);
+  }
+  first.kill("SIGKILL");
+  await new Promise((resolve) => first.once("exit", resolve));
+  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await writeFile(go, "");
+  await follow(client(next.baseUrl, next.token), runId, ["completed"]);
+  assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation, 1, "the first process finished it");
+  assert.equal(metricsOf(data, runId).effort, "high");
 });
 
 test("a run on the claude-agent or codex harness ends with metrics: its model the revision's, its effort the harness's", { timeout: 90_000 }, async (t) => {

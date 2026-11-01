@@ -95,6 +95,9 @@ type RunMeta = {
   stopped_at?: string;
   /** A run stopped by an older server: how many messages the person had sent then. Read only when `stopped_at` is not. */
   stopped_after?: number;
+  /** What its newest process took its thinking level from (app.ts's thinkingOf), as its environment had them: `effort`,
+   *  the run's effort, and `host`, the host's AGENT_THINKING. Absent for a process an older server started. */
+  launch_thinking?: { effort?: string; host?: string };
 };
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
@@ -425,6 +428,7 @@ export class Runs {
       ...(isObject(stored?.review) ? { review: stored.review as SavedReview } : {}),
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
+      ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
     };
     const run = this.blank(row, dir, meta, (await this.options.agents.revisions(row.agent)).find((r) => r.id === row.revision)?.version ?? 0);
     this.runs.set(row.id, run);
@@ -818,6 +822,9 @@ export class Runs {
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
       ...(this.options.documents ? { [DOCUMENTS_ENV]: this.options.documents } : {}),
     };
+    // Kept for its metrics: the host's level may change before the run ends.
+    run.meta.launch_thinking = { ...(env[EFFORT_ENV] ? { effort: env[EFFORT_ENV] } : {}), ...(env.AGENT_THINKING ? { host: env.AGENT_THINKING } : {}) };
+    void this.saveMeta(run).catch((error: Error) => warn(run.id, `what its process thinks at is not saved: ${error.message}`));
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
     // The decision keys are never in a run's environment, which its tools and its model's provider read (childEnv leaves
@@ -1055,9 +1062,9 @@ export class Runs {
     this.refresh(run);
   }
 
-  /** The run's metrics as the store keeps them: what its entries say it used, the effort its process ran at, and on a
-   *  harness other than pi the model its revision names (its entries name the harness). A busy store throws, for the
-   *  write's retries; a revision that cannot be read otherwise adds nothing. */
+  /** The run's metrics as the store keeps them: what its entries say it used, the effort its newest process ran at (unknown
+   *  for one an older server started), and on a harness other than pi the model its revision names (its entries name the
+   *  harness). A busy store throws, for the write's retries; a revision that cannot be read otherwise adds nothing. */
   private storedMetrics(run: Run, counted: RunMetrics): StoredMetrics {
     let revision: Revision;
     try {
@@ -1069,8 +1076,9 @@ export class Runs {
     const body = revision.kind === "agentic" ? revision.body : undefined;
     const harness = body?.harness ?? DEFAULT_HARNESS;
     // As its process chose it (app.ts): the run's effort, else its revision's thinking, else the host's, else medium.
-    const level = thinkingOf(run.meta.effort ? { ...process.env, [EFFORT_ENV]: run.meta.effort } : process.env, body?.thinking);
-    return { ...counted, effort: thinkingFor(harness, level) as string, ...(harness !== DEFAULT_HARNESS && body?.model ? { model: body.model } : {}) };
+    const launched = run.meta.launch_thinking;
+    const level = launched && thinkingFor(harness, thinkingOf({ [EFFORT_ENV]: launched.effort, AGENT_THINKING: launched.host }, body?.thinking));
+    return { ...counted, ...(level ? { effort: level } : {}), ...(harness !== DEFAULT_HARNESS && body?.model ? { model: body.model } : {}) };
   }
 
   /** Tries `persist` again every settleRetryMs while the server lives, until it lands. */
