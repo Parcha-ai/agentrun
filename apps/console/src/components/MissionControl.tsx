@@ -1,3 +1,4 @@
+import { agentHash } from "@/components/AgentPage";
 import { StatusBadge } from "@/components/StatusBadge";
 import { when } from "@/lib/format";
 import { costParts, type MissionView } from "@/lib/mission";
@@ -53,7 +54,7 @@ export function MissionControl({ view, error, onRetry, scope }: { view: MissionV
             <h2 className="caps border-b px-4 py-3 text-[12px] font-semibold">Runs per agent</h2>
             {view.perAgent.length ? (
               <ul>{view.perAgent.map((a) => (
-                <li key={a.agentId} className="border-b last:border-b-0"><a href={`#/runs?agent=${encodeURIComponent(a.agentId)}`} className="flex items-center justify-between gap-3 px-4 py-3 text-[14px] hover:bg-accent"><span className="min-w-0 truncate">{a.name}</span><span className="font-mono text-[13px] text-muted-foreground">{a.runs}</span></a></li>
+                <li key={a.agentId} className="border-b last:border-b-0"><a href={agentHash(a.agentId, "runs")} className="flex items-center justify-between gap-3 px-4 py-3 text-[14px] hover:bg-accent"><span className="min-w-0 truncate">{a.name}</span><span className="font-mono text-[13px] text-muted-foreground">{a.runs}</span></a></li>
               ))}</ul>
             ) : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No agents yet.</p>}
           </section>

@@ -301,7 +301,8 @@ test("the launcher run through a link, as a package manager installs a bin, find
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (out += chunk));
-  const code = await new Promise((resolve) => child.once("exit", resolve));
+  // "close", not "exit": it comes once the child's stdout and stderr are read to their end, so what it said is in.
+  const code = await new Promise((resolve) => child.once("close", resolve));
   assert.equal(code, 0, out);
   assert.match(out, /^usage: agentrun-serve /m);
 });
@@ -374,7 +375,8 @@ test("secrets past what a pipe is sure to hold are refused before the server sta
   const child = spawn(LAUNCHER, ["--help"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: tmp, XDG_CONFIG_HOME: tmp, AGENT_MODEL_API_KEY: `not-a-secret-${"x".repeat(5_000)}` } });
   let out = "";
   child.stderr.on("data", (chunk) => (out += chunk));
-  const code = await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(10_000).then(() => "hung")]);
+  // "close", not "exit": "exit" can come before the stderr pipe is read, and the refusal would read as "".
+  const code = await Promise.race([new Promise((resolve) => child.once("close", resolve)), sleep(10_000).then(() => "hung")]);
   assert.equal(code, 1, out);
   assert.match(out, /more than the 4096 a pipe is sure to hold/);
 });
