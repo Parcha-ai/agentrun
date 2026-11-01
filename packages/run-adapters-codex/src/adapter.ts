@@ -3,8 +3,8 @@
 // A session is the copied Codex harness (harness.ts) driven over the session's own records (the kernel's openDrive on
 // the writer the runner lends, `io.writer`), on a local machine (host/machine.ts): Codex's app-server with its built-in tools off, its
 // model behind the session's loopback proxy (@parcha/agentrun-adapters/host), and the host's tools, exactly those `spec.tools` names,
-// as its only tools. Every paid request passes the runner's `beforeRequest` first, and its usage comes back through
-// `afterRequest`.
+// as its only tools (beside the provider's own web search, when `webSearch` turns it on). Every paid request passes the
+// runner's `beforeRequest` first, and its usage comes back through `afterRequest`.
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { toolSchemaProblems } from "@parcha/agentrun-adapters";
@@ -30,6 +30,9 @@ export interface CodexProvider {
   credential: () => Promise<string> | string;
 }
 
+/** Codex's own web search, as a session may turn it on: `live` (it searches the web as it runs). */
+export type CodexWebSearch = "live";
+
 export interface CodexAdapterOptions {
   /** The provider's model id, or one per tier (`default` when a node names none). */
   model: string | { default: string; fast?: string; strong?: string };
@@ -39,6 +42,10 @@ export interface CodexAdapterOptions {
   confine?: ConfineChild;
   /** The price of a response; null (or no function) records its cost as unknown. */
   price?: ModelProxyOptions["price"];
+  /** Codex's own web search, on the provider (OpenAI's hosted `web_search` tool): `"live"` sets `web_search = "live"` in
+   *  Codex's config, the model proxy admits exactly the tool Codex then sends, and each search a response ran is added to
+   *  its price at the model's per-call price (unknown for a model with no known search price). Default off. */
+  webSearch?: CodexWebSearch;
   /** The most output tokens one request may ask for. Default 32 000. */
   maxOutputTokens?: number;
   /** The model's context window. Default 272 000. */
@@ -87,6 +94,7 @@ function adapterEvent(event: unknown): AdapterEvent | undefined {
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
+  if (options.webSearch !== undefined && options.webSearch !== "live") throw new TypeError("agentrun-codex: webSearch is \"live\" or absent");
   // The binary is checked once, here, against the pins: a mismatch or a missing binary is the host's to report, before
   // any run starts (CodexPinMismatch, CodexNotInstalled). A test's stand-in runs no Codex.
   const checked = options.standIn ? undefined : verifyCodex().path;
@@ -140,6 +148,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         credential: async () => options.provider.credential(),
         gatewayUrl: options.provider.origin,
         contextWindow: options.contextWindow ?? 272_000,
+        ...(options.webSearch ? { webSearch: options.webSearch } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.standIn ? { test: { command: options.standIn.command, args: options.standIn.args ?? [] } } : {}),
         machine: {
@@ -153,6 +162,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
               ...(options.log ? { log: options.log } : {}),
               ...(options.price ? { price: options.price } : {}),
               ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+              ...(options.webSearch ? { webSearch: options.webSearch } : {}),
               ...(options.fetch ? { fetch: options.fetch } : {}),
             },
           }),

@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/config.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 001-code-mode-host, 004-names, 006-comments
+// Changed by Parcha, patches: 001-code-mode-host, 004-names, 006-comments, 009-web-search-live
 /**
  * The `config.toml` a session's `CODEX_HOME` gets: the model and its
  * provider (the session's model proxy), and Codex's built-in tools and side
@@ -86,6 +86,13 @@ export interface CodexConfigOptions {
    * else), less any name the policy excludes.
    */
   commandEnv?: Readonly<Record<string, string>>;
+  /**
+   * Codex's own web search, live (`web_search = "live"`): through the
+   * session's provider the CLI then offers the model the provider's hosted
+   * `web_search` tool, with external web access. Default off (`"disabled"`:
+   * no web search tool at all).
+   */
+  webSearch?: 'live';
   /** Merged over the generated config, last. */
   extra?: Record<string, TomlValue>;
 }
@@ -112,7 +119,7 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
     model_provider: 'gateway',
     model_context_window: options.contextWindow,
     sandbox_mode: 'read-only',
-    web_search: 'disabled',
+    web_search: options.webSearch === 'live' ? 'live' : 'disabled',
     check_for_update_on_startup: false,
     shell_environment_policy: {
       inherit: SHELL_ENVIRONMENT_POLICY.inherit,

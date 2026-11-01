@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer, 009-web-search-live
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -126,10 +126,16 @@ export interface CodexHarnessOptions {
   /**
    * Codex's own shell and `apply_patch` (and `view_image`), on `/workspace`
    * in the session's VM. Default false (tool-less: `tools` are its only
-   * tools). Image generation, web search, sub-agents and plugins stay off
-   * either way.
+   * tools). Image generation, sub-agents and plugins stay off either way,
+   * and web search unless `webSearch` turns it on.
    */
   builtins?: boolean;
+  /**
+   * Codex's own web search, live: `web_search = "live"` in its config, so the
+   * model is offered the provider's hosted `web_search` tool (the session's
+   * model proxy must admit it). Default off.
+   */
+  webSearch?: 'live';
   /**
    * Codex's sandbox for its commands, in the VM (the Codex SDK's word; this
    * option was `sandbox`). Needs `builtins: true`. Default: `workspace-write`
@@ -504,6 +510,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         contextWindow: options.contextWindow ?? 272_000,
         cwd,
         ...(spec.env ? { commandEnv: spec.env } : {}),
+        ...(options.webSearch ? { webSearch: options.webSearch } : {}),
         extra: {
           sandbox_mode: sandboxMode,
           ...(sandboxMode === 'workspace-write' ? { sandbox_workspace_write: { network_access: true, writable_roots: [cwd, home] } } : {}),
