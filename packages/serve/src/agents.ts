@@ -47,7 +47,12 @@ export const homeBusy = () => new ApiError("home_busy", "the agent store is busy
 /** A store error as the request's answer: a busy store is retryable, a refusal names the field it refused. */
 export function storeError(error: unknown, field = "definition"): never {
   if (storeBusy(error)) throw homeBusy();
-  if (error instanceof AgentHomeError && error.code === "invalid") throw invalid([{ field, reason: "invalid", message: error.message }]);
+  if (error instanceof AgentHomeError && error.code === "invalid") {
+    // A workflow's refusal carries every issue, each at its path under the field.
+    const issues = (error as { issues?: Array<{ path: string; code: string; message: string }> }).issues;
+    if (issues?.length) throw invalid(issues.map((issue) => ({ field: `${field}${issue.path}`, reason: "invalid", code: issue.code, message: issue.message })), error.message);
+    throw invalid([{ field, reason: "invalid", message: error.message }]);
+  }
   if (error instanceof AgentHomeError && error.code === "missing") throw new ApiError("not_found", error.message);
   if (error instanceof AgentHomeError && error.code === "stale") throw new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   throw error;

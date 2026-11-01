@@ -19,7 +19,7 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.deepEqual(body.models, { source: "faux", fast: "faux/faux-1", default: "faux/faux-1", strong: "faux/faux-1" });
   assert.equal(body.features.quotes, false);
   assert.deepEqual(body.features.home, { export: false, import: false, check: false });
-  assert.deepEqual(body.features.runs, { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"] });
+  assert.deepEqual(body.features.runs, { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true });
   assert.deepEqual(body.features.agents, { create: true, list: true, update: true, revisions: true });
   assert.equal(body.features.messages.steer_workflow_runs, false);
   assert.equal(body.features.timeline.live_workflow_rows, false);

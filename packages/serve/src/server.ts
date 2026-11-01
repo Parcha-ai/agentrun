@@ -162,6 +162,10 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/archive$/, name: "archiveRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/unarchive$/, name: "unarchiveRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/kill$/, name: "killRun", capability: "runs.kill" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/graph$/, name: "getRunGraph" },
+  { method: "POST", pattern: /^\/workflows\/validate$/, name: "validateWorkflow" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/pause$/, name: "pauseRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
   { method: "POST", pattern: /^\/files$/, name: "createFile", capability: "files.upload" },
@@ -172,6 +176,19 @@ export const ROUTES: readonly Route[] = [
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
+/** A workflow run's title: its agent's name and a few words of its input, never the input's JSON ("Batch review: 20
+ *  documents, as_of 2026-10-30"). */
+export function workflowTitle(name: string, input: Record<string, unknown>): string {
+  const words = Object.entries(input).slice(0, 3).map(([key, value]) => {
+    if (Array.isArray(value)) return value.length === 1 && typeof value[0] === "string" ? value[0] : `${value.length} ${key}`;
+    if (typeof value === "string") return value.length > 40 ? `${value.slice(0, 39)}…` : value;
+    if (typeof value === "number" || typeof value === "boolean") return `${key} ${value}`;
+    return key;
+  });
+  // A name that ends in its own punctuation ("Is this certificate valid?") takes no colon after it.
+  return words.length ? `${name}${/[?!:.]$/.test(name) ? "" : ":"} ${words.join(", ")}` : name;
+}
+
 export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
   const models = modelSource(env);
   return {
@@ -201,7 +218,7 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
        *  lists only those) and kept, with its history; a run of an archived agent is refused. */
       archive: { agents: true, runs: true, list_param: "archived", routes: ["POST /agents/{id}/archive", "POST /agents/{id}/unarchive", "POST /runs/{id}/archive", "POST /runs/{id}/unarchive"] },
       home: { export: false, import: false, check: false },
-      runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"] },
+      runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true },
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: false, read: true, range: false, during_run: true },
@@ -436,7 +453,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       const wrong = await inputIssuesOf(revision, input);
       if (wrong.length) throw invalid(wrong);
       await runnable(revision);
-      const title = typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+      const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, input) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
       const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}) });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
     });
@@ -795,6 +812,28 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const files = (await walk(join(run.dir, "work"))).sort((a, b) => a.path.localeCompare(b.path));
         return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: files.length > FILE_LIST_CAP });
       }
+      case "validateWorkflow": {
+        const body = await bodyOf(req);
+        const extra = Object.keys(body).filter((k) => k !== "workflow" && k !== "tools");
+        if (extra.length) throw invalid(extra.map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` })));
+        if (!isObject(body.workflow)) throw invalid([{ field: "workflow", reason: body.workflow === undefined ? "missing" : "wrong_type", message: "workflow is the workflow definition, an object" }]);
+        if (body.tools !== undefined && !(Array.isArray(body.tools) && body.tools.every((t) => typeof t === "string"))) throw invalid([{ field: "tools", reason: "wrong_type", message: "tools is a list of tool names" }]);
+        const { workflowIssues } = await import("@parcha/pi-durable-agent/workflow");
+        const { issues, warnings } = await workflowIssues(body.workflow, body.tools as string[] | undefined);
+        // What a save refuses on this host (a model node's tool, a code node where none runs), and what it lacks yet.
+        if (!issues.length) {
+          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never }).catch(() => [])) {
+            if (blocker.host) warnings.push(blocker.message);
+            else issues.push({ path: "", code: "NOT_RUNNABLE_HERE", message: blocker.message });
+          }
+        }
+        return send(res, 200, { ok: issues.length === 0, issues, warnings });
+      }
+      case "getRunGraph":
+        return send(res, 200, await runs.graph(await needRun(id)));
+      case "pauseRun":
+      case "resumeRun":
+        return send(res, 200, await runs.pause(await needRun(id), found.name === "pauseRun"));
       case "readRunFile":
         return readFileRoute(req, res, url, await needRun(id), second!);
       case "getUsage":
