@@ -12,9 +12,9 @@ export { type ImportOptions, type ImportReport, type ImportStep, importPack, rea
 export { AgentHomeError, type HomeCheck, LOCK_FILE } from "./store.js";
 export { choosePrompt, LOOKUP_TEXT_MAX, type PromptChoice, type PromptJudge, type PromptLookup, type PromptLookupSource, type PromptPass, type PromptQuestion } from "./prompts.js";
 export {
-  type CapturedState, type HostKey, localHostKey, MAX_SESSION_COOKIE_AGE_MS, sessionVault, type SessionVault, type SessionVaultPort, VAULT_KEYS_FILE, type VaultCookie, type VaultEntry,
+  type CapturedState, type HostKey, localHostKey, MAX_SESSION_COOKIE_AGE_MS, seal, sessionVault, type SessionVault, type SessionVaultPort, VAULT_KEYS_FILE, type VaultCookie, type VaultEntry, unseal,
 } from "./vault.js";
 export {
   type Agent, type AgenticBody, type AgentRow, type ArchiveKind, type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, type RevisionKind, type RevisionRow, type RunRow,
-  type ImportedFrom, type ImportedRun, type ImportSource, type RunState, type StartedRun, STORE_FILE, type StoreStats, type WorkflowBody,
+  type ImportedFrom, type ImportedRun, type ImportSource, type RunState, type StartedRun, STORE_FILE, type StoredMetrics, type StoreStats, type WorkflowBody,
 } from "./agent-store.js";

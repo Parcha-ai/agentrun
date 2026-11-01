@@ -7,6 +7,12 @@
 // never as an entry the run's timeline sums. So it is marked the same way (`request: "compaction"`), and its answer's
 // cost is written as REQUEST_COST: the run's total, and /usage with it, include it, and one cut before its answer reads
 // unknown. Both are wrapped here: `streamSimple` for the generation's requests, `completeSimple` for the summary.
+//
+// Under a cap (cap.ts), each request comes with the worst case the cap held for it, and its start mark carries that
+// figure (`heldUsd`), as does the end mark of one stopped before its end (or a summary that failed): the cap counts a
+// request a stop or a crash cut at it, in a later process too. The timeline does not read it, so the run's shown cost
+// is unknown as before. A request the cap refused gets a start mark of its own (`capRefused`), written before pi writes
+// its error entry, so that entry answers its own mark and never stands for an earlier request a stop or a crash cut.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -14,6 +20,7 @@ import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-wo
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
+import { CAP_REFUSED_FIELD, HELD_FIELD, HELD_USD } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
 
 /** Whether the run in `root` (its directory) was cancelled: the mark serve's cancel writes there first. */
@@ -22,7 +29,7 @@ export const cancelledIn = (root: string) => () => existsSync(join(root, RUN_CAN
 /** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). Once
  *  `cancelled` says the run was cancelled, no request is sent: each is refused here, before it is marked, or after its
  *  mark when the cancel came while the mark waited, and then its start is withdrawn (an end mark, `unsent`). */
-export async function markRequests<M extends Models>(models: M, cancelled: () => boolean = () => false, { refusalWaitMs = 60_000 }: { refusalWaitMs?: number } = {}): Promise<{ models: M; open(run: DurableRun): void }> {
+export async function markRequests<M extends Models>(models: M, cancelled: () => boolean = () => false, { refusalWaitMs = 60_000 }: { refusalWaitMs?: number } = {}): Promise<{ models: M; open(run: DurableRun): void; refused(): Promise<void> }> {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   let open!: (run: DurableRun) => void;
   // A request a resumed turn sends before the app's open waits for it: the mark needs the run's store.
@@ -37,6 +44,11 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     errorMessage: why,
   });
   const reason = (error: unknown) => String((error as Error)?.message ?? error).slice(0, 200);
+  /** What the run's cap held for a request (its options' HELD_USD), as an end mark's field; none without a cap. */
+  const heldOf = (options: unknown): Record<string, number> => {
+    const held = (options as Record<symbol, unknown> | undefined)?.[HELD_USD];
+    return typeof held === "number" && Number.isFinite(held) ? { [HELD_FIELD]: held } : {};
+  };
   /** A cancelled run's request, never sent. It waits for the cancel to reach the run (the request's abort), and then ends
    *  as aborted, as a request the cancel cut does: the turn, or a workflow's node, stops, never failing on the refusal.
    *  serve's cancel aborts a live run's turn and then stops its process, so the wait is short. `refusalWaitMs` is a
@@ -63,7 +75,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     void (async () => {
       if (cancelled()) return refused();
       try {
-        await mark(REQUEST_STARTED);
+        await mark(REQUEST_STARTED, heldOf(options));
       } catch (error) {
         const message = failed(model, `the model request was not sent: its mark could not be written (${reason(error)})`);
         outer.push({ type: "error", reason: "error", error: message });
@@ -90,7 +102,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       // conservative reading, so the failure is swallowed here.
       if (result.stopReason === "aborted") {
         const responseId = (result as { responseId?: unknown }).responseId;
-        await mark(REQUEST_ENDED, typeof responseId === "string" ? { responseId } : {}).catch(() => undefined);
+        await mark(REQUEST_ENDED, { ...(typeof responseId === "string" ? { responseId } : {}), ...heldOf(options) }).catch(() => undefined);
       }
       outer.end(result);
     })();
@@ -101,7 +113,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     // A cancelled run sends no summary either; pi writes no entry for a failed summary, so nothing needs marking.
     if (cancelled()) return refuse(model, "summary request", options?.signal, false);
     try {
-      await mark(REQUEST_STARTED, COMPACTION);
+      await mark(REQUEST_STARTED, { ...COMPACTION, ...heldOf(options) });
     } catch (error) {
       return failed(model, `the model request was not sent: its mark could not be written (${reason(error)})`);
     }
@@ -113,12 +125,12 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     try {
       result = await models.completeSimple(model, context, options);
     } catch (error) {
-      await mark(REQUEST_ENDED, COMPACTION).catch(() => undefined);
+      await mark(REQUEST_ENDED, { ...COMPACTION, ...heldOf(options) }).catch(() => undefined);
       throw error;
     }
     // Its cost closes it; an abort, as for a generation's request, closes it unpriced. A store that cannot take either
     // leaves it open, which reads as cut, at an unknown cost.
-    if (result.stopReason === "aborted") await mark(REQUEST_ENDED, COMPACTION).catch(() => undefined);
+    if (result.stopReason === "aborted") await mark(REQUEST_ENDED, { ...COMPACTION, ...heldOf(options) }).catch(() => undefined);
     else {
       const total = result.usage?.cost?.total;
       const usd = typeof total === "number" ? total : null;
@@ -137,5 +149,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  return { models: proxy, open };
+  // The start mark of a generation request the cap refused (capModels), which never left: pi's error entry answers it.
+  const refused = () => mark(REQUEST_STARTED, { [CAP_REFUSED_FIELD]: true });
+  return { models: proxy, open, refused };
 }

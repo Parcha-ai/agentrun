@@ -129,3 +129,27 @@ test("claude-agent with no SDK and no key: the reason is the missing SDK, with i
   const sdk = async () => ({ ...real, claudeAgentAdapter: () => ({ id: "claude-agent" }) });
   await assert.rejects(claudeOf({}, needs, sdk), refused(/claude-agent needs ANTHROPIC_API_KEY/));
 });
+
+test("claude-agent's native skills reach the adapter as serve gives them, and an adapter with none is given no skills option", async () => {
+  const real = await import("@parcha/agentrun-claude-agent");
+  const given = [];
+  const load = async () => ({ ...real, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
+  const env = { ANTHROPIC_API_KEY: `not-a-secret-${"k"}` };
+  const skills = [{ name: "cite", files: { "SKILL.md": "---\nname: cite\ndescription: Cite sources.\n---\nCite.\n", "reference/sources.md": "Primary first.\n" } }];
+  await claudeOf(env, { ...needs, skills }, load);
+  await claudeOf(env, { ...needs, skills: [] }, load);
+  await claudeOf(env, needs, load);
+  assert.deepEqual(given[0].skills, skills, "the skills, as given");
+  assert.deepEqual(given.slice(1).map((options) => "skills" in options), [false, false], "none: no option, so the adapter keeps its Skill tool off");
+});
+
+test("claude-agent's check of skills is the installed adapter's own skillProblems; none where the package is not installed", async () => {
+  const { claudeSkillCheck } = await import("../dist/adapters.js");
+  assert.equal(typeof claudeSkillCheck, "function", "adapters.js exports claudeSkillCheck");
+  const real = await import("@parcha/agentrun-claude-agent");
+  assert.equal(await claudeSkillCheck(async () => real), real.skillProblems, "the adapter's own function, not a copy");
+  assert.equal(await claudeSkillCheck(), real.skillProblems, "by default, the package installed beside serve");
+  assert.equal(await claudeSkillCheck(() => Promise.reject(new Error("Cannot find package"))), undefined, "not installed: no check, so every skill stays inlined");
+  assert.equal(await claudeSkillCheck(async () => ({ ...real, skillProblems: undefined })), undefined, "an adapter with no check of its own: none");
+});

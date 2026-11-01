@@ -1,17 +1,19 @@
 // The Codex adapter behind createHarnessRunner, as a DSL host runs it, on the stand-in app-server (fake-app-server.mjs)
 // with its model requests going through the session's real proxy to a scripted provider. No network, no Codex binary.
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
-import { foldSession } from '@parcha/agentrun-adapters/kernel';
+import { foldSession, openDrive } from '@parcha/agentrun-adapters/kernel';
+import { NativeJournal, toolBridge, transcriptOf } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-codex';
 import { findCodex } from '../dist/binary.js';
+import { codeMode, waitStoppedText, withOutputKind } from '../dist/code-mode.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 
 process.env.AGENTRUN_CODEX_STANDIN = '1';
@@ -143,6 +145,69 @@ const until = async (done, what, ms = 15_000) => {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 };
+
+/** The calls in the session's Codex rollout that have no output line: what the next turn's history would hold unanswered. */
+function unansweredCalls(sessionsDir) {
+  const files = readdirSync(sessionsDir, { recursive: true }).filter((f) => /rollout-.*\.jsonl$/.test(String(f)));
+  assert.equal(files.length, 1, 'one rollout');
+  const items = readFileSync(join(sessionsDir, String(files[0])), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.type === 'response_item').map((l) => l.payload);
+  const answered = new Set(items.filter((i) => i.type === 'function_call_output').map((i) => i.call_id));
+  return items.filter((i) => i.type === 'function_call' && !answered.has(i.call_id)).map((i) => i.call_id);
+}
+
+/** A session whose turn a crash cut off inside a never call of `toolName`, with the turn then closed in the log (as a settle does), and a new send. */
+async function crashThenClosedThenSend(toolName) {
+  const dir = scratch();
+  const file = join(dir, 'script.json');
+  writeFileSync(file, JSON.stringify([`call ${toolName} {"amount":5}`, 'next']));
+  const codex = codexAdapter({
+    model: 'luna-test',
+    provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' },
+    sessionsDir: join(dir, 'sessions'),
+    standIn: { command: process.execPath, args: [FAKE], env: { FAKE_CODEX_SCRIPT: file } },
+  });
+  let charged = 0;
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const charge = { name: toolName, description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: (_args, { signal }) => { charged += 1; inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut off')), { once: true })); } };
+  const spec = { key: 'step:repair', label: 'pay', system: [], tools: [charge], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+
+  const first = new AbortController();
+  const a = await codex.open(spec, { writer: await store.open(spec.key), models, signal: first.signal, onEvent: () => {} });
+  await a.send('pay');
+  await reached;
+  first.abort(new Error('the process died'));
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  await a.close();
+  assert.equal(unansweredCalls(join(dir, 'sessions')).length, 1, 'the crash left the call without an output in the rollout');
+
+  // The turn is closed in the log without resuming it, as a settle does: the next open has no open turn, so no recovery note.
+  const closing = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  const journal = new NativeJournal(closing);
+  journal.message({ type: 'turn', status: 'interrupted' });
+  await journal.flush();
+
+  const b = await codex.open(spec, { writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'idle', 'no open turn, so no recovery note');
+  await b.send('next');
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  return { charged, dir };
+}
+
+test("a crash inside a never tool's call, then the turn closed in the log: the next send answers the dangling call from the log before the new turn, and the call is never run again", async () => {
+  const { charged, dir } = await crashThenClosedThenSend('charge');
+  assert.equal(charged, 1, 'the cut call is never run again');
+  assert.deepEqual(unansweredCalls(join(dir, 'sessions')), [], 'every call in the history the new turn sends has its output');
+});
+
+test('a host tool named exec is a function call: the repair answers it with the generic output, never as code mode\'s exec', async () => {
+  const { charged, dir } = await crashThenClosedThenSend('exec');
+  assert.equal(charged, 1);
+  assert.deepEqual(unansweredCalls(join(dir, 'sessions')), [], 'its function call has a function_call_output');
+});
 
 test("an interrupt while a never tool's outcome is still being written: the next turn's drive folds the outcome, never takes it for abandoned", async () => {
   let charged = 0;
@@ -285,6 +350,85 @@ test("a model Codex runs in code mode is checked like any other: the check refus
   for (const model of ['gpt-5.4-mini', 'gpt-6-sol', 'gpt-5.6-luna']) assert.deepEqual(make(model).check(spec), [], model);
   const tiered = codexAdapter({ model: { default: 'gpt-5.4-mini', strong: 'gpt-6-sol' }, provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
   assert.deepEqual(tiered.check({ ...spec, tier: 'strong' }), []);
+});
+
+test('a dangling custom tool call that is not exec, such as apply_patch, is answered with a custom tool call output', () => {
+  const call = (type, name) => ({ callId: `c-${name}`, name, type });
+  // Codex's own apply_patch is a freeform custom tool: a crash inside it leaves a custom_tool_call, which only a custom output answers.
+  const item = withOutputKind({ call_id: 'c-apply_patch', output: 'Not executed: the session stopped before this call started.' }, call('custom_tool_call', 'apply_patch'));
+  assert.deepEqual(item, { type: 'custom_tool_call_output', call_id: 'c-apply_patch', output: 'Not executed: the session stopped before this call started.' });
+  assert.equal(withOutputKind({ call_id: 'c-shell', output: 'x' }, call('function_call', 'shell')).type, 'function_call_output');
+});
+
+/** The no-note repair of a rollout holding `calls`, unanswered, with `hostTools` bridged: the items it injects. `order`, when given, records
+ *  the inject, the end of the sync after it (which takes a tick, as draining the rollout's tail does), and the repair's return. */
+async function repairedItems(calls, hostTools = [], order, { ctx, ties = [] } = {}) {
+  const injected = [];
+  const code = codeMode({
+    ctx: ctx ?? { state: () => ({ effects: new Map(), submissions: [], effectOrder: [] }), isMemoized: () => false },
+    machine: {},
+    journal: { append() {}, flush: async () => {}, read: async (stream) => (stream === 'codex.nested' ? ties.map((data) => ({ data })) : []) },
+    logged: new Set(),
+    synced: async () => { await new Promise((resolve) => setTimeout(resolve, 20)); order?.push('synced'); },
+    bridge: { get: (name) => hostTools.find((t) => t === name) && { name, replay: 'safe' } },
+    log() {},
+    lines: [],
+    rpc: () => ({ request: async (method, params) => { order?.push(method); injected.push(...params.items); } }),
+    guard: (promise) => promise,
+    threadId: () => 'thread-1',
+    tries: 1,
+    declined: 'declined',
+  });
+  await code.repairUnnoted(calls.map((payload) => JSON.stringify({ timestamp: '2026-10-30T00:00:00.000Z', type: 'response_item', payload })));
+  order?.push('returned');
+  return injected;
+}
+
+test('the no-note repair answers each dangling call with an output of its own kind: a custom tool call output for apply_patch, a function call output for a function call', async () => {
+  const applyPatch = { type: 'custom_tool_call', name: 'apply_patch', input: '*** Begin Patch\n*** End Patch', call_id: 'call_patch' };
+  const shell = { type: 'function_call', name: 'shell', arguments: '{}', call_id: 'call_shell' };
+  const items = await repairedItems([applyPatch, shell]);
+  assert.deepEqual(items.map((item) => [item.call_id, item.type]), [['call_patch', 'custom_tool_call_output'], ['call_shell', 'function_call_output']]);
+  for (const item of items) assert.match(item.output, /^Not executed: the session stopped before this call started/, 'the same text for either kind');
+});
+
+test("the no-note repair returns only once the rollout's tail is synced after the inject, so the next turn starts on a log that holds the outputs", async () => {
+  const order = [];
+  await repairedItems([{ type: 'function_call', name: 'shell', arguments: '{}', call_id: 'call_shell' }], [], order);
+  assert.deepEqual(order, ['thread/inject_items', 'synced', 'returned']);
+});
+
+test("a dangling wait of code mode is told the session stopped while it waited on its cell, never that it did not start", async () => {
+  const wait = { type: 'function_call', name: 'wait', arguments: JSON.stringify({ cell_id: '3', yield_time_ms: 5000 }), call_id: 'call_wait' };
+  const [item] = await repairedItems([wait]);
+  assert.deepEqual(item, { type: 'function_call_output', call_id: 'call_wait', output: waitStoppedText('3') });
+  assert.match(item.output, /^The session stopped while waiting on cell 3; that cell's script was cut off, and nothing was run again\./);
+  // A host tool of the same name is not code mode's wait: it gets the generic answer.
+  const [host] = await repairedItems([wait], ['wait']);
+  assert.match(host.output, /^Not executed: the session stopped before this call started/);
+});
+
+test("the no-note repair lists the ended turn's calls whose script could not be told under its cut-off exec, and never an earlier turn's", async () => {
+  // A session log of two turns: a call in each, and each turn ended (the second as a settle ends it).
+  const drive = await openDrive({ writer: await memorySessionStore().open('step:two-turns'), signal: new AbortController().signal });
+  const journal = new NativeJournal(drive);
+  const tool = (name) => ({ name, description: name, inputSchema: { type: 'object' }, replay: 'safe', execute: async () => `${name} result` });
+  const bridge = toolBridge(drive, [tool('early'), tool('late')], { live: false });
+  await bridge.call('early', {}, 'n0');
+  journal.message({ type: 'turn', status: 'completed' });
+  await journal.flush();
+  await bridge.call('late', {}, 'n1');
+  journal.message({ type: 'turn', status: 'interrupted' });
+  await journal.flush();
+  const [firstEnd] = transcriptOf(drive.state()).filter((r) => r.data?.type === 'turn').map((r) => r.at);
+  // Both calls ran under answers that could not be read to their end, so neither is tied to an exec; each carries its turn's start.
+  const ties = [{ callId: 'n0', exec: null, since: -1 }, { callId: 'n1', exec: null, since: firstEnd }];
+  const exec = { type: 'custom_tool_call', name: 'exec', input: 'await tools.late({})', call_id: 'call_js' };
+  const [item] = await repairedItems([exec], [], undefined, { ctx: drive, ties });
+  assert.equal(item.type, 'custom_tool_call_output');
+  assert.match(item.output, /1 call ran whose script could not be told/);
+  assert.match(item.output, /late completed: "late result"/);
+  assert.doesNotMatch(item.output, /early/);
 });
 
 test("a Codex turn the session itself stops, by its interrupt or its close, ends interrupted", async () => {

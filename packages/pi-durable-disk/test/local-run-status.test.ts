@@ -59,7 +59,8 @@ describe("readLocalRunStatus", () => {
     const dir = scratchRoot("local-status-bad");
     try {
       mkdirSync(dir.root, { recursive: true });
-      for (const text of ["not json", JSON.stringify({ run: "x", status: "napping" })]) {
+      const valid = { run: "x", status: "paused", generation: 1, sealedSeq: null, wakeAt: null, holder: null, heartbeatAt: null, updatedAt: "2026-10-30T00:00:00.000Z", detail: null };
+      for (const text of ["not json", JSON.stringify({ run: "x", status: "napping" }), JSON.stringify({ ...valid, box: { mode: "docker" } }), JSON.stringify({ ...valid, box: "bwrap" }), JSON.stringify({ ...valid, box: null })]) {
         writeFileSync(join(dir.root, "run.json"), text);
         await assert.rejects(readLocalRunStatus(dir.root), (error: unknown) => error instanceof RunRecordError && error.code === "RUN_JSON_INVALID");
         await assert.rejects(readRunStatus(controlOver(dir.root), REF.id), (error: unknown) => error instanceof RunRecordError && error.code === "RUN_JSON_INVALID");
