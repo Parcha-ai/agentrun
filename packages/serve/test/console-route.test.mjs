@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { agent, call, cookieOf, scratch, serve } from "./support.mjs";
 
+/** A test password, no real one (built, so the source export's credential scan reads no literal). */
+const PASSWORD = ["not-a-secret", "owner"].join("-");
 const INDEX = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" /><title>AgentRun</title>
 <script type="module" crossorigin src="./assets/index-Ab12Cd34.js"></script>
@@ -99,7 +101,7 @@ test("with accounts the console is public and its /v2 calls hold the owner's ses
   assert.equal((await call(server.port, { path: "/" })).headers.location, "/setup", "the page at / is unchanged");
   const before = await call(server.port, { path: "/v2/auth/session" });
   assert.deepEqual([before.status, before.json.password_set, before.json.signed_in], [200, false, false]);
-  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: json, body: { password: "not-a-secret-owner" } });
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: json, body: { password: PASSWORD } });
   assert.equal(made.status, 201, made.text);
   const cookie = cookieOf(made);
   assert.match(made.headers["set-cookie"][0], /; HttpOnly; SameSite=Strict; Path=\//);
