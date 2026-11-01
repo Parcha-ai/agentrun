@@ -1,6 +1,6 @@
 ---
 packages: @parcha/pi-transport
-kind: fix
+kind: breaking
 ---
 **A checkpoint is never unpacked on the host: a box's links stay data, made again only inside the box a restore goes to**
 - `pullCheckpoint` unpacked the box's archive into `localVault`'s directory with the host's general-purpose `tar -x -p`, so a box could make the host create symbolic links, hard links, named pipes and setuid files in the vault. Now the box sends only the bytes of the files the pull asks for, end to end; the vault keeps each file's content once, as a plain file of its own named by its SHA-256 and checked against it. Directories, symbolic links, hard links (`ManifestEntry.link`), named pipes (`kind: "fifo"`, which a checkpoint no longer refuses) and modes, setuid included, are the record's manifest and nothing else on the host.
