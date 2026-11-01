@@ -73,6 +73,9 @@ export default function reply(context, faux) {
     if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
     const submit = faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
+    // "Answer once <file> exists.": the node submits when the test has made that file.
+    const gate = /Answer once (\S+?) exists\./.exec(first)?.[1];
+    if (gate) return untilExists(gate).then(() => submit);
     const ms = first.includes("Take your time") ? 60_000 : first.includes("Answer soon") ? 1_500 : 0;
     return ms ? slow(faux, ms, "").then((m) => (m.stopReason === "aborted" ? m : submit)) : submit;
   }
