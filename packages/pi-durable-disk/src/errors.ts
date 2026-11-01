@@ -14,6 +14,8 @@ export const EXIT_FENCED = 75;
  * held delegation is live or orphaned (its client gone); the supervisor revokes orphans.
  */
 export const EXIT_HELD = 76;
+/** EX_CONFIG: the host launched a run with no box to run it in (`boxMode: "unavailable"`); a restart on this server cannot help. */
+export const EXIT_CONFIG = 78;
 
 export class PdaError extends Error {
   readonly code: string;
@@ -23,6 +25,14 @@ export class PdaError extends Error {
     this.name = new.target.name;
     this.code = code;
     this.exitCode = options.exitCode ?? 1;
+  }
+}
+
+/** The host gave an open `boxMode: "unavailable"`: there is no box to run it in. Refused before the claim is taken, so
+ *  nothing is opened, run or written; the run is held until a server with a box opens it. Exit 78. */
+export class BoxUnavailableError extends PdaError {
+  constructor() {
+    super("BOX_UNAVAILABLE", "this run's box is unavailable on this server: it is held until a server with a box opens it", { exitCode: EXIT_CONFIG });
   }
 }
 

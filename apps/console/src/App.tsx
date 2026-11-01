@@ -4,7 +4,7 @@ import { AgentPage } from "@/components/AgentPage";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
-import { missionFrom, type MissionView } from "@/lib/mission";
+import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult } from "@/components/Playground";
 import { type Agent, toolOffers } from "@/lib/agentForm";
 import { RunsList } from "@/components/RunsList";
@@ -81,6 +81,10 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [mission, setMission] = useState<MissionView | null>(null);
   const [missionError, setMissionError] = useState<string | null>(null);
   const [missionTry, setMissionTry] = useState(0);
+  // The range and agent Mission Control's analytics are asked for; a change reads them again, the page kept meanwhile.
+  const [statsRange, setStatsRange] = useState<StatsRange>("30d");
+  const [statsAgent, setStatsAgent] = useState<string | null>(null);
+  const [missionReading, setMissionReading] = useState(false);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
@@ -138,12 +142,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   useEffect(() => {
     if (where.section !== "mission") return;
     let live = true;
-    setMissionError(null);
-    Promise.all([v2.stats(), v2.listRuns(10)])
+    setMissionError(null); setMissionReading(true);
+    const from = rangeFrom(statsRange);
+    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), v2.listRuns(10)])
       .then(([s, r]) => { if (live) setMission(missionFrom(s, r.runs)); })
-      .catch((e) => { if (live) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
+      .catch((e) => { if (live) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); })
+      .finally(() => { if (live) setMissionReading(false); });
     return () => { live = false; };
-  }, [v2, where.section, missionTry]);
+  }, [v2, where.section, missionTry, statsRange, statsAgent]);
   const revsAsked = useRef(0);
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
@@ -171,7 +177,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       {where.section === "playground" && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "mission"
-        ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)} />
+        ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
+            scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />

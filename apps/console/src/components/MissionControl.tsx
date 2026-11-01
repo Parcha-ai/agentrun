@@ -3,11 +3,17 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { when } from "@/lib/format";
 import { costParts, type MissionView } from "@/lib/mission";
 import { cn } from "@/lib/utils";
+import { AnalyticsFilter, MissionAnalytics } from "@/components/MissionAnalytics";
+import { RANGES, type StatsRange } from "@/lib/mission";
+
+/** The range and agent the page's analytics are asked for, and how to change them. */
+export type AnalyticsScope = { range: StatsRange; onRange: (range: StatsRange) => void; agent: string | null; onAgent?: (agent: string | null) => void; refreshing?: boolean };
 
 /** Mission Control, the console's first page: how many agents and runs this server has, how many runs are working,
  *  waiting on a person or failed, what they cost (said with its basis, never $0 for a cost not known), runs per agent,
- *  and the latest runs, each a link to its page. */
-export function MissionControl({ view, error, onRetry }: { view: MissionView | null; error?: string | null; onRetry?: () => void }) {
+ *  and the latest runs, each a link to its page. A server that answers `analytics` also gets its tokens, time, success
+ *  and tools over the range picked (MissionAnalytics); one that does not gets the page as it was. */
+export function MissionControl({ view, error, onRetry, scope }: { view: MissionView | null; error?: string | null; onRetry?: () => void; scope?: AnalyticsScope }) {
   if (error) return (
     <div className="m-8 border p-4" role="alert">
       <p className="font-mono text-[13px] text-destructive-text">Mission Control could not be read: {error}</p>
@@ -34,6 +40,15 @@ export function MissionControl({ view, error, onRetry }: { view: MissionView | n
             <li key={label} className="border p-4"><p className="caps text-[11px] text-muted-foreground">{label}</p><p className={cn("mt-2 font-mono text-xl font-semibold", tone)}>{value}</p>{note && <p className="mt-1 font-mono text-[11px] text-muted-foreground">{note}</p>}</li>
           ))}
         </ul>
+        {view.analytics && (
+          <section className="space-y-4" aria-label="Analytics">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+              <h2 className="text-lg font-semibold">{scopeTitle(view)}</h2>
+              {scope && <AnalyticsFilter range={scope.range} onRange={scope.onRange} agent={scope.agent} agents={view.perAgent} onAgent={scope.onAgent} />}
+            </div>
+            <MissionAnalytics a={view.analytics} basis={view.cost.basis} refreshing={scope?.refreshing} />
+          </section>
+        )}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
           <section className="border">
             <h2 className="caps border-b px-4 py-3 text-[12px] font-semibold">Runs per agent</h2>
@@ -57,4 +72,13 @@ export function MissionControl({ view, error, onRetry }: { view: MissionView | n
       </div>
     </div>
   );
+}
+
+/** What the analytics on screen cover, read from their own answer (not the range picked, whose answer may still be on
+ *  its way): "Runs started in the last 30 days", or since the date asked, of one agent when it names one. */
+function scopeTitle(view: MissionView, now = Date.now()): string {
+  const f = view.analytics!.filter;
+  const days = f.from ? Math.round((Math.floor(now / 86_400_000) * 86_400_000 - Date.parse(f.from)) / 86_400_000) + 1 : null;
+  const span = !f.from ? "All runs" : RANGES.some((r) => r.days === days) ? `Runs started in the last ${days} days` : `Runs started since ${f.from.slice(0, 10)}`;
+  return f.agent ? `${span}, of ${view.perAgent.find((x) => x.agentId === f.agent)?.name ?? f.agent}` : span;
 }

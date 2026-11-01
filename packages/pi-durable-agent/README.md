@@ -504,7 +504,7 @@ with it. The agents are rows in `store.sqlite`, not one home each; the beta.24 h
 turns a home into an agent.
 
 ```
-my-agents/store.sqlite       agents, revisions, skills, runs, archive_changes, run_imports
+my-agents/store.sqlite       agents, revisions, skills, runs, archive_changes, run_imports, run_metrics, run_tool_metrics
 my-agents/runs/<run id>/     each run's own store and work directory
 ```
 
@@ -520,6 +520,11 @@ CREATE TABLE archive_changes (seq INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK 
                         archived INTEGER NOT NULL CHECK (archived IN (0, 1)), at TEXT NOT NULL);
 CREATE TABLE run_imports (run_id TEXT PRIMARY KEY REFERENCES runs(id), source TEXT NOT NULL CHECK (source IN ('claude-code', 'codex', 'pi')),
                         session TEXT NOT NULL, at TEXT NOT NULL, UNIQUE (source, session));
+CREATE TABLE run_metrics (run_id TEXT PRIMARY KEY REFERENCES runs(id), input INTEGER NOT NULL, cache_read INTEGER NOT NULL,
+                        cache_write INTEGER NOT NULL, output INTEGER NOT NULL, requests INTEGER NOT NULL, unmetered INTEGER NOT NULL,
+                        active_ms INTEGER, effort TEXT, model TEXT, models_json TEXT NOT NULL, cost_usd_est REAL, cost_basis TEXT, at TEXT NOT NULL);
+CREATE TABLE run_tool_metrics (run_id TEXT NOT NULL REFERENCES run_metrics(run_id), tool TEXT NOT NULL, calls INTEGER NOT NULL,
+                        errors INTEGER NOT NULL, PRIMARY KEY (run_id, tool));
 ```
 
 ```js
@@ -562,6 +567,25 @@ transaction, and returns `{ runId, dir, storePath }`: the store mints the id, an
 imports once: again, it returns undefined and writes nothing. The reads carry `importedFrom: { source, session }`. An imported run
 is read-only: `reopenRun` and `carryBack` refuse it by name, and a trigger in the file refuses any `UPDATE` of its row, so a version
 that ignores `run_imports` cannot change it either. Like `archive_changes`, the table came without a new store version.
+
+A run's metrics sit beside its row: `metrics` on `carryBack(runId, { state, costUsd?, summary?, metrics? })` and on `importRun`
+are written in the transaction that writes the run's row, and `store.runMetrics(runId)` reads them back with `at`, when they were
+written (undefined for a run with none). `runMetricsOf(records)` from `@parcha/pi-durable-agent/timeline` makes them from the
+entries of every conversation of the run's store (`SELECT record FROM entries ORDER BY id`), for a run this machine ran and an
+imported one alike; the host adds what only it knows: `activeMs`, how long the run was at work, `effort`, `model` (the model it
+ran; runMetricsOf names the one with the most requests), and `costUsdEst` with `costBasis`, an estimate of its cost apart from
+`cost_usd` and how it was made. The tokens are pi's: `input` is the input neither read from nor written to the cache,
+`cache_read` the cached input read, `cache_write` the input written to the cache, so the whole input is
+`input + cache_read + cache_write`, and the cached input is `cache_read`; `output` is the output. `requests` counts the model
+requests as the timeline's usage row does, and `unmetered` those of them whose tokens are unknown (cut before their end, a usage
+with no token counts, or one that reports no input at all: a request always sends some, so that is a writer's zeros for a request
+it did not measure, as an imported transcript's are): they are in `requests` and in no token sum, never read as 0. `models_json` counts requests by
+`provider/model`. `run_tool_metrics` holds a row per tool: its calls, and how many failed (an error result, or no result at all:
+interrupted). A run opened again keeps its metrics while it runs; its next end replaces them, and an end with none leaves it none,
+as an end with no cost leaves its cost unknown. They are in `store.sqlite`, so a sum over them opens nothing under `runs/`.
+Like `archive_changes`, the two tables came without a new store version: a store an earlier version wrote opens with no run's
+metrics and gains the tables from the first `openStore`, and an earlier version still opens a store that has them, ignores them
+and reads every run and `stats` as before (one that ends a run opened again leaves its metrics as they were).
 
 A workflow revision whose call nodes name a tool that is not a `tool` call passes the commit check on purpose: whether it runs is the host's to decide. `openStoreReader(folder)` reads `store.sqlite` in place, read-only: it writes nothing and makes no copy. On a store a run was stopped in the middle of writing, it says so in one line and changes no file; open the store once with write access to roll the write back.
 
@@ -636,7 +660,7 @@ exists to check them. [Errors](#errors) says what each code means.
 | `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })` | The session vault: `capture`, `restore`, `forget`, `forgetAll`, `list` and `handedOut` ([Saved browser sessions](#saved-browser-sessions-the-vault)) | `invalid`: a host key that is not `{ id, wrap, unwrap }`, a cap that is not above 0 and at most 24 hours, an empty `runId`; its calls: a bad session key, origin, captured state or `capturedAt`. `key`: a host key that does not open the vault. `busy`: with `runId`, another live run holds the session's save lease. `format`: a key file or a saved session that does not read or decrypt, or a saved session whose row's origins or `capturedAt` were changed. A refused call writes nothing |
 | `localHostKey(id, bytes)` | A `HostKey` held in this process: 32 bytes, AES-256-GCM | `invalid`: an id that is not letters, digits, `.`, `_`, `:` or `-`, or not 32 bytes |
 | `VAULT_KEYS_FILE`, `MAX_SESSION_COOKIE_AGE_MS` | `vault.keys`, and 24 hours | |
-| `openStore(dir, { busyTimeoutMs? })` | The agent store in `dir`, created if missing (`busyTimeoutMs`: how long a call waits synchronously for another connection to let go of the store before it throws SQLite's busy error, default 5000; opening it always waits up to 5 s): `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent?, ifCurrent? })` (`ifCurrent`, the current revision the caller read or null, makes it a compare-and-swap), `setCurrent(agent, revision)`, `setArchived(kind, id, archived)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `stats()`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id. `stale`: the agent's current revision is not `ifCurrent`, checked in the commit's own transaction; nothing is written |
+| `openStore(dir, { busyTimeoutMs? })` | The agent store in `dir`, created if missing (`busyTimeoutMs`: how long a call waits synchronously for another connection to let go of the store before it throws SQLite's busy error, default 5000; opening it always waits up to 5 s): `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent?, ifCurrent? })` (`ifCurrent`, the current revision the caller read or null, makes it a compare-and-swap), `setCurrent(agent, revision)`, `setArchived(kind, id, archived)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `stats()`, `runMetrics(runId)`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary?, metrics? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id. `stale`: the agent's current revision is not `ifCurrent`, checked in the commit's own transaction; nothing is written |
 | `openStoreReader(dir, { busyTimeoutMs? })` | The same reads on a read-only handle (`busyTimeoutMs` as `openStore`'s) (`store.sqlite` in place, no copy), plus `runStorePath(runId)`; it writes nothing | `missing`: no `store.sqlite` in `dir`; `busy`: a store with an unfinished write; `format`: a store a newer version wrote |
 | `AgentStore`, `AgentStoreReader`, `STORE_FILE` | The two classes `openStore` and `openStoreReader` return, and `store.sqlite` | |
 | `AgentHomeError` | The one error class of this package ([Errors](#errors)) | |
@@ -656,7 +680,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
-- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), `StoredMetrics` (a run's metrics as `carryBack`, `importRun` and `runMetrics` carry them), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.
@@ -683,12 +707,13 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `labelOf(tool, args, result?, extra?)` | The label of one call. An unknown tool gets `Using tool: <name>` |
 | `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
 | `inputPreview(args, max)` | The input worth showing, or `null`: a `description`, `command`, `query`, `file_path`, `url`, `path` or `code` argument, with a URL's query values dropped, cut to `max` |
+| `runMetricsOf(records)` | What a run that ended used, from the entries of all its conversations, in log order: its tokens (`input`, `cacheRead`, `cacheWrite`, `output`), its `requests` as the usage row counts them and `unmetered`, those of unknown tokens (an aborted response's partial usage, and a usage with no input at all, are never summed), its requests by `provider/model` (`models`) and the busiest `model`, and each tool's `calls` and `errors` (`tools`). A `RunMetrics`, for the store's `carryBack` and `importRun` ([Agents in a folder](#agents-in-a-folder-the-agent-store)) |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
 | `REQUEST_STARTED`, `REQUEST_ENDED`, `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted; and the cost of a request with no `pi.assistant` entry of its own (a compaction summary, marked `request: "compaction"`). An answer written before its cost came in is followed by `REQUEST_COST_PENDING`, and its cost comes later as `REQUEST_COST_LATE` (`usd`): it adds to the cost and is not counted as a request; the cost reads unknown while one is pending. The usage row counts each marked request and sums each cost; one with no entry or cost (cut before its answer) other than the latest still in flight makes the cost unknown. A request the host refused before it left (`REQUEST_REFUSED`) is not counted, and pi's error entry for it is not shown. A conversation with no marks reads as before |
 
 Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
-`FoldSpec` and `ToolResultView`.
+`FoldSpec`, `ToolResultView`, and `RunMetrics` and `ToolMetrics` (what `runMetricsOf` returns).
 
 ### `@parcha/pi-durable-agent/serve`
 

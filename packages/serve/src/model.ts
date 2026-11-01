@@ -4,7 +4,7 @@
 // faux module's (no key, no network); with `AGENT_MODEL_BASE_URL` every model id goes to that one OpenAI Responses
 // gateway; otherwise pi-ai's providers serve it, with their keys from the environment.
 import { pathToFileURL } from "node:url";
-import type { ModelCost, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ModelCost, ModelThinkingLevel, ProviderStreams } from "@earendil-works/pi-ai";
 import { authContextOf } from "./secrets.js";
 
 /** The child's environment names the faux module by absolute path. */
@@ -189,8 +189,9 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   const { openAIResponsesApi } = await import("@earendil-works/pi-ai/api/openai-responses.lazy");
   // USD per million input, output, cache-read and cache-write tokens, so the run's usage has a price. A tier's own price
   // (`AGENT_MODEL_FAST_PRICE`, `AGENT_MODEL_STRONG_PRICE`) goes with its model, else the default's; a model two tiers
-  // share takes the default's. With none set, pi-ai's catalog prices it (listedPrice); an id it does not list is unpriced:
-  // its cost reads $0, and a cap refuses it.
+  // share takes the default's. With none set, pi-ai's catalog prices it (listedPrice), a $0 entry included; an id it does
+  // not list is unpriced: its answers carry no total (unpricedApi), so the run's cost reads unknown, never $0, and a cap
+  // refuses it.
   const prices = new Map<string, { given: string | undefined; named: string | undefined }>();
   for (const tier of ["default", "fast", "strong"] as const) {
     const id = byTier.get(tier)?.modelId;
@@ -216,6 +217,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     const [input = 0, output = 0, cacheRead = 0, cacheWrite = input] = given.split(",").map(Number);
     return { input, output, cacheRead, cacheWrite };
   };
+  // `models` is priced first, which fills `unpriced`, and `api` is chosen by it.
   models.setProvider(createProvider({
     id: MODEL_PROVIDER,
     baseUrl,
@@ -224,9 +226,41 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
       id, name: id, api: "openai-responses", provider: MODEL_PROVIDER, baseUrl, reasoning: true, input: ["text", "image"] as ("text" | "image")[],
       cost: priceOf(id), contextWindow: 128_000, maxTokens: 32_000, compat: { supportsDeveloperRole: false },
     })),
-    api: openAIResponsesApi(),
+    api: unpriced.size ? unpricedApi(openAIResponsesApi(), unpriced, ai) : openAIResponsesApi(),
   }));
   return { models, model, byTier, unpriced };
+}
+
+/** `api`, with each answer of a model in `unpriced` written as an unpriced one: its usage's cost has no total, as
+ *  harness-app writes a harness's, so the timeline, the run's cost and /v2 read it unknown rather than $0. Every pi request
+ *  passes through it, a compaction's summary (`completeSimple`) included. */
+function unpricedApi<A extends ProviderStreams>(api: A, unpriced: ReadonlySet<string>, ai: typeof import("@earendil-works/pi-ai")): A {
+  const strip = (message: { usage?: { cost?: { total?: number } } } | undefined) => void (message?.usage?.cost && delete message.usage.cost.total);
+  const unpricedOf = <F extends ProviderStreams["stream"] | ProviderStreams["streamSimple"]>(stream: F): F => ((model: Parameters<F>[0], context: Parameters<F>[1], options?: Parameters<F>[2]) => {
+    const inner = stream(model, context, options as never);
+    if (!unpriced.has(model.id)) return inner;
+    const outer = ai.createAssistantMessageEventStream();
+    void (async () => {
+      let last: Parameters<typeof outer.end>[0] | undefined;
+      for await (const event of inner) {
+        const message = event.type === "done" ? event.message : event.type === "error" ? event.error : undefined;
+        if (message) {
+          strip(message);
+          last = message;
+        }
+        outer.push(event);
+      }
+      const result = last ?? (await inner.result());
+      strip(result);
+      outer.end(result);
+    })().catch((error: unknown) => {
+      const message = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, stopReason: "error", timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }, errorMessage: `the model request failed: ${String((error as Error)?.message ?? error).slice(0, 200)}` } as unknown as Parameters<typeof outer.end>[0];
+      outer.push({ type: "error", reason: "error", error: message } as never);
+      outer.end(message);
+    });
+    return outer;
+  }) as F;
+  return { ...api, stream: unpricedOf(api.stream.bind(api)), streamSimple: unpricedOf(api.streamSimple.bind(api)) };
 }
 
 type Listed = { provider: string; cost: ModelCost };
