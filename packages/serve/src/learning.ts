@@ -122,10 +122,13 @@ export function withAgentRepo<T>(data: string, agentId: string, work: () => Prom
   return next;
 }
 
-/** Main's commit, or undefined when the repository or its main is not there. */
+/** Main's commit, or undefined when there is no main yet: no repository, one whose `init` never finished, or one whose
+ *  making stopped before main. A main that is there, by its ref, and names no commit git can read is an error: the
+ *  repository is never made again over it. */
 async function mainOf(cwd: string, repo: string): Promise<string | undefined> {
-  if (!existsSync(join(repo, ".git"))) return undefined;
-  return git(cwd, repo, ["rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"]).then((out) => line(out) || undefined, () => undefined);
+  if (!existsSync(join(repo, ".git")) || !(await git(cwd, repo, ["rev-parse", "--git-dir"]).then(() => true, () => false))) return undefined;
+  if (!line(await git(cwd, repo, ["for-each-ref", "--format=%(objectname)", "refs/heads/main"]))) return undefined;
+  return line(await git(cwd, repo, ["rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"]));
 }
 
 /** Makes the agent's repository, or finishes one whose making stopped before main: `init` with no template, then the

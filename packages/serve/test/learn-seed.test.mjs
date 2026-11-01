@@ -144,6 +144,22 @@ test("a commit main holds that git cannot read refuses the run, with nothing mad
   assert.equal((await api("GET", "/agents/broken/runs")).body.runs.length, before, "no run was made");
 });
 
+test("a main whose commit git cannot read refuses the run, and the repository's working tree and index are left as they were", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: SYSTEM });
+  const main = await learned(api, data, "lost");
+  const repo = repoOf(data, "lost");
+  writeFileSync(join(repo, "learnings", "INDEX.md"), `# Learnings\n${NOTE}\n- L-eeeeeeeeeeee: a person's uncommitted rule.\n`);
+  git(repo, ["add", "--", "learnings/INDEX.md"]);
+  const staged = git(repo, ["ls-files", "--stage"]);
+  rmSync(join(repo, ".git", "objects", main.slice(0, 2), main.slice(2)));
+  const refused = await api("POST", "/agents/lost/runs", { input: { content: "hi" } });
+  assert.equal(refused.status, 500, JSON.stringify(refused.body));
+  assert.match(refused.body.error.message, /learning repository could not be read/);
+  assert.match(readFileSync(join(repo, "learnings", "INDEX.md"), "utf8"), /a person's uncommitted rule/);
+  assert.equal(git(repo, ["ls-files", "--stage"]), staged, "the index is not replaced");
+  assert.equal(git(repo, ["for-each-ref", "--format=%(objectname)", "refs/heads/main"]), main);
+});
+
 test("a run whose learned files cannot be written ends failed in the store, never left running with no process", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   assert.equal((await api("POST", "/agents", agent("unwritten"))).status, 201);
