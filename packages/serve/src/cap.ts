@@ -13,7 +13,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-adapters/host";
-import { type EntryLike, REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { type EntryLike, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
 /** A run's cap in USD, passed to its process. */
@@ -46,8 +46,19 @@ const refusedHere = (entry: EntryLike): boolean => {
   return message?.stopReason === "error" && typeof message.errorMessage === "string" && message.errorMessage.startsWith(`${SPEND_CAP_REACHED}:`);
 };
 
-/** What the run's store says its model requests cost, across every conversation in it: the cost the run's own timeline
- *  gives (pi-durable-agent's timelineOf), read as a settled run, since the process that wrote it is gone. Every response,
+/** The cost an entry adds to what a run spent, as the timeline counts it: a pi answer's total (none for one stopped before
+ *  its end), and the usd of a cost written apart from an answer; 0 for anything else, or for a cost that is not a number
+ *  (which makes the whole spend unknown, by the timeline's verdict). */
+const costOf = (entry: EntryLike): number => {
+  const message = entry.kind === "pi.assistant" ? (entry.model?.[0] as { stopReason?: unknown; usage?: { cost?: { total?: unknown } } } | undefined) : undefined;
+  const cost = message ? (message.stopReason === "aborted" ? undefined : message.usage?.cost?.total)
+    : entry.kind === REQUEST_COST || entry.kind === REQUEST_COST_LATE ? (entry.data as { usd?: unknown } | undefined)?.usd : undefined;
+  return typeof cost === "number" && Number.isFinite(cost) ? cost : 0;
+};
+
+/** What the run's store says its model requests cost, across every conversation in it: known or not as the run's own
+ *  timeline says (pi-durable-agent's timelineOf), read as a settled run, since the process that wrote it is gone, and
+ *  then the full amount, never the timeline's total rounded for display. Every response,
  *  and each cost written apart from one (a compaction summary's; a harness request's that came in after its answer).
  *  Every rule the timeline keeps for a cost no one knows holds here: a request or compaction marked as sent with no
  *  answer (a crash cut it, and it may have been billed), a cost that is not a number, a cost still pending. Two readings
@@ -81,9 +92,12 @@ export function spentIn(storeFile: string): number | null {
   } finally {
     db.close();
   }
+  // The timeline says whether the spend is known; the amount is summed here, as it is, since the timeline rounds its total
+  // for display (to the millionth of a dollar), and a cap must not lose what that drops.
   const usage = timelineOf(entries, { settled: true }).find((row) => row.kind === "usage")?.usage;
   if (usage === undefined) return 0;
-  return typeof usage.usd === "number" && Number.isFinite(usage.usd) ? usage.usd : null;
+  if (typeof usage.usd !== "number" || !Number.isFinite(usage.usd)) return null;
+  return entries.reduce((sum, entry) => sum + costOf(entry), 0);
 }
 
 /** The most output tokens one request may take: the model's ceiling, else its context window. A thinking budget can

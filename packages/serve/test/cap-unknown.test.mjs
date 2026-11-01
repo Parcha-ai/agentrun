@@ -171,6 +171,18 @@ test("pi under a cap: an answer whose cost is unknown makes what the run has spe
 // $1 a million output tokens and nothing for input, a ceiling of 1,000: each request's worst case is $0.001 exactly.
 const outputOnly = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
 
+test("the spend a reopened run reads is the full amount, never the timeline's total rounded for display: $0.0000004 spent is $0.0000004, and a request it leaves no room for is refused", async (t) => {
+  // Below the six decimals the timeline shows: rounded, it would read $0.
+  assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.0000004 })])), 0.0000004);
+  assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.0000001 }), compactionStarted, { kind: REQUEST_COST, data: { request: "compaction", usd: 0.0000002 } }, started, ended(0.0000001)])), 0.0000001 + 0.0000002 + 0.0000001, "answers, a summary's cost and a stopped request's held figure, summed as they are");
+  // One request's worst case is $0.001; a cap $0.0000002 above it has no room once $0.0000004 is spent.
+  const spent = spentIn(storeOf(t, [started, answer({ total: 0.0000004 })]));
+  const { models, sent } = fakeModels();
+  const next = (await capModels(models, 0.001 + 0.0000002, spent)).streamSimple(outputOnly, context);
+  assert.equal(sent.length, 0, "not sent: $0.0000004 spent and $0.001 held pass the cap");
+  assert.match((await next.result()).errorMessage, /^spend_cap_reached: .*could cost up to \$0\.001000/);
+});
+
 test("pi under a cap: a request stopped before its end counts at the worst case the cap held for it, which it hands its marks; the next goes while that leaves room, and is refused once it does not", async () => {
   const options = [];
   const { models, sent } = fakeModels();
