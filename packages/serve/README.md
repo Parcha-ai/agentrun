@@ -60,7 +60,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
-| `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
+| `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -656,11 +656,49 @@ The server reads the commit with git plumbing, never the working tree. What it h
 run: when the folder cannot be made or read, or its notes copied, the run starts with nothing learned. A host without
 git 2.40 or later is one such fault, said once on stderr.
 
-The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run lists) says how it went:
-`{state: "seeded", reason: null, detail: null, at}` for a run that started from what its agent learned,
-`{state: "dropped", reason: "seed_failed", detail, at}` for one that started with nothing, and `null` for a run that does
-not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a workflow's or an
-imported run). Nothing writes to `main` after its first commit yet: what a run learns stays in the run.
+### What a run learns
+
+When a run that learns answers or fails, the server asks the same session one more turn before it lets the run go,
+whatever its harness: one message through the run's door under the fixed request id `learn-reflect-<run id>`, so a
+server that restarts mid-turn asks again and the run takes it once. The server alone sends it (`turnOrigin: "reflect"`
+on the turn it keeps in `serve.json`; no request field sets it). Before it, `work/.learning/` is laid again from the
+seed, so only the turn's own writes count. The message (packages/learn's `reflectPrompt`) names that folder, the note
+format, that a memory is replaced by a new note with `supersedes: [old.md]` and never edited or deleted, that the
+server rebuilds `MEMORY.md`, how many index lines are left (200 less the active notes), that writing nothing is fine,
+and what not to keep. The turn runs under the run's own cap, with no reserve, and within 5 minutes; its rows are
+labelled `learning`, and the run's answer stays the job's.
+
+Once the run has ended, in the agent's queue, the server reads what the turn left in `work/.learning/`: the folder's
+top only, each entry with lstat and never a link followed, at most 4096 bytes of a note, and never past 64 changed
+paths. packages/learn's `checkProposal` refuses, before anything is written anywhere, an edited or deleted note, a path
+that is not a `.md` file at the top, a bad name, a link or anything not a regular file, front matter out of shape or
+setting `status`, a `supersedes` naming a note that is not active, more than 8 new notes or a note over 4096 bytes, an
+index past 200 lines, hidden characters, non-UTF-8, and text shaped like a secret or holding one of the server's own
+secrets (the launcher's, the keys and tokens in its environment, its API and door tokens), in a note or its name.
+`MEMORY.md` as the turn left it is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`.
+
+Then one grader decides, one grade at a time per agent: packages/learn's `gradePrompt` asked of the agent's own model,
+bounded (3 minutes), against `main`'s index and active notes as they are then, and read by `parseVerdict`, which fails
+closed. Only with Jev's key here does an injection screen run first, on Jev: a note it scores at
+`INJECTION_THRESHOLD` (0.75) or over, or cannot score, drops the run. What the grade spends is in no run's totals: it is
+booked once on `GET /usage` under the meter `learning`, by agent and by day, and kept on the run's learning.
+
+A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each note they supersede marked
+`status: superseded` with `superseded_by`, `MEMORY.md` rebuilt from the active notes, and the checked-out files brought
+in line. Its message is `learning: <run id>: merged`, the grader's reason and a `Run-Id` trailer; `main` moves only from
+the commit the merge was made on (once more on a `main` that moved meanwhile), and a run a trailer already names is
+merged, never twice. The merge's own questions are asked again of `main` first: a name another run added since is
+refused as `exists`. A server that goes between steps picks the run up at its next start, once.
+
+The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run lists) says how it went: `seeded`, then
+`reflecting` during the turn and until what it wrote is checked, `proposed` while it is graded, and `merged`, or
+`dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `no_write_tool`, `cancelled`,
+`crashed`, `reflect_timeout`, `reflect_failed`, `empty`, `propose_failed`, `checker`, `screen`, `screen_down`,
+`grader`, `grade_failed`; `tool_denied` is reserved for a tool gate this server does not have yet). It is `null` for a
+run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
+workflow's or an imported run). Once it is proposed, merged or dropped (`seed_failed` included), the run's timeline has
+one row of kind `learning` that says so, and `GET /stats` counts the runs that tried to learn under `learning`, over its
+`from`, `to` and `agent`.
 
 ## Spend cap
 

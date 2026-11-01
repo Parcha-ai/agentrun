@@ -28,7 +28,8 @@ import { boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
-import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { analyticsFilter, analyticsView, learningStats, statsView } from "./stats.js";
+import { bookings } from "./usage.js";
 import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
@@ -120,6 +121,8 @@ export type ServeOptions = {
   carryBackRetry?: CarryBackRetry;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
+  /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it (default 5 min). */
+  reflectTimeoutMs?: number;
   /** Whether runs learn (`--learning`; default AGENTRUN_SERVE_LEARNING, else `on`). `on`: a run of an agent whose
    *  definition says `learning: true` starts from what its agent learned. `off`: no run this server starts does, whatever
    *  its agent's definition says, and its `learning` is null. */
@@ -246,7 +249,7 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: false, read: true, range: false, during_run: true },
       quotes: false,
-      usage: { basis: "estimate", meters: ["tokens"] },
+      usage: { basis: "estimate", meters: ["tokens", "learning"] },
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
       browser: "none",
@@ -356,7 +359,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const agents = new Agents(data);
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -645,24 +648,31 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
     const lines = new Map<string, { usd: number; unpriced: number }>();
     const total = { usd: 0, unpriced: 0 };
-    for (const row of await agents.request(() => agents.store.listRuns())) {
-      const at = Date.parse(row.startedAt);
-      if (!(at >= from && at < to)) continue;
-      const live = row.state === "running" ? await runs.get(row.id) : null;
-      const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
-      const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
-      // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
-      // never passes as $0.
+    // A cost that is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it never
+    // passes as $0.
+    const add = (key: string, usd: number | null) => {
       const line = lines.get(key) ?? lines.set(key, { usd: 0, unpriced: 0 }).get(key)!;
       for (const sum of [line, total]) {
         if (usd === null) sum.unpriced++;
         else sum.usd += usd;
       }
+    };
+    const keyOf = (agent: string, at: string, meter: string) => (group === "agent" ? agent : group === "day" ? at.slice(0, 10) : group === "meter" ? meter : "local");
+    for (const row of await agents.request(() => agents.store.listRuns())) {
+      const at = Date.parse(row.startedAt);
+      if (!(at >= from && at < to)) continue;
+      const live = row.state === "running" ? await runs.get(row.id) : null;
+      add(keyOf(row.agent, row.startedAt, "tokens"), live ? runs.cost(live).usd : (row.costUsd ?? null));
+    }
+    // What learning spent on this server, outside any run (usage.ts): each run's grade, on the day it was graded.
+    for (const entry of await bookings(data)) {
+      const at = Date.parse(entry.at);
+      if (at >= from && at < to) add(keyOf(entry.agent, entry.at, "learning"), entry.usd);
     }
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
       from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
-      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: "tokens" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
+      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
       account: null,
     };
   }
@@ -898,8 +908,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await usage(url));
       case "getStats": {
         const filter = analyticsFilter(url);
-        const [stats, analytics] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter)] as const);
-        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter) });
+        const [stats, analytics, rows] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter), agents.store.listRuns()] as const);
+        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: await learningStats(rows, filter, (row) => runs.learningOfRow(row)) });
       }
       case "listToolKeys":
         return send(res, 200, toolKeys.view());

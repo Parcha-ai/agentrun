@@ -75,6 +75,20 @@ function readExactly(fd: number, length: number): Buffer {
 /** A secret's value: as handed over, else (no launcher) as this process's environment has it now. */
 export const secret = (name: string): string | undefined => held.get(name) ?? process.env[name];
 
+/** A name an environment gives a secret: a key, a token, a secret or a password. */
+const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
+/** A value shorter than this (whitespace aside) matches too much text by chance to be refused (packages/learn's). */
+const MIN_SECRET = 8;
+
+/** This host's secrets, for a scan of what a run wrote: each one the launcher lists, as this process holds it (never in
+ *  the environment once handed over, so a scan of process.env alone sees none of them), and the value of every other
+ *  key, token, secret or password `env` names. */
+export const hostSecrets = (env: NodeJS.ProcessEnv): string[] => {
+  const held = SECRET_NAMES.map((name) => secret(name) ?? "");
+  const named = Object.entries(env).filter(([name]) => SECRET_NAME.test(name) && !SECRET_NAMES.includes(name)).map(([, value]) => value ?? "");
+  return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
+};
+
 /** `env` with the secrets this process holds, for this process's own reading. Each secret is a property that does not
  *  enumerate: `env.NAME` reads it, while a spread of the object, or a spawn given it (Node builds a child's environment
  *  from its enumerable keys), leaves it out. */

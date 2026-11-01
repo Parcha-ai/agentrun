@@ -6,7 +6,9 @@ export type TimelineKind =
   | "subagent_started" | "subagent_progress" | "subagent_completed" | "final_answer" | "error"
   | "user_message" | "waiting" | "usage"
   /** A workflow decision: a judge's answers or a route's branch (serve's decision rows). */
-  | "decision";
+  | "decision"
+  /** Where a run's learning ended: proposed, merged or dropped (serve's learning row). */
+  | "learning";
 
 /** Grep's public `TimelineEvent` (its 13 fields) plus the open additions, all optional. */
 export type TimelineEvent = {
