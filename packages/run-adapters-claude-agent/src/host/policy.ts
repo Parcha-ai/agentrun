@@ -318,8 +318,7 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     apply: (body, route) => applyAnthropic(body, route, options),
     // `apply` let through only the session's model or its small one.
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
-    // Its undefined is no figure: the proxy reads it as an unmeasured input.
-    serverInputOverhead: anthropicServerInputOverhead as (body: Record<string, unknown>) => number,
+    serverInputOverhead: anthropicServerInputOverhead,
     usageOf: anthropicUsage,
   };
 }
