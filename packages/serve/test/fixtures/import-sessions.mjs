@@ -147,9 +147,33 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
   return writeSession(join(home, ".claude", "projects", slug, `${id}.jsonl`), records);
 }
 
-/** A Codex session in `cwd`: a question, a shell call and its output, an answer; tokens only, no cost. */
-export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, aborted = false } = {}) {
+/** A Codex session in `cwd`: the CLI's own context, a question, a shell call and its output, an answer; tokens only, no
+ *  cost. Each of the person's turns is a user message and, as older Codex wrote it, a user_message event too; with
+ *  `events: false`, as current Codex writes it, the user message alone. `then` is a second turn, with an image. */
+export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, aborted = false, events = true, then } = {}) {
   const id = sessionId(n);
+  const text = (value) => ({ type: "input_text", text: value });
+  const said = (minute, content, message) => [
+    {
+      timestamp: at(minute),
+      type: "response_item",
+      payload: { type: "message", role: "user", content },
+    },
+    ...(events
+      ? [
+          {
+            timestamp: at(minute),
+            type: "event_msg",
+            payload: { type: "user_message", message, images: [] },
+          },
+        ]
+      : []),
+  ];
+  const ended = (minute, answer, last) => ({
+    timestamp: at(minute),
+    type: "event_msg",
+    payload: aborted && last ? { type: "turn_aborted", reason: "interrupted" } : { type: "task_complete", last_agent_message: answer },
+  });
   const records = [
     {
       timestamp: at(0),
@@ -159,7 +183,7 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
         cwd,
         timestamp: at(0),
         model_provider: "openai",
-        cli_version: "0.99.0",
+        cli_version: events ? "0.99.0" : "0.150.0",
         source: subagent
           ? {
               subagent: {
@@ -180,19 +204,10 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
       payload: {
         type: "message",
         role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: "<environment_context>not the person's</environment_context>",
-          },
-        ],
+        content: [text(`# AGENTS.md instructions for ${cwd}\n\n<INSTRUCTIONS>\nnot the person's\n</INSTRUCTIONS>`), text(`<environment_context>\n  <cwd>${cwd}</cwd>\n</environment_context>`)],
       },
     },
-    {
-      timestamp: at(0),
-      type: "event_msg",
-      payload: { type: "user_message", message: prompt },
-    },
+    ...said(0, [text(prompt)], prompt),
     {
       timestamp: at(1),
       type: "response_item",
@@ -230,11 +245,27 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
         content: [{ type: "output_text", text: `Tests: ${output}.` }],
       },
     },
-    {
-      timestamp: at(3),
-      type: "event_msg",
-      payload: aborted ? { type: "turn_aborted", reason: "interrupted" } : { type: "task_complete", last_agent_message: `Tests: ${output}.` },
-    },
+    ended(3, `Tests: ${output}.`, !then),
+    ...(then
+      ? [
+          {
+            timestamp: at(4),
+            type: "turn_context",
+            payload: { cwd, model: "gpt-sol-6.1", effort: "medium" },
+          },
+          ...said(4, [text("<image name=[Image #1]>"), { type: "input_image", image_url: "data:image/png;base64,AAAA" }, text("</image>"), text(then)], then),
+          {
+            timestamp: at(5),
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "Done." }],
+            },
+          },
+          ended(5, "Done.", true),
+        ]
+      : []),
   ];
   return writeSession(join(home, ".codex", "sessions", "2026", "10", "20", `rollout-2026-10-20T09-00-00-${id}.jsonl`), records);
 }
