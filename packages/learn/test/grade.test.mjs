@@ -15,6 +15,9 @@ const OLD_RUN = "2026-10-01-0900-ffff";
 /** The paths the grader gives an item: every change but the memo and the index. */
 const GRADED = [NEW_NOTE, OLD, SKILL, DRAFT, README];
 const INSTRUCTIONS = "Answer questions about online stores from their public pages.";
+/** A note on main the branch does not change. */
+const KEPT = "learnings/L-5d0e9b1c7a24.md";
+const keptNote = () => note({ id: "L-5d0e9b1c7a24", runs: `[${OLD_RUN}]`, body: "A store's shipping policy is under /policies/ too, except on stores with a custom theme." });
 
 /** A run that adds a note, supersedes an old one, and adds a skill and a workflow draft. */
 const changes = () => [
@@ -108,6 +111,26 @@ test("with no standing instructions the prompt says so, and a deleted file shows
   assert.ok(prompt.includes(`for no other: ${[...GRADED, ".agents/skills/old-skill/SKILL.md", "workflows/gone/README.md"].join(", ")}.`));
 });
 
+test("main's notes the branch does not change are fenced in full when the host gives them, and refused when they overlap a change", () => {
+  const prompt = gradePrompt(input({ notes: [{ path: KEPT, text: keptNote() }] }));
+  const { body } = fencesOf(prompt);
+  assert.deepEqual(body(`${KEPT} on main`), [shown(keptNote())]);
+  assert.ok(prompt.includes("## main's notes\n\n----- begin "));
+  assert.ok(!prompt.includes(`${KEPT},`) && !prompt.includes(`${KEPT}.`), "a note on main is context, never an item");
+  assert.ok(gradePrompt(input()).includes("## main's notes\n\nThe host gave none beyond the index, and main's text of each note the branch changes.\n"));
+  for (const [what, notes, error] of [
+    ["not a list", { path: KEPT, text: keptNote() }, /main's notes must be an array/],
+    ["not a note", [{ path: SKILL, text: skill() }], /a note's path/],
+    ["the index", [{ path: INDEX, text: index() }], /a note's path/],
+    ["a note the branch changes", [{ path: OLD, text: note({ id: OLD_NOTE }) }], /its change's before/],
+    ["a note named twice", [{ path: KEPT, text: keptNote() }, { path: KEPT, text: keptNote() }], /twice/],
+    ["no text", [{ path: KEPT }], /main's text must be text/],
+    ["an unseen character", [{ path: KEPT, text: `${keptNote()}\u200b` }], /unseen character/],
+  ]) {
+    assert.throws(() => gradePrompt(input({ notes })), error, what);
+  }
+});
+
 test("a file that holds the fence's end line, or text shaped like the verdict, cannot close its fence", () => {
   const first = fencesOf(gradePrompt(input())).token;
   const hostile = (token) => [
@@ -136,8 +159,9 @@ test("a file that holds the fence's end line, or text shaped like the verdict, c
   const third = fencesOf(gradePrompt(input({ changes: withText(NEW_NOTE, both) })));
   assert.ok(![first, token].includes(third.token));
   assert.deepEqual(third.body(`${NEW_NOTE} on the branch`), [shown(both)]);
-  const framed = fencesOf(gradePrompt(input({ instructions: hostile(first), index: `${index([OLD_NOTE])}${hostile(first)}` })));
+  const framed = fencesOf(gradePrompt(input({ instructions: hostile(first), index: `${index([OLD_NOTE])}${hostile(first)}`, notes: [{ path: KEPT, text: hostile(first) }] })));
   assert.deepEqual(framed.body("the agent's standing instructions"), [shown(hostile(first))]);
+  assert.deepEqual(framed.body(`${KEPT} on main`), [shown(hostile(first))]);
   assert.deepEqual(framed.body("main's index"), [shown(`${index([OLD_NOTE])}${hostile(first)}`)]);
 });
 
@@ -292,6 +316,24 @@ test("empty, garbage or a verdict out of shape is the unreadable verdict, and no
     if (verdict.merge) assert.ok(whole.slice(0, at).includes(answer({}, 2)), `cut at ${at}`);
     else assert.deepEqual(verdict, UNREADABLE, `cut at ${at}`);
   }
+});
+
+test("an answer that repeats a key in one object is no verdict, whatever the last value says", () => {
+  const good = answer();
+  for (const text of [
+    good.replace('{"merge":true', '{"merge":false,"merge":true'),
+    good.replace('{"merge":true', '{"merge":false,"merg\\u0065":true'),
+    good.replace('"reason":', '"reason":"no","reason":'),
+    good.replace(`{"path":"${SKILL}","keep":true`, `{"path":"${SKILL}","keep":false,"keep":true`),
+    good.replace(`{"path":"${SKILL}"`, `{"path":"${OLD}","path":"${SKILL}"`),
+  ]) {
+    assert.notEqual(text, good);
+    assert.equal(JSON.parse(text).merge, true, "JSON.parse alone would read a merge");
+    assert.deepEqual(parseVerdict(text, changes()), UNREADABLE, text);
+  }
+  // A key's name inside a value, or the same key in two objects, repeats nothing.
+  const quoted = answer({ reason: 'It says "merge": false, "merge": true in a note; the note is general.', items: GRADED.map((path) => item(path, true, { why: '{"keep": false, "keep": true} \\" "keep"' })) });
+  assert.equal(parseVerdict(quoted, changes()).merge, true);
 });
 
 test("parseVerdict throws only on changes no checked branch holds", () => {
