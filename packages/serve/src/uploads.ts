@@ -29,6 +29,9 @@ const NAME_MAX = 255;
 const SHA256 = /^[0-9a-f]{64}$/;
 const FIELDS = ["path", "size_bytes", "content_type", "sha256"];
 
+/** Test seam, tests only: called as a run's copy starts, with the run's work/, before any file is copied. */
+export const uploadTestHooks: { beforeCopy?: (work: string) => Promise<void> | void } = {};
+
 /** The contract's File: `pending` until its bytes arrive, then `ready`, its `sha256` the bytes' own. */
 export type UploadedFile = {
   file_id: string;
@@ -65,15 +68,17 @@ export function pathProblem(path: string): string | undefined {
   return undefined;
 }
 
-/** `name` for the first, then `name-2`, `name-3`, ... before its extension (`report-2.pdf`), its stem cut to fit a name
- *  on disk. */
+/** `name` for the first, then `name-2`, `name-3`, ... before its extension (`report-2.pdf`), cut to fit a name on disk:
+ *  its stem first, down to one character, then its extension. */
 export function suffixed(name: string, n: number): string {
   if (n === 1) return name;
   const dot = name.lastIndexOf(".");
-  const ext = dot > 0 ? name.slice(dot) : "";
   let stem = [...(dot > 0 ? name.slice(0, dot) : name)];
-  while (stem.length > 1 && Buffer.byteLength(`${stem.join("")}-${n}${ext}`) > NAME_MAX) stem = stem.slice(0, -1);
-  return `${stem.join("")}-${n}${ext}`;
+  let ext = [...(dot > 0 ? name.slice(dot) : "")];
+  const fits = () => Buffer.byteLength(`${stem.join("")}-${n}${ext.join("")}`) <= NAME_MAX;
+  while (!fits() && stem.length > 1) stem = stem.slice(0, -1);
+  while (!fits() && ext.length > 0) ext = ext.slice(0, -1);
+  return `${stem.join("")}-${n}${ext.join("")}`;
 }
 
 /** Writes all of `chunk`, or throws: a short write (a disk nearly full) never passes as whole. */
@@ -108,7 +113,7 @@ export class Uploads {
     const issues: InputIssue[] = Object.keys(body).filter((key) => !FIELDS.includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
     if (typeof body.path !== "string") issues.push({ field: "path", reason: body.path === undefined ? "missing" : "wrong_type", message: "path is the file's relative path, a string" });
     if (!(Number.isSafeInteger(body.size_bytes) && (body.size_bytes as number) >= 0)) issues.push({ field: "size_bytes", reason: body.size_bytes === undefined ? "missing" : "wrong_type", message: "size_bytes is the file's length in bytes, an integer 0 or more" });
-    if (body.content_type !== undefined && !(typeof body.content_type === "string" && body.content_type.length <= 255)) issues.push({ field: "content_type", reason: typeof body.content_type === "string" ? "too_long" : "wrong_type", message: "content_type is a string of at most 255 characters" });
+    if (body.content_type !== undefined && typeof body.content_type !== "string") issues.push({ field: "content_type", reason: "wrong_type", message: "content_type is a string" });
     if (body.sha256 !== undefined && !(typeof body.sha256 === "string" && SHA256.test(body.sha256))) issues.push({ field: "sha256", reason: typeof body.sha256 === "string" ? "bad_format" : "wrong_type", message: "sha256 is 64 lowercase hex digits" });
     if (issues.length) throw invalid(issues);
     const problem = pathProblem(body.path as string);
@@ -227,6 +232,7 @@ export class Uploads {
    *  agent store makes a run's skill files (its mode from the umask): never a link to the upload. Answers each copy's path
    *  under `work`. */
   async copyInto(work: string, files: readonly UploadedFile[]): Promise<string[]> {
+    await uploadTestHooks.beforeCopy?.(work);
     const base = join(work, INPUTS_DIR);
     await mkdir(base, { recursive: true });
     const placed: string[] = [];

@@ -8,11 +8,13 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ROUTES, takesBytes } from "../dist/server.js";
-import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, pathProblem, suffixed } from "../dist/uploads.js";
+import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, pathProblem, suffixed, uploadTestHooks } from "../dist/uploads.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, cookieOf, follow, scratch, serve } from "./support.mjs";
 
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+/** A test password, not a real one. */
+const pw = (name) => `not-a-secret-${name}`;
 const UUID7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /** A PUT of `chunks` (a Buffer, or Buffers written one after another) to `path` on the server at `port`. */
@@ -104,6 +106,9 @@ test("a reservation is checked as the contract's FileCreate: 422 by field, 400 f
   assert.deepEqual(over.details, { limit: "max_upload_bytes" });
   assert.equal((await api("POST", "/files", { path: "max.bin", size_bytes: MAX_UPLOAD_BYTES })).status, 201, "the limit itself is taken");
   assert.equal((await api("POST", "/files", { path: "folders/keep/their/names.txt", size_bytes: 1 })).status, 201);
+  // A content type is any string, as the contract has it.
+  const typed = await api("POST", "/files", { path: "typed.txt", size_bytes: 1, content_type: `text/plain; ${"x=y; ".repeat(100)}charset=utf-8` });
+  assert.equal(typed.status, 201, JSON.stringify(typed.body));
 });
 
 test("a PUT is checked against its reservation: over the limit 413, a wrong length or hash 422 at the field, the same bytes again change nothing, other bytes are 422, an unknown file 404", async (t) => {
@@ -190,6 +195,39 @@ export default function reply(context, faux) {
   assert.ok((await readFile(join(server.data, "runs", second.body.run_id, "work", "inputs", "notes.txt"))).equals(notes));
 });
 
+test("a run whose files are still being copied does not start for a message meanwhile: its process waits for the copy", async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const notes = await upload(server, "notes.txt", Buffer.from("copied before the start\n"));
+  assert.equal((await api("POST", "/agents", agent("held"))).status, 201);
+  // The copy waits for the test: the run is in the store and listed meanwhile, its 202 not yet sent.
+  let open;
+  const gate = new Promise((resolve) => (open = resolve));
+  let copying;
+  const started = new Promise((resolve) => (copying = resolve));
+  uploadTestHooks.beforeCopy = async (work) => {
+    copying(work);
+    await gate;
+  };
+  t.after(() => void (uploadTestHooks.beforeCopy = undefined));
+  const created = api("POST", "/agents/held/runs", { input: { content: "Hello." }, file_ids: [notes.file_id] });
+  const work = await started;
+  const runId = (await api("GET", "/runs")).body.runs[0]?.run_id;
+  assert.ok(runId, "a client finds the run while it copies");
+  const message = api("POST", `/runs/${runId}/messages`, { content: "Go on." });
+  // The message's start would have spawned the process by now; it waits for the copy instead.
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const dir = join(work, "..");
+  assert.equal(await stat(join(dir, "process.log")).catch(() => null), null, "no process while the files are copied");
+  open();
+  const run = await created;
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  assert.equal(run.body.run_id, runId);
+  assert.ok([202, 409].includes((await message).status));
+  await follow(api, runId, ["completed"]);
+  assert.equal(await readFile(join(work, "inputs", "notes.txt"), "utf8"), "copied before the start\n");
+});
+
 test("a name taken already gets the next suffix, the same for the same files in the same order", async (t) => {
   const server = await serve(t);
   const { api } = server;
@@ -210,6 +248,9 @@ test("a name taken already gets the next suffix, the same for the same files in 
   assert.deepEqual([suffixed("a.txt", 1), suffixed("a.txt", 2), suffixed("README", 3), suffixed("a.b.c", 2)], ["a.txt", "a-2.txt", "README-3", "a.b-2.c"]);
   const long = suffixed(`${"é".repeat(125)}.txt`, 12);
   assert.ok(Buffer.byteLength(long) <= 255 && long.endsWith("-12.txt"), long);
+  // A long extension is cut too when the stem cannot make room.
+  const ext = suffixed(`a.${"x".repeat(253)}`, 2);
+  assert.ok(Buffer.byteLength(ext) <= 255 && ext.startsWith("a-2."), ext);
   assert.deepEqual([pathProblem("a/b.txt"), pathProblem("ünïcode/名前.txt")], [undefined, undefined]);
 });
 
@@ -254,7 +295,7 @@ test("a run body without file_ids, or with none, starts as before: no inputs fol
 test("the console's session sends a file's bytes: a PUT to a route marked raw takes any content type from the page's own origin; without it, or from another, it is no credential; nothing else changes", async (t) => {
   const server = await serve(t, { accounts: true, openSetup: true });
   const page = `http://127.0.0.1:${server.port}`;
-  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin: page }, body: { password: "not-a-secret-owner" } });
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin: page }, body: { password: pw("owner") } });
   assert.equal(made.status, 201, made.text);
   const cookie = cookieOf(made);
   const reserve = async (path, size) => {
