@@ -44,6 +44,12 @@ inductive Pred where
   | lt (path : Path) (n : Rat)
   | fieldEquals (path : Path) (value : Scalar)
   | isIn (path : Path) (values : List Scalar)
+  /-- `{predicate: "field_type"}`: the value at `path` is of the JSON type `ty` (`number`, `string`,
+  `boolean`, `array`, `object` or `null`). A model number is a rational, so always finite: the
+  TypeScript side's NaN and infinities, which no JSON document carries, are of no type there. -/
+  | fieldType (path : Path) (ty : String)
+  /-- `{predicate: "not"}`: `of` does not hold. The validator takes only a mechanical `of`. -/
+  | not (of : Pred)
   /-- `{predicate: "ask"}`: a yes/no question answered by `runJudge`; holds when
   `p_yes ≥ gte` (default 0.6). -/
   | ask (gte : Option Rat) (state : Option Tmpl)

@@ -102,6 +102,46 @@ Batch independent questions over the same state. They cannot read each other's
 answers. Use another step when a decision is needed to retrieve new evidence or
 construct new state. Inspect the assembled state and questions, not just node names.
 
+## Name the provider, pin the model, bound the time
+
+A decision node (`judge`, `pick`, `sift`, a `route` Jev chooses, or an `ask`
+predicate) may say five things about the provider that answers it. Each is optional:
+
+- `provider`: the id of one of the host's decision providers, such as `jev`,
+  `parallel` or `openrouter`. Absent, the host's default answers. An `openrouter`
+  node names its OpenRouter Decisions model in `model` (such as `liquid/d1`).
+- `model`: a model or version to pin, so a run asks the same model next month. A
+  changed pin is a different decision: its answer is never replayed from another
+  model's receipt. A provider that declares the models it serves refuses any
+  other pin before the run starts; Parallel serves `parallel-fast` only.
+- `evidence`: `"off"` keeps none; `"if_supported"` keeps what the provider gives;
+  `"required"` needs some. A provider whose capabilities declare no evidence is
+  refused for a `"required"` node before the run starts, and an answer that comes
+  back without any fails the request.
+- `timeoutMs`: the node's own bound, at most 120000. It only shortens the
+  provider's deadline, never lengthens it. A call cut by it after it was sent may
+  have been answered and billed: it is not asked again, and the run goes to review.
+- `images`: `{"<page1>": "{item.pages.0.image}"}` sends images with the request.
+  Each token must appear literally in the node's `state` or in a question's text,
+  where the image belongs (`"Does <page1> carry a seal?"`). Each reference is
+  written as a state value is and resolves to an image path the host reads; the
+  bytes never enter state. A provider without image input is refused before the
+  run. The receipt names each image by its SHA-256, never its bytes, and keeps the
+  state the judge saw. On `openrouter` with a model other than Jev (such as
+  `liquid/d1`), the token must stand alone as a top-level `state` value
+  (`"page": "<page1>"`), never inside text or a question: those models read an image
+  only as a whole state item. Jev on TypeSafe pins `jev-1.14.0`; through OpenRouter,
+  `typesafe/jev-1.14`. Jev takes an image of at most 1568 px on each side (a letter
+  page renders at 140 dpi to 1190x1540); a larger one is refused before it is sent.
+
+The host checks each decision node against its providers before any node runs: a
+provider it lacks, evidence it cannot give, a model it does not serve, a question
+type it does not answer, or images it cannot take stops the run with the node
+named. A host that names no decision providers cannot honour `provider` or
+`timeoutMs`, so it refuses a node that sets either. The evidence a provider gives
+travels with the answer, in `<as>$answers.evidence`, the decision receipt and the
+node's event.
+
 ## Consume uncertainty honestly
 
 `judge` stores decoded values at its `as` key and raw answers at `<as>$answers`.

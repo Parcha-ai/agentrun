@@ -12,7 +12,7 @@
     "isolatedModules": true,
     "types": ["vite/client"],
     "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] }
+    "paths": { "@/*": ["src/*"], "@dsl/*": ["../../packages/dsl/src/*"] }
   },
   "include": ["src", ".storybook"]
 }

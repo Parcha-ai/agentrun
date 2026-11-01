@@ -32,6 +32,10 @@
       "types": "./dist/recovery/testing/index.d.ts",
       "import": "./dist/recovery/testing/index.js"
     },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    },
     "./schema": "./schema/workflow.schema.json"
   },
   "files": [

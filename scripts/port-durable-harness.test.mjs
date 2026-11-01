@@ -104,10 +104,10 @@ test('a patch that changes nothing is named, and dropping a patch that others ar
   const cascaded = await portPackage(packageDir, { drop: ['001-begin-reservation'], cascade: true });
   assert.ok(!cascaded.files.get('src/process/builtins.ts').includes('private async again('), 'without 001 there is no reservation');
   assert.deepEqual((await readPatches(join(packageDir, PORT_DIR), 'harness-process')).map((p) => p.name), [
-    '001-begin-reservation', '002-message-prefix', '003-comments-name-this-host', '004-comments-name-the-session-writer', '005-comments-name-the-agent-sdk', '008-tool-images',
+    '001-begin-reservation', '002-message-prefix', '003-comments-name-this-host', '004-comments-name-the-session-writer', '005-comments-name-the-agent-sdk', '008-tool-images', '009-recovery-system-note', '010-recovery-note-statuses-only',
   ]);
   for (const patch of await readPatches(join(packageDir, PORT_DIR), 'harness-process')) assert.ok(patch.Reason.length > 20, `${patch.name} says why`);
-  // The fix offered upstream is the Codex harness's 009 (repairOutput); 001's begin() is ours (relabelled when offers got their own
+  // The fix offered upstream is the Codex harness's 012 (repairOutput); 001's begin() is ours (relabelled when offers got their own
   // budget: it changes 39 lines, over the offer cap, and they were always counted with ours).
   assert.deepEqual((await readPatches(join(packageDir, PORT_DIR), 'harness-process')).filter((p) => p.offer).map((p) => p.name), []);
   assert.equal((await readPatches(join(packageDir, PORT_DIR), 'harness-process'))[0].Upstream, 'ours');
@@ -155,7 +155,7 @@ test('the Codex port is what the pristine files, the Codex patches and the one i
   assert.equal(fake[0], '#!/usr/bin/env node');
   assert.match(fake[1], /^\/\/ Copyright 2026 Vercel Inc\./);
   assert.equal(fake[3], '// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments');
-  assert.match(files.get('src/harness.ts').split('\n')[2], /^\/\/ Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 009-cut-off-safe-call$/);
+  assert.match(files.get('src/harness.ts').split('\n')[2], /^\/\/ Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments(?:, \d{3}-[a-z-]+)*$/);
   for (const patch of await readPatches(join(codex, PORT_DIR), 'harness-codex')) {
     const without = await portPackage(codex, { drop: [patch.name], cascade: true });
     assert.ok([...files].some(([path, text]) => bodyOf(without.files.get(path) ?? '') !== bodyOf(text)), `${patch.name} changes the output`);
@@ -392,23 +392,26 @@ async function codexCopy(plant = async () => {}) {
   await plant(dir);
   return dir;
 }
-const OFFERED = `${PORT_DIR}/patches/harness-codex/009-cut-off-safe-call.patch`;
+const OFFERED = `${PORT_DIR}/patches/harness-codex/012-cut-off-safe-call.patch`;
 
 test("the vendored budget: a copy's own patches change under 60 lines, and the fixes it offers upstream under 20 more", { skip: !existsSync(join(root, 'packages', 'run-adapters-codex', PORT_DIR)) && 'the Codex package is not in this tree' }, async (t) => {
   const codex = join(root, 'packages', 'run-adapters-codex');
-  // 009 passes: offered upstream, it is counted apart from the Codex harness's own patches, under its own cap.
+  // 012 passes: offered upstream, it is counted apart from the Codex harness's own patches, under its own cap.
   const here = (await budgetLines(codex))['src/harness.ts'];
   t.diagnostic(`src/harness.ts: ${here.ours} lines its own, ${here.offer} offered upstream`);
   assert.ok(here.offer > 0 && here.offer < 20 && here.ours < 60, JSON.stringify(here));
   assert.deepEqual(await budgetProblems(codex), []);
-  // An "ours" patch still counts in the 60: 009 relabelled ours puts the harness's own count over it.
-  const ours = await codexCopy(edit(OFFERED, (text) => text.replace(/^Upstream: offer: .*$/m, 'Upstream: ours')));
+  // An "ours" patch still counts in the 60: 012 relabelled ours moves its lines to the harness's own count.
+  const relabel = (text) => text.replace(/^Upstream: offer: .*$/m, 'Upstream: ours');
+  const ours = await codexCopy(edit(OFFERED, relabel));
   assert.deepEqual((await budgetLines(ours))['src/harness.ts'], { ours: here.ours + here.offer, offer: 0 });
-  assert.match((await budgetProblems(ours)).join('\n'), /^src\/harness\.ts: its own patches change \d+ lines against upstream \(fewer than 60\)$/m);
-  // A larger fix labelled "offer" is refused by the offer cap: 009 with twelve more lines.
-  const big = await codexCopy(edit(OFFERED, (text) => text
-    .replace('@@ -1258,10 +1258,11 @@', '@@ -1258,10 +1258,23 @@')
-    .replace('+  // and the note and this output reach Codex together.\n', `+  // and the note and this output reach Codex together.\n${'+  //\n'.repeat(12)}`)));
-  assert.equal((await budgetLines(big))['src/harness.ts'].offer, here.offer + 12);
+  // A larger fix, 012 with twenty more lines: labelled "offer" it is refused by the offer cap, labelled "ours" by the 60.
+  const larger = (text) => text
+    .replace('@@ -1254,6 +1254,7 @@', '@@ -1254,6 +1254,27 @@')
+    .replace('+  if (recoveryNote(state)', `${'+  //\n'.repeat(20)}+  if (recoveryNote(state)`);
+  const big = await codexCopy(edit(OFFERED, larger));
+  assert.equal((await budgetLines(big))['src/harness.ts'].offer, here.offer + 20);
   assert.match((await budgetProblems(big)).join('\n'), /^src\/harness\.ts: its offer patches change \d+ lines \(fewer than 20\): a larger fix is ours, or split$/m);
+  const bigOurs = await codexCopy(edit(OFFERED, (text) => relabel(larger(text))));
+  assert.match((await budgetProblems(bigOurs)).join('\n'), /^src\/harness\.ts: its own patches change \d+ lines against upstream \(fewer than 60\)$/m);
 });

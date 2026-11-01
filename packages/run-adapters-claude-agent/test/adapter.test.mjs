@@ -2,7 +2,7 @@
 // "CLI" child makes each model request through the session's real proxy to a scripted Anthropic API. No key, no network,
 // no Claude Agent CLI.
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test as nodeTest } from 'node:test';
@@ -171,6 +171,33 @@ test("a call to anything but the session's own tools is denied by the gate and n
   for (const name of names) assert.equal(existsSync(canary(name)), false, `${name} ran`);
 });
 
+test("webSearch: the CLI is offered WebSearch alone and told so, the gate lets it through as a built-in call recorded before it runs (safe to repeat), and still denies every other", async (t) => {
+  const decided = [];
+  const seen = [];
+  const names = ['WebSearch', 'WebFetch', 'Bash', 'Read', 'Write', 'Skill', 'Task', 'mcp__other__tool'];
+  const script = [...names.map((name) => `builtin ${name} {"query":"agentrun","url":"https://example.com"}`), 'call submit {"value":{"answer":"ok"}}'];
+  const { adapter } = await claude(t, { webSearch: true, script, sdk: { onDecision: (d) => decided.push(d), onQuery: (options) => seen.push(options) } });
+  const store = memorySessionStore();
+  const runNode = createHarnessRunner(adapter, { store, maxTurns: 40 });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'q', system: [], user: 'Go.', schema: SCHEMAS.Out, tools: [] }), { answer: 'ok' });
+  assert.deepEqual(decided.map((d) => [d.name, d.decision]), names.map((name) => [name, name === 'WebSearch' ? 'allow' : 'deny']));
+  const [options] = seen;
+  assert.deepEqual(options.tools, ['WebSearch']);
+  assert.ok(!options.disallowedTools.includes('WebSearch') && options.disallowedTools.includes('Skill'), JSON.stringify(options.disallowedTools));
+  assert.match(options.systemPrompt.append, /^Your only tools are this app's \(the mcp__hands__ tools, if it has any\) and WebSearch; you have no shell, file or fetch tools/);
+  // The search's intent is in the session's records before it runs, as a read: a crash cut is retried, not reported lost.
+  const records = await store.read(store.keys()[0]);
+  const searches = [...foldSession('s', records).effects.values()].filter((e) => e.name.startsWith('tool.Web'));
+  assert.deepEqual(searches.map((e) => [e.name, e.replay]), [['tool.WebSearch', 'safe']]);
+  // Off (the default), as before: not offered, off by name, and denied.
+  const off = [];
+  const plain = await claude(t, { script: ['builtin WebSearch {"query":"agentrun"}', 'call submit {"value":{"answer":"ok"}}'], sdk: { onDecision: (d) => off.push(d), onQuery: (o) => off.push(o) } });
+  assert.deepEqual(await createHarnessRunner(plain.adapter, { store: memorySessionStore() })({ kind: 'agent', label: 'q', system: [], user: 'Go.', schema: SCHEMAS.Out, tools: [] }), { answer: 'ok' });
+  assert.deepEqual(off[0].tools, []);
+  assert.ok(off[0].disallowedTools.includes('WebSearch'));
+  assert.equal(off.find((d) => d.name === 'WebSearch')?.decision, 'deny');
+});
+
 test("every model request reaches the host with its tokens and its price: request_end carries input, output and cache tokens, usd above 0", async (t) => {
   const { adapter } = await claude(t, { script: ['call submit {"value":{"answer":"ok"}}'] });
   const ends = [];
@@ -303,4 +330,39 @@ test("the same crash, the next process in a NEW session directory (a fresh box):
   assert.equal(charged, 1, 'the charge ran once');
   const ended = (await store.read('step:s1')).filter((r) => r.kind === 'kernel.end').map((r) => r.data);
   assert.ok(ended.some((e) => e.status === 'failed' && e.error?.interrupted === true), JSON.stringify(ended));
+});
+
+test("a turn a halt ended with a reason (the transcript mirror's) ends failed and names it; the session's own interrupt and close end it interrupted", async (t) => {
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const halted = await claude(t, { script: ['mirror-error'] });
+  const spec = { key: 'step:halt', label: 'h', system: [], tools: [], context: 'fresh' };
+  const a = await halted.adapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  const end = await a.turnEnd();
+  assert.equal(end.status, 'failed', JSON.stringify(end));
+  assert.match(end.error ?? '', /mirror_unmapped/);
+  await a.close();
+  // A call that runs until it is stopped: stopped by the session itself, once by its interrupt and once by its close.
+  for (const stop of ['interrupt', 'close']) {
+    let inside;
+    const reached = new Promise((resolve) => { inside = resolve; });
+    const wait = { name: 'wait', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+    const own = await claude(t, { script: ['call wait {}'] });
+    const key = `step:${stop}`;
+    const b = await own.adapter.open({ ...spec, key, tools: [wait] }, { store, writer: await store.open(key), models, signal: new AbortController().signal, onEvent: () => {} });
+    await b.send('go');
+    await reached;
+    const ending = b.turnEnd();
+    if (stop === 'interrupt') await b.interrupt(); else await b.close();
+    assert.equal((await ending).status, 'interrupted', stop);
+    if (stop === 'interrupt') await b.close();
+  }
+});
+
+test("the adapter ends an aborted turn only through the kernel's abortedOutcome, and keeps no interrupted end of its own", () => {
+  // Structural: a halt with a reason the fakes cannot raise mid-turn still ends this adapter's turn as every other's.
+  const source = readFileSync(new URL('../src/adapter.ts', import.meta.url), 'utf8');
+  assert.match(source, /abortedOutcome\(current\.signal, io\.signal\)/);
+  assert.doesNotMatch(source, /status:\s*"interrupted"/);
 });
