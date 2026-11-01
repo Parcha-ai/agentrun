@@ -16,7 +16,7 @@ import {
 	isReservedLabel,
 } from "./box.ts";
 import { downloadByExec, finish, uploadByExec } from "./files.ts";
-import { parseNetwork, parsePorts } from "./network.ts";
+import { parseNetwork, parsePorts, refuseMounts } from "./network.ts";
 import { PROBE, parseProbe } from "./probe.ts";
 
 const DEFAULT_IMAGE = "debian:bookworm-slim";
@@ -752,6 +752,9 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 				// The moment Modal is asked: the facts go into the create call's tags, before the sandbox exists.
 				startedAt: new Date().toISOString(),
 			};
+			// Before any call to the vendor: its boxes cannot bind a path of this machine.
+			const refusedMounts = refuseMounts(spec, facts.provider);
+			if (refusedMounts !== undefined) return err(refusedMounts);
 			const aborted = <T>(): Result<T, BoxError> => err(new BoxError("aborted", "the call was aborted"));
 			let sandbox: ModalSandbox;
 			try {

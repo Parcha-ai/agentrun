@@ -1,3 +1,7 @@
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import {
 	createExpectAssertions,
@@ -385,6 +389,61 @@ export function createBoxConformance(options: BoxConformanceOptions): BoxConform
 					if (refused.ok) await refused.value.destroy(context);
 					assertions.strictEqual(refused.ok, false);
 					if (!refused.ok) assertions.strictEqual(refused.error.code, "invalid");
+				}
+			}),
+	});
+	cases.push({
+		name: "a provider that says it takes mounts binds host paths, read-only where asked; any other refuses them before a box exists",
+		timeoutMs: 120_000,
+		run: () =>
+			withProvider(async (provider) => {
+				if (provider.mounts !== true) {
+					const labels = { ...spec.labels, [CONFORMANCE_LABEL]: `${label}-mounts` };
+					const mounts = [{ source: "/data/run", target: "/data/run" }];
+					const refused = await provider.create({ ...spec, labels, mounts }, context);
+					if (refused.ok) await refused.value.destroy(context);
+					assertions.strictEqual(refused.ok ? "ok" : refused.error.code, "unsupported");
+					assertions.deepEqual(
+						unwrap(await provider.list({ [CONFORMANCE_LABEL]: labels[CONFORMANCE_LABEL] }, context)),
+						[],
+					);
+					return;
+				}
+				// Canonical paths, as the spec requires: a temporary directory can sit behind a symbolic link.
+				const host = await realpath(await mkdtemp(join(tmpdir(), "pi-transport-mounts-")));
+				try {
+					const readOnly = join(host, "in");
+					const readWrite = join(host, "out");
+					await mkdir(readOnly);
+					await mkdir(readWrite);
+					await writeFile(join(readOnly, "in.txt"), "from the host");
+					const mounts = [
+						{ source: readOnly, target: "/data/in", readOnly: true },
+						{ source: readWrite, target: "/data/out" },
+					];
+					const box = unwrap(await provider.create({ ...spec, mounts }, context));
+					try {
+						assertions.strictEqual((await run(box, ["cat", "/data/in/in.txt"])).stdout, "from the host");
+						const refusedWrite = await run(box, ["sh", "-c", "printf x > /data/in/new.txt"]);
+						assertions.ok(refusedWrite.exitCode !== 0, "a write to a read-only mount fails in the box");
+						assertions.ok(
+							!existsSync(join(readOnly, "new.txt")),
+							"a write to a read-only mount never reaches the host",
+						);
+						const written = await run(box, [
+							"sh",
+							"-c",
+							'printf %s "$1" > /data/out/out.txt',
+							"sh",
+							"from the box",
+						]);
+						assertions.strictEqual(written.exitCode, 0);
+						assertions.strictEqual(await readFile(join(readWrite, "out.txt"), "utf8"), "from the box");
+					} finally {
+						await box.destroy(context);
+					}
+				} finally {
+					await rm(host, { recursive: true, force: true });
 				}
 			}),
 	});
