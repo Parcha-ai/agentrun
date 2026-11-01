@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { startServe } from "../dist/index.js";
 import { nextMoment } from "../dist/runs.js";
+import { signatureOf } from "../dist/webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
 
@@ -75,6 +76,13 @@ async function meetsDocument(api, path, method, status, value) {
 
 /** Every file under `dir`, read. */
 const filesIn = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => readFileSync(join(e.parentPath, e.name)));
+
+test("the signature is the Standard Webhooks spec's, byte for byte: its published test vector", () => {
+  const secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+  const [id, timestamp, body] = ["msg_p5jXN8AQM9LWM0D4loKWxJek", "1614265330", '{"test": 2432232314}'];
+  assert.equal(signatureOf(secret, id, timestamp, body), "v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE=");
+  assert.equal(new Webhook(secret).sign(id, new Date(Number(timestamp) * 1000), body), signatureOf(secret, id, timestamp, body), "as the spec's library signs it");
+});
 
 test("demo: a run that ends and a run that asks its person each POST a Standard Webhooks message the spec's library verifies; a wrong secret does not; the secret is in no GET and on disk only sealed", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
