@@ -210,3 +210,24 @@ test("the next open re-books what the session booked with its tokens and model; 
   assert.deepEqual(usage(entries, true), { usd: 0.007, requests: 3 }, "the cost is what it was");
   assert.equal(bookedMarks(entries).length, 3, "each booked once");
 });
+
+test("the cap's spend read from a store sums each answer's cost and each cost written apart, a compaction's and a late one", () => {
+  const dir = mkdtempSync(join(tmpdir(), "spent-in-"));
+  try {
+    const file = join(dir, "run.sqlite");
+    const db = new DatabaseSync(file);
+    db.exec("CREATE TABLE entries (record TEXT)");
+    const put = db.prepare("INSERT INTO entries (record) VALUES (?)");
+    for (const entry of [
+      { kind: "pi.assistant", model: [{ usage: { cost: { total: 0.001 } } }] },
+      { kind: REQUEST_COST, data: { request: "compaction", usd: 0.002 } },
+      { kind: "pi.assistant", model: [{ usage: { cost: {} } }] },
+      { kind: REQUEST_COST_PENDING, data: {} },
+      { kind: REQUEST_COST_LATE, data: { usd: 0.003 } },
+    ]) put.run(JSON.stringify(entry));
+    db.close();
+    assert.equal(Math.round(spentIn(file) * 1e6) / 1e6, 0.006);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
