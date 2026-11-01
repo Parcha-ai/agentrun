@@ -43,8 +43,10 @@ function fake(
 
 const VERSION = 'if [ "$1" = --version ]; then echo "bubblewrap 0.9.0"; exit 0; fi';
 const noSysctl = () => undefined;
+/** A caller that is not root, whatever runs these tests. */
+const notRoot = () => ({ uid: 1000, capabilities: 0n });
 const probe = (f: { dir: string; scratch: string }, extra: Partial<BwrapProbeOptions> = {}) =>
-	probeBwrap({ path: f.dir, scratch: f.scratch, sysctl: noSysctl, timeoutMs: 5000, ...extra });
+	probeBwrap({ path: f.dir, scratch: f.scratch, sysctl: noSysctl, self: notRoot, timeoutMs: 5000, ...extra });
 
 describe("probeBwrap", () => {
 	it("is available when bwrap answers its version and runs true in a box built as an exec's, with the box's files on their descriptors", async () => {
@@ -111,6 +113,26 @@ exit 0`);
 		expect(existsSync(f.log)).toBe(false);
 	});
 
+	it("refuses a root caller without CAP_SETFCAP before running bwrap, and goes on for root with it", async () => {
+		const f = fake(`${VERSION}
+echo ran > "$LOG"
+exit 0`);
+		const setfcap = 1n << 31n;
+		const found = await probe(f, { self: () => ({ uid: 0, capabilities: 0x1ffffffffffn & ~setfcap }) });
+		expect(found).toEqual({
+			available: false,
+			code: "setfcap",
+			reason:
+				"this process runs as root without CAP_SETFCAP, which bwrap needs to map root into the box's user namespace: grant it the capability, or run it as a user that is not root",
+		});
+		expect(existsSync(f.log)).toBe(false);
+		expect(await probe(f, { self: () => ({ uid: 0, capabilities: 0x1ffffffffffn }) })).toMatchObject({
+			available: true,
+		});
+		// Capabilities that cannot be read leave it to the run to tell.
+		expect(await probe(f, { self: () => ({ uid: 0 }) })).toMatchObject({ available: true });
+	});
+
 	it("refuses a bwrap older than 0.8.0, and a version it cannot read", async () => {
 		const old = fake('if [ "$1" = --version ]; then echo "bubblewrap 0.6.1"; exit 0; fi; exit 0');
 		expect(await probe(old)).toEqual({
@@ -143,7 +165,7 @@ exit 1`);
 			available: false,
 			code: "userns_denied",
 			reason:
-				'AppArmor restricts unprivileged user namespaces on this host (kernel.apparmor_restrict_unprivileged_userns = 1): bwrap needs an AppArmor profile that grants it userns, which the host\'s operator loads once; bwrap said: "bwrap: setting up uid map: Permission denied"',
+				'AppArmor restricts unprivileged user namespaces on this host (kernel.apparmor_restrict_unprivileged_userns = 1): the host\'s administrator either loads an AppArmor profile that grants bwrap userns or turns the restriction off; bwrap said: "bwrap: setting up uid map: Permission denied"',
 		});
 	});
 

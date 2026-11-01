@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,19 +7,17 @@ import { BoxError } from "../src/box/box.ts";
 import {
 	BWRAP_DATA,
 	BWRAP_ETC,
-	BWRAP_FLAGS,
-	BWRAP_PATH,
 	BWRAP_SYSTEM,
 	type BwrapHost,
 	type BwrapHostFs,
 	type BwrapSpec,
 	bwrapArgs,
 	bwrapFiles,
-	checkBwrapArgs,
 } from "../src/box/bwrap-args.ts";
 
-// The bwrap box's argv, built and checked. Nothing here runs bwrap: a host's filesystem is either a fake one (a merged-/usr
-// host, a split one) or this host's own, read only to resolve paths.
+// The bwrap box's argv. The golden tests pin it element by element for a few hosts; the rest check what it binds and the
+// inputs it refuses. Nothing here runs bwrap: a host's filesystem is a fake one (a merged-/usr host, a split one) or this
+// host's own, read only to resolve paths.
 
 type Entry =
 	| { readonly kind: "dir" | "file" | "other" }
@@ -61,6 +59,19 @@ const MERGED: Readonly<Record<string, Entry>> = {
 	"/data/box/ws": DIR,
 };
 
+/** The merged host with a provider's records, a link to them, a file and a home under /usr, and a directory in /etc. */
+const GUARDED: Readonly<Record<string, Entry>> = {
+	...MERGED,
+	"/usr/local/records": DIR,
+	"/usr/local/records/inner": DIR,
+	"/usr/local/records.json": FILE,
+	"/usr/local/home-of-server": DIR,
+	"/usr/share/zoneinfo": DIR,
+	"/etc/ssl/certs/private": DIR,
+	"/data/records-link": { kind: "link", to: "/usr/local/records", real: "/usr/local/records" },
+	"/data/usr-link": { kind: "link", to: "/usr", real: "/usr" },
+};
+
 const HOME = "/data/home-of-server";
 const host = (extra: Partial<BwrapHost> = {}, entries: Readonly<Record<string, Entry>> = MERGED): BwrapHost => ({
 	workspace: "/data/box/ws",
@@ -91,6 +102,7 @@ function options(argv: readonly string[]): string[][] {
 		"--proc": 1,
 		"--dev": 1,
 		"--tmpfs": 1,
+		"--perms": 1,
 		"--remount-ro": 1,
 		"--chdir": 1,
 		"--ro-bind": 2,
@@ -108,6 +120,12 @@ function options(argv: readonly string[]): string[][] {
 	return out;
 }
 
+/** Every bind's source and destination: what of the host a box can see, and where. */
+const bound = (argv: readonly string[]) =>
+	options(argv)
+		.filter((o) => o[0] === "--bind" || o[0] === "--ro-bind")
+		.flatMap((o) => [o[1]!, o[2]!]);
+
 const roots: string[] = [];
 const servers: Server[] = [];
 afterEach(async () => {
@@ -115,79 +133,211 @@ afterEach(async () => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 const scratch = () => {
-	const root = mkdtempSync(join(tmpdir(), "bwrap-args-"));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "bwrap-args-")));
 	roots.push(root);
 	return root;
 };
 
-describe("bwrapArgs", () => {
-	it("builds every flag, the box's own mounts first, the system read-only, its files, the workspace, a read-only root, the environment and the command, and the argv passes the check", () => {
-		const h = host();
-		const argv = built({ env: { LANG: "C.UTF-8" } }, h);
-		expect(argv.slice(0, BWRAP_FLAGS.length)).toEqual([...BWRAP_FLAGS]);
-		expect(options(argv)).toEqual([
-			...BWRAP_FLAGS.map((flag) => [flag]),
-			["--cap-drop", "ALL"],
-			["--hostname", "box"],
-			["--proc", "/proc"],
-			["--dev", "/dev"],
-			["--tmpfs", "/tmp"],
-			["--tmpfs", "/dev/shm"],
-			["--ro-bind", "/usr", "/usr"],
-			["--symlink", "usr/bin", "/bin"],
-			["--symlink", "usr/sbin", "/sbin"],
-			["--symlink", "usr/lib", "/lib"],
-			["--symlink", "usr/lib64", "/lib64"],
-			["--ro-bind", "/etc/alternatives", "/etc/alternatives"],
-			["--ro-bind", "/etc/ca-certificates", "/etc/ca-certificates"],
-			["--ro-bind", "/etc/ld.so.cache", "/etc/ld.so.cache"],
-			["--ro-bind", "/usr/share/zoneinfo/Etc/UTC", "/etc/localtime"],
-			["--ro-bind", "/etc/nsswitch.conf", "/etc/nsswitch.conf"],
-			["--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs"],
-			["--ro-bind-data", "3", "/etc/passwd"],
-			["--ro-bind-data", "4", "/etc/group"],
-			["--ro-bind-data", "5", "/etc/hosts"],
-			["--bind", "/data/box/ws", "/workspace"],
-			["--remount-ro", "/"],
-			["--chdir", "/workspace"],
-			["--clearenv"],
-			["--setenv", "PATH", BWRAP_PATH],
-			["--setenv", "HOME", "/workspace"],
-			["--setenv", "LANG", "C.UTF-8"],
+// The parts every argv starts with, and the box's own files: written out, not taken from the module.
+const FLAGS = [
+	"--unshare-user",
+	"--unshare-pid",
+	"--unshare-net",
+	"--unshare-ipc",
+	"--unshare-uts",
+	"--unshare-cgroup",
+	"--disable-userns",
+	"--die-with-parent",
+	"--new-session",
+	"--cap-drop",
+	"ALL",
+	"--hostname",
+	"box",
+	"--proc",
+	"/proc",
+	"--dev",
+	"/dev",
+	"--tmpfs",
+	"/tmp",
+	"--tmpfs",
+	"/dev/shm",
+];
+const MERGED_SYSTEM = [
+	"--ro-bind",
+	"/usr",
+	"/usr",
+	"--symlink",
+	"usr/bin",
+	"/bin",
+	"--symlink",
+	"usr/sbin",
+	"/sbin",
+	"--symlink",
+	"usr/lib",
+	"/lib",
+	"--symlink",
+	"usr/lib64",
+	"/lib64",
+	"--ro-bind",
+	"/etc/alternatives",
+	"/etc/alternatives",
+	"--ro-bind",
+	"/etc/ca-certificates",
+	"/etc/ca-certificates",
+	"--ro-bind",
+	"/etc/ld.so.cache",
+	"/etc/ld.so.cache",
+	"--ro-bind",
+	"/usr/share/zoneinfo/Etc/UTC",
+	"/etc/localtime",
+	"--ro-bind",
+	"/etc/nsswitch.conf",
+	"/etc/nsswitch.conf",
+	"--ro-bind",
+	"/etc/ssl/certs",
+	"/etc/ssl/certs",
+];
+const FILES = [
+	"--ro-bind-data",
+	"3",
+	"/etc/passwd",
+	"--ro-bind-data",
+	"4",
+	"/etc/group",
+	"--ro-bind-data",
+	"5",
+	"/etc/hosts",
+];
+
+describe("bwrapArgs, golden", () => {
+	it("a merged-/usr host with the default spec", () => {
+		expect(built({}, host())).toEqual([
+			...FLAGS,
+			...MERGED_SYSTEM,
+			...FILES,
+			"--bind",
+			"/data/box/ws",
+			"/workspace",
+			"--remount-ro",
+			"/",
+			"--chdir",
+			"/workspace",
+			"--clearenv",
+			"--setenv",
+			"PATH",
+			"/usr/local/bin:/usr/bin:/bin",
+			"--setenv",
+			"HOME",
+			"/workspace",
+			"--",
+			"sh",
+			"-c",
+			"echo hi",
 		]);
-		expect(argv.slice(argv.indexOf("--"))).toEqual(["--", "sh", "-c", "echo hi"]);
-		expect(checkBwrapArgs(argv, { env: { LANG: "C.UTF-8" } }, h)).toBeUndefined();
 	});
 
-	it("binds a split-/usr host's /bin, /sbin and /lib as directories, read-only, and leaves out what the host lacks", () => {
-		const split: Record<string, Entry> = { "/usr": DIR, "/bin": DIR, "/sbin": DIR, "/lib": DIR, "/data/box/ws": DIR };
-		const h = host({}, split);
-		const argv = built({}, h);
-		const binds = options(argv).filter((o) => o[0] === "--ro-bind" || o[0] === "--symlink");
-		expect(binds).toEqual([
-			["--ro-bind", "/usr", "/usr"],
-			["--ro-bind", "/bin", "/bin"],
-			["--ro-bind", "/sbin", "/sbin"],
-			["--ro-bind", "/lib", "/lib"],
+	it("a split-/usr host without the /etc it lacks, a working directory under /tmp and the spec's environment", () => {
+		const split: Record<string, Entry> = {
+			"/usr": DIR,
+			"/bin": DIR,
+			"/sbin": DIR,
+			"/lib": DIR,
+			"/etc/ssl/certs": DIR,
+			"/data/box/split-ws": DIR,
+		};
+		const h = host({ workspace: "/data/box/split-ws", command: ["make", "test"] }, split);
+		const spec: BwrapSpec = { workspace: "/tmp/work", env: { LANG: "C.UTF-8", PATH: "/opt/tool/bin:/usr/bin" } };
+		expect(built(spec, h)).toEqual([
+			...FLAGS,
+			"--ro-bind",
+			"/usr",
+			"/usr",
+			"--ro-bind",
+			"/bin",
+			"/bin",
+			"--ro-bind",
+			"/sbin",
+			"/sbin",
+			"--ro-bind",
+			"/lib",
+			"/lib",
+			"--ro-bind",
+			"/etc/ssl/certs",
+			"/etc/ssl/certs",
+			...FILES,
+			"--bind",
+			"/data/box/split-ws",
+			"/tmp/work",
+			"--remount-ro",
+			"/",
+			"--chdir",
+			"/tmp/work",
+			"--clearenv",
+			"--setenv",
+			"PATH",
+			"/opt/tool/bin:/usr/bin",
+			"--setenv",
+			"HOME",
+			"/tmp/work",
+			"--setenv",
+			"LANG",
+			"C.UTF-8",
+			"--",
+			"make",
+			"test",
 		]);
-		expect(checkBwrapArgs(argv, {}, h)).toBeUndefined();
 	});
 
+	it("a home and a hidden path inside /usr, each masked by a read-only tmpfs after the system binds", () => {
+		const h = host(
+			{ homes: [HOME, "/usr/local/home-of-server"], hidden: ["/usr/local/records"], command: ["true"] },
+			GUARDED,
+		);
+		expect(built({}, h)).toEqual([
+			...FLAGS,
+			...MERGED_SYSTEM,
+			"--perms",
+			"555",
+			"--tmpfs",
+			"/usr/local/home-of-server",
+			"--remount-ro",
+			"/usr/local/home-of-server",
+			"--perms",
+			"555",
+			"--tmpfs",
+			"/usr/local/records",
+			"--remount-ro",
+			"/usr/local/records",
+			...FILES,
+			"--bind",
+			"/data/box/ws",
+			"/workspace",
+			"--remount-ro",
+			"/",
+			"--chdir",
+			"/workspace",
+			"--clearenv",
+			"--setenv",
+			"PATH",
+			"/usr/local/bin:/usr/bin:/bin",
+			"--setenv",
+			"HOME",
+			"/workspace",
+			"--",
+			"true",
+		]);
+	});
+});
+
+describe("bwrapArgs, what it binds", () => {
 	it("binds no host path but the system, the named part of /etc and the workspace, and only the workspace writable", () => {
-		const argv = built({}, host());
-		const all = options(argv);
+		const all = options(built({}, host()));
 		const allowedDestinations = new Set<string>([...BWRAP_SYSTEM, ...BWRAP_ETC]);
 		for (const [option, source, destination] of all.filter((o) => o[0] === "--ro-bind")) {
 			expect(allowedDestinations.has(destination!), `${option} ${source} ${destination}`).toBe(true);
 			expect(source === destination || source!.startsWith("/usr/") || source!.startsWith("/etc/")).toBe(true);
 		}
 		expect(all.filter((o) => o[0] === "--bind")).toEqual([["--bind", "/data/box/ws", "/workspace"]]);
-		for (const forbidden of ["/", "/etc", "/home", HOME, "/run", "/var", "/root", "/proc", "/sys", "/srv", "/tmp"]) {
-			expect(
-				all.some((o) => (o[0] === "--bind" || o[0] === "--ro-bind") && o[1] === forbidden),
-				forbidden,
-			).toBe(false);
-		}
 		for (const path of ["/etc/passwd", "/etc/group", "/etc/hosts", "/etc/shadow", "/etc/resolv.conf"]) {
 			expect(
 				all.some((o) => (o[0] === "--bind" || o[0] === "--ro-bind") && o[2] === path),
@@ -199,12 +349,42 @@ describe("bwrapArgs", () => {
 		);
 	});
 
-	it("on this host's own filesystem binds only system paths read-only and the workspace as resolved", () => {
+	it("never binds /run, /var or the host's /tmp, nor anything that holds them, nor anything under /run, and refuses them as a workspace", () => {
 		const root = scratch();
 		const workspace = join(root, "ws");
 		mkdirSync(workspace);
-		const h: BwrapHost = { workspace, command: ["true"], homes: [join(root, "home")] };
-		const argv = built({ workspace: "/data/box" }, h);
+		const argvs = [
+			built({}, host()),
+			built({}, host({ hidden: ["/usr/local/records"] }, GUARDED)),
+			built({ workspace: "/tmp/work" }, { workspace, command: ["true"], homes: [join(root, "home")] }),
+		];
+		for (const argv of argvs) {
+			for (const path of bound(argv)) {
+				for (const kept of ["/run", "/var", "/var/run", "/tmp", "/var/tmp"]) {
+					expect(path === kept || kept.startsWith(path === "/" ? "/" : `${path}/`), `${path} shows ${kept}`).toBe(
+						false,
+					);
+				}
+				expect(path.startsWith("/run/") || path.startsWith("/var/run/"), path).toBe(false);
+			}
+		}
+		for (const [workspace, why] of [
+			["/run", /is \/run/],
+			["/run/user/1000", /lies under \/run/],
+			["/var/run/box", /lies under \/var\/run/],
+			["/var", /is \/var/],
+			["/tmp", /is \/tmp/],
+			["/var/tmp", /is \/var\/tmp/],
+		] as const) {
+			expect(refusal({}, host({ workspace })).message, workspace).toMatch(why);
+		}
+	});
+
+	it("on this host's own filesystem binds only system paths read-only and the workspace", () => {
+		const root = scratch();
+		const workspace = join(root, "ws");
+		mkdirSync(workspace);
+		const argv = built({ workspace: "/data/box" }, { workspace, command: ["true"], homes: [join(root, "home")] });
 		for (const [option, source, destination] of options(argv)) {
 			if (option === "--ro-bind") {
 				expect([...BWRAP_SYSTEM, ...BWRAP_ETC]).toContain(destination);
@@ -213,7 +393,6 @@ describe("bwrapArgs", () => {
 			if (option === "--symlink") expect(BWRAP_SYSTEM as readonly string[]).toContain(destination);
 		}
 		expect(options(argv).filter((o) => o[0] === "--bind")).toEqual([["--bind", workspace, "/data/box"]]);
-		expect(checkBwrapArgs(argv, { workspace: "/data/box" }, h)).toBeUndefined();
 	});
 
 	it("has no network but its own: absent and none unshare it, open and an allowlist are unsupported", () => {
@@ -235,8 +414,7 @@ describe("bwrapArgs", () => {
 			const argv = built({ env: { NODE_ENV: "test", PATH: "/opt/tool/bin:/usr/bin" } }, host());
 			expect(argv.join("\n")).not.toContain("inherited-value");
 			expect(argv.join("\n")).not.toContain("PI_TRANSPORT_BWRAP_TEST_SECRET");
-			const env = options(argv).filter((o) => o[0] === "--setenv");
-			expect(env).toEqual([
+			expect(options(argv).filter((o) => o[0] === "--setenv")).toEqual([
 				["--setenv", "PATH", "/opt/tool/bin:/usr/bin"],
 				["--setenv", "HOME", "/workspace"],
 				["--setenv", "NODE_ENV", "test"],
@@ -246,7 +424,71 @@ describe("bwrapArgs", () => {
 			delete process.env.PI_TRANSPORT_BWRAP_TEST_SECRET;
 		}
 	});
+});
 
+describe("bwrapArgs, a protected path inside the system", () => {
+	const at = (argv: readonly string[], ...mount: string[]) =>
+		options(argv).findIndex((o) => o.length === mount.length && o.every((part, n) => part === mount[n]));
+	/** The mask at `path`: `--perms 555 --tmpfs <path> --remount-ro <path>`, in that order, once. */
+	const masked = (argv: readonly string[], path: string) => {
+		const tmpfs = at(argv, "--tmpfs", path);
+		expect(tmpfs, `no mask at ${path}`).toBeGreaterThan(0);
+		const all = options(argv);
+		expect([all[tmpfs - 1], all[tmpfs], all[tmpfs + 1]]).toEqual([
+			["--perms", "555"],
+			["--tmpfs", path],
+			["--remount-ro", path],
+		]);
+		expect(all.filter((o) => o[0] === "--tmpfs" && o[1] === path)).toHaveLength(1);
+		return tmpfs;
+	};
+
+	it("masks a hidden path reached through a link at the place its contents are, and a home under a system directory", () => {
+		const linked = built({}, host({ hidden: ["/data/records-link"] }, GUARDED));
+		expect(masked(linked, "/usr/local/records")).toBeGreaterThan(at(linked, "--ro-bind", "/usr", "/usr"));
+		const home = built({}, host({ homes: [HOME, "/usr/local/home-of-server"] }, GUARDED));
+		expect(masked(home, "/usr/local/home-of-server")).toBeGreaterThan(at(home, "--ro-bind", "/usr", "/usr"));
+	});
+
+	it("masks only the outermost of nested paths, one inside a split host's /bin, and one inside a bound part of /etc", () => {
+		const nested = built({}, host({ hidden: ["/usr/local/records/inner", "/usr/local/records"] }, GUARDED));
+		masked(nested, "/usr/local/records");
+		expect(at(nested, "--tmpfs", "/usr/local/records/inner")).toBe(-1);
+		const split: Record<string, Entry> = { "/usr": DIR, "/bin": DIR, "/bin/secret": DIR, "/data/box/ws": DIR };
+		const argv = built({}, host({ hidden: ["/bin/secret"] }, split));
+		expect(masked(argv, "/bin/secret")).toBeGreaterThan(at(argv, "--ro-bind", "/bin", "/bin"));
+		const etc = built({}, host({ hidden: ["/etc/ssl/certs/private"] }, GUARDED));
+		expect(masked(etc, "/etc/ssl/certs/private")).toBeGreaterThan(
+			at(etc, "--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs"),
+		);
+	});
+
+	it("leaves out a part of /etc whose source lies in a protected path, and masks that path in /usr", () => {
+		const argv = built({}, host({ hidden: ["/usr/share/zoneinfo"] }, GUARDED));
+		expect(options(argv).some((o) => o[2] === "/etc/localtime")).toBe(false);
+		masked(argv, "/usr/share/zoneinfo");
+	});
+
+	it("refuses a protected path that is or holds a system root, as named or through a link, and a protected file inside one", () => {
+		for (const hidden of ["/usr", "/etc", "/lib", "/data/usr-link"]) {
+			const error = refusal({}, host({ hidden: [hidden] }, GUARDED));
+			expect(error.message, hidden).toMatch(
+				/^the protected path \/\S+ is or holds \/\S+, which a box binds: masking it would leave the box without its system$/,
+			);
+		}
+		expect(refusal({}, host({ homes: ["/usr"] }, GUARDED)).message).toMatch(
+			/the protected path \/usr is or holds \/usr/,
+		);
+		expect(refusal({}, host({ hidden: ["/usr/local/records.json"] }, GUARDED)).message).toMatch(
+			/the protected path \/usr\/local\/records\.json is not a directory, and lies in \/usr/,
+		);
+		// A protected path that does not exist yet has nothing to show: no mask, and the box is built.
+		const later = built({}, host({ hidden: ["/usr/local/not-yet"] }, GUARDED));
+		expect(options(later).some((o) => o[1] === "/usr/local/not-yet")).toBe(false);
+	});
+});
+
+describe("bwrapArgs, the inputs it refuses", () => {
 	it("refuses an environment name that is not a variable name, a NUL in a value, and keeps __proto__ a plain name", () => {
 		for (const name of ["A=B", "1X", "", "X Y", "X-Y"]) {
 			expect(refusal({ env: { [name]: "v" } }, host()).message).toMatch(/is not a variable name/);
@@ -285,8 +527,6 @@ describe("bwrapArgs", () => {
 		const cases: [string, RegExp][] = [
 			["/", /is \/, which a box never sees/],
 			["/home", /is \/home/],
-			["/var", /is \/var/],
-			["/tmp", /is \/tmp/],
 			["/srv", /is \/srv, which/],
 			["/data", /is \/data/],
 			["/etc", /is \/etc/],
@@ -294,8 +534,6 @@ describe("bwrapArgs", () => {
 			["/proc/1/root", /lies under \/proc/],
 			["/sys/fs", /lies under \/sys/],
 			["/dev/shm/box", /lies under \/dev/],
-			["/run/user/1000/box", /lies under \/run/],
-			["/var/run/box", /lies under \/var\/run/],
 			["/usr/local/box", /lies under \/usr/],
 			["/lib/box", /lies under \/lib/],
 			["/root/box", /lies under \/root/],
@@ -313,7 +551,7 @@ describe("bwrapArgs", () => {
 		expect(bwrapArgs({}, host({ workspace: "/data/home-of-server-other" }, sibling)).ok).toBe(true);
 	});
 
-	it("refuses a workspace that is, holds or lies under a hidden path, such as the provider's records", () => {
+	it("refuses a workspace that is, holds or lies under a hidden path, and a hidden path or home that is not absolute", () => {
 		const entries: Record<string, Entry> = {
 			...MERGED,
 			"/data/box": DIR,
@@ -327,7 +565,6 @@ describe("bwrapArgs", () => {
 		expect(refusal({}, host({ hidden: ["/data/box"] }, entries)).message).toMatch(/lies under \/data\/box/);
 		expect(refusal({}, host({ hidden: ["/data/box/"] }, entries)).message).toMatch(/lies under \/data\/box/);
 		expect(bwrapArgs({}, host({ hidden: ["/data/box/records"] }, entries)).ok).toBe(true);
-		// A path to protect that is not absolute is refused, never passed over.
 		expect(refusal({}, host({ hidden: ["data/box/ws"] }, entries)).message).toMatch(
 			/a hidden path "data\/box\/ws" is not an absolute path/,
 		);
@@ -341,7 +578,7 @@ describe("bwrapArgs", () => {
 		expect(error.message).toMatch(/lies under/);
 	});
 
-	it("checks a workspace as resolved: a link to a forbidden root or into the server's home is refused, a link to an allowed directory binds its target", () => {
+	it("refuses a workspace with a link in it, whatever it leads to, and one that does not exist", () => {
 		const root = scratch();
 		const home = join(root, "home");
 		mkdirSync(join(home, ".ssh"), { recursive: true });
@@ -350,15 +587,20 @@ describe("bwrapArgs", () => {
 		symlinkSync("/etc", join(root, "to-etc"));
 		symlinkSync(join(home, ".ssh"), join(root, "to-home"));
 		symlinkSync(target, join(root, "to-ws"));
+		symlinkSync(root, join(root, "loop"));
 		symlinkSync(join(root, "nowhere"), join(root, "dangling"));
-		const at = (name: string): BwrapHost => ({ workspace: join(root, name), command: ["true"], homes: [home] });
-		expect(refusal({}, at("to-etc")).message).toMatch(/through its links, \/etc is \/etc/);
-		expect(refusal({}, at("to-home")).message).toMatch(/through its links, .* lies under .*home/);
-		expect(refusal({}, at("dangling")).message).toMatch(/does not exist/);
-		expect(refusal({}, at("missing")).message).toMatch(/does not exist/);
-		const argv = built({}, at("to-ws"));
-		expect(options(argv).filter((o) => o[0] === "--bind")).toEqual([["--bind", target, "/workspace"]]);
-		expect(checkBwrapArgs(argv, {}, at("to-ws"))).toBeUndefined();
+		const at = (path: string): BwrapHost => ({ workspace: path, command: ["true"], homes: [home] });
+		expect(refusal({}, at(join(root, "to-etc"))).message).toMatch(
+			/has a link in it \(it leads to \/etc\): give its real path/,
+		);
+		expect(refusal({}, at(join(root, "to-home"))).message).toMatch(/has a link in it \(it leads to .*\.ssh\)/);
+		expect(refusal({}, at(join(root, "to-ws"))).message).toMatch(/has a link in it/);
+		expect(refusal({}, at(join(root, "loop", "real-ws"))).message).toMatch(/has a link in it/);
+		expect(refusal({}, at(join(root, "dangling"))).message).toMatch(/does not exist/);
+		expect(refusal({}, at(join(root, "missing"))).message).toMatch(/does not exist/);
+		expect(options(built({}, at(target))).filter((o) => o[0] === "--bind")).toEqual([
+			["--bind", target, "/workspace"],
+		]);
 	});
 
 	it("refuses a workspace that is a file or a socket", async () => {
@@ -374,7 +616,7 @@ describe("bwrapArgs", () => {
 		}
 	});
 
-	it("refuses a box working directory that is relative, the root, /tmp, or in a place the box mounts itself", () => {
+	it("refuses a box working directory that is relative, the root, /tmp, in a place the box mounts itself, or holds a colon", () => {
 		const cases: [string, RegExp][] = [
 			["workspace", /is not an absolute path/],
 			["/work/../etc", /has a \.\. segment/],
@@ -390,10 +632,7 @@ describe("bwrapArgs", () => {
 		];
 		for (const [workspace, why] of cases) expect(refusal({ workspace }, host()).message, workspace).toMatch(why);
 		for (const workspace of ["/workspace", "/tmp/work", "/opt/app/work", "/app"]) {
-			const h = host();
-			const argv = built({ workspace }, h);
-			expect(options(argv).find((o) => o[0] === "--chdir")).toEqual(["--chdir", workspace]);
-			expect(checkBwrapArgs(argv, { workspace }, h)).toBeUndefined();
+			expect(options(built({ workspace }, host())).find((o) => o[0] === "--chdir")).toEqual(["--chdir", workspace]);
 		}
 	});
 
@@ -403,35 +642,24 @@ describe("bwrapArgs", () => {
 		expect(refusal({}, host({ command: ["sh", "a\0b"] })).message).toMatch(/NUL/);
 	});
 
-	it("refuses a host whose system links out of /usr, or resolves a system directory or a part of /etc elsewhere", () => {
-		expect(
-			refusal(
-				{},
-				host(
-					{},
-					{
-						...MERGED,
-						"/lib": { kind: "link", to: "/data/home-of-server/lib", real: "/data/home-of-server/lib" },
-					},
-				),
-			).message,
-		).toMatch(/this host's \/lib links to \/data\/home-of-server\/lib, outside \/usr/);
+	it("refuses a host whose system links out of /usr, or resolves a part of /etc elsewhere, and leaves out a dangling one", () => {
+		const outOfUsr = {
+			...MERGED,
+			"/lib": { kind: "link", to: "/data/home-of-server/lib", real: "/data/home-of-server/lib" },
+		} as const;
+		expect(refusal({}, host({}, outOfUsr)).message).toMatch(
+			/this host's \/lib links to \/data\/home-of-server\/lib, outside \/usr/,
+		);
 		expect(
 			refusal({}, host({}, { ...MERGED, "/lib": { kind: "link", to: "usr/../home", real: "/home" } })).message,
 		).toMatch(/outside \/usr/);
-		expect(
-			refusal(
-				{},
-				host(
-					{},
-					{
-						...MERGED,
-						"/etc/nsswitch.conf": { kind: "link", to: "/data/home-of-server/x", real: "/data/home-of-server/x" },
-					},
-				),
-			).message,
-		).toMatch(/this host's \/etc\/nsswitch.conf resolves to \/data\/home-of-server\/x, outside \/etc and \/usr/);
-		// A link of /etc that leads nowhere (a time zone not installed) is left out.
+		const etcOut = {
+			...MERGED,
+			"/etc/nsswitch.conf": { kind: "link", to: "/data/home-of-server/x", real: "/data/home-of-server/x" },
+		} as const;
+		expect(refusal({}, host({}, etcOut)).message).toMatch(
+			/this host's \/etc\/nsswitch.conf resolves to \/data\/home-of-server\/x, outside \/etc and \/usr/,
+		);
 		const argv = built(
 			{},
 			host({}, { ...MERGED, "/etc/localtime": { kind: "link", to: "/usr/share/zoneinfo/Nowhere" } }),
@@ -440,349 +668,17 @@ describe("bwrapArgs", () => {
 	});
 });
 
-describe("checkBwrapArgs", () => {
-	const spec: BwrapSpec = { env: { LANG: "C.UTF-8" } };
-	const argv = () => built(spec, host());
-	/** The argv with `extra` inserted just before `--remount-ro /`, the last mount. */
-	const insert = (...extra: string[]) => {
-		const a = argv();
-		const at = a.indexOf("--remount-ro");
-		return [...a.slice(0, at), ...extra, ...a.slice(at)];
-	};
-	const without = (option: string, operands = 0) => {
-		const a = argv();
-		const at = a.indexOf(option);
-		expect(at).toBeGreaterThanOrEqual(0);
-		return [...a.slice(0, at), ...a.slice(at + 1 + operands)];
-	};
-	const refused = (a: readonly string[], why: RegExp) => {
-		const error = checkBwrapArgs(a, spec, host());
-		expect(error, `not refused: ${a.join(" ")}`).toBeInstanceOf(BoxError);
-		expect(error!.code).toBe("invalid");
-		expect(error!.message).toMatch(why);
-	};
-
-	it("passes the argv bwrapArgs built", () => {
-		expect(checkBwrapArgs(argv(), spec, host())).toBeUndefined();
-	});
-
-	it("refuses an option a box never uses, each by name", () => {
-		for (const extra of [
-			["--share-net"],
-			["--cap-add", "ALL"],
-			["--cap-add", "CAP_SYS_ADMIN"],
-			["--dev-bind", "/dev", "/dev"],
-			["--bind-try", "/data/home-of-server", "/h"],
-			["--ro-bind-try", "/data/home-of-server", "/h"],
-			["--unsetenv", "PATH"],
-			["--as-pid-1"],
-			["--args", "7"],
-			["--userns", "7"],
-			["--userns2", "7"],
-			["--pidns", "7"],
-			["--uid", "0"],
-			["--gid", "0"],
-			["--seccomp", "7"],
-			["--add-seccomp-fd", "7"],
-			["--info-fd", "7"],
-			["--json-status-fd", "7"],
-			["--block-fd", "7"],
-			["--sync-fd", "7"],
-			["--file", "7", "/etc/shadow"],
-			["--bind-data", "7", "/x"],
-			["--dir", "/x"],
-			["--chmod", "0777", "/workspace"],
-			["--perms", "0777"],
-			["--overlay-src", "/data/home-of-server"],
-			["--unshare-all"],
-			["--exec-label", "x"],
-			["--lock-file", "/x"],
-			["--level-prefix"],
-			["stray-word"],
-		]) {
-			refused(
-				insert(...extra),
-				new RegExp(
-					`${JSON.stringify(extra[0]).replace(/[-[\]/{}()*+?.\\^$|]/g, "\\$&")} is not an option a bwrap box uses`,
-				),
-			);
-		}
-	});
-
-	it("refuses an extra --bind, a second writable bind elsewhere, and a --bind away from the working directory", () => {
-		refused(
-			insert("--bind", "/data/home-of-server", "/h"),
-			/a box has one --bind, its workspace, and this argv has 2/,
-		);
-		refused(insert("--bind", "/data/box/ws", "/workspace"), /this argv has 2/);
-		const moved = argv().map((part, n, a) => (a[n - 2] === "--bind" ? "/elsewhere" : part));
-		refused(moved, /--bind \/data\/box\/ws to \/elsewhere is not at the working directory \/workspace/);
-		const noBind = without("--bind", 2);
-		refused(noBind, /this argv has 0/);
-	});
-
-	it("refuses a writable bind of a forbidden root, the server's home or a path not in normal form", () => {
-		const swap = (source: string) => argv().map((part, n, a) => (a[n - 1] === "--bind" ? source : part));
-		refused(swap("/"), /the workspace \/ is \//);
-		refused(swap("/etc"), /the workspace \/etc is \/etc/);
-		refused(swap("/data/home-of-server/.ssh"), /lies under \/data\/home-of-server/);
-		refused(swap("/run/user/1000"), /lies under \/run/);
-		refused(swap("/data/box/ws/../../../data/home-of-server"), /--bind's source .* has a \.\. segment/);
-		refused(swap("relative"), /--bind's source .* is not an absolute path/);
-	});
-
-	it("refuses a read-only bind of anything but the system and the named part of /etc", () => {
-		refused(
-			insert("--ro-bind", "/data/home-of-server", "/data/home-of-server"),
-			/--ro-bind to \/data\/home-of-server is not the system's/,
-		);
-		refused(insert("--ro-bind", "/", "/host"), /--ro-bind to \/host is not the system's/);
-		refused(insert("--ro-bind", "/etc", "/etc"), /--ro-bind to \/etc is not the system's/);
-		refused(insert("--ro-bind", "/etc/shadow", "/etc/shadow"), /not the system's/);
-		refused(insert("--ro-bind", "/run", "/run"), /not the system's/);
-		refused(insert("--ro-bind", "/var/run/docker.sock", "/var/run/docker.sock"), /not the system's/);
-		refused(insert("--ro-bind", "/usr", "/usr"), /--ro-bind to \/usr twice/);
-		const swapUsr = argv().map((part, n, a) =>
-			a[n - 1] === "--ro-bind" && a[n + 1] === "/usr" ? "/data/home-of-server" : part,
-		);
-		refused(swapUsr, /--ro-bind \/data\/home-of-server to \/usr binds a host path outside the system/);
-		const dotted = argv().map((part, n, a) =>
-			a[n - 1] === "--ro-bind" && a[n + 1] === "/usr" ? "/usr/../home" : part,
-		);
-		refused(dotted, /--ro-bind's source "\/usr\/\.\.\/home" has a \.\. segment/);
-		const etcWhole = argv().map((part, n, a) =>
-			a[n - 1] === "--ro-bind" && a[n + 1] === "/etc/ssl/certs" ? "/etc" : part,
-		);
-		refused(etcWhole, /--ro-bind \/etc to \/etc\/ssl\/certs binds a host path outside the system/);
-	});
-
-	it("refuses a system link out of /usr, a box file at another path, and a private mount elsewhere", () => {
-		const link = argv().map((part, n, a) =>
-			a[n - 1] === "--symlink" && a[n + 1] === "/lib" ? "/data/home-of-server/lib" : part,
-		);
-		refused(link, /--symlink \/data\/home-of-server\/lib \/lib leads outside \/usr/);
-		refused(insert("--symlink", "usr/bin", "/workspace/bin"), /--symlink to \/workspace\/bin is not a system link/);
-		const passwd = argv().map((part, n, a) =>
-			a[n - 2] === "--ro-bind-data" && part === "/etc/passwd" ? "/etc/shadow" : part,
-		);
-		refused(passwd, /--ro-bind-data 3 \/etc\/shadow is not one of the box's files/);
-		refused(insert("--tmpfs", "/home"), /--tmpfs \/home is neither one of the box's own mounts nor a mask/);
-		refused(insert("--proc", "/proc2"), /--proc \/proc2 is not one of the box's own mounts/);
-		refused(without("--proc", 1), /--proc \/proc is missing or made twice/);
-		refused(insert("--tmpfs", "/tmp"), /--tmpfs \/tmp is missing or made twice/);
-	});
-
-	it("refuses a private mount after a bind under it, which it would hide", () => {
-		const h = host();
-		const a = built({ workspace: "/tmp/work" }, h);
-		const at = a.indexOf("--tmpfs");
-		expect(a.slice(at, at + 2)).toEqual(["--tmpfs", "/tmp"]);
-		const moved = [...a.slice(0, at), ...a.slice(at + 2)];
-		const remount = moved.indexOf("--remount-ro");
-		const late = [...moved.slice(0, remount), "--tmpfs", "/tmp", ...moved.slice(remount)];
-		const error = checkBwrapArgs(late, { workspace: "/tmp/work" }, h);
-		expect(error?.message).toMatch(/--tmpfs \/tmp comes after --bind to \/tmp\/work, which it would hide/);
-	});
-
-	it("refuses an argv without its read-only root, or with the remount before the last mount or of another path", () => {
-		refused(without("--remount-ro", 1), /--remount-ro \/ is missing/);
-		const a = argv();
-		const at = a.indexOf("--remount-ro");
-		const early = [...a.slice(0, at), ...a.slice(at + 2)];
-		const proc = early.indexOf("--proc");
-		refused(
-			[...early.slice(0, proc), "--remount-ro", "/", ...early.slice(proc)],
-			/--remount-ro \/ is not the last mount/,
-		);
-		refused(
-			a.map((part, n) => (a[n - 1] === "--remount-ro" ? "/usr" : part)),
-			/--remount-ro \/usr is not the root/,
-		);
-	});
-
-	it("refuses an argv with any flag removed or given twice, each by name", () => {
-		for (const flag of BWRAP_FLAGS) {
-			refused(without(flag), new RegExp(`${flag} is missing`));
-			refused(insert(flag), new RegExp(`${flag} twice`));
-		}
-		refused(without("--cap-drop", 1), /--cap-drop is missing/);
-		refused(
-			argv().map((part, n, a) => (a[n - 1] === "--cap-drop" ? "CAP_NET_RAW" : part)),
-			/--cap-drop CAP_NET_RAW is not ALL/,
-		);
-		refused(without("--hostname", 1), /--hostname is missing/);
-		refused(
-			argv().map((part, n, a) => (a[n - 1] === "--hostname" ? "the-host" : part)),
-			/--hostname the-host is not the box's own/,
-		);
-		refused(without("--chdir", 1), /--chdir is missing/);
-		refused(insert("--chdir", "/workspace"), /--chdir twice/);
-	});
-
-	it("refuses an environment that is not the one built: before --clearenv, without it, a name twice, one more or one changed", () => {
-		const a = argv();
-		refused(["--setenv", "X", "1", ...a], /--setenv before --clearenv/);
-		refused(without("--clearenv"), /--setenv before --clearenv/);
-		const dashes = a.indexOf("--");
-		refused(
-			[...a.slice(0, dashes), "--setenv", "PATH", "/data/home-of-server/bin", ...a.slice(dashes)],
-			/--setenv PATH twice/,
-		);
-		refused(
-			[...a.slice(0, dashes), "--setenv", "LD_PRELOAD", "/tmp/x.so", ...a.slice(dashes)],
-			/it is not the argv built for this box/,
-		);
-		refused(
-			a.map((part) => (part === "C.UTF-8" ? "C" : part)),
-			/it is not the argv built for this box: at \d+ it has "C" where "C.UTF-8" was built/,
-		);
-		refused(
-			[...a.slice(0, dashes), "--setenv", "A=B", "1", ...a.slice(dashes)],
-			/--setenv "A=B" is not a variable name/,
-		);
-	});
-
-	it("refuses an argv with no command after --, an option missing its operands, or another command than the one built", () => {
-		const a = argv();
-		refused(a.slice(0, a.indexOf("--")), /no command after --/);
-		refused(a.slice(0, a.indexOf("--") + 1), /no command after --/);
-		refused(["--unshare-user", "--bind", "/data/box/ws"], /--bind is missing its operands/);
-		refused([...a.slice(0, a.indexOf("--") + 1), "rm", "-rf", "/workspace"], /it is not the argv built for this box/);
-	});
-
-	it("answers a spec it would not build with that refusal", () => {
-		const error = checkBwrapArgs(argv(), { ...spec, network: "open" }, host());
-		expect(error?.code).toBe("unsupported");
-	});
-});
-
-describe("a protected path inside the system", () => {
-	/** The merged host with a provider's records, a link to them, a file and a home under /usr, and a directory in /etc. */
-	const GUARDED: Readonly<Record<string, Entry>> = {
-		...MERGED,
-		"/usr/local/records": DIR,
-		"/usr/local/records/inner": DIR,
-		"/usr/local/records.json": FILE,
-		"/usr/local/home-of-server": DIR,
-		"/usr/share/zoneinfo": DIR,
-		"/etc/ssl/certs/private": DIR,
-		"/data/records-link": { kind: "link", to: "/usr/local/records", real: "/usr/local/records" },
-		"/data/usr-link": { kind: "link", to: "/usr", real: "/usr" },
-	};
-	const at = (argv: readonly string[], ...mount: string[]) =>
-		options(argv).findIndex((o) => o.length === mount.length && o.every((part, n) => part === mount[n]));
-
-	it("masks a hidden directory under /usr with an empty tmpfs after the /usr bind and before the root is remounted", () => {
-		const h = host({ hidden: ["/usr/local/records"] }, GUARDED);
-		const argv = built({}, h);
-		const mask = at(argv, "--tmpfs", "/usr/local/records");
-		expect(mask).toBeGreaterThan(at(argv, "--ro-bind", "/usr", "/usr"));
-		expect(mask).toBeLessThan(at(argv, "--remount-ro", "/"));
-		expect(
-			options(argv)
-				.filter((o) => o[0] === "--tmpfs")
-				.map((o) => o[1]),
-		).toEqual(["/tmp", "/dev/shm", "/usr/local/records"]);
-		expect(checkBwrapArgs(argv, {}, h)).toBeUndefined();
-	});
-
-	it("masks a hidden path reached through a link at the place its contents are, and a home under a system directory", () => {
-		const linked = host({ hidden: ["/data/records-link"] }, GUARDED);
-		const argv = built({}, linked);
-		expect(at(argv, "--tmpfs", "/usr/local/records")).toBeGreaterThan(at(argv, "--ro-bind", "/usr", "/usr"));
-		expect(checkBwrapArgs(argv, {}, linked)).toBeUndefined();
-		const home = host({ homes: [HOME, "/usr/local/home-of-server"] }, GUARDED);
-		const homeArgv = built({}, home);
-		expect(at(homeArgv, "--tmpfs", "/usr/local/home-of-server")).toBeGreaterThan(
-			at(homeArgv, "--ro-bind", "/usr", "/usr"),
-		);
-		expect(checkBwrapArgs(homeArgv, {}, home)).toBeUndefined();
-	});
-
-	it("masks only the outermost of nested paths, one inside a split host's /bin, and one inside a bound part of /etc", () => {
-		const nested = built({}, host({ hidden: ["/usr/local/records/inner", "/usr/local/records"] }, GUARDED));
-		expect(options(nested).filter((o) => o[0] === "--tmpfs" && o[1]!.startsWith("/usr"))).toEqual([
-			["--tmpfs", "/usr/local/records"],
-		]);
-		const split: Record<string, Entry> = { "/usr": DIR, "/bin": DIR, "/bin/secret": DIR, "/data/box/ws": DIR };
-		const h = host({ hidden: ["/bin/secret"] }, split);
-		const argv = built({}, h);
-		expect(at(argv, "--tmpfs", "/bin/secret")).toBeGreaterThan(at(argv, "--ro-bind", "/bin", "/bin"));
-		expect(checkBwrapArgs(argv, {}, h)).toBeUndefined();
-		const etc = host({ hidden: ["/etc/ssl/certs/private"] }, GUARDED);
-		const etcArgv = built({}, etc);
-		expect(at(etcArgv, "--tmpfs", "/etc/ssl/certs/private")).toBeGreaterThan(
-			at(etcArgv, "--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs"),
-		);
-		expect(checkBwrapArgs(etcArgv, {}, etc)).toBeUndefined();
-	});
-
-	it("leaves out a part of /etc whose source lies in a protected path, and masks that path in /usr", () => {
-		const h = host({ hidden: ["/usr/share/zoneinfo"] }, GUARDED);
-		const argv = built({}, h);
-		expect(options(argv).some((o) => o[2] === "/etc/localtime")).toBe(false);
-		expect(at(argv, "--tmpfs", "/usr/share/zoneinfo")).toBeGreaterThan(at(argv, "--ro-bind", "/usr", "/usr"));
-		expect(checkBwrapArgs(argv, {}, h)).toBeUndefined();
-	});
-
-	it("refuses a protected path that is or holds a system root, as named or through a link, and a protected file inside one", () => {
-		for (const hidden of ["/usr", "/etc", "/lib", "/data/usr-link"]) {
-			const error = refusal({}, host({ hidden: [hidden] }, GUARDED));
-			expect(error.message, hidden).toMatch(
-				/^the protected path \/\S+ is or holds \/\S+, which a box binds: masking it would leave the box without its system$/,
-			);
-		}
-		expect(refusal({}, host({ homes: ["/usr"] }, GUARDED)).message).toMatch(
-			/the protected path \/usr is or holds \/usr/,
-		);
-		expect(refusal({}, host({ hidden: ["/usr/local/records.json"] }, GUARDED)).message).toMatch(
-			/the protected path \/usr\/local\/records\.json is not a directory, and lies in \/usr/,
-		);
-		// A protected path that does not exist yet has nothing to show: no mask, and the box is built.
-		const later = built({}, host({ hidden: ["/usr/local/not-yet"] }, GUARDED));
-		expect(options(later).some((o) => o[1] === "/usr/local/not-yet")).toBe(false);
-	});
-
-	it("refuses an argv that drops a mask, moves it before its bind, repeats it, or adds a tmpfs anywhere else", () => {
-		const h = host({ hidden: ["/usr/local/records"] }, GUARDED);
-		const argv = built({}, h);
-		const mask = argv.findIndex((part, n) => part === "--tmpfs" && argv[n + 1] === "/usr/local/records");
-		const dropped = [...argv.slice(0, mask), ...argv.slice(mask + 2)];
-		const shown =
-			/the box would show the protected \/usr\/local\/records: no --tmpfs masks it after the bind that shows it/;
-		expect(checkBwrapArgs(dropped, {}, h)?.message).toMatch(shown);
-		const usr = dropped.findIndex((part, n) => part === "--ro-bind" && dropped[n + 2] === "/usr");
-		const early = [...dropped.slice(0, usr), "--tmpfs", "/usr/local/records", ...dropped.slice(usr)];
-		expect(checkBwrapArgs(early, {}, h)?.message).toMatch(shown);
-		const twice = [...argv.slice(0, mask), "--tmpfs", "/usr/local/records", ...argv.slice(mask)];
-		expect(checkBwrapArgs(twice, {}, h)?.message).toMatch(/--tmpfs \/usr\/local\/records twice/);
-		for (const elsewhere of ["/usr/share", "/usr/local", "/usr", "/etc/ssl/certs"]) {
-			const extra = [...argv.slice(0, mask), "--tmpfs", elsewhere, ...argv.slice(mask)];
-			expect(checkBwrapArgs(extra, {}, h)?.message, elsewhere).toMatch(
-				new RegExp(`--tmpfs ${elsewhere.replaceAll("/", "\\/")} is neither one of the box's own mounts nor a mask`),
-			);
-		}
-	});
-
-	it("finds a missing mask from the argv's own binds, whatever built it: an argv built without the hidden path is refused for it", () => {
-		const unguarded = built({}, host({}, GUARDED));
-		expect(checkBwrapArgs(unguarded, {}, host({ hidden: ["/usr/local/records"] }, GUARDED))?.message).toMatch(
-			/the box would show the protected \/usr\/local\/records/,
-		);
-		expect(checkBwrapArgs(unguarded, {}, host({ hidden: ["/usr/share/zoneinfo"] }, GUARDED))?.message).toMatch(
-			/--ro-bind \/usr\/share\/zoneinfo\/Etc\/UTC to \/etc\/localtime shows \/usr\/share\/zoneinfo, which a box never sees/,
-		);
-	});
-});
-
 describe("bwrapFiles", () => {
-	it("names the box's one user, with the working directory as its home, its group, and a hosts file of the loopback and the box", () => {
-		const files = bwrapFiles("/workspace", { uid: 1234, gid: 5678 });
-		expect(files.map(([fd]) => fd)).toEqual(BWRAP_DATA.map(([fd]) => fd));
-		expect(files).toEqual([
-			[3, "box:x:1234:5678:box:/workspace:/bin/sh\n"],
-			[4, "box:x:5678:\n"],
+	it("names the box's one user with the working directory as its home, nobody for unmapped ids, and a hosts file of the loopback and the box", () => {
+		expect(bwrapFiles("/workspace", { uid: 1234, gid: 5678 })).toEqual([
+			[3, "box:x:1234:5678:box:/workspace:/bin/sh\nnobody:x:65534:65534:nobody:/:/usr/sbin/nologin\n"],
+			[4, "box:x:5678:\nnogroup:x:65534:\n"],
 			[5, "127.0.0.1\tlocalhost\n127.0.1.1\tbox\n::1\tlocalhost ip6-localhost ip6-loopback\n"],
 		]);
+		expect(bwrapFiles("/workspace", { uid: 65534, gid: 65534 }).slice(0, 2)).toEqual([
+			[3, "box:x:65534:65534:box:/workspace:/bin/sh\n"],
+			[4, "box:x:65534:\n"],
+		]);
+		expect(bwrapFiles("/w", { uid: 1, gid: 1 }).map(([fd]) => fd)).toEqual(BWRAP_DATA.map(([fd]) => fd));
 	});
 });
