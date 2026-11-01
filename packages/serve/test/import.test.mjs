@@ -648,6 +648,8 @@ test("the summary says unknown where it has no data", () => {
     "Open http://127.0.0.1:7340/",
   ]);
   assert.deepEqual(summaryLines([], "http://127.0.0.1:7340").slice(0, 4), ["Found 0 sessions", "Imported into 0 agents (one per project)", "+ tokens unknown · agent time unknown", "+ Busiest hour: unknown · top tool: unknown"]);
+});
+
 test("the CLI's own note is never the person's turn: a session holding only notes is passed over without --all, and a note before the first prompt is not the run's title", async (t) => {
   const root = await scratch(t);
   const h = { at: join(root, "home"), temp: join(root, "tmp") };
