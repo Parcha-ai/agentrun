@@ -7,8 +7,9 @@ export function AnalyticsFilter({ range, onRange, agent, agents, onAgent }: { ra
     <div className="flex flex-wrap items-center gap-3">
       <div className="flex" role="radiogroup" aria-label="Range">
         {RANGES.map((r) => (
-          <button key={r.id} type="button" role="radio" aria-checked={range === r.id} onClick={() => onRange(r.id)}
-            className={cn("caps -ml-px border px-3 py-2 text-[12px] first:ml-0", range === r.id ? "relative border-foreground bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground")}>{r.label}</button>
+          <label key={r.id} className={cn("caps -ml-px cursor-pointer border px-3 py-2 text-[12px] first:ml-0 has-[:focus-visible]:outline has-[:focus-visible]:outline-1 has-[:focus-visible]:outline-offset-2", range === r.id ? "relative border-foreground bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground")}>
+            <input type="radio" name="mission-range" value={r.id} checked={range === r.id} onChange={() => onRange(r.id)} className="sr-only" />{r.label}
+          </label>
         ))}
       </div>
       {onAgent && agents.length > 0 && (
@@ -68,7 +69,7 @@ function HarnessTable({ rows, basis }: { rows: Analytics["by_harness_effort"]; b
   return (
     <Section title="Success by harness and effort">
       {rows.length ? (
-        <table className="w-full border-collapse text-[13px]">
+        <div className="overflow-x-auto"><table className="w-full border-collapse text-[13px]">
           <thead><tr className="caps border-b text-[11px] text-muted-foreground">{["Harness", "Effort", "Runs", "Success", "Tokens", "Cost"].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
           <tbody>
             {rows.map((g) => {
@@ -86,7 +87,7 @@ function HarnessTable({ rows, basis }: { rows: Analytics["by_harness_effort"]; b
               );
             })}
           </tbody>
-        </table>
+        </table></div>
       ) : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No runs in this range.</p>}
     </Section>
   );
@@ -96,7 +97,7 @@ function ToolsTable({ tools }: { tools: Analytics["tools"] }) {
   return (
     <Section title="Top tools">
       {tools.length ? (
-        <table className="w-full border-collapse text-[13px]">
+        <div className="overflow-x-auto"><table className="w-full border-collapse text-[13px]">
           <thead><tr className="caps border-b text-[11px] text-muted-foreground">{["Tool", "Calls", "Errors", "Error rate"].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
           <tbody>
             {tools.map((x) => (
@@ -107,7 +108,7 @@ function ToolsTable({ tools }: { tools: Analytics["tools"] }) {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       ) : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No tool calls in runs with metrics.</p>}
     </Section>
   );
@@ -166,10 +167,10 @@ function Trend({ days }: { days: Analytics["by_day"] }) {
       </div>
       <details className="border-t px-4 py-2">
         <summary className="caps cursor-pointer text-[11px] text-muted-foreground">Table</summary>
-        <table className="mt-2 w-full border-collapse font-mono text-[12px]">
+        <div className="overflow-x-auto"><table className="mt-2 w-full border-collapse font-mono text-[12px]">
           <thead><tr className="caps text-[11px] text-muted-foreground">{["Day", "Runs", "Completed", "Failed", "Other", "Tokens"].map((h) => <th key={h} className="py-1 pr-4 text-left font-normal">{h}</th>)}</tr></thead>
           <tbody>{days.map((d) => <tr key={d.day}><td className="py-0.5 pr-4">{d.day}</td><td className="pr-4">{d.runs}</td><td className="pr-4">{d.completed}</td><td className="pr-4">{d.failed}</td><td className="pr-4">{otherOf(d)}</td><td className="pr-4">{d.tokens.toLocaleString("en-US")}</td></tr>)}</tbody>
-        </table>
+        </table></div>
       </details>
     </Section>
   );

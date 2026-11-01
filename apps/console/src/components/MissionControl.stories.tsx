@@ -23,7 +23,8 @@ export const Phone: Story = { render: () => <Shell active="mission"><MissionCont
 // imported, and token sums that leave a few runs out.
 const g = (runs: number, completed: number, failed: number, withMetrics: number, tokens: number, cost: number | null, unknown = 0) =>
   ({ runs, completed, failed, runs_with_metrics: withMetrics, tokens, cost_usd: cost, unknown_cost_runs: unknown });
-const today = Date.UTC(2026, 10, 1);
+// Relative to today, so the trend (the last 30 days) always has these days to draw.
+const today = Math.floor(Date.now() / 86_400_000) * 86_400_000;
 const days: Analytics["by_day"] = Array.from({ length: 30 }, (_, k) => {
   const runs = [0, 1, 2, 4, 3, 0, 5, 6, 2, 1][k % 10]!, failed = k % 7 === 3 ? 2 : k % 5 === 0 && runs ? 1 : 0;
   return { day: new Date(today - (29 - k) * 86_400_000).toISOString().slice(0, 10), ...g(runs, Math.max(0, runs - failed - (k === 29 ? 1 : 0)), Math.min(failed, runs), runs, runs * 42_000 + k * 1_500, runs ? runs * 0.021 : null) };

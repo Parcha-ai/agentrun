@@ -42,7 +42,7 @@ export function MissionControl({ view, error, onRetry, scope }: { view: MissionV
         {view.analytics && (
           <section className="space-y-4" aria-label="Analytics">
             <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-              <h2 className="text-lg font-semibold">{scopeTitle(view, scope?.range)}</h2>
+              <h2 className="text-lg font-semibold">{scopeTitle(view)}</h2>
               {scope && <AnalyticsFilter range={scope.range} onRange={scope.onRange} agent={scope.agent} agents={view.perAgent} onAgent={scope.onAgent} />}
             </div>
             <MissionAnalytics a={view.analytics} basis={view.cost.basis} refreshing={scope?.refreshing} />
@@ -73,11 +73,11 @@ export function MissionControl({ view, error, onRetry, scope }: { view: MissionV
   );
 }
 
-/** What the analytics cover, said as their heading: "Runs started in the last 30 days", or since the date the answer
- *  names, of one agent when it names one. */
-function scopeTitle(view: MissionView, range?: StatsRange): string {
+/** What the analytics on screen cover, read from their own answer (not the range picked, whose answer may still be on
+ *  its way): "Runs started in the last 30 days", or since the date asked, of one agent when it names one. */
+function scopeTitle(view: MissionView, now = Date.now()): string {
   const f = view.analytics!.filter;
-  const days = RANGES.find((r) => r.id === range)?.days;
-  const span = !f.from ? "All runs" : days ? `Runs started in the last ${days} days` : `Runs started since ${f.from.slice(0, 10)}`;
+  const days = f.from ? Math.round((Math.floor(now / 86_400_000) * 86_400_000 - Date.parse(f.from)) / 86_400_000) + 1 : null;
+  const span = !f.from ? "All runs" : RANGES.some((r) => r.days === days) ? `Runs started in the last ${days} days` : `Runs started since ${f.from.slice(0, 10)}`;
   return f.agent ? `${span}, of ${view.perAgent.find((x) => x.agentId === f.agent)?.name ?? f.agent}` : span;
 }

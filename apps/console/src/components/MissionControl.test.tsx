@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Analytics, cachedShare, compact, costLine, duration, missionFrom, type MissionView, rangeFrom, type Stats, successRate, trendDays } from "@/lib/mission";
 import { MissionControl } from "./MissionControl";
 import type { Run } from "@/lib/v2";
@@ -103,7 +103,17 @@ const withA = (a: Analytics | undefined): MissionView => ({ ...view, analytics: 
 const render = (v: MissionView, scope?: Parameters<typeof MissionControl>[0]["scope"]) => renderToStaticMarkup(createElement(MissionControl, { view: v, scope }));
 const scope = { range: "30d" as const, onRange: () => {}, agent: null, onAgent: () => {} };
 
+// The fixtures' days are fixed, so the page's clock is too: the trend and the heading count days back from today.
+const atNow = () => { beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(NOW); }); afterEach(() => { vi.useRealTimers(); }); };
+
 describe("MissionControl's analytics", () => {
+  atNow();
+  it("the heading names the range of the figures on screen, not a range picked whose answer is still on its way", () => {
+    expect(render(withA(analytics()), { ...scope, range: "7d", refreshing: true })).toContain("Runs started in the last 30 days");
+    expect(render(withA(analytics({ filter: { from: "2026-10-26T00:00:00.000Z", to: null, agent: "calc" } })), scope)).toContain("Runs started in the last 7 days, of Calc");
+    expect(render(withA(analytics({ filter: { from: null, to: null, agent: null } })), scope)).toContain("All runs");
+  });
+
   it("an answer without analytics (an older server) leaves the page as it was: no range picker, no analytics", () => {
     expect(render(withA(undefined), scope)).toBe(renderToStaticMarkup(createElement(MissionControl, { view })));
     expect(render(withA(undefined), scope)).not.toContain('aria-label="Analytics"');
@@ -161,15 +171,16 @@ describe("MissionControl's analytics", () => {
     expect(imported).toContain("Run here: 9 runs · Imported from codex: 3 runs");
   });
 
-  it("the range picker asks for another range, and the agent picker for one agent", async () => {
+  it("the range picker is native radios (arrow keys, one Tab stop) that ask for another range, and the agent picker for one agent", async () => {
     const onRange = vi.fn(), onAgent = vi.fn();
     const host = document.body.appendChild(document.createElement("div"));
     const root = createRoot(host);
     await act(async () => { root.render(createElement(MissionControl, { view: withA(analytics()), scope: { range: "30d", onRange, agent: null, onAgent } })); });
-    const radio = (label: string) => [...host.querySelectorAll("[role=radio]")].find((b) => b.textContent === label) as HTMLButtonElement;
-    expect(radio("30 days").getAttribute("aria-checked")).toBe("true");
-    await act(async () => { radio("7 days").click(); });
-    await act(async () => { radio("All").click(); });
+    const radio = (id: string) => host.querySelector(`input[type=radio][value='${id}']`) as HTMLInputElement;
+    expect([radio("7d").checked, radio("30d").checked, radio("all").checked]).toEqual([false, true, false]);
+    expect(new Set(["7d", "30d", "all"].map((id) => radio(id).name)).size).toBe(1);
+    await act(async () => { radio("7d").click(); });
+    await act(async () => { radio("all").click(); });
     expect(onRange.mock.calls).toEqual([["7d"], ["all"]]);
     const select = host.querySelector("select[aria-label='Agent']") as HTMLSelectElement;
     await act(async () => { select.value = "calc"; select.dispatchEvent(new Event("change", { bubbles: true })); });
@@ -179,6 +190,7 @@ describe("MissionControl's analytics", () => {
 });
 
 describe("the analytics helpers", () => {
+  atNow();
   it("a range's from is the start of the UTC day it begins on: today and the days before it; All has none", () => {
     expect(rangeFrom("7d", NOW)).toBe("2026-10-26T00:00:00.000Z");
     expect(rangeFrom("30d", NOW)).toBe("2026-10-03T00:00:00.000Z");

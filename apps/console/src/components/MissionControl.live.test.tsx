@@ -48,11 +48,11 @@ describe("Mission Control's range, against the server", () => {
     const { host, asked, wait } = await open(true);
     const from = (search: string) => new URLSearchParams(search).get("from");
     expect(from(asked[0]!)).toBe(rangeFrom("30d"));
-    const radio = (label: string) => [...host.querySelectorAll("[role=radio]")].find((b) => b.textContent === label) as HTMLButtonElement;
-    await act(async () => { radio("7 days").click(); });
+    const radio = (id: string) => host.querySelector(`input[type=radio][value='${id}']`) as HTMLInputElement;
+    await act(async () => { radio("7d").click(); });
     await wait(() => asked.length === 2);
     expect(from(asked[1]!)).toBe(rangeFrom("7d"));
-    await act(async () => { radio("All").click(); });
+    await act(async () => { radio("all").click(); });
     await wait(() => asked.length === 3);
     expect(asked[2]).toBe("");
     const select = host.querySelector("select[aria-label='Agent']") as HTMLSelectElement;
