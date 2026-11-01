@@ -157,7 +157,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   assert.equal(git(repo, ["rev-parse", "main"]), head, "nothing committed");
   assert.ok(!objects(repo).includes(token), "no git object holds it");
   assert.deepEqual((await write(`${files}/check-units.md`, "no front matter\n", { "if-match": etag2 })).body.error.problems.map((p) => p.rule), ["note"]);
-  assert.deepEqual((await write(`${files}/check-units.md`, EDITED.replace("Amounts", "Amo​unts"), { "if-match": etag2 })).body.error.problems.map((p) => p.rule), ["invisible_unicode"]);
+  assert.deepEqual((await write(`${files}/check-units.md`, EDITED.replace("Amounts", "Amo\u200bunts"), { "if-match": etag2 })).body.error.problems.map((p) => p.rule), ["invisible_unicode"]);
   assert.equal(git(repo, ["rev-parse", "main"]), head);
 
   // The log: every change on main, newest first, by run or by person.
