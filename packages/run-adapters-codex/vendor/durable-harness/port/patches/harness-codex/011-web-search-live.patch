@@ -1,4 +1,4 @@
-Patch: 009-web-search-live
+Patch: 011-web-search-live
 Reason: a session may turn on Codex's own web search, live, which sets web_search = "live" in Codex's config, a key the harness reserves; the harness hands the config it generated to its machine's optional configure hook before writing it, and the machine (this package's own, host/machine.ts) sets the setting there, so the harness carries one line and no web search logic
 Upstream: ours
 Pins: web search live through the pinned binary: the run completes past a web_search_call, the proxy forwards the recorded live tool, and the search is booked
