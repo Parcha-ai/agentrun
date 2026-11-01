@@ -6,11 +6,12 @@ import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { type Agent, type AgentFields, defaultTools, harnessOptions, reachesWeb, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
+import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
 export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string; definition?: Agent["definition"] };
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string };
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -97,6 +98,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     setSaving(false); setProblem(p); setSaved(!p); if (!p) setNote("");
   };
   // The tools that reach the web which this agent's harness runs here, for the notice when it has none of them.
+  // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
+  // off, the full id in a title.
+  const fallback = harnessDefault(f.harness ?? "pi", caps.defaultModel);
+  const modelDefault = fallback ? modelLabel(fallback, { source: caps.modelSource, default: caps.defaultModel }) : undefined;
   const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
 
   return (
@@ -229,8 +234,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   </div>
                 </Field>
               )}
-              <Field label="Model" optional note={caps.defaultModel ? `Empty uses the server's default (${caps.defaultModel}).` : undefined} error={fieldError("model")} warning={fieldWarning("model")}>
-                <input value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder={caps.defaultModel ?? "provider/model"} className={input} />
+              <Field label="Model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
+                <input value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder={modelDefault?.text ?? "provider/model"} className={input} />
               </Field>
             </div>
           )}
@@ -277,7 +282,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
 
 const input = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
-function Field({ label, required, optional, note, error, warning, aside, children }: { label: string; required?: boolean; optional?: boolean; note?: string; error?: string; warning?: string; aside?: React.ReactNode; children: React.ReactNode }) {
+function Field({ label, required, optional, note, error, warning, aside, children }: { label: string; required?: boolean; optional?: boolean; note?: React.ReactNode; error?: string; warning?: string; aside?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
