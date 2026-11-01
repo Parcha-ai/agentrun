@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/auth/session"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "password_set": false,
+    "signed_in": false
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "case_id": "jury-clear",
+  "payment": {
+    "descriptor": "TILEWORKS SUPPLY CO 8885550142 OH",
+    "memo": "Invoice 4471: 40 pallets glazed ceramic floor tile",
+    "amount": "USD 18,420.00",
+    "merchant_site": "Tileworks Supply sells porcelain and ceramic tile to contractors across the Midwest."
+  }
+}

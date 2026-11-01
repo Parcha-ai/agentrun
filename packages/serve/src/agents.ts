@@ -47,7 +47,12 @@ export const homeBusy = () => new ApiError("home_busy", "the agent store is busy
 /** A store error as the request's answer: a busy store is retryable, a refusal names the field it refused. */
 export function storeError(error: unknown, field = "definition"): never {
   if (storeBusy(error)) throw homeBusy();
-  if (error instanceof AgentHomeError && error.code === "invalid") throw invalid([{ field, reason: "invalid", message: error.message }]);
+  if (error instanceof AgentHomeError && error.code === "invalid") {
+    // A workflow's refusal carries every issue, each at its path under the field.
+    const issues = (error as { issues?: Array<{ path: string; code: string; message: string }> }).issues;
+    if (issues?.length) throw invalid(issues.map((issue) => ({ field: `${field}${issue.path}`, reason: "invalid", code: issue.code, message: issue.message })), error.message);
+    throw invalid([{ field, reason: "invalid", message: error.message }]);
+  }
   if (error instanceof AgentHomeError && error.code === "missing") throw new ApiError("not_found", error.message);
   if (error instanceof AgentHomeError && error.code === "stale") throw new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   throw error;
@@ -135,7 +140,9 @@ export class Agents {
    *  one revision. The store keeps an agent's id, name and description from its creation. `ifCurrent` (from If-Match)
    *  is the current revision the caller read, null for none: the store compares it in the commit's own transaction.
    *  `check` sees the revision, the current one's included, before anything is written, and may refuse it. */
-  async commit(read: AgentEntry, { definition, skills, note }: DefinitionBody, { ifCurrent, check }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void> } = {}): Promise<AgentEntry> {
+  /** `contract`: the contract's edit, whose version the caller has checked is past the current one. It always makes a new
+   *  revision, the same definition included, numbered as this store numbers them (the next), whatever version it named. */
+  async commit(read: AgentEntry, { definition, skills, note }: DefinitionBody, { ifCurrent, check, contract = false }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {}): Promise<AgentEntry> {
     const held = (now: AgentEntry) => {
       if (ifCurrent !== undefined && (now.revision?.id ?? null) !== ifCurrent) storeError(new AgentHomeError("stale", "the agent's current revision is not the one the commit expects"));
       return now;
@@ -164,11 +171,11 @@ export class Agents {
     // checks again, and the store refuses the commit if another writer moved the current revision after this read.
     const attempt = async (): Promise<AgentEntry | undefined> => {
       const now = held(this.entry(agent.id) ?? entry);
-      if (now.revision && sameRevision(now.revision, revision)) {
+      if (!contract && now.revision && sameRevision(now.revision, revision)) {
         this.checkVersion(definition, now.version);
         return now;
       }
-      this.checkVersion(definition, now.revisions + 1);
+      if (!contract) this.checkVersion(definition, now.revisions + 1);
       await this.store.commitRevision(agent.id, revision, { setCurrent: true, ifCurrent: now.revision?.id ?? null });
       return undefined;
     };

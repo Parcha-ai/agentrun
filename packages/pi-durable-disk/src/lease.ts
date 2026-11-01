@@ -8,7 +8,8 @@ export { assertPragmas, Fence, FencedDatabase, openArchilStore, PROFILE_PRAGMAS,
 export type { ArchilStore, OpenOptions, PragmaMismatch, Profile } from "./store.ts";
 // Types the signatures above mention.
 export type { AcquireOptions, ArchilHost, Claim, RunRef, Unmounted } from "./claim.ts";
-export type { ClaimDir, PersistRecord, RunHolder, RunRecord, RunStatus } from "./status.ts";
+export { BOX_MODES } from "./status.ts";
+export type { BoxMode, ClaimDir, PersistRecord, RunHolder, RunRecord, RunStatus } from "./status.ts";
 // Parking, for a Harness the host opened over `openRunLease` (`leaseParkTarget`).
 export { busyState, drain, leaseParkTarget, watchParking } from "./park.ts";
 export type { BusyState, DrainOptions, Parking, ParkOptions, ParkResult, ParkTarget } from "./park.ts";

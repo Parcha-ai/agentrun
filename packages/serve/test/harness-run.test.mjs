@@ -10,9 +10,9 @@ import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, scratch, serve } from "./support.mjs";
 
-const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer;
 
@@ -65,16 +65,20 @@ test("a run whose process dies mid-turn after a paid request resumes on the next
 test("a chat sent while a turn works, then the server and the run's process die: the next server's run finishes the turn and answers the chat before it completes, never dropping it", { timeout: 120_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   // The first server in a process of its own, so it dies as a crash kills it, and the next one knows nothing it knew.
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_SERVE_FAUX_HARNESS: FAUX_HARNESS } });
+  // Started through startServe's options: the faux harness is a test hook, which no environment name enables.
+  const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
+const server = await startServe({ data: ${JSON.stringify(data)}, port: 0, faux: ${JSON.stringify(FAUX)}, fauxHarness: ${JSON.stringify(FAUX_HARNESS)}, drainTimeout: "5s" });
+process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token }) + "\\n");`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => child.kill("SIGKILL"));
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_API_KEY=/.test(out); i++) {
+  for (let i = 0; !out.includes("\n"); i++) {
     assert.ok(i < 200, `the server did not start: ${out}`);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  const value = (name) => new RegExp(`${name}=(\\S+)`).exec(out)[1];
-  const first = client(value("AGENTRUN_BASE_URL"), value("AGENTRUN_API_KEY"));
+  const { base, token } = JSON.parse(out.slice(0, out.indexOf("\n")));
+  const first = client(base, token);
   const go = join(await scratch(t), "go");
   const runId = await started(first, "chat-resume", `Wait for ${go}, then answer the chat.`);
   for (let i = 0; !(await first("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
@@ -217,6 +221,29 @@ test("a run on another harness gets pi's own file tools: a write then a read of 
   const results = toolResults(rows);
   assert.equal(results.length, 2, JSON.stringify(results));
   assert.match(results[1][0], /hello from the tool/, "the read returned what the write wrote");
+});
+
+for (const harness of ["claude-agent", "codex"]) {
+  test(`fetch_page runs on ${harness}: the definition saves with no warning, its run is not refused, and the tool reads the page`, { timeout: 60_000 }, async (t) => {
+    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB });
+    const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title.", tools: ["fetch_page"] }));
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    assert.doesNotMatch(JSON.stringify(saved.body), /not bound yet/, "no warning that the tool is pi's only");
+    const run = await api("POST", `/agents/web-${harness}/runs`, { input: { content: "hi" } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const results = toolResults(rows);
+    assert.equal(results.length, 1, JSON.stringify(results));
+    assert.match(results[0][0], /Public page/, "the page's title, read through the guarded fetch");
+  });
+}
+
+test("capabilities say which harnesses run each tool: the file tools and fetch_page on every harness, the rest on pi", async (t) => {
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
+  const every = ["pi", "claude-agent", "codex"];
+  for (const name of ["read", "write", "edit", "fetch_page"]) assert.deepEqual(tools[name], every, name);
+  for (const [name, harnesses] of Object.entries(tools)) if (!["read", "write", "edit", "fetch_page"].includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });
 
 test("pi's confinement holds for another harness's read: a link out of the workspace is refused with pi's words", { timeout: 90_000 }, async (t) => {

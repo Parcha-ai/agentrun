@@ -1,0 +1,214 @@
+{
+  "v": 2,
+  "name": "jury",
+  "schemas": {
+    "Input": {
+      "type": "object",
+      "required": [
+        "case_id",
+        "payment"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "payment": {
+          "type": "object",
+          "required": [
+            "descriptor"
+          ],
+          "properties": {
+            "descriptor": {
+              "type": "string"
+            },
+            "memo": {
+              "type": "string"
+            },
+            "merchant_site": {
+              "type": "string"
+            },
+            "amount": {
+              "type": "string"
+            }
+          },
+          "description": "What the payment says about itself: card descriptor, memo, and the merchant's own site text."
+        }
+      },
+      "examples": [
+        {
+          "case_id": "jury-clear",
+          "payment": {
+            "descriptor": "TILEWORKS SUPPLY CO 8885550142 OH",
+            "memo": "Invoice 4471: 40 pallets glazed ceramic floor tile",
+            "amount": "USD 18,420.00",
+            "merchant_site": "Tileworks Supply sells porcelain and ceramic tile to contractors across the Midwest."
+          }
+        }
+      ]
+    },
+    "Vote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "is_gambling"
+      ],
+      "properties": {
+        "is_gambling": {
+          "type": "boolean",
+          "description": "Is the payment described in `payment` a payment for gambling: staking money or a paid currency on a game of chance or skill for a chance to win money or prizes redeemable for money, including sweepstakes casinos and social casinos that pay out cash prizes?"
+        }
+      }
+    },
+    "JuryDecision": {
+      "type": "object",
+      "required": [
+        "case_id",
+        "decision",
+        "why",
+        "mean",
+        "spread",
+        "votes"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "gambling",
+            "not_gambling"
+          ]
+        },
+        "why": {
+          "type": "string"
+        },
+        "mean": {
+          "type": "number"
+        },
+        "spread": {
+          "type": "number"
+        },
+        "stdev": {
+          "type": "number"
+        },
+        "votes": {
+          "type": "array"
+        }
+      }
+    }
+  },
+  "input": {
+    "schemaId": "Input"
+  },
+  "output": {
+    "schemaId": "JuryDecision",
+    "path": "decision"
+  },
+  "root": {
+    "node": "chain",
+    "steps": [
+      {
+        "node": "parallel",
+        "label": "jury",
+        "branches": [
+          {
+            "node": "judge",
+            "label": "jev",
+            "provider": "jev",
+            "timeoutMs": 60000,
+            "state": {
+              "case_id": "{case_id}",
+              "payment": "{payment}"
+            },
+            "out": "Vote",
+            "as": "vote_jev"
+          },
+          {
+            "node": "judge",
+            "label": "pplx_decider",
+            "provider": "openrouter",
+            "model": "perplexity/pplx-decider-v1.2",
+            "timeoutMs": 60000,
+            "state": {
+              "case_id": "{case_id}",
+              "payment": "{payment}"
+            },
+            "out": "Vote",
+            "as": "vote_pplx"
+          },
+          {
+            "node": "judge",
+            "label": "liquid_d1",
+            "provider": "openrouter",
+            "model": "liquid/d1",
+            "timeoutMs": 60000,
+            "state": {
+              "case_id": "{case_id}",
+              "payment": "{payment}"
+            },
+            "out": "Vote",
+            "as": "vote_liquid"
+          },
+          {
+            "node": "judge",
+            "label": "cloudflare_clef",
+            "provider": "openrouter",
+            "model": "cloudflare/clef",
+            "timeoutMs": 60000,
+            "state": {
+              "case_id": "{case_id}",
+              "payment": "{payment}"
+            },
+            "out": "Vote",
+            "as": "vote_clef"
+          }
+        ]
+      },
+      {
+        "node": "code",
+        "label": "aggregate",
+        "as": "verdict",
+        "code": "(s) => {\n  const jurors = [{\"label\":\"jev\",\"as\":\"vote_jev\",\"model\":\"jev\"},{\"label\":\"pplx_decider\",\"as\":\"vote_pplx\",\"model\":\"perplexity/pplx-decider-v1.2\"},{\"label\":\"liquid_d1\",\"as\":\"vote_liquid\",\"model\":\"liquid/d1\"},{\"label\":\"cloudflare_clef\",\"as\":\"vote_clef\",\"model\":\"cloudflare/clef\"}];\n  const votes = jurors.map((j) => { const a = ((s[j.as + \"$answers\"] || {}).answers || {}).is_gambling; return { juror: j.label, model: j.model, p: a && typeof a.noul === \"number\" ? a.noul : null }; });\n  const ps = votes.map((v) => v.p).filter((p) => p !== null);\n  const mean = ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : null;\n  const spread = ps.length ? Math.max(...ps) - Math.min(...ps) : null;\n  const sd = ps.length ? Math.sqrt(ps.reduce((a, p) => a + (p - mean) * (p - mean), 0) / ps.length) : null;\n  // Agree: every juror answered, they sit within 0.35 of each other, and the mean is clear of the middle band.\n  let action = \"human_review\"; let why;\n  if (ps.length < jurors.length) why = (jurors.length - ps.length) + \" juror(s) gave no probability\";\n  else if (spread > 0.35) why = \"the jurors disagree (spread \" + spread.toFixed(2) + \")\";\n  else if (mean >= 0.7) { action = \"auto_yes\"; why = \"the jurors agree it is gambling (mean \" + mean.toFixed(2) + \")\"; }\n  else if (mean < 0.3) { action = \"auto_no\"; why = \"the jurors agree it is not gambling (mean \" + mean.toFixed(2) + \")\"; }\n  else why = \"the jurors agree it is unclear (mean \" + mean.toFixed(2) + \")\";\n  return { action, why, mean, spread, stdev: sd, votes };\n}"
+      },
+      {
+        "node": "route",
+        "label": "agreement",
+        "valuePath": "verdict.action",
+        "as": "agreement_taken",
+        "branches": {
+          "auto_yes": {
+            "body": {
+              "node": "code",
+              "label": "auto_gambling",
+              "as": "decision",
+              "code": "(s) => ({ case_id: s.case_id, decision: \"gambling\", why: s.verdict.why, mean: s.verdict.mean, spread: s.verdict.spread, stdev: s.verdict.stdev, votes: s.verdict.votes })"
+            }
+          },
+          "auto_no": {
+            "body": {
+              "node": "code",
+              "label": "auto_not_gambling",
+              "as": "decision",
+              "code": "(s) => ({ case_id: s.case_id, decision: \"not_gambling\", why: s.verdict.why, mean: s.verdict.mean, spread: s.verdict.spread, stdev: s.verdict.stdev, votes: s.verdict.votes })"
+            }
+          },
+          "human_review": {
+            "body": {
+              "node": "escalate",
+              "label": "jury_split",
+              "when": {
+                "predicate": "field_equals",
+                "path": "verdict.action",
+                "value": "human_review"
+              },
+              "kind": "jury_review",
+              "stage": "jury",
+              "summary": "A person decides case {case_id}: {verdict.why}."
+            }
+          }
+        }
+      }
+    ]
+  }
+}

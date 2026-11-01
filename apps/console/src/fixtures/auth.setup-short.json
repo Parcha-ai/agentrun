@@ -1,0 +1,28 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v2/setup",
+    "body_fields": [
+      "password"
+    ]
+  },
+  "status": 422,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "code": "input_invalid",
+      "message": "password is 12 characters or more",
+      "retryable": false,
+      "request_id": "req_5f3944cc08b0f9a8",
+      "fields": [
+        {
+          "field": "password",
+          "reason": "invalid",
+          "message": "password is 12 characters or more"
+        }
+      ]
+    }
+  }
+}

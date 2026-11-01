@@ -1,0 +1,31 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v2/agents/support-triage/runs",
+    "body": {
+      "input": {
+        "subject": "No body"
+      }
+    },
+    "idempotency_key": "fixture-start-4"
+  },
+  "status": 422,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "code": "input_invalid",
+      "message": "the workflow does not take this input: INPUT_INVALID",
+      "retryable": false,
+      "request_id": "req_c1a7fadeea43caba",
+      "fields": [
+        {
+          "field": "input",
+          "reason": "invalid",
+          "message": "the workflow does not take this input: INPUT_INVALID"
+        }
+      ]
+    }
+  }
+}

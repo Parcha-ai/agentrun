@@ -1,0 +1,5 @@
+---
+packages: repo
+kind: feature
+---
+The console draws a workflow run live. A workflow run's page has a Graph view that polls `GET /v2/runs/{id}/graph` each second while the run goes: each node's state, the branch a route took, a map as a grid of item cells (named by document, toned by outcome, with the deciding probability), and the run's cost, decisions and elapsed time. Pause and Resume hold and release the run. Clicking a node or an item opens a drawer with the verdict (a probability bar per question, the answer chosen, the rule and the action), Parallel's cited sources, the state the model saw, the page images it was shown, the model, cost and latency, and for a call node its input and output. Written reports read as Markdown, and an ended run's header cost comes from its record. Idempotency keys no longer need `crypto.randomUUID`, so a run starts from a plain-http address too. The graph renderer is a TypeScript port of pi-durable-agent's `graph.js`, and it reads the DSL's `workflowGraph` through an `@dsl` alias.

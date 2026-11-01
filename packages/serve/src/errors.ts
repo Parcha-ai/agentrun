@@ -35,7 +35,7 @@ export type ErrorCode = keyof typeof ERROR_STATUS;
 
 const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "rate_limited", "internal", "unavailable"]);
 
-export type InputIssue = { field: string; reason: string; message: string; expected?: string; fix?: string };
+export type InputIssue = { field: string; reason: string; message: string; expected?: string; fix?: string; code?: string };
 
 /** What a refusal carries beside its code and message. */
 export type ErrorExtra = {

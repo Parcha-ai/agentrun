@@ -1,0 +1,29 @@
+{
+  "request": {
+    "method": "PUT",
+    "path": "/v2/agents/01a18490-2e24-7b3f-890e-91b7fd0dbd78/definition",
+    "body": {
+      "definition": {
+        "version": 2,
+        "name": "Changelog checker",
+        "description": "Checks a changelog entry against the merged change.",
+        "instructions": "An edit from a stale tab.",
+        "skills": [],
+        "tools": []
+      }
+    },
+    "if_match": "\"509fef8eb74e9ddd9194d7dad6c4ee217be5ee61e552989abf62891548829a28\""
+  },
+  "status": 412,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "code": "precondition_failed",
+      "message": "If-Match is \"509fef8eb74e9ddd9194d7dad6c4ee217be5ee61e552989abf62891548829a28\", and the agent's current revision is \"55dd5d20803a2d690898bff78cbab1782729c036459f131b9efaa79e1151109b\"",
+      "retryable": false,
+      "request_id": "req_a40efd8a26157c95"
+    }
+  }
+}

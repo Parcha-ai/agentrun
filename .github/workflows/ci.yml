@@ -48,6 +48,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: node scripts/changes.mjs --check --base "$BASE_SHA"
       - run: npm install --global npm@11.21.0 --ignore-scripts
+      - name: Install poppler, Ghostscript and ffmpeg
+        # agentrun-serve's pdf_pages draws pages with poppler, and its tests make their PDFs with Ghostscript and a wide
+        # PNG with ffmpeg: the durable shard runs serve's suite.
+        if: matrix.shard == 'durable'
+        run: |
+          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
+          pdftoppm -v && gs --version && ffmpeg -version | head -1
       - run: npm ci --ignore-scripts
       - run: npm run build
       - if: matrix.shard == 'checks'
@@ -110,10 +119,11 @@ jobs:
       - run: npm run build-storybook
 
   verify:
-    # The required checks keep their names: verify (<node>) passes when every test shard and the console passed. It reads
-    # `needs`, not the jobs API, so an API error cannot fail a required check. A red 24.21 shard now fails verify (22.x) too.
+    # The required checks keep their names: verify (<node>) passes when every test shard, the console and every pi leg
+    # passed. It reads `needs`, not the jobs API, so an API error cannot fail a required check. A red 24.21 shard now fails
+    # verify (22.x) too, and so does a pi leg that failed, was cancelled or was skipped.
     name: verify (${{ matrix.node }})
-    needs: [test, console]
+    needs: [test, console, pi-1-2]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -122,11 +132,12 @@ jobs:
       matrix:
         node: ['22.19.0', '22.23.2', '24.21.0']
     steps:
-      - name: Every test shard and the console passed
+      - name: Every test shard, the console and every pi leg passed
         env:
           RESULT: ${{ needs.test.result }}
           CONSOLE: ${{ needs.console.result }}
-        run: test "$RESULT" = success && test "$CONSOLE" = success
+          PI_LEGS: ${{ needs['pi-1-2'].result }}
+        run: test "$RESULT" = success && test "$CONSOLE" = success && test "$PI_LEGS" = success
 
   pi-durable-disk-pi-floor:
     # @parcha/pi-durable-disk's peers accept the pi family from 1.0.4, while the workspace develops against 1.1.0. Its
@@ -181,12 +192,18 @@ jobs:
     # while the workspace develops on 1.1.0 (verify). scripts/pi-leg.mjs picks the packages from their ranges, so a range
     # that starts to accept a version is tested on it in the same pull request, and fails the run if another version was
     # resolved. From 1.3 pi pins its own packages to exact versions, so each leg installs one whole family.
+    # Each leg runs as two jobs that both install and check the whole family: `first` runs the suites FIRST names and the
+    # clean consumer, `rest` every other suite, so each suite runs once and a new pi workspace runs in `rest`.
+    name: pi-1-2 (${{ matrix.pi }}, ${{ matrix.suites }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      FIRST: '@parcha/pi-transport,@parcha/agentrun-serve,@parcha/pi-git-remote'
     strategy:
       fail-fast: false
       matrix:
         pi: ['1.2.0', '1.3.0']
+        suites: [first, rest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -194,14 +211,24 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
+      - name: Install poppler, Ghostscript and ffmpeg
+        # The first suites run agentrun-serve's, whose pdf_pages tests need them (as the durable test shard does).
+        if: matrix.suites == 'first'
+        run: |
+          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
+          pdftoppm -v && gs --version && ffmpeg -version | head -1
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: The clean consumer and the reference example at the leg's pi
         # The packages packed and installed together in an empty directory, with the pi family at this version: one
         # pi-durable and one chord there, and the reference job's record equal to the one fixed for this pi.
+        if: matrix.suites == 'first'
         run: node scripts/verify-packages.mjs --pi ${{ matrix.pi }}
-      - run: node scripts/pi-leg.mjs --pi ${{ matrix.pi }} --scratch --require-all --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
+      - run: node scripts/pi-leg.mjs --pi ${{ matrix.pi }} --scratch --require-all ${{ matrix.suites == 'first' && '--tests' || '--tests-except' }} "$FIRST" --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: The re-asked fold on this pi
+        if: matrix.suites == 'first'
         # A real mid-stream kill and resume, recorded on the pi the leg installed: pi.live must still be version 1 and turn 0 asked twice.
         # It skips until the package has the store export and the disk its beforeResume hook. If pi changes pi.live it fails; it is not adapted.
         run: node --test examples/reference-midstream.test.mjs
@@ -209,7 +236,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pi-leg-${{ matrix.pi }}
+          name: pi-leg-${{ matrix.pi }}-${{ matrix.suites }}
           path: |
             .release/pi-leg.json
             .release/verification.json
@@ -408,6 +435,10 @@ jobs:
           test/local-run.test.ts test/cli-local.test.ts test/quickstart.test.ts test/confine.test.ts
           test/examples/kill-9.test.ts test/examples/audit-across-crashes.test.ts test/examples/no-double-charge.test.ts
           test/examples/fork-into-many.test.ts test/examples/serve-and-park.test.ts
+      - name: The server hands a workflow run its decision key
+        # macOS aborts the parent of a spawn with a pipe at descriptor 16 or above; a run with a decision key must not.
+        working-directory: packages/serve
+        run: node --test --test-timeout=240000 test/decision-key.test.mjs
       - name: The stranger's no-key quickstart
         # The README's quickstart, then the keyless examples against the registry's beta (#557). On a Mac the walk installs
         # 0.1.0-beta.14 at the least, the first release that runs there (the spec's examples.platformFloors).

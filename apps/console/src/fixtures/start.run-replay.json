@@ -1,0 +1,41 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v2/agents/meeting-notes/runs",
+    "body": {
+      "input": {
+        "content": "Summarize the standup: we ship Friday."
+      }
+    },
+    "idempotency_key": "fixture-start-1"
+  },
+  "status": 202,
+  "headers": {
+    "content-type": "application/json",
+    "location": "/v2/runs/01a184ad-0ddc-73d8-a2fb-fb9a41804a20"
+  },
+  "body": {
+    "run_id": "01a184ad-0ddc-73d8-a2fb-fb9a41804a20",
+    "agent_id": "meeting-notes",
+    "agent_version": 2,
+    "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+    "kind": "agentic",
+    "sha": null,
+    "status": "queued",
+    "state": "working",
+    "title": "Summarize the standup: we ship Friday.",
+    "created_at": "2026-10-28T22:41:37.515Z",
+    "updated_at": "2026-10-28T22:41:37.517Z",
+    "ended_at": null,
+    "result": null,
+    "error": null,
+    "cost": {
+      "usd": 0,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "archived_at": null,
+    "poll_after_ms": 1000
+  }
+}

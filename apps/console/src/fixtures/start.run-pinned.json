@@ -1,0 +1,42 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v2/agents/meeting-notes/runs",
+    "body": {
+      "input": {
+        "content": "Summarize the standup on the first prompt."
+      },
+      "revision": "de808d53a519354cd685e0280867779a8b282f7161ea8f9ac08da85a02a46655"
+    },
+    "idempotency_key": "fixture-start-2"
+  },
+  "status": 202,
+  "headers": {
+    "content-type": "application/json",
+    "location": "/v2/runs/01a184ad-132d-7a18-9ba9-7fde49213e6f"
+  },
+  "body": {
+    "run_id": "01a184ad-132d-7a18-9ba9-7fde49213e6f",
+    "agent_id": "meeting-notes",
+    "agent_version": 1,
+    "revision": "de808d53a519354cd685e0280867779a8b282f7161ea8f9ac08da85a02a46655",
+    "kind": "agentic",
+    "sha": null,
+    "status": "queued",
+    "state": "working",
+    "title": "Summarize the standup on the first prompt.",
+    "created_at": "2026-10-28T22:41:39.236Z",
+    "updated_at": "2026-10-28T22:41:39.257Z",
+    "ended_at": null,
+    "result": null,
+    "error": null,
+    "cost": {
+      "usd": 0,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "archived_at": null,
+    "poll_after_ms": 1000
+  }
+}
