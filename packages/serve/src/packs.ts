@@ -2,7 +2,9 @@
 // ordered list of skills and, if it sets one, a thinking level; each output type names its writer skills and the file in
 // the run's workspace the output lands in. A pack is policy only: skill names and levels, never a skill's text.
 // packIssues checks a pack's shape; resolvePack reads a checked pack for one run. Neither reads a file or the
-// environment.
+// environment. defaultPack reads the pack serve ships, built next to this module (dist/packs/default).
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import type { InputIssue } from "./errors.js";
 import { EFFORTS, type Effort, THINKING_LEVELS } from "./model.js";
 import { isObject, type Json } from "./validate.js";
@@ -164,4 +166,10 @@ export function resolvePack(pack: Pack, { effort = "medium", output }: PackAsk =
     skills: [...new Set([...row.skills, ...writers])],
     ...(output !== undefined && writer ? { output: { type: output, ...(writer.file !== undefined ? { file: writer.file } : {}), skills: [...writers] } } : {}),
   };
+}
+
+/** The pack serve ships, `default`: its pack.json, and the directory its skills are in (`<skills>/<name>/SKILL.md`). */
+export async function defaultPack(): Promise<{ pack: Pack; skills: string }> {
+  const pack = JSON.parse(await readFile(new URL("./packs/default/pack.json", import.meta.url), "utf8")) as Pack;
+  return { pack, skills: fileURLToPath(new URL("./packs/default/skills/", import.meta.url)) };
 }

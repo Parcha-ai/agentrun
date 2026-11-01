@@ -1,5 +1,6 @@
-// The page's own files (src/page), the vendored OpenAPI contract (src/openapi) and llms.txt are plain files; tsc leaves
-// them out, so the build copies them next to the server.
+// The page's own files (src/page), the vendored OpenAPI contract (src/openapi), llms.txt and the packs serve ships
+// (src/packs: each pack's pack.json and its skills) are plain files; tsc leaves them out, so the build copies them next to
+// the server.
 import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 cpSync(join(root, "src", "page"), join(root, "dist", "page"), { recursive: true });
 cpSync(join(root, "src", "openapi"), join(root, "dist", "openapi"), { recursive: true });
 cpSync(join(root, "src", "llms.txt"), join(root, "dist", "llms.txt"));
+cpSync(join(root, "src", "packs"), join(root, "dist", "packs"), { recursive: true });
 
 // The console (apps/console), when its own build ran first: its index.html and Vite's assets, never a source map, into
 // dist/console, which the server answers at /console/. Without that build the server says so there.

@@ -1,0 +1,10 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+**A job at an effort for an output type: a run takes a profile pack, and serve ships a `default` one**
+- serve ships a default profile pack, `default`, with the skills it names. Each effort loads one skill: `effort-low` (one wide pass of searches, then write once), `effort-medium` (a plan, concurrent search batches, corroborated claims, a thesis, one check before finishing) and `effort-high` (a six-phase loop ending in a three-pass review gate); the pack sets no thinking level, so a run thinks at its effort. The effort skills refer to tools by what they do (a web search, a page fetch, read, write and edit), since the tools an agent has vary, and each loads the run's writer skill right before it writes the deliverable.
+- Output types: `report` and `decision` load `report-writer` and write `report.md` (plain markdown, an action title, inline citations on every claim and a `## Sources` list); `answer` loads no writer and writes no file; `slides` loads `slides` and writes one self-contained `slides.html` with keyboard navigation; `dashboard` loads `data-visualization` and `html-app-architecture` and writes `dashboard.html`; `website` loads `html-app-architecture` and `anti-slop-design` and writes `index.html`. The pack names no default output, so a run writes a file only when it asks for an output type. No binary format (spreadsheet, document, PDF, presentation file) is offered: producing one needs a shell, which serve does not give an agent.
+- Every bundled `SKILL.md` has front matter with its `name` and a `description` and passes the skill check the native harnesses run, so each one loads natively.
+- The `slides` skill is adapted from frontend-slides by Zara Zhang (MIT License), whose license ships beside it and is credited in serve's NOTICE.
+- `defaultPack()` reads the pack and the directory of its skills; the build copies `src/packs` to `dist/packs`, and the package check confirms the pack and each of its skills are in the published package.

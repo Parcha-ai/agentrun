@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "default",
+  "effort": {
+    "low": { "skills": ["effort-low"] },
+    "medium": { "skills": ["effort-medium"] },
+    "high": { "skills": ["effort-high"] }
+  },
+  "outputs": {
+    "report": { "skills": ["report-writer"], "file": "report.md" },
+    "decision": { "skills": ["report-writer"], "file": "report.md" },
+    "answer": { "skills": [] },
+    "slides": { "skills": ["slides"], "file": "slides.html" },
+    "dashboard": { "skills": ["data-visualization", "html-app-architecture"], "file": "dashboard.html" },
+    "website": { "skills": ["html-app-architecture", "anti-slop-design"], "file": "index.html" }
+  }
+}
