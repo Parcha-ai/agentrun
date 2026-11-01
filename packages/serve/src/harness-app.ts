@@ -100,8 +100,14 @@ export function adapterRun(
   const CANCELLED = "the run was cancelled: the model request was not sent";
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const answer = cancelled() ? { refuse: CANCELLED } : cap?.beforeRequest(request);
-    if (answer) refused = answer.refuse;
-    return answer;
+    if (answer) {
+      refused = answer.refuse;
+      return answer;
+    }
+    // Admitted: the worst case the cap holds for it, which the runner records, and counts it at if its cost never
+    // comes in.
+    const hold = cap?.worstOf?.(request);
+    return hold === undefined ? undefined : { holdUsd: hold };
   };
   /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
    *  cancel that lands between them still keeps the request from leaving. */
