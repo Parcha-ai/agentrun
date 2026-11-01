@@ -153,3 +153,32 @@ test("claude-agent's check of skills is the installed adapter's own skillProblem
   assert.equal(await claudeSkillCheck(() => Promise.reject(new Error("Cannot find package"))), undefined, "not installed: no check, so every skill stays inlined");
   assert.equal(await claudeSkillCheck(async () => ({ ...real, skillProblems: undefined })), undefined, "an adapter with no check of its own: none");
 });
+
+test("codex's native skills reach the adapter as serve gives them, and an adapter with none is given no skills option", async () => {
+  const { codexOf } = await import("../dist/adapters.js");
+  assert.equal(typeof codexOf, "function", "adapters.js exports codexOf, taking the package from `load` as claudeOf does");
+  const real = await import("@parcha/agentrun-codex");
+  const given = [];
+  // The package is here; its pinned binary need not be: the check is the stub's.
+  const load = async () => ({ ...real, verifyCodex: () => ({ path: "/stub/codex" }), codexAdapter: (options) => (given.push(options), { id: "codex" }) });
+  const needs = { model: { provider: "openai", modelId: "gpt-5.4-mini" }, models: { getModel: () => undefined } };
+  const env = { OPENAI_API_KEY: `not-a-secret-${"o"}` };
+  const skills = [{ name: "cite", files: { "SKILL.md": "---\nname: cite\ndescription: Cite sources.\n---\nCite.\n", "reference/sources.md": "Primary first.\n" } }];
+  await codexOf(env, { ...needs, skills }, load);
+  await codexOf(env, { ...needs, skills: [] }, load);
+  await codexOf(env, needs, load);
+  assert.deepEqual(given[0].skills, skills, "the skills, as given");
+  assert.deepEqual(given.slice(1).map((options) => "skills" in options), [false, false], "none: no option");
+  await assert.rejects(codexOf(env, needs, () => Promise.reject(new Error("Cannot find package"))), (error) => error instanceof HarnessUnavailable && /codex is not installed here/.test(error.message));
+});
+
+test("codex's check of skills is the installed adapter's own skillProblems (the shared one); none where the package is not installed", async () => {
+  const { codexSkillCheck } = await import("../dist/adapters.js");
+  assert.equal(typeof codexSkillCheck, "function", "adapters.js exports codexSkillCheck");
+  const real = await import("@parcha/agentrun-codex");
+  assert.equal(await codexSkillCheck(async () => real), real.skillProblems, "the adapter's own function, not a copy");
+  assert.equal(await codexSkillCheck(), real.skillProblems, "by default, the package installed beside serve");
+  assert.equal(real.skillProblems, (await import("@parcha/agentrun-adapters")).skillProblems, "the check every adapter runs");
+  assert.equal(await codexSkillCheck(() => Promise.reject(new Error("Cannot find package"))), undefined, "not installed: no check, so every skill stays inlined");
+  assert.equal(await codexSkillCheck(async () => ({ ...real, skillProblems: undefined })), undefined, "an adapter with no check of its own: none");
+});

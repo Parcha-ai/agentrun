@@ -183,3 +183,31 @@ test("a codex run's model proxy reports a refusal in the run's log: one harness 
   assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["codex", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
   for (const secret of [CANARY, GATEWAY_KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
 });
+
+/** Every file under `dir`, by its path below it. */
+async function filesIn(dir) {
+  const entries = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => []);
+  return entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name).slice(dir.length + 1)).sort();
+}
+
+test("a codex run's skills: one Codex's check takes is the session's own (its CODEX_HOME/skills, read_skill_file offered), Codex's bundled ones are off, and one it would refuse stays in the prompt", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const gw = await gateway(t);
+  gw.release();
+  const { api, data } = await codexServe(t, gw);
+  const skills = { "good-x/SKILL.md": "---\nname: good-x\ndescription: The good-x skill.\n---\nGOOD-X-BODY\n", "good-x/reference/notes.md": "Notes.\n", "legacy-x/SKILL.md": "# Legacy\nLEGACY-X-BODY\n" };
+  assert.equal((await api("POST", "/agents", { ...agent("skilled", { harness: "codex", skills: ["good-x", "legacy-x"] }), skills })).status, 201);
+  const run = await api("POST", "/agents/skilled/runs", { input: { content: "Say what you did." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
+  const session = join(data, "runs", run.body.run_id, "harness");
+  const files = await filesIn(session);
+  const home = files.find((path) => path.endsWith("codex-home/config.toml"))?.slice(0, -"config.toml".length);
+  assert.ok(home, `the session's CODEX_HOME: ${files.join(", ")}`);
+  assert.equal(await readFile(join(session, home, "skills", "good-x", "SKILL.md"), "utf8"), skills["good-x/SKILL.md"], "the skill Codex's check takes is seeded where Codex lists it");
+  assert.equal(await readFile(join(session, home, "skills", "good-x", "reference", "notes.md"), "utf8"), "Notes.\n", "with its other files");
+  assert.ok(!files.some((path) => path.includes("legacy-x")), "the one it would refuse is not seeded");
+  assert.match(await readFile(join(session, home, "config.toml"), "utf8"), /\[skills\.bundled\]\s*\nenabled = false/, "Codex's bundled skills off");
+  const rollout = files.find((path) => path.startsWith(`${home}sessions/`) && path.endsWith(".jsonl"));
+  const meta = JSON.parse((await readFile(join(session, rollout), "utf8")).split("\n")[0]);
+  assert.ok(meta.payload.dynamic_tools.some((tool) => tool.name === "read_skill_file"), `read_skill_file is among the session's tools: ${JSON.stringify(meta.payload.dynamic_tools.map((tool) => tool.name))}`);
+});

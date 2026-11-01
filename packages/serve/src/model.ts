@@ -118,6 +118,8 @@ export type FauxHelpers = {
   text: typeof import("@earendil-works/pi-ai").fauxText;
   thinking: typeof import("@earendil-works/pi-ai").fauxThinking;
   toolCall: typeof import("@earendil-works/pi-ai").fauxToolCall;
+  /** The thinking level pi asks the model for, as the run's agent has it. */
+  reasoning?: string;
 };
 
 /** The models for a run, and its model of each tier it uses and of no other: an agentic revision's `ref` (or the
@@ -154,7 +156,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     const helpers: FauxHelpers = { message: ai.fauxAssistantMessage, text: ai.fauxText, thinking: ai.fauxThinking, toolCall: ai.fauxToolCall };
     // `contextWindow` sizes the faux model's window, so a test can make a run long enough to compact.
     const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(price ? { cost: price } : {}), ...(typeof mod.contextWindow === "number" ? { contextWindow: mod.contextWindow } : {}) })) as [{ id: string }, ...{ id: string }[]] });
-    const step = (async (context: unknown, options?: { signal?: AbortSignal }) => reply(context, { ...helpers, ...(options?.signal ? { signal: options.signal } : {}) })) as unknown as Parameters<typeof core.setResponses>[0][number];
+    const step = (async (context: unknown, options?: { signal?: AbortSignal; reasoning?: string }) => reply(context, { ...helpers, ...(options?.signal ? { signal: options.signal } : {}), ...(options?.reasoning ? { reasoning: options.reasoning } : {}) })) as unknown as Parameters<typeof core.setResponses>[0][number];
     core.setResponses(Array.from({ length: 10_000 }, () => step));
     // `cost` (USD per million tokens) prices the faux model's usage, which the faux core leaves at $0, so a run's
     // estimate and its cap can be tested; "unknown" leaves its usage with no cost, as a provider that does not price it.

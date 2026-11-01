@@ -143,7 +143,9 @@ test("the harness's session gets the ordered mandate and the pack's skills in it
   const mandate = said.indexOf("first `effort-x`, then `writer-x`");
   assert.ok(mandate > said.indexOf("Say your system."), `the mandate follows the instructions, in order: ${said}`);
   assert.ok(said.includes("Write the deliverable to `report.md`"), said);
-  assert.ok(said.indexOf("EFFORT-X-BODY") > mandate && said.indexOf("WRITER-X-BODY") > mandate, "the skills are below it");
+  // claude-agent's check takes both skills: its adapter loads them, and the prompt does not write them out.
+  assert.match(said, /^Native: effort-x, writer-x$/m);
+  assert.ok(!said.includes("EFFORT-X-BODY") && !said.includes("WRITER-X-BODY"), "the skills are the Skill tool's");
 });
 
 test("the shipped default pack on an agent with its own report-writer: the revision's skill of that name wins over the one the pack bundles, and a low-effort run thinks low", { timeout: 120_000 }, async (t) => {
@@ -161,5 +163,7 @@ test("the shipped default pack on an agent with its own report-writer: the revis
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
   const said = (await api("GET", `/runs/${run.body.run_id}`)).body.result?.final_answer ?? "";
   assert.match(said, /^Thinking low\./, "the run's effort: the default pack sets no thinking");
-  assert.ok(said.includes("THE CALLER'S OWN REPORT WRITER"), "the session reads the caller's writer");
+  // Both go to the adapter from the run's workspace: report-writer as staged there, the caller's.
+  assert.match(said, /^Native: effort-low, report-writer$/m, "the adapter loads both, the caller's report-writer among them");
+  assert.ok(!said.includes("THE CALLER'S OWN REPORT WRITER"), "the Skill tool's, not written out");
 });

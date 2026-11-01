@@ -65,8 +65,8 @@ type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite:
 /** A child's command under the run's confinement (pi-durable-disk's confinePrefix): only added in front. */
 export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>) => { command: string; args: string[] };
 /** What a run's adapter needs of serve: its model, the catalog that prices it as it prices pi's runs, the run's
- *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, which its own check took:
- *  skills.ts). */
+ *  confinement for the harness's own process, and the skills it loads itself (claude-agent's or codex's, which its own
+ *  check took: skills.ts). */
 export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[] };
 
 /** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
@@ -173,6 +173,22 @@ export async function claudeSkillCheck(load: () => Promise<unknown> = loadClaude
   return typeof claude?.skillProblems === "function" ? (claude.skillProblems as SkillCheck) : undefined;
 }
 
+/** The package that runs codex, imported by its name: installed beside serve by the person who wants it. */
+const loadCodex = (): Promise<unknown> => import("@parcha/agentrun-codex");
+
+/** The installed codex adapter's own check of the skills it would load (its skillProblems, @parcha/agentrun-adapters'
+ *  shared one), from `load` (a test gives its own): what it refuses stays in the run's prompt (skills.ts). None where the
+ *  package is not installed, or has no such check: every skill stays inlined, and codexOf says what is missing. */
+export async function codexSkillCheck(load: () => Promise<unknown> = loadCodex): Promise<SkillCheck | undefined> {
+  const codex = (await load().catch(() => undefined)) as { skillProblems?: unknown } | undefined;
+  return typeof codex?.skillProblems === "function" ? (codex.skillProblems as SkillCheck) : undefined;
+}
+
+/** The check of the skills `harness` loads itself, when it loads any (claude-agent, codex); none for one that takes
+ *  every skill in its prompt (pi). */
+export const skillCheckFor = (harness: string): Promise<SkillCheck | undefined> =>
+  harness === "claude-agent" ? claudeSkillCheck() : harness === "codex" ? codexSkillCheck() : Promise.resolve(undefined);
+
 /** claude-agent's adapter, from `load` (the installed package; a test gives its own). */
 export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = loadClaude): Promise<AgentAdapter> {
   const claude = (await load().catch(() => {
@@ -206,10 +222,11 @@ export const thinkingFor = (harness: string, level: string): SessionSpec["thinki
 
 /** The bare id Codex takes: serve's "openai/<id>" without its provider. */
 
-async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
-  const codex = await import("@parcha/agentrun-codex").catch(() => {
+/** codex's adapter, from `load` (the installed package; a test gives its own). */
+export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = loadCodex): Promise<AgentAdapter> {
+  const codex = (await load().catch(() => {
     throw new HarnessUnavailable(`codex is not installed here: ${INSTALL.codex}`);
-  });
+  })) as typeof import("@parcha/agentrun-codex");
   const standIn = env[CODEX_STANDIN_ENV] ? (JSON.parse(env[CODEX_STANDIN_ENV]) as { command: string; args?: string[]; env?: Record<string, string> }) : undefined;
   if (!standIn) {
     try {
@@ -221,15 +238,18 @@ async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<Age
   }
   // The id as model.ts chose it: a gateway's own name for the model, whole (AGENT_MODEL_GATEWAY_IDS says whether it is
   // provider-qualified), or OpenAI's model id, which chooseModel has already taken out of "openai/<id>".
-  return codex.codexAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model), price: priceOf(needs), log: harnessLog("codex", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
+  // The skills only when there are some: Codex's bundled skills are off either way (the adapter's config).
+  return codex.codexAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model), price: priceOf(needs), log: harnessLog("codex", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}) });
 }
 
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
   const faux = env[FAUX_HARNESS_ENV];
   if (faux) {
-    const [{ fauxAdapter }, module] = await Promise.all([import("@parcha/agentrun-adapters/testing"), import(pathToFileURL(faux).href) as Promise<{ script?: (spec: SessionSpec) => never[] }>]);
+    const [{ fauxAdapter }, module] = await Promise.all([import("@parcha/agentrun-adapters/testing"), import(pathToFileURL(faux).href) as Promise<{ script?: (spec: SessionSpec, given: { skills: readonly SkillFiles[] }) => never[] }>]);
     if (typeof module.script !== "function") throw new Error(`${FAUX_HARNESS_ENV} names ${faux}, which exports no script(spec)`);
-    return fauxAdapter({ script: module.script });
+    // The script is told the skills the adapter it stands in for would load itself, so a test sees how they went.
+    const script = module.script;
+    return fauxAdapter({ script: (spec) => script(spec, { skills: needs.skills ?? [] }) });
   }
   if (harness === "codex") return codexOf(env, needs);
   if (harness === "claude-agent") return claudeOf(env, needs);

@@ -19,7 +19,7 @@ import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { readJson, RUN_META } from "./files.js";
-import { adapterFor, claudeModel, claudeSkillCheck, type ConfineChild, thinkingFor } from "./adapters.js";
+import { adapterFor, claudeModel, type ConfineChild, skillCheckFor, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
 import { completer } from "./llm.js";
@@ -84,9 +84,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(CodingTools);
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
     const harness = revision.body.harness;
-    // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
-    // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts).
-    const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
+    // claude-agent and codex load the skills their adapter takes themselves (claude-agent's Skill tool, codex's
+    // read_skill_file), and the prompt keeps only the ones it would refuse (skills.ts); a faux harness splits them as the
+    // harness it stands in for does.
+    const check = await skillCheckFor(harness);
     const { system: instructions, native } = await systemOf(withMandate(revision.body.instructions, profile), skillFiles, where.work, check);
     const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.

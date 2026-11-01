@@ -317,3 +317,29 @@ test("the run's thinking level reaches the harness's session: the revision's, an
     assert.equal(await answer(api, run.body.run_id), said);
   }
 });
+
+// The same run, with a profile pack, on each harness: one skill every harness's check takes (front matter naming it, a
+// description) and one none takes (no front matter). pi gets both written out; claude-agent loads the one it takes with
+// its Skill tool, and codex is shown it by name and description and reads it with read_skill_file; the other stays
+// written out. The mandate is the same on all three, and every one thinks at the pack row's level.
+test("the same run on pi, claude-agent and codex gets its skills the way its harness takes them, under the same mandate, at the same thinking level", { timeout: 180_000 }, async (t) => {
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const skills = { "good-x/SKILL.md": "---\nname: good-x\ndescription: The good-x skill.\n---\nGOOD-X-BODY\n", "legacy-x/SKILL.md": "# Legacy\nLEGACY-X-BODY\n" };
+  const row = { skills: ["good-x"], thinking: "high" };
+  const profile = { version: 1, name: "inline", effort: { low: row, medium: row, high: row }, outputs: { report: { skills: ["legacy-x"], file: "report.md" } } };
+  for (const [harness, native] of [["pi", "none"], ["claude-agent", "good-x"], ["codex", "good-x"]]) {
+    const id = `skills-${harness}`;
+    const made = await api("POST", "/agents", { ...agent(id, { harness, instructions: "Say your system.", skills: ["good-x", "legacy-x"], thinking: "low" }), skills });
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const run = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" }, effort: "low", profile, output: "report" });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const said = (await answer(api, run.body.run_id)) ?? "";
+    const [thinking, given] = said.split("\n");
+    assert.equal(thinking, "Thinking high.", `${harness}: the pack row's level, over the run's effort and the revision's thinking`);
+    assert.equal(given, `Native: ${native}`, `${harness}: the skills its adapter loads itself`);
+    assert.ok(said.includes("first `good-x`, then `legacy-x`. Each is listed to you as a skill or written out below."), `${harness}'s mandate: ${said}`);
+    assert.equal(said.includes("GOOD-X-BODY"), native === "none", `${harness}: good-x written out only where the harness does not take it`);
+    assert.ok(said.includes("LEGACY-X-BODY"), `${harness}: legacy-x, which no harness takes, written out`);
+  }
+});

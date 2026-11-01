@@ -112,7 +112,7 @@ export function readSkillFileTool(root: string, skills: readonly SkillFileList[]
   const known = new Map(skills.map((skill) => [skill.name, new Set(skill.files)] as const));
   return {
     name: READ_SKILL_FILE,
-    description: "Read a file of one of your skills: the skill's name and the file's path inside it, as its SKILL.md names it.",
+    description: "Read a file of one of your skills, by the skill's name and the file's path inside it: its SKILL.md, or a file its SKILL.md names. Open a skill listed to you by its name and description with this tool: its SKILL.md first, then the files it names.",
     inputSchema: { type: "object", properties: { skill: { type: "string", enum: [...known.keys()] }, path: { type: "string" } }, required: ["skill", "path"], additionalProperties: false },
     replay: "safe",
     async call(args) {

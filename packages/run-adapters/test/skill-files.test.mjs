@@ -25,10 +25,12 @@ function skills() {
 }
 const call = (tool, args) => tool.call(args, { callId: 'c1', signal: new AbortController().signal });
 
-test("a listed file of a skill reads, its exact text; the tool is replay-safe and names the host's skills", async () => {
+test("a listed file of a skill reads, its exact text; the tool is replay-safe, names the host's skills, and says it opens a listed skill", async () => {
   const { tool } = skills();
   assert.equal(tool.name, READ_SKILL_FILE);
   assert.equal(tool.replay, 'safe');
+  // A harness that lists skills by name and description (Codex) says to open the listed path: here this tool opens it.
+  assert.match(tool.description, /Open a skill listed to you by its name and description with this tool: its SKILL\.md first, then the files it names\./);
   assert.deepEqual(tool.inputSchema.properties.skill.enum, ['research', 'billing']);
   assert.deepEqual(await call(tool, { skill: 'research', path: 'reference/sources.md' }), { text: 'Primary sources first. ✓\n' });
   assert.deepEqual(await call(tool, { skill: 'billing', path: 'rates.md' }), { text: 'the other skill\n' });

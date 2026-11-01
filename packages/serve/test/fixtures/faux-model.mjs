@@ -15,8 +15,9 @@ const untilExists = async (file) => {
 };
 
 export default function reply(context, faux) {
-  // pi's whole system prompt: its system messages, their sections included.
+  // pi's thinking level, then its whole system prompt (its system messages), as the answer: as the faux harness says its own.
   const system = context.messages.filter((m) => m.role === "system").map((m) => [textOf(m), ...Object.values(m.sections ?? {})].join("\n")).join("\n");
+  if (system.includes("Say your system.")) return faux.message(`Thinking ${faux.reasoning}.\nNative: none\n${system}`);
   // Writes the run's deck with the write tool, then answers as "Say your system." does (pack-job.test.mjs).
   if (system.includes("Make the slides, then say your system.")) {
     if (context.messages.at(-1)?.role !== "toolResult") return faux.message(faux.toolCall("write", { path: "slides.html", content: SLIDES }), { stopReason: "toolUse" });
