@@ -85,15 +85,15 @@ export function analyticsView(a: StoreAnalytics, filter: AnalyticsFilter) {
 }
 
 /** How the runs that tried to learn fared, over the runs the analytics' `from`, `to` and `agent` pick (by when they
- *  started, unarchived): `runs` with a learning block, `merged`, `dropped` by reason, and `in_progress` (seeded,
+ *  started, unarchived unless `archived`): `runs` with a learning block, `merged`, `dropped` by reason, and `in_progress` (seeded,
  *  reflecting or proposed). A run with learning off, a workflow's or an imported one, has none, and is not counted. */
-export async function learningStats(rows: readonly RunRow[], filter: AnalyticsFilter, learningOf: (row: RunRow) => Promise<{ state: string; reason: string | null } | null>) {
+export async function learningStats(rows: readonly RunRow[], filter: AnalyticsFilter, learningOf: (row: RunRow) => Promise<{ state: string; reason: string | null } | null>, archived = false) {
   const from = filter.from === undefined ? -Infinity : Date.parse(filter.from);
   const to = filter.to === undefined ? Infinity : Date.parse(filter.to);
   const out = { runs: 0, merged: 0, dropped: {} as Record<string, number>, in_progress: 0 };
   for (const row of rows) {
     const at = Date.parse(row.startedAt);
-    if (row.kind !== "agentic" || row.importedFrom || row.archivedAt || !(at >= from && at < to) || (filter.agent !== undefined && row.agent !== filter.agent)) continue;
+    if (row.kind !== "agentic" || row.importedFrom || (row.archivedAt && !archived) || !(at >= from && at < to) || (filter.agent !== undefined && row.agent !== filter.agent)) continue;
     const learning = await learningOf(row);
     if (!learning) continue;
     out.runs += 1;

@@ -137,7 +137,8 @@ export async function agentFolder(data: string, agentId: string): Promise<string
 }
 
 /** Before every command: a `-c` flag wins over the repository's own config. No hook or fsmonitor runs, no replace ref
- *  is read, a commit is never signed (which would run a program), and no transport runs, so nothing is fetched lazily. */
+ *  is read, a commit is never signed (which would run a program), and no transport runs, so nothing is fetched lazily.
+ *  No optional lock is taken (GIT_OPTIONAL_LOCKS), so a read never writes. */
 const SAFE = ["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgSign=false", "-c", "protocol.allow=never"];
 
 /** Every call's environment, built from nothing: no system or global config (so no template or hooks folder named
@@ -149,6 +150,7 @@ const gitEnv = (gitDir: string | undefined): NodeJS.ProcessEnv => ({
   GIT_ATTR_NOSYSTEM: "1",
   GIT_NO_REPLACE_OBJECTS: "1",
   GIT_NO_LAZY_FETCH: "1",
+  GIT_OPTIONAL_LOCKS: "0",
   GIT_TERMINAL_PROMPT: "0",
   LC_ALL: "C",
   GIT_AUTHOR_NAME: IDENTITY.name,
@@ -235,7 +237,7 @@ export async function mainOf(cwd: string, repo: string): Promise<string | undefi
  *  through), and main is created last, only where it is not there yet: a making that stops anywhere before leaves no
  *  main, and the next one does it all again. Called in the queue, on the folder agentFolder made and checked; `check`
  *  checks it again once `.git` is made. */
-async function openAgentRepo(cwd: string, repo: string, check: () => Promise<unknown>): Promise<string> {
+export async function openAgentRepo(cwd: string, repo: string, check: () => Promise<unknown>): Promise<string> {
   const known = await mainOf(cwd, repo);
   if (known) return known;
   await git(cwd, undefined, ["init", "-q", "--template=", "--initial-branch=main", repo]);
@@ -250,6 +252,12 @@ async function openAgentRepo(cwd: string, repo: string, check: () => Promise<unk
   await git(cwd, repo, ["update-ref", "-m", "host: the agent's learning folder", "refs/heads/main", commit, ""]);
   return commit;
 }
+
+/** Brings the folder's checked-out files in line with commit `sha` of main: host-only files, so no hook or filter runs,
+ *  with the work tree named outright, the folder itself. Why it could not, when it could not. In the queue, on the
+ *  folder agentFolder checked. */
+export const checkOut = (repo: string, sha: string): Promise<Error | undefined> =>
+  git(repo, repo, ["read-tree", "-u", "--reset", sha], "", { GIT_WORK_TREE: repo }).then(() => undefined, (error: Error) => error);
 
 /** The blobs `oids` hold, in order, read in one `cat-file --batch`. One git cannot read throws. */
 export async function readBlobs(cwd: string, repo: string, oids: readonly string[]): Promise<Buffer[]> {

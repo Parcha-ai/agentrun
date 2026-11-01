@@ -16,6 +16,7 @@ import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFa
 import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { type LearningMode, learningOf } from "./learning.js";
+import { agentLearning, learningLog, learningNotes, noteBody, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { placesOf } from "./place.js";
@@ -27,7 +28,7 @@ import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
-import { SECRET_NAMES, withSecrets } from "./secrets.js";
+import { hostSecrets, SECRET_NAMES, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, learningStats, statsView } from "./stats.js";
 import { bookings } from "./usage.js";
 import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
@@ -197,6 +198,14 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/log$/, name: "listLearningLog" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
+  { method: "PUT", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "writeLearningFile" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
@@ -350,6 +359,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
+  /** The host's secrets as a run's notes are checked against (runs.ts): a person's note, and every learning text read. */
+  const learningSecrets = () => [...hostSecrets(process.env), token, doorToken];
   const env = withSecrets({ ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
   const caps = capabilities(env, maxRuns, await harnessOffers(env), learning);
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts). No run uses one yet: the log says which this server has.
@@ -920,6 +931,33 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "deleteToolKey":
         toolKeys.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      // A person's view and control of what an agent learned (learning-routes.ts). Every text cut of the host's secrets as
+      // they are now; a write as the definition's: an archived agent's too.
+      case "getAgentLearning": {
+        await needAgent(id);
+        const rows = await agents.request(() => agents.store.listRuns({ agent: id }));
+        const { runs: _, ...counts } = await learningStats(rows, { agent: id }, (row) => runs.learningOfRow(row), true);
+        return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts));
+      }
+      case "listLearningNotes":
+      case "listLearningLog":
+        await needAgent(id);
+        return send(res, 200, await (found.name === "listLearningNotes" ? learningNotes : learningLog)(data, id, url.searchParams, secretsShown(learningSecrets())));
+      case "readLearningFile":
+        await needAgent(id);
+        return sendNote(res, 200, await readNote(data, id, second!, secretsShown(learningSecrets())));
+      case "writeLearningFile":
+      case "retireLearningFile": {
+        await needAgent(id);
+        const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
+        const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
+        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets() });
+        return sendNote(res, written.status, { ...written, text: secretsShown(learningSecrets()).text(written.text) }, written.status === 201 ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
+      }
+      case "getRunLearning":
+        return send(res, 200, await runLearning(await needRun(id), secretsShown(learningSecrets()), learningSecrets()));
+      case "getRunLearningDiff":
+        return send(res, 200, await runDiff(data, await needRun(id), secretsShown(learningSecrets())));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }

@@ -700,6 +700,35 @@ workflow's or an imported run). Once it is proposed, merged or dropped (`seed_fa
 one row of kind `learning` that says so, and `GET /stats` counts the runs that tried to learn under `learning`, over its
 `from`, `to` and `agent`.
 
+### What a person sees and controls
+
+A person reads and changes an agent's learning through this server's own routes (`learning/1` in `/v2/openapi.json`),
+with the token, an archived agent's too:
+
+- `GET /agents/{agent_id}/learning`: `main`'s head, `MEMORY.md` as `index`, the first 50 notes (active first, then
+  newest first) and the first 20 changes on `main` (newest first, each `by: {run}` from its `Run-Id` trailer or
+  `{user: true}`, with its commit, time, reason and files), and how the agent's runs that tried to learn fared
+  (`merged`, `dropped` by reason, `in_progress`). An agent with no folder answers `main: null` and empty pages.
+  `GET .../learning/notes?cursor=&limit=&status=` and `GET .../learning/log?cursor=&limit=` page on, up to 200 at a
+  time; a cursor reads the same commit its first page did.
+- `GET .../learning/files/{file}`: one note (or `MEMORY.md`) on `main` as `text/markdown`, with its `ETag`, the note's
+  git blob id.
+- `PUT .../learning/files/{file}` with the note's whole text edits it under `If-Match: <etag>`, or creates it under
+  `If-None-Match: *` (201); `POST .../learning/files/{file}/retire` under `If-Match` sets `status: retired`. A stale
+  ETag, or a name already taken, is 412; neither header (or `If-Match: *`) is 428 `precondition_required`. The note
+  passes the same structural checks as a run's (packages/learn's `checkNote`), and no grader: a refusal is 400 with
+  `problems`, and nothing is written. Each write is one commit on `main` in the agent's queue, `learning: <edited,
+  created or retired> by a person: <file>` with a `Changed-By: user` trailer, with `MEMORY.md` rebuilt, `main` moved
+  only from the commit it was made on, and the folder's files brought in line; it answers the note as it now is, with
+  its new `ETag`. `MEMORY.md` itself is never written (400).
+- `GET /runs/{run_id}/learning`: the run's learning whole (its seed, its merge, the grader's verdict, the checker's
+  problems, what the grade cost), `null` for a run that does not learn. `GET /runs/{run_id}/learning/diff`: a merged
+  run's merge commit against its parent, else its proposal against its seed, each file's patch as git writes it from
+  the first `@@`, or `withheld` (`too_large`, `secret`).
+
+Every read is git plumbing at one commit, with no optional lock, and every text it answers is cut of the server's
+secrets as they are then.
+
 ## Spend cap
 
 An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process

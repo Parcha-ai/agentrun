@@ -17,7 +17,7 @@ import type { PageJudge } from "@parcha/pi-browser";
 import { claudeModel } from "./adapters.js";
 import { FAUX_JEV_ENV, fauxFetch, jevKey } from "./decisions.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
-import { agentFolder, git, homeDir, line, mainOf, NO_TOKENS, type Proposal, readBlobs, type Tokens, withAgentRepo } from "./learning.js";
+import { agentFolder, checkOut, git, homeDir, line, mainOf, NO_TOKENS, type Proposal, readBlobs, type Tokens, withAgentRepo } from "./learning.js";
 import { type Complete, completer } from "./llm.js";
 import { runModels, thinkingOf } from "./model.js";
 import { authContextOf } from "./secrets.js";
@@ -207,8 +207,7 @@ export function mergeProposal(data: string, agentId: string, runId: string, prop
   const added = proposedOf(proposal);
   return withAgentRepo(data, agentId, async () => {
     const repo = await agentFolder(data, agentId);
-    // Host-only files, so no hook or filter runs, with the work tree named outright: the folder itself.
-    const checkout = (sha: string) => git(repo, repo, ["read-tree", "-u", "--reset", sha], "", { GIT_WORK_TREE: repo }).then(() => undefined, (error: Error) => error);
+    const checkout = (sha: string) => checkOut(repo, sha);
     for (let tries = 0; ; tries++) {
       const sha = (await mainOf(home, repo))!;
       const known = await mergeOf(home, repo, sha, runId);
