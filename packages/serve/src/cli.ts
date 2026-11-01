@@ -10,9 +10,10 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
+import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--all]
 
@@ -30,6 +31,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     AGENTRUN_SERVE_CODE_NODES=1); off, a workflow with one saves with a warning and its runs are refused
   --drain-timeout D how long a busy run may finish its turn when the server stops (default 30s; the image's is 6s, inside
                     Docker's 10 s grace); a run cut off resumes at the next start
+  --learning on|off whether runs learn (default on, or AGENTRUN_SERVE_LEARNING): on, a run of an agent whose definition
+                    says learning: true starts from what that agent learned; off, no run reads what was learned
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
@@ -85,6 +88,7 @@ try {
       "drain-timeout": { type: "string" },
       documents: { type: "string" },
       "allow-code-nodes": { type: "boolean", default: false },
+      learning: { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -123,7 +127,7 @@ try {
   serve = await startServe({
     data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
-    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), log: (line) => void process.stdout.write(`${line}\n`),
+    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     ...(accounts ? { accounts, openSetup: !publicUrl, ...(publicUrl ? { publicUrl } : {}) } : {}),
   });
 } catch (error) {

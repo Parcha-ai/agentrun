@@ -18,7 +18,7 @@ import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
-import { learningBlocker, pinSeed, type Seed, seedOf } from "./learning.js";
+import { type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
@@ -100,7 +100,11 @@ type RunMeta = {
   /** What its newest process took its thinking level from (app.ts's thinkingOf), as its environment had them: `effort`,
    *  the run's effort, and `host`, the host's AGENT_THINKING. Absent for a process an older server started. */
   launch_thinking?: { effort?: string; host?: string };
+  /** Where the run's learning stands (learning.ts); absent for a run that does not learn. */
+  learning?: Learning;
 };
+/** A run's learning as a list shows it: its state and reason. */
+const shortLearning = (learning: Learning | null) => (learning ? { state: learning.state, reason: learning.reason } : null);
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */
@@ -288,7 +292,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; learning?: LearningMode; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, and the seal key
  *  the tool keys are kept under (tool-keys.ts). */
@@ -386,7 +390,7 @@ export class Runs {
   private starting = 0;
   /** The start sweep of the boxes runs left: once, before any run opens a box (sweepOnce). */
   private swept?: Promise<void>;
-  /** Why this host keeps no learning repository, said once. */
+  /** Why this host keeps no learning folder, said once. */
   private learningOff?: string;
   constructor(private readonly options: RunsOptions) {}
 
@@ -436,6 +440,7 @@ export class Runs {
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
+      ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
     };
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, known?.revision);
@@ -1157,39 +1162,49 @@ export class Runs {
     }
   }
 
-  /** What an agentic run of `agentId` starts from: its learning repository's main (learning.ts), the repository made
-   *  first when it is absent. Undefined on a host without the git learning needs, which is said once. A repository that
-   *  cannot be made or read refuses the start. */
-  private async seedFor(agentId: string): Promise<Seed | undefined> {
+  /** What a run of `agentId` starts from: its learning folder's main (learning.ts), the folder made first when it is
+   *  absent; else why it starts with nothing learned. A learning fault never refuses a run: a host without the git
+   *  learning needs is said once, and a folder that cannot be made or read once per run. */
+  private async seedFor(agentId: string): Promise<{ seed: Seed } | { failed: string }> {
     const blocked = await learningBlocker(process.env);
     if (blocked) {
       if (this.learningOff !== blocked) process.stderr.write(`agentrun-serve: runs start with nothing learned: ${blocked}\n`);
       this.learningOff = blocked;
-      return undefined;
+      return { failed: "This host has no git that learning can use, so the run started with nothing learned." };
     }
-    return seedOf(this.options.agents.dir, agentId).catch((error: Error) => {
-      throw new ApiError("internal", `The agent ${agentId}'s learning repository could not be read: ${error.message}`);
+    return seedOf(this.options.agents.dir, agentId).then((seed) => ({ seed }), (error: Error) => {
+      process.stderr.write(`agentrun-serve: the agent ${agentId}'s learning folder could not be read, so its run starts with nothing learned: ${error.message}\n`);
+      return { failed: "The agent's learning folder could not be read, so the run started with nothing learned." };
     });
   }
 
   private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
-    // Read before the run is made, so a learning repository that cannot be read leaves nothing behind.
-    const seed = revision.kind === "agentic" ? await this.seedFor(entry.agent.id) : undefined;
+    // A run learns when the server's switch (`--learning`) is on and its agent's definition says `learning: true`. Its
+    // seed is read before the run is made, so the folder is read once whatever the run's setup does.
+    const learns = this.options.learning !== "off" && revision.kind === "agentic" && revision.body.learning === true;
+    const seeded = learns ? await this.seedFor(entry.agent.id) : undefined;
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
+    const at = new Date().toISOString();
+    let failed = seeded && "failed" in seeded ? seeded.failed : undefined;
+    if (seeded && "seed" in seeded) {
+      try {
+        await pinSeed(started.dir, started.workspace, seeded.seed);
+        for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
+      } catch (error) {
+        warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
+        failed = "What the agent learned could not be copied into the run, so it started with nothing learned.";
+      }
+    }
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
-      created_at: new Date().toISOString(),
+      created_at: at,
       input: options.input,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
+      ...(seeded ? { learning: failed === undefined ? { state: "seeded", reason: null, detail: null, at } : { state: "dropped", reason: "seed_failed", detail: failed, at } } : {}),
     };
     try {
       await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
-      // After startRun, whose seedRun wrote the revision's skills into the run's work: the learned ones go in beside them.
-      if (seed && revision.kind === "agentic") {
-        await pinSeed(started.dir, started.workspace, seed, Object.keys(revision.body.skills));
-        for (const path of seed.skipped) warn(started.runId, `its learning repository's ${path} was not read`);
-      }
     } catch (error) {
       // The store has the run as running, and no process will run it: it ends failed here, never left for a later
       // start to open with half its files.
@@ -1440,13 +1455,14 @@ export class Runs {
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
+      learning: run.meta.learning ?? null,
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
     };
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from, learning } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from, learning: shortLearning(learning) };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -1471,6 +1487,7 @@ export class Runs {
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
       archived_at: row.archivedAt ?? null,
       imported_from: row.importedFrom ?? null,
+      learning: shortLearning(isObject(meta?.learning) ? meta.learning : null),
     };
   }
 

@@ -77,14 +77,14 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   const registry = createRegistry();
   registry.install(CodingTools);
+  // What the run's agent learned goes into its instructions, the one path for every harness (learning.ts).
+  const learned = revision.kind === "agentic" ? await withLearned(where.root, revision.body.instructions) : "";
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
     const harness = revision.body.harness;
     // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
-    // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts). The learned skills the run's pin lists
-    // go with the revision's, and its index into the instructions (learning.ts).
+    // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts).
     const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
-    const seeded = await withLearned(where.root, revision.body.instructions, Object.keys(revision.body.skills));
-    const { system: instructions, native } = await systemOf(seeded.instructions, seeded.skillFiles, where.work, check);
+    const { system: instructions, native } = await systemOf(learned, Object.keys(revision.body.skills), where.work, check);
     const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
@@ -130,8 +130,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    const seeded = await withLearned(where.root, revision.body.instructions, Object.keys(revision.body.skills));
-    const instructions = await promptOf(seeded.instructions, seeded.skillFiles, where.work);
+    const instructions = await promptOf(learned, Object.keys(revision.body.skills), where.work);
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => marked.open(durable) } as unknown as AppOptions;
   }
   const meta = await readJson(join(where.root, RUN_META));

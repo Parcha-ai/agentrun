@@ -60,6 +60,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
+| `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -526,28 +527,45 @@ A completed agentic run's `result` is `{output: null, final_answer}`; a complete
 
 ## Learning
 
-Each agent has a learning repository, `DATA/homes/<agent id>/learning/`: plain git with `main` checked out, laid out as
-[`packages/learn`'s SPEC](../learn/SPEC.md) says (`learnings/INDEX.md`, one line per note, `learnings/L-<12 hex>.md`,
-`.agents/skills/<name>/SKILL.md`, `memos/<run id>.md`). The server makes it when the agent's first agentic run is made,
-with one commit on `main` that holds only `learnings/INDEX.md` (a `# Learnings` line), and is its only writer. Every git
-call it makes there runs with the repository's hooks and fsmonitor off, no replace refs, no lazy fetch and no system or
-global config, one at a time per agent. The agent's definition stays in the store: the repository holds what it learned.
+Learning is off unless an agent's definition says `learning: true` (an agentic one: a workflow refuses the field). A
+definition that sets it keeps it on its revision, `false` included, and an edit that leaves it out keeps the agent's; one
+that never sets it stores nothing, so its revision id is the one it had before the switch. The server's `--learning off`
+turns learning off for every run it starts, whatever the agent says.
 
-Every agentic run, on any harness, starts from `main` as it is when the run is made:
+An agent that learns has a learning folder, `DATA/homes/<agent id>/learning/`, in Claude Code's auto-memory format:
 
-- `runs/<id>/learning.json` pins that commit (`seed`). It is written once: a resume or a follow-up reads the same commit,
-  however `main` moves on.
-- Each `.agents/skills/<name>/SKILL.md` that commit holds is written into the run's `work/.agents/skills/` and prompted
-  after the revision's skills. A revision's skill, or a skill file of the revision's, of the same name wins, and the
-  learned one is left out.
-- When `learnings/INDEX.md` holds a note line, its text goes into the run's instructions in a `<learned>` section.
+- `MEMORY.md`, the index a run reads, one line per active note: `- [name](file.md) — description`, built by the server;
+- one file per note, `<slug>.md`: front matter with `name`, `description` and `type` (`user`, `feedback`, `project` or
+  `reference`), and optionally `status: superseded` or `retired` with `superseded_by` (no status: active), then the
+  note's text. [`packages/learn`](../learn/README.md) parses it and builds the index.
 
-The server reads the commit with git plumbing, never the working tree, before the run is made: a commit git cannot read
-refuses the run (`500 internal`) with nothing made. The run's process reads only the pin and those files, and never
-runs git. What the commit holds over SPEC's caps (4096 bytes for the index, 32768 for a skill), or that
-is not a regular UTF-8 file, is not read, and the server's stderr names it. Workflow runs and imported runs are not
-seeded. A host without git 2.40 or later runs every agent with nothing learned, and says so once on stderr. Nothing
-writes to `main` after its first commit yet: what a run learns stays in the run.
+The folder is plain git with `main` checked out. The agent's first run that learns makes it, with one commit on `main`
+holding an empty `MEMORY.md`; an agent that does not learn never gets one. The server is its only writer. Every git
+call the server makes there runs with the folder's hooks and fsmonitor off, no replace refs, no lazy fetch and no system
+or global config, one at a time per agent.
+
+Each run of an agent that learns starts from `main` as it is when the run is made, whatever its harness:
+
+- `runs/<id>/learning.json` pins that commit (`seed`). It is written once: a resume or a follow-up reads the same
+  commit, however `main` moves on.
+- The first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own) go into the run's
+  instructions after the agent's, under `# Learned`, with one line saying the notes are in `.learning/` and to open one
+  when it applies. That is pi's system prompt and claude-agent's and codex's instructions: the same channel `CLAUDE.md`
+  and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project settings off, so a
+  `.claude/` in the work never loads), and no skill is learned.
+- `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh; a superseded or retired
+  note is not.
+
+The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
+1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
+run: when the folder cannot be made or read, or its notes copied, the run starts with nothing learned. A host without
+git 2.40 or later is one such fault, said once on stderr.
+
+The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run lists) says how it went:
+`{state: "seeded", reason: null, detail: null, at}` for a run that started from what its agent learned,
+`{state: "dropped", reason: "seed_failed", detail, at}` for one that started with nothing, and `null` for a run that does
+not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a workflow's or an
+imported run). Nothing writes to `main` after its first commit yet: what a run learns stays in the run.
 
 ## Spend cap
 
