@@ -13,8 +13,21 @@ export type SkillFiles = { name: string; files: Record<string, string> };
 /** A harness's check of the skills it would load: why it refuses them, or none. */
 export type SkillCheck = (skills: readonly SkillFiles[]) => string[];
 
+/** The most skill files read at once, so a run with many skill files stays under a low open-file limit. */
+export const READS_AT_ONCE = 16;
+
 /** `path` under the run's skills directory, as the workspace reads it. */
 const skillPath = (path: string) => [".agents", "skills", path].join("/");
+
+/** Each of `paths` under the run's skills directory as text, in order, READS_AT_ONCE at a time. Through no link
+ *  (workspace.ts): a skill directory or file linked out of the workspace is refused, and the read fails. */
+async function readSkillFiles(work: string, paths: readonly string[]): Promise<string[]> {
+  const texts: string[] = [];
+  for (let at = 0; at < paths.length; at += READS_AT_ONCE) {
+    texts.push(...(await Promise.all(paths.slice(at, at + READS_AT_ONCE).map((path) => readWorkText(work, skillPath(path))))));
+  }
+  return texts;
+}
 
 /** The instructions, then each skill's SKILL.md, by name. */
 function promptWith(instructions: string, skills: readonly { name: string; files: Readonly<Record<string, string>> }[]): string {
@@ -24,9 +37,9 @@ function promptWith(instructions: string, skills: readonly { name: string; files
 
 /** The revision's instructions, then each skill's `<name>/SKILL.md` from the run's workspace, by name. */
 export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: string): Promise<string> {
-  // Through no link (workspace.ts): a skill directory, or its SKILL.md, linked out of the workspace is refused.
-  const skills = await Promise.all(skillNames(skillFiles).map(async (name) => ({ name, files: { "SKILL.md": await readWorkText(work, skillPath(`${name}/SKILL.md`)) } })));
-  return promptWith(instructions, skills);
+  const names = skillNames(skillFiles);
+  const texts = await readSkillFiles(work, names.map((name) => `${name}/SKILL.md`));
+  return promptWith(instructions, names.map((name, i) => ({ name, files: { "SKILL.md": texts[i]! } })));
 }
 
 /**
@@ -44,10 +57,11 @@ export async function skillsOf(skillFiles: Iterable<string>, work: string): Prom
     const name = deepest.find((skill) => path.startsWith(`${skill}/`));
     return name === undefined ? [] : [{ name, path }];
   });
-  const texts = await Promise.all(owned.map(({ path }) => readWorkText(work, skillPath(path))));
-  const skills = new Map(names.map((name) => [name, {} as Record<string, string>]));
-  owned.forEach(({ name, path }, i) => (skills.get(name)![path.slice(name.length + 1)] = texts[i]!));
-  return names.map((name) => ({ name, files: skills.get(name)! }));
+  const texts = await readSkillFiles(work, owned.map(({ path }) => path));
+  const entries = new Map(names.map((name) => [name, [] as [string, string][]]));
+  owned.forEach(({ name, path }, i) => entries.get(name)!.push([path.slice(name.length + 1), texts[i]!]));
+  // Each file an own property of a plain object: assigned, a file named __proto__ would set the prototype instead.
+  return names.map((name) => ({ name, files: Object.fromEntries(entries.get(name)!) }));
 }
 
 /** The skills a harness loads itself (`native`) and the ones that stay in the prompt (`inlined`), by its own check: each

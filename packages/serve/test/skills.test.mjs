@@ -10,7 +10,8 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { skillProblems } from "@parcha/agentrun-claude-agent";
 import { promptOf as appPromptOf } from "../dist/app.js";
-import { promptOf, skillsOf, splitSkills, systemOf } from "../dist/skills.js";
+import { promptOf, READS_AT_ONCE, skillsOf, splitSkills, systemOf } from "../dist/skills.js";
+import { workspaceTestHooks } from "../dist/workspace.js";
 
 const CANARY = `not-a-secret-canary-${process.pid}`;
 
@@ -57,6 +58,39 @@ test("a skill's file is read through no link: a reference file linked out of wor
   await mkdir(join(work, ".agents", "skills", "cite", "reference"), { recursive: true });
   await symlink(outside, join(work, ".agents", "skills", "cite", "reference", "sources.md"));
   await assert.rejects(skillsOf(["cite/SKILL.md", "cite/reference/sources.md"], work), (error) => !String(error?.message).includes(CANARY));
+});
+
+test("a skill's file named __proto__ is kept as its own file in a plain object, and the adapter takes it", async (t) => {
+  const files = { "cite/SKILL.md": md("cite"), "cite/__proto__": "Not a prototype.\n" };
+  const { work } = await workWith(t, files);
+  const [cite] = await skillsOf(Object.keys(files), work);
+  assert.deepEqual(Object.keys(cite.files), ["SKILL.md", "__proto__"]);
+  assert.equal(Object.getOwnPropertyDescriptor(cite.files, "__proto__")?.value, "Not a prototype.\n");
+  assert.equal(Object.getPrototypeOf(cite.files), Object.prototype, "a plain object, as the adapter reads it");
+  assert.deepEqual(splitSkills([cite], skillProblems).native, [cite]);
+});
+
+test("files are read at most READS_AT_ONCE at a time, and a skill with more files than that gets all of them, in order", async (t) => {
+  const refs = Array.from({ length: READS_AT_ONCE * 2 + 5 }, (_, i) => `ref/f-${String(i).padStart(2, "0")}.md`);
+  const files = { "cite/SKILL.md": md("cite"), ...Object.fromEntries(refs.map((ref) => [`cite/${ref}`, `Text of ${ref}.\n`])) };
+  const names = Array.from({ length: READS_AT_ONCE + 3 }, (_, i) => `s-${String(i).padStart(2, "0")}`);
+  const { work } = await workWith(t, { ...files, ...Object.fromEntries(names.map((name) => [`${name}/SKILL.md`, md(name)])) });
+  let open = 0;
+  let peak = 0;
+  workspaceTestHooks.afterOpen = async () => {
+    peak = Math.max(peak, ++open);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    open -= 1;
+  };
+  t.after(() => void (workspaceTestHooks.afterOpen = undefined));
+  const [cite] = await skillsOf(Object.keys(files), work);
+  assert.deepEqual(Object.keys(cite.files), ["SKILL.md", ...refs]);
+  for (const ref of refs) assert.equal(cite.files[ref], `Text of ${ref}.\n`);
+  assert.ok(peak <= READS_AT_ONCE, `skillsOf had ${peak} files open at once`);
+  peak = 0;
+  const prompt = await promptOf("Do it.", names.map((name) => `${name}/SKILL.md`), work);
+  assert.deepEqual([...prompt.matchAll(/<skill name="([^"]+)">/g)].map((m) => m[1]), names);
+  assert.ok(peak <= READS_AT_ONCE, `promptOf had ${peak} files open at once`);
 });
 
 test("each skill is judged on its own by the adapter's check: one it takes goes native, one it would refuse stays inlined", () => {
