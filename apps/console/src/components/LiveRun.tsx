@@ -65,12 +65,16 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     try { await v2[what](runId); setError(null); } catch (e) { setError(asApiError(e)); }
     setBusy(null); await refresh(); setFollows((n) => n + 1);
   };
-  // The answer is the run as archived (or not): it is shown at once, over any read of the run still on its way.
+  // Only the archive's own effect is taken from its answer, at once: the run may have moved on since it was read (a final
+  // timeline page's read can land first). The run and its files are read again after it, and that read is the newest.
   const archive = async () => {
     if (!run) return;
     setBusy("archive");
-    try { const r = await (run.archived_at ? v2.unarchiveRun(runId) : v2.archiveRun(runId)); runReads.begin(); setRun(r); setError(null); } catch (e) { setError(asApiError(e)); }
-    setBusy(null);
+    try {
+      const r = await (run.archived_at ? v2.unarchiveRun(runId) : v2.archiveRun(runId));
+      setRun((cur) => (cur ? { ...cur, archived_at: r.archived_at } : r)); setError(null);
+    } catch (e) { setError(asApiError(e)); }
+    setBusy(null); void refresh();
   };
   const message = async (text: string) => {
     let ok = true;
