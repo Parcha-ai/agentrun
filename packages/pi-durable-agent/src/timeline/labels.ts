@@ -18,6 +18,19 @@ export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec): vo
   if (fold) folds.set(tool, fold);
 }
 
+/** A finished call's outcome, when its own result says more than that the call returned: a tool that answers a refusal
+ *  or a failure as its result, not as an error (a fetch's `{ok: false, refused}`), reads as refused or failed. */
+export type OutcomeFn = (result: { text: string; isError: boolean }) => { failed: boolean; text: string } | undefined;
+const outcomes = new Map<string, OutcomeFn>();
+
+/** Registers how one tool's result tells its outcome. A host adds its own tools here. */
+export function registerOutcome(tool: string, outcome: OutcomeFn): void {
+  outcomes.set(tool, outcome);
+}
+
+/** The outcome of a call that returned (not one that errored), when its tool tells one. */
+export const outcomeOf = (tool: string, result: { text: string; isError: boolean }) => (result.isError ? undefined : outcomes.get(tool)?.(result));
+
 const turnEnding = new Set<string>();
 
 /** Registers a tool that ends its turn (pi's `terminate`): what the person sends after a round of such tools is their
@@ -73,10 +86,25 @@ registerLabel("read", (a) => `Read ${path(a) ?? "a file"}`, { many: (n) => `Read
 registerLabel("write", (a) => `Wrote ${path(a) ?? "a file"}`, { many: (n) => `Wrote ${n} files`, subject: (input) => input ?? undefined });
 registerLabel("edit", (a) => `Edited ${path(a) ?? "a file"}`, { many: (n) => `Edited ${n} files`, subject: (input) => input ?? undefined });
 registerLabel("bash", (a) => `Ran \`${cut(scrubUrls(firstLine(str(a.command) ?? "")), 60)}\``, { many: (n) => `Ran ${n} commands` });
-registerLabel("web_fetch", (a) => `Fetched ${where(str(a.url) ?? "a page")}`, {
-  many: (n) => `Fetched ${n} pages`,
-  subject: (input) => (input ? where(input) : undefined),
-});
+/** A fetch that answered its page as a result with `ok: false`: refused (the public-host guard said no, `refused`) or
+ *  failed (`error`, or a message). Undefined for a page it fetched. */
+const unfetched = (result: { text: string } | undefined) => {
+  const page = result && obj(json(result.text));
+  if (page?.ok !== false) return undefined;
+  const refused = str(page.refused);
+  return refused !== undefined ? { refused: true, detail: refused.replace(/^refused:\s*/, "") } : { refused: false, detail: str(page.error) ?? str(page.message) ?? "no detail" };
+};
+const fetchLabel: LabelFn = (a, result) => `${unfetched(result) ? "Tried to fetch" : "Fetched"} ${where(str(a.url) ?? "a page")}`;
+const fetchFold: FoldSpec = { many: (n) => `Fetched ${n} pages`, subject: (input) => (input ? where(input) : undefined) };
+const fetchOutcome: OutcomeFn = (result) => {
+  const failure = unfetched(result);
+  return failure && { failed: true, text: `${failure.refused ? "refused" : "failed"}: ${failure.detail}` };
+};
+// web_fetch and fetch_page answer the same page, `{ok, url, status, title, text, links, refused?, error?}`.
+for (const tool of ["web_fetch", "fetch_page"]) {
+  registerLabel(tool, fetchLabel, fetchFold);
+  registerOutcome(tool, fetchOutcome);
+}
 registerLabel("web_search", (a) => {
   const query = str(a.query);
   return query ? `Searched the web for "${cut(scrubUrls(query), 60)}"` : "Searched the web";
