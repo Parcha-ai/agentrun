@@ -130,7 +130,16 @@ export {
 export { admitsTool, type Shipped, shippingStorage } from "./shipping.ts";
 export { type BoxRunnerOptions, boxRunner, type RunnerProgram } from "./start.ts";
 export { killRunner, type StopRunner, stopRunner } from "./stop.ts";
-export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";
+export {
+	checkpointStore,
+	DEFAULT_MAX_STORE_BYTES,
+	type Seal,
+	StoreError,
+	type StoreErrorCode,
+	sealStore,
+	type UntrustedStoreOptions,
+	verifyStore,
+} from "./store.ts";
 export {
 	type ChangedReceipt,
 	changedEntries,
