@@ -1,0 +1,7 @@
+---
+packages: @parcha/pi-transport
+kind: feature
+---
+`@parcha/pi-transport/sync` moves a run's files between the host and a box that shares no disk with it. `seedDir` copies a host directory into a box path (a host link is never followed, modes are capped at 0755, `readOnly` paths go without a write bit). `pullDir` brings back what changed since the last pull: the box lists the directory and a path comes back when it is new or listed differently from the `mark` the previous pull returned, with `exclude`, `keep: "box" | "newer"` and `mirrorDeletes` (off by default). `seedAgentHome` and `pullAgentHome` keep an agent home's `learning/` host-owned: seeded read-only, never pulled back, never removed.
+Every pulled entry is checked by the package's own tar reader (`extractTar`) before it touches the host: regular files and directories only (links, devices and pipes are skipped and counted by reason, never created); no absolute path, `..`, empty segment, NUL or name over the platform limits; nothing written outside the destination and no link already there followed; each file written through a temporary name and renamed; modes at most 0644/0755 with no setuid, group or world write; and a clean stop past `maxBytes` (default `MAX_PULL_BYTES`, 1 GiB) or `maxEntries` (default `MAX_PULL_ENTRIES`, 100,000).
+An `exclude` pattern that starts with `/` is now anchored at the root (`/learning` is the top-level `learning` only); before, such a pattern matched nothing.
