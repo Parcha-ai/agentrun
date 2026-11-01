@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, answerFlow, flowAgent, follow, serve, startRun, storeRun } from "./support.mjs";
+import { schemaProblems } from "./schema-support.mjs";
 
 test("PUT definition commits a new revision whose parent is the current one and makes it current; skills carry over", async (t) => {
   const { api } = await serve(t);
@@ -59,6 +60,51 @@ test("PUT definition: If-Match must name the current revision, a name it does no
   assert.equal((await api("PUT", "/agents/nobody/definition", { definition: { instructions: "x" } })).status, 404);
 });
 
+test("PUT definition takes the contract's body too: the definition itself, with If-Match required and a version past the current one", async (t) => {
+  const { api } = await serve(t);
+  const created = (await api("POST", "/agents", agent("contract"))).body;
+  const body = { id: "contract", version: 2, name: "contract", instructions: "Answer briefly.", skills: [], tools: ["read"] };
+  const revisions = async () => (await api("GET", "/agents/contract/revisions")).body.revisions.length;
+  const unmatched = await api("PUT", "/agents/contract/definition", body);
+  assert.deepEqual([unmatched.status, unmatched.body.error?.code], [412, "precondition_failed"], "the contract's form needs If-Match");
+  assert.equal(await revisions(), 1, "and nothing is written without it");
+  const edited = await api("PUT", "/agents/contract/definition", body, { "if-match": created.home_etag });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  assert.deepEqual([edited.body.definition.version, edited.body.definition.instructions, edited.body.definition.tools], [2, "Answer briefly.", ["read"]]);
+  const etag = edited.headers.get("etag");
+  const again = await api("PUT", "/agents/contract/definition", body, { "if-match": etag });
+  assert.deepEqual([again.status, again.body.error?.fields?.map((f) => f.field)], [422, ["definition.version"]], "the same definition at the current version is not past it");
+  const stale = await api("PUT", "/agents/contract/definition", { ...body, instructions: "Again." }, { "if-match": etag });
+  assert.deepEqual([stale.status, stale.body.error?.fields?.map((f) => f.field)], [422, ["definition.version"]], "a version not past the current one");
+  const unversioned = await api("PUT", "/agents/contract/definition", (({ version, ...rest }) => rest)({ ...body, instructions: "Again." }), { "if-match": etag });
+  assert.deepEqual([unversioned.status, unversioned.body.error?.fields?.map((f) => f.field)], [422, ["definition.version"]], "the contract requires a version");
+  const elsewhere = await api("PUT", "/agents/contract/definition", { ...body, id: "else", version: 3 }, { "if-match": etag });
+  assert.deepEqual([elsewhere.status, elsewhere.body.error?.fields?.map((f) => f.field)], [422, ["definition.id"]]);
+  assert.equal(await revisions(), 2, "only the one edit was written");
+  // Any version past the current one, as the contract allows: the same definition saved again is a new revision, and
+  // a version further on is taken, the revision numbered as this server numbers them (the next).
+  const resaved = await api("PUT", "/agents/contract/definition", { ...body, version: 3 }, { "if-match": etag });
+  assert.equal(resaved.status, 200, JSON.stringify(resaved.body));
+  assert.deepEqual([resaved.body.definition.version, await revisions()], [3, 3], "the same definition at a later version is written");
+  const jumped = await api("PUT", "/agents/contract/definition", { ...body, version: 9, instructions: "Further on." }, { "if-match": resaved.headers.get("etag") });
+  assert.equal(jumped.status, 200, JSON.stringify(jumped.body));
+  assert.deepEqual([jumped.body.definition.version, jumped.body.definition.instructions, await revisions()], [4, "Further on.", 4], "a version further on is taken, numbered as the next");
+});
+
+test("the served document takes exactly one of PUT definition's two bodies: the contract's, or this server's {definition, skills?, note?}; never both, never neither", async (t) => {
+  const { api } = await serve(t);
+  const doc = (await api("GET", "/openapi.json")).body;
+  const op = doc.paths["/agents/{agent_id}/definition"].put;
+  const schema = op.requestBody.content["application/json"].schema;
+  const definition = { id: "a", version: 2, name: "a", instructions: "x", skills: [], tools: [] };
+  const problems = (value) => schemaProblems(doc, schema, value);
+  assert.deepEqual(problems(definition), [], "the contract's body");
+  assert.deepEqual(problems({ definition, skills: { "cite/SKILL.md": "# Cite" }, note: "why" }), [], "this server's body");
+  assert.notDeepEqual(problems({ ...definition, definition }), [], "both at once");
+  assert.notDeepEqual(problems({ note: "why" }), [], "neither");
+  assert.deepEqual(op["x-agentrun-serve-changed"], { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" });
+});
+
 test("POST current makes an earlier revision current again; a revision of another agent is refused", async (t) => {
   const { api } = await serve(t);
   const first = (await api("POST", "/agents", agent("back"))).body;
@@ -108,7 +154,8 @@ test("GET /runs lists every agent's runs newest first, filtered by agent, revisi
   await follow(api, c.run_id, ["completed"]);
   const all = (await api("GET", "/runs")).body;
   assert.deepEqual(all.runs.map((r) => r.run_id), [c.run_id, b.run_id, a.run_id]);
-  assert.deepEqual(Object.keys(all.runs[0]).sort(), ["agent_id", "agent_version", "archived_at", "cost", "created_at", "ended_at", "error", "kind", "revision", "run_id", "sha", "state", "status", "title"]);
+  assert.deepEqual(Object.keys(all.runs[0]).sort(), ["agent_id", "agent_version", "archived_at", "cost", "created_at", "ended_at", "error", "imported_from", "kind", "review", "revision", "run_id", "sha", "state", "status", "title"]);
+  assert.deepEqual(all.runs.map((r) => r.review), [null, null, null], "no run here escalated, so none waits for review");
   assert.deepEqual((await api("GET", "/runs?agent=one")).body.runs.map((r) => r.run_id), [c.run_id, a.run_id]);
   assert.deepEqual((await api("GET", "/runs?status=failed")).body.runs.map((r) => [r.run_id, r.agent_id, r.error.code]), [[b.run_id, "two", "run_failed"]], "a failed run keeps its own error");
   assert.equal(all.runs[0].error, null);

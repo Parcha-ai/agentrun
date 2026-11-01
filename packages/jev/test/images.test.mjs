@@ -6,8 +6,10 @@ import test from 'node:test';
 import { createJevRunner, JevError } from '../dist/index.js';
 
 const HEADER = 'TypeSafe-Danger-Zone-Images';
-const png = (fill = 1) => Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, fill, 2, 3, 4]);
-const jpeg = (fill = 1) => Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, fill, 2, 3, 4]);
+// The smallest headers that name a size: a PNG's signature and IHDR, a JPEG's APP0 and first frame marker; `fill` makes the bytes differ.
+const be = (n, width) => Array.from({ length: width }, (_, i) => (n >>> (8 * (width - 1 - i))) & 0xff);
+const png = (fill = 1, width = 1, height = 1) => Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, ...be(width, 4), ...be(height, 4), 8, 2, 0, 0, 0, fill]);
+const jpeg = (fill = 1, width = 1, height = 1) => Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 4, fill, 2, 0xff, 0xc0, 0, 11, 8, ...be(height, 2), ...be(width, 2), 1, 1, 0x11, 0]);
 const asPng = bytes => ({ bytes, mime: 'image/png' });
 const asJpeg = bytes => ({ bytes, mime: 'image/jpeg' });
 const box = { top: 0.1, bottom: 0.6, left: 0.2, right: 0.5 };
@@ -202,4 +204,17 @@ test('a reference counts where it sits in a string value of the state, an instru
     assert.equal(sent.headers[HEADER.toLowerCase()], 'true', 'the request carries the image header');
     assert.deepEqual(sent.parts[sent.request.assets['<photo>'].part], png(), 'and the image as a file part');
   }
+});
+
+test('an image past Jev\'s 1568 px side is refused before any request, naming its size and the cap', async () => {
+  const t = transport(() => ok({ urgent: { type: 'noul', noul: 0.4 } }));
+  const ask = (bytes, mime) => createJevRunner({ ...quick, fetch: t.fetch })({ label: 't', kind: 'judge', state: { page: '<p>' }, questions: noulQuestions, assets: { '<p>': { bytes, mime } } });
+  for (const [bytes, mime, size] of [[png(1, 1569, 400), 'image/png', '1569x400'], [png(1, 1275, 1650), 'image/png', '1275x1650'], [jpeg(1, 400, 1569), 'image/jpeg', '400x1569']]) {
+    await assert.rejects(ask(bytes, mime), error => code('invalid_request')(error) && error.requestDiagnostic?.reason === 'invalid_assets' && error.message.includes(size) && error.message.includes('1568'));
+  }
+  await assert.rejects(ask(Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]), 'image/png'), error => code('invalid_request')(error) && /no width and height/.test(error.message));
+  assert.equal(t.seen.length, 0, 'nothing is sent');
+  await ask(png(1, 1568, 1568), 'image/png');
+  await ask(jpeg(1, 1190, 1540), 'image/jpeg');
+  assert.equal(t.seen.length, 2, 'at the cap and under it, the image goes');
 });

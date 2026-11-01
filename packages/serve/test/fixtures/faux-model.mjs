@@ -24,6 +24,51 @@ export default function reply(context, faux) {
   // Files the page as evidence with browser_read, then delivers the record.
   const read = first.includes("Read the example page");
   if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
+    // A node that says whether anything it can reach holds a decision key (Jev's or Parallel's): this process's
+    // environment (as its tools get it), the environment the kernel shows, the descriptor the server hands the keys on,
+    // and a program it starts.
+    // "..., once <file> exists." holds it until the test has made that file.
+    const canary = JSON.stringify(context);
+    if (canary.includes("Report the canary")) {
+      if (answered) return faux.message("Submitted.");
+      const gate = /Report the canary once (\S+?) exists\./.exec(canary)?.[1];
+      return (async () => {
+        const [{ CANARY: JEV }, { CANARY: PARALLEL }, { readFile }, { readFileSync, readlinkSync }, { spawnSync }] = await Promise.all([import("./faux-jev.mjs"), import("./faux-parallel.mjs"), import("node:fs/promises"), import("node:fs"), import("node:child_process")]);
+        const holds = (text) => typeof text === "string" && (text.includes(JEV) || text.includes(PARALLEL));
+        if (gate) await untilExists(gate);
+        const environ = await readFile("/proc/self/environ", "utf8").catch(() => "");
+        const fd = process.env.AGENTRUN_SERVE_DECISION_KEY_FD;
+        const sub = spawnSync("sh", ["-c", `${fd ? `[ -e /proc/$$/fd/${fd} ] && echo FD_OPEN; ` : ""}env`], { encoding: "utf8" });
+        // Whether the descriptor is a Unix socket, as the handed one is (one end of a socket pair): Node opens 3 to about
+        // 20 for itself, none a Unix socket, and a closed low number is soon one of them. Here and in a Node program it starts.
+        const handedSocket = (fd) => {
+          try {
+            const inode = /^socket:\[(\d+)\]$/.exec(readlinkSync(`/proc/self/fd/${fd}`))?.[1];
+            return inode !== undefined && readFileSync("/proc/self/net/unix", "utf8").split("\n").some((line) => line.trim().split(/\s+/)[6] === inode);
+          } catch {
+            return false;
+          }
+        };
+        // And a Node program, as a tool's effect would start one: what its environment holds and whether it got the
+        // descriptor.
+        const node = spawnSync(process.execPath, ["-e", `const { readFileSync, readlinkSync } = require("fs"); process.stdout.write(JSON.stringify({ leaked: Object.values(process.env).some((v) => v && (v.includes(${JSON.stringify(JEV)}) || v.includes(${JSON.stringify(PARALLEL)}))), fd_open: ${fd ? `(${handedSocket})(${fd})` : "false"} }))`], { encoding: "utf8" });
+        const nodeSaw = JSON.parse(node.stdout || "{}");
+        // The env this process gives its tools (ToolHost.env, made by withSecrets from the secrets fd 3 handed over):
+        // the module the run preloaded, so the same instance and the same secrets.
+        const secrets = await import(new URL("../../dist/secrets.js", import.meta.url).href);
+        const hostEnv = secrets.withSecrets(process.env);
+        return faux.message(faux.toolCall("submit", {
+          leaked: Object.values(process.env).some(holds) || holds(environ),
+          key_set: process.env.TYPESAFE_API_KEY !== undefined || process.env.PARALLEL_API_KEY !== undefined,
+          fd_open: fd ? handedSocket(fd) : false,
+          sub_leaked: holds(sub.stdout),
+          sub_fd_open: sub.stdout.includes("FD_OPEN"),
+          node_leaked: nodeSaw.leaked !== false,
+          node_fd_open: nodeSaw.fd_open !== false,
+          host_env_leaked: ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"].some((name) => holds(hostEnv[name]) || holds(secrets.secret(name))),
+        }), { stopReason: "toolUse" });
+      })();
+    }
     if ((browse || read) && results === 0) return faux.message(faux.toolCall(read ? "browser_read" : "snapshot", {}), { stopReason: "toolUse" });
     if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
@@ -41,11 +86,11 @@ export default function reply(context, faux) {
     const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
     return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
   }
-  // Fetches each URL its first message lists with fetch_page, one per turn, then says so.
-  const fetches = /^Fetch these pages: (.*)$/s.exec(first);
+  // Fetches each URL its first message lists with fetch_page (or the tool it names), one per turn, then says so.
+  const fetches = /^Fetch these pages(?: with (\w+))?: (.*)$/s.exec(first);
   if (fetches) {
-    const urls = JSON.parse(fetches[1]);
-    return results < urls.length ? faux.message(faux.toolCall("fetch_page", { url: urls[results] }), { stopReason: "toolUse" }) : faux.message("Fetched.");
+    const urls = JSON.parse(fetches[2]);
+    return results < urls.length ? faux.message(faux.toolCall(fetches[1] ?? "fetch_page", { url: urls[results] }), { stopReason: "toolUse" }) : faux.message("Fetched.");
   }
   if (browse) return results === 0 ? faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" }) : faux.message(`Seen: ${textOf(context.messages.at(-1))}`);
   // A follow-up whose answer starts only after a minute: a stop before then cuts it before its first content.
@@ -55,6 +100,19 @@ export default function reply(context, faux) {
     if (answered) return faux.message("I wrote report.md.");
     return faux.message(faux.toolCall("write", { path: "report.md", content: "# Report\n\nThe answer is 42.\n" }), { stopReason: "toolUse" });
   }
+  // A call that succeeds, then one that fails (the file is not there), then the answer.
+  if (first.includes("Write a note, then read a missing one")) {
+    if (results === 0) return faux.message(faux.toolCall("write", { path: "note.md", content: "noted" }), { stopReason: "toolUse" });
+    if (results === 1) return faux.message(faux.toolCall("read", { path: "missing.md" }), { stopReason: "toolUse" });
+    return faux.message("Wrote one, missed one.");
+  }
+  // One request that calls a tool, then the run's process exits on the next, without releasing the run.
+  if (first.includes("Crash after one request")) {
+    if (results === 0) return faux.message(faux.toolCall("write", { path: "note.md", content: "noted" }), { stopReason: "toolUse" });
+    process.exit(3);
+  }
+  // A tool name past what the agent store keeps (256 characters): pi answers that no such tool exists.
+  if (first.includes("Call a tool with a long name")) return results === 0 ? faux.message(faux.toolCall("t".repeat(300), {}), { stopReason: "toolUse" }) : faux.message("Called it.");
   if (last.includes("Take your time")) return slow(faux, 60_000, "Done slowly.");
   // Answers only once it is stopped: the answer lands after the stop, the race the server must not read as an answer.
   if (first.includes("Answer when stopped") && users.length === 1) return new Promise((resolve) => faux.signal?.addEventListener("abort", () => resolve(faux.message("Stopped, but here is the answer.")), { once: true }));

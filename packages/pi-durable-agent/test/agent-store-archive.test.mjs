@@ -86,10 +86,12 @@ test("nothing is deleted: an unarchive appends a row, and the database refuses a
 test("a store written before archiving (no archive_changes table) opens: the reader lists it with nothing archived, and the writer adds the table and archives", async () => {
   const { dir, store, runId } = await seeded();
   store.close();
-  // The one difference archiving makes to the file: drop it, and the file is as an earlier version wrote it.
+  // The differences archiving (and later, imports and run metrics) make to the file: drop them, and the file is as an earlier version wrote it.
   const db = new DatabaseSync(path.join(dir, "store.sqlite"));
-  for (const { type, name } of db.prepare("SELECT type, name FROM sqlite_master WHERE tbl_name = 'archive_changes' AND type != 'table'").all()) db.exec(`DROP ${type.toUpperCase()} ${name}`);
-  db.exec("DROP TABLE archive_changes");
+  for (const table of ["run_tool_metrics", "run_metrics", "run_imports", "archive_changes"]) {
+    for (const { type, name } of db.prepare("SELECT type, name FROM sqlite_master WHERE (tbl_name = ? OR sql LIKE '%' || ? || '%') AND type != 'table' AND sql IS NOT NULL").all(table, table)) db.exec(`DROP ${type.toUpperCase()} ${name}`);
+    db.exec(`DROP TABLE ${table}`);
+  }
   assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((r) => r.name), ["agents", "revisions", "runs", "skills"]);
   assert.equal(db.prepare("PRAGMA user_version").get().user_version, 1);
   db.close();

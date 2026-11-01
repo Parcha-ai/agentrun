@@ -13,7 +13,9 @@ export type SystemOneAnswer =
   | { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
   | { type: "noul"; noul: number }
   | { type: "score"; score: number; legend: Record<string, string>; probabilities: Record<string, number>; confidence: number }
-  | { type: "box"; box: SystemOneBox; confidence: number | null };
+  | { type: "box"; box: SystemOneBox; confidence: number | null }
+  /** The provider declined to answer this question. It is never decoded as a value. */
+  | { type: "refusal" };
 
 export type SystemOneResult = {
   answers: Record<string, SystemOneAnswer>;
@@ -95,6 +97,8 @@ export function compileQuestions(schema: Record<string, unknown>, definitions: R
 
 export function answersToValue(answers: Record<string, SystemOneAnswer>, questions: CompiledQuestions): Record<string, unknown> {
   const out: Record<string, unknown> = Object.create(null);
+  const refused = refusedQuestions(answers).filter((id) => Object.hasOwn(questions, id));
+  if (refused.length) throw refusalError(refused);
   for (const [id, q] of Object.entries(questions)) {
     const a = answers[id];
     if (!a) throw new Error(`System One returned no answer for question "${id}"`);
@@ -109,6 +113,7 @@ export function answersToValue(answers: Record<string, SystemOneAnswer>, questio
 
 export function answerConfidence(answer: SystemOneAnswer): number {
   if (!answer || typeof answer !== "object") throw new SystemOneError("System One answer missing for a question that was asked", null);
+  if (answer.type === "refusal") return 0;
   if (answer.type === "noul") return Math.abs(answer.noul - 0.5) * 2;
   // A box the provider reported no confidence for counts as none: unknown is never read as sure.
   return typeof answer.confidence === "number" ? answer.confidence : 0;
@@ -143,7 +148,7 @@ export function synthesizeAnswers(questions: Record<string, SystemOneQuestion>):
 export type SystemOneRetryClass = "http_429" | "http_5xx" | "connection" | "timeout";
 
 const responseReasons = ["answers_shape", "answer_keys", "answer_shape", "answer_type", "noul_probability",
-  "confidence", "box_coordinates", "probabilities", "probability_keys", "probability_mass", "score_legend", "score_consistency", "choice_option", "score_range"] as const;
+  "confidence", "box_coordinates", "probabilities", "probability_keys", "probability_mass", "score_legend", "score_consistency", "choice_option", "score_range", "refusal"] as const;
 export type SystemOneResponseReason = typeof responseReasons[number];
 export function isSystemOneResponseReason(value: unknown): value is SystemOneResponseReason {
   return typeof value === "string" && (responseReasons as readonly string[]).includes(value);
@@ -161,17 +166,20 @@ export class SystemOneError extends Error {
 
 const unit = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
 
-// System One reports probabilities rounded to two places, so the reported sum drifts from 1 by up to
-// half a step per option (3 × 0.33 = 0.99; 8 × 0.13 = 1.04). A distribution is accepted when it could
-// be that rounding of one summing to 1: a value on the two-place grid may be off by ±0.005 (within
-// [0, 1]); any other value is taken as exact. With no grid values this is |sum − 1| ≤ 1e-5, the
-// check for full-precision distributions. Answers are accepted as reported, never rescaled.
-const ROUNDING_HALF_STEP = 0.005;
-const onTwoPlaceGrid = (p: number) => Math.abs(p * 100 - Math.round(p * 100)) < 1e-9;
+// System One reports probabilities rounded, Jev to two places and some OpenRouter models to four (Cloudflare's clef,
+// live: 0.2967 + 0.6661 + 0.0371 = 0.9999), so the reported sum drifts from 1 by up to half a step per option
+// (3 × 0.33 = 0.99; 8 × 0.13 = 1.04). A distribution is accepted when it could be that rounding of one summing to 1: a
+// value on the two-, three- or four-place grid may be off by half that grid's step (within [0, 1]), the coarsest grid it
+// lies on; any other value is taken as exact. With no grid values this is |sum − 1| ≤ 1e-5, the check for
+// full-precision distributions. Answers are accepted as reported, never rescaled.
+const roundingHalfStep = (p: number): number => {
+  for (const places of [2, 3, 4]) { const scale = 10 ** places; if (Math.abs(p * scale - Math.round(p * scale)) < 1e-9 * scale / 100) return 0.5 / scale; }
+  return 0;
+};
 function roundedFromUnitMass(probabilities: number[]): boolean {
   let low = 0, high = 0;
   for (const p of probabilities) {
-    const step = onTwoPlaceGrid(p) ? ROUNDING_HALF_STEP : 0;
+    const step = roundingHalfStep(p);
     low += Math.max(0, p - step); high += Math.min(1, p + step);
   }
   return low <= 1 + 1e-5 && high >= 1 - 1e-5;
@@ -179,13 +187,13 @@ function roundedFromUnitMass(probabilities: number[]): boolean {
 // A Score's weighted level drifts the same way. The unrounded probabilities lie within their rounding
 // intervals and sum to 1, so Σ level·p lies between two bounds: start every level at its interval's
 // low end, then give the rest of the unit mass to the lowest levels (the minimum) or the highest (the
-// maximum), each up to its interval's high end. A score on the grid is itself off by up to 0.005. The
+// maximum), each up to its interval's high end. A score on a grid is itself off by up to half its step. The
 // score is accepted when its interval meets [min, max]; with no grid values this is
 // |score − Σ level·p| ≤ 1e-5. A score that is not a number contradicts nothing here and is left to
 // the range check, as before.
 function scoreContradictsDistribution(score: number, probabilities: Record<string, number>): boolean {
   const levels = Object.entries(probabilities).map(([level, p]) => {
-    const step = onTwoPlaceGrid(p) ? ROUNDING_HALF_STEP : 0;
+    const step = roundingHalfStep(p);
     return { level: Number(level), low: Math.max(0, p - step), high: Math.min(1, p + step) };
   }).sort((a, b) => a.level - b.level);
   const floor = levels.reduce((sum, l) => sum + l.level * l.low, 0);
@@ -196,7 +204,7 @@ function scoreContradictsDistribution(score: number, probabilities: Record<strin
     return weighted;
   };
   const min = fill(levels), max = fill([...levels].reverse());
-  const step = onTwoPlaceGrid(score) ? ROUNDING_HALF_STEP : 0;
+  const step = roundingHalfStep(score);
   return score - step > max + 1e-5 || score + step < min - 1e-5;
 }
 
@@ -207,6 +215,10 @@ export function validateAnswers(questions: Record<string, SystemOneQuestion>, an
   for (const [id, q] of Object.entries(questions)) {
     const a = (answers as Record<string, any>)[id];
     if (!a || typeof a !== "object") throw new SystemOneError("System One returned no answer for a question", null, undefined, "answer_shape");
+    if (a.type === "refusal") {
+      if (Object.keys(a).length !== 1) throw new SystemOneError("System One answer: a refusal carries nothing but its type", null, undefined, "answer_shape");
+      continue;
+    }
     if (a.type !== q.type) throw new SystemOneError("System One answer type does not match its question", null, undefined, "answer_type");
     if (q.type === "box") {
       const box = a.box;
@@ -230,4 +242,63 @@ export function validateAnswers(questions: Record<string, SystemOneQuestion>, an
     if (q.type === "choice" && !(typeof a.choice === "string" && Object.prototype.hasOwnProperty.call(q.criteria, a.choice))) throw new SystemOneError("System One answer: choice is not an option", null, undefined, "choice_option");
     if (q.type === "score" && !(typeof a.score === "number" && Number.isFinite(a.score) && a.score >= 0 && a.score <= q.criteria.length - 1)) throw new SystemOneError("System One answer: score is outside its levels", null, undefined, "score_range");
   }
+}
+
+/** The questions whose answer is a refusal, in answer order. */
+export function refusedQuestions(answers: Record<string, unknown>): string[] {
+  return Object.entries(answers).filter(([, a]) => isRecord(a) && a.type === "refusal").map(([id]) => id);
+}
+
+/** What `answersToValue` throws for a refused answer: the backstop. A decision node never gets this far, since `decide()`
+ *  escalates the run for review (DECISION_REFUSED) on a refusal first. */
+export function refusalError(ids: string[]): SystemOneError {
+  return new SystemOneError(`System One refused ${ids.length === 1 ? "question" : "questions"} ${ids.map((id) => `"${id}"`).join(", ")}`, null, undefined, "refusal");
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/** The confidence TypeSafe documents for Jev (docs.typesafe.ai/confidence), computed from an answer's probabilities: for a
+ *  choice of n options, (p - 1/n) / (1 - 1/n) for the chosen option's p, floored at 0; for a score of n levels, 1 minus
+ *  the probability-weighted distance from the most likely level (the lowest, on a tie) over that distance for an even
+ *  spread, floored at 0. Null when the probabilities are missing or are not a distribution over the answer's options. */
+export function deriveConfidence(answer: unknown): number | null {
+  if (!isRecord(answer) || !isRecord(answer.probabilities)) return null;
+  const probabilities = answer.probabilities;
+  const values = Object.values(probabilities);
+  const n = values.length;
+  if (n < 2 || !values.every(unit)) return null;
+  if (answer.type === "choice") {
+    if (typeof answer.choice !== "string" || !Object.hasOwn(probabilities, answer.choice)) return null;
+    return Math.min(1, Math.max(0, ((probabilities[answer.choice] as number) - 1 / n) / (1 - 1 / n)));
+  }
+  if (answer.type === "score") {
+    const levels = Array.from({ length: n }, (_, i) => probabilities[String(i)]);
+    if (!levels.every(unit)) return null;
+    const p = levels as number[];
+    const mode = p.indexOf(Math.max(...p));
+    const spread = p.reduce((sum, pi, i) => sum + pi * Math.abs(i - mode), 0);
+    const even = p.reduce((sum, _, i) => sum + Math.abs(i - (n - 1) / 2), 0) / n;
+    return Math.min(1, Math.max(0, 1 - spread / even));
+  }
+  return null;
+}
+
+/** Where an answer's confidence came from: the provider's response, or derived from its probabilities. */
+export type ConfidenceSource = "provider" | "derived";
+
+/** The answers with every choice and score carrying a confidence: the provider's own when it gave one in [0, 1], else
+ *  one derived from the probabilities (deriveConfidence), else 0, which validation then refuses with the probabilities
+ *  that left nothing to derive from. `confidence_source` names each choice and score answer's source. */
+export function completeConfidence(questions: Record<string, SystemOneQuestion>, answers: Record<string, unknown>): { answers: Record<string, unknown>; confidence_source: Record<string, ConfidenceSource> } {
+  // Null-prototype records: a question may be named __proto__, which on a plain object would set its prototype.
+  const out: Record<string, unknown> = Object.create(null);
+  const confidence_source: Record<string, ConfidenceSource> = Object.create(null);
+  for (const [id, answer] of Object.entries(answers)) {
+    const asked = Object.hasOwn(questions, id) ? questions[id] : undefined;
+    if (!isRecord(answer) || (answer.type !== "choice" && answer.type !== "score") || asked?.type !== answer.type) { out[id] = answer; continue; }
+    if (unit(answer.confidence)) { out[id] = answer; confidence_source[id] = "provider"; continue; }
+    out[id] = { ...answer, confidence: deriveConfidence(answer) ?? 0 };
+    confidence_source[id] = "derived";
+  }
+  return { answers: { ...out }, confidence_source: { ...confidence_source } };
 }

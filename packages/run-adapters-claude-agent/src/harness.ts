@@ -199,7 +199,8 @@ export interface ClaudeCodeHarnessOptions {
    * `claudeBuiltinReplay` (reads safe).
    */
   builtinReplay?: Record<string, ReplayPolicy> | ((name: string) => ReplayPolicy);
-  /** Provider-hosted tools the model may use (`web_search`, `web_fetch`); default none; refused with `network: 'deny-all'`. */
+  /** Provider-hosted tools the model may use; default none. `web_search` turns the CLI's WebSearch on, built-ins off or
+   *  not: each call recorded as a built-in's (the session's model proxy decides what the provider may run). */
   providerTools?: readonly ProviderTool[];
   /**
    * The model, a native Anthropic id (`claude-sonnet-4-5`) or a Gateway one
@@ -254,6 +255,9 @@ export const DEFAULT_MODEL = 'claude-sonnet-4-5';
 
 /** What the harness appends to the system prompt about the tools, before `instructions`, with the built-ins off and the app's tools there. */
 export const TOOLS_NOTE = `Your only tools are this app's, the mcp__${MCP_SERVER}__ tools; you have no shell, file, search or web tools of your own.`;
+
+/** `TOOLS_NOTE` with WebSearch on (`providerTools: ['web_search']`) and the other built-ins off. */
+export const WEB_SEARCH_NOTE = `Your only tools are this app's (the mcp__${MCP_SERVER}__ tools, if it has any) and WebSearch; you have no shell, file or fetch tools of your own.`;
 
 /** `TOOLS_NOTE` for a session with no tools at all (built-ins off, no `tools`). */
 export const NO_TOOLS_NOTE = 'You have no tools in this session: no shell, file, search or web tools. Answer from the conversation.';
@@ -392,6 +396,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
   const executable = options.executable ?? CLAUDE_VM_EXECUTABLE;
   const replay = typeof options.builtinReplay === 'function' ? options.builtinReplay : options.builtinReplay ? (name: string) => (options.builtinReplay as Record<string, ReplayPolicy>)[name] ?? claudeBuiltinReplay(name) : claudeBuiltinReplay;
   const providerTools = options.providerTools ?? [];
+  const webSearch = providerTools.includes('web_search');
   const log = options.log ?? (() => {});
   let sdk: Promise<ClaudeAgentSdk> | undefined;
   const loadSdk = (): Promise<ClaudeAgentSdk> => {
@@ -579,7 +584,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                       if (name === undefined) return deny(`Not run: ${JSON.stringify(String(asked).slice(0, 80))} is not one of this session's skills.`);
                       return name === asked ? allow() : allow({ ...input, skill: name });
                     }
-                    if (!builtinsOn) return deny("Not run: this session's only tools are its own.");
+                    // WebSearch, when on, takes the built-ins' path below: its intent recorded before it runs.
+                    if (!builtinsOn && !(webSearch && hook.tool_name === 'WebSearch')) return deny("Not run: this session's only tools are its own.");
                     if (ctx.signal.aborted) return deny('the session stopped');
                     let updated: Record<string, unknown> | undefined;
                     const field = FILE_TOOLS[hook.tool_name];
@@ -678,7 +684,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // Built-ins on: the allowed ones (less those whose state the log does not carry), each let through by
           // the PreToolUse hook once its intent is in the log. Off: the bridged tools are the only ones. Either
           // way nothing is asked of a user, and nothing else is permitted.
-          ...(allowed !== undefined ? { tools: skills ? [...allowed, 'Skill'] : allowed } : {}),
+          ...(allowed !== undefined ? { tools: [...allowed, ...(skills ? ['Skill'] : []), ...(webSearch && !allowed.includes('WebSearch') ? ['WebSearch'] : [])] } : {}),
           // The session's skills, from its own plugin: listed to the model and loadable, and no other.
           ...(skills ? { plugins: [{ type: 'local' as const, path: skills.plugin }], skills: [...skills.names] } : {}),
           disallowedTools: disallowed,
@@ -697,7 +703,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: [builtinsOn ? DRIVE_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
+            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
             snapshot: !recovered,
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),

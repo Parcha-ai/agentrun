@@ -1,0 +1,79 @@
+{
+  "description": "An escalate guarded by not field_type number stops the run on a score that is present but not a number.",
+  "workflow": {
+    "v": 2,
+    "name": "not-number-fires",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "code",
+          "label": "read",
+          "code": "s => ({ score: s.raw })"
+        },
+        {
+          "node": "escalate",
+          "label": "gate",
+          "when": {
+            "predicate": "not",
+            "of": {
+              "predicate": "field_type",
+              "path": "score",
+              "type": "number"
+            }
+          },
+          "kind": "review",
+          "stage": "gate",
+          "summary": "Score: {score}"
+        },
+        {
+          "node": "code",
+          "label": "accept",
+          "code": "s => ({ accepted: s.score })"
+        }
+      ]
+    }
+  },
+  "input": {
+    "raw": "abc"
+  },
+  "script": {
+    "code": {
+      "/root/steps/0": {
+        "return": {
+          "score": "abc"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "escalated",
+    "state": {
+      "raw": "abc",
+      "score": "abc"
+    },
+    "escalation": {
+      "kind": "review",
+      "stage": "gate",
+      "label": "gate"
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:read",
+        "node.end:read:ok"
+      ],
+      "/root/steps/1": [
+        "escalate.evaluated:gate:true"
+      ]
+    }
+  }
+}

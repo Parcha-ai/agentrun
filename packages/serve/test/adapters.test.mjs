@@ -2,7 +2,7 @@
 // other provider, a missing key, or a gateway under a path the proxy cannot reach is a reason capabilities shows.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { claudeProvider, codexProvider, HarnessUnavailable, priceOf } from "../dist/adapters.js";
+import { claudeModel, claudeModelId, claudeOf, claudeProvider, codexProvider, HarnessUnavailable, priceOf } from "../dist/adapters.js";
 
 const openai = { provider: "openai", modelId: "gpt-5.4-mini" };
 const refused = (pattern) => (error) => error instanceof HarnessUnavailable && pattern.test(error.message);
@@ -54,6 +54,21 @@ test("the model id codex is given is the one model.ts chose: OpenAI's own id dir
   assert.equal((await chooseModel({ ...gateway, AGENT_MODEL_GATEWAY_IDS: "bare" }, "openai/gpt-4o")).model.modelId, "gpt-4o", "unless the gateway takes bare ids");
 });
 
+test("the model id claude-agent sends and prices is Anthropic's own: dots as dashes, as a gateway such as OpenRouter names its models with dots", () => {
+  assert.equal(claudeModelId({ provider: "anthropic", modelId: "claude-sonnet-5.5" }), "claude-sonnet-5-5", "OpenRouter's name, as Anthropic's id");
+  assert.equal(claudeModelId({ provider: "anthropic", modelId: "claude-sonnet-5-5" }), "claude-sonnet-5-5", "Anthropic's own id, unchanged");
+  assert.equal(claudeModelId({ provider: "anthropic", modelId: "claude-haiku-4.5" }), "claude-haiku-4-5");
+  assert.equal(claudeModelId({ provider: "other", modelId: "a.b" }), "a.b", "another provider's id is never rewritten");
+});
+
+test("claude-agent's model is one provider and the model's own id: the doubled anthropic/anthropic/<model> is refused, naming the form to use", () => {
+  assert.deepEqual(claudeModel({}, "anthropic/claude-sonnet-5.5"), { model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } }, "the run's model is Anthropic's own id, for every lookup of it");
+  const doubled = claudeModel({}, "anthropic/anthropic/claude-sonnet-5.5");
+  assert.equal(doubled.host, false, "the revision's own model: a refusal at save, which no host setting fixes");
+  assert.match(doubled.why, /name it anthropic\/claude-sonnet-5\.5\./);
+  assert.equal(claudeModel({ AGENT_MODEL: "anthropic/anthropic/claude-haiku-4.5" }, undefined).host, true, "the host's default: a setting of the host");
+});
+
 test("a gateway base with a path: codex sends to <base>/v1/responses and claude-agent to <base>/v1/messages, a trailing /v1 taken once, so one OpenRouter-style base serves both", () => {
   const anthropic = { provider: "anthropic", modelId: "claude-sonnet-5-5" };
   const key = `not-a-secret-${"k"}`;
@@ -96,4 +111,45 @@ test("a gateway base that could send a key somewhere else than it reads is refus
   // A loopback gateway may be plain http (a local server, or a test's).
   assert.equal(codexProvider({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000/api/v1" }, { provider: "agent-model", modelId: "x" }).origin, "http://127.0.0.1:4000/api");
   assert.equal(claudeProvider({ ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "http://localhost:5000" }, anthropic).origin, "http://localhost:5000");
+});
+
+test("claude-agent with no SDK and no key: the reason is the missing SDK, with its install line, never the key a person would set first", async () => {
+  const real = await import("@parcha/agentrun-claude-agent");
+  // The package itself is here (as in serve's image); its SDK is not: the adapter's own check, with nothing installed.
+  const noSdk = async () => ({ ...real, claudeAgentAdapter: () => real.verifyClaudeAgent({}, () => undefined) });
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
+  await assert.rejects(claudeOf({}, needs, noSdk), (error) => {
+    assert.ok(error instanceof HarnessUnavailable, String(error));
+    assert.match(error.message, /not installed/);
+    assert.match(error.message, /npm install (?:--?[A-Za-z][A-Za-z-]* )*@/, "with its install line, as the image smoke reads it");
+    assert.doesNotMatch(error.message, /ANTHROPIC_API_KEY/);
+    return true;
+  });
+  // With the SDK in place, a missing key is still said.
+  const sdk = async () => ({ ...real, claudeAgentAdapter: () => ({ id: "claude-agent" }) });
+  await assert.rejects(claudeOf({}, needs, sdk), refused(/claude-agent needs ANTHROPIC_API_KEY/));
+});
+
+test("claude-agent's native skills reach the adapter as serve gives them, and an adapter with none is given no skills option", async () => {
+  const real = await import("@parcha/agentrun-claude-agent");
+  const given = [];
+  const load = async () => ({ ...real, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
+  const env = { ANTHROPIC_API_KEY: `not-a-secret-${"k"}` };
+  const skills = [{ name: "cite", files: { "SKILL.md": "---\nname: cite\ndescription: Cite sources.\n---\nCite.\n", "reference/sources.md": "Primary first.\n" } }];
+  await claudeOf(env, { ...needs, skills }, load);
+  await claudeOf(env, { ...needs, skills: [] }, load);
+  await claudeOf(env, needs, load);
+  assert.deepEqual(given[0].skills, skills, "the skills, as given");
+  assert.deepEqual(given.slice(1).map((options) => "skills" in options), [false, false], "none: no option, so the adapter keeps its Skill tool off");
+});
+
+test("claude-agent's check of skills is the installed adapter's own skillProblems; none where the package is not installed", async () => {
+  const { claudeSkillCheck } = await import("../dist/adapters.js");
+  assert.equal(typeof claudeSkillCheck, "function", "adapters.js exports claudeSkillCheck");
+  const real = await import("@parcha/agentrun-claude-agent");
+  assert.equal(await claudeSkillCheck(async () => real), real.skillProblems, "the adapter's own function, not a copy");
+  assert.equal(await claudeSkillCheck(), real.skillProblems, "by default, the package installed beside serve");
+  assert.equal(await claudeSkillCheck(() => Promise.reject(new Error("Cannot find package"))), undefined, "not installed: no check, so every skill stays inlined");
+  assert.equal(await claudeSkillCheck(async () => ({ ...real, skillProblems: undefined })), undefined, "an adapter with no check of its own: none");
 });

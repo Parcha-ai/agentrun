@@ -1,0 +1,43 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents?archived=true"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "agents": [
+      {
+        "agent_id": "recipe-scaler",
+        "definition": {
+          "id": "recipe-scaler",
+          "version": 1,
+          "name": "Recipe scaler",
+          "description": "Scales a recipe to a number of servings. Archived: replaced by a spreadsheet.",
+          "instructions": "Scale the recipe to the servings the person asks for, in grams and millilitres.",
+          "harness": "pi",
+          "skills": [],
+          "tools": []
+        },
+        "kind": "agentic",
+        "revision": "c1f1fc29267d935cc1594481a868997dc77d1d539cc351dea2330acd96786404",
+        "revisions": 1,
+        "source": null,
+        "skills": [],
+        "sign_ins": [],
+        "runs": {
+          "count": 2,
+          "live": 0
+        },
+        "region": "local",
+        "home_etag": "\"c1f1fc29267d935cc1594481a868997dc77d1d539cc351dea2330acd96786404\"",
+        "archived_at": "2026-10-28T19:33:46.064Z",
+        "created_at": "2026-10-28T19:32:58.523Z",
+        "updated_at": "2026-10-28T19:32:58.964Z"
+      }
+    ],
+    "next_cursor": null
+  }
+}
