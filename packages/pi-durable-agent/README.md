@@ -730,7 +730,8 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 
 Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
-`FoldSpec`, `ToolResultView`, and `RunMetrics` and `ToolMetrics` (what `runMetricsOf` returns).
+`FoldSpec`, `ToolResultView`, `RunMetrics` and `ToolMetrics` (what `runMetricsOf` returns), and `DecisionLike` (a
+workflow's decision receipt, as `runMetricsOf` reads it).
 
 ### `@parcha/pi-durable-agent/serve`
 
