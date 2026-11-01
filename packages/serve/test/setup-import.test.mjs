@@ -137,7 +137,7 @@ test("open setup with a public address, though it listens on loopback (behind a 
   assert.equal(agentsIn(server.data), 0);
 });
 
-test("an import at setup that cannot open the store (held past its wait) is said, and the server goes on serving", { timeout: 60_000 }, async (t) => {
+test("an import at setup that cannot open the store (held past its wait) holds up no request, is said, and the server goes on serving", { timeout: 60_000 }, async (t) => {
   // A rejection nothing handles would end a server: the import's own failure must be handled where it happens.
   const unhandled = [];
   const listen = (reason) => unhandled.push(reason);
@@ -148,8 +148,12 @@ test("an import at setup that cannot open the store (held past its wait) is said
   const holder = new DatabaseSync(join(server.data, "store.sqlite"));
   holder.exec("BEGIN EXCLUSIVE");
   try {
+    const asked = Date.now();
     const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
     assert.equal(made.status, 201, made.text);
+    // The import waits for the store on its own thread: the setup's answer and the next request do not.
+    assert.equal((await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json.state, "running");
+    assert.ok(Date.now() - asked < 2_000, `answered in ${Date.now() - asked} ms while the store is held`);
     await sleep(6_500);
     assert.equal((await call(server.port, { path: "/v2/auth/session" })).status, 200, "the server is still up");
     assert.deepEqual((await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json, { state: "stopped" }, "the owner reads it stopped");

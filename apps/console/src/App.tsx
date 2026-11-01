@@ -42,8 +42,9 @@ function setupCodeOnce(): string | null {
   return capturedSetup.code;
 }
 
-/** How often the console reads an import under way. Exported for its test. */
+/** How often the console reads an import under way, and how many failed reads in a row end its watch. */
 export const IMPORT_POLL_MS = 1000;
+const IMPORT_READ_TRIES = 30;
 
 /** The import asked for at setup, as a line. */
 function importLine(s: ImportState): string {
@@ -105,17 +106,25 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [error, setError] = useState<string | null>(null);
   const asked = useRef(0);
   const go = (hash: string) => { location.hash = hash; };
-  // The import asked for at setup (here, or before the server restarted): read until it ends, then the agents' names again.
+  // The import asked for at setup (here, or before the server restarted): read until it ends, a failed read tried again.
+  // One that ends while this page watches has what the page shows read again (`refreshed`).
   const [imported, setImported] = useState<ImportState | null>(null);
-  const [namesTry, setNamesTry] = useState(0);
+  const [refreshed, setRefreshed] = useState(0);
   useEffect(() => {
     let live = true;
     (async () => {
-      for (;;) {
-        const s = await v2.setupImport().catch(() => null);
-        if (!live || !s || !("state" in s)) return;
-        setImported(s);
-        if (s.state !== "running") return void setNamesTry((n) => n + 1);
+      let watched = false;
+      for (let failed = 0; live && failed < IMPORT_READ_TRIES; ) {
+        const s = await v2.setupImport().then((r) => r, () => undefined);
+        if (!live) return;
+        if (s === undefined) failed += 1;
+        else {
+          failed = 0;
+          if (!s || !("state" in s)) return;
+          setImported(s);
+          if (s.state !== "running") return void (watched && setRefreshed((n) => n + 1));
+          watched = true;
+        }
         await new Promise((r) => setTimeout(r, IMPORT_POLL_MS));
       }
     })();
@@ -135,7 +144,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       }
       setNames(all);
     })().catch(() => {});
-  }, [v2, namesTry]);
+  }, [v2, refreshed]);
   useEffect(() => {
     if (where.section !== "runs" || where.run) return;
     // Only the newest request lands: a slower answer for all runs never replaces one agent's runs, or the reverse.
@@ -144,7 +153,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     (where.runsOf ? v2.listAgentRuns(where.runsOf) : v2.listRuns())
       .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); } })
       .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
-  }, [v2, where]);
+  }, [v2, where, refreshed]);
   const agentName = (id: string) => names[id] ?? id;
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string } } | null;
   // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
@@ -167,7 +176,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         setPick((p) => (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
       })
       .catch((e) => setStartError(e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)));
-  }, [v2, where.section, retry]);
+  }, [v2, where.section, retry, refreshed]);
   useEffect(() => {
     if (where.section !== "mission") return;
     let live = true;
@@ -176,7 +185,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .then(([s, r]) => { if (live) setMission(missionFrom(s, r.runs)); })
       .catch((e) => { if (live) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
     return () => { live = false; };
-  }, [v2, where.section, missionTry]);
+  }, [v2, where.section, missionTry, refreshed]);
   const revsAsked = useRef(0);
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
@@ -215,7 +224,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
         : where.section === "agents"
-        ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} go={go} /> : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={editorCaps} agentId={where.agent} go={go} />
+        ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} /> : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={editorCaps} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor) : v2.listRuns(50, cursor)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); } }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}

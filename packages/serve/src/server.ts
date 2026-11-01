@@ -1,6 +1,7 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { chmod, lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -8,7 +9,8 @@ import type { AddressInfo } from "node:net";
 import { homedir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { type AgentStore, type NewRevision, openStore, type Revision } from "@parcha/pi-durable-agent";
+import { Worker } from "node:worker_threads";
+import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
@@ -17,7 +19,8 @@ import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
-import { IMPORT_ASKED, planImport, runImport } from "./import.js";
+import { IMPORT_ASKED } from "./import.js";
+import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
@@ -354,14 +357,31 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
-  // on loopback), planned once (a listing, no transcript kept), run once.
+  // on loopback), planned once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
+  // a busy store's wait and the sessions' parsing never hold up a request.
   const offersImport = options.openSetup === true && options.publicUrl === undefined && isLoopback(host);
-  const sessionsOptions = () => ({ home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), env: process.env });
-  let planned: ReturnType<typeof planImport> | undefined;
-  const sessionsPlan = () => (planned ??= planImport(sessionsOptions()));
+  const workers = new Map<Worker, Promise<unknown>>();
+  const onWorker = (task: ImportTask["task"]): Promise<ImportAnswer> =>
+    new Promise((answered, failed) => {
+      const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
+        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}) } satisfies ImportTask,
+      });
+      workers.set(worker, once(worker, "exit").catch(() => undefined));
+      let answer: ImportAnswer | undefined;
+      worker.on("message", (message: ImportAnswer) => void (answer = message));
+      worker.once("error", failed);
+      worker.once("exit", (code) => {
+        workers.delete(worker);
+        if (answer) answered(answer);
+        else failed(new Error(`the import's worker ended (${code}) with no answer`));
+      });
+    });
+  let planned: Promise<ImportAnswer> | undefined;
+  // A count that failed is asked again by the next read.
+  const sessionsPlan = () => (planned ??= onWorker("plan").catch((error: unknown) => { planned = undefined; throw error; }));
   // The owner's yes, kept until the import ends: a server stopped (or killed) mid-import goes on with it at its next start.
   const importAsked = join(data, IMPORT_ASKED);
-  const stopping = new AbortController();
+  let closing = false;
   let importing: Promise<void> | undefined;
   /** The import at setup as the owner's console reads it: running, done with what it took, or stopped (the next start
    *  goes on with it). */
@@ -370,21 +390,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const importAtSetup = () =>
     (importing ??= (async () => {
       importState = { state: "running" };
-      let store: AgentStore | undefined;
       try {
-        // A connection of its own, which waits for the store: the server's own never waits on a request's path.
-        store = openStore(data);
-        const report = await runImport(store, await planImport(sessionsOptions(), store), { ...sessionsOptions(), signal: stopping.signal });
-        if (stopping.signal.aborted) return void (importState = { state: "stopped" });
+        const answer = await onWorker("import");
+        if (!("took" in answer)) return void (importState = { state: "stopped" });
         await rm(importAsked, { force: true });
-        const took = { agents: report.agents.length, runs: report.agents.reduce((n, a) => n + a.runs + a.finished, 0), skipped: report.skipped.length };
-        importState = { state: "done", ...took };
-        process.stdout.write(`${logLine("import", took)}\n`);
+        importState = { state: "done", ...answer.took };
+        process.stdout.write(`${logLine("import", answer.took)}\n`);
       } catch (error) {
         importState = { state: "stopped" };
-        process.stderr.write(`agentrun-serve: the import at setup stopped (the next start goes on with it): ${(error as Error).message}\n`);
-      } finally {
-        store?.close();
+        if (!closing) process.stderr.write(`agentrun-serve: the import at setup stopped (the next start goes on with it): ${(error as Error).message}\n`);
       }
     })());
   if (offersImport && existsSync(importAsked)) void importAtSetup();
@@ -720,8 +734,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         // Before the owner is set, to the setup page: how many projects and sessions the box would import.
         if (!me.hasPassword()) {
           pageRead(req);
-          const plan = await sessionsPlan();
-          return send(res, 200, { projects: plan.projects.length, sessions: plan.projects.reduce((n, p) => n + p.sessions.length, 0) });
+          const counted = await sessionsPlan();
+          if (!("sessions" in counted)) throw new ApiError("not_found", "no route /v2/setup/import");
+          return send(res, 200, { projects: counted.projects, sessions: counted.sessions });
         }
         // After, to the signed-in owner: the import asked for at setup, running, done or stopped.
         if (!signedIn(req, me) || importState === undefined) throw new ApiError("not_found", "no route /v2/setup/import");
@@ -985,8 +1000,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
     async close() {
-      // An import under way stops between two sessions and is waited for: nothing writes the store after close.
-      stopping.abort();
+      // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
+      // after close.
+      closing = true;
+      for (const worker of workers.keys()) worker.postMessage("stop");
+      await Promise.all(workers.values());
       await importing;
       await runs.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));

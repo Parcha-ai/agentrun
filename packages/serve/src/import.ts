@@ -47,7 +47,8 @@ export type ImportOptions = {
   now?: number;
   /** The temp directory whose projects are left out (default the OS's). */
   temp?: string;
-  /** Stops the import between two sessions (a server shutting down): what is written stays, and the next import goes on from there. */
+  /** Stops the import between two session files, planned or taken (a server shutting down): what is written stays, and
+   *  the next import goes on from there. */
   signal?: AbortSignal;
 };
 export type Skipped = { what: string; why: string };
@@ -98,7 +99,7 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 
 /** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Reads no turns,
  *  and no file `store`'s imports already read whole and that has not changed since. */
-export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir() }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
+export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), signal }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
   const skipped: Skipped[] = [];
   const seen = store ? await filesIn(store) : new Map<string, SourceFile>();
   let already = 0;
@@ -106,6 +107,7 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
     for (const file of await sessionFiles(home, source)) {
+      if (signal?.aborted) break;
       const stats = await stat(file).catch(() => null);
       if (!stats) continue;
       if (sameFile(seen.get(hash(file)), stats)) {
