@@ -2,14 +2,15 @@
 // and its tokens are a REQUEST_COST entry the run's usage row and its metrics sum (request-start.ts): its cost, the cost
 // its end stores, its graph's total and /v2/stats count it there, and nowhere a second time.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { REQUEST_COST, REQUEST_STARTED, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
 import { spentIn } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
-import { flowAgent, follow, serve, storeRun } from "./support.mjs";
+import { processAlive } from "@parcha/agentrun-adapters/host";
+import { flowAgent, follow, scratch, serve, storeRun } from "./support.mjs";
 
 const FAUX_PRICED = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
 
@@ -70,4 +71,44 @@ test("a completion's cost mark carries its tokens as pi counts them, the cache a
   ]);
   const m = runMetricsOf(marks);
   assert.deepEqual([m.input, m.cacheRead, m.cacheWrite, m.output, m.requests, m.unmetered], [200, 800, 30, 50, 2, 1], "1030 tokens in, each once; the zeros are no count");
+});
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function until(check, what, ms = 30_000) {
+  for (const end = Date.now() + ms; ; await sleep(50)) {
+    const value = await check();
+    if (value) return value;
+    assert.ok(Date.now() < end, `waited for ${what}`);
+  }
+}
+
+test("a workflow resumed after its process died counts an llm call it made before once in its graph while it goes: the rows read at the death hold it", async (t) => {
+  const { api, data } = await serve(t, { faux: FAUX_PRICED });
+  // The call answers once the gate exists; then a model node, held by a pause, so the process dies with nothing in flight.
+  const flow = {
+    ...llmFlow, schemas: { ...llmFlow.schemas, Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } } },
+    output: { schemaId: "Answer", path: "after" },
+    root: { node: "chain", steps: [...llmFlow.root.steps, { node: "extract", label: "after", instructions: "Answer the question.", out: "Answer", as: "after" }] },
+  };
+  assert.equal((await api("POST", "/agents", flowAgent("resumer", flow, { tools: ["llm"] }))).status, 201);
+  const gate = join(await scratch(t), "go");
+  const { body } = await api("POST", "/agents/resumer/runs", { input: { question: `Answer once ${gate} exists.` } });
+  const dir = join(data, "runs", body.run_id);
+  const log = async () => (await readFile(join(dir, "nodes.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  await until(async () => (await log()).some((line) => line.t === "effect.start" && line.tool === "llm"), "the call");
+  assert.equal((await api("POST", `/runs/${body.run_id}/pause`)).status, 200);
+  await writeFile(gate, "");
+  const answered = await until(async () => (await log()).find((line) => line.t === "effect.end" && line.tool === "llm"), "the call's answer");
+  const paid = answered.output.cost_usd;
+  assert.ok(paid > 0);
+  // Its completion committed, the run waits at the pause; its process dies, and the server opens it again.
+  await sleep(1_000);
+  const { holder, generation } = JSON.parse(await readFile(join(dir, "run.json"), "utf8"));
+  t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  process.kill(holder.pid, "SIGKILL");
+  await until(async () => { const next = JSON.parse(await readFile(join(dir, "run.json"), "utf8").catch(() => "{}")); return next.generation > generation && next.holder?.pid !== holder.pid && processAlive(next.holder.pid) && next; }, "the run opened again");
+  const graph = (await api("GET", `/runs/${body.run_id}/graph`)).body;
+  assert.deepEqual([graph.run.status, graph.totals.cost_usd], ["paused", paid], "the earlier call once: in the rows read at the death, not again from the node log");
+  assert.equal((await api("POST", `/runs/${body.run_id}/cancel`)).status, 202);
+  await follow(api, body.run_id, ["cancelled"]);
 });

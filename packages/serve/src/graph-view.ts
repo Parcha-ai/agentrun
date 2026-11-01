@@ -27,6 +27,8 @@ export type GraphInput = {
   input: unknown;
   /** The model nodes' cost from the run's rows (read once it ended; 0 before), null when unknown. */
   modelCost: number | null;
+  /** How many of its llm calls' answers its node log held when its rows were last read: their cost is in `modelCost`. */
+  llmRead?: number;
 };
 
 type Frame = { done?: string[]; states?: Record<string, unknown>; inputs?: Record<string, unknown>; steps?: Record<string, unknown>; routes?: Record<string, { branch?: string }>; decisions?: Record<string, Record<string, { status?: string }>>; failures?: Record<string, unknown>; partial?: { path?: string } };
@@ -197,8 +199,10 @@ export async function runGraph(given: GraphInput) {
   }
 
   // The run's spend: its decisions', its llm calls' and its model nodes'; one unknown makes it unknown. An llm call's cost
-  // is in the model nodes' once the run's rows are read at its end (its REQUEST_COST mark); before, from the node log.
-  const calls = given.ended ? [] : effects.filter((e) => e.tool === "llm" && e.status === "done").map((e) => (isObject(e.output) && typeof e.output.cost_usd === "number" ? e.output.cost_usd : null));
+  // is a REQUEST_COST entry, in `modelCost` once the run's rows hold it: the first `llmRead` answers of the node log (an
+  // answer is logged after its cost is committed). Only the later ones are counted from the node log.
+  const answers = lines.filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done");
+  const calls = answers.slice(given.llmRead ?? 0).map((line) => (line.t === "effect.end" && isObject(line.output) && typeof line.output.cost_usd === "number" ? line.output.cost_usd : null));
   const costs: Array<number | null> = [...decisions.map((d) => d.cost_usd), ...calls, given.modelCost];
   const cost = costs.some((c) => c === null) ? null : Math.round((costs as number[]).reduce((a, b) => a + b, 0) * 1e8) / 1e8;
   const startedMs = Date.parse(given.run.startedAt);

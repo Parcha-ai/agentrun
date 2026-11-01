@@ -27,7 +27,7 @@ import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV, thinkingOf, withoutFaux } from "./model.js";
-import { pausedIn, RUN_PAUSED } from "./pause.js";
+import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
@@ -168,6 +168,9 @@ export type Run = {
   decisionCost?: number | null;
   /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). */
   decisions?: Record<string, unknown>[];
+  /** How many of a workflow run's llm calls' answers its node log held when its rows were last read: their cost is in its
+   *  rows (each a REQUEST_COST entry, committed before its answer is logged), so its graph counts only the later ones. */
+  llmRead?: number;
   /** What every conversation of its store says it used, as the settle that ends it read them. */
   metrics?: RunMetrics;
   relaunches: number;
@@ -517,6 +520,7 @@ export class Runs {
       const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
       // Decisions it cannot read add no rows: the run's cost read says unknown (readDecisionCost).
       try { run.decisions = durableDecisions(file); } catch { run.decisions = undefined; }
+      run.llmRead = (await readNodeLog(run.dir)).filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done").length;
     }
     run.working = false;
     noteAnswer(run, entries);
@@ -1328,7 +1332,7 @@ export class Runs {
     const { runGraph } = await import("./graph-view.js");
     const given = {
       run: { id: run.id, agent: run.agentId, revision: run.revision, status, paused: status === "paused", startedAt: run.meta.created_at, endedAt: ended ? (run.endedAt ?? run.updatedAt) : null },
-      ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows),
+      ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows), llmRead: run.llmRead ?? 0,
     };
     // A poll never answers home_busy: a store still held answers the live view, or the last whole one, marked stale.
     try {
