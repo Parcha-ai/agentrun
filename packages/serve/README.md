@@ -345,8 +345,10 @@ typed answers and their probabilities.
   "not_set_up_here", needs: ["PARALLEL_API_KEY"]}}`. A provider this server does not have refuses the save, `422`.
 - Each question's receipt is a row of the run's store (`agentrun.decisions`) before its answer acts, and a resumed run
   takes an answered one instead of asking again.
-- Jev's API reports no cost. A receipt keeps its cost unknown (`null`), and so does the run: its `cost.usd` reads
-  `null`, never `0`, while any of its decisions' costs is unknown.
+- Jev's API reports token counts and no price, so each answered decision is booked at TypeSafe's published price
+  ($0.042 per million input tokens; output tokens are free) as an estimate, and the run's `cost.usd` is its decisions'
+  sum, with `basis: "estimate"`. A decision whose cost is unknown (no token counts, the OpenRouter route, or a call that
+  failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
 - The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
   server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands the values to a workflow
   run's process once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS
