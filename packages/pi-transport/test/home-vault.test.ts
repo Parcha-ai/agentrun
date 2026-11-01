@@ -30,7 +30,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { Box, BoxExecOptions, BoxProcess } from "../src/box/box.ts";
 import { BoxError } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
-import { checkpointStats, localVault, pullCheckpoint } from "../src/home/checkpoint.ts";
+import { type CheckpointVault, checkpointStats, localVault, pullCheckpoint } from "../src/home/checkpoint.ts";
 import { dirStore } from "../src/home/dir-store.ts";
 import type { HomeHandle } from "../src/home/host.ts";
 import { type MoveError, type Place, recoverHome } from "../src/home/move.ts";
@@ -403,6 +403,65 @@ describe("a hostile box", () => {
 			expect(notPlain(vaultDirectory)).toEqual([]);
 		});
 	}
+});
+
+describe("the vault's contents", () => {
+	it("are never swept while a generation is in the making or a content is being written, and go once nothing names them", async () => {
+		const vault = localVault(fresh("vault"));
+		const holds = (text: string) => vault.holds("s", sha(text), text.length, context);
+		const pending = getOrThrow(await vault.begin("s", context));
+		const writer = getOrThrow(await vault.keep("s", sha("in the making"), 13, context));
+		await writer.write(Buffer.from("in the making"));
+		getOrThrow(await writer.end());
+		// Another pull gives up and a prune runs: neither removes what the generation in the making relies on.
+		await vault.discard(getOrThrow(await vault.begin("s", context)));
+		getOrThrow(await vault.prune("s", 1, context));
+		expect(await holds("in the making")).toBe(true);
+		// Given up itself, with nothing else in the making: what no record names goes.
+		await vault.discard(pending);
+		expect(await holds("in the making")).toBe(false);
+		// A content still being written is not swept from under its writer.
+		const half = getOrThrow(await vault.keep("s", sha("half"), 4, context));
+		await half.write(Buffer.from("ha"));
+		getOrThrow(await vault.prune("s", 1, context));
+		await half.write(Buffer.from("lf"));
+		getOrThrow(await half.end());
+		expect(await holds("half")).toBe(true);
+		getOrThrow(await vault.prune("s", 1, context));
+		expect(await holds("half")).toBe(false);
+	});
+
+	it("that the host cannot write (a full disk) end the pull at once, with the host's error, and leave no half behind", async () => {
+		const fx = await source();
+		writeFileSync(join(fx.place.workspace, "a.txt"), "alpha");
+		const directory = fresh("vault");
+		const inner = localVault(directory);
+		const full: CheckpointVault = {
+			...inner,
+			async keep(session, sha256, bytes, ctx) {
+				const opened = await inner.keep(session, sha256, bytes, ctx);
+				if (!opened.ok) return opened;
+				return ok({
+					...opened.value,
+					write: async () => {
+						throw Object.assign(new Error("no space left on the device"), { code: "ENOSPC" });
+					},
+				});
+			},
+		};
+		const stats = checkpointStats();
+		const started = performance.now();
+		const pulled = await pullCheckpoint(
+			{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault: full, stats },
+			context,
+		);
+		expect(pulled.ok ? "" : pulled.error.reason).toBe("failed");
+		expect(pulled.ok ? "" : pulled.error.message).toMatch(/could not keep a\.txt: no space left on the device/);
+		// Not held until a stall or the hold's end (60 s and 120 s): the failed write ends the copy.
+		expect(performance.now() - started).toBeLessThan(10_000);
+		expect(readdirSync(join(directory, "s", "contents"))).toEqual([]);
+		expect(getOrThrow(await inner.latest("s", context))).toBeUndefined();
+	});
 });
 
 describe("a generation an earlier version kept", () => {

@@ -1455,8 +1455,11 @@ const CONTENT_FILES_SCRIPT = `umask 077; cd -- "$1" || exit 3; mkdir -p -- "$2" 
 /** Where a file's content goes on the host: kept whole under its SHA-256, or not at all. */
 export type ContentSink = {
 	write(bytes: Uint8Array): Promise<void>;
-	/** The content is whole: kept only when it is the SHA-256 and the size it was opened with. */
-	end(): Promise<Result<void, Error>>;
+	/**
+	 * The content is whole: kept only when it is the SHA-256 and the size it was opened with. An error with the code
+	 * `invalid` says it was not; any other is the host's own (a full disk).
+	 */
+	end(): Promise<Result<void, Error & { readonly code?: string }>>;
 	/** Nothing is kept. */
 	abort(): Promise<void>;
 };
@@ -1506,6 +1509,14 @@ function contentSink(
 						: `${item.path} is not as it was when the checkpoint was taken`,
 				),
 			);
+		const notKept = (item: WantedContent, cause: unknown) =>
+			fail(
+				new WorkspaceError(
+					"transfer_failed",
+					`could not keep ${item.path}: ${cause instanceof Error ? cause.message : String(cause)}`,
+					cause,
+				),
+			);
 		return ok({
 			stdin: {
 				write: async (chunk) => {
@@ -1517,25 +1528,24 @@ function contentSink(
 						if (item === undefined) throw changed(undefined);
 						if (sink === undefined) {
 							const opened = await keep(item.sha256, item.bytes);
-							if (!opened.ok) {
-								throw fail(
-									new WorkspaceError(
-										"transfer_failed",
-										`could not keep ${item.path}: ${opened.error.message}`,
-									),
-								);
-							}
+							if (!opened.ok) throw notKept(item, opened.error);
 							sink = opened.value;
 							left = item.bytes;
 						}
 						const take = Math.min(left, chunk.length - at);
-						await sink.write(chunk.subarray(at, at + take));
+						// A write the host cannot make (a full disk) ends this side now, with its error: the copy does not
+						// wait for a stall to notice.
+						try {
+							await sink.write(chunk.subarray(at, at + take));
+						} catch (cause) {
+							throw notKept(item, cause);
+						}
 						at += take;
 						left -= take;
 						if (left === 0) {
 							const done = await sink.end();
 							sink = undefined;
-							if (!done.ok) throw changed(item);
+							if (!done.ok) throw done.error.code === "invalid" ? changed(item) : notKept(item, done.error);
 							index += 1;
 						}
 					}
@@ -1591,7 +1601,17 @@ export async function pullContents(
 			return err(new WorkspaceError("transfer_failed", `could not keep ${item.path}: ${opened.error.message}`));
 		}
 		const done = await opened.value.end();
-		if (!done.ok) return err(new WorkspaceError("mismatch", `${item.path} is not as it was when it was listed`));
+		if (!done.ok) {
+			return err(
+				done.error.code === "invalid"
+					? new WorkspaceError("mismatch", `${item.path} is not as it was when it was listed`)
+					: new WorkspaceError(
+							"transfer_failed",
+							`could not keep ${item.path}: ${done.error.message}`,
+							done.error,
+						),
+			);
+		}
 	}
 	const sent = items.filter((one) => one.bytes > 0);
 	const bytes = sent.reduce((sum, item) => sum + item.bytes, 0);

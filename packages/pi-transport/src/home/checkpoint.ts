@@ -252,8 +252,28 @@ export function localVault(directory: string): CheckpointVault {
 			"refused",
 			`generation ${n} of ${session} was kept by an earlier version of the vault, as a tree the host unpacked: it is refused, never read, unpacked or restored`,
 		);
-	/** The contents no readable record of this vault names, and the halves of contents that were never finished, go. */
+	/** How many contents of each session this vault is writing now. */
+	const writing = new Map<string, number>();
+	/**
+	 * Whether a generation of the session may be in the making: this vault is writing a content of it, or a `gen-<n>`
+	 * directory without a record is above the newest record (begun since the last commit, here or by another process).
+	 * One below it was begun before a generation that is committed, by a host that did not finish it.
+	 */
+	const making = (session: string): boolean => {
+		if ((writing.get(session) ?? 0) > 0) return true;
+		const newest = numbers(session).at(-1) ?? 0;
+		try {
+			return readdirSync(dirOf(session)).some((name) => Number(/^gen-(\d{8})$/.exec(name)?.[1] ?? 0) > newest);
+		} catch {
+			return false;
+		}
+	};
+	/**
+	 * The contents no readable record of this vault names, and the halves of contents that were never finished, go. Not
+	 * while a generation is in the making: it relies on contents no record names yet.
+	 */
 	const sweep = (session: string) => {
+		if (making(session)) return;
 		const named = new Set<string>();
 		for (const n of numbers(session)) {
 			const found = read(session, n);
@@ -384,6 +404,7 @@ export function localVault(directory: string): CheckpointVault {
 			} catch (cause) {
 				return err(io("could not keep a content", cause));
 			}
+			writing.set(session, (writing.get(session) ?? 0) + 1);
 			const hash = createHash("sha256");
 			let size = 0;
 			let closed = false;
@@ -391,6 +412,13 @@ export function localVault(directory: string): CheckpointVault {
 				if (closed) return;
 				closed = true;
 				await handle.close();
+			};
+			let released = false;
+			/** The content is named or gone: a sweep may look at this session again. */
+			const release = () => {
+				if (released) return;
+				released = true;
+				writing.set(session, (writing.get(session) ?? 1) - 1);
 			};
 			return ok({
 				async write(chunk) {
@@ -416,11 +444,14 @@ export function localVault(directory: string): CheckpointVault {
 					} catch (cause) {
 						rmSync(partial, { force: true });
 						return err(io("could not keep a content", cause));
+					} finally {
+						release();
 					}
 				},
 				async abort() {
 					await close().catch(() => {});
 					rmSync(partial, { force: true });
+					release();
 				},
 			});
 		},
@@ -712,6 +743,15 @@ export async function pullCheckpoint(
 			const problem = treeProblem(manifest.value);
 			if (problem !== undefined) return skip("failed", `the box listed a tree the host does not keep: ${problem}`);
 			if (over()) return timedOut("the files were listed");
+			// Begun before the pull decides which contents the vault already holds: while a generation is in the making, no
+			// prune or discard removes a content it relies on.
+			const begun = await vault.begin(session, context);
+			if (!begun.ok) return skip("failed", begun.error.message, [], begun.error);
+			const pending = begun.value;
+			const fail = async (error: Error, reason: SkipReason) => {
+				await vault.discard(pending);
+				return skip(reason, error.message, [], error);
+			};
 			// What moves: each file the listing says changed (also one whose mode or time changed with the same content),
 			// and each whose content the vault does not hold. A content moves once.
 			const changed = new Set(changedEntries(previous?.manifest, manifest.value).map((entry) => entry.path));
@@ -727,6 +767,7 @@ export async function pullCheckpoint(
 			if (options.maxPullBytes !== undefined) {
 				const delta = wanted.reduce((sum, entry) => sum + entry.bytes, 0);
 				if (delta + held.value.seal.bytes > options.maxPullBytes) {
+					await vault.discard(pending);
 					return skip(
 						"too_large",
 						`this pull would move ${delta + held.value.seal.bytes} bytes (${delta} of files, ${held.value.seal.bytes} of store), the limit is ${options.maxPullBytes}`,
@@ -736,16 +777,9 @@ export async function pullCheckpoint(
 			let excluded: Excluded | undefined;
 			if ((options.workspace?.exclude?.length ?? 0) > 0) {
 				const found = await excludedOf(place.box, place.workspace, calls(), context);
-				if (!found.ok) return skip("failed", found.error.message, [], found.error);
+				if (!found.ok) return fail(found.error, "failed");
 				if (found.value.files > 0 || found.value.entries.length > 0) excluded = found.value;
 			}
-			const begun = await vault.begin(session, context);
-			if (!begun.ok) return skip("failed", begun.error.message, [], begun.error);
-			const pending = begun.value;
-			const fail = async (error: Error, reason: SkipReason) => {
-				await vault.discard(pending);
-				return skip(reason, error.message, [], error);
-			};
 			if (over()) {
 				await vault.discard(pending);
 				return timedOut("the store was copied");
