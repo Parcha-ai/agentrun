@@ -1,7 +1,9 @@
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	appendFileSync,
 	closeSync,
+	constants,
 	fsyncSync,
 	mkdirSync,
 	openSync,
@@ -9,8 +11,10 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { withoutAbortSignal } from "@earendil-works/chord/context";
@@ -30,15 +34,20 @@ import {
 	type Excluded,
 	excludedOf,
 	type Manifest,
-	manifestSince,
-	moveChanged,
 	moveFile,
+	pullContents,
+	treeProblem,
+	treeSince,
+	type WantedContent,
 	type WorkspaceOptions,
 } from "./workspace.ts";
 
-/** Why a vault call failed. Returned, never thrown. */
+/**
+ * Why a vault call failed. Returned, never thrown. `refused`: a generation an earlier version of the vault kept as a tree
+ * the host unpacked; it is never read, unpacked or restored.
+ */
 export class VaultError extends Error {
-	public code: "io" | "invalid" | "gap";
+	public code: "io" | "invalid" | "gap" | "refused";
 	/** For `gap`: the highest commit the vault holds in an unbroken run. */
 	public through: number | undefined;
 
@@ -50,7 +59,11 @@ export class VaultError extends Error {
 	}
 }
 
-/** One checkpoint, as the vault keeps it. Paths are in `CheckpointVault.box`. */
+/**
+ * One checkpoint, as the vault keeps it. The workspace is its `manifest`: every entry, with its kind, mode, time, link
+ * target and, for a file, SHA-256 and size. A file's content is in the vault under its SHA-256 (`CheckpointVault.content`);
+ * a directory, a link, a hard link and a named pipe are the record alone, and are made only in the box a restore goes to.
+ */
 export type Checkpoint = {
 	readonly session: string;
 	/** The generation number, 1 for the first, one more each time. */
@@ -63,30 +76,48 @@ export type Checkpoint = {
 	readonly manifest: Manifest;
 	/** What `exclude` left out of the workspace, absent when nothing was excluded. A restore does not bring it back. */
 	readonly excluded?: Excluded;
-	/** The store's file. */
+	/** The store's file, in `CheckpointVault.box`. */
 	readonly storeFile: string;
-	/** The workspace tree. */
-	readonly filesRoot: string;
 };
 
-/** A generation being made: its paths exist (the tree is a copy of the latest one) and it is not a checkpoint yet. */
+/** A generation being made: its store's path exists and it is not a checkpoint yet. */
 export type PendingCheckpoint = {
 	readonly session: string;
 	readonly n: number;
 	readonly storeFile: string;
-	readonly filesRoot: string;
-	/** The generation the tree was copied from, whose manifest the delta is taken against. */
+	/** The latest checkpoint when it was begun, whose manifest the delta is taken against. */
 	readonly previous: Checkpoint | undefined;
 };
+
+/** A file's content on its way into a vault: kept whole under its SHA-256, or not at all. */
+export interface ContentWriter {
+	write(bytes: Uint8Array): Promise<void>;
+	/** The content is whole: kept only when it hashes to the SHA-256 and has the size it was opened with. */
+	end(): Promise<Result<void, VaultError>>;
+	/** Give up: nothing is kept. */
+	abort(): Promise<void>;
+}
 
 /**
  * Where a host keeps the checkpoints of its sessions, as generations. A generation is a checkpoint only when `commit`
  * has recorded it; `latest` never names a half-made one.
  */
 export interface CheckpointVault {
-	/** The box the generations' files are in: the movers copy to and from it. */
+	/**
+	 * The box the generations' store files are in: the movers copy them to and from it. The workspace never goes through
+	 * it: its files are contents (`keep`, `content`) and its tree is the record.
+	 */
 	readonly box: Box;
-	/** Make the paths of the next generation, its tree copied from the latest. */
+	/** Whether the vault holds the content with this SHA-256 (lowercase hex) and size, for the session. */
+	holds(session: string, sha256: string, bytes: number, context: Context): Promise<boolean>;
+	/**
+	 * Keep a file's content for the session, under its SHA-256. The bytes are opaque: the vault makes nothing of them but
+	 * that one content, and keeps it only when it hashes to the name.
+	 */
+	keep(session: string, sha256: string, bytes: number, context: Context): Promise<Result<ContentWriter, VaultError>>;
+	/** The content with this SHA-256, as the vault holds it; `undefined` when it holds none. */
+	content(session: string, sha256: string): AsyncIterable<Uint8Array> | undefined;
+	/** Make the path of the next generation's store. Its files are contents the vault keeps or already holds. */
 	begin(session: string, context: Context): Promise<Result<PendingCheckpoint, VaultError>>;
 	/** Record a generation: after this, `latest` names it. */
 	commit(
@@ -167,16 +198,30 @@ function hostBox(directory: string): Box {
 }
 
 const generationName = (n: number) => `gen-${String(n).padStart(8, "0")}`;
+/** The records this vault writes say so; one without it was written by an earlier version, beside a tree it unpacked. */
+const RECORD_FORMAT = 2;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const READ_CHUNK = 64 * 1024;
+
+type GenerationRecord = Omit<Checkpoint, "storeFile" | "session" | "n"> & { readonly format?: number };
 
 /**
- * A vault in a directory of this machine. A generation is `gen-<n>/store.db`, `gen-<n>/files/` and `gen-<n>.json`;
- * the tree of a new generation is a hard-linked copy of the latest one's, so it costs only what changed (a file the
- * delta rewrites gets a new inode, and the older generation keeps its own). `latest` is the highest number with a
- * record; a record is written whole and renamed into place after the generation's files are in.
+ * A vault in a directory of this machine. A generation is `gen-<n>.json`, its record (the manifest included), and
+ * `gen-<n>/store.db`; the content of every file is kept once per session in `contents/<sha256>`, a plain file of the
+ * host's own, so a generation costs only what changed. Nothing a box sent becomes anything else on this machine: no
+ * link, hard link, pipe, device or setuid file is ever made here. `latest` is the highest number with a record; a
+ * record is written whole and renamed into place after the generation's store and contents are in, and contents no
+ * kept record names are removed with the generations that named them.
+ *
+ * A generation an earlier version kept (a record without `format`, beside a tree the host unpacked) is `refused`: it
+ * is never read, unpacked or restored, and goes when `prune` removes it.
  */
 export function localVault(directory: string): CheckpointVault {
 	const box = hostBox(directory);
 	const dirOf = (session: string) => join(directory, encodeURIComponent(session));
+	const contentsOf = (session: string) => join(dirOf(session), "contents");
+	const contentPath = (session: string, sha256: string) =>
+		SHA256_HEX.test(sha256) ? join(contentsOf(session), sha256) : undefined;
 	const numbers = (session: string): number[] => {
 		try {
 			return readdirSync(dirOf(session))
@@ -188,17 +233,40 @@ export function localVault(directory: string): CheckpointVault {
 			return [];
 		}
 	};
-	const read = (session: string, n: number): Checkpoint | undefined => {
+	const recordOf = (session: string, n: number): GenerationRecord | undefined => {
 		try {
-			const meta = JSON.parse(readFileSync(join(dirOf(session), `${generationName(n)}.json`), "utf8")) as Omit<
-				Checkpoint,
-				"storeFile" | "filesRoot" | "session" | "n"
-			>;
-			const base = join(dirOf(session), generationName(n));
-			return { session, n, ...meta, storeFile: join(base, "store.db"), filesRoot: join(base, "files") };
+			return JSON.parse(readFileSync(join(dirOf(session), `${generationName(n)}.json`), "utf8")) as GenerationRecord;
 		} catch {
 			return undefined;
 		}
+	};
+	const read = (session: string, n: number): Checkpoint | "refused" | undefined => {
+		const record = recordOf(session, n);
+		if (record === undefined) return undefined;
+		if (record.format !== RECORD_FORMAT) return "refused";
+		const { format: _format, ...meta } = record;
+		return { session, n, ...meta, storeFile: join(dirOf(session), generationName(n), "store.db") };
+	};
+	const refused = (session: string, n: number) =>
+		new VaultError(
+			"refused",
+			`generation ${n} of ${session} was kept by an earlier version of the vault, as a tree the host unpacked: it is refused, never read, unpacked or restored`,
+		);
+	/** The contents no readable record of this vault names, and the halves of contents that were never finished, go. */
+	const sweep = (session: string) => {
+		const named = new Set<string>();
+		for (const n of numbers(session)) {
+			const found = read(session, n);
+			if (typeof found !== "object") continue;
+			for (const entry of found.manifest.entries) if (entry.sha256 !== undefined) named.add(entry.sha256);
+		}
+		let names: string[];
+		try {
+			names = readdirSync(contentsOf(session));
+		} catch {
+			return;
+		}
+		for (const name of names) if (!named.has(name)) rmSync(join(contentsOf(session), name), { force: true });
 	};
 	const io = (what: string, cause: unknown) =>
 		new VaultError("io", `${what}: ${cause instanceof Error ? cause.message : String(cause)}`, cause);
@@ -228,7 +296,7 @@ export function localVault(directory: string): CheckpointVault {
 			heldThrough.set(session, entries.length === 0 ? undefined : (entries.at(-1) as LogEntry).commit);
 		}
 		const all = numbers(session);
-		const head = all.length === 0 ? undefined : read(session, all.at(-1) as number)?.seal.head;
+		const head = all.length === 0 ? undefined : recordOf(session, all.at(-1) as number)?.seal.head;
 		const held = heldThrough.get(session);
 		if (head === undefined) return held;
 		return held === undefined ? head - 1 : Math.max(held, head - 1);
@@ -240,23 +308,28 @@ export function localVault(directory: string): CheckpointVault {
 			try {
 				mkdirSync(dirOf(session), { recursive: true });
 				const all = numbers(session);
-				const previous = all.length === 0 ? undefined : read(session, all.at(-1) as number);
+				let previous: Checkpoint | undefined;
+				for (const n of [...all].reverse()) {
+					const found = read(session, n);
+					if (typeof found === "object") {
+						previous = found;
+						break;
+					}
+				}
 				// Numbers are never reused, also over a generation that was removed or never committed.
 				let n = (all.at(-1) ?? 0) + 1;
 				while (readdirSync(dirOf(session)).includes(generationName(n))) n += 1;
 				const base = join(dirOf(session), generationName(n));
 				mkdirSync(base, { recursive: true });
-				const filesRoot = join(base, "files");
-				if (previous === undefined) mkdirSync(filesRoot);
-				else execFileSync("cp", ["-al", "--", previous.filesRoot, filesRoot]);
-				return ok({ session, n, storeFile: join(base, "store.db"), filesRoot, previous });
+				return ok({ session, n, storeFile: join(base, "store.db"), previous });
 			} catch (cause) {
 				return err(io("could not begin a generation", cause));
 			}
 		},
 		async commit(pending, meta) {
 			try {
-				const record = {
+				const record: GenerationRecord = {
+					format: RECORD_FORMAT,
 					at: meta.at,
 					epoch: meta.epoch,
 					seal: meta.seal,
@@ -266,30 +339,107 @@ export function localVault(directory: string): CheckpointVault {
 				const file = join(dirOf(pending.session), `${generationName(pending.n)}.json`);
 				writeFileSync(`${file}.partial`, JSON.stringify(record));
 				renameSync(`${file}.partial`, file);
-				return ok({
-					session: pending.session,
-					n: pending.n,
-					...meta,
-					storeFile: pending.storeFile,
-					filesRoot: pending.filesRoot,
-				});
+				return ok({ session: pending.session, n: pending.n, ...meta, storeFile: pending.storeFile });
 			} catch (cause) {
 				return err(io("could not record the generation", cause));
 			}
 		},
 		async discard(pending) {
 			rmSync(join(dirOf(pending.session), generationName(pending.n)), { recursive: true, force: true });
+			sweep(pending.session);
 		},
 		async latest(session) {
-			// The newest record that reads: one that was damaged on disk does not hide the generations before it.
+			// The newest record that reads: one that was damaged on disk does not hide the generations before it. An
+			// earlier version's generation is older than every one this version made, so it is the newest only alone.
 			for (const n of numbers(session).reverse()) {
 				const found = read(session, n);
+				if (found === "refused") return err(refused(session, n));
 				if (found !== undefined) return ok(found);
 			}
 			return ok(undefined);
 		},
 		async get(session, n) {
-			return ok(read(session, n));
+			const found = read(session, n);
+			return found === "refused" ? err(refused(session, n)) : ok(found);
+		},
+		async holds(session, sha256, bytes) {
+			const path = contentPath(session, sha256);
+			const found = path === undefined ? undefined : statSync(path, { throwIfNoEntry: false });
+			return found?.isFile() === true && found.size === bytes;
+		},
+		async keep(session, sha256, bytes) {
+			const path = contentPath(session, sha256);
+			if (path === undefined || !Number.isSafeInteger(bytes) || bytes < 0) {
+				return err(new VaultError("invalid", `${JSON.stringify(sha256)} is not a SHA-256 to keep a content under`));
+			}
+			const partial = join(contentsOf(session), `.in-${randomUUID()}`);
+			let handle: Awaited<ReturnType<typeof open>>;
+			try {
+				mkdirSync(contentsOf(session), { recursive: true });
+				handle = await open(
+					partial,
+					constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+					0o600,
+				);
+			} catch (cause) {
+				return err(io("could not keep a content", cause));
+			}
+			const hash = createHash("sha256");
+			let size = 0;
+			let closed = false;
+			const close = async () => {
+				if (closed) return;
+				closed = true;
+				await handle.close();
+			};
+			return ok({
+				async write(chunk) {
+					hash.update(chunk);
+					size += chunk.length;
+					for (let at = 0; at < chunk.length; ) at += (await handle.write(chunk, at)).bytesWritten;
+				},
+				async end() {
+					try {
+						await close();
+						const got = hash.digest("hex");
+						if (size !== bytes || got !== sha256) {
+							rmSync(partial, { force: true });
+							return err(
+								new VaultError(
+									"invalid",
+									`the content is ${size} bytes with SHA-256 ${got}, not ${bytes} with ${sha256}`,
+								),
+							);
+						}
+						renameSync(partial, path);
+						return ok(undefined);
+					} catch (cause) {
+						rmSync(partial, { force: true });
+						return err(io("could not keep a content", cause));
+					}
+				},
+				async abort() {
+					await close().catch(() => {});
+					rmSync(partial, { force: true });
+				},
+			});
+		},
+		content(session, sha256) {
+			const path = contentPath(session, sha256);
+			if (path === undefined || statSync(path, { throwIfNoEntry: false })?.isFile() !== true) return undefined;
+			return (async function* () {
+				const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+				try {
+					for (;;) {
+						const buffer = Buffer.allocUnsafe(READ_CHUNK);
+						const { bytesRead } = await handle.read(buffer, 0, READ_CHUNK, null);
+						if (bytesRead === 0) return;
+						yield buffer.subarray(0, bytesRead);
+					}
+				} finally {
+					await handle.close();
+				}
+			})();
 		},
 		async prune(session, keep) {
 			try {
@@ -302,7 +452,7 @@ export function localVault(directory: string): CheckpointVault {
 				}
 				// What no kept generation needs any more: commits below the oldest kept head.
 				const kept = numbers(session)
-					.map((n) => read(session, n)?.seal.head)
+					.map((n) => recordOf(session, n)?.seal.head)
 					.filter((head): head is number => head !== undefined);
 				if (kept.length > 0) {
 					const oldest = Math.min(...kept);
@@ -319,6 +469,7 @@ export function localVault(directory: string): CheckpointVault {
 						renameSync(`${file}.partial`, file);
 					}
 				}
+				sweep(session);
 				return ok(gone.length);
 			} catch (cause) {
 				return err(io("could not remove old generations", cause));
@@ -513,8 +664,9 @@ export async function pullCheckpoint(
 		return { ok: false as const, error: skipped };
 	};
 	const latest = await vault.latest(session, context);
-	if (!latest.ok) return skip("failed", latest.error.message, [], latest.error);
-	const previous = latest.value;
+	// A generation an earlier version kept is never read: the pull takes the workspace afresh.
+	if (!latest.ok && latest.error.code !== "refused") return skip("failed", latest.error.message, [], latest.error);
+	const previous = latest.ok ? latest.value : undefined;
 
 	const held = await home.checkpoint(options.drain ?? { timeoutMs: DEFAULT_PULL_DRAIN_MS }, context);
 	if (!held.ok) {
@@ -542,7 +694,7 @@ export async function pullCheckpoint(
 	let committed: Result<Checkpoint, CheckpointSkipped>;
 	try {
 		committed = await (async (): Promise<Result<Checkpoint, CheckpointSkipped>> => {
-			const manifest = await manifestSince(place.box, place.workspace, previous?.manifest, calls(), context);
+			const manifest = await treeSince(place.box, place.workspace, previous?.manifest, calls(), context);
 			if (!manifest.ok)
 				return skip(
 					manifest.error.code === "too_large" ? "too_large" : "failed",
@@ -556,12 +708,24 @@ export async function pullCheckpoint(
 					`the workspace holds ${manifest.value.bytes} bytes, the limit is ${options.workspace.maxBytes}`,
 				);
 			}
+			// The box made the listing: a path outside the tree, or through a link, is never kept.
+			const problem = treeProblem(manifest.value);
+			if (problem !== undefined) return skip("failed", `the box listed a tree the host does not keep: ${problem}`);
 			if (over()) return timedOut("the files were listed");
+			// What moves: each file the listing says changed (also one whose mode or time changed with the same content),
+			// and each whose content the vault does not hold. A content moves once.
+			const changed = new Set(changedEntries(previous?.manifest, manifest.value).map((entry) => entry.path));
+			const wanted: WantedContent[] = [];
+			const moving = new Set<string>();
+			for (const entry of manifest.value.entries) {
+				if (entry.kind !== "file" || entry.sha256 === undefined || moving.has(entry.sha256)) continue;
+				if (changed.has(entry.path) || !(await vault.holds(session, entry.sha256, entry.bytes, context))) {
+					moving.add(entry.sha256);
+					wanted.push({ path: entry.path, sha256: entry.sha256, bytes: entry.bytes });
+				}
+			}
 			if (options.maxPullBytes !== undefined) {
-				// What moveChanged will copy: also a file whose mode or time changed with the same content.
-				const delta = changedEntries(previous?.manifest, manifest.value)
-					.filter((entry) => entry.kind === "file")
-					.reduce((sum, entry) => sum + entry.bytes, 0);
+				const delta = wanted.reduce((sum, entry) => sum + entry.bytes, 0);
 				if (delta + held.value.seal.bytes > options.maxPullBytes) {
 					return skip(
 						"too_large",
@@ -600,25 +764,17 @@ export async function pullCheckpoint(
 				await vault.discard(pending);
 				return timedOut("the files were pulled");
 			}
-			const files = await moveChanged(
+			// The box sends the bytes of those files and nothing else: the vault keeps each under its SHA-256, and the
+			// tree (directories, links, pipes, modes) is the record alone.
+			const files = await pullContents(
 				place.box,
-				vault.box,
-				{
-					fromRoot: place.workspace,
-					toRoot: pending.filesRoot,
-					previous: pending.previous?.manifest,
-					current: manifest.value,
-					...calls(),
-					stallMs: left(),
-					deadlineMs: left(),
-				},
+				place.workspace,
+				wanted,
+				(sha256, size) => vault.keep(session, sha256, size, context),
+				{ stallMs: left(), deadlineMs: left() },
 				context,
 			);
-			if (!files.ok) {
-				const reason: SkipReason =
-					files.error.code === "mismatch" ? "changed" : files.error.code === "too_large" ? "too_large" : "failed";
-				return fail(files.error, reason);
-			}
+			if (!files.ok) return fail(files.error, files.error.code === "mismatch" ? "changed" : "failed");
 			const recorded = await vault.commit(
 				pending,
 				{

@@ -15,6 +15,7 @@ export {
 	CheckpointSkipped,
 	type CheckpointStats,
 	type CheckpointVault,
+	type ContentWriter,
 	checkpointStats,
 	localVault,
 	type PendingCheckpoint,
