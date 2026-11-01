@@ -89,12 +89,13 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
   // Without accounts, the printed link's token becomes this browser's cookie once. With an owner the console is the
   // owner's session alone: the token is for scripts and the CLI, and its link signs no browser in.
   const url = new URL(req.url ?? "/", "http://serve");
+  const without = () => (url.searchParams.delete("token"), `/${url.searchParams.size ? `?${url.searchParams}` : ""}`);
+  // With an owner a token in the address signs nothing in, and leaves it: the same address without it, no cookie.
+  if (server.owner && url.searchParams.has("token")) return redirect(res, without());
   const given = server.owner ? null : url.searchParams.get("token");
   // A token holds no whitespace, so a space in the link is a "+" that was not encoded.
   if (given !== null && (same(given, server.token) || same(given.replaceAll(" ", "+"), server.token))) {
-    url.searchParams.delete("token");
-    const rest = url.searchParams.toString();
-    return redirect(res, `/${rest ? `?${rest}` : ""}`, { "set-cookie": `${cookieName(req)}=${sessionOf(server.token)}; HttpOnly; SameSite=Strict; Path=/${overHttps(req) ? "; Secure" : ""}` });
+    return redirect(res, without(), { "set-cookie": `${cookieName(req)}=${sessionOf(server.token)}; HttpOnly; SameSite=Strict; Path=/${overHttps(req) ? "; Secure" : ""}` });
   }
   if (given !== null) server.authFailed?.(raw, "wrong_link_token");
   return file(req, res, raw, dir, "index.html", given === null ? 200 : 401);

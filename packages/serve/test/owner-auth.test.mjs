@@ -207,7 +207,10 @@ test("the bin: accounts on with no AGENTRUN_ACCOUNTS, the first-visit line with 
 test("with accounts on, the token link signs no browser in: it sets no cookie, and a cookie made from the token is no credential, before or after signing out everywhere", async (t) => {
   const server = await owned(t);
   const link = await call(server.port, { path: `/?token=${encodeURIComponent(server.token)}` });
-  assert.deepEqual([link.status, link.headers.location, link.headers["set-cookie"], link.text], [200, undefined, undefined, CONSOLE_INDEX], "the console, which asks for the password");
+  assert.deepEqual([link.status, link.headers.location, link.headers["set-cookie"]], [303, "/", undefined], "the token leaves the address, and signs nothing in");
+  const kept = await call(server.port, { path: `/?view=runs&token=${encodeURIComponent(server.token)}` });
+  assert.deepEqual([kept.status, kept.headers.location], [303, "/?view=runs"], "other parameters stay");
+  assert.deepEqual([(await call(server.port, { path: "/" })).text], [CONSOLE_INDEX], "then the console, which asks for the password");
   const tokenCookie = `agentrun-${server.port}=${createHmac("sha256", server.token).update("agentrun-serve page").digest("base64url")}`;
   const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server), cookie: server.cookie }, body: {} });
   assert.equal(out.status, 200, out.text);
