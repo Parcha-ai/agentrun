@@ -6,7 +6,7 @@ import { RunError } from "@/components/RunError";
 import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
 import { Timeline, Working } from "@/components/Timeline";
-import { type MessageFeatures, runState } from "@/lib/runState";
+import { isEscalated, type MessageFeatures, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { latest, pendingQuestion } from "@/lib/viewing";
 import type { Run, RunFile, TimelineRow } from "@/lib/v2";
@@ -24,15 +24,20 @@ export type RunDetailProps = {
   readFile?: (file: RunFile) => Promise<string>;
   openFile?: RunFile | null;
   actions?: RunActions;
-  onMessage?: (text: string) => void;
+  /** Sends a message; resolves false when it failed, so the composer keeps the draft. */
+  onMessage?: (text: string) => void | boolean | Promise<void | boolean>;
   tab?: Tab;
+  /** A workflow run's live graph (RunGraphView): the first tab when given. */
+  graphView?: React.ReactNode;
+  /** The header's cost when another source than the run record has it (a workflow run's graph totals). */
+  costText?: string;
 };
-type Tab = "report" | "timeline" | "files";
+type Tab = "graph" | "report" | "timeline" | "files";
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial }: RunDetailProps) {
-  const view = runState(run.status, run.state, run.kind, messages, harnessSteers);
-  const [tab, setTab] = useState<Tab>(initial ?? (view.final && run.status === "completed" ? "report" : "timeline"));
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText }: RunDetailProps) {
+  const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error);
+  const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   const waiting = pendingQuestion(run.status, run.state, rows);
   // Only the newest read lands: closing the viewer or opening another file retires a read still in flight.
@@ -48,10 +53,10 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`]];
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`]];
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <RunHeader run={run} agentName={agentName} actions={actions} />
+      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map(([id, name]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
@@ -60,9 +65,9 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           </button>
         ))}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
+      {tab === "graph" ? <div className="min-h-0 flex-1">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
-          {run.status === "failed" && run.error && <RunError error={run.error} />}
+          {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
             <section className="border border-border-strong/60 p-4"><p className="caps text-[11px] text-muted-foreground">Cancelled</p>
               <p className="mt-2 text-[14px] text-muted-foreground">This run was cancelled. It keeps what it did before; it takes no more messages.</p></section>
@@ -76,7 +81,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {tab === "timeline" && <Timeline rows={rows} live={view.live} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} />}
         </div>
-      </div>
+      </div>}
       {view.canMessage && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} /></div></div>
       )}

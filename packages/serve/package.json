@@ -27,10 +27,11 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "agentrun-serve": "./dist/cli.js"
+    "agentrun-serve": "./launcher/agentrun-serve"
   },
   "files": [
     "dist",
+    "launcher",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
@@ -45,9 +46,11 @@
   },
   "dependencies": {
     "@browserbasehq/sdk": ">=2.20.0 <3",
+    "@parcha/agentrun-decisions": "0.1.0-beta.28",
     "@parcha/agentrun-dsl": "0.1.0-beta.28",
     "@parcha/agentrun-harness-claude": "0.1.0-beta.28",
     "@parcha/agentrun-harness-codex": "0.1.0-beta.28",
+    "@parcha/agentrun-jev": "0.1.0-beta.28",
     "@parcha/agentrun-kernel": "0.1.0-beta.28",
     "@parcha/agentrun-pi": "0.1.0-beta.28",
     "@parcha/pi-browser": "0.1.0-beta.28",

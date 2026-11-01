@@ -1,0 +1,300 @@
+{
+  "v": 2,
+  "name": "merchant-mcc",
+  "schemas": {
+    "Input": {
+      "type": "object",
+      "required": [
+        "merchant_name",
+        "url"
+      ],
+      "properties": {
+        "merchant_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The merchant's public home page."
+        }
+      },
+      "examples": [
+        {
+          "merchant_name": "Kettlewick Roasters",
+          "url": "https://kettlewick-roasters.example/"
+        }
+      ]
+    },
+    "Page": {
+      "type": "object",
+      "required": [
+        "ok",
+        "url",
+        "status",
+        "title",
+        "text",
+        "links"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "refused": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    },
+    "PageSignals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "advertises_prohibited",
+        "advertises_restricted"
+      ],
+      "properties": {
+        "advertises_prohibited": {
+          "type": "boolean",
+          "description": "Does the page in `page_text` offer goods or services card networks prohibit: counterfeit, replica or 'mirror quality' branded goods, illegal drugs or drug paraphernalia, weapons that are illegal to sell, or unlicensed gambling?"
+        },
+        "advertises_restricted": {
+          "type": "boolean",
+          "description": "Does the page in `page_text` offer products card networks restrict and acquirers onboard only with extra checks: CBD or hemp products, vaping products, nutraceuticals with health claims, firearms accessories, alcohol or tobacco?"
+        }
+      }
+    },
+    "WebRisk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sells_prohibited",
+        "risk_level"
+      ],
+      "properties": {
+        "sells_prohibited": {
+          "type": "boolean",
+          "description": "According to public sources about the merchant in `merchant_name` at `url` (reviews, complaints, news, marketplace listings), does it sell goods or services card networks prohibit, such as counterfeit or replica branded goods or illegal drugs?"
+        },
+        "risk_level": {
+          "type": "string",
+          "enum": [
+            "low",
+            "elevated",
+            "high"
+          ],
+          "description": "How risky is it for a card acquirer to process payments for the merchant in `merchant_name` at `url`, judging from public sources?",
+          "criteria": {
+            "low": "An ordinary merchant: no complaints pattern, no prohibited or restricted goods.",
+            "elevated": "Restricted goods, a pattern of chargeback or delivery complaints, or a thin public footprint.",
+            "high": "Prohibited goods, fraud reports, or enforcement actions."
+          }
+        }
+      }
+    },
+    "MerchantDecision": {
+      "type": "object",
+      "required": [
+        "merchant_name",
+        "decision",
+        "tier",
+        "mcc",
+        "reasons"
+      ],
+      "properties": {
+        "merchant_name": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "approve",
+            "decline"
+          ]
+        },
+        "tier": {
+          "type": "string"
+        },
+        "mcc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mcc_label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "probabilities": {
+          "type": "object"
+        },
+        "evidence": {
+          "type": "array"
+        }
+      }
+    }
+  },
+  "input": {
+    "schemaId": "Input"
+  },
+  "output": {
+    "schemaId": "MerchantDecision",
+    "path": "decision"
+  },
+  "root": {
+    "node": "chain",
+    "steps": [
+      {
+        "node": "call",
+        "label": "fetch_site",
+        "via": "tool",
+        "tool": "fetch_page",
+        "args": {
+          "url": "{url}"
+        },
+        "out": "Page",
+        "as": "page",
+        "deadline_s": 45
+      },
+      {
+        "node": "escalate",
+        "label": "site_unreadable",
+        "when": {
+          "predicate": "field_equals",
+          "path": "page.ok",
+          "value": false
+        },
+        "kind": "merchant_review",
+        "stage": "merchant-mcc",
+        "summary": "A person reviews {merchant_name}: its page at {url} could not be read."
+      },
+      {
+        "node": "code",
+        "label": "mcc_candidates",
+        "as": "mcc_codes",
+        "code": "(s) => [{\"code\":\"5411\",\"description\":\"Grocery stores and supermarkets\"},{\"code\":\"5499\",\"description\":\"Miscellaneous food stores: specialty foods, coffee, tea, confectionery\"},{\"code\":\"5812\",\"description\":\"Eating places and restaurants\"},{\"code\":\"5814\",\"description\":\"Fast food restaurants\"},{\"code\":\"5651\",\"description\":\"Family clothing stores\"},{\"code\":\"5661\",\"description\":\"Shoe stores\"},{\"code\":\"5948\",\"description\":\"Luggage and leather goods stores, including handbags\"},{\"code\":\"5944\",\"description\":\"Jewelry, watch and clock stores\"},{\"code\":\"5732\",\"description\":\"Electronics stores\"},{\"code\":\"5734\",\"description\":\"Computer software stores\"},{\"code\":\"5942\",\"description\":\"Book stores\"},{\"code\":\"5945\",\"description\":\"Hobby, toy and game shops\"},{\"code\":\"5977\",\"description\":\"Cosmetic stores\"},{\"code\":\"5912\",\"description\":\"Drug stores and pharmacies\"},{\"code\":\"5993\",\"description\":\"Cigar stores and stands, including vape and smoke shops\"},{\"code\":\"5999\",\"description\":\"Miscellaneous and specialty retail stores\"},{\"code\":\"5921\",\"description\":\"Package stores: beer, wine and liquor\"},{\"code\":\"5967\",\"description\":\"Direct marketing: inbound teleservices and adult content\"},{\"code\":\"7995\",\"description\":\"Betting, including lottery tickets, casino chips and off-track betting\"},{\"code\":\"4829\",\"description\":\"Money transfer\"},{\"code\":\"6051\",\"description\":\"Quasi-cash: crypto assets, money orders, foreign currency\"},{\"code\":\"7372\",\"description\":\"Computer programming and software services\"},{\"code\":\"8099\",\"description\":\"Medical and health services, not elsewhere classified\"},{\"code\":\"7299\",\"description\":\"Miscellaneous personal services\"}]"
+      },
+      {
+        "node": "parallel",
+        "label": "read_the_page",
+        "branches": [
+          {
+            "node": "pick",
+            "label": "choose_mcc",
+            "provider": "jev",
+            "timeoutMs": 60000,
+            "itemsPath": "mcc_codes",
+            "describe": "{item.code}: {item.description}",
+            "allowNone": true,
+            "instructions": "Which merchant category code best describes what this merchant sells, judging from its own web page?",
+            "state": {
+              "merchant": "{merchant_name}",
+              "page_title": "{page.title}",
+              "page_text": "{page.text}"
+            },
+            "as": "mcc"
+          },
+          {
+            "node": "judge",
+            "label": "page_signals",
+            "provider": "jev",
+            "timeoutMs": 60000,
+            "state": {
+              "merchant": "{merchant_name}",
+              "page_title": "{page.title}",
+              "page_text": "{page.text}"
+            },
+            "out": "PageSignals",
+            "as": "page_signals"
+          }
+        ]
+      },
+      {
+        "node": "judge",
+        "label": "web_check",
+        "provider": "parallel",
+        "evidence": "if_supported",
+        "timeoutMs": 120000,
+        "state": {
+          "merchant_name": "{merchant_name}",
+          "url": "{url}",
+          "category": "{mcc.option}"
+        },
+        "out": "WebRisk",
+        "as": "web"
+      },
+      {
+        "node": "code",
+        "label": "risk_tier",
+        "as": "risk",
+        "code": "(s) => {\n  const HIGH_RISK_MCC = [\"5967\",\"7995\",\"4829\",\"6051\",\"5993\",\"5912\",\"5122\"];\n  const reasons = []; const p = {};\n  const sig = (s[\"page_signals$answers\"] || {}).answers || {};\n  const web = (s[\"web$answers\"] || {}).answers || {};\n  p.page_prohibited = sig.advertises_prohibited ? sig.advertises_prohibited.noul : null;\n  p.page_restricted = sig.advertises_restricted ? sig.advertises_restricted.noul : null;\n  p.web_prohibited = web.sells_prohibited ? web.sells_prohibited.noul : null;\n  p.web_risk = web.risk_level ? web.risk_level.choice : null;\n  p.web_risk_confidence = web.risk_level && typeof web.risk_level.confidence === \"number\" ? web.risk_level.confidence : null;\n  const code = s.mcc && s.mcc.item ? s.mcc.item.code : null;\n  let tier = \"low\";\n  const raise = (t, why) => { reasons.push(why); if (t === \"high\" || (t === \"medium\" && tier === \"low\")) tier = t; };\n  if (p.page_prohibited === null || p.web_prohibited === null) raise(\"medium\", \"a prohibited-goods answer is missing\");\n  if (p.page_prohibited !== null && p.page_prohibited >= 0.8) raise(\"high\", \"the page offers prohibited goods (P(yes) \" + p.page_prohibited.toFixed(2) + \")\");\n  else if (p.page_prohibited !== null && p.page_prohibited >= 0.35) raise(\"medium\", \"the page may offer prohibited goods (P(yes) \" + p.page_prohibited.toFixed(2) + \")\");\n  if (p.web_prohibited !== null && p.web_prohibited >= 0.8) raise(\"high\", \"public sources say it sells prohibited goods (P(yes) \" + p.web_prohibited.toFixed(2) + \")\");\n  else if (p.web_prohibited !== null && p.web_prohibited >= 0.35) raise(\"medium\", \"public sources are mixed on prohibited goods (P(yes) \" + p.web_prohibited.toFixed(2) + \")\");\n  if (p.page_restricted !== null && p.page_restricted >= 0.6) raise(\"medium\", \"the page offers restricted products (P(yes) \" + p.page_restricted.toFixed(2) + \")\");\n  if (p.web_risk === \"high\") raise(\"high\", \"public sources rate the merchant high risk\");\n  else if (p.web_risk === \"elevated\") raise(\"medium\", \"public sources rate the merchant elevated risk\");\n  if (!code) raise(\"medium\", \"no merchant category code fits\");\n  else if (HIGH_RISK_MCC.includes(code)) raise(\"medium\", \"MCC \" + code + \" is a high-risk category\");\n  const evidence = ((s[\"web$answers\"] || {}).evidence || []).map((e) => ({ url: e.url, title: e.title }));\n  return { tier, mcc: code, mcc_label: s.mcc ? s.mcc.option : null, reasons, reasons_text: reasons.join(\"; \"), probabilities: p, evidence };\n}"
+      },
+      {
+        "node": "route",
+        "label": "risk_route",
+        "valuePath": "risk.tier",
+        "as": "risk_taken",
+        "branches": {
+          "low": {
+            "body": {
+              "node": "code",
+              "label": "approve",
+              "as": "decision",
+              "code": "(s) => ({ merchant_name: s.merchant_name, decision: \"approve\", tier: \"low\", mcc: s.risk.mcc, mcc_label: s.risk.mcc_label, reasons: s.risk.reasons, probabilities: s.risk.probabilities, evidence: s.risk.evidence })"
+            }
+          },
+          "medium": {
+            "body": {
+              "node": "escalate",
+              "label": "enhanced_due_diligence",
+              "when": {
+                "predicate": "field_equals",
+                "path": "risk.tier",
+                "value": "medium"
+              },
+              "kind": "merchant_review",
+              "stage": "merchant-mcc",
+              "summary": "Enhanced due diligence for {merchant_name} (MCC {risk.mcc}): {risk.reasons_text}"
+            }
+          },
+          "high": {
+            "body": {
+              "node": "code",
+              "label": "decline",
+              "as": "decision",
+              "code": "(s) => ({ merchant_name: s.merchant_name, decision: \"decline\", tier: \"high\", mcc: s.risk.mcc, mcc_label: s.risk.mcc_label, reasons: s.risk.reasons, probabilities: s.risk.probabilities, evidence: s.risk.evidence })"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

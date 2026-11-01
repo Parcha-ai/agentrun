@@ -20,9 +20,10 @@ import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, ToolResultEntry, typ
 import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
-import { fileTools, type ToolResults } from "./host-tools.js";
+import { hostTools, type ToolResults } from "./host-tools.js";
 import type { CapGuard } from "./cap.js";
 import { durableSessions } from "./sessions.js";
+import { parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
 import { REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
@@ -92,13 +93,21 @@ export function adapterRun(
   cap?: CapGuard,
   cancelled: () => boolean = () => false,
 ): AdapterRun {
+  // web_fetch's Parallel key, read as the run's app loads, before its process starts one of its own (web-fetch.ts).
+  if (tools.includes(WEB_FETCH_TOOL)) parallelOf(process.env);
   // The run's cap, or its cancel, refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
   const CANCELLED = "the run was cancelled: the model request was not sent";
-  const guard = (request: { spentUsd: number | null; inFlight: readonly unknown[] }) => {
+  const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const answer = cancelled() ? { refuse: CANCELLED } : cap?.beforeRequest(request);
-    if (answer) refused = answer.refuse;
-    return answer;
+    if (answer) {
+      refused = answer.refuse;
+      return answer;
+    }
+    // Admitted: the worst case the cap holds for it, which the runner records, and counts it at if its cost never
+    // comes in.
+    const hold = cap?.worstOf?.(request);
+    return hold === undefined ? undefined : { holdUsd: hold };
   };
   /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
    *  cancel that lands between them still keeps the request from leaving. */
@@ -372,7 +381,7 @@ export function adapterRun(
       // Each request the session booked and the root does not have, or has at unknown cost only: written now, once.
       for (const [request, usage] of await bookedInSession(await writer.read())) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
-      session = await adapter.open({ ...spec, tools: fileTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}) });
+      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}) });
       queue.push(...accepted.values());
       openedDone();
       if (session.state === "open_turn") runTurns(() => session!.recover());

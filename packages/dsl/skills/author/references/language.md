@@ -31,10 +31,10 @@ This is the complete set. Each kind accepts exactly these fields; any other fiel
 - `escalate`: `label`, `when`, `kind`, `stage`, `summary`
 - `call`: `label`, `via`, `tool`, `args`, `code`, `input`, `command`, `env`, `where`, `out`, `as`, `produces`, `deadline_s`, `retry`, `poll`, `requires`
 - `workflow`: `label`, `workflow`, `input`, `out`, `as`
-- `judge`: `label`, `state`, `out`, `as`, `requires`
-- `pick`: `label`, `itemsPath`, `describe`, `instructions`, `state`, `allowNone`, `as`, `requires`
-- `sift`: `label`, `itemsPath`, `describe`, `state`, `out`, `as`, `keep`, `requires`
-- `route`: `label`, `state`, `instructions`, `branches`, `unsure`, `valuePath`, `otherwise`, `as`, `requires`
+- `judge`: `label`, `state`, `out`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`
+- `pick`: `label`, `itemsPath`, `describe`, `instructions`, `state`, `allowNone`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`
+- `sift`: `label`, `itemsPath`, `describe`, `state`, `out`, `as`, `keep`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`
+- `route`: `label`, `state`, `instructions`, `branches`, `unsure`, `valuePath`, `otherwise`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`
 
 Every kind also accepts `metadata`, an object the host owns and the engine never reads; set only the keys the host addendum names.
 
@@ -72,6 +72,8 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 - `sift`: `itemsPath`, `out` (a question schema asked of every item; the host splits the items across requests when they exceed its limits) and `as`. `keep` {path: a question id or <id>.confidence, never a choice, gte?} keeps passing items, in order, at `<as>.items`.
 - `route` runs one of 2 or more named `branches`. Jev chooses: a non-empty `state` map, `instructions` (the one question) and up to 240 branches, each {criteria?, body}; `unsure` {branch, gte: a number in (0, 1]} takes that branch when the choice's confidence is below `gte`. Or the workflow already holds the choice: `valuePath` names the state string that is the branch, each branch is {body}, no question is asked, and `otherwise` (a branch) takes a missing or unknown name, which otherwise fails; a non-string fails. `as` records the choice.
 - A decoded boolean is true at yes-probability 0.5. To hold a different threshold, read `<as>$answers.answers.<id>.noul` in a code node.
+- `images` {token: reference} sends images with a decision (judge, pick, sift, a route Jev chooses, ask). Each token, such as "<page1>", must appear literally in the node's `state` or in a question's text; each reference is written as a state value is, such as "{item.pages.0.image}", and must resolve to an image path the host can read. Only a provider that takes image input answers such a node. Pass images by reference, never their bytes in state.
+- Inside a `map` with `onItemFailure` `collect`, a decision whose provider fails (rate limit, HTTP error, invalid answer, timeout) fails that item, and one sent whose outcome was lost, or one the provider refused, ends the item as a row marked `needs_review`; the other items go on.
 
 ### Control nodes
 
@@ -92,7 +94,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 
 ## Predicates
 
-`loop.until` and `escalate.when` take one of these; `poll` takes only the first 8. Each path or key reads a state value an input or an earlier node produced.
+`loop.until` and `escalate.when` take one of these; `poll` takes only the first 10. Each path or key reads a state value an input or an earlier node produced.
 A predicate is one JSON object that names itself in its `predicate` field beside its own fields, for example `{"predicate": "field_true", "path": "review.approved"}`.
 - `field_equals` {path, value}: holds when the value at `path` equals `value` (a string, number or boolean)
 - `field_true` {path}: holds when the value at `path` is `true`
@@ -102,7 +104,9 @@ A predicate is one JSON object that names itself in its `predicate` field beside
 - `lt` {path, n}: holds when the finite number at `path` is below `n`
 - `empty` {path}: holds when the value at `path` is an empty array, an empty string, null or absent
 - `no_new_items` {key}: takes `key`, not `path`; holds when that state key is an empty array or falsy
-- `ask` {instructions, state, criteria, gte}: a yes/no question for the host's judge: `instructions` is the question, `state` what it sees (default: the whole state), `criteria` optional {true, false} descriptions; holds when the yes-probability is at least `gte` (in (0.5, 1], default 0.6)
+- `field_type` {path, type}: holds when the value at `path` is of `type`, one of number, string, boolean, array, object, null; a number only when finite, and an absent value is of no type
+- `not` {of}: holds when `of`, one mechanical predicate (never `ask`), does not; `{"predicate": "not", "of": {"predicate": "field_type", "path": "score", "type": "number"}}` holds when score is absent or not a finite number
+- `ask` {instructions, state, criteria, gte, provider, model, evidence, timeoutMs, images}: a yes/no question for the host's judge: `instructions` is the question, `state` what it sees (default: the whole state), `criteria` optional {true, false} descriptions; holds when the yes-probability is at least `gte` (in (0.5, 1], default 0.6)
 
 ## Authority
 

@@ -12,8 +12,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, type AdapterSession, type AgentAdapter, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
-import { openDrive, pendingSubmissions, Restart, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
+import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
+import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { hostHeaderProblems, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
@@ -25,58 +25,20 @@ import { serialWriter } from "./serial.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
-/** The pinned CLI's tools the copied harness leaves undecided, off by name in every session. */
+/** The pinned CLI's tools the copied harness leaves undecided, off by name in every session (WebSearch unless `webSearch`). */
 export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch"]);
 
 /** The local plugin the session's skills are served from: the model sees each as `agentrun:<name>`, and may load it by
  *  that name or, unless the CLI has a command or skill of that name (`CLAUDE_AGENT_CLI_SKILL_NAMES`), by its bare one. */
 export const CLAUDE_AGENT_SKILLS_PLUGIN = "agentrun";
 
-/** A skill the model may load (the Skill tool): its name, and its files by path, `SKILL.md` among them. */
-export interface ClaudeAgentSkill {
-  /** Lowercase letters, digits and dashes; `SKILL.md`'s front matter names it the same. */
-  name: string;
-  /** Each file's text by its path inside the skill (`SKILL.md`, `reference/sources.md`). */
-  files: Readonly<Record<string, string>>;
-}
-
-const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const SKILL_PATH = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/){0,4}[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
-const SKILL_BYTES = 1024 * 1024;
+/** A skill the model may load (the Skill tool): its name, and its files by path, `SKILL.md` among them. The shape every
+ *  adapter takes a host's skills in (`HostSkill`, from @parcha/agentrun-kernel). */
+export interface ClaudeAgentSkill extends HostSkill {}
 
 /** The skills, checked: each a name, a `SKILL.md` whose front matter has that name and a description, and files at plain
- *  relative paths, 1 MiB in all; or the problems. */
-export function skillProblems(skills: readonly ClaudeAgentSkill[]): string[] {
-  const problems: string[] = [];
-  const seen = new Set<string>();
-  let bytes = 0;
-  for (const skill of skills) {
-    const name = String(skill?.name ?? "");
-    if (!SKILL_NAME.test(name)) { problems.push(`the skill name ${JSON.stringify(name.slice(0, 80))} is not lowercase letters, digits and dashes`); continue; }
-    if (seen.has(name)) problems.push(`the skill ${name} is given twice`);
-    seen.add(name);
-    const files = skill.files ?? {};
-    const md = files["SKILL.md"];
-    const front = typeof md === "string" ? /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(md)?.[1] : undefined;
-    if (front === undefined) problems.push(`the skill ${name} has no SKILL.md with front matter`);
-    else {
-      if (!new RegExp(`^name:\\s*(['"]?)${name}\\1\\s*$`, "m").test(front)) problems.push(`the skill ${name}'s SKILL.md names it otherwise`);
-      if (!/^description:\s*\S/m.test(front)) problems.push(`the skill ${name}'s SKILL.md has no description`);
-    }
-    // A path that is another's folder (reference, and reference/sources.md) can't be written as both.
-    const paths = new Set(Object.keys(files));
-    for (const folder of new Set([...paths].flatMap((path) => path.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))))) {
-      if (paths.has(folder)) problems.push(`the skill ${name}'s ${folder} is both a file and a folder`);
-    }
-    for (const [path, text] of Object.entries(files)) {
-      if (!SKILL_PATH.test(path) || path.split("/").some((part) => part === "." || part === "..")) problems.push(`the skill ${name}'s file ${JSON.stringify(path.slice(0, 80))} is not a plain relative path`);
-      if (typeof text !== "string") problems.push(`the skill ${name}'s file ${path} is not text`);
-      else bytes += Buffer.byteLength(text);
-    }
-  }
-  if (bytes > SKILL_BYTES) problems.push(`the skills hold ${bytes} bytes, more than ${SKILL_BYTES}`);
-  return problems;
-}
+ *  relative paths, 1 MiB in all; or the problems. @parcha/agentrun-kernel' own check, which the Codex adapter runs too. */
+export { skillProblems };
 
 /** Writes the skills as the local plugin at `dir` (replacing what was there), and returns their plugin-qualified names. */
 function writeSkillsPlugin(dir: string, skills: readonly ClaudeAgentSkill[]): string[] {
@@ -140,6 +102,11 @@ export interface ClaudeAgentAdapterOptions {
    *  others: never the CLI's bundled ones or any in a home directory. Written into each session's private directory.
    *  Default none. */
   skills?: readonly ClaudeAgentSkill[];
+  /** Claude's own WebSearch, and nothing else of the CLI's: the model may call it, and the CLI runs each call as a request
+   *  of its own through the session's model proxy with Anthropic's web search server tool, the one hosted tool that proxy
+   *  then admits. Each search the provider reports is booked at `CLAUDE_WEB_SEARCH_USD` on top of `price`, into the
+   *  session's cost and so its spend cap. WebFetch stays off (it would fetch from the CLI's own process). Default off. */
+  webSearch?: boolean;
   /** Diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /**
@@ -328,6 +295,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   const maxImageBytes = options.maxImageBytes ?? CLAUDE_AGENT_MAX_IMAGE_BYTES;
   if (!Number.isSafeInteger(maxImageBytes) || maxImageBytes < 1 || maxImageBytes > MAX_IMAGE_BYTES_CEILING) throw new Error(`agentrun-harness-claude: maxImageBytes must be a whole number of bytes from 1 to ${MAX_IMAGE_BYTES_CEILING}`);
   const skills = options.skills ?? [];
+  const webSearch = options.webSearch === true;
   const skillsWrong = skillProblems(skills);
   if (skillsWrong.length) throw new Error(`agentrun-harness-claude: ${skillsWrong.join("; ")}`);
   const headersWrong = hostHeaderProblems(options.provider.headers);
@@ -374,14 +342,16 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
 
       const calls = new CallsInFlight();
+      // The CLI's own tools offered to the model: Skill only when the session has skills, WebSearch only when it is on.
+      const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
       const acquire = localMachine({
         dir,
         ...(options.confine ? { confine: options.confine } : {}),
         proxy: {
           hooks: io.models,
           tools: tools.map((t) => t.name),
-          // The Skill tool is offered to the model only when the session has skills.
-          ...(skills.length ? { builtins: ["Skill"] } : {}),
+          ...(builtins.length ? { builtins } : {}),
+          ...(webSearch ? { webSearch: true } : {}),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(options.provider.auth ? { auth: options.provider.auth } : {}),
@@ -397,7 +367,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         name: CLAUDE_AGENT_ID,
         sandbox: {
           attach: (ctx, request) => acquire({ ctx, ...(request.model ? { model: request.model } : {}), ...(request.deadline === undefined ? {} : { deadline: request.deadline }) }),
-          // No provider-hosted tool and no command of its own: the CLI reaches nothing but its model proxy.
+          // No command of its own: the CLI reaches nothing but its model proxy (a web search, when on, is the provider's).
           network: "deny-all",
           // The runner's turn cap and the host's beforeRequest bound the spend.
           budget: { turnUsd: Infinity, sessionUsd: Infinity },
@@ -405,8 +375,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         tools: tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
-        // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists).
-        disallowedTools: [...CLAUDE_AGENT_ALSO_OFF],
+        // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists), but WebSearch when it is on.
+        disallowedTools: CLAUDE_AGENT_ALSO_OFF.filter((name) => !(webSearch && name === "WebSearch")),
+        ...(webSearch ? { providerTools: ["web_search" as const] } : {}),
         model: modelFor(spec),
         ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
@@ -459,7 +430,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
               const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
               outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
             } catch (error) {
-              if (current.signal.aborted) outcome = { status: "interrupted" };
+              // Stopped by the session or its host: interrupted. Halted by anything else (a spend cap, the mirror, a refused
+              // spawn): failed, naming why.
+              if (current.signal.aborted) outcome = abortedOutcome(current.signal, io.signal);
               // The CLI exited mid-turn: the drive is rebuilt from the log and the turn resumes, a few times.
               else if (error instanceof Restart && attempt < RESTARTS) drive = await open(attempt + 1);
               else outcome = { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
@@ -503,7 +476,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           calls.draining = true;
           try {
             if (drainMs > 0) await calls.idle(drainMs);
-            drive.halt?.(new Error("interrupted"));
+            drive.halt?.(new SessionHalt("interrupted"));
             await running?.catch(() => {});
           } finally {
             // Calls the halt cut off have no outcome to wait for; the next turn starts clean.
@@ -514,7 +487,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         async close() {
           if (closed) return;
           closed = true;
-          drive.halt?.(new Error("closed"));
+          drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
         },
       };

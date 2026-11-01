@@ -6,11 +6,14 @@
 FROM node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6 AS build
 WORKDIR /src
 COPY . .
+# The console (apps/console, its own lockfile) builds first, so the server's build copies it into its dist; then its
+# sources and dependencies go: the image keeps the built files alone.
 # The reference harness is not part of the server: it is removed from the image after the workspace build. So is the
 # Claude Agent SDK, which its adapter develops against (a dev dependency, so npm ci installs it), with its platform
 # packages (they hold the Claude CLI) and bin link, until its licence is reviewed for the image: docker/image-check.sh
 # names them. Never `npm prune --omit=dev`: the pi packages the server loads are dev dependencies too.
-RUN npm ci --ignore-scripts && npm run build \
+RUN npm ci --ignore-scripts && (cd apps/console && npm ci --ignore-scripts && npm run build) \
+ && npm run build && test -f packages/serve/dist/console/index.html && rm -rf apps \
  && rm -rf packages/harness node_modules/@parcha/agentrun-harness \
  && rm -rf node_modules/@anthropic-ai/claude-agent-sdk node_modules/@anthropic-ai/claude-agent-sdk-* \
       node_modules/@anthropic-ai/claude-code node_modules/.bin/claude \
@@ -34,7 +37,7 @@ USER node
 ENV NODE_ENV=production
 EXPOSE 7340
 VOLUME ["/data"]
-ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentrun/packages/serve/dist/cli.js"]
+ENTRYPOINT ["/opt/agentrun/packages/serve/launcher/agentrun-serve", "--", "/usr/bin/tini", "--", "node", "/opt/agentrun/packages/serve/dist/cli.js"]
 # A busy run gets 6 s to finish its turn on SIGTERM, so a stop (about 1.5 s more) ends inside Docker's default 10 s
 # grace; a turn cut off resumes at the next start.
 CMD ["--data", "/data", "--listen", "0.0.0.0", "--port", "7340", "--drain-timeout", "6s"]

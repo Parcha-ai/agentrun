@@ -69,6 +69,9 @@ current_gen() { sed -n "s/^GEN='\(.*\)'\$/\1/p" "$D/spec.sh" 2>/dev/null; }
 MYGEN=$GEN
 stale() { [ "$(current_gen)" != "$MYGEN" ]; }
 # Every process started from $SELF reads this directory again: none starts unless it and the spool are still the launcher's own.
+# Each is given its starter's generation as its last argument and takes it as its own (run, supervise and watch below), never
+# the spec's: by the time it reads the spec a later launch of the name may have written it, and then it is a leftover of the
+# earlier launch and does nothing.
 detach() { own_dirs || exit 13; ( $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
 # The same, with this process's frame on the new process's stdin (a pipe from the builtin printf: no argv holds it).
 detach_framed() { own_dirs || exit 13; ( send_frame | $SETSID sh "$SELF" "$@" >/dev/null 2>&1 & ); }
@@ -167,7 +170,7 @@ run() {
 ensure_watch() {
   [ ! -e "$D/done" ] || return 0
   alive "$(rd watch.pid)" "$(rd watch.ticks)" && return 0
-  detach watch "$D"
+  detach watch "$D" "$MYGEN"
   # The watchdog is part of the launcher: the program starts, and a caller is told so, only once it has registered.
   i=0
   while [ "$i" -lt 50 ] && ! alive "$(rd watch.pid)" "$(rd watch.ticks)"; do
@@ -182,7 +185,7 @@ start_one() {
   wr starts $n
   wr started.at "$(now)"
   write_live starting "" "$(rd lastexit)" || exit 0
-  if [ "$FRAMED" = 1 ]; then detach_framed run "$D" $n; else detach run "$D" $n; fi
+  if [ "$FRAMED" = 1 ]; then detach_framed run "$D" $n "$MYGEN"; else detach run "$D" $n "$MYGEN"; fi
   i=0
   while [ ! -e "$D/pid.$n" ] && [ "$i" -lt 50 ]; do
     sleep $TICK
@@ -262,6 +265,7 @@ watch() {
   lock
   other=$(rd watch.pid)
   if [ -n "$other" ] && [ "$other" != "$$" ] && alive "$other" "$(rd watch.ticks)"; then unlock; exit 0; fi
+  if stale; then unlock; exit 0; fi
   wr watch.pid $$
   wr watch.ticks "$(ticks $$)"
   unlock
@@ -273,7 +277,7 @@ watch() {
     # (the launch reads lost; a caller that holds them again launches it again).
     if ! alive "$(rd launcher.pid)" "$(rd launcher.ticks)"; then
       if [ "$FRAMED" = 1 ]; then watch_over; fi
-      detach supervise "$D"
+      detach supervise "$D" "$MYGEN"
     fi
     trim_log
   done
@@ -322,10 +326,12 @@ stopit() {
   unlock
   if [ "$claimed" = 0 ]; then stop_wait "$tenths"; return; fi
   if alive "$pid" "$(rd ticks.$n)"; then
-    gkill TERM "$pid"
+    # Without setsid the runner leads no group: the program is what runs under it, and the runner, which waits for it,
+    # stays to show when it has ended.
+    if [ -n "$SETSID" ]; then gkill TERM "$pid"; else kill -s TERM $(descendants "$pid") 2>/dev/null; fi
     began=$(centis)
     limit=$(( tenths * 10 ))
-    while group_live "$pid" && [ $(( $(centis) - began )) -lt "$limit" ]; do
+    while program_live && [ $(( $(centis) - began )) -lt "$limit" ]; do
       sleep $STEP
     done
   fi
@@ -333,16 +339,83 @@ stopit() {
   stop_end
 }
 
+# Whether the program still runs: its group with setsid; without, its runner, which ends only after what it runs.
+program_live() {
+  if [ -n "$SETSID" ]; then group_live "$pid"; else alive "$pid" "$(rd ticks.$n)"; fi
+}
+
+# The ids of the processes under $1, by parent, each signalled with $2 first when given (STOP: none of them starts another
+# before its own children are read).
+descendants() {
+  for c in $(children_of "$1"); do
+    [ -z "$2" ] || kill -s "$2" "$c" 2>/dev/null
+    echo "$c"
+    descendants "$c" "$2"
+  done
+}
+
+# The program killed: its group with setsid; without, its runner and every process under it, each stopped first. Then it
+# returns whether all it killed is gone, within 2 s: a stop that cannot tell never reports the launch stopped.
+end_program() {
+  killed=
+  if [ -n "$SETSID" ]; then
+    if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; killed=group; fi
+  else
+    # What is killed is written down first, each process with its start: a stop that takes this one over finds it there
+    # once the runner is gone, and a process that has since taken one of the ids has another start and is never touched.
+    if alive "$pid" "$(rd ticks.$n)"; then
+      kill -s STOP "$pid" 2>/dev/null
+      list=$(for c in $pid $(descendants "$pid" STOP); do echo "$c $(started "$c")"; done)
+      printf '%s\n' "$list" > "$D/stop.killed.$$" 2>/dev/null && mv "$D/stop.killed.$$" "$D/stop.killed" 2>/dev/null
+      # A record that does not read back (a full disk, a failed mv) would leave a later stop nothing to find: what was just
+      # read is killed all the same, and the stop fails.
+      if [ "$(cat "$D/stop.killed" 2>/dev/null)" != "$list" ]; then
+        rm -f "$D/stop.killed.$$"
+        printf '%s\n' "$list" | while read -r c t; do kill -s KILL "$c" 2>/dev/null; done
+        failed="the program's processes were killed, but the stop could not record what it killed in $D/stop.killed. The stop is not done; a later stop takes it over."
+        return 1
+      fi
+    fi
+    for c in $(recorded); do kill -s KILL "$c" 2>/dev/null; done
+  fi
+  began=$(centis)
+  while [ $(( $(centis) - began )) -lt 200 ]; do
+    left=
+    if [ "$killed" = group ]; then
+      group_live "$pid" && left=" its group $pid"
+    else
+      for c in $(recorded); do left="$left $c"; done
+    fi
+    [ -n "$left" ] || return 0
+    sleep $STEP
+  done
+  failed="the program did not end:$left still there after its kill. The stop is not done; a later stop takes it over."
+  return 1
+}
+
+# The ids in stop.killed that still run with the start written beside them.
+recorded() {
+  [ -r "$D/stop.killed" ] || return 0
+  while read -r c t; do
+    if pid_live "$c" && [ "$(started "$c")" = "$t" ]; then echo "$c"; fi
+  done < "$D/stop.killed"
+}
+
 # The end of a stop: what is left of the program's group killed, the launcher's processes ended, the last state. Then its
 # status, recorded under this launch's generation BEFORE done and stop.done release the name (a launch of the name that waited
 # may wipe $D at once after), and printed from memory, never read again.
 stop_end() {
-  if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; fi
-  for f in launcher watch; do
-    p=$(rd $f.pid)
-    if alive "$p" "$(rd $f.ticks)"; then kill -s KILL "$p" 2>/dev/null; fi
-  done
-  # Nothing but this stop trims the output now: a trim lock left is a killed watchdog's, never waited out (15 s).
+  if ! end_program; then
+    end_launcher
+    echo "$failed"
+    exit 1
+  fi
+  end_launcher
+  # Nothing but this stop trims the output now: a trim lock left is a killed watchdog's, never waited out (15 s). What the
+  # stop could not end is named in the log, never passed over.
+  if [ -n "$unended" ]; then
+    printf '%s\n' "$unended" | while IFS= read -r u; do printf '[launcher] could not end %s; removed the trim lock anyway\n' "$u"; done >> "$D/out.log"
+  fi
   rmdir "$D/trim" 2>/dev/null
   case "$before" in
     exited|gave_up|stopped) ;;
@@ -355,6 +428,33 @@ stop_end() {
   : > "$D/done"
   : > "$D/stop.done"
   printf '%s\n' "$final"
+}
+
+# The supervisor and the watchdog ended, with what each runs at that moment: a lock's mkdir in flight outlives a kill of its
+# shell alone and would take the lock after its holder is gone, so a stop's trim would wait out the lock (15 s). With setsid
+# each leads a group of its own, which is killed; without, the shell is stopped first (it starts nothing more), then its
+# children and it are killed. Either way this returns once none of them is left, or after 2 s, with what is left in $unended.
+end_launcher() {
+  groups=
+  kids=
+  for f in launcher watch; do
+    p=$(rd $f.pid)
+    if [ -n "$SETSID" ]; then
+      if own_group "$p" "$(rd $f.ticks)"; then gkill KILL "$p"; groups="$groups $p"; fi
+    elif alive "$p" "$(rd $f.ticks)"; then
+      kill -s STOP "$p" 2>/dev/null
+      for c in $(children_of "$p"); do kill -s KILL "$c" 2>/dev/null; kids="$kids $c"; done
+      kill -s KILL "$p" 2>/dev/null
+    fi
+  done
+  began=$(centis)
+  for g in $groups; do
+    while group_live "$g" && [ $(( $(centis) - began )) -lt 200 ]; do sleep $STEP; done
+  done
+  for c in $kids; do
+    while pid_live "$c" && [ $(( $(centis) - began )) -lt 200 ]; do sleep $STEP; done
+  done
+  unended=$(for g in $groups; do group_live "$g" && members_of "$g"; done; for c in $kids; do pid_live "$c" && named "$c"; done)
 }
 
 # A stop that did not claim the launch waits for the owner's end, within its own bound ($1 tenths of drain, the hook at its
@@ -637,7 +737,7 @@ start_launch() {
     command -v base64 >/dev/null 2>&1 || { echo "UNSUPPORTED this box has no base64 to decode the launch's stdin"; exit 10; }
     read_frame || { echo "INVALID the launch frame is malformed (this launch carries stdin or secrets: launch it with them)"; exit 7; }
   fi
-  if [ "$FRAMED" = 1 ]; then detach_framed supervise "$D"; else detach supervise "$D"; fi
+  if [ "$FRAMED" = 1 ]; then detach_framed supervise "$D" "$MYGEN"; else detach supervise "$D" "$MYGEN"; fi
 }
 
 # A stop's hook (beforeStop), after the drain and before the final kill: in a session of its own, bounded by HOOK_TENTHS;
@@ -667,10 +767,7 @@ run_hook() {
 }
 
 clear_dir() {
-  for f in launcher watch; do
-    p=$(rd $f.pid)
-    if alive "$p" "$(rd $f.ticks)"; then kill -s KILL "$p" 2>/dev/null; fi
-  done
+  end_launcher
   i=0
   while [ "$i" -lt 25 ]; do
     rm -rf "$D" 2>/dev/null
@@ -687,9 +784,9 @@ case "$MODE" in
   trim) trim_log ;;
   centis) centis ;;
   clear) clear_dir ;;
-  run) if [ "$FRAMED" = 1 ]; then read_frame || exit 7; fi; run "$3" ;;
-  supervise) if [ "$FRAMED" = 1 ]; then read_frame || exit 7; fi; supervise ;;
-  watch) watch ;;
+  run) MYGEN=$4; if [ "$FRAMED" = 1 ]; then read_frame || exit 7; fi; run "$3" ;;
+  supervise) MYGEN=$3; if [ "$FRAMED" = 1 ]; then read_frame || exit 7; fi; supervise ;;
+  watch) MYGEN=$3; watch ;;
   start) start_launch ;;
   stop) stop_for "$3" "$4" ;;
   status) status ;;
@@ -722,6 +819,50 @@ const GROUP_LIVE = [
 	'    if [ "$3" = "$g" ] && [ "$1" != Z ]; then return 0; fi',
 	"  done",
 	"  return 1",
+	"} 2>/dev/null",
+	"# The ids of the processes whose parent is $1 and that are not zombies (shell builtins only, like group_live).",
+	"children_of() {",
+	"  pp=$1",
+	'  for f in "$PROC"/[0-9]*/stat; do',
+	'    read -r line < "$f" || continue',
+	"    r=\x24{line##*) }",
+	'    [ "$r" != "$line" ] || continue',
+	"    set -- $r",
+	"    ck=\x24{f%/stat}",
+	'    if [ "$2" = "$pp" ] && [ "$1" != Z ]; then echo "\x24{ck##*/}"; fi',
+	"  done",
+	"} 2>/dev/null",
+	"# Each process of group $1 that is not a zombie, as its id and its name in brackets, read from $PROC like group_live.",
+	"members_of() {",
+	"  g=$1",
+	'  for f in "$PROC"/[0-9]*/stat; do',
+	'    read -r line < "$f" || continue',
+	"    r=\x24{line##*) }",
+	'    [ "$r" != "$line" ] || continue',
+	"    set -- $r",
+	"    ck=\x24{f%/stat}",
+	"    nm=\x24{line#*(}",
+	'    if [ "$3" = "$g" ] && [ "$1" != Z ]; then echo "\x24{ck##*/} (\x24{nm%) *})"; fi',
+	"  done",
+	"} 2>/dev/null",
+	"# Process $1 as its id and its name in brackets, read from $PROC.",
+	"named() {",
+	'  read -r line < "$PROC/$1/stat" || return 1',
+	"  nm=\x24{line#*(}",
+	'  echo "$1 (\x24{nm%) *})"',
+	"} 2>/dev/null",
+	"# The start of process $1 (field 22 of its stat), read from $PROC; empty once it is gone.",
+	"started() {",
+	'  read -r line < "$PROC/$1/stat" || return 0',
+	"  r=\x24{line##*) }",
+	"  set -- $r",
+	'  echo "\x24{20}"',
+	"} 2>/dev/null",
+	"# Whether process $1 is left and not a zombie, read from $PROC like group_live.",
+	"pid_live() {",
+	'  read -r line < "$PROC/$1/stat" || return 1',
+	"  r=\x24{line##*) }",
+	'  [ "\x24{r%% *}" != Z ]',
 	"} 2>/dev/null",
 	"# Hundredths of a second on a clock that only goes forward, as a plain decimal: shell arithmetic reads a leading zero as octal,",
 	"# and 0.88 s of uptime written as 088 is a syntax error (a fresh VM reports such an uptime).",
@@ -930,6 +1071,15 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"final",
 	"rec",
 	"seen",
+	"pp",
+	"ck",
+	"groups",
+	"kids",
+	"nm",
+	"unended",
+	"killed",
+	"list",
+	"failed",
 ];
 
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */

@@ -49,17 +49,24 @@ function modeFor(status: RunStatus, state: RunState, kind: Run["kind"], on: Mess
   return mode;
 }
 
+/** A run that ended escalated: /v2 says `failed`, and its error's code says `escalated` (a person takes it from here). */
+export const isEscalated = (status: RunStatus, error?: { code: string } | null) => status === "failed" && error?.code === "escalated";
+
 /** How the console shows a run: serve's status and state, by its contract table and its guards (runs.ts message, stop,
- *  cancel). Stopped (input_required, idle), input required (input_required, waiting) and cancelled stay distinct. */
-export function runState(status: RunStatus, state: RunState, kind: Run["kind"], messages: MessageFeatures, steers: boolean): RunView {
+ *  cancel). Stopped (input_required, idle), input required (input_required, waiting) and cancelled stay distinct, and so
+ *  does a run that ended escalated (`error`'s code), which reads Escalated, never Failed. */
+export function runState(status: RunStatus, state: RunState, kind: Run["kind"], messages: MessageFeatures, steers: boolean, error?: { code: string } | null): RunView {
   const final = FINAL.has(status);
   const agentic = kind === "agentic";
+  const escalated = isEscalated(status, error);
   const label =
-    status === "input_required" ? (state === "waiting" ? "Input required" : "Stopped")
-    : { queued: "Queued", working: "Working", completed: "Completed", failed: "Failed", cancelled: "Cancelled" }[status];
+    escalated ? "Escalated"
+    : status === "input_required" ? (state === "waiting" ? "Input required" : "Stopped")
+    : { queued: "Queued", working: "Working", completed: "Completed", failed: "Failed", cancelled: "Cancelled", paused: "Paused" }[status];
   const tone: Tone =
-    status === "completed" ? "success" : status === "failed" ? "error" : status === "cancelled" ? "muted"
-    : status === "input_required" ? "warning" : "active";
+    escalated ? "warning"
+    : status === "completed" ? "success" : status === "failed" ? "error" : status === "cancelled" ? "muted"
+    : status === "input_required" || status === "paused" ? "warning" : "active";
   const messageMode = modeFor(status, state, kind, messages, steers);
   return {
     label,

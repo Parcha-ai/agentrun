@@ -33,6 +33,10 @@ const runNode = createHarnessRunner(
   it is a deny. Sub-agents, scheduled jobs, worktrees, background shells, settings, plugins and MCP servers from
   settings are off by option, and `test/tool-off.test.mjs` runs the pinned CLI against a scripted model that tries each
   of them: nothing runs, writes or fetches.
+- **Claude's own WebSearch, by option.** `webSearch: true` turns on the CLI's WebSearch and nothing else of its own: the
+  proxy then admits Anthropic's web search server tool exactly as the pinned CLI sends it, every other hosted tool stays
+  refused, and each search the provider reports is booked at $10 per 1,000 (`CLAUDE_WEB_SEARCH_USD`) beside the tokens,
+  into the session's cost and spend cap. WebFetch stays off. Default off.
 - **The model behind a proxy.** The CLI talks to a model proxy on the loopback interface with a key of its session's
   own; it never holds the provider key, a sign-in or the operator's settings. The proxy (`@parcha/agentrun-kernel/host`
   with this package's Anthropic policy) forwards only the routes the pinned CLI calls, fixes the model, refuses

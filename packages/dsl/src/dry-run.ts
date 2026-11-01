@@ -2,12 +2,24 @@ import { Compile } from "typebox/compile";
 import { runWorkflow, validateWorkflow, WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, type Workflow, type WorkflowDeps } from "./workflow.js";
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 import { synthesizeAnswers } from "./system-one.js";
+import type { DecisionCapabilities, DecisionProvider } from "./decision-provider.js";
 
 /** `ok` keeps its meaning: false only when a check failed. `status` says whether every check ran: `passed`, `not_run`
  *  (a check stood down; `skipped` says which and why, so this is not proof the graph was exercised) or `failed`. */
 export type DryRunResult =
   | { ok: true; status: "passed" | "not_run"; skipped?: string[] }
   | { ok: false; status: "failed"; problems: string[]; stage?: string };
+
+/** A provider for every id the workflow names, and a default: the dry run answers each decision itself, so a node's
+ *  provider and timeoutMs hold it to no host's providers. */
+function syntheticProviders(workflow: Workflow): NonNullable<WorkflowDeps["decisionProviders"]> {
+  const ids = new Set(["dry-run"]);
+  JSON.stringify(workflow, (key, value) => { if (key === "provider" && typeof value === "string") ids.add(value); return value; });
+  const capabilities: DecisionCapabilities = { types: ["noul", "choice", "score", "box"], inputs: ["text", "json", "image", "pdf", "url"], evidence: "citations",
+    probability: "none", grounding: false, replay: "deduped", maxQuestions: null, maxStateBytes: null };
+  const provider = (id: string): DecisionProvider => ({ id, needs: [], capabilities, decide: async () => { throw new Error("A dry run answers its decisions itself."); } });
+  return { providers: Object.fromEntries([...ids].map((id) => [id, provider(id)])), default: "dry-run" };
+}
 
 export function synthesizeInstance(schema: unknown, definitions: Record<string, unknown> = {}, depth = 0): unknown {
   if (depth > 12 || !schema || typeof schema !== "object") return null;
@@ -191,8 +203,14 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
         if (review) await review(candidate);
         return candidate;
       },
-      runJudge: async ({ questions }) => { await step(); return { answers: synthesizeAnswers(questions), model: "synthetic", usage: null, cost_usd: null, request_sha256: "" }; },
+      // A node that requires evidence gets a placeholder, as a provider that gives evidence would answer it.
+      runJudge: async ({ questions, evidence }) => {
+        await step();
+        return { answers: synthesizeAnswers(questions), model: "synthetic", usage: null, cost_usd: null, request_sha256: "",
+          ...(evidence === "required" ? { evidence: [{ url: "https://example.invalid/dry-run", title: null, excerpts: [], scope: "dry_run" }] } : {}) };
+      },
       syntheticEffects: true,
+      decisionProviders: syntheticProviders(workflow),
       runEffect: async ({ node, schema }) => { await step(); return node.via === "shell"
         ? { code: 0, stdout: "{}", stderr: "", truncated: false }
         : synthesizeInstance(schema ?? (workflow.schemas || {})[node.out as string] as Record<string, unknown>, (schema?.definitions as Record<string, unknown> | undefined) ?? workflow.schemas ?? {}); },

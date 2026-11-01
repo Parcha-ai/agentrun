@@ -9,6 +9,11 @@ export type WorkflowNodeKind = typeof WORKFLOW_NODE_KINDS[number];
 
 /** Generative kinds: one adapter session each, answering against a schema. */
 export const GENERATIVE_NODE_KINDS = ["agent", "decide", "extract", "report"] as const satisfies readonly WorkflowNodeKind[];
+/** What a decision node or an `ask` predicate may say about its provider: which one, a pinned model, the evidence it
+ *  needs, its own time bound, and the images it sends (token -> image reference). */
+export const DECISION_NODE_FIELDS = ["provider", "model", "evidence", "timeoutMs", "images"] as const;
+/** The longest a decision node may give its provider, in milliseconds. A node only ever shortens its provider's own deadline. */
+export const DECISION_TIMEOUT_MAX_MS = 120_000;
 /** Typed-question kinds: one judge request each, no tools and no session. */
 export const JUDGMENT_NODE_KINDS = ["judge", "pick", "sift", "route"] as const satisfies readonly WorkflowNodeKind[];
 
@@ -29,10 +34,10 @@ export const NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]: readonly string
   escalate: ["node", "label", "when", "kind", "stage", "summary"],
   call: ["node", "label", "via", "tool", "args", "code", "input", "command", "env", "where", "out", "as", "produces", "deadline_s", "retry", "poll", "requires"],
   workflow: ["node", "label", "workflow", "input", "out", "as"],
-  judge: ["node", "label", "state", "out", "as", "requires"],
-  pick: ["node", "label", "itemsPath", "describe", "instructions", "state", "allowNone", "as", "requires"],
-  sift: ["node", "label", "itemsPath", "describe", "state", "out", "as", "keep", "requires"],
-  route: ["node", "label", "state", "instructions", "branches", "unsure", "valuePath", "otherwise", "as", "requires"],
+  judge: ["node", "label", "state", "out", "as", "requires", ...DECISION_NODE_FIELDS],
+  pick: ["node", "label", "itemsPath", "describe", "instructions", "state", "allowNone", "as", "requires", ...DECISION_NODE_FIELDS],
+  sift: ["node", "label", "itemsPath", "describe", "state", "out", "as", "keep", "requires", ...DECISION_NODE_FIELDS],
+  route: ["node", "label", "state", "instructions", "branches", "unsure", "valuePath", "otherwise", "as", "requires", ...DECISION_NODE_FIELDS],
 };
 
 /** Fields every node kind accepts in addition to its own. `metadata` is the host's: an optional object of
@@ -45,8 +50,8 @@ export const IGNORED_NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]?: readon
   decide: ["samples", "voteField"],
 };
 
-/** Predicates that read a state value. `poll` accepts only these. */
-export const MECHANICAL_PREDICATES = ["field_equals", "field_true", "in", "count_gte", "gte", "lt", "empty", "no_new_items"] as const;
+/** Predicates that read a state value. `poll` accepts only these, and `not` holds only one of these. */
+export const MECHANICAL_PREDICATES = ["field_equals", "field_true", "in", "count_gte", "gte", "lt", "empty", "no_new_items", "field_type", "not"] as const;
 /** Every predicate `loop.until` and `escalate.when` accept: the mechanical set plus `ask`, a yes/no judge question. */
 export const WORKFLOW_PREDICATES = [...MECHANICAL_PREDICATES, "ask"] as const;
 export type WorkflowPredicateName = typeof WORKFLOW_PREDICATES[number];
@@ -61,8 +66,14 @@ export const PREDICATE_FIELDS: { readonly [Name in WorkflowPredicateName]: reado
   lt: ["path", "n"],
   empty: ["path"],
   no_new_items: ["key"],
-  ask: ["instructions", "state", "criteria", "gte"],
+  field_type: ["path", "type"],
+  not: ["of"],
+  ask: ["instructions", "state", "criteria", "gte", ...DECISION_NODE_FIELDS],
 };
+
+/** The JSON types `field_type` names. A number is a finite one: NaN and the infinities are no JSON value. */
+export const FIELD_TYPES = ["number", "string", "boolean", "array", "object", "null"] as const;
+export type FieldType = typeof FIELD_TYPES[number];
 
 export const EFFORT_LEVELS = ["minimal", "low", "medium", "high"] as const;
 /** There is no "off": every generative node thinks. */

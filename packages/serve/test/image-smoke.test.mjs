@@ -1,7 +1,10 @@
 // docker/image-smoke.sh, the release's check that a built image serves, run here against a stand-in `docker` on PATH and
 // a local server that answers as the container would: it passes a serving image, and fails, saying why, on a health that
-// never answers, a pi that is not available, or a harness whose reason is an import error or names no install line. On a
-// failure it shows the container's log with any key withheld, and it always removes the container it started.
+// never answers, a pi that is not available, or a harness whose reason is an import error or names no install line. Codex
+// must be listed: the image carries its pinned CLI (image-check.sh), so it is never unavailable as not installed or not
+// the pinned build, only for a setting its reason names (no key, say); with IMAGE_SMOKE_CODEX=available it must be
+// available. On a failure it shows the container's log with any key withheld, and it always removes the container it
+// started.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
@@ -9,16 +12,24 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { env } from "node:process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { harnessesOf } from "../dist/harness.js";
+import { harnessesOf, harnessOffers } from "../dist/harness.js";
+import { findCodex } from "../../run-adapters-codex/dist/binary.js";
+import { verifyCodexBinary } from "../../run-adapters-codex/dist/verify.js";
+
+const pinned = verifyCodexBinary(findCodex());
+const noCodex = pinned instanceof Error && env.AGENTRUN_CODEX_REQUIRE_BINARY !== "1" ? pinned.message : false;
 
 const SMOKE = fileURLToPath(new URL("../docker/image-smoke.sh", import.meta.url));
 /** The address the smoke publishes the container on (its `loopback=`), which the stand-in container answers on. */
 const LOOPBACK = /^loopback=(\S+)$/m.exec(readFileSync(SMOKE, "utf8"))?.[1];
 
 /** Runs the smoke with a stand-in docker whose container is `answer` (a function of the path), on loopback. */
-async function smoke(t, answer, ...runArgs) {
+const smoke = (t, answer, ...runArgs) => smokeWith(t, {}, answer, ...runArgs);
+/** The same, with `extra` in the smoke's own environment (IMAGE_SMOKE_CODEX, say). */
+async function smokeWith(t, extra, answer, ...runArgs) {
   const server = createServer((req, res) => {
     const reply = answer(req.url);
     if (!reply) return req.socket.destroy();
@@ -39,7 +50,7 @@ case "$1" in
 esac
 `);
   await chmod(join(dir, "docker"), 0o755);
-  const child = spawn("sh", [SMOKE, "agentrun-server:test", ...runArgs], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, IMAGE_SMOKE_WAIT_S: "3" } });
+  const child = spawn("sh", [SMOKE, "agentrun-server:test", ...runArgs], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, IMAGE_SMOKE_WAIT_S: "3", ...extra } });
   let stdout = "", stderr = "";
   child.stdout.on("data", (d) => (stdout += d));
   child.stderr.on("data", (d) => (stderr += d));
@@ -60,12 +71,16 @@ test("the smoke runs as documented, `docker/image-smoke.sh <image>`: it is execu
   assert.ok(statSync(SMOKE).mode & 0o100, `docker/image-smoke.sh is mode ${(statSync(SMOKE).mode & 0o777).toString(8)}, not executable`);
 });
 
-test("an image of this serve passes, by the harnesses this serve really reports (claude-agent: a harness it does not run yet)", async (t) => {
-  const harnesses = harnessesOf({});
+// Codex's offer is the one this serve makes with the pinned CLI and no key (harnessOffers, as GET /v2/capabilities answers).
+test("an image of this serve passes, by the harnesses this serve really reports (claude-agent: a harness it does not run yet; codex with no key)", { skip: noCodex }, async (t) => {
+  const codex = (await harnessOffers({})).find((h) => h.id === "codex");
+  assert.equal(codex?.available, false, "with no key this serve offers codex as unavailable");
+  const harnesses = harnessesOf({}).map((h) => (h.id === "codex" ? codex : h));
   assert.ok(harnesses.some((h) => h.id === "claude-agent"), "this serve lists claude-agent");
   const r = await smoke(t, serving(harnesses));
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /claude-agent: unavailable \(/);
+  assert.match(r.stdout, /codex: unavailable \(codex needs OPENAI_API_KEY/);
 });
 
 const claude = { id: "claude-agent", available: false, reason: "The Claude Agent SDK 0.3.286 is not installed; npm install --save-exact @anthropic-ai/claude-agent-sdk@0.3.286" };
@@ -81,6 +96,35 @@ test("an image that serves passes: health 200 ok, pi available, claude-agent not
   assert.ok(r.calls[0].startsWith("run -d --name agentrun-image-smoke-") && r.calls[0].endsWith(` -p ${LOOPBACK}::7340 -e AGENT_MODEL=m agentrun-server:test`), r.calls[0]);
   assert.match(r.calls.at(-1), /^rm -f -v agentrun-image-smoke-\d+$/, "the container it started is removed");
 });
+
+test("codex passes with no key, unavailable for the key it names; and available, also when IMAGE_SMOKE_CODEX=available asks for it", { skip: noCodex }, async (t) => {
+  const keyless = (await harnessOffers({})).find((h) => h.id === "codex");
+  const keyed = (await harnessOffers({ OPENAI_API_KEY: "fake-test-key" })).find((h) => h.id === "codex");
+  assert.equal(keyed?.available, true, "with a key this serve offers codex as available");
+  const r = await smoke(t, serving([pi, claude, keyless]));
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /codex: unavailable \(codex needs OPENAI_API_KEY/);
+  const asked = await smokeWith(t, { IMAGE_SMOKE_CODEX: "available" }, serving([pi, claude, keyed]));
+  assert.equal(asked.code, 0, asked.stderr);
+  assert.match(asked.stdout, /codex: available/);
+});
+
+// The image carries the pinned Codex CLI, so each of these is a broken image, not a setting to change.
+const codexCases = [
+  ["capabilities that list harnesses but not codex", serving([pi, claude]), {}, /capabilities list harnesses, but not codex/],
+  ["codex unavailable as not installed, though with its install line", serving([pi, claude, { id: "codex", available: false, reason: "codex is not installed here: npm install @parcha/agentrun-harness-codex @openai/codex@0.164.0" }]), {}, /codex is unavailable as not installed or not the pinned build, but the image carries the pinned Codex CLI/],
+  ["codex unavailable as not the pinned build", serving([pi, claude, { id: "codex", available: false, reason: "agentrun-harness-codex: the Codex binary at /x/codex is not the pinned build: its binary sha256 is 00, not 11 (npm install @parcha/agentrun-harness-codex @openai/codex@0.164.0)" }]), {}, /codex is unavailable as not installed or not the pinned build/],
+  ["codex unavailable for a reason that names no setting", serving([pi, claude, { id: "codex", available: false, reason: "This server does not run codex yet." }]), {}, /codex is unavailable for a reason that names no setting to change/],
+  ["codex unavailable when IMAGE_SMOKE_CODEX=available asks for it", serving([pi, claude, { id: "codex", available: false, reason: "codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL." }]), { IMAGE_SMOKE_CODEX: "available" }, /IMAGE_SMOKE_CODEX=available, but codex is unavailable/],
+];
+for (const [why, answer, extra, said] of codexCases) {
+  test(`the smoke fails on ${why}, and says so`, { timeout: 30_000 }, async (t) => {
+    const r = await smokeWith(t, extra, answer);
+    assert.equal(r.code, 1, r.stdout);
+    assert.match(r.stderr, said);
+    assert.match(r.calls.at(-1), /^rm -f -v agentrun-image-smoke-\d+$/);
+  });
+}
 
 for (const [why, answer, said] of [
   ["a health that never answers", () => undefined, /GET \/v2\/health did not answer 200 ok/],

@@ -90,3 +90,19 @@ test("a skills root reached through a link (as /tmp is on some machines) still r
   const tool = readSkillFileTool(join(base, 'skills'), [{ name: 'research', files: ['SKILL.md'] }]);
   assert.deepEqual(await call(tool, { skill: 'research', path: 'SKILL.md' }), { text: 'inside\n' });
 });
+
+test("skillProblems, the check every adapter runs on a host's skills: a plain name, a SKILL.md that names it with a description, plain relative paths, 1 MiB in all", async () => {
+  const { skillProblems } = await import('@parcha/agentrun-kernel');
+  assert.equal(typeof skillProblems, 'function', '@parcha/agentrun-kernel exports skillProblems');
+  const md = (name, extra = 'description: d') => `---\nname: ${name}\n${extra}\n---\nbody\n`;
+  const wrong = (skill) => skillProblems([skill]).join('; ');
+  assert.deepEqual(skillProblems([{ name: 'research', files: { 'SKILL.md': md('research'), 'reference/sources.md': 'x' } }]), []);
+  assert.match(wrong({ name: 'Bad Name', files: { 'SKILL.md': md('Bad Name') } }), /not lowercase letters, digits and dashes/);
+  assert.match(wrong({ name: 'a', files: {} }), /no SKILL.md with front matter/);
+  assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('b') } }), /names it otherwise/);
+  assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a', 'other: x') } }), /no description/);
+  assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a'), '../escape.md': 'x' } }), /not a plain relative path/);
+  assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a'), reference: 'x', 'reference/sources.md': 'y' } }), /reference is both a file and a folder/);
+  assert.match(skillProblems([{ name: 'a', files: { 'SKILL.md': md('a') } }, { name: 'a', files: { 'SKILL.md': md('a') } }]).join(';'), /given twice/);
+  assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a'), 'big.md': 'x'.repeat(1024 * 1024) } }), /more than 1048576/);
+});

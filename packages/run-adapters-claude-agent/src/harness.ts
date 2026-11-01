@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the PreToolUse hook is always installed and, with the built-ins off, denies every call but the session's own tools; message prefixes and log tags name the Claude Agent adapter; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; comments that cite CLI 2.1.296 describe durable-harness's pin, and this copy runs 2.1.286, whose tool set test/tool-off.test.mjs pins; 2026-10-28: the session's tools are served by host/tool-server.ts (each JSON Schema as given, arguments as sent), not through the SDK's zod tool(), and the CLI is told the longest description so it cuts none; an optional `skills` (a local plugin and the names enabled in it) turns the Skill tool on for those skills alone; the PreToolUse hook takes a session skill by its bare name too (unless the CLI keeps that name), and rewrites it to the plugin-qualified one; a tool's images go to the model with its text; a refusal the CLI made reaches the host only once its tool_result entry is in the log.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the PreToolUse hook is always installed and, with the built-ins off, denies every call but the session's own tools; message prefixes and log tags name the Claude Agent adapter; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; comments that cite CLI 2.1.296 describe durable-harness's pin, and this copy runs 2.1.286, whose tool set test/tool-off.test.mjs pins; 2026-10-28: the session's tools are served by host/tool-server.ts (each JSON Schema as given, arguments as sent), not through the SDK's zod tool(), and the CLI is told the longest description so it cuts none; an optional `skills` (a local plugin and the names enabled in it) turns the Skill tool on for those skills alone; the PreToolUse hook takes a session skill by its bare name too (unless the CLI keeps that name), and rewrites it to the plugin-qualified one; a tool's images go to the model with its text; a refusal the CLI made reaches the host only once its tool_result entry is in the log; 2026-11-01: `providerTools: ['web_search']` turns the CLI's WebSearch on with the built-ins off: offered by name, let through the PreToolUse hook as a recorded built-in call, and named in the system prompt's note.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -199,7 +199,8 @@ export interface ClaudeCodeHarnessOptions {
    * `claudeBuiltinReplay` (reads safe).
    */
   builtinReplay?: Record<string, ReplayPolicy> | ((name: string) => ReplayPolicy);
-  /** Provider-hosted tools the model may use (`web_search`, `web_fetch`); default none; refused with `network: 'deny-all'`. */
+  /** Provider-hosted tools the model may use; default none. `web_search` turns the CLI's WebSearch on, built-ins off or
+   *  not: each call recorded as a built-in's (the session's model proxy decides what the provider may run). */
   providerTools?: readonly ProviderTool[];
   /**
    * The model, a native Anthropic id (`claude-sonnet-4-5`) or a Gateway one
@@ -254,6 +255,9 @@ export const DEFAULT_MODEL = 'claude-sonnet-4-5';
 
 /** What the harness appends to the system prompt about the tools, before `instructions`, with the built-ins off and the app's tools there. */
 export const TOOLS_NOTE = `Your only tools are this app's, the mcp__${MCP_SERVER}__ tools; you have no shell, file, search or web tools of your own.`;
+
+/** `TOOLS_NOTE` with WebSearch on (`providerTools: ['web_search']`) and the other built-ins off. */
+export const WEB_SEARCH_NOTE = `Your only tools are this app's (the mcp__${MCP_SERVER}__ tools, if it has any) and WebSearch; you have no shell, file or fetch tools of your own.`;
 
 /** `TOOLS_NOTE` for a session with no tools at all (built-ins off, no `tools`). */
 export const NO_TOOLS_NOTE = 'You have no tools in this session: no shell, file, search or web tools. Answer from the conversation.';
@@ -392,6 +396,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
   const executable = options.executable ?? CLAUDE_VM_EXECUTABLE;
   const replay = typeof options.builtinReplay === 'function' ? options.builtinReplay : options.builtinReplay ? (name: string) => (options.builtinReplay as Record<string, ReplayPolicy>)[name] ?? claudeBuiltinReplay(name) : claudeBuiltinReplay;
   const providerTools = options.providerTools ?? [];
+  const webSearch = providerTools.includes('web_search');
   const log = options.log ?? (() => {});
   let sdk: Promise<ClaudeAgentSdk> | undefined;
   const loadSdk = (): Promise<ClaudeAgentSdk> => {
@@ -579,7 +584,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                       if (name === undefined) return deny(`Not run: ${JSON.stringify(String(asked).slice(0, 80))} is not one of this session's skills.`);
                       return name === asked ? allow() : allow({ ...input, skill: name });
                     }
-                    if (!builtinsOn) return deny("Not run: this session's only tools are its own.");
+                    // WebSearch, when on, takes the built-ins' path below: its intent recorded before it runs.
+                    if (!builtinsOn && !(webSearch && hook.tool_name === 'WebSearch')) return deny("Not run: this session's only tools are its own.");
                     if (ctx.signal.aborted) return deny('the session stopped');
                     let updated: Record<string, unknown> | undefined;
                     const field = FILE_TOOLS[hook.tool_name];
@@ -678,7 +684,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // Built-ins on: the allowed ones (less those whose state the log does not carry), each let through by
           // the PreToolUse hook once its intent is in the log. Off: the bridged tools are the only ones. Either
           // way nothing is asked of a user, and nothing else is permitted.
-          ...(allowed !== undefined ? { tools: skills ? [...allowed, 'Skill'] : allowed } : {}),
+          ...(allowed !== undefined ? { tools: [...allowed, ...(skills ? ['Skill'] : []), ...(webSearch && !allowed.includes('WebSearch') ? ['WebSearch'] : [])] } : {}),
           // The session's skills, from its own plugin: listed to the model and loadable, and no other.
           ...(skills ? { plugins: [{ type: 'local' as const, path: skills.plugin }], skills: [...skills.names] } : {}),
           disallowedTools: disallowed,
@@ -697,7 +703,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: [builtinsOn ? DRIVE_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
+            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
             snapshot: !recovered,
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),

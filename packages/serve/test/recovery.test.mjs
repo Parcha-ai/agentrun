@@ -6,24 +6,37 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, flowAgent, follow, scratch, startRun, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
+// A hang guard far beyond a measured start (median 7.4 s locally; slowest CI test 17.4 s), not a start budget.
+const test = (name, ...rest) => nodeTest(name, { timeout: 120_000, ...(rest.length > 1 ? rest[0] : {}) }, rest.at(-1));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const alive = processAlive;
 
-/** A server in a process of its own, so a test can kill it the way a crash does and leave its runs behind. */
+/** A server in a process of its own, so a test can kill it the way a crash does and leave its runs behind. It is ready
+ *  when it prints its banner, which it does once it listens: its address and key lines, whole. A server that exits first
+ *  fails the test with what it said. No clock: a slow start, on a loaded machine, is still a start. */
 async function serverProcess(data) {
   const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_API_KEY=/.test(out); i++) {
-    assert.ok(i < 200, `the server did not start: ${out}`);
-    await sleep(50);
-  }
+  let err = "";
+  // Read to the end, so the server never blocks on a full pipe; its last lines say why, should it exit before it listens.
+  child.stderr.on("data", (chunk) => (err = (err + chunk).slice(-4_000)));
+  await new Promise((resolve, reject) => {
+    const exited = (code, signal) => reject(new Error(`the server exited before it listened (${signal ?? code}): ${out}${err}`));
+    child.stdout.on("data", (chunk) => {
+      out += chunk;
+      if (!/^AGENTRUN_API_KEY=.*\n/m.test(out) || !/^AGENTRUN_BASE_URL=\S+\n/m.test(out)) return;
+      child.off("exit", exited);
+      resolve();
+    });
+    child.once("exit", exited);
+    child.once("error", reject);
+  });
   const value = (name) => new RegExp(`${name}=(\\S+)`).exec(out)[1];
   // The banner prints the token only when this start made it; a later start on the same directory names its file.
   return { child, api: client(value("AGENTRUN_BASE_URL"), (await readFile(join(data, ".token"), "utf8")).trim()) };
@@ -36,10 +49,8 @@ async function crashMidRun(t, content, { create = agent("calc"), input = { conte
   t.after(() => first.child.kill("SIGKILL"));
   assert.equal((await first.api("POST", "/agents", create)).status, 201);
   const { body: run } = await first.api("POST", `/agents/${create.definition.id}/runs`, { input });
-  for (let i = 0; (await first.api("GET", `/runs/${run.run_id}`)).body.state !== "working" || (await first.api("GET", `/runs/${run.run_id}`)).body.status !== "working"; i++) {
-    assert.ok(i < 200, "the run starts working");
-    await sleep(50);
-  }
+  // Its own process started and its turn in flight.
+  await untilState(first.api, run.run_id, ["working", "working"]);
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
   const record = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8"));
@@ -324,10 +335,7 @@ test("a carry back that finds the store busy is tried again until it lands, so t
   const go = join(dir, "go");
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: `Answer once ${go} exists.` } });
   // Once the run's process has read its revision and works: before that, it reads the store itself.
-  for (let i = 0; (await api("GET", `/runs/${run.run_id}`)).body.state !== "working" || (await api("GET", `/runs/${run.run_id}`)).body.status !== "working"; i++) {
-    assert.ok(i < 400, "the run starts working");
-    await sleep(50);
-  }
+  await untilState(api, run.run_id, ["working", "working"]);
   // Another writer holds the store; the run answers; the carry back is refused; then the writer lets go.
   const lock = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
   lock.exec("BEGIN EXCLUSIVE");
@@ -385,14 +393,22 @@ const stateOf = async (api, runId) => {
   return [body.status, body.state];
 };
 
-async function untilState(api, runId, want, tries = 200) {
-  for (let i = 0; ; i++) {
-    const now = await stateOf(api, runId);
-    if (now.join() === want.join()) return;
-    assert.ok(i < tries, `the run reaches ${want.join("/")}: last ${now.join("/")}`);
-    await sleep(50);
+/** Until `done(status, state)` holds for the run, long-polling its timeline, which the server answers as the run changes;
+ *  the status and state then. A run that ends in a status `done` does not take fails the test at once. No clock: how long
+ *  a run takes to start on a loaded machine is not what these tests are about. */
+async function untilRun(api, runId, done, what) {
+  let after = 0;
+  for (;;) {
+    const { status, body: page } = await (api.fresh ?? api)("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "2000" })}`);
+    assert.equal(status, 200, JSON.stringify(page));
+    if (done(page.status, page.state)) return [page.status, page.state];
+    assert.ok(!["completed", "failed", "cancelled"].includes(page.status), `the run ended ${page.status} before it reached ${what}`);
+    after = page.next_after;
   }
 }
+
+/** Until the run's status and state are `want` (as untilRun). */
+const untilState = (api, runId, want) => untilRun(api, runId, (status, state) => status === want[0] && state === want[1], want.join("/"));
 
 test("a stopped run is still input_required and idle after a restart that ended its process: a follow-up goes on, a cancel cancels", { timeout: 60_000 }, async (t) => {
   const start = servers(t);
@@ -428,13 +444,8 @@ test("a stopped run whose live process the next server adopts is input_required 
     assert.ok(alive(holder.pid), "the run's process outlived its server");
     t.after(() => alive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   };
-  const adopted = async (api, runId) => {
-    for (let i = 0; (await stateOf(api, runId))[0] === "queued"; i++) {
-      assert.ok(i < 200, "the adopted run's rows arrive");
-      await sleep(50);
-    }
-    return stateOf(api, runId);
-  };
+  // Once the adopted run's rows arrive, its status is past queued.
+  const adopted = (api, runId) => untilRun(api, runId, (status) => status !== "queued", "a status past queued");
   const first = await serverProcess(data);
   t.after(() => first.child.kill("SIGKILL"));
   const runId = await stopWhileWorking(first.api, "slow");

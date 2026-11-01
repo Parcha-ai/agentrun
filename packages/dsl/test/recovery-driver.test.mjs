@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { runWorkflow } from '@parcha/agentrun-dsl';
+import { runWorkflow, DecisionProviderError, judgeFromProvider } from '@parcha/agentrun-dsl';
 // The driver measures an effect's durable attempt clock with Date.now(), and the interpreter its deadline with
 // performance.now(). A test that needs either to pass holds both clocks and moves them itself.
 const holdClocks = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); return { advance: (ms) => { now += ms; t.mock.timers.tick(ms); } }; };
@@ -344,6 +344,106 @@ test("a route's answer is committed as its decision before its branch runs, and 
   assert.deepEqual([spent.state.questionSpendUsd, spent.state.pin.routes, asked], [0.004, {}, 3]);
   assert.deepEqual([(await run(invalid, routed, judge(choice('calm', 0.9, 0.001)))).state.went, asked], ['calm', 4]);
   assert.equal((await operator(invalid, routed)).state.questionSpendUsd, 0.005);
+});
+
+test("a refused route's decision takes its unsure branch with no choice of its own, a later open follows it, and a mislabelled one is refused", async () => {
+  const refused = { cost_usd: 0.001, request_sha256: 'request-2', answers: { branch: { type: 'refusal' } } };
+  const store = memoryStore();
+  await assert.rejects(run(store, routed, { runJudge: async () => refused }, { cut: 'calm-step' }), /cut at calm-step/);
+  const decided = (await operator(store, routed)).state.pin.routes[step(1)];
+  assert.deepEqual([decided.branch, decided.choice, decided.unsure, decided.refused], ['calm', null, true, true]);
+  const resumed = await run(store, routed, { runJudge: async () => { throw new Error('the route was asked again'); } });
+  assert.deepEqual([resumed.status, resumed.state.went], ['complete', 'calm']);
+  // A refused route's record with "" for its branch or its choice is the mislabel: the checkpoint is refused at open.
+  for (const mislabel of [{ choice: '' }, { branch: '' }]) {
+    const planted = memoryStore();
+    await assert.rejects(run(planted, routed, { runJudge: async () => refused }, { cut: 'calm-step' }), /cut at calm-step/);
+    await operator(planted, routed, async (journal) => {
+      const state = structuredClone(journal.state);
+      Object.assign(state.pin.routes[step(1)], mislabel);
+      await journal.save(state);
+    });
+    await assert.rejects(open(planted, routed), fault('FROZEN_CHECKPOINT_INVALID', /Invalid frozen recovery checkpoint/));
+  }
+});
+
+test('a refused route with no unsure branch escalates, and records no decision: it took no branch', async () => {
+  const sure = doc([code('seed', "() => ({ text: 'hello' })"), { node: 'route', label: 'triage', state: { text: '{text}' }, instructions: 'Which desk takes this?', as: 'desk',
+    branches: { calm: { criteria: 'a routine request', body: code('calm-step', "() => ({ went: 'calm' })") }, angry: { criteria: 'an escalating complaint', body: code('angry-step', "() => ({ went: 'angry' })") } } }]);
+  const store = memoryStore();
+  const result = await run(store, sure, { runJudge: async () => ({ cost_usd: 0.001, answers: { branch: { type: 'refusal' } } }) });
+  assert.deepEqual([result.status, result.escalation.kind], ['escalated', 'decision_refused']);
+  const journal = await operator(store, sure);
+  assert.deepEqual([journal.state.pin.routes, journal.state.questionSpendUsd], [{}, 0.001]);
+});
+
+test('under recovery, a decision whose outcome was lost after sending is in the run\'s spend: at the provider\'s estimate, or unpriced', async () => {
+  const judged = doc([{ node: 'judge', label: 'check', state: { text: 'x' }, out: 'Flag', as: 'flag' }], { schemas: { ...SCHEMAS, Flag: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } } });
+  const lost = (costUsd) => async () => { throw new DecisionProviderError('outcome_unknown', 'Parallel answered HTTP 503 after the request was sent.', { status: 503, attempts: 1, costUsd, costBasis: costUsd === null ? 'unknown' : 'estimate' }); };
+  const priced = memoryStore();
+  const result = await run(priced, judged, { runJudge: lost(0.001) });
+  assert.deepEqual([result.status, result.escalation.kind], ['escalated', 'decision_interrupted']);
+  const spent = await operator(priced, judged);
+  assert.deepEqual([spent.state.questionSpendUsd, spent.state.unpricedQuestionCount], [0.001, undefined]);
+  const unknown = memoryStore();
+  await run(unknown, judged, { runJudge: lost(null) });
+  const incomplete = await operator(unknown, judged);
+  assert.deepEqual([incomplete.state.questionSpendUsd, incomplete.state.unpricedQuestionCount], [undefined, 1], 'an unknown cost makes the spend read incomplete, never $0');
+});
+
+test('a decision whose outcome was lost after sending is never asked again by the next process: it was interrupted, not failed', async () => {
+  const judged = doc([{ node: 'judge', label: 'check', state: { text: 'x' }, out: 'Flag', as: 'flag' }], { schemas: { ...SCHEMAS, Flag: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } } });
+  const store = memoryStore();
+  let asked = 0;
+  const judge = { runJudge: async () => { asked += 1; if (asked === 1) throw new DecisionProviderError('outcome_unknown', 'Parallel answered HTTP 503 after the request was sent.', { status: 503, attempts: 1, costUsd: 0.001, costBasis: 'estimate' }); return { answers: { legit: { type: 'noul', noul: 0.9 } } }; } };
+  const first = await run(store, judged, judge);
+  assert.deepEqual([first.status, first.escalation.kind], ['escalated', 'decision_interrupted']);
+  const second = await run(store, judged, judge);
+  assert.equal(asked, 1, 'a request that may have been answered and billed is not asked, and paid for, a second time');
+  assert.deepEqual([second.status, second.escalation.kind], ['escalated', 'decision_interrupted']);
+  assert.equal((await operator(store, judged)).state.questionSpendUsd, 0.001, 'booked once');
+});
+
+test('a decision that failed before it was sent is asked again by the next process, and nothing is booked for it: it failed, not interrupted', async () => {
+  const judged = doc([{ node: 'judge', label: 'check', state: { text: 'x' }, out: 'Flag', as: 'flag' }], { schemas: { ...SCHEMAS, Flag: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } } });
+  const store = memoryStore();
+  let asked = 0;
+  const judge = { runJudge: async () => { asked += 1; if (asked === 1) throw new DecisionProviderError('rate_limited', 'Parallel answered HTTP 429 without Retry-After.', { status: 429, attempts: 1 }); return { cost_usd: 0.001, answers: { legit: { type: 'noul', noul: 0.9 } } }; } };
+  await assert.rejects(run(store, judged, judge), (error) => error instanceof DecisionProviderError && error.code === 'rate_limited');
+  const first = await operator(store, judged);
+  assert.deepEqual([first.state.questionSpendUsd, first.state.unpricedQuestionCount], [undefined, undefined], 'a request refused before it was sent costs nothing');
+  const second = await run(store, judged, judge);
+  assert.deepEqual([asked, second.status], [2, 'complete'], 'the next process asks it again');
+  assert.equal((await operator(store, judged)).state.questionSpendUsd, 0.001, 'only the answered ask is booked');
+});
+
+test('under recovery, an answer the seam rejects is in the run\'s spend at the provider\'s cost, or as an unpriced request, and the decision failed: the next process asks again', async () => {
+  const judged = doc([{ node: 'judge', label: 'check', state: { text: 'x' }, out: 'Flag', as: 'flag' }], { schemas: { ...SCHEMAS, Flag: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } } });
+  const capabilities = { types: ['noul', 'choice', 'score'], inputs: ['text', 'json'], evidence: 'none', probability: 'model', grounding: false, replay: 'never', maxQuestions: null, maxStateBytes: null };
+  for (const [cost_usd, spend, unpriced] of [[0.004, 0.004, undefined], [null, undefined, 1]]) {
+    const store = memoryStore();
+    let asked = 0;
+    const provider = { id: 'test', needs: [], capabilities, decide: async () => {
+      asked += 1;
+      return { answers: { legit: { type: 'noul', noul: asked === 1 ? 1.7 : 0.9 } }, model: null, usage: null, evidence: [], cost_usd, cost_basis: cost_usd === null ? 'unknown' : 'estimate', provider_request_id: null };
+    } };
+    const judge = { runJudge: judgeFromProvider(provider) };
+    await assert.rejects(run(store, judged, judge), (error) => error instanceof DecisionProviderError && error.code === 'invalid_response');
+    const first = await operator(store, judged);
+    assert.deepEqual([first.state.questionSpendUsd, first.state.unpricedQuestionCount], [spend, unpriced], 'the rejected answer was paid for: booked at its cost, or counted unpriced, never $0');
+    const second = await run(store, judged, judge);
+    assert.deepEqual([asked, second.status], [2, 'complete'], 'it failed, so the next process asks again');
+  }
+});
+
+test('under recovery, a provider\'s own malformed-response error is booked: at the cost it carries, or as an unpriced request', async () => {
+  const judged = doc([{ node: 'judge', label: 'check', state: { text: 'x' }, out: 'Flag', as: 'flag' }], { schemas: { ...SCHEMAS, Flag: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } } });
+  for (const [details, spend, unpriced] of [[{ costUsd: 0.001, costBasis: 'estimate' }, 0.001, undefined], [{}, undefined, 1]]) {
+    const store = memoryStore();
+    await assert.rejects(run(store, judged, { runJudge: async () => { throw new DecisionProviderError('invalid_response', 'Parallel returned a body that is not JSON.', { attempts: 1, ...details }); } }));
+    const journal = await operator(store, judged);
+    assert.deepEqual([journal.state.questionSpendUsd, journal.state.unpricedQuestionCount], [spend, unpriced]);
+  }
 });
 
 test('a route is decided once, only a route is decided, and its receipts are carried until the host has written them', async () => {
