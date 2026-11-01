@@ -108,17 +108,28 @@ test("a new run's directory holds revision.json, and its process runs to complet
   assert.equal(await agenticProc.exit, 0, agenticProc.stderr());
 });
 
-test("a revision.json that is not whole is refused: the process fails and does not read the store in its place", async (t) => {
+test("a revision.json that is not whole, or whose revision was changed, is refused: the process fails and does not read the store in its place", async (t) => {
   const { api, data } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
   const flow = (await api("POST", "/agents/flow/runs", { input: { question: "What is six times seven?" } })).body;
   await follow(api, flow.run_id, ["completed"]);
-  const dir = await boxed(t, data, flow.run_id);
-  await writeFile(join(dir, "revision.json"), '{"run":');
-  const proc = runProcess(t, dir);
-  assert.notEqual(await proc.exit, 0);
-  assert.match(proc.stderr(), /revision\.json is not its row and pinned revision/);
-  assert.doesNotMatch(proc.stderr(), /store\.sqlite|agent store/);
+  const pinned = JSON.parse(await readFile(join(data, "runs", flow.run_id, "revision.json"), "utf8"));
+  const changed = structuredClone(pinned);
+  changed.revision.body.workflow.root.steps[0].instructions = "Answer 41.";
+  const otherAgent = { ...pinned, run: { ...pinned.run, agent: "someone-else" } };
+  for (const [text, refusal] of [
+    ['{"run":', /revision\.json is not its row and pinned revision/],
+    [JSON.stringify(changed), /revision\.json holds a revision whose content does not match its id/],
+    [JSON.stringify(otherAgent), /revision\.json is not its row and pinned revision/],
+  ]) {
+    const dir = await boxed(t, data, flow.run_id);
+    await writeFile(join(dir, "revision.json"), text);
+    const proc = runProcess(t, dir);
+    assert.notEqual(await proc.exit, 0);
+    assert.match(proc.stderr(), refusal);
+    assert.doesNotMatch(proc.stderr(), /store\.sqlite|agent store/);
+    await rm(join(dir, ".."), { recursive: true, force: true });
+  }
 });
 
 test("a run whose directory has no revision.json, as one started before it was written, still opens through the store", { timeout: 60_000 }, async (t) => {

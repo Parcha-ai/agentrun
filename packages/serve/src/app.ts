@@ -14,7 +14,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
 import { createRegistry, type Extension, type Harness, type Tx } from "@earendil-works/pi-durable";
-import { openStoreReader, type Revision, RUN_STORE_FILE } from "@parcha/pi-durable-agent";
+import { openStoreReader, type Revision, revisionHash, RUN_STORE_FILE } from "@parcha/pi-durable-agent";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { cancelledIn, markRequests } from "./request-start.js";
@@ -75,8 +75,9 @@ async function revisionOf(where: AppContext): Promise<PinnedRevision> {
   }
 }
 
-/** `revision.json`'s run and revision. A file that is not whole JSON, or whose run does not pin the revision it holds, is
- *  refused: the store is never asked in its place. */
+/** `revision.json`'s run and revision. A file that is not whole JSON, whose run does not pin the revision it holds, or
+ *  whose revision's content does not give its id (the store's own check, `readRevision`'s) is refused: the store is
+ *  never asked in its place. */
 function pinnedOf(text: string): PinnedRevision {
   let pinned: unknown;
   try {
@@ -84,10 +85,11 @@ function pinnedOf(text: string): PinnedRevision {
   } catch {}
   const run = isObject(pinned) && isObject(pinned.run) ? pinned.run : undefined;
   const revision = isObject(pinned) && isObject(pinned.revision) ? pinned.revision : undefined;
-  if (!run || !revision || typeof run.id !== "string" || typeof run.agent !== "string" || typeof revision.id !== "string" || run.revision !== revision.id || (revision.kind !== "agentic" && revision.kind !== "workflow") || !isObject(revision.body)) {
+  if (!run || !revision || typeof run.id !== "string" || typeof revision.id !== "string" || typeof revision.agent !== "string" || run.agent !== revision.agent || run.revision !== revision.id || (revision.kind !== "agentic" && revision.kind !== "workflow") || !isObject(revision.body)) {
     throw new Error(`the run's ${RUN_REVISION} is not its row and pinned revision`);
   }
-  return { run: { id: run.id, agent: run.agent, revision: revision.id }, revision: revision as unknown as Revision };
+  if (revisionHash(revision as unknown as Revision) !== revision.id) throw new Error(`the run's ${RUN_REVISION} holds a revision whose content does not match its id: it was changed`);
+  return { run: { id: run.id, agent: revision.agent, revision: revision.id }, revision: revision as unknown as Revision };
 }
 
 export default async function app(where: AppContext): Promise<AppOptions> {

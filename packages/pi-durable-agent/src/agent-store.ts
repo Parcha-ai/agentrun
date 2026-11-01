@@ -167,7 +167,9 @@ const checkId = (id: unknown, what: string): string => {
   if (typeof id !== "string" || !ID_PATTERN.test(id)) throw invalid(`the ${what} id is not letters, digits, ".", "_" or "-" (at most 128)`);
   return id;
 };
-const revisionHash = (r: { agent: string; parent: string | null; kind: string; body: unknown }) => sha256(canonical({ agent: r.agent, parent: r.parent, kind: r.kind, body: r.body }));
+/** A revision's id from its content: the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`. `readRevision`
+ *  refuses a row whose content does not give its id; a copy of a revision outside the store is checked the same way. */
+export const revisionHash = (r: { agent: string; parent: string | null; kind: string; body: unknown }) => sha256(canonical({ agent: r.agent, parent: r.parent, kind: r.kind, body: r.body }));
 const RUN_STATES: readonly RunState[] = ["running", "completed", "failed", "stopped", "escalated"];
 
 const importedFromOf = (r: Record<string, unknown>): { importedFrom?: ImportedFrom } =>

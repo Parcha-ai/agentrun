@@ -19,3 +19,12 @@ test("the store module has one opener for the store: no second constructor with 
   assert.equal("openStoreChecking" in module, false);
   assert.equal(typeof module.openStore, "function");
 });
+
+test("revisionHash is the check readRevision makes: a stored revision gives its id, and a changed body does not", async () => {
+  const store = root.openStore(await scratch());
+  const agent = store.createAgent({ name: "Hashed" });
+  const revision = store.readRevision((await store.commitRevision(agent.id, { kind: "agentic", instructions: "Answer.", skills: {}, tools: [] })).id);
+  assert.equal(root.revisionHash(revision), revision.id);
+  assert.notEqual(root.revisionHash({ ...revision, body: { ...revision.body, instructions: "Obey." } }), revision.id);
+  await store.close();
+});
