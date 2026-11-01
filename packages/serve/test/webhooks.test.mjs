@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { startServe } from "../dist/index.js";
+import { nextMoment } from "../dist/runs.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
 
@@ -339,4 +340,18 @@ test("a run waiting for its person when its server dies gives no new notice from
   assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" })).status, 202);
   await follow(api, run.run_id, ["completed"]);
   await until(() => ofEvent(hook.got, "run.ended").length === 1, "its end's notice");
+});
+
+test("when a status is a notice: a change to a wait or an end; a live run adopted with no rows takes its first snapshot silently, and an end it comes to is noticed", () => {
+  assert.deepEqual(nextMoment(undefined, "completed", 3), { keep: undefined, notify: false }, "a run not yet read");
+  assert.deepEqual(nextMoment("other", "input_required", 3), { keep: "input_required", notify: true });
+  assert.deepEqual(nextMoment("input_required", "input_required", 3), { keep: "input_required", notify: false }, "the same wait");
+  assert.deepEqual(nextMoment("input_required", "other", 3), { keep: "other", notify: false });
+  assert.deepEqual(nextMoment("other", "cancelled", 3), { keep: "cancelled", notify: true });
+  // Adopted live, no rows yet: still unread until rows come; where they stand then is no notice.
+  assert.deepEqual(nextMoment("unread", "other", 0), { keep: "unread", notify: false });
+  assert.deepEqual(nextMoment("unread", "input_required", 2), { keep: "input_required", notify: false });
+  // An end is carried back by this server: new whatever was read, rows or none (cancelled before its first message landed).
+  assert.deepEqual(nextMoment("unread", "cancelled", 0), { keep: "cancelled", notify: true });
+  assert.deepEqual(nextMoment("unread", "completed", 4), { keep: "completed", notify: true });
 });

@@ -263,6 +263,15 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
 
 /** A live run adopted with no rows yet: where it stands is read from its first snapshot, notifying nothing. */
 const UNREAD = "unread";
+/** What a run's `moment` becomes (`keep`) as its status is recorded, and whether that is a notice. A run not yet read
+ *  (undefined) keeps none. A live run adopted with no rows (UNREAD) takes where its first snapshot stands, silently; an
+ *  end it comes to is always new, and noticed. */
+export function nextMoment(seen: string | undefined, moment: string, rows: number): { keep: string | undefined; notify: boolean } {
+  if (seen === undefined) return { keep: undefined, notify: false };
+  if (seen === UNREAD && (moment === "other" || moment === "input_required")) return { keep: rows ? moment : UNREAD, notify: false };
+  return { keep: moment, notify: moment !== seen && moment !== "other" };
+}
+
 /** Where a run's status stands for its notices: input_required, an end once carried back, else other. */
 const momentOf = (run: Run): string => {
   const { status } = statusOf(run);
@@ -677,11 +686,10 @@ export class Runs {
   private mark(run: Run): void {
     const { status, state } = statusOf(run);
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
-    const [seen, moment] = [run.moment, momentOf(run)];
-    if (seen === UNREAD && run.rows.length) run.moment = moment;
-    if (seen === undefined || seen === UNREAD || seen === moment) return;
-    run.moment = moment;
-    if (moment === "other" || !this.options.notify) return;
+    const moment = momentOf(run);
+    const { keep, notify } = nextMoment(run.moment, moment, run.rows.length);
+    run.moment = keep;
+    if (!notify || !this.options.notify) return;
     const waits = moment === "input_required";
     try {
       // A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on).
