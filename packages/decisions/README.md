@@ -20,7 +20,7 @@ The key is `PARALLEL_API_KEY`, read by name when a request is made, or `apiKey`.
 What it does with Parallel's answers:
 
 - **Types and limits.** It answers `noul`, `choice` and `score`. Before sending, it refuses as `invalid_request` anything over Parallel's documented limits: more than 100 questions, a choice outside 2 to 255 options, a score outside 2 to 10 levels, a question that renders past 5,000 characters, or a state over 96,000 bytes. A choice option with no description is described by its own name.
-- **Model.** It asks Parallel's `fast` mode and declares the one model it serves, `parallel-fast`. A node that pins another model is refused before the run starts when the host passes its providers to the run's checks, and as `invalid_request` before anything is sent otherwise.
+- **Model.** It asks Parallel's `fast` mode and declares the one model it serves, `parallel-fast`. A node that pins another model is refused before the run starts when the host passes its providers to the run's checks, and as `invalid_request` before anything is sent otherwise. `modes` (default `PARALLEL_MODES`, `["fast"]`) lists the modes a node may pin as `parallel-<mode>`, for one Parallel adds before this package does; a node that pins none asks the first.
 - **Refusals.** Parallel may decline a question (`{ "type": "refusal" }`). It stays a refusal: the DSL never decodes it to a value. The run escalates for a person (`decision_refused`), or a route takes its `unsure` branch.
 - **Confidence.** A choice or score that comes back without a confidence gets one derived from its probabilities, and the decision receipt's `confidence_source` says so.
 - **Evidence.** Parallel's citations apply to the whole request, not to one answer, so each is evidence with `scope: "call"`.
@@ -37,9 +37,28 @@ What it does with Parallel's answers:
 
   No message carries the key, a header or a body.
 
+## OpenRouter Decisions
+
+`openrouterProvider()` asks any of [OpenRouter's](https://openrouter.ai) Decisions models (`POST https://openrouter.ai/api/v1/systemone`), the System One request Jev takes (`{ state, model, questions }`), sent to the model the node's `model` names, such as `perplexity/pplx-decider-v1.2`, `liquid/d1`, `cloudflare/clef` or `typesafe/jev-1.14`. A node that names none is refused before anything is sent, unless the provider was given a default `model`.
+
+```ts
+import { judgeFromProviders } from '@parcha/agentrun-dsl';
+import { openrouterProvider, parallelProvider } from '@parcha/agentrun-decisions';
+
+const runJudge = judgeFromProviders({ providers: { openrouter: openrouterProvider(), parallel: parallelProvider() }, default: 'openrouter' });
+```
+
+The key is `OPENROUTER_API_KEY`, read by name when a request is made, or `apiKey`.
+
+- **Cost.** The response's `usage.cost` is booked as `reported`; a response without one is an unknown cost (null, never 0).
+- **Replay.** As Parallel: `replay: "never"`. A request is sent again only when it never reached OpenRouter, or on a 429 with `Retry-After` (up to `maxAttempts`, default 3). A 408, a 5xx, a connection lost after sending or a deadline in flight is `outcome_unknown` at an unknown cost.
+- **Images (experimental).** OpenRouter takes JSON only, so a request's images go in the body as `assets` (`{ type: "image", format, data_base64 }`) with the `TypeSafe-Danger-Zone-Images` header, and only to a model the public catalog (`/v1/models?output_modalities=decisions`) lists with image input (`takesImages` overrides the catalog). Jev reads an image token anywhere in the state or a question, and refuses an image over 1568 px on a side, which the provider refuses before sending. Every other model reads an image only as a top-level item of an array state: an object state whose tokens are whole top-level values goes as `[{ the other fields }, "<token>"]`, and a token anywhere else is refused before sending. OpenRouter documents image assets as alpha, so the provider lists `image` under `experimental.inputs`.
+
+`@parcha/agentrun-decisions/testing/faux-system-one` is a fake System One endpoint for a host's tests: its answers are made up but stable (drawn from a hash of the model, the question and the state), it lists a small Decisions catalog, and it reads images as OpenRouter does. No request leaves the process.
+
 ## Tests
 
-`npm test -w @parcha/agentrun-decisions` runs on a fake fetch. It registers the DSL's provider conformance suite, replays 28 responses recorded from Parallel's decision tool through the seam, and checks the request as sent, the limits and the errors. `test/parallel.live.test.mjs` makes three decisions on the paid REST path (about $0.003) and runs only with `PARALLEL_API_KEY` set; without it, it is skipped and says so.
+`npm test -w @parcha/agentrun-decisions` runs on a fake fetch. It registers the DSL's provider conformance suite, replays 28 responses recorded from Parallel's decision tool and the live Parallel and OpenRouter responses of 2026-10-30 (five OpenRouter models) through the seam, and checks the request as sent, the limits and the errors. `test/parallel.live.test.mjs` makes three decisions on the paid REST path (about $0.003) and runs only with `PARALLEL_API_KEY` set; without it, it is skipped and says so.
 
 ## License
 

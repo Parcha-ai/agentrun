@@ -166,17 +166,20 @@ export class SystemOneError extends Error {
 
 const unit = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
 
-// System One reports probabilities rounded to two places, so the reported sum drifts from 1 by up to
-// half a step per option (3 × 0.33 = 0.99; 8 × 0.13 = 1.04). A distribution is accepted when it could
-// be that rounding of one summing to 1: a value on the two-place grid may be off by ±0.005 (within
-// [0, 1]); any other value is taken as exact. With no grid values this is |sum − 1| ≤ 1e-5, the
-// check for full-precision distributions. Answers are accepted as reported, never rescaled.
-const ROUNDING_HALF_STEP = 0.005;
-const onTwoPlaceGrid = (p: number) => Math.abs(p * 100 - Math.round(p * 100)) < 1e-9;
+// System One reports probabilities rounded, Jev to two places and some OpenRouter models to four (Cloudflare's clef,
+// live: 0.2967 + 0.6661 + 0.0371 = 0.9999), so the reported sum drifts from 1 by up to half a step per option
+// (3 × 0.33 = 0.99; 8 × 0.13 = 1.04). A distribution is accepted when it could be that rounding of one summing to 1: a
+// value on the two-, three- or four-place grid may be off by half that grid's step (within [0, 1]), the coarsest grid it
+// lies on; any other value is taken as exact. With no grid values this is |sum − 1| ≤ 1e-5, the check for
+// full-precision distributions. Answers are accepted as reported, never rescaled.
+const roundingHalfStep = (p: number): number => {
+  for (const places of [2, 3, 4]) { const scale = 10 ** places; if (Math.abs(p * scale - Math.round(p * scale)) < 1e-9 * scale / 100) return 0.5 / scale; }
+  return 0;
+};
 function roundedFromUnitMass(probabilities: number[]): boolean {
   let low = 0, high = 0;
   for (const p of probabilities) {
-    const step = onTwoPlaceGrid(p) ? ROUNDING_HALF_STEP : 0;
+    const step = roundingHalfStep(p);
     low += Math.max(0, p - step); high += Math.min(1, p + step);
   }
   return low <= 1 + 1e-5 && high >= 1 - 1e-5;
@@ -184,13 +187,13 @@ function roundedFromUnitMass(probabilities: number[]): boolean {
 // A Score's weighted level drifts the same way. The unrounded probabilities lie within their rounding
 // intervals and sum to 1, so Σ level·p lies between two bounds: start every level at its interval's
 // low end, then give the rest of the unit mass to the lowest levels (the minimum) or the highest (the
-// maximum), each up to its interval's high end. A score on the grid is itself off by up to 0.005. The
+// maximum), each up to its interval's high end. A score on a grid is itself off by up to half its step. The
 // score is accepted when its interval meets [min, max]; with no grid values this is
 // |score − Σ level·p| ≤ 1e-5. A score that is not a number contradicts nothing here and is left to
 // the range check, as before.
 function scoreContradictsDistribution(score: number, probabilities: Record<string, number>): boolean {
   const levels = Object.entries(probabilities).map(([level, p]) => {
-    const step = onTwoPlaceGrid(p) ? ROUNDING_HALF_STEP : 0;
+    const step = roundingHalfStep(p);
     return { level: Number(level), low: Math.max(0, p - step), high: Math.min(1, p + step) };
   }).sort((a, b) => a.level - b.level);
   const floor = levels.reduce((sum, l) => sum + l.level * l.low, 0);
@@ -201,7 +204,7 @@ function scoreContradictsDistribution(score: number, probabilities: Record<strin
     return weighted;
   };
   const min = fill(levels), max = fill([...levels].reverse());
-  const step = onTwoPlaceGrid(score) ? ROUNDING_HALF_STEP : 0;
+  const step = roundingHalfStep(score);
   return score - step > max + 1e-5 || score + step < min - 1e-5;
 }
 
