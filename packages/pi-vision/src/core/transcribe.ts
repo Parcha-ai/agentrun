@@ -6,8 +6,9 @@
 
 import { VISION_TRANSCRIBE } from "./contract.js";
 import { visionContext, type VisionEnv } from "./env.js";
-import { fileLook, fileTold, keptAnswer, lookKey, type Filing, type LookRecord } from "./evidence.js";
+import { fileLook, fileTold, keptAnswer, lookKey, type LookRecord } from "./evidence.js";
 import type { CallContext, CallSetup } from "./host.js";
+import { filingOf } from "./filing.js";
 import { sniffKind, SNIFF_BYTES, type Kind } from "./kinds.js";
 import { singleFlight, throwMiss } from "./media.js";
 import { ProviderMiss } from "./derive.js";
@@ -85,7 +86,7 @@ export async function transcribe(input: unknown, env: VisionEnv | undefined, cal
   const transcriber = setup.transcriber;
   const fragment = request.fragment ?? request.path;
   const model = transcriber?.model ?? "no transcriber";
-  const filing: Filing = { conversationId: call.conversationId, label: setup.scope.label, evidence: setup.evidence, onLook: setup.onLook, onMiss: setup.onMiss };
+  const filing = filingOf(call, setup);
   let sha256 = "", kind: Kind = "unknown";
   const plan = [transcriber?.provider ?? null, request.language ?? null];
   const record = (body: string, facts: Partial<LookRecord["facts"]> = {}): LookRecord => ({

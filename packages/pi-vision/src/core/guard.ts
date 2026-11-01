@@ -6,7 +6,8 @@
 // the eyes take in one, each filed as one look.
 
 import { formatFragment } from "./fragments.js";
-import { blocksSha256, fileLook, fileTold, keptAnswer, lookKey, type Filing, type LookRecord } from "./evidence.js";
+import { blocksSha256, fileLook, fileTold, keptAnswer, lookKey, type LookRecord } from "./evidence.js";
+import { filingOf, NO_RECEIPT } from "./filing.js";
 import type { CallContext, CallSetup, EyesAnswer, ImageContent, TextContent, ToolResult, Usage } from "./host.js";
 import { imageHeader, KINDS, type Kind } from "./kinds.js";
 import { RESULT_BYTES_SHARE, type Limits } from "./limits.js";
@@ -141,7 +142,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
   };
   // A receipt is filed only for media a door named; another tool's image is still routed and its looks and misses still
   // reach the host's hooks, with nothing to cite.
-  const filing: Filing = { conversationId: call.conversationId, label: setup.scope.label, evidence: media.path ? setup.evidence : { file: async () => null }, onLook: setup.onLook, onMiss: setup.onMiss };
+  const filing = filingOf(call, setup, media.path ? setup.evidence : NO_RECEIPT);
   // A miss filed before any request to the eyes cost nothing; one after a request says what it knows of that request.
   const miss = async (what: string, unit: readonly ImageContent[], cause: Miss, spent: Partial<LookRecord["facts"]> = { tokens_in: 0, tokens_out: 0, cost_usd: 0 }): Promise<TextContent> => {
     const m = { ...cause, reason: pathSafe(linkSafe(cause.reason)) };

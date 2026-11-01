@@ -7,8 +7,9 @@
 
 import { VISION_SEE } from "./contract.js";
 import type { VisionEnv } from "./env.js";
-import { blocksSha256, fileLook, fileTold, keptAnswer, lookKey, type Filing, type LookRecord } from "./evidence.js";
+import { blocksSha256, fileLook, fileTold, keptAnswer, lookKey, type LookRecord } from "./evidence.js";
 import type { CallContext, CallSetup, EyesAnswer } from "./host.js";
+import { filingOf } from "./filing.js";
 import { fitImage } from "./image.js";
 import { aboutMedium, AS_IS, gatherMedia, namesMedia, singleFlight, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
 import { firstLine } from "./misses.js";
@@ -50,7 +51,7 @@ function checked(input: unknown): SeeRequest {
 export async function see(input: unknown, env: VisionEnv | undefined, call: CallContext, setup: CallSetup): Promise<SeeAnswer> {
   const request = checked(input);
   const ask = request.ask.trim();
-  const filing: Filing = { conversationId: call.conversationId, label: setup.scope.label, evidence: setup.evidence, onLook: setup.onLook, onMiss: setup.onMiss };
+  const filing = filingOf(call, setup);
   const record = (items: readonly Item[], model: string, body: string, facts: Partial<LookRecord["facts"]> = {}, about?: About): LookRecord => {
     if (!items.length && about) {
       return {
