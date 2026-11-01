@@ -15,8 +15,9 @@
 // computer use, the server's bash or editor, a tool search) is refused, and a content block may only be of a type the
 // pinned CLI sends (text, thinking, tool calls and results), so no server tool's block, MCP block, image or document
 // passes. A tool of the session's own that is not one of its names (`mcp__hands__<name>`)
-// is dropped, so the model is offered exactly the host's tools. Usage is read from the stream's `message_start` (input
-// and cache tokens) and its last `message_delta` (output).
+// is dropped, so the model is offered exactly the host's tools. With `webSearch`, one hosted tool passes: Anthropic's web
+// search, exactly as the pinned CLI asks for it in the request its WebSearch tool makes. Usage is read from the stream's
+// `message_start` (input and cache tokens) and its last `message_delta` (output, and the searches the provider ran).
 import { providerInputOverhead, ProxyRefusal, type InputShape, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-adapters/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
@@ -55,6 +56,18 @@ const OUTPUT_CONFIG_KEYS = new Set(["effort", "format", "task_budget"]);
  *  document. */
 export const CLAUDE_BLOCKS: ReadonlySet<string> = new Set(["text", "thinking", "redacted_thinking", "tool_use", "tool_result"]);
 
+/** Anthropic's web search server tool as the pinned CLI (2.1.286) asks for it: when the model calls the CLI's WebSearch,
+ *  the CLI sends a request of its own on the session's model with this one tool (recorded behind a local server,
+ *  test/fixtures/web-search-request-cli-2.1.286.json): its type and name, `max_uses: 8`, and the domains the model named.
+ *  A later version (dynamic filtering runs code execution) or any other field is refused. */
+export const CLAUDE_WEB_SEARCH_TOOL = "web_search_20250305";
+const WEB_SEARCH_KEYS: ReadonlySet<string> = new Set(["type", "name", "max_uses", "allowed_domains", "blocked_domains"]);
+/** The most searches one request may ask the provider for: the pinned CLI's `max_uses`. */
+const WEB_SEARCH_MAX_USES = 8;
+/** What one web search costs on Anthropic's API, in USD, beside the tokens: $10 per 1,000 searches, "Web search tool" in
+ *  https://platform.claude.com/docs/en/about-claude/pricing (a search that errs is not billed). */
+export const CLAUDE_WEB_SEARCH_USD = 0.01;
+
 export interface AnthropicPolicyOptions {
   /** The session's model, and the one the CLI's small background calls use (default: the session's). */
   model: string;
@@ -65,6 +78,10 @@ export interface AnthropicPolicyOptions {
   builtins?: readonly string[];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
+  /** Admit Anthropic's web search server tool (`CLAUDE_WEB_SEARCH_TOOL`), exactly as the pinned CLI asks for it; every
+   *  other hosted tool stays refused, and so does every server tool's block (the CLI's WebSearch answers the model in
+   *  text, so it never sends one back). Default off. */
+  webSearch?: boolean;
   /** How the provider takes its credential. Default `x-api-key` (Anthropic's API). */
   auth?: "x-api-key" | "bearer";
   /** Told when a request on the session's main model carries no thinking and no effort: the model would answer without
@@ -134,12 +151,26 @@ function outputConfig(config: unknown): void {
   onlyKeys(config, OUTPUT_CONFIG_KEYS, "output_config");
 }
 
-/** The tools the provider gets: client tools of the session's own only; a provider-hosted one is refused. */
-function ownTools(tools: unknown, allowed: ReadonlySet<string>): unknown[] | undefined {
+/** Whether `tool` is the web search server tool as the pinned CLI asks for it: its type and name, at most
+ *  `WEB_SEARCH_MAX_USES` searches, the domains as lists of names, and nothing else. */
+function cliWebSearch(tool: Record<string, unknown>): boolean {
+  const uses = tool.max_uses;
+  const names = (domains: unknown) => domains === undefined || (Array.isArray(domains) && domains.every((d) => typeof d === "string"));
+  return tool.type === CLAUDE_WEB_SEARCH_TOOL && tool.name === "web_search" && Object.keys(tool).every((key) => WEB_SEARCH_KEYS.has(key))
+    && typeof uses === "number" && Number.isSafeInteger(uses) && uses >= 1 && uses <= WEB_SEARCH_MAX_USES && names(tool.allowed_domains) && names(tool.blocked_domains);
+}
+
+/** Whether a body offers the web search server tool. */
+const offersWebSearch = (body: Record<string, unknown>): boolean => Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === CLAUDE_WEB_SEARCH_TOOL);
+
+/** The tools the provider gets: client tools of the session's own only; a provider-hosted one is refused, but for the
+ *  web search tool as the pinned CLI asks for it, when the session has it. */
+function ownTools(tools: unknown, allowed: ReadonlySet<string>, webSearch = false): unknown[] | undefined {
   if (tools === undefined) return undefined;
   if (!Array.isArray(tools)) return refuse(400, "tools is not a list");
   return tools.filter((tool) => {
     if (!isPlain(tool)) return refuse(400, "a tool must be an object");
+    if (webSearch && cliWebSearch(tool)) return true;
     if (tool.type !== undefined && tool.type !== "custom") refuse(403, "a provider-hosted tool is not offered to this session's model");
     return typeof tool.name === "string" && allowed.has(tool.name);
   });
@@ -168,9 +199,10 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
   }
   blocks(body.system, "system");
   const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? [])]);
-  const tools = ownTools(body.tools, allowed);
+  const tools = ownTools(body.tools, allowed, options.webSearch);
   const choice = body.tool_choice;
-  if (isPlain(choice) && choice.type === "tool" && !(typeof choice.name === "string" && allowed.has(choice.name))) refuse(403, "tool_choice names a tool this session does not have");
+  const chosen = isPlain(choice) && typeof choice.name === "string" && (allowed.has(choice.name) || (options.webSearch === true && choice.name === "web_search"));
+  if (isPlain(choice) && choice.type === "tool" && !chosen) refuse(403, "tool_choice names a tool this session does not have");
   const small = options.smallModel ?? options.model;
   if (body.model !== options.model && body.model !== small) refuse(403, "the model is not this session's");
   const out: Record<string, unknown> = { ...body, messages: (body.messages as unknown[]).map(withoutImageNotes), ...(tools === undefined ? {} : { tools }) };
@@ -189,21 +221,41 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
 /** A non-negative whole count, or undefined. */
 const tokenCount = (value: unknown): number | undefined => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
 
-/** A Messages `usage` object as the proxy books it, or undefined when it says no input or output count. */
-function bookedUsage(usage: unknown): ProxyUsage | undefined {
+/** A Messages response's usage as the proxy books it: its tokens, and the web searches the provider ran for it
+ *  (`usage.server_tool_use.web_search_requests`), only when there were any. */
+export interface AnthropicUsage extends ProxyUsage {
+  webSearches?: number;
+}
+
+/** A Messages `usage` object as the proxy books it, or undefined when it says no input or output count, or names web
+ *  searches by a figure that is not a count (unknown, never zero). */
+function bookedUsage(usage: unknown): AnthropicUsage | undefined {
   if (!isPlain(usage)) return undefined;
   const input = tokenCount(usage.input_tokens);
   const output = tokenCount(usage.output_tokens);
   if (input === undefined || output === undefined) return undefined;
-  return { input, output, cacheRead: tokenCount(usage.cache_read_input_tokens) ?? 0, cacheWrite: tokenCount(usage.cache_creation_input_tokens) ?? 0 };
+  const said = isPlain(usage.server_tool_use) ? usage.server_tool_use.web_search_requests : undefined;
+  const webSearches = said === undefined ? 0 : tokenCount(said);
+  if (webSearches === undefined) return undefined;
+  return { input, output, cacheRead: tokenCount(usage.cache_read_input_tokens) ?? 0, cacheWrite: tokenCount(usage.cache_creation_input_tokens) ?? 0, ...(webSearches ? { webSearches } : {}) };
+}
+
+/** `price` with each web search a response reports added at `CLAUDE_WEB_SEARCH_USD`: the host prices the tokens, the
+ *  searches are Anthropic's flat rate. An unknown price stays unknown. */
+export function withWebSearches(price: (model: string, usage: ProxyUsage) => number | null): (model: string, usage: ProxyUsage) => number | null {
+  return (model, usage) => {
+    const usd = price(model, usage);
+    const count = (usage as AnthropicUsage).webSearches ?? 0;
+    return usd === null || count === 0 ? usd : usd + count * CLAUDE_WEB_SEARCH_USD;
+  };
 }
 
 /** The usage a Messages response reports, read by parsing it, never by matching its text (the API nests objects in
  *  `usage`): a whole body's `usage`, or a stream's `message_start` usage (input and cache tokens) with its last
- *  `message_delta` usage over it (the final counts). Each SSE `data:` line is parsed on its own and one that does not
- *  parse is skipped (the proxy keeps only the head and tail of a long answer). A stream that never stopped, or an
- *  answer with no readable usage, is unknown. */
-export function anthropicUsage(text: string): ProxyUsage | undefined {
+ *  `message_delta` usage over it (the final counts, the web searches among them). Each SSE `data:` line is parsed on its
+ *  own and one that does not parse is skipped (the proxy keeps only the head and tail of a long answer). A stream that
+ *  never stopped, or an answer with no readable usage, is unknown. */
+export function anthropicUsage(text: string): AnthropicUsage | undefined {
   const lines = text.split(/\r?\n/);
   if (!lines.some((line) => line.startsWith("data:") || line.startsWith("event:"))) {
     let body: unknown;
@@ -234,8 +286,11 @@ function imagesIn(value: unknown): number {
 }
 
 /** The input tokens the provider bills for `body` that it does not carry (`providerInputOverhead`, with its sources): the
- *  tool-use system prompt when it has tools, and for each image the most it can be billed as, beyond its bytes. */
-export function anthropicServerInputOverhead(body: Record<string, unknown>): number {
+ *  tool-use system prompt when it has tools, and for each image the most it can be billed as, beyond its bytes. None
+ *  can be said for a body with the web search tool: the provider bills the pages it finds as input, on each of its
+ *  searches, so its input is unmeasured (undefined), never bounded by its bytes. */
+export function anthropicServerInputOverhead(body: Record<string, unknown>): number | undefined {
+  if (offersWebSearch(body)) return undefined;
   const choice = isPlain(body.tool_choice) ? body.tool_choice.type : undefined;
   const shape: InputShape = {
     tools: Array.isArray(body.tools) && body.tools.length > 0,
@@ -263,7 +318,8 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     apply: (body, route) => applyAnthropic(body, route, options),
     // `apply` let through only the session's model or its small one.
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
-    serverInputOverhead: anthropicServerInputOverhead,
+    // Its undefined is no figure: the proxy reads it as an unmeasured input.
+    serverInputOverhead: anthropicServerInputOverhead as (body: Record<string, unknown>) => number,
     usageOf: anthropicUsage,
   };
 }
