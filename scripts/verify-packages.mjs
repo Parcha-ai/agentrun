@@ -72,6 +72,8 @@ const allowedExtraFiles = {
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
   serve: ['package/launcher/agentrun-serve'],
 };
+/** The origin a model proxy on a unix socket names (@parcha/agentrun-adapters/host). */
+const SOCKET_ORIGIN = 'http://localhost'; // key-gate: loopback-rule the Host a request over a unix socket names; nothing dials it
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
     // The test kit's scripted Anthropic API (`./testing`) listens on the loopback interface, on a port it chose.
@@ -79,9 +81,10 @@ const allowedEndpoints = {
     ['dist/testing/fake-anthropic.d.ts', 'http://127.0.0.1:<port>'],
   ],
   'run-adapters': [
-    // The session's model proxy listens on the loopback interface, on the free port it chose; its type documents that.
-    ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
-    ['dist/host/proxy.d.ts', 'http://127.0.0.1:<port>'],
+    // A model proxy on a unix socket gives this as its origin: the Host a request over the socket names. Nothing dials it
+    // (on TCP the proxy gives the address it bound, read from the socket, so no address is written there).
+    ['dist/host/proxy.js', SOCKET_ORIGIN],
+    ['dist/host/proxy.d.ts', SOCKET_ORIGIN],
   ],
   'pi-browser': [
     // Stagehand's trace export is pointed at a closed loopback port (the discard port): nothing listens, nothing leaves the host.

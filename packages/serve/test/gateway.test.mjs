@@ -308,6 +308,7 @@ test("through the gateway only the run's models pass, and nothing a provider wou
     { model: CLAUDE, max_tokens: 8, messages: user, container: "container_1" },
     { model: CLAUDE, max_tokens: 8, messages: blocks({ type: "image", source: { type: "url", url: "https://example.com/a.png" } }) },
     { model: CLAUDE, max_tokens: 8, messages: blocks({ type: "document", source: { type: "file", file_id: "file_1" } }) },
+    { model: CLAUDE, max_tokens: 8, messages: blocks({ type: "tool_result", tool_use_id: "toolu_1", content: [{ type: "image", source: { type: "url", url: "https://example.com/a.png" } }] }) },
     { model: CLAUDE, max_tokens: 8, messages: [{ role: "system", content: [{ type: "tool_addition", tool: { type: "tool_definition", definition: { type: "code_execution_20250825", name: "code_execution" } } }] }] },
   ]) {
     const answer = await viaAnthropic(body);
@@ -321,6 +322,7 @@ test("through the gateway only the run's models pass, and nothing a provider wou
     { model: GPT, input: blocks({ type: "input_image", image_url: "https://example.com/a.png" }) },
     { model: GPT, input: blocks({ type: "input_file", file_url: "https://example.com/a.pdf" }) },
     { model: GPT, input: blocks({ type: "input_file", file_id: "file_1" }) },
+    { model: GPT, input: [{ type: "function_call_output", call_id: "call_1", output: [{ type: "input_image", image_url: "https://example.com/a.png" }] }] },
     { model: GPT, input: user, previous_response_id: "resp_1" },
     { model: GPT, input: user, conversation: "conv_1" },
   ]) {
@@ -328,7 +330,9 @@ test("through the gateway only the run's models pass, and nothing a provider wou
     assert.ok([400, 403].includes(answer.status), `${answer.status} for ${JSON.stringify(body)}`);
   }
   assert.equal(anthropic.got.length + openai.got.length, 0, "nothing refused was forwarded");
-  // pi-ai's shapes: client tools, a tool added as the conversation goes, inline images, and fields no table here lists.
+  // pi-ai's shapes: client tools, a tool added as the conversation goes, inline images, and fields no table here lists. A
+  // tool call's arguments are the client's data, whatever they look like: a URL source or a hosted tool there passes.
+  const data = { source: { type: "url", url: "https://example.com/page" }, tools: [{ type: "web_search" }] };
   const image = "iVBORw0KGgo=";
   const messages = {
     model: CLAUDE, max_tokens: 8, stream: true, a_field_from_later: { on: true },
@@ -336,6 +340,8 @@ test("through the gateway only the run's models pass, and nothing a provider wou
     messages: [
       { role: "user", content: [{ type: "text", text: "hi" }, { type: "image", source: { type: "base64", media_type: "image/png", data: image } }] },
       { role: "system", content: [{ type: "tool_addition", tool: { type: "tool_definition", definition: { name: "edit", input_schema: { type: "object" } } } }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "read", input: data }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: [{ type: "text", text: "done" }] }] },
     ],
   };
   const responses = {
@@ -344,6 +350,10 @@ test("through the gateway only the run's models pass, and nothing a provider wou
     input: [
       { type: "additional_tools", role: "developer", tools: [{ type: "namespace", name: "functions", tools: [{ type: "function", name: "wait" }] }] },
       { role: "user", content: [{ type: "input_image", image_url: `data:image/png;base64,${image}` }] },
+      { type: "tool_search_call", call_id: "pi_tool_load_1", execution: "client", status: "completed", arguments: { query: "read", ...data } },
+      { type: "tool_search_output", call_id: "pi_tool_load_1", execution: "client", status: "completed", tools: [{ type: "function", name: "read", parameters: { type: "object", default: data }, defer_loading: true }] },
+      { type: "function_call", call_id: "call_1", name: "read", arguments: JSON.stringify(data) },
+      { type: "function_call_output", call_id: "call_1", output: [{ type: "input_text", text: "done" }] },
     ],
   };
   assert.equal((await viaAnthropic(messages)).status, 200);

@@ -25,15 +25,6 @@ const refuse = (status: number, message: string): never => { throw new ProxyRefu
 const HOSTED_TOOL = "a provider-hosted tool is not offered through the run's gateway";
 const FETCHED = "content the provider would fetch from a URL, or a file it holds, is not sent through the run's gateway";
 
-/** Every object in `value`, at any depth (a strict body nests at most 64 levels). */
-function* objects(value: unknown): Generator<Record<string, unknown>> {
-  if (Array.isArray(value)) for (const item of value) yield* objects(item);
-  else if (isPlain(value)) {
-    yield value;
-    for (const item of Object.values(value)) yield* objects(item);
-  }
-}
-
 /** The body, once it is an object that names one of the run's models. */
 function ofTheRun(body: unknown, models: ReadonlySet<string>): Record<string, unknown> {
   if (!isPlain(body)) return refuse(400, "the body is not an object");
@@ -62,6 +53,24 @@ function anthropicTool(tool: unknown): void {
   if (tool.type !== undefined && tool.type !== "custom") refuse(403, HOSTED_TOOL);
 }
 
+/** A Messages content list (the system prompt's, a message's, a tool result's): the blocks the provider reads. A block's
+ *  source is where it would fetch from; a tool result's content and a document's own content are content lists too; a
+ *  tool added as the conversation goes (pi-ai's `tool_addition`) is a definition like the list's. A tool call's input is
+ *  the client's data, and is not read. */
+function anthropicContent(content: unknown): void {
+  if (!Array.isArray(content)) return;
+  for (const block of content as unknown[]) {
+    if (!isPlain(block)) continue;
+    const source = block.source;
+    if (isPlain(source)) {
+      if (source.type === "url" || source.type === "file") refuse(403, FETCHED);
+      if (source.type === "content") anthropicContent(source.content);
+    }
+    if (block.type === "tool_result") anthropicContent(block.content);
+    if (block.type === "tool_addition") anthropicTool(isPlain(block.tool) ? block.tool.definition : undefined);
+  }
+}
+
 /** Anthropic's Messages API through the run's gateway. A client sends the run's token as `x-api-key` (the SDK, as pi-ai
  *  uses it) or as a bearer token; the provider gets serve's credential as `x-api-key`, or as a bearer token for a gateway
  *  that takes one (`auth`). */
@@ -79,11 +88,8 @@ export function anthropicGatewayPolicy(options: GatewayPolicyOptions & { auth?: 
         if (!Array.isArray(body.tools)) refuse(400, "tools is not a list");
         for (const tool of body.tools as unknown[]) anthropicTool(tool);
       }
-      for (const object of objects([body.system, body.messages])) {
-        // A tool a conversation adds as it goes (pi-ai's `tool_addition` block) is a definition like the list's.
-        if (object.type === "tool_addition") anthropicTool(isPlain(object.tool) ? object.tool.definition : undefined);
-        if (isPlain(object.source) && (object.source.type === "url" || object.source.type === "file")) refuse(403, FETCHED);
-      }
+      anthropicContent(body.system);
+      if (Array.isArray(body.messages)) for (const message of body.messages as unknown[]) if (isPlain(message)) anthropicContent(message.content);
       return body;
     },
     modelOf,
@@ -97,6 +103,16 @@ export const RESPONSES_GATEWAY_ROUTES: readonly ProxyRoute[] = Object.freeze([{ 
 /** Keys of a Responses body that name what the provider holds: an earlier response, a conversation. */
 const RESPONSES_HELD = ["previous_response_id", "conversation"] as const;
 const RESPONSES_CLIENT_TOOLS: ReadonlySet<unknown> = new Set(["function", "custom"]);
+
+/** A Responses content list (a message's, a tool output's): an image or a file the provider would fetch or holds. */
+function responsesContent(content: unknown): void {
+  if (!Array.isArray(content)) return;
+  for (const part of content as unknown[]) {
+    if (!isPlain(part)) continue;
+    if (part.type === "input_image" && (part.file_id !== undefined || (typeof part.image_url === "string" && !part.image_url.startsWith("data:")))) refuse(403, FETCHED);
+    if (part.type === "input_file" && (part.file_id !== undefined || part.file_url !== undefined)) refuse(403, FETCHED);
+  }
+}
 
 /** A list of Responses tool definitions: the client's own (`function`, `custom`), or a namespace of them. */
 function responsesTools(tools: unknown): void {
@@ -121,11 +137,16 @@ export function responsesGatewayPolicy(options: GatewayPolicyOptions): ProviderP
       const body = ofTheRun(input, models);
       for (const key of RESPONSES_HELD) if (body[key] !== undefined) refuse(403, "an earlier response or a conversation the provider holds is not named through the run's gateway");
       if (body.tools !== undefined) responsesTools(body.tools);
-      for (const object of objects(body.input)) {
-        // Tools an input item adds (pi-ai's `additional_tools`, a client tool search's output) are definitions like the list's.
-        if (Array.isArray(object.tools)) responsesTools(object.tools);
-        if (object.type === "input_image" && (object.file_id !== undefined || (typeof object.image_url === "string" && !object.image_url.startsWith("data:")))) refuse(403, FETCHED);
-        if (object.type === "input_file" && (object.file_id !== undefined || object.file_url !== undefined)) refuse(403, FETCHED);
+      // Each input item: a message's content and a tool output's are content lists; the tools an item adds (pi-ai's
+      // `additional_tools`, a client tool search's output) are definitions like the list's. A tool call's arguments are the
+      // client's data, and are not read.
+      if (Array.isArray(body.input)) {
+        for (const item of body.input as unknown[]) {
+          if (!isPlain(item)) continue;
+          responsesContent(item.content);
+          responsesContent(item.output);
+          if (item.tools !== undefined) responsesTools(item.tools);
+        }
       }
       return body;
     },

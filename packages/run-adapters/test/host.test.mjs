@@ -2,9 +2,9 @@
 // layer's pieces a harness waits and builds tools with. No network: the provider is a scripted fetch.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
-import { connect } from 'node:net';
+import { connect, createServer as netServer } from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -994,6 +994,33 @@ test("a socket path: one a crashed host left (nothing answers on it) is replaced
   assert.equal(readFileSync(file, 'utf8'), 'kept');
   await assert.rejects(proxy(t, { socketPath: join(dir, 'x'.repeat(120)) }), /at most/);
   assert.deepEqual(readdirSync(dir).sort(), ['model.sock', 'notes'], 'a refused start leaves nothing of its own');
+});
+
+test("two starts at one socket path: one listens there, the other is refused, and the path keeps the one that won", async (t) => {
+  const dir = socketDir(t);
+  const path = join(dir, 'model.sock');
+  const started = await Promise.allSettled([proxy(t, { socketPath: path }), proxy(t, { socketPath: path })]);
+  const won = started.filter((s) => s.status === 'fulfilled');
+  assert.equal(won.length, 1, started.map((s) => s.reason?.message ?? 'listening').join('; '));
+  assert.match(started.find((s) => s.status === 'rejected').reason.message, /already answers|was taken/);
+  assert.equal((await send(won[0].value.p.url, { socketPath: path })).status, 200, 'the one that won answers at the path');
+  assert.deepEqual(readdirSync(dir), ['model.sock']);
+});
+
+test("a socket the probe cannot reach (EACCES) is refused and left where it is, never taken for a stale one", async (t) => {
+  const dir = socketDir(t);
+  const path = join(dir, 'model.sock');
+  const other = netServer();
+  await new Promise((resolve) => other.listen(path, resolve));
+  t.after(() => new Promise((resolve) => other.close(resolve)));
+  chmodSync(path, 0o000);
+  const before = statSync(path);
+  // Root reaches any socket, so there the probe answers and the start is refused for that instead.
+  const root = process.getuid?.() === 0;
+  await assert.rejects(proxy(t, { socketPath: path }), (error) => (root ? /already answers/.test(error.message) : error.code === 'EACCES'));
+  const after = statSync(path);
+  assert.deepEqual([after.dev, after.ino], [before.dev, before.ino], 'the socket is the one that was there');
+  assert.deepEqual(readdirSync(dir), ['model.sock']);
 });
 
 test("the proxy's handler, mounted under a path on a host's own server, matches what follows the mount as the proxy would, and admits nothing once closed", async (t) => {

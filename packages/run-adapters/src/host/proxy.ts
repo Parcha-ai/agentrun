@@ -17,7 +17,7 @@
 // It listens on the loopback interface, or on a unix socket only its owner can reach (`socketPath`, `listenLocal`). Its
 // handling of a request is its own piece (`modelProxyHandler`), so a host's server can mount it under a path of its own.
 import { createHash, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdtemp, rename, rm, unlink } from "node:fs/promises";
+import { chmod, link, lstat, mkdtemp, rm, unlink } from "node:fs/promises";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
@@ -187,19 +187,21 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the loopback interface,
 /** The longest unix socket path every platform the host runs on can bind (macOS: 104 bytes with its terminator). */
 const SOCKET_PATH_MAX = 103;
 
-/** Whether something answers on the unix socket at `path`. */
-const answers = (path: string): Promise<boolean> => new Promise((resolve) => {
+/** Whether something answers on the unix socket at `path`: true, or the error the connection failed with. */
+const answers = (path: string): Promise<true | NodeJS.ErrnoException> => new Promise((resolve) => {
   const socket = connect(path);
   socket.once("connect", () => { socket.destroy(); resolve(true); });
-  socket.once("error", () => resolve(false));
+  socket.once("error", (error: NodeJS.ErrnoException) => resolve(error));
 });
 
 /**
  * Listen with `server` on the loopback interface, at a free port, or with `socketPath` on a unix socket of mode 0600 at
- * that path. The socket is bound in a new directory of mode 0700 beside the path, made 0600 there, and only then moved to
- * the path: it is never reachable at the path with a looser mode. A socket nothing answers on (one a crashed host left)
- * is replaced; one something answers on, or a file that is not a socket, is refused. On close the socket is removed,
- * unless it is no longer the one it made.
+ * that path. The socket is bound in a new directory of mode 0700 beside the path, made 0600 there, and only then linked
+ * to the path: it is never reachable with a looser mode, there or anywhere. Its directory must be local (as for the egress
+ * proxy's socket): a socket that refuses a connection (one a crashed host left) is removed; one something answers on, one
+ * the probe cannot reach (EACCES, say), or a file that is not a socket is refused and left. The path is a hard link,
+ * never a rename: a start that finds the path taken between its check and its link is refused (EEXIST), never replaces
+ * what is there. On close the socket is removed, unless the path no longer holds the one it made.
  */
 export async function listenLocal(server: Server, socketPath?: string): Promise<LocalListener> {
   const closeServer = () => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); });
@@ -216,23 +218,32 @@ export async function listenLocal(server: Server, socketPath?: string): Promise<
   // The bound path, `<dir>/.sock-XXXXXX/s`, must fit as well as the final one.
   if (Buffer.byteLength(socketPath) > SOCKET_PATH_MAX || Buffer.byteLength(dir) + 15 > SOCKET_PATH_MAX) throw new Error(`agentrun-adapters: a unix socket path must be at most ${SOCKET_PATH_MAX} bytes, and its directory at most ${SOCKET_PATH_MAX - 15}`);
   const there = await lstat(socketPath).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
-  if (there && !there.isSocket()) throw new Error("agentrun-adapters: the socket path holds a file that is not a socket");
-  if (there && (await answers(socketPath))) throw new Error("agentrun-adapters: something already answers on the socket path");
+  if (there) {
+    if (!there.isSocket()) throw new Error("agentrun-adapters: the socket path holds a file that is not a socket");
+    const probe = await answers(socketPath);
+    if (probe === true) throw new Error("agentrun-adapters: something already answers on the socket path");
+    if (probe.code !== "ECONNREFUSED") throw probe;
+    await unlink(socketPath);
+  }
   const holder = await mkdtemp(join(dir, ".sock-"));
   const bound = join(holder, "s");
-  let ino: number;
+  let mine: { dev: number; ino: number };
   try {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(bound, () => { server.off("error", reject); resolve(); });
     });
-    // Made 0600 where no one else can reach it (its directory is 0700), checked, then moved into place (over a stale
-    // socket, which goes).
+    // Made 0600 where no one else can reach it (its directory is 0700), checked, then linked to the path.
     await chmod(bound, 0o600);
     const made = await lstat(bound);
     if (!made.isSocket() || (made.mode & 0o777) !== 0o600) throw new Error("agentrun-adapters: the socket was not made with mode 0600");
-    await rename(bound, socketPath);
-    ino = made.ino;
+    try {
+      await link(bound, socketPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("agentrun-adapters: the socket path was taken while this listener started");
+      throw error;
+    }
+    mine = { dev: made.dev, ino: made.ino };
   } catch (error) {
     await closeServer();
     throw error;
@@ -245,7 +256,7 @@ export async function listenLocal(server: Server, socketPath?: string): Promise<
     close: async () => {
       await closeServer();
       const now = await lstat(socketPath).catch(() => undefined);
-      if (now?.isSocket() && now.ino === ino) await unlink(socketPath).catch(() => {});
+      if (now?.isSocket() && now.dev === mine.dev && now.ino === mine.ino) await unlink(socketPath).catch(() => {});
     },
   };
 }
