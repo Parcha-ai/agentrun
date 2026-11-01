@@ -64,15 +64,16 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 const own = <T>(record: Record<string, T>, key: string): T | undefined => (Object.hasOwn(record, key) ? record[key] : undefined);
 const newId = () => randomBytes(12).toString("hex");
 
-/** AES-256-GCM over `plain`, bound to `aad`: the IV, the ciphertext and the tag, in that order. */
-function seal(key: Buffer, plain: Buffer, aad: string): Buffer {
+/** AES-256-GCM over `plain`, bound to `aad`: the IV, the ciphertext and the tag, in that order. Shared: the vault's own
+ *  sealing, and a host's (agentrun-serve's tool keys) under a key of its own. */
+export function seal(key: Buffer, plain: Buffer, aad: string): Buffer {
   const iv = randomBytes(IV_BYTES);
   const cipher = createCipheriv("aes-256-gcm", key, iv).setAAD(Buffer.from(aad, "utf8"));
   return Buffer.concat([iv, cipher.update(plain), cipher.final(), cipher.getAuthTag()]);
 }
 
 /** `seal`'s inverse; it throws when the bytes, the key or the `aad` differ from the sealing's. */
-function unseal(key: Buffer, sealed: Buffer, aad: string): Buffer {
+export function unseal(key: Buffer, sealed: Buffer, aad: string): Buffer {
   if (sealed.length < IV_BYTES + TAG_BYTES) throw new Error("too short");
   const decipher = createDecipheriv("aes-256-gcm", key, sealed.subarray(0, IV_BYTES)).setAAD(Buffer.from(aad, "utf8"));
   decipher.setAuthTag(sealed.subarray(sealed.length - TAG_BYTES));

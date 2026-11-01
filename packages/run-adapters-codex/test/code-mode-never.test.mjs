@@ -4,14 +4,14 @@
 //
 // Without the binary this skips; with AGENTRUN_CODEX_REQUIRE_BINARY=1 (CI) a missing or different binary fails.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { env } from 'node:process';
 import { after, test } from 'node:test';
 import { createHarnessRunner } from '@parcha/agentrun-adapters';
-import { foldSession } from '@parcha/agentrun-adapters/kernel';
-import { journalRecords } from '@parcha/agentrun-adapters/process';
+import { foldSession, openDrive } from '@parcha/agentrun-adapters/kernel';
+import { journalRecords, NativeJournal } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { codexAdapter } from '@parcha/agentrun-codex';
 import { findCodex } from '../dist/binary.js';
@@ -453,4 +453,125 @@ test("code mode: a never call that FAILED in the interrupted turn is not answere
   const told = toldAbout(r.seen, 'call_again').join('\n');
   assert.ok(!/Recorded earlier/.test(told), 'not answered from the log');
   assert.match(told, /charged/, 'the retry\'s own result');
+});
+
+test("a cut-off code-mode exec is answered with a custom tool output holding the nested outcomes, and never with a generic one", { skip, timeout: 180_000 }, async () => {
+  let charged = 0;
+  let holding;
+  const held = new Promise((resolve) => { holding = resolve; });
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return { text: 'charged 5' }; } };
+  const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut off')), { once: true })); } };
+  const spec = { key: 'step:code-repair', label: 'pay', system: [], tools: [charge, hold], context: 'fresh' };
+  const store = memorySessionStore();
+  const { seen, fetch } = provider([[exec('call_js', `text('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));\nawait tools.hold({});`)]]);
+  const died = new AbortController();
+  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('pay');
+  await held;
+  died.abort(new Error('the process died'));
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  await a.close();
+  const before = seen.length;
+
+  const b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  assert.equal(charged, 1, 'the never tool did not run again');
+  const answers = seen.slice(before).flatMap((body) => body.input ?? []).filter((item) => item.call_id === 'call_js' && /_output$/.test(item.type ?? ''));
+  assert.deepEqual([...new Set(answers.map((item) => item.type))], ['custom_tool_call_output'], 'the exec is answered as a custom tool call, and never with a generic output');
+  assert.ok(answers.map((item) => JSON.stringify(item.output)).join('\n').includes('charged 5'), 'the answer carries the nested outcome');
+  // Codex drops an output that does not match its call's kind from what it sends, so the rollout itself is what shows a generic output.
+  const lines = readdirSync(ROOT, { recursive: true }).filter((f) => /rollout-.*\.jsonl$/.test(String(f))).flatMap((f) => readFileSync(join(ROOT, String(f)), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
+  const outputs = lines.filter((l) => l.type === 'response_item' && l.payload?.call_id === 'call_js' && /_output$/.test(l.payload.type ?? '')).map((l) => l.payload.type);
+  assert.ok(outputs.includes('custom_tool_call_output'), 'the rollout holds the exec\'s custom output');
+  assert.ok(!outputs.includes('function_call_output'), 'and no generic output for it');
+});
+
+test("a settled turn whose exec dangles with a completed never call does not answer a new turn's same call as recorded earlier: the new call runs", { skip, timeout: 180_000 }, async () => {
+  let charged = 0;
+  let holding;
+  const held = new Promise((resolve) => { holding = resolve; });
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return { text: `charged #${charged}` }; } };
+  const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut off')), { once: true })); } };
+  const spec = { key: 'step:code-settled', label: 'pay', system: [], tools: [charge, hold], context: 'fresh' };
+  const store = memorySessionStore();
+  const { seen, fetch } = provider([
+    [exec('call_js', `text('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));\nawait tools.hold({});`)],
+    [exec('call_js2', `text('again: ' + JSON.stringify(await tools.charge({ amount: 5 })));`)],
+  ]);
+  const died = new AbortController();
+  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('pay');
+  await held;
+  assert.equal(charged, 1, 'the charge completed before the crash');
+  died.abort(new Error('the process died'));
+  await a.turnEnd();
+  await a.close();
+  // The turn is closed in the log without resuming it, as a settle does: the next send is a new turn, with no recovery note.
+  const closing = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  const journal = new NativeJournal(closing);
+  journal.message({ type: 'turn', status: 'interrupted' });
+  await journal.flush();
+  const before = seen.length;
+  const b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'idle');
+  await b.send('charge again');
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  assert.equal(charged, 2, 'the new turn asked for a charge and it ran: it is not answered from the ended turn');
+  assert.ok(!toldAbout(seen.slice(before), 'call_js2').join('\n').includes('Recorded earlier in this turn'), 'the model is not told the new call was recorded earlier in this turn');
+});
+
+test("code mode: a crash while the model waited on a yielded script's cell: the wait is told the session stopped while it waited on that cell, never that it did not start", { skip, timeout: 300_000 }, async () => {
+  const r = await crashed((_seen, n) => [say(n)], { yielded: true });
+  assert.ok(toldAbout(r.seen, 'call_js').join('\n').includes('Script running with cell ID 1'), 'the script yielded before the crash');
+  const told = r.seen.slice(r.before).flatMap((body) => body.input ?? []).filter((item) => item.call_id === 'call_wait' && /_output$/.test(item.type ?? ''));
+  assert.ok(told.length > 0, 'the resumed requests answer the wait');
+  assert.deepEqual([...new Set(told.map((item) => item.type))], ['function_call_output']);
+  const text = told.map((item) => (Array.isArray(item.output) ? item.output.map((o) => o.text ?? '').join('\n') : String(item.output))).join('\n');
+  assert.match(text, /The session stopped while waiting on cell 1; that cell's script was cut off, and nothing was run again\./);
+  assert.doesNotMatch(text, /Not executed/);
+});
+
+test("code mode: an answer that could not be read to its end, a crash, the turn closed in the log, then a new send: the cut-off exec lists the call that ran, never that it ran none", { skip, timeout: 300_000 }, async () => {
+  let looked = 0;
+  let holding;
+  const held = new Promise((resolve) => { holding = resolve; });
+  const lookup = { name: 'lookup', description: 'Look something up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async () => { looked += 1; return { text: 'found' }; } };
+  const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut off')), { once: true })); } };
+  const spec = { key: 'step:code-unread-settled', label: 'look', system: [], tools: [lookup, hold], context: 'fresh' };
+  const store = memorySessionStore();
+  // An answer past what the proxy watches to its end: the script it carries cannot be told, so its nested calls are tied to no exec.
+  const pad = { type: 'message', role: 'assistant', id: 'msg_pad', content: [{ type: 'output_text', text: 'x'.repeat(4 * 1024 * 1024 + 100) }] };
+  const { seen, fetch } = provider([[pad, exec('call_js', `text('lookup: ' + JSON.stringify(await tools.lookup({ q: 'x' })));\nawait tools.hold({});`)]]);
+  const died = new AbortController();
+  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('look');
+  await held;
+  assert.equal(looked, 1, 'the safe call ran before the crash');
+  died.abort(new Error('the process died'));
+  await a.turnEnd();
+  await a.close();
+  const ties = journalRecords(foldSession(spec.key, await store.read(spec.key)), 'codex.nested').map((r) => r.data);
+  assert.ok(ties.length > 0 && ties.every((t) => t.exec === null), `its call is tied to no exec: ${JSON.stringify(ties)}`);
+  // The turn is closed in the log without resuming it, as a settle does: the next send is a new turn, with no recovery note.
+  const closing = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  const journal = new NativeJournal(closing);
+  journal.message({ type: 'turn', status: 'interrupted' });
+  await journal.flush();
+  const before = seen.length;
+  const b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'idle');
+  await b.send('next');
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  const told = seen.slice(before).flatMap((body) => body.input ?? []).filter((item) => item.call_id === 'call_js' && /_output$/.test(item.type ?? ''));
+  assert.deepEqual([...new Set(told.map((item) => item.type))], ['custom_tool_call_output']);
+  const text = told.map((item) => (Array.isArray(item.output) ? item.output.map((o) => o.text ?? '').join('\n') : String(item.output))).join('\n');
+  assert.match(text, /2 calls ran whose script could not be told/, 'both nested calls, though no exec is known for them');
+  assert.match(text, /lookup completed: "found"/);
+  assert.match(text, /hold was started and did not report a result/);
+  assert.doesNotMatch(text, /it ran none/);
+  assert.equal(looked, 1, 'nothing was run again');
 });

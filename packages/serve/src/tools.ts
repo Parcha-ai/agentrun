@@ -15,6 +15,7 @@ import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
+import { parallelOf, WEB_FETCH_TOOL, webFetch, webFetchTool } from "./web-fetch.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }`, in place of
@@ -182,6 +183,18 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
       return { tools: [tool], extensions: [extension] };
     },
     effect: async (args, run) => fetchPage(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), signal: run.signal }),
+  },
+  [WEB_FETCH_TOOL]: {
+    summary: "Read one public web page through Parallel's extract where PARALLEL_API_KEY is set, else (or when Parallel answers no page) fetched as fetch_page fetches it: fetch_page's Page plus via, \"parallel\" or \"direct\"; a URL fetch_page refuses is refused, never sent to Parallel.",
+    needs: [],
+    nodes: true,
+    bind: async (host) => {
+      const tool = webFetchTool(host.env) as unknown as ToolRegistration;
+      const extension = defineExtension({ name: "web-fetch", tools: [tool] });
+      host.install(extension);
+      return { tools: [tool], extensions: [extension] };
+    },
+    effect: async (args, run) => webFetch(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), parallel: parallelOf(run.env), signal: run.signal }),
   },
   browser: browserTool,
   // monid's catalog on one key (monid.ts): pi binds each under its wire name, `monid_discover` and the rest.

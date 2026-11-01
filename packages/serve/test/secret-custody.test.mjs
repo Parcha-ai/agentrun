@@ -24,7 +24,8 @@ const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const CONFINED = existsSync("/usr/bin/setpriv");
-const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
+/** The server's own: its token, and the seal key its tool keys are kept under. */
+const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY"];
 /** Every secret serve and a run's process read: each must be on the launcher's list. */
 /** The decision keys: held by the server like the rest, and handed to a workflow run's process only on its decision
  *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
@@ -111,7 +112,8 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
   // The launcher's own temporary directory, where its FIFO is made: the test's, so it can see that nothing is left.
   const tmp = join(dir, "tmp");
   mkdirSync(tmp);
-  const child = spawn(LAUNCHER, typeof args === "function" ? args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env, TMPDIR: tmp } });
+  // The seal key the launcher makes when none is given goes in the test's own config directory, never the user's.
+  const child = spawn(LAUNCHER, typeof args === "function" ? args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), ...env, TMPDIR: tmp } });
   t.after(async () => {
     // Every process under the launcher, found before it goes (its children then belong to init), killed, and waited for.
     const tree = new Set([...treeOf(child.pid)]);
@@ -292,9 +294,10 @@ process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
 });
 
 test("the launcher run through a link, as a package manager installs a bin, finds the server beside its real path", async (t) => {
-  const link = join(await scratch(t), "agentrun-serve");
+  const dir = await scratch(t);
+  const link = join(dir, "agentrun-serve");
   symlinkSync(LAUNCHER, link);
-  const child = spawn(link, ["--help"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENT_MODEL_API_KEY: `not-a-secret-${"help"}` } });
+  const child = spawn(link, ["--help"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: dir, AGENT_MODEL_API_KEY: `not-a-secret-${"help"}` } });
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (out += chunk));
@@ -368,7 +371,7 @@ test("on claude-agent, with its turn held inside the Claude CLI, no process of t
 
 test("secrets past what a pipe is sure to hold are refused before the server starts, saying so, never a hang", async (t) => {
   const tmp = await scratch(t);
-  const child = spawn(LAUNCHER, ["--help"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: tmp, AGENT_MODEL_API_KEY: `not-a-secret-${"x".repeat(5_000)}` } });
+  const child = spawn(LAUNCHER, ["--help"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: tmp, XDG_CONFIG_HOME: tmp, AGENT_MODEL_API_KEY: `not-a-secret-${"x".repeat(5_000)}` } });
   let out = "";
   child.stderr.on("data", (chunk) => (out += chunk));
   const code = await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(10_000).then(() => "hung")]);
