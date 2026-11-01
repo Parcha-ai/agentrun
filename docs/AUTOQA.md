@@ -41,7 +41,7 @@ there and never print it.
 | Env | Why |
 | --- | --- |
 | `TMPDIR`, `--data` | Use a fresh data dir and a temp dir of its own per run, so no earlier run's state is read. |
-| `XDG_CONFIG_HOME` | The launcher writes `agentrun/seal.key` there. Point it at a QA dir so `~/.config` is never touched. |
+| `XDG_CONFIG_HOME` | The launcher writes `agentrun/seal.key` there. Point it at a QA dir so your own config directory is never touched. |
 | `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Gateway for the pi and codex harnesses (OpenAI Responses). Point them at your gateway (its `/v1` base URL) and set `AGENT_MODEL` to a small, cheap model for smokes. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | The claude-agent harness only, on Anthropic Messages. Your gateway may serve `/v1/messages` too. |
 | `AGENTRUN_MAX_RUNS` | Cap concurrent runs (3 is plenty for QA). |
