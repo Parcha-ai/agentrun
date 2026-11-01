@@ -107,6 +107,27 @@ test("retries are never deduped", () => {
   assert.equal(rows.filter((row) => row.kind === "tool_use").length, 3);
 });
 
+test("a fetch whose page says it was refused, or failed, reads as that and as failed, never ok", () => {
+  const page = (fields) => JSON.stringify({ ok: false, url: "", status: 0, title: "", text: "", links: [], ...fields });
+  const rows = timelineOf([
+    assistant([call("a", "web_fetch", { url: "http://x.example:8080/health" })], 0),
+    result("a", "web_fetch", page({ url: "http://x.example:8080/health", refused: "refused: port 8080 is not 80 or 443", via: "direct" }), 0),
+    assistant([call("b", "fetch_page", { url: "https://down.example/x" })], 1),
+    result("b", "fetch_page", page({ url: "https://down.example/x", error: "timed out after 15000 ms" }), 1),
+    assistant([call("c", "web_fetch", { url: "https://example.com" })], 2),
+    result("c", "web_fetch", JSON.stringify({ ok: true, url: "https://example.com/", status: 200, title: "Example Domain", text: "x", links: [], via: "direct" }), 2),
+  ]);
+  assert.deepEqual(rows.filter((row) => row.kind === "tool_result").map((row) => [row.summary, row.tool_status]), [
+    ["Tried to fetch x.example:8080/health: refused: port 8080 is not 80 or 443", "failed"],
+    ["Tried to fetch down.example/x: failed: timed out after 15000 ms", "failed"],
+    ["Fetched example.com: ok", "success"],
+  ]);
+  assert.deepEqual(rows.filter((row) => row.kind === "tool_use").map((row) => row.summary), ["Tried to fetch x.example:8080/health", "Tried to fetch down.example/x", "Fetched example.com"]);
+  const rendered = text(rows);
+  assert.match(rendered, /Tried to fetch x\.example:8080\/health +failed$/m);
+  assert.match(rendered, /Fetched example\.com +ok$/m);
+});
+
 test("a result closes its call by id, whatever its order", () => {
   const rows = timelineOf([
     assistant([call("a", "read", { path: "one.md" }), call("b", "read", { path: "two.md" })], 0),

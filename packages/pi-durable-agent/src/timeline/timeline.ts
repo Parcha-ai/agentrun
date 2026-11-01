@@ -1,4 +1,4 @@
-import { BROWSER_OPENERS, endsTurn, inputPreview, labelOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
+import { BROWSER_OPENERS, endsTurn, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 
 export type TimelineKind =
@@ -297,12 +297,15 @@ function createProjector(options: TimelineOptions) {
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
   /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
-  const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, parent?: string) =>
-    make("tool_result", conv, rowId, {
-      summary: view.isError ? `${named} failed: ${failure(view.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
-      tool_status: view.isError ? "failed" : "success", tool_result_preview: view.text ? cut(scrubUrls(view.text), caps.preview) : null,
+  /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. */
+  const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, parent?: string) => {
+    const outcome = outcomeOf(tool.name, view);
+    return make("tool_result", conv, rowId, {
+      summary: view.isError ? `${named} failed: ${failure(view.text)}` : outcome ? `${named}: ${scrubUrls(firstLine(outcome.text))}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
+      tool_status: view.isError || outcome?.failed ? "failed" : "success", tool_result_preview: view.text ? cut(scrubUrls(view.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
     });
+  };
 
   /** A call that spawned a conversation: its rows, and the child's, now name it as their parent. */
   function adopt(conv: number, child: number, callId: string, args: Obj, fallback: string): TimelineEvent[] {
