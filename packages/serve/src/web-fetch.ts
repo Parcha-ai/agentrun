@@ -9,7 +9,9 @@
 // The key is the one the server hands the run's process on its decision descriptor (decisions.ts) when one of its
 // capabilities resolves to Parallel, read once and held in this module's memory: never in an environment, a child or a
 // file.
-import { defineTool } from "@earendil-works/pi-durable";
+import type { JsonValue } from "@earendil-works/chord";
+import type { TSchema } from "@earendil-works/pi-ai";
+import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
 import { clip, fetchOptions, fetchPage, LINKS_CAP, type Page, pageText, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, URL_PARAMETERS } from "./fetch-page.js";
@@ -124,7 +126,7 @@ export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: Gu
 
 /** The agent's tool: the WebPage as JSON text. A run whose web_fetch resolves to Parallel reads its key as the tool is
  *  made, when the run opens. */
-export function webFetchTool(env: NodeJS.ProcessEnv) {
+export function webFetchTool(env: NodeJS.ProcessEnv): ToolRegistration<TSchema, JsonValue> {
   if (planeOf(env).web_fetch === "parallel") parallelOf(env);
   return defineTool({
     name: WEB_FETCH_TOOL,

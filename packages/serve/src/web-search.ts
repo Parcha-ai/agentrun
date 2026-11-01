@@ -12,7 +12,8 @@
 // Parallel is asked through the run's one client (web-fetch.ts), on the key the server handed the run's process: a 401
 // or 403 to either web tool stops both for the rest of the run. No request is retried.
 import type { TSchema } from "@earendil-works/pi-ai";
-import { defineTool } from "@earendil-works/pi-durable";
+import type { JsonValue } from "@earendil-works/chord";
+import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { clip, TITLE_CAP } from "./fetch-page.js";
 import { forModel } from "./result.js";
 import { fauxFetch } from "./decisions.js";
@@ -93,7 +94,7 @@ export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unk
 
 /** The agent's tool: the Search as JSON text. A run whose web_search resolves to Parallel reads its key as the tool is
  *  made, when the run opens. */
-export function webSearchTool(env: NodeJS.ProcessEnv) {
+export function webSearchTool(env: NodeJS.ProcessEnv): ToolRegistration<TSchema, JsonValue> {
   const provider = planeOf(env).web_search;
   const parallel = provider === "parallel";
   if (parallel) parallelOf(env);

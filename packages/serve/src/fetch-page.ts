@@ -5,7 +5,8 @@
 // branch on it.
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "@earendil-works/pi-ai";
-import { defineTool } from "@earendil-works/pi-durable";
+import type { JsonValue } from "@earendil-works/chord";
+import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { forModel } from "./result.js";
 
@@ -61,7 +62,7 @@ export const URL_PARAMETERS = {
 } as unknown as TSchema;
 
 /** The agent's tool: the Page as JSON text. */
-export const fetchPageTool = (options: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">>) =>
+export const fetchPageTool = (options: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">>): ToolRegistration<TSchema, JsonValue> =>
   defineTool({
     name: FETCH_PAGE_TOOL,
     description: "Fetch one web page from a public host and read it. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text (cut at 60,000 characters; then truncated is true and original_chars its whole length) and the absolute links it holds. A private or local address, a port other than 80 or 443, a scheme other than http(s), or a page that is not text is refused (ok false, with refused saying why).",
