@@ -271,6 +271,21 @@ test("lists and outputs are bounded", () => {
   assert.deepEqual(refusals(edited((p) => (p.outputs = { ...outputs(MAX_PACK_OUTPUTS), report: { skills: [] } }))), [["outputs", "too_many"]]);
 });
 
+test("a list or outputs over its limit still has its items up to the limit checked, and none past it", () => {
+  const skills = (n) => Array.from({ length: n }, (_, i) => `skill-${i}`);
+  const badFirst = skills(MAX_PACK_SKILLS + 1);
+  badFirst[0] = "../bad";
+  assert.deepEqual(refusals(edited((p) => (p.effort.low.skills = badFirst))), [["effort.low.skills", "too_many"], ["effort.low.skills[0]", "bad_format"]]);
+  const badLast = skills(MAX_PACK_SKILLS + 1);
+  badLast[MAX_PACK_SKILLS] = "../bad";
+  assert.deepEqual(refusals(edited((p) => (p.effort.low.skills = badLast))), [["effort.low.skills", "too_many"]], "the item past the limit is not checked");
+  const outputs = (n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`out-${i}`, { skills: [] }]));
+  const firstBad = { report: { skills: [], file: "/abs" }, ...outputs(MAX_PACK_OUTPUTS) };
+  assert.deepEqual(refusals(edited((p) => (p.outputs = firstBad))), [["outputs", "too_many"], ["outputs.report.file", "bad_format"]]);
+  const lastBad = { report: { skills: [] }, ...outputs(MAX_PACK_OUTPUTS - 1), late: { skills: [], file: "/abs" } };
+  assert.deepEqual(refusals(edited((p) => (p.outputs = lastBad))), [["outputs", "too_many"]], "the output past the limit is not checked");
+});
+
 test("every issue is collected, not only the first", () => {
   const p = edited((p) => {
     p.version = 2;

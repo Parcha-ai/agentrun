@@ -54,13 +54,14 @@ function onlyFields(value: Json, fields: readonly string[], at: string, out: Inp
   }
 }
 
-/** A list of skill names: each one PACK_SKILL takes, none twice, at most MAX_PACK_SKILLS. */
+/** A list of skill names: each one PACK_SKILL takes, none twice, at most MAX_PACK_SKILLS. Over the limit, the first
+ *  MAX_PACK_SKILLS are still checked and the rest are not. */
 function skillList(value: unknown, at: string, out: InputIssue[]): void {
   if (value === undefined) return void out.push(issue(at, "missing", `${at} is required`));
   if (!Array.isArray(value)) return void out.push(issue(at, "wrong_type", `${at} is not a list of skill names`));
-  if (value.length > MAX_PACK_SKILLS) return void out.push(issue(at, "too_many", `${at} names ${value.length} skills, more than ${MAX_PACK_SKILLS}`));
+  if (value.length > MAX_PACK_SKILLS) out.push(issue(at, "too_many", `${at} names ${value.length} skills, more than ${MAX_PACK_SKILLS}`));
   const seen = new Set<string>();
-  value.forEach((name: unknown, i) => {
+  value.slice(0, MAX_PACK_SKILLS).forEach((name: unknown, i) => {
     const field = `${at}[${i}]`;
     if (typeof name !== "string") out.push(issue(field, "wrong_type", `${field} is not a skill name`));
     else if (!PACK_SKILL.test(name)) out.push(issue(field, "bad_format", `${field} is not a skill name: ${JSON.stringify(name)} must match ${PACK_SKILL.source}`));
@@ -102,7 +103,9 @@ function fileIssue(file: unknown, at: string, out: InputIssue[]): void {
 
 /**
  * Every issue with `value` as a version 1 pack, none if it is one. Fields are paths into the pack
- * (`effort.low.skills[0]`), under `at` when given (`profile.effort.low.skills[0]`); the pack itself is `at`.
+ * (`effort.low.skills[0]`), under `at` when given (`profile.effort.low.skills[0]`); the pack itself is `at`. A skill
+ * list or `outputs` over its limit is `too_many`, and its items up to the limit are checked as any others; items past
+ * the limit are not checked, so an oversized pack makes a bounded number of issues.
  */
 export function packIssues(value: unknown, { at = "" } = {}): InputIssue[] {
   if (!isObject(value)) return [issue(at, value === undefined ? "missing" : "wrong_type", `${at || "the pack"} is not an object`)];
@@ -125,9 +128,10 @@ export function packIssues(value: unknown, { at = "" } = {}): InputIssue[] {
   const outputs = under(at, "outputs");
   if (value.outputs === undefined) out.push(issue(outputs, "missing", `${outputs} is required`));
   else if (!isObject(value.outputs)) out.push(issue(outputs, "wrong_type", `${outputs} is not an object of output types`));
-  else if (Object.keys(value.outputs).length > MAX_PACK_OUTPUTS) out.push(issue(outputs, "too_many", `${outputs} names more than ${MAX_PACK_OUTPUTS} output types`));
   else {
-    for (const [type, output] of Object.entries(value.outputs)) {
+    const entries = Object.entries(value.outputs);
+    if (entries.length > MAX_PACK_OUTPUTS) out.push(issue(outputs, "too_many", `${outputs} names ${entries.length} output types, more than ${MAX_PACK_OUTPUTS}`));
+    for (const [type, output] of entries.slice(0, MAX_PACK_OUTPUTS)) {
       const field = under(outputs, type);
       if (!OUTPUT_TYPE.test(type)) out.push(issue(field, "bad_format", `the output type ${JSON.stringify(type)} must match ${OUTPUT_TYPE.source}`));
       const checked = skillsRow(output, OUTPUT_FIELDS, field, out);
