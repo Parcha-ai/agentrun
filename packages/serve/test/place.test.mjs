@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, flowAgent, follow, serve } from "./support.mjs";
+import { Agents } from "../dist/agents.js";
+import { agent, flowAgent, follow, scratch, serve } from "./support.mjs";
 
 const storedBodies = (data) => {
   const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
@@ -147,6 +148,27 @@ test("an edit identical to the current revision is a no-op, whether it names the
     assert.equal(again.body.revision, made.revision, JSON.stringify(definition));
     assert.equal(again.body.revisions, 1);
   }
+});
+
+test("an edit without If-Match that another edit overtakes while it is checked is built again on the new current revision: it never restores the place or harness it read", async (t) => {
+  const agents = new Agents(join(await scratch(t), "agents"));
+  t.after(() => agents.close());
+  const made = await agents.create({ definition: { id: "raced", name: "raced", instructions: "Answer.", place: { mode: "runner" } } });
+  let overtaken = false;
+  const checked = [];
+  const edited = await agents.commit(made, { definition: { instructions: "Answer briefly." } }, {
+    check: async (revision) => {
+      checked.push(revision.place);
+      if (overtaken) return;
+      overtaken = true;
+      await agents.commit(await agents.get("raced"), { definition: { instructions: "Answer.", place: { mode: "sandbox", box: "docker" }, harness: "codex" } });
+    },
+  });
+  assert.equal(edited.revision.body.instructions, "Answer briefly.");
+  assert.deepEqual(edited.revision.body.place, { mode: "sandbox", box: "docker" }, "the place of the revision it commits on, not the one it first read");
+  assert.equal(edited.revision.body.harness, "codex");
+  assert.deepEqual(checked, [{ mode: "runner" }, { mode: "sandbox", box: "docker" }], "and the revision it commits is the one it checked");
+  assert.equal(edited.revisions, 3);
 });
 
 test("capabilities lists the place modes, this host's default, and each box: none is set up on this server yet", async (t) => {

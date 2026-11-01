@@ -149,7 +149,7 @@ export class Agents {
       if (ifCurrent !== undefined && (now.revision?.id ?? null) !== ifCurrent) storeError(new AgentHomeError("stale", "the agent's current revision is not the one the commit expects"));
       return now;
     };
-    const entry = held((await this.get(read.agent.id)) ?? read);
+    let entry = held((await this.get(read.agent.id)) ?? read);
     const { agent } = entry;
     const kept = [
       ...(definition.id !== undefined && definition.id !== agent.id ? [{ field: "definition.id", reason: "not_an_option", message: `definition.id is ${agent.id}, the agent's id` }] : []),
@@ -158,32 +158,36 @@ export class Agents {
         .map((key) => ({ field: `definition.${key}`, reason: "not_allowed", message: `The agent store keeps an agent's ${key} from its creation; an edit does not change it.`, fix: `Remove definition.${key}.` })),
     ];
     if (kept.length) throw invalid(kept);
-    let files = skills;
-    if (files === undefined) {
-      const held = Object.entries(entry.revision?.body.skills ?? {});
-      const texts = await this.request(() => this.texts(held.map(([, sha]) => sha)));
-      files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
-    }
-    // An edit that names no harness or place keeps the agent's, as it keeps its skill files: absent here is unchanged,
-    // not the default.
-    const harness = entry.revision?.body.harness;
-    const place = entry.revision?.body.place;
-    const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}) }, files, note);
-    await this.checked(revision);
-    await check?.(revision);
-    // Each try reads the current revision, checks against it and commits on it in one go: a try a busy store sent back
-    // checks again, and the store refuses the commit if another writer moved the current revision after this read.
-    const attempt = async (): Promise<AgentEntry | undefined> => {
-      const now = held(this.entry(agent.id) ?? entry);
-      if (!contract && now.revision && sameRevision(now.revision, revision)) {
-        this.checkVersion(definition, now.version);
-        return now;
-      }
-      if (!contract) this.checkVersion(definition, now.revisions + 1);
-      await this.store.commitRevision(agent.id, revision, { setCurrent: true, ifCurrent: now.revision?.id ?? null });
-      return undefined;
-    };
+    // Each try builds the revision on the current one, checks it and commits it on that one: a current revision another
+    // writer moved since the build is sent back as stale, and the next try builds and checks again on the new one, so
+    // what an edit leaves out (skill files, harness, place) is never carried over from a revision it does not follow.
     for (let tries = 1; ; tries++) {
+      if (tries > 1) entry = held((await this.get(agent.id)) ?? entry);
+      let files = skills;
+      if (files === undefined) {
+        const held = Object.entries(entry.revision?.body.skills ?? {});
+        const texts = await this.request(() => this.texts(held.map(([, sha]) => sha)));
+        files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
+      }
+      // An edit that names no harness or place keeps the agent's, as it keeps its skill files: absent here is unchanged,
+      // not the default.
+      const harness = entry.revision?.body.harness;
+      const place = entry.revision?.body.place;
+      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}) }, files, note);
+      await this.checked(revision);
+      await check?.(revision);
+      const base = entry.revision?.id ?? null;
+      const attempt = async (): Promise<AgentEntry | undefined> => {
+        const now = held(this.entry(agent.id) ?? entry);
+        if ((now.revision?.id ?? null) !== base) throw new AgentHomeError("stale", "the agent's current revision moved while the edit was checked");
+        if (!contract && now.revision && sameRevision(now.revision, revision)) {
+          this.checkVersion(definition, now.version);
+          return now;
+        }
+        if (!contract) this.checkVersion(definition, now.revisions + 1);
+        await this.store.commitRevision(agent.id, revision, { setCurrent: true, ifCurrent: base });
+        return undefined;
+      };
       try {
         return (await this.request(attempt)) ?? (await this.get(agent.id))!;
       } catch (error) {
