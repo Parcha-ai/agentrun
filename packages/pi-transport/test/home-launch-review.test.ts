@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -261,9 +261,23 @@ describe.skipIf(!HAS_PROC)("the launcher's own sections", () => {
 	it("starts nothing for a wrapper that comes up after a stop was asked for", () => {
 		const d = dir("stopped-first", "GEN='g1'\nrun_program() {\n  echo started >> marker\n  exec sleep 1\n}\n");
 		writeFileSync(join(d, "stop.req"), "1\n");
-		spawnSync("sh", [join(d, "launcher.sh"), "run", d, "1"], { env, timeout: 10_000 });
+		spawnSync("sh", [join(d, "launcher.sh"), "run", d, "1", "g1"], { env, timeout: 10_000 });
 		expect(existsSync(join(d, "marker"))).toBe(false);
 		expect(existsSync(join(d, "pid.1"))).toBe(false);
+	});
+
+	it("a supervisor, a watchdog or a wrapper an earlier launch of the name started does nothing: its generation is its starter's", () => {
+		for (const [mode, ...args] of [["supervise"], ["watch"], ["run", "1"]] as const) {
+			const d = dir(`earlier-${mode}`, "GEN='later'\nRESTART=0\nrun_program() {\n  echo started >> marker\n}\n");
+			// The last argument is the generation of the process that started it; the spec is a later launch's.
+			const ran = spawnSync("sh", [join(d, "launcher.sh"), mode, d, ...args, "earlier"], {
+				cwd: d,
+				env,
+				timeout: 10_000,
+			});
+			expect(ran.status, mode).toBe(0);
+			expect(readdirSync(d).sort(), mode).toEqual(["launcher.sh", "spec.sh"]);
+		}
 	});
 
 	it("keeps the tail of the output when the watchdog and the end of a launch trim at the same moment", async () => {

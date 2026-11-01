@@ -32,7 +32,7 @@ async function cutOffExec() {
   const journal = { append() {}, flush: async () => {}, read: async (stream) => (stream === NESTED_STREAM ? ties.map((data) => ({ data })) : []) };
   const mode = codeMode({ ctx: next, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge: { get: () => undefined }, log() {}, lines: [], rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
   const items = [{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }];
-  await mode.recoverItems(items, [{ callId: EXEC, name: 'exec' }], [], since);
+  await mode.recoverItems(items, [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [], since);
   return { state: next.state(), output: items[0].output };
 }
 

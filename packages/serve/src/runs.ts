@@ -12,9 +12,9 @@ import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-adapters/host";
-import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
-import { registerLabel, registerTurnEnding, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { HARNESS_LOG_EVENT } from "./adapters.js";
+import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
+import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsOf, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
@@ -22,13 +22,14 @@ import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/swee
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
-import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV } from "./decisions.js";
+import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, PARALLEL_KEY_ENV } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, FAUX_ENV, withoutFaux } from "./model.js";
+import { EFFORT_ENV, FAUX_ENV, thinkingOf, withoutFaux } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
+import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
@@ -95,6 +96,9 @@ type RunMeta = {
   stopped_at?: string;
   /** A run stopped by an older server: how many messages the person had sent then. Read only when `stopped_at` is not. */
   stopped_after?: number;
+  /** What its newest process took its thinking level from (app.ts's thinkingOf), as its environment had them: `effort`,
+   *  the run's effort, and `host`, the host's AGENT_THINKING. Absent for a process an older server started. */
+  launch_thinking?: { effort?: string; host?: string };
 };
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
@@ -122,6 +126,8 @@ export type Run = {
   revision: string;
   /** The harness its revision names, read at its first message. */
   harness?: string;
+  /** Its agentic revision names web_fetch: its process is handed Parallel's key for it (web-fetch.ts). */
+  webFetch?: true;
   /** Imported history (`agentrun-serve import`): the source it was run in, and its id there. It takes no message, and a
    *  stop or a cancel moves nothing. */
   imported?: { source: string; session: string };
@@ -163,6 +169,8 @@ export type Run = {
   /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). Null
    *  when they cannot be read: its timeline's usage row then reads unknown. */
   decisions?: Record<string, unknown>[] | null;
+  /** What every conversation of its store says it used, as the settle that ends it read them. */
+  metrics?: RunMetrics;
   relaunches: number;
   /** Its newest launch has not reported back: its mark (RUN_LAUNCHING) is on disk. */
   launching?: boolean;
@@ -282,8 +290,9 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
 export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
-/** The server's own secrets, which a run's process never gets: the API token, by name or by value. */
-const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
+/** The server's own secrets, which a run's process never gets: the API token, by name or by value, and the seal key
+ *  the tool keys are kept under (tool-keys.ts). */
+const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY"]);
 /** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own and the decision
  *  keys, which go on their own descriptor. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
@@ -424,8 +433,10 @@ export class Runs {
       ...(isObject(stored?.review) ? { review: stored.review as SavedReview } : {}),
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
+      ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
     };
-    const run = this.blank(row, dir, meta, (await this.options.agents.revisions(row.agent)).find((r) => r.id === row.revision)?.version ?? 0);
+    const known = await this.options.agents.revision(row.agent, row.revision);
+    const run = this.blank(row, dir, meta, known?.version ?? 0, known?.revision);
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
@@ -450,10 +461,11 @@ export class Runs {
     return run;
   }
 
-  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
+  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number, revision?: Revision): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
       working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
+      ...(revision?.kind === "agentic" && revision.body.tools.includes(WEB_FETCH_TOOL) ? { webFetch: true as const } : {}),
     };
   }
 
@@ -483,21 +495,25 @@ export class Runs {
   }
 
   /** The run's rows from its store, opened read-only; only once its claim is released. An agentic run's rows are its
-   *  root conversation's; a workflow run's are its model nodes'. */
-  private async readStore(run: Run): Promise<void> {
+   *  root conversation's; a workflow run's are its model nodes'. `atEnd`: a settle's read, which reads every
+   *  conversation (a workflow's nodes, a harness's session) once and counts the run's metrics from all of them. */
+  private async readStore(run: Run, atEnd = false): Promise<void> {
     const file = this.storeFile(run);
     if (!(await stat(file).catch(() => null))) return;
     const { DatabaseSync } = await import("node:sqlite");
-    const entries: Json[] = [];
+    const read: Array<{ conversation: number; entry: Json }> = [];
     const db = new DatabaseSync(file, { readOnly: true });
     try {
-      const rows = run.kind === "workflow"
-        ? db.prepare("SELECT record FROM entries ORDER BY id").iterate()
-        : db.prepare("SELECT record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").iterate();
-      for (const row of rows) entries.push(JSON.parse(String((row as { record: string }).record)) as Json);
+      const rows = run.kind === "workflow" || atEnd
+        ? db.prepare("SELECT conversation_id, record FROM entries ORDER BY id").iterate()
+        : db.prepare("SELECT conversation_id, record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").iterate();
+      for (const row of rows as Iterable<{ conversation_id: number; record: string }>) read.push({ conversation: Number(row.conversation_id), entry: JSON.parse(String(row.record)) as Json });
     } finally {
       db.close();
     }
+    const root = read.reduce((min, r) => Math.min(min, r.conversation), Infinity);
+    const entries = read.flatMap((r) => (run.kind === "workflow" || r.conversation === root ? [r.entry] : []));
+    if (atEnd) run.metrics = runMetricsOf(read.map((r) => r.entry) as never);
     if (run.kind === "workflow") {
       const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
       // Decisions it cannot read add no rows, and leave the served usage row's total unknown, as the run's cost read
@@ -814,14 +830,19 @@ export class Runs {
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
       ...(this.options.documents ? { [DOCUMENTS_ENV]: this.options.documents } : {}),
     };
+    // Kept for its metrics: the host's level may change before the run ends.
+    run.meta.launch_thinking = { ...(env[EFFORT_ENV] ? { effort: env[EFFORT_ENV] } : {}), ...(env.AGENT_THINKING ? { host: env.AGENT_THINKING } : {}) };
+    void this.saveMeta(run).catch((error: Error) => warn(run.id, `what its process thinks at is not saved: ${error.message}`));
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
     // The decision keys are never in a run's environment, which its tools and its model's provider read (childEnv leaves
     // out every secret): a workflow run's process gets them once on an inherited pipe, by name, for its decision
-    // providers alone (decisions.ts).
+    // providers and web_fetch alone (decisions.ts), and an agentic run's process Parallel's alone when it names
+    // web_fetch.
     delete env[DECISION_KEY_FD_ENV];
     // Chosen from the secrets this server holds: out of its environment once its launcher hands them over (secrets.ts).
-    const decisionKeys = run.kind === "workflow" ? decisionKeysOf(withSecrets(process.env)) : {};
+    const offered = decisionKeysOf(withSecrets(process.env));
+    const decisionKeys = run.kind === "workflow" ? offered : run.webFetch && offered[PARALLEL_KEY_ENV] ? { [PARALLEL_KEY_ENV]: offered[PARALLEL_KEY_ENV] } : {};
     const handsKey = Object.keys(decisionKeys).length > 0;
     this.markLaunching(run);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
@@ -925,7 +946,9 @@ export class Runs {
     const pid = holderPid(record);
     // A process that is gone serves no door, whatever its last heartbeat says.
     const gone = !this.live(run) && !(pid !== undefined && pid !== process.pid && alive(pid) && this.doorOf(record));
-    if (released || gone) await this.storeWhenFree(run);
+    // Its metrics are this settle's read, or none: never an earlier end's.
+    run.metrics = undefined;
+    if (released || gone) await this.storeWhenFree(run, true);
     // Its process gone: an archived run's box is let go now, whatever comes next (an outcome, a wait for the person, a
     // relaunch), since nothing else would until the next start or archive. This is every archived end that can let a box
     // go: a settle with the process not gone means another live holder of the run, whose box is its own. That holder is
@@ -990,21 +1013,33 @@ export class Runs {
     if (paid.length) run.decisionCost = paid.every((cost) => typeof cost === "number") ? (paid as number[]).reduce((a, b) => a + b, 0) : null;
   }
 
-  /** Ends the run in the agent store, once: how it ended, its cost and a line for the list. A store held by another
-   *  writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
+  /** Ends the run in the agent store, once: how it ended, its cost, a line for the list and its metrics. A store held by
+   *  another writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
+    const counted = run.metrics;
+    const end = (metrics?: StoredMetrics) => {
+      try {
+        this.store.carryBack(run.id, metrics ? { ...ending, metrics } : ending);
+      } catch (error) {
+        if (!(error instanceof AgentHomeError && error.code === "exists")) throw error;
+      }
+    };
     const persist = async () => {
       await this.saveMeta(run);
       await whenFree(() => {
+        const metrics = counted && this.storedMetrics(run, counted);
         try {
-          this.store.carryBack(run.id, ending);
+          end(metrics);
         } catch (error) {
-          if (!(error instanceof AgentHomeError && error.code === "exists")) throw error;
+          // Metrics the store refuses (a name past its limit) never hold up the run's end: it ends without them.
+          if (!(metrics && error instanceof AgentHomeError && error.code === "invalid")) throw error;
+          warn(run.id, `its metrics are not kept: ${error.message}`);
+          end();
         }
       }, this.busyDelays(), this.onBusy(run.id, "the agent store"));
     };
@@ -1037,6 +1072,25 @@ export class Runs {
     this.refresh(run);
   }
 
+  /** The run's metrics as the store keeps them: what its entries say it used, the effort its newest process ran at (unknown
+   *  for one an older server started), and on a harness other than pi the model its revision names (its entries name the
+   *  harness). A busy store throws, for the write's retries; a revision that cannot be read otherwise adds nothing. */
+  private storedMetrics(run: Run, counted: RunMetrics): StoredMetrics {
+    let revision: Revision;
+    try {
+      revision = this.store.readRevision(run.revision);
+    } catch (error) {
+      if (storeBusy(error)) throw error;
+      return counted;
+    }
+    const body = revision.kind === "agentic" ? revision.body : undefined;
+    const harness = body?.harness ?? DEFAULT_HARNESS;
+    // As its process chose it (app.ts): the run's effort, else its revision's thinking, else the host's, else medium.
+    const launched = run.meta.launch_thinking;
+    const level = launched && thinkingFor(harness, thinkingOf({ [EFFORT_ENV]: launched.effort, AGENT_THINKING: launched.host }, body?.thinking));
+    return { ...counted, ...(level ? { effort: level } : {}), ...(harness !== DEFAULT_HARNESS && body?.model ? { model: body.model } : {}) };
+  }
+
   /** Tries `persist` again every settleRetryMs while the server lives, until it lands. */
   private persistLater(run: Run, persist: () => Promise<void>): void {
     const timer = setTimeout(() => {
@@ -1064,8 +1118,8 @@ export class Runs {
   }
 
   /** The run's store, read again while another connection holds it, within the same retries. */
-  private storeWhenFree(run: Run): Promise<void> {
-    return whenFree(() => this.readStore(run), this.busyDelays(), this.onBusy(run.id, "its store"));
+  private storeWhenFree(run: Run, atEnd = false): Promise<void> {
+    return whenFree(() => this.readStore(run, atEnd), this.busyDelays(), this.onBusy(run.id, "its store"));
   }
 
   // ---- acting ---------------------------------------------------------------------------------------------------------
@@ -1112,7 +1166,7 @@ export class Runs {
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
     };
     await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
-    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version);
+    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
     this.runs.set(run.id, run);
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;

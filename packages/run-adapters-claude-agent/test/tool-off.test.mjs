@@ -6,14 +6,14 @@
 //
 // Without the pinned CLI this skips; with AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1 (CI) a missing or different one fails.
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { Server, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { createHarnessRunner } from '@parcha/agentrun-adapters';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_SDK_VERSION, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
+import { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_SDK_VERSION, CLAUDE_WEB_SEARCH_TOOL, CLAUDE_WEB_SEARCH_USD, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
 import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF } from '../dist/harness.js';
 import { fakeAnthropic } from '@parcha/agentrun-claude-agent/testing';
 import { CLAUDE_BETAS, CLAUDE_BLOCKS, CLAUDE_MESSAGES_ROUTES } from '../dist/host/policy.js';
@@ -225,6 +225,63 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
   t.diagnostic(`blocks: ${[...types].sort().join(', ')}`);
   t.diagnostic(`requests: ${forwarded.length}, main-model: ${main}, sdk ${CLAUDE_AGENT_SDK_VERSION}`);
   assert.ok(forwarded.length >= plan.length, 'every model request came through the proxy, with the provider key');
+});
+
+// With webSearch on, one tool of the CLI's runs: WebSearch, which asks the provider for its web search in a request of its
+// own. That request carries exactly the tool definition recorded from this CLI, the proxy refuses nothing, each search is
+// booked, and every other built-in is still denied with nothing run, written or fetched.
+test("with webSearch on, the CLI's WebSearch runs through the proxy, exactly the recorded tool, booked per search; WebFetch, Bash and every other built-in are still denied", { skip, timeout: 240_000 }, async (t) => {
+  const dir = mkdtempSync(join(ROOT, 'search-'));
+  const canary = (name) => join(dir, `canary-${name}`);
+  const attacks = [
+    ['WebFetch', { url: 'https://example.com', prompt: 'x' }],
+    ['Bash', { command: `touch ${canary('bash')}`, description: 'x' }],
+    ['Write', { file_path: canary('write'), content: 'pwned' }],
+    ['Read', { file_path: '/etc/hostname' }],
+    ['Task', { description: 'x', prompt: `touch ${canary('task')}`, subagent_type: 'general-purpose' }],
+    ['Skill', { skill: 'x' }],
+  ];
+  const plan = [{ tool: { name: 'WebSearch', input: { query: 'agentrun' } } }, ...attacks.map(([name, input]) => ({ tool: { name, input } })), { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } }].map((r, i) => ({ ...r, thinking: `step ${i}` }));
+  let main = 0;
+  const FOUND = 'AgentRun runs agents durably.';
+  const provider = await fakeAnthropic({ reply: (r) => {
+    if ((r.body.tools ?? []).some((tool) => tool.type === CLAUDE_WEB_SEARCH_TOOL)) return { search: { query: 'agentrun', results: [{ title: 'AgentRun', url: 'https://example.com/agentrun' }], text: FOUND, searches: 3 } };
+    if (r.model !== MODEL) return { text: 'ok' };
+    return plan[main++] ?? { text: 'done' };
+  } });
+  t.after(() => provider.close());
+  const logged = [];
+  const real = await import('@anthropic-ai/claude-agent-sdk');
+  let asked;
+  const sdk = { ...real, query: (args) => { asked = args.options; return real.query(args); } };
+  const priced = (_model, u) => (u.input * 3 + u.output * 15) / 1e6;
+  const adapter = claudeAgentAdapter({ sdk, sdkVersion: CLAUDE_AGENT_SDK_VERSION, model: MODEL, smallModel: SMALL, webSearch: true, price: priced, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), log: (message, detail) => logged.push({ message, ...detail }) });
+  const events = [];
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: 40, timeoutMs: 200_000, onEvent: (e) => events.push(e) });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'search', system: ['Answer.'], user: 'Search, then say ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [] }), { answer: 'ok' });
+
+  const ended = events.filter((e) => e.type === 'tool_end');
+  assert.deepEqual(ended.filter((e) => !e.isError).map((e) => e.name), ['WebSearch', 'submit']);
+  for (const [name] of attacks) assert.ok(ended.some((e) => e.name === name && e.isError), `${name} is shown as a failed call`);
+  for (const name of ['bash', 'write', 'task']) assert.equal(existsSync(canary(name)), false, name);
+  assert.deepEqual(asked.tools, ['WebSearch']);
+  for (const tool of PINNED_CLI_TOOLS.filter((x) => !CLAUDE_BUILTINS.includes(x) && x !== 'WebSearch')) assert.ok(asked.disallowedTools.includes(tool), `${tool} is not off by name`);
+  // The CLI's own request for the search: exactly the tool definition recorded from this CLI, admitted, nothing refused.
+  const forwarded = provider.requests.filter((r) => r.authorized && r.path === '/v1/messages');
+  const searched = forwarded.filter((r) => (r.body.tools ?? []).some((tool) => tool.type === CLAUDE_WEB_SEARCH_TOOL));
+  const recorded = JSON.parse(readFileSync(new URL('./fixtures/web-search-request-cli-2.1.286.json', import.meta.url), 'utf8'));
+  assert.equal(searched.length, 1);
+  assert.deepEqual(searched[0].body.tools, recorded.body.tools);
+  assert.deepEqual(countedRefusals(t, logged), [], 'the proxy refused nothing the CLI asked');
+  for (const r of forwarded.filter((x) => x !== searched[0])) for (const name of r.tools) assert.match(name, /^(mcp__hands__submit|WebSearch)$/, `the model was offered ${name}`);
+  // What the search found reached the model, and its three searches were booked at $0.01 each beside the tokens.
+  assert.ok(forwarded.some((r) => JSON.stringify(r.messages).includes(FOUND) && JSON.stringify(r.messages).includes('https://example.com/agentrun')), 'the results reached the model');
+  const usages = events.filter((e) => e.type === 'request_end').map((e) => e.usage);
+  const booked = usages.filter((u) => u.webSearches);
+  assert.deepEqual(booked.map((u) => u.webSearches), [3]);
+  assert.equal(booked[0].usd, priced('', booked[0]) + 3 * CLAUDE_WEB_SEARCH_USD);
+  assert.deepEqual(logged.filter((l) => /thinking\.disabled/.test(l.message)), [], 'the search request thinks at the session level too');
+  t.diagnostic(`requests: ${forwarded.length}, search request betas: ${searched[0].headers['anthropic-beta']}`);
 });
 
 /** One node through the adapter on the pinned CLI, `model` its main model, `extra` the node's own fields: what reached

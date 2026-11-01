@@ -1,7 +1,8 @@
 // Decision workflows on Jev and Parallel: a workflow's judge, pick, sift, route and ask nodes run on TypeSafe's System
 // One, or on Parallel Decisions for a node that names it, when this server's environment names the provider's key. A key
-// reaches its provider only, never a run's tools, its model, a program it starts or a file. Here each provider is the
-// tests' fake fetch (fixtures/faux-jev.mjs, fixtures/faux-parallel.mjs): no network, no real key.
+// reaches its provider only (Parallel's also web_fetch, which reads pages through Parallel), never a run's environment,
+// its model, a program it starts or a file. Here each provider is the tests' fake fetch (fixtures/faux-jev.mjs,
+// fixtures/faux-parallel.mjs): no network, no real key.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -20,6 +21,7 @@ import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
+const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_HANG", "AGENTRUN_TEST_FAUX_JEV_COST", "PARALLEL_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS", "AGENTRUN_TEST_FAUX_JEV_NO_USAGE"];
 const OPENROUTER_GATEWAY = "https://openrouter.ai/api/v1";
 /** Keys that are not the canary, so a request sent with one is not authorized: held in names, as no key literal sits beside a key variable. */
@@ -82,8 +84,10 @@ async function withKeys(t, which) {
   return async () => ({ jev: await read(files.jev), parallel: await read(files.parallel) });
 }
 
-async function startFlow(api, steps, output) {
-  const made = await api("POST", "/agents", flowAgent("coi", flow(steps, output)));
+async function startFlow(api, steps, output, { schemas = {}, tools } = {}) {
+  const doc = flow(steps, output);
+  Object.assign(doc.schemas, schemas);
+  const made = await api("POST", "/agents", flowAgent("coi", doc, tools ? { tools } : {}));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const started = await api("POST", "/agents/coi/runs", { input: { question: QUESTION } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -637,11 +641,13 @@ test("a decision whose cost the provider reports is on its row, and the run's to
   assert.equal(storeRun(data, runId).costUsd, 0.00003, "and the store keeps the same total");
 });
 
-test("the Parallel key never reaches a run's tools, model or programs: not in its environment, its descriptors, a child process or a file", async (t) => {
+test("only a run that asks Parallel or names a web tool holds the Parallel key, in memory: never in its environment, a child process or a file; an agentic run naming no web tool gets no key at all", async (t) => {
   const seen = await withKeys(t, { parallel: true });
   const gate = join(await scratch(t), "go");
-  const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL });
-  const runId = await startFlow(api, [onParallel, probe(gate)]);
+  const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL, fauxWeb: FAUX_WEB });
+  // A workflow asking Parallel on one read of the key: a decision node, then web_fetch in a call node.
+  const read = { node: "call", label: "read", via: "tool", tool: "web_fetch", args: { url: "http://public.example/" }, out: "Page", as: "page", deadline_s: 60 };
+  const runId = await startFlow(api, [onParallel, read, probe(gate)], undefined, { tools: ["web_fetch"], schemas: { Page: { type: "object", required: ["via"], properties: { via: { const: "parallel" } } } } });
   // While the run's process waits at the probe, after it read the key: as the kernel shows that process.
   const pid = await processOf(data, runId);
   const environ = await readFile(`/proc/${pid}/environ`, "utf8");
@@ -653,7 +659,23 @@ test("the Parallel key never reaches a run's tools, model or programs: not in it
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(last.status, "completed", JSON.stringify(run.error));
   assert.deepEqual(run.result.output, CLEAN, "the model node's process, and an sh and a node -e it starts, see neither the key nor its descriptor");
-  assert.deepEqual((await seen()).parallel.map((c) => c.authorized), [true], "and Parallel did get the key");
+  assert.deepEqual((await seen()).parallel.map((c) => [c.path, c.authorized]), [["/v1/decisions", true], ["/v1/extract", true]], "Parallel got the key from the decision node and from web_fetch, on the one read");
+  // Agentic runs, each held in its first turn: one naming web_fetch holds the key as the workflow does, one naming no web
+  // tool was never handed it.
+  for (const tool of ["web_fetch", "read"]) {
+    const hold = join(await scratch(t), "go");
+    const id = `holds-${tool.replace("_", "-")}`;
+    assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: "Hold.", tools: [tool] } })).status, 201);
+    const started = await api("POST", `/agents/${id}/runs`, { input: { content: `Answer once ${hold} exists.` } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const pid = await processOf(data, started.body.run_id);
+    const environ = await readFile(`/proc/${pid}/environ`, "utf8");
+    assert.equal(environ.includes(PARALLEL_CANARY), false, `${tool}: the run's process environment holds no copy of the key`);
+    assert.equal(keyFdIn(environ), tool === "web_fetch" ? KEY_FD : undefined, `${tool}: handed the key only when it names web_fetch`);
+    assert.equal(await handedSocket(pid, KEY_FD), false, `${tool}: no key descriptor open`);
+    await writeFile(hold, "");
+    await follow(api, started.body.run_id, ["completed"]);
+  }
   assert.deepEqual(await filesHolding(data, PARALLEL_CANARY), [], "no file of the data directory holds the key");
   assert.equal(process.env.PARALLEL_API_KEY, PARALLEL_CANARY, "the server's own environment is as it was");
 });
