@@ -35,6 +35,25 @@ test("a zombie is not alive: an exited child its parent never reaps; a running p
   assert.equal(processAlive(parent.pid), false, "an exited and reaped process is gone");
 });
 
+test("passed straight to an array method, which adds the index (and the array) as arguments, it still reads a zombie as gone: a second argument that is not a function is no stat reader", { skip: !linux && "zombie state is read from /proc" }, async (t) => {
+  const parent = spawn("sh", ["-c", "sleep 0.2 & echo $!; exec sleep 600"], { stdio: ["ignore", "pipe", "ignore"] });
+  t.after(() => parent.kill("SIGKILL"));
+  const pid = Number(await new Promise((resolve) => parent.stdout.once("data", (chunk) => resolve(String(chunk).trim()))));
+  for (const deadline = Date.now() + 30_000; stateOf(pid) !== "Z"; ) {
+    assert.ok(Date.now() < deadline, `the child became a zombie (state ${stateOf(pid)})`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual([pid].filter(processAlive), [], "filter passes (pid, 0, array): the zombie is not alive");
+  assert.equal([pid].some(processAlive), false);
+  assert.equal(processAlive(pid, 0), false, "an index where the stat reader would go: the zombie is not alive");
+  // At a truthy index too: a guard that only tests for a truthy seam would take 1 for the reader.
+  assert.deepEqual([process.pid, pid].filter(processAlive), [process.pid], "the zombie at index 1 is not alive either");
+  assert.equal([process.pid, pid].some((p, i) => i === 1 && processAlive(p, i)), false);
+  assert.equal(processAlive(pid, 1), false);
+  assert.deepEqual([process.pid, parent.pid].filter(processAlive), [process.pid, parent.pid], "and running processes are");
+  assert.equal([process.pid].every(processAlive), true);
+});
+
 test("a process whose /proc entry cannot be read (hidepid, another user's) is asked by signal: alive while it runs, even when the signal is not permitted", { skip: !linux && "the /proc read is Linux's" }, () => {
   const denied = () => { throw Object.assign(new Error("permission denied"), { code: "EACCES" }); };
   assert.equal(processAlive(process.pid, denied), true, "a running process this test may signal");
