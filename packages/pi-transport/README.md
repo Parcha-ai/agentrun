@@ -459,13 +459,21 @@ A box is not trusted, so neither is a byte of a tar archive it makes. The host n
 
 ```ts
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { readStream } from "@parcha/pi-transport";
 import { extractTar } from "@parcha/pi-transport/sync";
 
 const packed = await box.exec(["tar", "-c", "-f", "-", "-C", "/work", "."], undefined, BACKGROUND_CONTEXT);
 if (!packed.ok) throw packed.error;
-const extracted = await extractTar(packed.value.stdout, "/data/runs/r1/work", {
-	onSkip: (skip) => console.warn(skip.reason, skip.path, skip.target ?? ""),
-});
+const tar = packed.value;
+// Both streams are read: a program whose error pipe fills stops writing its output.
+const [extracted, errors] = await Promise.all([
+	extractTar(tar.stdout, "/data/runs/r1/work", {
+		onSkip: (skip) => console.warn(skip.reason, skip.path, skip.target ?? ""),
+	}),
+	readStream(tar.stderr),
+]);
+const exited = await tar.wait();
+if (!exited.ok || exited.value !== 0) console.warn("tar failed:", new TextDecoder().decode(errors));
 if (extracted.ok && extracted.value.stopped !== undefined) console.warn(extracted.value.stopped.message);
 ```
 
@@ -480,7 +488,7 @@ if (extracted.ok && extracted.value.stopped !== undefined) console.warn(extracte
   replaces a directory or the other way round (`occupied`). Each file is written under a temporary name and renamed
   into place; one cut off halfway is removed.
 - **Modes capped.** A file gets at most 0755 (0644 without an execute bit), never setuid, setgid, group or world write;
-  a directory at most 0755. `receipt.masked` counts the files that lost a bit.
+  a directory at most 0755. `receipt.masked` counts the files written that lost a bit.
 - **Limits.** The extraction stops cleanly past `maxBytes` of archive (header blocks, pax and long-name payloads and
   member data, each charged before it is read; default `MAX_PULL_BYTES`, 1 GiB) or `maxEntries` members, written or
   skipped (default `MAX_PULL_ENTRIES`, 100,000). One pax header or long name holds at most 64 KiB. A bad checksum, a

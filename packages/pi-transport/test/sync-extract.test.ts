@@ -2,6 +2,7 @@
 // it into `dest` beside an `outside` directory, and asserts the whole scratch tree: what may be written is, nothing
 // else is, and nothing outside `dest` changes.
 import {
+	chmodSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -363,21 +364,22 @@ describe("the extractor refuses what a hostile box can put in an archive", () =>
 		expect(Object.keys(tree(dest))).toEqual(["notes", "notes/learning", "notes/learning/kept.md"]);
 	});
 
-	it("keeps a newer host file when asked to, and replaces an older one", async () => {
+	it("keeps a newer host file when asked to, and replaces an older one, counting only its mode as masked", async () => {
 		writeFileSync(join(dest, "newer"), "host");
 		writeFileSync(join(dest, "older"), "host");
 		const { utimesSync } = await import("node:fs");
 		utimesSync(join(dest, "older"), 1_500_000_000, 1_500_000_000);
 		const { receipt } = await extract(
 			archive(
-				member({ name: "newer", data: "box", mtime: 1_600_000_000 }),
-				member({ name: "older", data: "box", mtime: 1_600_000_000 }),
+				member({ name: "newer", data: "box", mtime: 1_600_000_000, mode: 0o666 }),
+				member({ name: "older", data: "box", mtime: 1_600_000_000, mode: 0o666 }),
 			),
 			{ keep: "newer" },
 		);
 		expect(receipt.kept).toEqual(["newer"]);
 		expect(receipt.written).toEqual(["older"]);
 		expect(receipt.skipped.host_newer).toBe(1);
+		expect(receipt.masked).toBe(1);
 	});
 
 	it("stops on a bad checksum, a lone zero block or a cut archive, keeping whole files and no partial one", async () => {
@@ -441,6 +443,27 @@ describe("removeEntries", () => {
 			outside: "dir 755",
 			...OUTSIDE_BEFORE,
 		});
+	});
+
+	it("removes a directory after what is in it, however the paths are spelled", async () => {
+		mkdirSync(join(dest, "a"));
+		writeFileSync(join(dest, "a/b"), "x");
+		const removed = getOrThrow(await removeEntries(dest, ["a", "./a/b"]));
+		expect(removed).toMatchObject({ removed: 2, kept: 0 });
+		expect(tree(dest)).toEqual({});
+	});
+
+	it.skipIf(process.getuid?.() === 0)("fails, never reports success, when an entry cannot be looked at", async () => {
+		mkdirSync(join(dest, "locked"));
+		writeFileSync(join(dest, "locked/f"), "x");
+		chmodSync(join(dest, "locked"), 0o600);
+		try {
+			const removed = await removeEntries(dest, ["locked/f"]);
+			expect(removed.ok ? "ok" : removed.error.code).toBe("transfer_failed");
+		} finally {
+			chmodSync(join(dest, "locked"), 0o755);
+		}
+		expect(readFileSync(join(dest, "locked/f"), "utf8")).toBe("x");
 	});
 });
 

@@ -133,7 +133,7 @@ export type ExtractReceipt = {
 	readonly written: readonly string[];
 	/** The files left as they were because the host's was newer (`keep: "newer"`). */
 	readonly kept: readonly string[];
-	/** Files whose mode lost a bit to the cap: setuid, setgid, sticky, group or world write. */
+	/** Files written whose mode lost a bit to the cap: setuid, setgid, sticky, group or world write. */
 	readonly masked: number;
 	readonly skipped: Readonly<Record<SkipReason, number>>;
 	/** The first `MAX_NAMED_SKIPS` skips, in order. */
@@ -703,9 +703,7 @@ class TarExtractor implements Extractor {
 	async #place(file: Pending): Promise<void> {
 		this.#state = { kind: "header" };
 		try {
-			const capped = fileMode(file.mode);
-			if ((file.mode & 0o7022) !== 0) this.#masked += 1;
-			await file.out.chmod(capped);
+			await file.out.chmod(fileMode(file.mode));
 			await file.out.utimes(file.mtime, file.mtime);
 			await file.out.close();
 		} catch (error) {
@@ -735,6 +733,7 @@ class TarExtractor implements Extractor {
 		}
 		this.#files += 1;
 		this.#bytes += file.size;
+		if ((file.mode & 0o7022) !== 0) this.#masked += 1;
 		this.#written.push(file.path);
 	}
 }
@@ -825,13 +824,16 @@ export async function removeEntries(
 		onSkip?.({ path: path.replaceAll("\0", "\\0"), reason });
 	};
 	try {
-		for (const path of [...paths].sort().reverse()) {
+		const named: { path: string; segments: readonly Buffer[] }[] = [];
+		for (const path of paths) {
 			const checked = nameProblem(path, root.path.length);
-			if ("reason" in checked) {
-				skip(path, checked.reason);
-				continue;
-			}
-			const above = checked.segments.slice(0, -1);
+			if ("reason" in checked) skip(path, checked.reason);
+			else named.push({ path, segments: checked.segments });
+		}
+		// Deepest first, by the path as checked (`./a/b` is `a/b`): what is in a directory goes before the directory.
+		named.sort((a, b) => b.segments.length - a.segments.length);
+		for (const { path, segments } of named) {
+			const above = segments.slice(0, -1);
 			const reached = above.length === 0 ? { held: root } : await walk(root, above, false);
 			if (reached === undefined) continue;
 			if ("reason" in reached) {
@@ -839,8 +841,11 @@ export async function removeEntries(
 				continue;
 			}
 			try {
-				const at = entryOf(reached.held, checked.segments[checked.segments.length - 1] as Buffer);
-				const there = await lstat(at).catch(() => undefined);
+				const at = entryOf(reached.held, segments[segments.length - 1] as Buffer);
+				const there = await lstat(at).catch((error: unknown) => {
+					if (errnoOf(error) === "ENOENT") return undefined;
+					throw error;
+				});
 				if (there === undefined) continue;
 				if (there.isDirectory()) {
 					const gone = await rmdir(at).then(
