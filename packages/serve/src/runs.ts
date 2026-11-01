@@ -109,10 +109,11 @@ type RunMeta = {
   reflect?: Reflect;
 };
 /** A run's end-of-run turn: the job's outcome, the newest store entry before the turn and, once the run ended, the newest
- *  after it (its rows are those between), its deadline, whether its copy of the folder was laid, and how it ended.
- *  `turnOrigin` says the server sent it, never a person: no request field sets it, and its request id marks the turn in
- *  the run's journal, so the tool gate, once this server has one, can tell it from a person's. */
-type Reflect = { turnOrigin: "reflect"; outcome: Status; after: number; until?: number; deadline: string; laid?: true; ended?: true; timedOut?: true };
+ *  after it (its rows are those between), its deadline, whether its copy of the folder was laid, and how it ended. */
+type Reflect = { outcome: Status; after: number; until?: number; deadline: string; laid?: true; ended?: true; timedOut?: true };
+/** Who sent the end-of-run turn: the server, never a person, and no request field sets it. The one value it is sent
+ *  with, at its one call (reflectTurn); the per-tool gate, once this server has one, takes it there. */
+const REFLECT_ORIGIN = "reflect";
 /** The run asked its end-of-run turn and has not ended since. */
 const reflecting = (run: { meta: RunMeta }) => run.meta.reflect !== undefined && run.meta.reflect.until === undefined;
 /** The run ended after its end-of-run turn did, and what the turn wrote is neither checked nor dropped yet. */
@@ -706,7 +707,7 @@ export class Runs {
     run.finishing = outcome;
     run.endedAt = new Date().toISOString();
     const after = run.lastEntry ?? Math.max(0, ...run.rows.map((row) => entryOf(row.id)).filter(Number.isInteger));
-    run.meta.reflect = { turnOrigin: "reflect", outcome, after, deadline: new Date(Date.now() + (this.options.reflectTimeoutMs ?? REFLECT_TIMEOUT_MS)).toISOString() };
+    run.meta.reflect = { outcome, after, deadline: new Date(Date.now() + (this.options.reflectTimeoutMs ?? REFLECT_TIMEOUT_MS)).toISOString() };
     // The job's error, kept for a restart: the turn's is never the run's.
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
     this.setLearning(run, "reflecting", null, "The agent is asked what it learned.");
@@ -732,7 +733,8 @@ export class Runs {
       }
       await this.saveMeta(run);
       const { reflectPrompt } = await import("@parcha/agentrun-learn");
-      await this.toReflect(run, "/submit", { requestId: reflectId(run.id), content: reflectPrompt({ dir, active: Object.keys(seed.notes).length }), whenBusy: "followUp" });
+      // The one call that sends the end-of-run turn, with its origin.
+      await this.toReflect(run, "/submit", { requestId: reflectId(run.id), content: reflectPrompt({ dir, active: Object.keys(seed.notes).length }), whenBusy: "followUp" }, REFLECT_ORIGIN);
       end = await this.reflectEnd(run, Date.parse(reflect.deadline));
     } catch (error) {
       if (!this.live(run) || run.cancel) return;
@@ -750,8 +752,10 @@ export class Runs {
     this.terminate(run);
   }
 
-  /** One request to a finishing run's door (toDoor wakes no run that is finishing): again while it opens or parks. */
-  private async toReflect(run: Run, path: string, body?: Json): Promise<Json | null> {
+  /** One request to a finishing run's door (toDoor wakes no run that is finishing): again while it opens or parks.
+   *  `turnOrigin`: who sent a turn this request sends (REFLECT_ORIGIN), for the per-tool gate to take once this server
+   *  has one; nothing reads it until then. */
+  private async toReflect(run: Run, path: string, body?: Json, turnOrigin?: typeof REFLECT_ORIGIN): Promise<Json | null> {
     for (const deadline = Date.now() + 30_000; ; await sleep(200)) {
       if (!this.live(run) || run.cancel) throw new Error("the run's process is gone");
       const door = this.doorOf(await this.record(run));

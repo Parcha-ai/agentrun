@@ -41,8 +41,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
 
     // What the merge left: one host commit on main naming the run, with the note, and MEMORY.md built from it.
     const repo = repoOf(data, id);
-    const { learning, reflect } = await savedOf(data, one);
-    assert.equal(reflect.turnOrigin, "reflect", "the server marked the turn as its own");
+    const { learning } = await savedOf(data, one);
     assert.deepEqual(learning.verdict, { merge: true, reason: "Each note is general and new.", items: [{ file: FILE, keep: true, why: "It holds as a general rule." }] });
     const main = git(repo, ["rev-parse", "main"]);
     assert.equal(learning.merged, main);
