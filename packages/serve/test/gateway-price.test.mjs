@@ -1,11 +1,12 @@
 // A gateway model's price, which a run's cost is reckoned from: AGENT_MODEL_PRICE (or its tier's) when set, else the list
-// price pi-ai's catalog gives that model id, else $0. No network: runModels only builds the models, and the run below
-// talks to a Responses endpoint on loopback.
+// price pi-ai's catalog gives that model id (a $0 entry included), else none: the cost of its answers is then unknown,
+// never $0. No network: runModels only builds the models, and the runs below talk to a Responses endpoint on loopback.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { calculateCost } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { runModels } from "../dist/model.js";
 import { agent, follow, responsesEndpoint, serve } from "./support.mjs";
 
@@ -20,13 +21,15 @@ const total = (cost) => cost.input + cost.output;
 /** The highest whole price the catalog lists for `id`: the entry with the most input plus output. */
 const highest = (id) => entries(id).reduce((top, { cost }) => (total(cost) > total(top) ? cost : top), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
-test("a gateway model the catalog knows takes its list price; a set price wins; an unknown one is $0", async () => {
+test("a gateway model the catalog knows takes its list price; a set price wins; an id the catalog does not list has no price", async () => {
   const listed = builtinModels().getModels().find((model) => model.id === "gpt-6-luna" && model.cost.input > 0);
   assert.ok(listed, "pi-ai's catalog prices gpt-6-luna");
   const luna = highest("gpt-6-luna");
   assert.deepEqual((await costOf({ AGENT_MODEL: "gpt-6-luna" })).default, luna);
   assert.deepEqual((await costOf({ AGENT_MODEL: "gpt-6-luna", AGENT_MODEL_PRICE: "2,4,0.2" })).default, { input: 2, output: 4, cacheRead: 0.2, cacheWrite: 2 });
-  assert.deepEqual((await costOf({ AGENT_MODEL: "not-a-catalog-model" })).default, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  assert.deepEqual([...(await runModels({ ...GATEWAY, AGENT_MODEL: "not-a-catalog-model" }, undefined)).unpriced], ["not-a-catalog-model"], "an id the catalog does not list has no price");
+  assert.deepEqual([...(await runModels({ ...GATEWAY, AGENT_MODEL: "gpt-6-luna" }, undefined)).unpriced], [], "a listed one has its price");
+  assert.deepEqual([...(await runModels({ ...GATEWAY, AGENT_MODEL: "not-a-catalog-model", AGENT_MODEL_PRICE: "0,0" }, undefined)).unpriced], [], "a set price is known, $0 included");
   // A tier's own price goes with its model; the other tier, with no price of its own, takes the catalog's.
   const tiers = await costOf({ AGENT_MODEL: "not-a-catalog-model", AGENT_MODEL_FAST: "gpt-6-luna", AGENT_MODEL_PRICE: "3,6" }, ["default", "fast"]);
   assert.deepEqual(tiers.default, { input: 3, output: 6, cacheRead: 0, cacheWrite: 3 });
@@ -101,7 +104,7 @@ test("through a gateway a revision's provider/model-id is sent whole (OpenRouter
   assert.deepEqual((await costOf({ AGENT_MODEL: `${bare.provider}/${bare.id}` })).default, vendorCost, `${bare.provider}/${bare.id}`);
 });
 
-test("max_cost_usd applies to a gateway model the catalog prices: its response passes the cap and the run stops with spend_cap_reached; an id the catalog does not know is still $0 and never reaches its cap", async (t) => {
+test("max_cost_usd applies to a gateway model the catalog prices: its response passes the cap and the run stops with spend_cap_reached; an id the catalog does not know has no price, so under the cap it is refused before anything is sent, and with no cap its run's cost reads unknown, never $0", async (t) => {
   const tokens = 1_000_000;
   const endpoint = await responsesEndpoint(t, "42", tokens);
   const names = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
@@ -110,11 +113,11 @@ test("max_cost_usd applies to a gateway model the catalog prices: its response p
   for (const name of names) delete process.env[name];
   process.env.AGENT_MODEL_BASE_URL = endpoint.url;
   const { api } = await serve(t, { faux: undefined });
-  const run = async (id, model) => {
+  const run = async (id, model, capped = { max_cost_usd: 1 }) => {
     assert.equal((await api("POST", "/agents", agent(id, { model }))).status, 201);
     // gpt-4o's worst case for one request (32k output tokens at its list price) is under $1; the endpoint's million
     // tokens each way cost far more.
-    const started = await api("POST", `/agents/${id}/runs`, { input: { content: "What is six times seven?" }, max_cost_usd: 1 });
+    const started = await api("POST", `/agents/${id}/runs`, { input: { content: "What is six times seven?" }, ...capped });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     await follow(api, started.body.run_id, ["completed", "failed"]);
     return (await api("GET", `/runs/${started.body.run_id}`)).body;
@@ -125,9 +128,72 @@ test("max_cost_usd applies to a gateway model the catalog prices: its response p
   const usage = { input: tokens, output: tokens, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
   const expected = calculateCost(builtinModels().getModel("openai", "gpt-4o"), usage).total;
   assert.ok(Math.abs(priced.cost.usd - expected) < 1e-9, `the run's cost is openai's list price for its usage: ${priced.cost.usd} vs ${expected}`);
-  const free = await run("free", "agent-model/not-a-catalog-model");
-  assert.deepEqual([free.status, free.error ?? null, free.cost.usd ?? 0], ["completed", null, 0], JSON.stringify(free));
-  // Each run's turns went to the gateway (other processes on the machine may probe a loopback port with a GET).
+  const asked = endpoint.models.length;
+  const unpriced = await run("unpriced", "agent-model/not-a-catalog-model");
+  assert.deepEqual([unpriced.status, unpriced.error?.code, unpriced.cost.usd], ["failed", "spend_cap_reached", 0], JSON.stringify(unpriced));
+  assert.match(unpriced.error?.message ?? "", /no price/, JSON.stringify(unpriced.error));
+  assert.equal(endpoint.models.length, asked, "the gateway was asked nothing for it");
+  // With no cap the same model runs, and its answer has no price: the run's cost is unknown, never $0.
+  const free = await run("free", "agent-model/not-a-catalog-model", {});
+  assert.ok(endpoint.models.length > asked, "the uncapped run asked the gateway");
+  assert.deepEqual([free.status, free.error ?? null, free.cost.usd], ["completed", null, null], JSON.stringify(free));
+  // The sent runs' turns went to the gateway (other processes on the machine may probe a loopback port with a GET).
   const posts = endpoint.asked.filter((line) => line.startsWith("POST "));
   assert.ok(posts.length >= 2 && posts.every((line) => line === "POST /responses"), endpoint.asked.join(", "));
+});
+
+test("the run's models say which ids serve has no price for: one the catalog does not list and no price names; never one it lists, or one priced by AGENT_MODEL_PRICE", async () => {
+  const unpriced = async (env, tiers = ["default"]) => [...(await runModels({ ...GATEWAY, ...env }, undefined, tiers)).unpriced];
+  assert.deepEqual(await unpriced({ AGENT_MODEL: "not-a-catalog-model" }), ["not-a-catalog-model"], "not listed, no price set");
+  assert.deepEqual(await unpriced({ AGENT_MODEL: "not-a-catalog-model", AGENT_MODEL_PRICE: "0,0" }), [], "a price set, even $0, is a known price");
+  assert.deepEqual(await unpriced({ AGENT_MODEL: "gpt-6-luna" }), [], "listed in the catalog");
+  assert.deepEqual(await unpriced({ AGENT_MODEL: "not-a-catalog-model", AGENT_MODEL_FAST: "gpt-6-luna" }, ["default", "fast"]), ["not-a-catalog-model"], "per model, not per run");
+});
+
+/** One answer of `tier` of `env`'s gateway at `url`: the message pi writes as its entry. */
+const answerOf = async (url, env, tier = "default", how = "streamSimple") => {
+  // Every tier `env` names, as one run builds them: a run's models share one provider.
+  const tiers = ["default", ...(env.AGENT_MODEL_FAST ? ["fast"] : [])];
+  const { models, byTier } = await runModels({ AGENT_MODEL_BASE_URL: url, AGENT_MODEL_API_KEY: "none", ...env }, undefined, tiers);
+  const ref = byTier.get(tier);
+  const model = models.getModel(ref.provider, ref.modelId);
+  const context = { messages: [{ role: "user", content: "What is six times seven?", timestamp: 0 }] };
+  if (how === "complete") return models.complete(model, context);
+  return how === "completeSimple" ? models.completeSimple(model, context) : models.streamSimple(model, context).result();
+};
+const usdOf = (messages) => timelineOf(messages.map((message, i) => ({ kind: "pi.assistant", id: i + 1, conversationId: 0, model: [message] })), { settled: true }).find((row) => row.kind === "usage")?.usage.usd;
+
+test("an answer of a model with no price carries no total, so its run's cost is unknown; a priced one, catalog or set, keeps its total; one unknown answer makes the run's cost unknown", async (t) => {
+  const endpoint = await responsesEndpoint(t, "42", 1_000);
+  const unpriced = await answerOf(endpoint.url, { AGENT_MODEL: "not-a-catalog-model" });
+  assert.equal(unpriced.stopReason, "stop", JSON.stringify(unpriced));
+  assert.equal(unpriced.usage.cost.total, undefined, "no price: no total");
+  const listed = await answerOf(endpoint.url, { AGENT_MODEL: "gpt-4o" });
+  assert.ok(listed.usage.cost.total > 0, `the catalog's price: ${listed.usage.cost.total}`);
+  const given = await answerOf(endpoint.url, { AGENT_MODEL: "not-a-catalog-model", AGENT_MODEL_PRICE: "2,4" });
+  assert.ok(given.usage.cost.total > 0, `a set price: ${given.usage.cost.total}`);
+  const zero = await answerOf(endpoint.url, { AGENT_MODEL: "not-a-catalog-model", AGENT_MODEL_PRICE: "0,0" });
+  assert.equal(zero.usage.cost.total, 0, "a set price of $0 is a known $0");
+  // A tier of the same run with no price of its own beside a priced one: the unpriced tier's answers alone lose their total.
+  const fast = await answerOf(endpoint.url, { AGENT_MODEL: "gpt-4o", AGENT_MODEL_FAST: "not-a-catalog-fast" }, "fast");
+  assert.equal(fast.usage.cost.total, undefined, "the unpriced tier");
+  const beside = await answerOf(endpoint.url, { AGENT_MODEL: "gpt-4o", AGENT_MODEL_FAST: "not-a-catalog-fast" }, "default");
+  assert.equal(beside.usage.cost.total, listed.usage.cost.total, "the priced tier of that same run keeps its total");
+  assert.equal(usdOf([listed]), Math.round(listed.usage.cost.total * 1e6) / 1e6, "a priced answer alone: its cost");
+  assert.equal(usdOf([listed, unpriced]), null, "with an unpriced one beside it: unknown, never the priced part alone");
+  assert.equal(usdOf([zero]), 0, "a set $0: known");
+  // pi's compaction summary asks through completeSimple, the same provider: its cost is unknown too (request-start writes it as null).
+  const summary = await answerOf(endpoint.url, { AGENT_MODEL: "not-a-catalog-model" }, "default", "completeSimple");
+  assert.equal(summary.usage.cost.total, undefined, "a compaction's answer");
+  // The provider's other entry, stream (Models.complete and stream reach it): no pi request in serve uses it today.
+  const plain = await answerOf(endpoint.url, { AGENT_MODEL: "not-a-catalog-model" }, "default", "complete");
+  assert.equal(plain.usage.cost.total, undefined, "an answer through the provider's stream");
+});
+
+test("a model the catalog lists at $0 is a known $0, not one with no price", async () => {
+  const free = builtinModels().getModels().find((model) => entries(model.id).length > 0 && entries(model.id).every(({ cost }) => total(cost) === 0));
+  assert.ok(free, "pi-ai's catalog lists a model at $0");
+  const { unpriced } = await runModels({ ...GATEWAY, AGENT_MODEL: free.id }, undefined);
+  assert.deepEqual([...unpriced], [], `${free.id} is listed, so its price is known`);
+  assert.deepEqual((await costOf({ AGENT_MODEL: free.id })).default, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 });

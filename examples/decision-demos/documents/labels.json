@@ -1,0 +1,353 @@
+{
+  "as_of": "2026-10-30",
+  "documents": [
+    {
+      "file": "coi-bramblewick-tidal-instruments.pdf",
+      "type": "certificate_of_incorporation",
+      "company": "Bramblewick Tidal Instruments, Inc.",
+      "jurisdiction": "Delaware",
+      "issuer": "State of Delaware, Secretary of State, Division of Corporations",
+      "date": "2025-03-04",
+      "valid": true,
+      "defects": [],
+      "pages": 1
+    },
+    {
+      "file": "coi-quarry-lantern-software.pdf",
+      "type": "certificate_of_incorporation",
+      "company": "Quarry Lantern Software, Inc.",
+      "jurisdiction": "Delaware",
+      "issuer": "State of Delaware, Secretary of State, Division of Corporations",
+      "date": "2023-08-21",
+      "valid": true,
+      "defects": [],
+      "pages": 1
+    },
+    {
+      "file": "coi-quillmere-harbor-robotics.pdf",
+      "type": "certificate_of_incorporation",
+      "company": "Quillmere Harbor Robotics, Inc.",
+      "jurisdiction": "Delaware",
+      "issuer": "State of Delaware, Secretary of State, Division of Corporations",
+      "date": "2025-06-02",
+      "body_company": "Quillmere Harbour Robotic Systems, LLC",
+      "valid": false,
+      "defects": [
+        {
+          "kind": "name_mismatch",
+          "where": "title vs. Article FIRST",
+          "detail": "The title and certification name Quillmere Harbor Robotics, Inc., but Article FIRST names Quillmere Harbour Robotic Systems, LLC, a different entity type and spelling."
+        }
+      ],
+      "pages": 1
+    },
+    {
+      "file": "coi-ashgrove-vireo-labs.pdf",
+      "type": "certificate_of_incorporation",
+      "company": "Ashgrove Vireo Labs, Inc.",
+      "jurisdiction": "Delaware",
+      "issuer": "State of Delaware, Secretary of State, Division of Corporations",
+      "date": "2024-09-30",
+      "valid": false,
+      "defects": [
+        {
+          "kind": "altered_date",
+          "where": "filing stamp, top right",
+          "detail": "The Delivered and FILED dates in the stamp are covered with white-out and retyped as 09/30/2024 in a different typewriter font, while the certification below still says the fifteenth day of July, 2024."
+        }
+      ],
+      "pages": 1
+    },
+    {
+      "file": "coi-ferncastle-biotics.pdf",
+      "type": "certificate_of_incorporation",
+      "company": "Ferncastle Biotics, Inc.",
+      "jurisdiction": "Delaware",
+      "issuer": "State of Delaware, Secretary of State, Division of Corporations",
+      "date": "2027-02-17",
+      "valid": false,
+      "defects": [
+        {
+          "kind": "future_date",
+          "where": "filing stamp and certification",
+          "detail": "The certificate says it was filed on February 17, 2027 and signed February 16, 2027, after the review date of October 30, 2026."
+        }
+      ],
+      "pages": 1
+    },
+    {
+      "file": "kyb-brisklow-coi.pdf",
+      "type": "certificate_of_incorporation",
+      "company": "Brisklow Marine Coatings, Inc.",
+      "jurisdiction": "Delaware",
+      "issuer": "State of Delaware, Secretary of State, Division of Corporations",
+      "date": "2023-04-11",
+      "valid": true,
+      "defects": [],
+      "pages": 1
+    },
+    {
+      "file": "coi-marrowfield-bakeworks.pdf",
+      "type": "certificate_of_incorporation",
+      "company": "Marrowfield Bakeworks Corp.",
+      "jurisdiction": "Wyoming",
+      "issuer": "State of Wyoming, Secretary of State",
+      "date": "2022-11-09",
+      "valid": true,
+      "defects": [],
+      "pages": 1
+    },
+    {
+      "file": "coi-tessaline-freight-systems.pdf",
+      "type": "certificate_of_incorporation",
+      "company": "Tessaline Freight Systems, Inc.",
+      "jurisdiction": "Nevada",
+      "issuer": "State of Nevada, Secretary of State",
+      "date": "2024-06-12",
+      "valid": true,
+      "defects": [],
+      "pages": 1
+    },
+    {
+      "file": "coi-calloway-pinnacle-mining.pdf",
+      "type": "certificate_of_incorporation",
+      "company": "Calloway Pinnacle Mining, Inc.",
+      "jurisdiction": "Nevada",
+      "issuer": "State of Nevada, Secretary of State",
+      "date": "2025-08-26",
+      "valid": false,
+      "defects": [
+        {
+          "kind": "missing_seal",
+          "where": "filing stamp box, top right",
+          "detail": "The filing stamp has an empty space where the Secretary of State's seal belongs; no seal is printed or embossed."
+        },
+        {
+          "kind": "missing_signature",
+          "where": "items 6 and 7 and the certification",
+          "detail": "The incorporator, registered agent and Secretary of State signature lines are all blank."
+        }
+      ],
+      "pages": 1
+    },
+    {
+      "file": "coi-wrenfield-acoustics.pdf",
+      "type": "certificate_of_incorporation",
+      "company": "Wrenfield Acoustics, Inc.",
+      "jurisdiction": "California",
+      "issuer": "State of California, Secretary of State",
+      "date": "2021-05-17",
+      "valid": true,
+      "defects": [],
+      "pages": 1
+    },
+    {
+      "file": "ein-quarry-lantern-software.pdf",
+      "type": "ein_letter",
+      "company": "Quarry Lantern Software, Inc.",
+      "jurisdiction": "United States (federal)",
+      "issuer": "Department of the Treasury, Internal Revenue Service, Cincinnati OH 45999",
+      "date": "2023-09-05",
+      "ein": "92-3381047",
+      "valid": true,
+      "defects": [],
+      "pages": 2
+    },
+    {
+      "file": "ein-osterby-orchard-supply.pdf",
+      "type": "ein_letter",
+      "company": "Osterby Orchard Supply LLC",
+      "jurisdiction": "United States (federal)",
+      "issuer": "Department of the Treasury, Internal Revenue Service, Cincinnati OH 45999",
+      "date": "2024-02-14",
+      "ein": "93-2216485",
+      "valid": true,
+      "defects": [],
+      "pages": 2
+    },
+    {
+      "file": "ein-pellucid-harbor-analytics.pdf",
+      "type": "ein_letter",
+      "company": "Pellucid Harbor Analytics, Inc.",
+      "jurisdiction": "United States (federal)",
+      "issuer": "Department of the Treasury, Internal Revenue Service, Cincinnati OH 45999",
+      "date": "2025-01-22",
+      "ein": "99-4057721",
+      "valid": true,
+      "defects": [],
+      "pages": 2
+    },
+    {
+      "file": "ein-dunmore-kiln-works.pdf",
+      "type": "ein_letter",
+      "company": "Dunmore Kiln Works Corp.",
+      "jurisdiction": "United States (federal)",
+      "issuer": "Department of the Treasury, Internal Revenue Service, Cincinnati OH 45999",
+      "date": "2022-07-11",
+      "ein": "88-2973064",
+      "valid": true,
+      "defects": [],
+      "pages": 2
+    },
+    {
+      "file": "ein-hollowmere-textiles.pdf",
+      "type": "ein_letter",
+      "company": "Hollowmere Textiles, Inc.",
+      "jurisdiction": "United States (federal)",
+      "issuer": "Department of the Treasury, Internal Revenue Service, Cincinnati OH 45999",
+      "date": "2024-10-08",
+      "ein": "85-3149906",
+      "valid": false,
+      "defects": [
+        {
+          "kind": "pasted_field",
+          "where": "Employer Identification Number, top right",
+          "detail": "The EIN in the header sits on a separate tinted patch with a drop shadow and a tilt, pasted over the original field; the tear-off stub on page 2 shows a different number, 85-3149960."
+        }
+      ],
+      "pages": 2
+    },
+    {
+      "file": "ein-vantablue-logistics.pdf",
+      "type": "ein_letter",
+      "company": "Vantablue Logistics LLC",
+      "jurisdiction": "United States (federal)",
+      "issuer": "Department of the Treasury, Internal Revenue Service, Cincinnati OH 45999",
+      "date": "2025-04-29",
+      "ein": "33-4718250",
+      "valid": false,
+      "defects": [
+        {
+          "kind": "inconsistent_fonts",
+          "where": "addressee name and EIN",
+          "detail": "The entity name and the EIN are set in a large bold serif and an italic serif, unlike the plain sans-serif used for every other line of the notice."
+        }
+      ],
+      "pages": 2
+    },
+    {
+      "file": "kyb-brisklow-ein.pdf",
+      "type": "ein_letter",
+      "company": "Brisklow Marine Coatings, Inc.",
+      "jurisdiction": "United States (federal)",
+      "issuer": "Department of the Treasury, Internal Revenue Service, Cincinnati OH 45999",
+      "date": "2023-05-02",
+      "ein": "92-1658830",
+      "valid": true,
+      "defects": [],
+      "pages": 2
+    },
+    {
+      "file": "bank-bramblewick-tidal-instruments.pdf",
+      "type": "bank_letter",
+      "company": "Bramblewick Tidal Instruments, Inc.",
+      "jurisdiction": "United States",
+      "issuer": "Cobalt Ridge Bank, N.A.",
+      "date": "2025-04-02",
+      "valid": true,
+      "defects": [],
+      "pages": 1
+    },
+    {
+      "file": "bank-tessaline-freight-systems.pdf",
+      "type": "bank_letter",
+      "company": "Tessaline Freight Systems, Inc.",
+      "jurisdiction": "United States",
+      "issuer": "Silverbirch National Bank",
+      "date": "2024-07-01",
+      "valid": true,
+      "defects": [],
+      "pages": 1
+    },
+    {
+      "file": "bank-osterby-orchard-supply.pdf",
+      "type": "bank_letter",
+      "company": "Osterby Orchard Supply LLC",
+      "jurisdiction": "United States",
+      "issuer": "Northcairn Savings Bank",
+      "date": "2024-03-04",
+      "valid": true,
+      "defects": [],
+      "pages": 1
+    },
+    {
+      "file": "bank-ashgrove-vireo-labs.pdf",
+      "type": "bank_letter",
+      "company": "Ashgrove Vireo Labs, Inc.",
+      "jurisdiction": "United States",
+      "issuer": "Cobalt Ridge Bank, N.A.",
+      "date": "2024-10-21",
+      "valid": false,
+      "defects": [
+        {
+          "kind": "missing_signature",
+          "where": "signature block, bottom",
+          "detail": "The letter ends at 'Sincerely,' over a blank signature line marked only 'Authorized Signature', with no signer named and no title."
+        }
+      ],
+      "pages": 1
+    },
+    {
+      "file": "bank-quorvane-medical-devices.pdf",
+      "type": "bank_letter",
+      "company": "Quorvane Medical Devices, Inc.",
+      "jurisdiction": "United States",
+      "issuer": "Silverbirch National Bank",
+      "date": "2025-02-11",
+      "valid": false,
+      "defects": [
+        {
+          "kind": "altered_date",
+          "where": "Date Opened row",
+          "detail": "The Date Opened value is covered with white-out and retyped as February 11, 2025 in a typewriter font, slightly tilted, with the original text showing at the edges."
+        }
+      ],
+      "pages": 1
+    },
+    {
+      "file": "kyb-brisklow-bank.pdf",
+      "type": "bank_letter",
+      "company": "Brisklow Marine Coatings, Inc.",
+      "jurisdiction": "United States",
+      "issuer": "Northcairn Savings Bank",
+      "date": "2023-06-15",
+      "valid": true,
+      "defects": [],
+      "pages": 1
+    },
+    {
+      "file": "kyb-brisklow-bank-mismatch.pdf",
+      "type": "bank_letter",
+      "company": "Brisklow Marine Holdings LLC",
+      "jurisdiction": "United States",
+      "issuer": "Northcairn Savings Bank",
+      "date": "2023-06-15",
+      "valid": true,
+      "defects": [],
+      "pages": 1
+    }
+  ],
+  "packets": {
+    "brisklow": {
+      "company": "Brisklow Marine Coatings, Inc.",
+      "jurisdiction": "Delaware",
+      "documents": [
+        "kyb-brisklow-coi.pdf",
+        "kyb-brisklow-ein.pdf",
+        "kyb-brisklow-bank.pdf"
+      ],
+      "expected": "approve"
+    },
+    "brisklow-mismatch": {
+      "company": "Brisklow Marine Coatings, Inc.",
+      "jurisdiction": "Delaware",
+      "documents": [
+        "kyb-brisklow-coi.pdf",
+        "kyb-brisklow-ein.pdf",
+        "kyb-brisklow-bank-mismatch.pdf"
+      ],
+      "expected": "review",
+      "note": "The bank letter's account holder is Brisklow Marine Holdings LLC, a different entity from the applicant."
+    }
+  }
+}

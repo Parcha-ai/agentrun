@@ -6,9 +6,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { capabilities, ERROR_STATUS, startServe } from "../dist/index.js";
 import { EFFORT_ENV, thinkingOf } from "../dist/model.js";
-import { agent, answerFlow, client, flowAgent, follow, scratch, serve, storeRun } from "./support.mjs";
+import { agent, answerFlow, client, flowAgent, scratch, serve, withEnv } from "./support.mjs";
 
 test("capabilities answer without a credential and say what this server offers: local, no quotes, no home moves, no upload limit", async (t) => {
+  withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "PARALLEL_API_KEY"]);
   const { baseUrl } = await serve(t);
   const { status, body } = await client(baseUrl)("GET", "/capabilities");
   assert.equal(status, 200);
@@ -18,16 +19,22 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.deepEqual(body.models, { source: "faux", fast: "faux/faux-1", default: "faux/faux-1", strong: "faux/faux-1" });
   assert.equal(body.features.quotes, false);
   assert.deepEqual(body.features.home, { export: false, import: false, check: false });
-  assert.deepEqual(body.features.runs, { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"] });
+  assert.deepEqual(body.features.runs, { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true });
   assert.deepEqual(body.features.agents, { create: true, list: true, update: true, revisions: true });
   assert.equal(body.features.messages.steer_workflow_runs, false);
   assert.equal(body.features.timeline.live_workflow_rows, false);
   const keyed = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"].filter((name) => !process.env[name]);
-  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["ask_person", true, false, false], ["fetch_page", true, true, true], ["browser", keyed.length === 0, true, false]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run");
+  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["ask_person", true, false, false], ["fetch_page", true, true, true], ["browser", keyed.length === 0, true, false], ["pdf_pages", true, false, true], ["llm", true, false, true]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run");
   assert.ok(body.tools.every((t) => typeof t.summary === "string" && t.summary));
   assert.deepEqual(body.tools.find((t) => t.name === "browser").missing, keyed.length ? keyed : undefined, "what browser lacks here, by name");
   assert.deepEqual(body.workflows.node_tools, ["read", "write", "edit", "fetch_page", "browser"]);
-  assert.deepEqual(body.workflows, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "fetch_page", "browser"], adapters: ["runNode", "runEffect"] });
+  // This server's environment sets no Jev key (the test clears both): typed questions do not run, and say why.
+  assert.deepEqual({ ...body.workflows, decisions: undefined }, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "fetch_page", "browser"], adapters: ["runNode", "runEffect"], decisions: undefined });
+  assert.deepEqual(body.workflows.decisions.providers.map((p) => [p.id, p.available]), [["jev", false], ["parallel", false], ["openrouter", false]]);
+  // And with TYPESAFE_API_KEY set, they do: runJudge is an adapter, and jev is available.
+  process.env.TYPESAFE_API_KEY = "fake-test-key";
+  const withJev = (await client((await serve(t)).baseUrl)("GET", "/capabilities")).body.workflows;
+  assert.deepEqual([withJev.adapters, withJev.decisions.providers], [["runNode", "runEffect", "runJudge"], [{ id: "jev", available: true }, { id: "parallel", available: false, reason: withJev.decisions.providers[1]?.reason }, { id: "openrouter", available: false, reason: withJev.decisions.providers[2]?.reason }]]);
   assert.deepEqual(body.features.thinking, ["low", "medium", "high", "xhigh", "max"]);
   assert.equal(body.features.files.upload, false);
   assert.deepEqual(body.regions, [{ id: "local", jurisdiction: null, state: "live" }]);
@@ -256,7 +263,7 @@ test("the tool table is closed: a name outside it is refused by name, and a tool
   assert.equal(toolRefusal(["read", "ask_person"], {}), undefined);
   assert.deepEqual(toolRefusal(["read", "bash", "constructor"], {}).unbound, ["bash", "constructor"], "nothing outside the table, not even a name every object has");
   assert.deepEqual(toolRefusal(["ask_person"], {}, "nodes").unbound, ["ask_person"], "a workflow's model node cannot ask the person");
-  assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["ask_person", undefined], ["fetch_page", undefined], ["browser", ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"]]]);
+  assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["ask_person", undefined], ["fetch_page", undefined], ["browser", ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"]], ["pdf_pages", undefined], ["llm", undefined]]);
   assert.deepEqual(toolRefusal(["fetch_page", "read"], {}, "calls").unbound, ["read"], "a call node runs only a tool the table gives an effect");
   assert.deepEqual(toolRefusal(["browser"], { BROWSERBASE_API_KEY: "fake-test-key" }).missing, { browser: ["BROWSERBASE_PROJECT_ID"] });
 });

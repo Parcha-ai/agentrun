@@ -1,7 +1,6 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -10,9 +9,10 @@ import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
+import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
+import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
@@ -20,8 +20,14 @@ import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
-import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
+import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
+import { DOCUMENTS_ENV } from "./pdf-pages.js";
+import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
+import { SECRET_NAMES, withSecrets } from "./secrets.js";
+import { statsView } from "./stats.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
+import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
+import { type ServerLock, takeServerLock } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
 export const DEFAULT_PORT = 7340;
@@ -61,6 +67,12 @@ export type ServeOptions = {
   token?: string;
   /** Default 7340; 0 is any free port. */
   port?: number;
+  /** A read-only directory of documents a workflow's `pdf_pages` calls read by file name (`--documents`); default
+   *  AGENTRUN_SERVE_DOCUMENTS. */
+  documents?: string;
+  /** Run workflows' `code` nodes (`--allow-code-nodes`; default AGENTRUN_SERVE_CODE_NODES=1). Off, a workflow with one saves
+   *  with a warning and its run is 409: a code node runs in the run's process through `new Function`, which is no sandbox. */
+  allowCodeNodes?: boolean;
   /** A faux model module (no key, no network): see the README. */
   faux?: string;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
@@ -69,6 +81,15 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export gives `fetch_page` its `{ lookup, fetchImpl }` (the tests' fake
    *  network), in place of the system's resolver and undici. */
   fauxWeb?: string;
+  /** With `faux` only: a module whose default export is the fetch Jev's runner sends through (the tests' fake), in place
+   *  of TypeSafe's API. */
+  fauxJev?: string;
+  /** With `faux` only: a module whose default export is the fetch the Parallel provider sends through (the tests' fake),
+   *  in place of Parallel's API. */
+  fauxParallel?: string;
+  /** With `faux` only: a module whose default export is the fetch OpenRouter's decision models send through, in place of
+   *  OpenRouter's System One API (`@parcha/agentrun-decisions/testing/faux-system-one` is one). */
+  fauxOpenrouter?: string;
   /** A module scripting the faux harness (`script(spec)`): every harness but pi runs on it (harness.ts). */
   fauxHarness?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
@@ -88,6 +109,9 @@ export type ServeOptions = {
   carryBackRetry?: CarryBackRetry;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
+  /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
+   *  swept at start and let go at archive. The quarantine of boxes a reap could not empty is kept in the data directory. */
+  box?: BoxHost;
 };
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
@@ -139,16 +163,34 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/archive$/, name: "archiveRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/unarchive$/, name: "unarchiveRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/kill$/, name: "killRun", capability: "runs.kill" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/graph$/, name: "getRunGraph" },
+  { method: "POST", pattern: /^\/workflows\/validate$/, name: "validateWorkflow" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/pause$/, name: "pauseRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
   { method: "POST", pattern: /^\/files$/, name: "createFile", capability: "files.upload" },
   { method: "PUT", pattern: /^\/files\/([^/]+)$/, name: "uploadFile", capability: "files.upload" },
   { method: "POST", pattern: /^\/quotes$/, name: "createQuote", capability: "quotes" },
   { method: "GET", pattern: /^\/usage$/, name: "getUsage" },
+  { method: "GET", pattern: /^\/stats$/, name: "getStats" },
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
-export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
+/** A workflow run's title: its agent's name and a few words of its input, never the input's JSON ("Batch review: 20
+ *  documents, as_of 2026-10-30"). */
+export function workflowTitle(name: string, input: Record<string, unknown>): string {
+  const words = Object.entries(input).slice(0, 3).map(([key, value]) => {
+    if (Array.isArray(value)) return value.length === 1 && typeof value[0] === "string" ? value[0] : `${value.length} ${key}`;
+    if (typeof value === "string") return value.length > 40 ? `${value.slice(0, 39)}…` : value;
+    if (typeof value === "number" || typeof value === "boolean") return `${key} ${value}`;
+    return key;
+  });
+  // A name that ends in its own punctuation ("Is this certificate valid?") takes no colon after it.
+  return words.length ? `${name}${/[?!:.]$/.test(name) ? "" : ":"} ${words.join(", ")}` : name;
+}
+
+export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -160,17 +202,24 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = max
     models,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing. */
     tools: toolsView(env),
+    /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
+    secrets: {
+      names: [...SECRET_NAMES],
+      handoff: "pipe",
+      condition: "Started by its launcher (the package's agentrun-serve, the image's entrypoint), the server takes each secret named here over a pipe and holds it in memory only, and every run's process gets all of them but the server's own token over a pipe of its own, whatever its harness and tools: none of them is in any process's environment or command line. The launcher runs before any run's process exists; the image starts it as PID 1. Started another way (node dist/cli.js), the server reads them from its environment, where a process of its user can read them.",
+      limit: "In memory is not out of reach: a process of the same user can read another's memory (/proc/<pid>/mem) where the kernel lets it attach. Linux's Yama ptrace_scope of 1 or more refuses that to all but a process's own ancestors; a host at 0 exposes the secrets to a run's own code. A run's process holds its model keys in memory, since it calls the model itself. A harness's CLI (codex, claude-agent) holds a key of its own for its session's model proxy in its environment: not a provider's key, but one a process of the same user could spend through that run's proxy while the session lives. Started as the package's bin on a host, until it execs, the launcher and any subshell it forks show the caller's environment, secrets included, to a process of the same user (/proc keeps a process's environment as it was at its exec). A run's process gets its secrets over a socket, read and closed as it starts; another process can take a socket only through pidfd_getfd, which the same ptrace rule refuses.",
+    },
     /** What a workflow revision's run gets: each model node runs on the model of its tier (`models.fast`,
      *  `models.default`, `models.strong`) with the tools it names of `node_tools`; a node that names no thinking level
      *  thinks at the run's effort, or medium. */
-    workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS] },
+    workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS, ...(decisionsOf(env).some((offer) => offer.available) ? [DECISION_ADAPTER] : [])], decisions: { providers: decisionsOf(env) } },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
       /** This server's own routes, outside the contract: an archived agent or run is hidden from the lists (`?archived=true`
        *  lists only those) and kept, with its history; a run of an archived agent is refused. */
       archive: { agents: true, runs: true, list_param: "archived", routes: ["POST /agents/{id}/archive", "POST /agents/{id}/unarchive", "POST /runs/{id}/archive", "POST /runs/{id}/unarchive"] },
       home: { export: false, import: false, check: false },
-      runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"] },
+      runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true },
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: false, read: true, range: false, during_run: true },
@@ -235,30 +284,47 @@ async function oldHomes(data: string): Promise<string[]> {
 export async function startServe(options: ServeOptions): Promise<Serve> {
   const data = resolve(options.data);
   await mkdir(data, { recursive: true, mode: 0o700 });
+  // What only reads and refuses comes first: a start refused for it creates nothing in the data root, server.lock included.
   const homes = await oldHomes(data);
   if (homes.length) {
     const named = homes.length > 5 ? [...homes.slice(0, 5), `and ${homes.length - 5} more`] : homes;
     throw new Error(`this data directory holds agent homes from AgentRun Server 0.1.0-beta.26 or earlier (${named.join(", ")}), which this version does not read: started here, it would show none of their agents or runs. Keep them with the earlier version, or move those directories out of ${data} to start this one; see "Upgrading from 0.1.0-beta.26" in the serve README.`);
   }
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
+  if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
+  const maxRuns = maxRunsOf(process.env, options.maxRuns);
+  const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
+  if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
+  const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
+  // Then one server per data root, before anything writes it: a refused second server writes no token, opens no store,
+  // adopts or sweeps no run, binds no port and prints no address (server-lock.ts). A failed start releases the lock and
+  // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile.
+  const lock = takeServerLock(data);
+  try {
+    return await startHolding(options, data, lock, { maxRuns, minFreeBytes });
+  } catch (error) {
+    lock.release();
+    throw error;
+  }
+}
+
+async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number }): Promise<Serve> {
+  const { maxRuns, minFreeBytes } = checked;
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
   const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
   const token = options.token ?? stored!.token;
   const doorTokenFile = join(data, DOOR_TOKEN_FILE);
   const { token: doorToken } = await tokenIn(doorTokenFile);
-  if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
-  const maxRuns = maxRunsOf(process.env, options.maxRuns);
-  const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
-  if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
-  const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
+  const env = withSecrets({ ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
   const caps = capabilities(env, maxRuns, await harnessOffers(env));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const documents = options.documents ?? process.env[DOCUMENTS_ENV];
+  if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -361,7 +427,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const named = harness ? { harness } : {};
     if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, missing, ...named } });
     const tier = blockers.find((b) => b.tier)?.tier;
-    throw new ApiError("agent_not_runnable", message, { details: { adapters: blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])), unbound, missing, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}), ...named } });
+    const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
+    throw new ApiError("agent_not_runnable", message, { details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.codeNodes || b.shell), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...named } });
   }
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
@@ -402,7 +469,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       const wrong = await inputIssuesOf(revision, input);
       if (wrong.length) throw invalid(wrong);
       await runnable(revision);
-      const title = typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+      const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, input) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
       const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}) });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
     });
@@ -471,16 +538,17 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   // ---- files ----------------------------------------------------------------------------------------------------------
 
-  async function walk(base: string, dir = "", out: { path: string; size_bytes: number; modified_at: string; content_type: string | null }[] = [], depth = 0): Promise<typeof out> {
-    for (const d of await readdir(join(base, dir), { withFileTypes: true }).catch(() => [])) {
-      if (d.name.startsWith(".") || d.isSymbolicLink() || out.length > FILE_LIST_CAP) continue;
-      const rel = dir ? `${dir}/${d.name}` : d.name;
-      if (d.isDirectory()) depth < 16 && (await walk(base, rel, out, depth + 1));
-      else if (d.isFile()) {
-        const st = await stat(join(base, rel)).catch(() => null);
-        if (st) out.push({ path: rel, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(rel).slice(1).toLowerCase()] ?? null });
-      }
-    }
+  /** The run's files, through no link (workspace.ts): each regular file's own size and time, a dot-name left out. */
+  async function walk(base: string): Promise<{ path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[]> {
+    const out: { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[] = [];
+    if (!(await lstat(base).catch(() => null))?.isDirectory()) return out;
+    // work/ unreadable as a whole lists nothing; what the walk could not read in it is left out.
+    await walkWork(base, (path, st, readable) => {
+      if (st.isFile()) out.push({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null, ...(readable ? {} : { unreadable: true }) });
+      return out.length <= FILE_LIST_CAP;
+    }, { skip: (name) => name.startsWith(".") }).catch((error) => {
+      if (!(error instanceof WorkRefused)) throw error;
+    });
     return out;
   }
 
@@ -494,15 +562,15 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const parts = rel.split("/");
     if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || parts.some((p) => p === "" || p === "." || p === "..")) throw new ApiError("invalid_file_path", "the path has an empty, . or .. segment, a backslash, a NUL or a leading /");
     if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", "a path segment that starts with . is the run's own, not a file it wrote");
-    let path = join(run.dir, "work");
-    if (!(await lstat(path).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
-    for (const part of parts) {
-      path = join(path, part);
-      const st = await lstat(path).catch(() => null);
-      if (!st || st.isSymbolicLink()) throw new ApiError("not_found", "no such file");
-    }
-    const st = await lstat(path);
-    if (!st.isFile()) throw new ApiError("not_found", "no such file");
+    const work = join(run.dir, "work");
+    if (!(await lstat(work).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
+    // Through no link, held from the open to the last byte (workspace.ts): a name swapped for one is refused, not followed.
+    const opened = await openWorkFile(work, rel).catch((error) => {
+      if (error instanceof WorkRefused && error.reason === "unreadable") throw new ApiError("system_file_forbidden", "This file was created private by a tool in the run's box: this server cannot read it.", { details: { reason: "unreadable" } });
+      return null;
+    });
+    if (!opened) throw new ApiError("not_found", "no such file");
+    const { handle, stats: st } = opened;
     const type = TYPES[extname(rel).slice(1).toLowerCase()] ?? "application/octet-stream";
     const download = url.searchParams.get("download") === "1" || !INLINE.has(type);
     const name = parts.at(-1)!.replace(/[^\w.-]/g, "_");
@@ -514,8 +582,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       ...(type.startsWith("text/html") ? { "content-security-policy": FILE_CSP } : {}),
       ...(download ? { "content-disposition": `attachment; filename="${name}"` } : {}),
     });
-    if (req.method === "HEAD" || st.size === 0) return void res.end();
-    await pipeline(createReadStream(path), res).catch(() => undefined);
+    if (req.method === "HEAD" || st.size === 0) {
+      await handle.close();
+      return void res.end();
+    }
+    await pipeline(handle.createReadStream(), res).catch(() => undefined);
+    await handle.close().catch(() => undefined);
   }
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
@@ -658,11 +730,19 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const match = req.headers["if-match"];
         if (match !== undefined && match !== etagOf(entry)) throw new ApiError("precondition_failed", `If-Match is ${match}, and the agent's current revision is ${etagOf(entry)}`);
         const body = await bodyOf(req);
+        // Two bodies, told apart by one rule: this server's own form holds the definition under `definition`; the
+        // contract's is the definition itself, and takes the contract's preconditions: If-Match, and a version past the
+        // current one.
+        const contract = !("definition" in body);
+        if (contract) {
+          if (match === undefined) throw new ApiError("precondition_failed", "If-Match is required: the agent's ETag, as GET /agents/{agent_id} returned it.");
+          if (body.version === undefined || (typeof body.version === "number" && body.version <= entry.version)) throw invalid([{ field: "definition.version", reason: body.version === undefined ? "missing" : "not_an_option", message: `definition.version must be greater than the current one, ${entry.version}` }]);
+        }
         // The check above is a fast path; the store compares If-Match again inside the commit, so of two edits that read
         // the same revision exactly one lands.
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
-        const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false }), { check, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
+        const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
         return send(res, 200, { ...agentView(edited), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
@@ -688,6 +768,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "unarchiveAgent": {
         await needAgent(id);
         await agents.setArchived("agent", id, found.name === "archiveAgent");
+        if (found.name === "archiveAgent") await runs.archived();
         const entry = await needAgent(id);
         return send(res, 200, agentView(entry), { etag: etagOf(entry) });
       }
@@ -739,6 +820,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "unarchiveRun": {
         const run = await needRun(id);
         await agents.setArchived("run", run.id, found.name === "archiveRun");
+        if (found.name === "archiveRun") await runs.archived();
         return send(res, 200, await runs.view(run));
       }
       case "listRunFiles": {
@@ -746,10 +828,34 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const files = (await walk(join(run.dir, "work"))).sort((a, b) => a.path.localeCompare(b.path));
         return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: files.length > FILE_LIST_CAP });
       }
+      case "validateWorkflow": {
+        const body = await bodyOf(req);
+        const extra = Object.keys(body).filter((k) => k !== "workflow" && k !== "tools");
+        if (extra.length) throw invalid(extra.map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` })));
+        if (!isObject(body.workflow)) throw invalid([{ field: "workflow", reason: body.workflow === undefined ? "missing" : "wrong_type", message: "workflow is the workflow definition, an object" }]);
+        if (body.tools !== undefined && !(Array.isArray(body.tools) && body.tools.every((t) => typeof t === "string"))) throw invalid([{ field: "tools", reason: "wrong_type", message: "tools is a list of tool names" }]);
+        const { workflowIssues } = await import("@parcha/pi-durable-agent/workflow");
+        const { issues, warnings } = await workflowIssues(body.workflow, body.tools as string[] | undefined);
+        // What a save refuses on this host (a model node's tool, a code node where none runs), and what it lacks yet.
+        if (!issues.length) {
+          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never }).catch(() => [])) {
+            if (blocker.host) warnings.push(blocker.message);
+            else issues.push({ path: "", code: "NOT_RUNNABLE_HERE", message: blocker.message });
+          }
+        }
+        return send(res, 200, { ok: issues.length === 0, issues, warnings });
+      }
+      case "getRunGraph":
+        return send(res, 200, await runs.graph(await needRun(id)));
+      case "pauseRun":
+      case "resumeRun":
+        return send(res, 200, await runs.pause(await needRun(id), found.name === "pauseRun"));
       case "readRunFile":
         return readFileRoute(req, res, url, await needRun(id), second!);
       case "getUsage":
         return send(res, 200, await usage(url));
+      case "getStats":
+        return send(res, 200, statsView(await agents.request(() => agents.store.stats()), runs));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
@@ -814,6 +920,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       await runs.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();
+      lock.release();
     },
   };
 }

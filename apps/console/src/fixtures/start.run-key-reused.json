@@ -1,0 +1,24 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v2/agents/meeting-notes/runs",
+    "body": {
+      "input": {
+        "content": "A different request."
+      }
+    },
+    "idempotency_key": "fixture-start-1"
+  },
+  "status": 409,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "code": "idempotency_mismatch",
+      "message": "this Idempotency-Key was used with another body",
+      "retryable": false,
+      "request_id": "req_9fe98778d0857639"
+    }
+  }
+}

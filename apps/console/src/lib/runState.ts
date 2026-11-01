@@ -56,10 +56,10 @@ export function runState(status: RunStatus, state: RunState, kind: Run["kind"], 
   const agentic = kind === "agentic";
   const label =
     status === "input_required" ? (state === "waiting" ? "Input required" : "Stopped")
-    : { queued: "Queued", working: "Working", completed: "Completed", failed: "Failed", cancelled: "Cancelled" }[status];
+    : { queued: "Queued", working: "Working", completed: "Completed", failed: "Failed", cancelled: "Cancelled", paused: "Paused" }[status];
   const tone: Tone =
     status === "completed" ? "success" : status === "failed" ? "error" : status === "cancelled" ? "muted"
-    : status === "input_required" ? "warning" : "active";
+    : status === "input_required" || status === "paused" ? "warning" : "active";
   const messageMode = modeFor(status, state, kind, messages, steers);
   return {
     label,
