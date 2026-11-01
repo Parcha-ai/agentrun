@@ -551,6 +551,13 @@ test("an ended workflow run whose decisions cannot be read after the server rest
   const after = (await again("GET", `/runs/${twin}`)).body;
   assert.equal(after.status, "completed", JSON.stringify(after));
   assert.equal(after.cost.usd, null, "decisions it cannot read leave the run's cost unknown");
+  // Its timeline agrees: its usage row's total is unknown, never its priced model node's alone, and its other rows stay.
+  const keptRows = await timeline(again, kept);
+  const twinRows = await timeline(again, twin);
+  const usage = twinRows.findLast((row) => row.kind === "usage");
+  assert.equal(typeof keptRows.findLast((row) => row.kind === "usage")?.usage?.usd, "number", "the readable run's usage row has its known total");
+  assert.deepEqual([usage?.usage?.usd, /^Cost so far: unknown /.test(usage?.summary ?? "")], [null, true], `the twin's usage row: ${JSON.stringify(usage)}`);
+  assert.deepEqual(twinRows.filter((row) => row.kind !== "usage").map((row) => row.kind), keptRows.filter((row) => row.kind !== "usage" && row.kind !== "decision").map((row) => row.kind), "every row but the decisions' is served");
 });
 
 test("an ended workflow run with no store file keeps its known cost after the server restarts: a missing store is one never made", async (t) => {
