@@ -145,7 +145,9 @@ const TOOL_KEYS_VIEW = closed({
   keys: {
     type: "array",
     items: closed({
-      id: { enum: TOOL_KEYS.map((row) => row.id) }, label: { type: "string" }, unlocks: { type: "array", items: { type: "string" } }, harnesses: { type: "array", items: { enum: [...HARNESSES] } },
+      id: { enum: TOOL_KEYS.map((row) => row.id) }, label: { type: "string" },
+      unlocks: { type: "array", items: { type: "string" }, description: "What the key unlocks on this server: tools capabilities' `tools` lists, and `decisions.<id>` for a provider its `workflows.decisions.providers` lists. Empty when the key unlocks nothing this server binds." },
+      harnesses: { type: "array", items: { enum: [...HARNESSES] }, description: "The harnesses that run the tools in `unlocks`: the union of their `harnesses` in capabilities' `tools`." },
       fields: {
         type: "array",
         items: {

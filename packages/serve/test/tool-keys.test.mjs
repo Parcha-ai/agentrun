@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { unseal } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
+import { TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, client, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
 
@@ -45,10 +46,10 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   assert.equal(listed.status, 200);
   assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED });
   assert.deepEqual(listed.body.keys.map((k) => [k.id, k.unlocks, k.harnesses]), [
-    ["parallel", ["web_fetch", "web_search", "decisions.parallel"], ["pi", "claude-agent", "codex"]],
-    ["monid", ["monid.discover", "monid.inspect", "monid.run"], ["pi", "claude-agent", "codex"]],
+    ["parallel", ["web_fetch", "decisions.parallel"], ["pi", "claude-agent", "codex"]],
+    ["monid", [], []],
     ["browserbase", ["browser"], ["pi"]],
-  ]);
+  ], "only what this server binds: no web_search, no monid tool");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
   const file = join(data, "tool-keys.json");
@@ -67,6 +68,31 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204);
   assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: UNSET, BROWSERBASE_PROJECT_ID: UNSET });
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).fields), ["PARALLEL_API_KEY"]);
+});
+
+test("each key unlocks only what capabilities bind, a tool or a decision provider, and runs on the union of those tools' harnesses; a name bound later shows with no edit to the key table", async (t) => {
+  for (const [label, env] of [["no key set", {}], ["every key set", { PARALLEL_API_KEY: made(), BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() }]]) {
+    await t.test(label, async (st) => {
+      withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), ...env }, KEYS);
+      const { api } = await serve(st);
+      const caps = (await api("GET", "/capabilities")).body;
+      const view = (await api("GET", "/settings/tool-keys")).body;
+      const tools = new Map(caps.tools.map((tool) => [tool.name, tool]));
+      const bound = new Set([...tools.keys(), ...caps.workflows.decisions.providers.map((provider) => `decisions.${provider.id}`)]);
+      assert.deepEqual(view.keys.map((key) => key.id), TOOL_KEYS.map((row) => row.id), "every key lists, one that unlocks nothing too");
+      for (const [i, key] of view.keys.entries()) {
+        assert.deepEqual(key.unlocks, TOOL_KEYS[i].unlocks.filter((name) => bound.has(name)), `${key.id}: its names capabilities bind, and only those`);
+        const run = new Set(key.unlocks.flatMap((name) => tools.get(name)?.harnesses ?? []));
+        assert.deepEqual([...key.harnesses].sort(), [...run].sort(), `${key.id}: the harnesses of the tools it unlocks`);
+      }
+      for (const tool of caps.tools) if (tool.key !== undefined) assert.ok(view.keys.find((key) => key.id === tool.key)?.unlocks.includes(tool.name), `${tool.name} names the key ${tool.key}, which unlocks it`);
+      await meetsDocument(api, view);
+    });
+  }
+  // Bound later: once capabilities list web_search or a monid tool, the key table's own names show it.
+  const later = [{ name: "web_fetch", harnesses: ["pi", "claude-agent", "codex"] }, { name: "web_search", harnesses: ["pi"] }, { name: "monid.run", harnesses: ["pi"] }];
+  assert.deepEqual(unlockedBy(TOOL_KEYS[0].unlocks, later, [{ id: "jev" }]), { unlocks: ["web_fetch", "web_search"], harnesses: ["pi", "claude-agent", "codex"] }, "no parallel provider, no decisions.parallel");
+  assert.deepEqual(unlockedBy(TOOL_KEYS[1].unlocks, later, []), { unlocks: ["monid.run"], harnesses: ["pi"] });
 });
 
 test("a sealed value moved to another field's name does not open there: it is asked for again as a damaged entry", async (t) => {
