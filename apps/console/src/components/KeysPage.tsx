@@ -22,8 +22,9 @@ function fieldState(f: ToolKeyField): string {
 
 /** Settings → Tool keys: each key a tool needs, where each of its fields is set, and a form to add, change or remove the
  *  one saved here. A value goes to the server and nowhere else: the inputs are never filled from it, never kept in the
- *  page's state, and cleared after a save or a cancel. `atRest` is capabilities' `features.tool_keys.at_rest`. */
-export function KeysPage({ v2, atRest }: { v2: Client; atRest?: "sealed" | "unavailable" }) {
+ *  page's state, and cleared after a save or a cancel. `atRest` is capabilities' `features.tool_keys.at_rest`;
+ *  `onChange` follows each save and removal (the server's tools may change with its keys). */
+export function KeysPage({ v2, atRest, onChange }: { v2: Client; atRest?: "sealed" | "unavailable"; onChange?: () => void }) {
   const [view, setView] = useState<ToolKeys | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [noSealing, setNoSealing] = useState(false);
@@ -38,11 +39,15 @@ export function KeysPage({ v2, atRest }: { v2: Client; atRest?: "sealed" | "unav
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   const cantStore = atRest === "unavailable" || noSealing;
-  const refused = (id: string, title: string, e: unknown) => {
+  // A write closes only the form that sent it: one opened on another row meanwhile keeps what was typed in it.
+  const closeIf = (started: typeof open) => setOpen((o) => (o === started ? null : o));
+  const done = (started: typeof open) => { closeIf(started); load(); onChange?.(); };
+  const refused = (id: string, title: string, e: unknown, started: typeof open) => {
+    // Nothing can be saved on this server: every form closes, and what was typed goes with it.
     if (e instanceof ClientError && e.code === "no_sealing_key") { setNoSealing(true); setOpen(null); return; }
     setProblem({ id, title, error: apiError(e) });
     // The server may know better than the list shown (a key its launcher now holds): read it again.
-    if (e instanceof ClientError && e.code === "key_set_by_server") { setOpen(null); load(); }
+    if (e instanceof ClientError && e.code === "key_set_by_server") { closeIf(started); load(); }
   };
 
   if (!view) return loadError
@@ -79,17 +84,19 @@ export function KeysPage({ v2, atRest }: { v2: Client; atRest?: "sealed" | "unav
               open={open?.id === k.id ? open.mode : null} problem={problem?.id === k.id ? problem : null}
               onOpen={(mode) => { setOpen(mode ? { id: k.id, mode } : null); setProblem(null); }}
               onSave={async (values) => {
+                const started = open;
                 try { await v2.saveToolKey(k.id, values); } catch (e) {
                   if (e instanceof ClientError && e.status === 422) return e;
-                  refused(k.id, "The key was not saved", e);
+                  refused(k.id, "The key was not saved", e, started);
                   return null;
                 }
-                setOpen(null); load();
+                done(started);
                 return null;
               }}
               onRemove={async () => {
-                try { await v2.removeToolKey(k.id); } catch (e) { refused(k.id, "The key was not removed", e); return; }
-                setOpen(null); load();
+                const started = open;
+                try { await v2.removeToolKey(k.id); } catch (e) { refused(k.id, "The key was not removed", e, started); return; }
+                done(started);
               }} />
           ))}
         </ul>

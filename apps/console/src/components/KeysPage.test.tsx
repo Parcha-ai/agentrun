@@ -30,7 +30,7 @@ function view(fields: Record<string, ToolKeyField>, reenter: ToolKeys["reenter"]
 type Call = { method: string; path: string; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 /** A server that answers GET with `views` in turn (the last one again after) and PUT and DELETE with `write`. */
-function server(views: ToolKeys[], write: (call: Call) => Response = () => new Response(null, { status: 204 })) {
+function server(views: ToolKeys[], write: (call: Call) => Response | Promise<Response> = () => new Response(null, { status: 204 })) {
   const calls: Call[] = [];
   let read = 0;
   const fetch = (async (url: string, init?: RequestInit) => {
@@ -45,10 +45,10 @@ function server(views: ToolKeys[], write: (call: Call) => Response = () => new R
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-async function open(v2: ReturnType<typeof createClient>, atRest: "sealed" | "unavailable" = "sealed") {
+async function open(v2: ReturnType<typeof createClient>, atRest: "sealed" | "unavailable" = "sealed", onChange?: () => void) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(KeysPage, { v2, atRest })));
+  act(() => root!.render(createElement(KeysPage, { v2, atRest, onChange })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const row = (label: string) => [...host.querySelectorAll("li")].find((li) => li.querySelector("span.font-mono")?.textContent === label)!;
@@ -78,9 +78,10 @@ describe("KeysPage", () => {
     expect(page.row("Browserbase").textContent).toContain("pi only");
   });
 
-  it("Add key sends a PUT with only the values typed, then reads the keys again", async () => {
+  it("Add key sends a PUT with only the values typed, then reads the keys again and says it changed", async () => {
     const { v2, calls } = server([view({}), view({ BROWSERBASE_API_KEY: field("BROWSERBASE_API_KEY", "stored") })]);
-    const page = await open(v2);
+    let changed = 0;
+    const page = await open(v2, "sealed", () => changed++);
     await page.click(page.row("Browserbase"), /^Add key$/);
     expect(page.input("BROWSERBASE_API_KEY").type).toBe("password");
     expect(page.input("BROWSERBASE_API_KEY").getAttribute("autocomplete")).toBe("new-password");
@@ -91,6 +92,23 @@ describe("KeysPage", () => {
     expect(calls.filter((c) => c.method === "GET" && c.path === "/v2/settings/tool-keys")).toHaveLength(2);
     expect(page.row("Browserbase").textContent).toContain("BROWSERBASE_API_KEYset · saved here");
     expect(page.input("BROWSERBASE_API_KEY")).toBeNull();
+    expect(changed).toBe(1);
+  });
+
+  it("a write that ends after another row's form opened leaves that form and what was typed in it", async () => {
+    let answer!: (r: Response) => void;
+    const { v2, calls } = server([view({}), view({ MONID_API_KEY: field("MONID_API_KEY", "stored") })], () => new Promise<Response>((r) => { answer = r; }));
+    const page = await open(v2);
+    await page.click(page.row("Monid"), /^Add key$/);
+    await page.type("MONID_API_KEY", FAKE);
+    await page.click(page.row("Monid"), /^Save$/);
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
+    await page.click(page.row("Parallel"), /^Add key$/);
+    await page.type("PARALLEL_API_KEY", OTHER);
+    await act(async () => { answer(new Response(null, { status: 204 })); });
+    await page.settle();
+    expect(page.row("Monid").textContent).toContain("MONID_API_KEYset · saved here");
+    expect(page.input("PARALLEL_API_KEY").value).toBe(OTHER);
   });
 
   it("a key the server is started with has no edit controls, and says why", async () => {
@@ -172,14 +190,16 @@ describe("KeysPage", () => {
     expect(page.row("Monid").textContent).toContain("set · from the server");
   });
 
-  it("Remove asks first, then sends a DELETE and reads the keys again", async () => {
+  it("Remove asks first, then sends a DELETE, reads the keys again and says it changed", async () => {
     const { v2, calls } = server([view({ PARALLEL_API_KEY: field("PARALLEL_API_KEY", "stored") }), view({})]);
-    const page = await open(v2);
+    let changed = 0;
+    const page = await open(v2, "sealed", () => changed++);
     await page.click(page.row("Parallel"), /^Remove$/);
     expect(calls.filter((c) => c.method === "DELETE")).toEqual([]);
     await page.click(page.row("Parallel"), /^Remove$/);
     expect(calls.filter((c) => c.method === "DELETE")).toEqual([{ method: "DELETE", path: "/v2/settings/tool-keys/parallel", body: undefined }]);
     expect(page.row("Parallel").textContent).toContain("PARALLEL_API_KEYnot set");
+    expect(changed).toBe(1);
   });
 
   it("no typed value is ever in the DOM: not while typing, not after a save, not after a cancel", async () => {
