@@ -453,6 +453,55 @@ short or flipped is `mismatch`; the directories are removed on success, on failu
 archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
 tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
+## A box's archive, unpacked on this machine (`./sync`)
+
+A box is not trusted, so neither is a byte of a tar archive it makes. The host never unpacks one with `tar`:
+`@parcha/pi-transport/sync` reads it with its own reader as it arrives and writes it under one directory.
+
+```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { readStream } from "@parcha/pi-transport";
+import { extractTar } from "@parcha/pi-transport/sync";
+
+const packed = await box.exec(["tar", "-c", "-f", "-", "-C", "/work", "."], undefined, BACKGROUND_CONTEXT);
+if (!packed.ok) throw packed.error;
+const tar = packed.value;
+// Both streams are read: a program whose error pipe fills stops writing its output.
+const [extracted, errors] = await Promise.all([
+	extractTar(tar.stdout, "/data/runs/r1/work", {
+		onSkip: (skip) => console.warn(skip.reason, skip.path, skip.target ?? ""),
+	}),
+	readStream(tar.stderr),
+]);
+const exited = await tar.wait();
+if (!exited.ok || exited.value !== 0) console.warn("tar failed:", new TextDecoder().decode(errors));
+if (extracted.ok && extracted.value.stopped !== undefined) console.warn(extracted.value.stopped.message);
+```
+
+- **Regular files and directories only.** A symbolic or hard link, a device, a pipe or any other member is skipped,
+  counted by reason (`receipt.skipped`, the first 100 by path in `receipt.skips`, each one to `onSkip`), and never
+  created. The skip of a link carries `target`, what the link names, so a caller that keeps links keeps them as data.
+- **Safe names, and only the ones asked for.** A name is refused when it is absolute, holds `.`, `..`, an empty segment
+  or a NUL, or passes 255 bytes a segment or 4095 a path. `admit` decides by path and kind what may be written; a
+  second member of a path is skipped, and a pax global header is not honoured.
+- **Nothing outside the destination.** Every directory is opened from a held handle of the one above with
+  `O_NOFOLLOW`, so a link already in the destination is never followed (`link_in_destination`), and a file never
+  replaces a directory or the other way round (`occupied`). Each file is written under a temporary name and renamed
+  into place; one cut off halfway is removed.
+- **Modes capped.** A file gets at most 0755 (0644 without an execute bit), never setuid, setgid, group or world write;
+  a directory at most 0755. `receipt.masked` counts the files written that lost a bit.
+- **Limits.** The extraction stops cleanly past `maxBytes` of archive (header blocks, pax and long-name payloads and
+  member data, each charged before it is read; default `MAX_PULL_BYTES`, 1 GiB) or `maxEntries` members, written or
+  skipped (default `MAX_PULL_ENTRIES`, 100,000). One pax header or long name holds at most 64 KiB. A bad checksum, a
+  lone zero block or an archive cut short stops it too (`malformed`). What was written before a stop stays, every file
+  whole, and `receipt.stopped` says why.
+
+`openExtractor` is the same reader fed a chunk at a time: `write` until it returns `false`, then `finish`, which waits
+for a write still running. `keep: "newer"` keeps a host file newer than the member. `removeEntries` removes paths
+under a directory by the same walk: a file or a link is unlinked (never what a link names), a directory only when
+empty. A failure of the host's own file system is `transfer_failed`; everything the archive does wrong is in the
+receipt.
+
 ## A home: the session runs somewhere, and can stop without a cut
 
 A session can live in a box too: it moves between boxes, and comes back from a killed process or a lost box.
