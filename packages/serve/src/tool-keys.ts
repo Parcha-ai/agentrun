@@ -10,9 +10,11 @@ import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
+import { decisionsOf } from "./decisions.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
-import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
+import { HARNESSES } from "./harness.js";
+import { toolsView } from "./tools.js";
 import { isObject } from "./validate.js";
 
 export const TOOL_KEYS_FILE = "tool-keys.json";
@@ -22,13 +24,25 @@ const MAX_VALUE_BYTES = 1024;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 /** Each key a person may save, fixed here: the fields it is entered as (BROWSERBASE_PROJECT_ID is no secret, and is
- *  kept the same way), what it unlocks, and the harnesses that run what it unlocks. */
+ *  kept the same way), and what it may unlock: tools by name, and `decisions.<id>`, a workflow's decision provider.
+ *  GET lists only those this server binds (unlockedBy), so a name here the server does not bind is never promised, and
+ *  one shows by itself once the server binds it. */
 export const TOOL_KEYS = [
-  { id: "parallel", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "web_search", "decisions.parallel"], harnesses: [...HARNESSES] },
-  { id: "monid", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid.discover", "monid.inspect", "monid.run"], harnesses: [...HARNESSES] },
-  { id: "browserbase", label: "Browserbase", fields: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], unlocks: ["browser"], harnesses: [DEFAULT_HARNESS] },
+  { id: "parallel", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "web_search", "decisions.parallel"] },
+  { id: "monid", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid.discover", "monid.inspect", "monid.run"] },
+  { id: "browserbase", label: "Browserbase", fields: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], unlocks: ["browser"] },
 ] as const;
 const FIELDS: readonly string[] = TOOL_KEYS.flatMap((row) => row.fields);
+
+/** What `candidates` unlock here, as capabilities show it: the tools of `tools` (capabilities' `tools`, available or
+ *  not) and the providers of `providers` (its `workflows.decisions.providers`) named among them, and the harnesses
+ *  that run those tools. A name neither holds is left out; a key that unlocks none of its names lists nothing. */
+export function unlockedBy(candidates: readonly string[], tools: readonly { name: string; harnesses: readonly string[] }[], providers: readonly { id: string }[]) {
+  const bound = new Set([...tools.map((tool) => tool.name), ...providers.map((provider) => `decisions.${provider.id}`)]);
+  const unlocks = candidates.filter((name) => bound.has(name));
+  const run = new Set(tools.filter((tool) => unlocks.includes(tool.name)).flatMap((tool) => tool.harnesses));
+  return { unlocks, harnesses: HARNESSES.filter((harness) => run.has(harness)) };
+}
 
 /** Why a stored value does not open, in the order a re-entry names one: no seal key now, another than it was sealed
  *  under, or the file (or its entry) damaged. */
@@ -79,12 +93,15 @@ export class ToolKeys {
     }
   }
 
-  /** GET: each key's fields, whether set and where from (never a value), and what to enter again, with why. */
+  /** GET: each key's fields, whether set and where from (never a value), what it unlocks of what capabilities shows
+   *  here, and what to enter again, with why. */
   view() {
     const kept = this.kept();
     const again: { name: string; why: Unreadable }[] = [];
+    const tools = toolsView(this.env);
+    const providers = decisionsOf(this.env);
     const keys = TOOL_KEYS.map((row) => ({
-      id: row.id, label: row.label, unlocks: [...row.unlocks], harnesses: [...row.harnesses],
+      id: row.id, label: row.label, ...unlockedBy(row.unlocks, tools, providers),
       fields: row.fields.map((name) => {
         if (this.env[name]) return { name, set: true, source: "server" as const };
         const opened = kept !== "unreadable" && kept[name] !== undefined ? this.open(name, kept[name]) : undefined;

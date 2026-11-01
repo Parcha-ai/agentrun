@@ -282,7 +282,9 @@ A tool's key comes from one of two places. The server's own environment, through
 name: `PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one, field by field (`parallel` takes
 `PARALLEL_API_KEY`, `monid` `MONID_API_KEY`, `browserbase` `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`), and
 `DELETE` forgets it. `GET /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and
-each field's `set` and `source` (`server`, `stored` or null): never a value, nor any part of one. A field the server is
+each field's `set` and `source` (`server`, `stored` or null): never a value, nor any part of one. `unlocks` holds only
+what capabilities show this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`), so a
+key whose tools this server does not bind (`monid` today) lists, with nothing in `unlocks`. A field the server is
 started with is the server's, and wins: saving it is `409 key_set_by_server`. A value is text of at most 1024 bytes
 with no control character (`422` otherwise).
 
