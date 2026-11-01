@@ -9,6 +9,7 @@ import type { PromptVariant } from "./kinds.js";
 import { canonical } from "./kinds.js";
 import { seedRun } from "./runs.js";
 import { AgentHomeError } from "./store.js";
+import type { RunMetrics } from "./timeline/timeline.js";
 
 // An agent store is one folder: `store.sqlite` (plain tables, and the truth) and `runs/<run id>/`, each run's own pi-durable store and
 // work directory. Copy the folder and every agent, revision and run comes with it.
@@ -40,8 +41,12 @@ export type ImportedFrom = { source: ImportSource; session: string };
 /** `archivedAt`: when the run was archived, else when its agent was, while it is. `importedFrom`: set on a run imported
  *  from another harness's session, which is read-only. */
 export type RunRow = { id: string; agent: string; revision: string; kind: RevisionKind; state: RunState; startedAt: string; endedAt?: string; costUsd?: number; summary?: string; archivedAt?: string; importedFrom?: ImportedFrom };
+/** A run's metrics as the store keeps them: `runMetricsOf` of its entries, plus what only its host knows: `activeMs`, how
+ *  long it was at work; `effort`, the effort it ran at; `model`, the model it ran (runMetricsOf's by default); and
+ *  `costUsdEst`, an estimate of its cost apart from the cost it carried back, with `costBasis` naming how it was made. */
+export type StoredMetrics = RunMetrics & { activeMs?: number; effort?: string; costUsdEst?: number; costBasis?: string };
 /** A session to import as a run that has already ended. */
-export type ImportedRun = { agent: string; revision: string; state: "completed" | "failed" | "stopped"; startedAt: string; endedAt: string; costUsd?: number; summary?: string } & ImportedFrom;
+export type ImportedRun = { agent: string; revision: string; state: "completed" | "failed" | "stopped"; startedAt: string; endedAt: string; costUsd?: number; summary?: string; metrics?: StoredMetrics } & ImportedFrom;
 /** What can be archived. */
 export type ArchiveKind = "agent" | "run";
 type RunCounts = Record<RunState, number> & { total: number };
@@ -120,10 +125,34 @@ BEGIN SELECT RAISE(ABORT, 'an import is written once'); END;
 CREATE TRIGGER IF NOT EXISTS run_imports_are_kept BEFORE DELETE ON run_imports
 BEGIN SELECT RAISE(ABORT, 'an import is written once'); END;
 CREATE TRIGGER IF NOT EXISTS imported_runs_stay_ended BEFORE UPDATE ON runs WHEN EXISTS (SELECT 1 FROM run_imports i WHERE i.run_id = OLD.id)
-BEGIN SELECT RAISE(ABORT, 'an imported run is read-only'); END;`;
+BEGIN SELECT RAISE(ABORT, 'an imported run is read-only'); END;
+CREATE TABLE IF NOT EXISTS run_metrics (
+  run_id       TEXT PRIMARY KEY REFERENCES runs(id),
+  input        INTEGER NOT NULL,
+  cache_read   INTEGER NOT NULL,
+  cache_write  INTEGER NOT NULL,
+  output       INTEGER NOT NULL,
+  requests     INTEGER NOT NULL,
+  unmetered    INTEGER NOT NULL,
+  active_ms    INTEGER,
+  effort       TEXT,
+  model        TEXT,
+  models_json  TEXT NOT NULL,
+  cost_usd_est REAL,
+  cost_basis   TEXT,
+  at           TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS run_tool_metrics (
+  run_id TEXT NOT NULL REFERENCES run_metrics(run_id),
+  tool   TEXT NOT NULL,
+  calls  INTEGER NOT NULL,
+  errors INTEGER NOT NULL,
+  PRIMARY KEY (run_id, tool)
+);`;
 
-// archive_changes, runs_by_state and run_imports came after version 1 without a new version: an earlier version opens
-// the file and ignores them. run_imports' trigger on runs is in the file, so that version still cannot change an imported run.
+// archive_changes, runs_by_state, run_imports, run_metrics and run_tool_metrics came after version 1 without a new
+// version: an earlier version opens the file and ignores them. run_imports' trigger on runs is in the file, so that
+// version still cannot change an imported run.
 const STORE_VERSION = 1;
 const SQLITE_READONLY_ROLLBACK = 776;
 const SQLITE_CONSTRAINT = 19;
@@ -152,6 +181,23 @@ const checkTime = (value: unknown, what: string): string => {
   if (iso.slice(0, 19) !== value.slice(0, 19)) throw invalid(`the ${what} time ${value} is not a time that exists`);
   return iso;
 };
+
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+const isName = (value: unknown): value is string => typeof value === "string" && value !== "" && value.length <= 256;
+const isUsd = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+/** Metrics to write, checked before any write: each count a whole number of at least 0, each name non-empty text of at
+ *  most 256 characters. */
+function checkMetrics(m: unknown): StoredMetrics {
+  if (!isObject(m)) throw invalid("the metrics are not an object");
+  for (const key of ["input", "cacheRead", "cacheWrite", "output", "requests", "unmetered"] as const) if (!isCount(m[key])) throw invalid(`the metrics' ${key} is not a whole number of at least 0`);
+  if ((m.unmetered as number) > (m.requests as number)) throw invalid("the metrics' unmetered requests are more than its requests");
+  if (!isObject(m.models) || !Object.entries(m.models).every(([name, n]) => isName(name) && isCount(n))) throw invalid("the metrics' models are not model names to request counts");
+  if (!isObject(m.tools) || !Object.entries(m.tools).every(([name, t]) => isName(name) && isObject(t) && isCount(t.calls) && isCount(t.errors) && t.errors <= t.calls)) throw invalid("the metrics' tools are not tool names to { calls, errors }, errors at most calls");
+  if (m.activeMs !== undefined && !isCount(m.activeMs)) throw invalid("the metrics' activeMs is not a whole number of at least 0");
+  for (const key of ["model", "effort", "costBasis"] as const) if (m[key] !== undefined && !isName(m[key])) throw invalid(`the metrics' ${key} is not non-empty text of at most 256 characters`);
+  if (m.costUsdEst !== undefined && !isUsd(m.costUsdEst)) throw invalid("the metrics' costUsdEst is not a number of at least 0");
+  return m as StoredMetrics;
+}
 
 /** A revision as stored, checked: the id is the hash of its content, so a row that was changed does not pass. */
 function revisionOf(row: Record<string, unknown>): Revision {
@@ -192,10 +238,13 @@ export class AgentStoreReader {
   private readonly archives: boolean;
   /** Likewise run_imports: a store without it holds no imported run. */
   private readonly imports: boolean;
+  /** And run_metrics with run_tool_metrics: a store without them holds no run's metrics. */
+  private readonly metrics: boolean;
   constructor(readonly dir: string, protected readonly db: DatabaseSync) {
     const has = (table: string) => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== undefined;
     this.archives = has("archive_changes");
     this.imports = has("run_imports");
+    this.metrics = has("run_metrics") && has("run_tool_metrics");
   }
   close(): void { this.db.close(); }
 
@@ -243,6 +292,24 @@ export class AgentStoreReader {
       FROM runs r JOIN agents a ON a.id = r.agent_id JOIN revisions v ON v.id = r.revision_id ${imported.join} WHERE r.id = :id`).get({ id: checkId(runId, "run") }) as Record<string, unknown> | undefined;
     if (!r) return undefined;
     return { id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}), agentName: r.agent_name as string, ...(r.note ? { note: r.note as string } : {}), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}), ...importedFromOf(r) };
+  }
+  /** A run's metrics, as its last carryBack or its import wrote them, with its tools by name and `at`, when they were
+   *  written: one statement. Undefined for a run with none, or an unknown run. */
+  runMetrics(runId: string): (StoredMetrics & { at: string }) | undefined {
+    const id = checkId(runId, "run");
+    if (!this.metrics) return undefined;
+    const rows = this.db.prepare(`SELECT m.*, t.tool, t.calls, t.errors FROM run_metrics m LEFT JOIN run_tool_metrics t ON t.run_id = m.run_id
+      WHERE m.run_id = ? ORDER BY t.tool`).all(id) as Array<Record<string, unknown>>;
+    const m = rows[0];
+    if (!m) return undefined;
+    const optional = (key: string, column: string, as: (value: unknown) => unknown) => (m[column] !== null ? { [key]: as(m[column]) } : {});
+    return {
+      input: Number(m.input), cacheRead: Number(m.cache_read), cacheWrite: Number(m.cache_write), output: Number(m.output), requests: Number(m.requests), unmetered: Number(m.unmetered),
+      models: JSON.parse(m.models_json as string) as Record<string, number>, ...optional("model", "model", String),
+      tools: Object.fromEntries(rows.filter((r) => r.tool !== null).map((r) => [r.tool as string, { calls: Number(r.calls), errors: Number(r.errors) }])),
+      ...optional("activeMs", "active_ms", Number), ...optional("effort", "effort", String), ...optional("costUsdEst", "cost_usd_est", Number), ...optional("costBasis", "cost_basis", String),
+      at: m.at as string,
+    };
   }
   /** Counts and cost sums over the whole store, each an SQL aggregate over `store.sqlite`'s indexes, read in one
    *  snapshot; nothing under `runs/` is opened. */
@@ -403,18 +470,38 @@ export class AgentStore extends AgentStoreReader {
     return run;
   }
 
-  /** End a run, once: `state` is how it ended, `summary` a line for the list (cut to 2000 characters, never refused, so a run always ends). A second call for an ended run is refused. */
-  carryBack(runId: string, result: { state: "completed" | "failed" | "stopped" | "escalated"; costUsd?: number; summary?: string }): void {
+  /** End a run, once: `state` is how it ended, `summary` a line for the list (cut to 2000 characters, never refused, so a run always ends). A second call for an ended run is refused.
+   *  `metrics` (runMetricsOf of the whole run, and what its host knows) replace the run's in the same transaction, so a
+   *  run opened again and ended again keeps its latest; with none it has none, as with no cost its cost is unknown. */
+  carryBack(runId: string, result: { state: "completed" | "failed" | "stopped" | "escalated"; costUsd?: number; summary?: string; metrics?: StoredMetrics }): void {
     if (!["completed", "failed", "stopped", "escalated"].includes(result?.state)) throw invalid("the state is not completed, failed, stopped or escalated");
     if (result.costUsd !== undefined && !(Number.isFinite(result.costUsd) && result.costUsd >= 0)) throw invalid("the cost is not a number of at least 0");
     if (result.summary !== undefined && (typeof result.summary !== "string" || result.summary === "")) throw invalid("the summary is not non-empty text");
-    this.refuseImported(checkId(runId, "run"));
-    const done = this.db.prepare("UPDATE runs SET state = ?, ended_at = ?, cost_usd = ?, summary = ? WHERE id = ? AND ended_at IS NULL").run(result.state, new Date().toISOString(), result.costUsd ?? null, result.summary === undefined ? null : cutSummary(result.summary), checkId(runId, "run"));
-    if (done.changes === 0) throw new AgentHomeError(this.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(runId) ? "exists" : "missing", "that run is unknown or has already ended");
+    const metrics = result.metrics === undefined ? undefined : checkMetrics(result.metrics);
+    const id = checkId(runId, "run");
+    this.refuseImported(id);
+    const at = new Date().toISOString();
+    this.tx(() => {
+      const done = this.db.prepare("UPDATE runs SET state = ?, ended_at = ?, cost_usd = ?, summary = ? WHERE id = ? AND ended_at IS NULL").run(result.state, at, result.costUsd ?? null, result.summary === undefined ? null : cutSummary(result.summary), id);
+      if (done.changes === 0) throw new AgentHomeError(this.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(id) ? "exists" : "missing", "that run is unknown or has already ended");
+      this.writeMetrics(id, metrics, at);
+    });
   }
 
-  /** Opens a completed run again, for a follow-up: running, with no end; its cost and summary stay until the next
-   *  carryBack. Only a completed run opens again. */
+  /** A run's metrics replaced by `metrics` (none: removed), inside the caller's transaction. */
+  private writeMetrics(runId: string, metrics: StoredMetrics | undefined, at: string): void {
+    this.db.prepare("DELETE FROM run_tool_metrics WHERE run_id = ?").run(runId);
+    this.db.prepare("DELETE FROM run_metrics WHERE run_id = ?").run(runId);
+    if (!metrics) return;
+    this.db.prepare(`INSERT INTO run_metrics (run_id, input, cache_read, cache_write, output, requests, unmetered, active_ms, effort, model, models_json, cost_usd_est, cost_basis, at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(runId, metrics.input, metrics.cacheRead, metrics.cacheWrite, metrics.output, metrics.requests, metrics.unmetered,
+      metrics.activeMs ?? null, metrics.effort ?? null, metrics.model ?? null, JSON.stringify(metrics.models), metrics.costUsdEst ?? null, metrics.costBasis ?? null, at);
+    const tool = this.db.prepare("INSERT INTO run_tool_metrics (run_id, tool, calls, errors) VALUES (?, ?, ?, ?)");
+    for (const [name, t] of Object.entries(metrics.tools)) tool.run(runId, name, t.calls, t.errors);
+  }
+
+  /** Opens a completed run again, for a follow-up: running, with no end; its cost, summary and metrics stay until the
+   *  next carryBack. Only a completed run opens again. */
   reopenRun(runId: string): void {
     this.refuseImported(checkId(runId, "run"));
     const done = this.db.prepare("UPDATE runs SET state = 'running', ended_at = NULL WHERE id = ? AND state = 'completed'").run(checkId(runId, "run"));
@@ -426,7 +513,8 @@ export class AgentStore extends AgentStoreReader {
   /** Records a session another harness ran on this machine as a run of `agent` at `revision` that has already ended,
    *  at the source's own times. The store mints the run id; the same source and session imports once (again: undefined,
    *  nothing written). Its directory and store directory are made 0700 (no work directory: nothing ran here), and the
-   *  caller writes the transcript at `storePath`. An imported run is read-only: nothing reopens or ends it again. */
+   *  caller writes the transcript at `storePath`. An imported run is read-only: nothing reopens or ends it again. Its
+   *  `metrics` are written with its rows. */
   importRun(input: ImportedRun): Pick<StartedRun, "runId" | "dir" | "storePath"> | undefined {
     if (!isObject(input)) throw invalid("the import is not an object");
     if ("runId" in input || "id" in input) throw invalid("importRun takes no run id: the store mints it");
@@ -441,6 +529,7 @@ export class AgentStore extends AgentStoreReader {
     if (endedAt < startedAt) throw invalid("the run ends before it starts");
     if (input.costUsd !== undefined && !(Number.isFinite(input.costUsd) && input.costUsd >= 0)) throw invalid("the cost is not a number of at least 0");
     if (input.summary !== undefined && (typeof input.summary !== "string" || input.summary === "")) throw invalid("the summary is not non-empty text");
+    const metrics = input.metrics === undefined ? undefined : checkMetrics(input.metrics);
     const runId = uuidv7();
     const dir = path.join(this.dir, "runs", runId);
     const storePath = runStoreIn(dir);
@@ -457,7 +546,9 @@ export class AgentStore extends AgentStoreReader {
         if (this.db.prepare("SELECT 1 FROM run_imports WHERE source = ? AND session = ?").get(input.source, input.session)) return false;
         this.db.prepare("INSERT INTO runs (id, agent_id, revision_id, state, started_at, ended_at, cost_usd, summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
           .run(runId, agent, revision.id, input.state, startedAt, endedAt, input.costUsd ?? null, input.summary === undefined ? null : cutSummary(input.summary));
-        this.db.prepare("INSERT INTO run_imports (run_id, source, session, at) VALUES (?, ?, ?, ?)").run(runId, input.source, input.session, new Date().toISOString());
+        const at = new Date().toISOString();
+        this.db.prepare("INSERT INTO run_imports (run_id, source, session, at) VALUES (?, ?, ?, ?)").run(runId, input.source, input.session, at);
+        if (metrics) this.writeMetrics(runId, metrics, at);
         return true;
       });
       if (!added) {
