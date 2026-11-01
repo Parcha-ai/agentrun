@@ -46,7 +46,7 @@ class UsageError extends PdaError {
 }
 
 const USAGE = `usage:
-  pi-durable-disk run --dir PATH --app MODULE [--id ID] [any run flag below but the Archil ones]
+  pi-durable-disk run --dir PATH --app MODULE [--id ID] [--serve-socket PATH] [any run flag below but the Archil ones]
   pi-durable-disk run --disk D --region R --id ID --app MODULE [--mount-root DIR] [--archil BIN]
                         [--heartbeat-ms N] [--lease-expiry-ms N] [--lease-margin-ms N] [--on-sigterm resume|pause]
                         [--token-stdin] [--run-as USER] [--serve PORT] [--serve-host H] [--serve-url URL]
@@ -246,6 +246,10 @@ async function readToken(values: Record<string, unknown>): Promise<string> {
  * parks the run when its work only waits longer than that, and with `--serve` an idle run parks too after `--park-idle`
  * (default the threshold), since a request can wake it. `--drain-timeout` bounds the drain on SIGTERM. What happens
  * between the open and the exit is `serveUntilDone`.
+ *
+ * `--serve-socket PATH` serves on a unix socket in place of `--serve`, `--serve-host` and `--serve-url` (each refused
+ * beside it), for a run in a local directory: a disk's run is reached from other hosts. The socket is 0600, the holder's
+ * address is `unix:<absolute path>`, and `--serve-token-file` applies as it does on loopback.
  */
 async function runInstance(values: Record<string, unknown>): Promise<number> {
   const dir = localDir(values, ["disk", "region", "mount-root", "archil", "token-stdin"]);
@@ -269,6 +273,12 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   const servePort = str(values.serve);
   if (servePort !== undefined && !/^\d{1,5}$/.test(servePort)) throw new UsageError("--serve takes a port number (0: any free port)");
   const serveHost = str(values["serve-host"], "127.0.0.1")!;
+  const serveSocket = str(values["serve-socket"]);
+  if (serveSocket !== undefined) {
+    const tcp = ["serve", "serve-host", "serve-url"].filter((name) => values[name] !== undefined);
+    if (tcp.length) throw new UsageError(`--serve-socket serves on a unix socket in place of a TCP address: drop ${tcp.map((name) => `--${name}`).join(", ")}`);
+    if (dir === undefined) throw new UsageError("--serve-socket serves a run in a local directory (--dir); a disk's run is reached from other hosts, through --serve-url");
+  }
   const tokenFile = str(values["serve-token-file"]);
   if (servePort !== undefined && tokenFile === undefined && !isLoopback(serveHost)) throw new UsageError(`--serve-host ${serveHost} is not loopback: name a --serve-token-file`);
   const serveToken = tokenFile === undefined ? undefined : readServeToken(tokenFile);
@@ -289,9 +299,10 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   // The server is up before the run opens (its address goes into the holder); parking starts after.
   let parking: Parking | undefined;
   let server: RunServer | undefined;
-  if (servePort !== undefined) {
+  if (servePort !== undefined || serveSocket !== undefined) {
     const url = str(values["serve-url"]);
-    server = await serveRun({ port: Number(servePort), host: serveHost, ...(url ? { url } : {}), token: serveToken, root: rootOptions, onIdle: () => parking?.check() });
+    const where = serveSocket !== undefined ? { socket: serveSocket } : { port: Number(servePort), host: serveHost, ...(url ? { url } : {}) };
+    server = await serveRun({ ...where, token: serveToken, root: rootOptions, onIdle: () => parking?.check() });
     holder.serve = server.url;
   }
   const idleMs = ms("park-idle") ?? (server ? parkMs : undefined);
@@ -754,6 +765,7 @@ export async function main(argv: string[]): Promise<number> {
             "serve-host": { type: "string" },
             "serve-token-file": { type: "string" },
             "serve-url": { type: "string" },
+            "serve-socket": { type: "string" },
             "park-threshold": { type: "string" },
             "park-idle": { type: "string" },
             "drain-timeout": { type: "string" },

@@ -1,17 +1,18 @@
 // Runs: each one a child process (`pi-durable-disk run` on `<data>/runs/<id>` with serve's app), pinned to a revision in
-// the agent store. An agentic run is read live through the door its process serves on loopback; a workflow run is
-// working while its process lives. Once the process has exited the run is read from its store, read-only, and carried
-// back to the agent store (`carryBack`), and it is finished. A run whose process went before the run ended is opened
-// again on its directory, and resumes from its store.
+// the agent store. An agentic run is read live through the door its process serves on loopback (or, launched with
+// `doorSocket`, on a unix socket in its directory); a workflow run is working while its process lives. Once the process
+// has exited the run is read from its store, read-only, and carried back to the agent store (`carryBack`), and it is
+// finished. A run whose process went before the run ended is opened again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, openSync, rmSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, realpathSync, rmSync } from "node:fs";
 import { open as openFile, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-adapters/host";
+import { SOCKET_PATH_MAX } from "@parcha/pi-durable-disk";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, registerTurnEnding, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT } from "./adapters.js";
@@ -70,6 +71,42 @@ const warn = (runId: string, text: string) => void process.stderr.write(`agentru
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
 const holderPid = (record: Json | null) => (isObject(record?.holder) && Number.isSafeInteger(record.holder.pid) ? (record.holder.pid as number) : undefined);
+
+/** A live run's door: a loopback origin, or a unix socket in the run's directory, whose routes go to `origin`. */
+type Door = { origin: string; socket?: string };
+/** Where a run launched with `doorSocket` serves its door: a socket in its own directory. */
+const DOOR_SOCKET = "door.sock";
+
+/**
+ * The socket a run's holder names (`unix:<path>`), when serve may dial it: an absolute path with no `.` or `..` part,
+ * inside the run's own directory, every directory below that one a real directory (no link on the way) and the socket
+ * itself a socket, not a link. So a run's process cannot point serve at a socket anywhere else. It is looked at before
+ * each dial; a process that can swap the socket for a link between that look and the dial is not ruled out here.
+ */
+export function socketIn(dir: string, path: string): string | undefined {
+  if (!isAbsolute(path) || normalize(path) !== path) return undefined;
+  const root = resolve(dir);
+  if (!path.startsWith(`${root}${sep}`)) return undefined;
+  try {
+    if (!lstatSync(path).isSocket()) return undefined;
+    return realpathSync(path) === join(realpathSync(root), path.slice(root.length + 1)) ? path : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** One request to a run's door, its answer read by `read`: a loopback door with the global fetch, as always; a socket
+ *  door with undici's fetch on a dispatcher of its own, dialled at the socket and closed once `read` is done. */
+async function knock<T>(door: Door, path: string, init: RequestInit, read: (res: Response) => Promise<T>): Promise<T> {
+  if (door.socket === undefined) return read(await fetch(new URL(path, door.origin), init));
+  const { Agent, fetch: socketFetch } = await import("undici");
+  const dispatcher = new Agent({ connect: { socketPath: door.socket } });
+  try {
+    return await read((await socketFetch(new URL(path, door.origin), { ...init, dispatcher } as never)) as unknown as Response);
+  } finally {
+    void dispatcher.destroy().catch(() => undefined);
+  }
+}
 type WorkflowEnding = { status: "complete" | "escalated" | "refused" | "stopped"; code?: string; message?: string };
 /** How a workflow run's workflow ended, as its app wrote it in the run's final status: absent until it ended. */
 function workflowEnding(record: Json | null): WorkflowEnding | undefined {
@@ -278,8 +315,10 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
- *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+ *  start, always waits READY_TIMEOUT_MS); `doorSocket`: each run's process serves its door on a unix socket in the run's
+ *  directory (`door.sock`) in place of loopback, so a box that shares the directory reaches it too (default off); `log`
+ *  takes a run's start and end (print.ts). */
+export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; doorSocket?: boolean; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value. */
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
@@ -429,7 +468,7 @@ export class Runs {
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
-    if (row.state !== "running" || !this.doorOf(record)) await this.storeWhenFree(run);
+    if (row.state !== "running" || !this.doorOf(run, record)) await this.storeWhenFree(run);
     if (row.state !== "running") {
       run.outcome = STATUS_OF[row.state];
       run.endedAt = row.endedAt;
@@ -440,7 +479,7 @@ export class Runs {
       if (row.importedFrom) run.imported = row.importedFrom;
       if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
-    } else if (record && this.doorOf(record)) {
+    } else if (record && this.doorOf(run, record)) {
       // A server that died between saving a stop and its abort reaching the run leaves the turn working.
       run.finishStop = run.meta.stopped_at !== undefined || run.meta.stopped_after !== undefined;
       this.adoptProcess(run, record);
@@ -466,15 +505,22 @@ export class Runs {
     return readJson(join(run.dir, "run.json"));
   }
 
-  /** The door a live run serves, from its run.json: running, a fresh heartbeat, and a loopback address. */
-  private doorOf(record: Json | null): string | undefined {
+  /** The door a live run serves, from its run.json: running, a fresh heartbeat, and a loopback address or a socket in
+   *  the run's own directory (`socketIn`). */
+  private doorOf(run: Run, record: Json | null): Door | undefined {
     if (record?.status !== "running" || !isObject(record.holder) || typeof record.holder.serve !== "string") return undefined;
     // A run's process is a process on this machine: one that is gone serves no door, however fresh its heartbeat.
     const pid = holderPid(record);
     if (pid !== undefined && !alive(pid)) return undefined;
     if (typeof record.heartbeatAt !== "string" || Date.now() - Date.parse(record.heartbeatAt) >= LEASE_MS) return undefined;
-    const url = URL.parse(record.holder.serve);
-    return url?.protocol === "http:" && isLoopback(url.hostname) ? url.origin : undefined;
+    const serve = record.holder.serve;
+    if (serve.startsWith("unix:")) {
+      const socket = socketIn(run.dir, serve.slice("unix:".length));
+      // The origin names the door's routes only: the connection goes to the socket, and the door reads no Host header.
+      return socket === undefined ? undefined : { origin: "http://door", socket };
+    }
+    const url = URL.parse(serve);
+    return url?.protocol === "http:" && isLoopback(url.hostname) ? { origin: url.origin } : undefined;
   }
 
   private storeFile(run: Run): string {
@@ -578,7 +624,7 @@ export class Runs {
     const timer = setInterval(() => {
       void this.record(run).then((now) => {
         if (now !== null) unreadable = 0;
-        if (run.orphan !== pid || (this.doorOf(now) && alive(pid))) return;
+        if (run.orphan !== pid || (this.doorOf(run, now) && alive(pid))) return;
         // A record that cannot be read while the process lives is read again at every tick: settling on no record could
         // leave the run unsettled and unwatched. The server says so once the record has been unreadable for a while.
         if (now === null && alive(pid)) {
@@ -671,7 +717,7 @@ export class Runs {
     run.feed = abort;
     void (async () => {
       while (!abort.signal.aborted) {
-        const door = this.doorOf(await this.record(run));
+        const door = this.doorOf(run, await this.record(run));
         if (door) this.reportedBack(run);
         if (door && run.kind === "workflow") {
           if (!run.working && !run.outcome) {
@@ -679,16 +725,20 @@ export class Runs {
             this.refresh(run);
           }
         } else if (door) await this.follow(run, door, abort.signal).catch(() => undefined);
-        if (abort.signal.aborted || (!this.live(run) && !this.doorOf(await this.record(run)))) break;
+        if (abort.signal.aborted || (!this.live(run) && !this.doorOf(run, await this.record(run)))) break;
         await sleep(run.kind === "workflow" ? 500 : 200);
       }
       if (run.feed === abort) run.feed = undefined;
     })();
   }
 
-  private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {
+  /** The door's events (`GET /events`) into the run's rows, until the stream ends or `signal` aborts. */
+  private async follow(run: Run, door: Door, signal: AbortSignal): Promise<void> {
+    return knock(door, "/events", { signal, headers: { ...this.headers(), accept: "text/event-stream" } }, (up) => this.followed(run, up));
+  }
+
+  private async followed(run: Run, up: Response): Promise<void> {
     const reducer = timelineReducer();
-    const up = await fetch(new URL("/events", door), { signal, headers: { ...this.headers(), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
     const decoder = new TextDecoder();
     let buffer = "";
@@ -728,7 +778,7 @@ export class Runs {
   }
 
   /** The door of a run that is not finished, starting or waking its process when it is not live. */
-  private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS): Promise<string> {
+  private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS): Promise<Door> {
     const deadline = Date.now() + timeoutMs;
     // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
     await this.sweepOnce();
@@ -736,7 +786,7 @@ export class Runs {
       const record = await this.record(run);
       // Checked after the read: a settle may end the run while it is read, and nothing starts a run that ended.
       if (run.outcome || run.finishing || run.cancel) throw this.finished(run);
-      const door = this.doorOf(record);
+      const door = this.doorOf(run, record);
       if (door) return door;
       if (!this.live(run)) {
         // A process that just went is being settled: its run may be over, so nothing starts it again before that.
@@ -778,22 +828,21 @@ export class Runs {
    *  has no turn: the door's abort would give it a root conversation. */
   private async abortTurn(run: Run): Promise<void> {
     if (run.kind === "workflow") return;
-    const door = this.doorOf(await this.record(run));
-    if (door) await fetch(new URL("/abort", door), { method: "POST", headers: this.headers(true), body: "{}", signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
+    const door = this.doorOf(run, await this.record(run));
+    if (door) await knock(door, "/abort", { method: "POST", headers: this.headers(true), body: "{}", signal: AbortSignal.timeout(5_000) }, async () => undefined).catch(() => undefined);
   }
 
   private async toDoor(run: Run, path: string, body?: Json, readyMs?: number): Promise<{ status: number; body: Json | null }> {
     const deadline = Date.now() + 30_000;
     for (;;) {
       const door = await this.ensureLive(run, readyMs);
-      const res = await fetch(new URL(path, door), {
+      const answer = await knock(door, path, {
         method: body === undefined ? "GET" : "POST",
         headers: this.headers(body !== undefined),
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(15_000),
-      }).catch(() => null);
-      const data = res ? ((await res.json().catch(() => null)) as Json | null) : null;
-      if (res && !(res.status === 503 && RETRY_CODES.includes(String(data?.error)))) return { status: res.status, body: data };
+      }, async (res) => ({ status: res.status, body: (await res.json().catch(() => null)) as Json | null })).catch(() => null);
+      if (answer && !(answer.status === 503 && RETRY_CODES.includes(String(answer.body?.error)))) return answer;
       if (Date.now() > deadline) throw new ApiError("unavailable", "the run's door did not answer", { retry_after_ms: 1000 }, { "retry-after": "1" });
       await sleep(200);
     }
@@ -835,7 +884,7 @@ export class Runs {
     const child = spawn(process.execPath, [
       // secrets.ts first, as a preload: the pipe is read and closed before pi-durable-disk's CLI loads or starts anything.
       "--no-warnings=ExperimentalWarning", "--import", SECRETS_MODULE, this.cli, "run", "--dir", run.dir, "--app", this.app,
-      "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
+      ...this.doorFlags(run), "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
     ], { stdio, env });
     closeSync(log);
     const pipe = child.stdio[3] as import("node:stream").Writable | null;
@@ -858,6 +907,19 @@ export class Runs {
       this.reportedBack(run);
     });
     this.connect(run);
+  }
+
+  /** Where a run's process serves its door: on loopback; with `doorSocket`, on a socket in the run's directory, unless
+   *  its path is longer than a socket address holds (a long data directory), when the run serves on loopback and the
+   *  log says why. Never a failed launch. */
+  private doorFlags(run: Run): string[] {
+    const loopback = ["--serve", "0", "--serve-host", "127.0.0.1"]; // key-gate: loopback-rule a run process serves its door on this machine only, as it always has
+    if (!this.options.doorSocket) return loopback;
+    const socket = join(run.dir, DOOR_SOCKET);
+    const bytes = Buffer.byteLength(socket);
+    if (bytes <= SOCKET_PATH_MAX) return ["--serve-socket", socket];
+    this.options.log?.("door_socket_too_long", { run: run.id, bytes, limit: SOCKET_PATH_MAX, serves_on: "loopback" });
+    return loopback;
   }
 
   /** Writes the run's launch mark before its process is spawned: a spawn that takes the server down leaves it, and the
@@ -922,7 +984,7 @@ export class Runs {
     const released = RELEASED.has(String(record?.status));
     const pid = holderPid(record);
     // A process that is gone serves no door, whatever its last heartbeat says.
-    const gone = !this.live(run) && !(pid !== undefined && pid !== process.pid && alive(pid) && this.doorOf(record));
+    const gone = !this.live(run) && !(pid !== undefined && pid !== process.pid && alive(pid) && this.doorOf(run, record));
     if (released || gone) await this.storeWhenFree(run);
     // Its process gone: an archived run's box is let go now, whatever comes next (an outcome, a wait for the person, a
     // relaunch), since nothing else would until the next start or archive. This is every archived end that can let a box
@@ -940,7 +1002,7 @@ export class Runs {
     } else if (exited && !released && code !== null && code !== 0) {
       run.error = { code: "run_failed", message: `The run's process exited (${code}) without releasing the run: ${await lastLogLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
-    } else if (!gone && this.doorOf(record)) ended = undefined;
+    } else if (!gone && this.doorOf(run, record)) ended = undefined;
     else if (run.kind === "workflow") ended = await this.workflowEnd(run, workflowEnding(record));
     else {
       const end = this.decide(run);

@@ -247,6 +247,12 @@ app with a harness of its own (a child process, another agent loop) hands the do
 field. Without `door`, the door answers byte for byte as it did before the field existed
 ([`test/door-exchange.test.ts`](test/door-exchange.test.ts) holds the recorded exchange).
 
+On a run in a local directory the door can listen on a unix socket instead of a TCP port: `run --dir PATH --serve-socket
+PATH/door.sock` (refused beside `--serve`, `--serve-host` and `--serve-url`). The socket is 0600, `run.json`'s `holder.serve`
+is `unix:<absolute path>`, the bearer token applies as on loopback, and the same exchange answers over it, so a run in a
+container that shares its directory with the host is reachable from both sides. A path longer than a socket address holds
+(107 bytes on Linux, 103 on macOS) is refused by name, never cut.
+
 ```ts
 interface DoorHook {
   /** Resolves when the input is TAKEN, not when the turn ends; the turn runs after, reported through ctx.emit and the conversation's entries. */

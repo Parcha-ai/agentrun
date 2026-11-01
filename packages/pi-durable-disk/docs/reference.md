@@ -387,7 +387,11 @@ the token prefix.
 
 `pi-durable-disk run --serve PORT` (0: any free port; `--serve-host`, default 127.0.0.1; any other address needs
 `--serve-token-file`, see Security, and a wildcard such as 0.0.0.0 also needs `--serve-url`, the address clients reach) puts
-a small HTTP front on the open run, so a client talks to the run, not to a host:
+a small HTTP front on the open run, so a client talks to the run, not to a host. A run in a local directory can serve it on
+a unix socket instead, `--serve-socket PATH` (never beside `--serve`, `--serve-host` or `--serve-url`): made 0600, named
+`unix:<absolute path>` in the holder, its token optional as on loopback. A socket there that refuses a connection is
+replaced; a live one, or anything else, is refused; a path longer than a socket address holds is refused by name
+(`SERVE_SOCKET_TOO_LONG`); the socket goes when the instance exits.
 
 | Request | What it does |
 |---|---|

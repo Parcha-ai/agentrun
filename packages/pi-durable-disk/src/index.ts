@@ -41,7 +41,7 @@ export { DAYTONA_LIST_PRICES, DaytonaApiError, daytonaHost, DaytonaHostError, da
 export type { CreateSandboxBody, DaytonaClient, DaytonaHostErrorCode, DaytonaHostOptions, DaytonaRestOptions, ExecResult, SandboxInfo } from "./hosts/daytona.ts";
 
 // Serve: one HTTP request runs one turn.
-export { requestRun, ServeConfigError, ServeError, serveRun } from "./serve.ts";
+export { requestRun, ServeConfigError, ServeError, serveRun, SOCKET_PATH_MAX } from "./serve.ts";
 export type { RequestOptions, RunResponse, RunServer, ServeConfigErrorCode, ServeErrorCode, ServeOptions } from "./serve.ts";
 export type { DoorContext, DoorEvent, DoorHook, DoorInput, DoorStatus, DoorTimeouts } from "./door.ts";
 

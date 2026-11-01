@@ -5,11 +5,15 @@
 // code while the run opens, parks or is released. `requestRun` is the client: it finds the instance through run.json,
 // starts the run through `ensureRunning` (with demand) when it is released or gone, and retries while it starts.
 // Open requests keep the instance up (parking waits for none). On loopback a bearer token is optional; on any other
-// address it is required, read from a private file, and checked in constant time on every route.
+// address it is required, read from a private file, and checked in constant time on every route. The door can listen on a
+// unix socket instead (`socket`): made 0600, it is reached through the file system, so a run in a container that shares
+// its directory with the host is reachable from both sides.
 import { createHash, timingSafeEqual } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { isIP, type AddressInfo } from "node:net";
+import { chmodSync, lstatSync, readFileSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { connect, isIP, type AddressInfo } from "node:net";
+import { resolve } from "node:path";
+import { isMainThread } from "node:worker_threads";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ConversationBusy, ROOT_CONVERSATION_ID, watchEvents } from "@earendil-works/pi-durable";
@@ -39,8 +43,17 @@ export interface ServeOptions {
    * bound address, which only works for a specific host; a wildcard bind has no address a client can use.
    */
   readonly url?: string;
-  /** Every request must carry `authorization: Bearer <token>` (see `readServeToken`). Optional on loopback only. */
+  /** Every request must carry `authorization: Bearer <token>` (see `readServeToken`). Optional on loopback and on a socket only. */
   readonly token?: string;
+  /**
+   * Listen on this unix socket instead of a TCP address: `port`, `host` and `url` are refused beside it. The socket is
+   * made 0600, so only its owner can connect, and `url` (run.json's holder) is `unix:<absolute path>`. A socket already
+   * there that refuses a connection is a dead door's and is replaced; one that answers is a live door's, and it and
+   * anything that is not a socket are refused and left as they are. A path longer than a socket address holds
+   * (`SOCKET_PATH_MAX` bytes) is refused, never cut. The socket goes when the server closes or the process exits. For a
+   * run in a local directory: `requestRun` reaches only `http:` and `https:` doors.
+   */
+  readonly socket?: string;
   /** How the root conversation is created when absent (pi's `root()` options); a submit without `conversationId` goes there. */
   readonly root?: Parameters<Harness["root"]>[1];
   /** Called each time the last open request ends (parking looks again). */
@@ -51,7 +64,7 @@ export interface ServeOptions {
 }
 
 export interface RunServer {
-  /** `http://<host>:<port>`. */
+  /** `http://<host>:<port>` (or `url`), or `unix:<absolute path>` for a door on a socket. */
   readonly url: string;
   /** Open requests: submits waiting for their answer, event streams; and a door hook's call in flight or busy turn. */
   readonly active: number;
@@ -64,11 +77,19 @@ export interface RunServer {
   close(): Promise<void>;
 }
 
-export type ServeConfigErrorCode = "SERVE_TOKEN_REQUIRED" | "SERVE_TOKEN_INVALID" | "SERVE_URL_REQUIRED" | "SERVE_URL_INVALID";
+export type ServeConfigErrorCode =
+  | "SERVE_TOKEN_REQUIRED"
+  | "SERVE_TOKEN_INVALID"
+  | "SERVE_URL_REQUIRED"
+  | "SERVE_URL_INVALID"
+  | "SERVE_SOCKET_INVALID"
+  | "SERVE_SOCKET_TOO_LONG"
+  | "SERVE_SOCKET_IN_USE";
 
 /**
  * A non-loopback address without a token, a token file that is missing, empty or not private, or a wildcard bind
- * without the URL clients reach it at. Exit 2 (usage).
+ * without the URL clients reach it at; a socket beside a TCP address, at a path a socket address cannot hold, or where
+ * something other than a dead door's socket is. Exit 2 (usage).
  */
 export class ServeConfigError extends PdaError {
   constructor(code: ServeConfigErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -110,6 +131,98 @@ const isWildcard = (host: string) => {
   const h = host.toLowerCase();
   return h === "0.0.0.0" || h === "::" || h === "[::]" || h === "0:0:0:0:0:0:0:0" || h === "::ffff:0.0.0.0";
 };
+
+/**
+ * The longest unix socket path a socket address holds here, in bytes: `sun_path` less its terminating NUL (108 on Linux,
+ * 104 on macOS and the BSDs). Node cuts a longer path to fit and listens there, so a longer one is refused before that.
+ */
+export const SOCKET_PATH_MAX = process.platform === "linux" ? 107 : 103;
+
+/** The absolute path a door on a socket listens on: no TCP address beside it, and a path a socket address holds whole. */
+function socketPathOf(options: ServeOptions): string {
+  const tcp = (["port", "host", "url"] as const).filter((name) => options[name] !== undefined);
+  if (tcp.length) throw new ServeConfigError("SERVE_SOCKET_INVALID", `a door on a unix socket has no TCP address: drop ${tcp.join(", ")}`);
+  const path = resolve(options.socket!);
+  const bytes = Buffer.byteLength(path);
+  if (bytes > SOCKET_PATH_MAX) {
+    throw new ServeConfigError("SERVE_SOCKET_TOO_LONG", `the door socket ${path} is ${bytes} bytes, and a unix socket path holds at most ${SOCKET_PATH_MAX} here: name a shorter one`);
+  }
+  return path;
+}
+
+/**
+ * Clears `path` for a door's socket: nothing there, or a socket that refuses a connection (a dead door's, removed). A
+ * socket that answers is a live door's, and is refused; so is anything that is not a socket, or a socket this process
+ * cannot probe, and each is left where it is. Two starts that both find the same dead socket could each remove it in turn,
+ * the second after the first listens there; that needs two instances of one run starting at once, which its owner lock
+ * settles, so nothing here guards it. A start that finds a live door never touches it.
+ */
+async function clearSocket(path: string): Promise<void> {
+  let found: Stats;
+  try {
+    found = lstatSync(path);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw new ServeConfigError("SERVE_SOCKET_INVALID", `cannot use ${path} as the door socket: ${(cause as Error).message}`, { cause });
+  }
+  if (!found.isSocket()) throw new ServeConfigError("SERVE_SOCKET_INVALID", `${path} is there and is not a socket; the door leaves it as it is`);
+  const answer = await new Promise<true | NodeJS.ErrnoException>((done) => {
+    const probe = connect(path);
+    probe.once("connect", () => (probe.destroy(), done(true)));
+    probe.once("error", (error: NodeJS.ErrnoException) => done(error));
+  });
+  if (answer === true) throw new ServeConfigError("SERVE_SOCKET_IN_USE", `${path} is a live door's socket: another instance serves there`);
+  if (answer.code === "ENOENT") return;
+  if (answer.code !== "ECONNREFUSED") throw new ServeConfigError("SERVE_SOCKET_INVALID", `cannot tell whether ${path} is a live door's socket: ${answer.message}`, { cause: answer });
+  try {
+    unlinkSync(path);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+  }
+}
+
+/**
+ * Listen on the socket at `path`, made 0600: the bind runs inside `listen` before it returns, under a umask that leaves
+ * only the owner's read and write, so the socket never has a wider mode, and the umask is put back at once. No other
+ * JavaScript runs in between; a file the thread pool creates in that instant would only get a narrower mode. A worker
+ * thread cannot set the umask, so there the socket has the umask's mode until the chmod that follows the bind. The mode
+ * is the guard: Linux asks for write permission on a socket to connect to it. A socket put there between `clearSocket`
+ * and the bind fails it (EADDRINUSE), and is refused as a live door's.
+ */
+function listenOnSocket(server: Server, path: string): Promise<Stats> {
+  return new Promise((done, fail) => {
+    const refused = (error: NodeJS.ErrnoException) =>
+      fail(error.code === "EADDRINUSE" ? new ServeConfigError("SERVE_SOCKET_IN_USE", `${path} was taken while this door started`, { cause: error }) : error);
+    server.once("error", refused);
+    const umask = isMainThread ? process.umask(0o177) : undefined;
+    try {
+      server.listen(path, () => {
+        server.off("error", refused);
+        try {
+          chmodSync(path, 0o600);
+          const mine = lstatSync(path);
+          if (!mine.isSocket()) throw new Error(`${path} is not the socket this door made`);
+          done(mine);
+        } catch (error) {
+          server.close();
+          fail(error);
+        }
+      });
+    } finally {
+      if (umask !== undefined) process.umask(umask);
+    }
+  });
+}
+
+/** Removes the socket at `path` while it is still `mine` (the same inode), never one another start put there. */
+function removeSocket(path: string, mine: Stats): void {
+  try {
+    const now = lstatSync(path);
+    if (now.dev === mine.dev && now.ino === mine.ino) unlinkSync(path);
+  } catch {
+    // gone already: libuv removes a socket as its server closes
+  }
+}
 
 class HttpError extends Error {
   readonly status: number;
@@ -168,15 +281,16 @@ async function answerOf(conversation: Conversation, entry: EntryId, context: Con
 /** Start listening; requests are answered once `attach` hands over the open run. */
 export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
   const base = options.context ?? BACKGROUND_CONTEXT;
+  const socket = options.socket === undefined ? undefined : socketPathOf(options);
   const bind = options.host ?? "127.0.0.1";
   if (options.token !== undefined && (!options.token || /\s/.test(options.token))) throw new ServeConfigError("SERVE_TOKEN_INVALID", "the serve token is empty or has whitespace");
-  if (options.token === undefined && !isLoopback(bind)) {
+  if (options.token === undefined && socket === undefined && !isLoopback(bind)) {
     throw new ServeConfigError("SERVE_TOKEN_REQUIRED", `serving on ${bind}, which is not loopback, needs a bearer token (--serve-token-file)`);
   }
   if (options.url !== undefined && !["http:", "https:"].includes(URL.parse(options.url)?.protocol ?? "")) {
     throw new ServeConfigError("SERVE_URL_INVALID", `${options.url} is not an http:// or https:// address`);
   }
-  if (options.url === undefined && isWildcard(bind)) {
+  if (socket === undefined && options.url === undefined && isWildcard(bind)) {
     throw new ServeConfigError("SERVE_URL_REQUIRED", `serving on ${bind} binds every address; name the one clients reach (--serve-url)`);
   }
   // Both sides are hashed to one length, so the comparison takes the same time whatever the caller sent.
@@ -328,14 +442,27 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
       send(res, 500, { error: "FAILED", message: (error as Error)?.message ?? String(error) });
     });
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(options.port ?? 0, bind, () => resolve());
-  });
-  const address = server.address() as AddressInfo;
-  const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
+  let url: string;
+  let forget = () => {};
+  if (socket !== undefined) {
+    await clearSocket(socket);
+    const mine = await listenOnSocket(server, socket);
+    // A drain, a park or a fence ends the instance with process.exit, which closes no server: the socket goes then too.
+    const onExit = () => removeSocket(socket, mine);
+    process.once("exit", onExit);
+    forget = () => (process.off("exit", onExit), removeSocket(socket, mine));
+    url = `unix:${socket}`;
+  } else {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(options.port ?? 0, bind, () => resolve());
+    });
+    const address = server.address() as AddressInfo;
+    const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
+    url = options.url ?? `http://${host}:${address.port}`;
+  }
   return {
-    url: options.url ?? `http://${host}:${address.port}`,
+    url,
     get active() {
       return active + (door?.working ? 1 : 0);
     },
@@ -365,7 +492,7 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     close() {
       closed = true;
       return new Promise((resolve) => {
-        server.close(() => resolve());
+        server.close(() => (forget(), resolve()));
         server.closeAllConnections();
       });
     },

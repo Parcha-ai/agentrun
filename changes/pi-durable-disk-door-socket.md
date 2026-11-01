@@ -1,0 +1,5 @@
+---
+packages: @parcha/pi-durable-disk
+kind: feature
+---
+A run in a local directory can serve its door on a unix socket: `run --dir PATH --serve-socket PATH/door.sock` (`serveRun({ socket })`), in place of `--serve`, `--serve-host` and `--serve-url`, which are refused beside it, as is a disk's run. The socket is made 0600, `run.json`'s `holder.serve` is `unix:<absolute path>`, and the bearer token applies as on loopback; the routes answer the recorded exchange byte for byte. A socket left by a dead door is replaced; a live door's socket, or anything that is not a socket, is refused (`SERVE_SOCKET_IN_USE`, `SERVE_SOCKET_INVALID`) and left as it is. A path longer than a socket address holds (`SOCKET_PATH_MAX`: 107 bytes on Linux, 103 on macOS) is refused with `SERVE_SOCKET_TOO_LONG`, never cut. The socket goes when the server closes or the instance exits.
