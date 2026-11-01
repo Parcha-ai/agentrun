@@ -7,7 +7,8 @@ import { readFileSync } from "node:fs";
 import { ERROR_STATUS } from "./errors.js";
 import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
-import { THINKING_LEVELS } from "./model.js";
+import { EFFORTS, THINKING_LEVELS } from "./model.js";
+import { MAX_OUTPUT_FILE, MAX_PACK_OUTPUTS, MAX_PACK_SKILLS, OUTPUT_TYPE, PACK_NAME, PACK_SKILL } from "./packs.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 
@@ -364,12 +365,52 @@ const REVIEW: Json = {
   description: "Set when a workflow run escalated: it completed, and waits for a person to review it. Like every workflow run, it takes no messages (501 unsupported_here).",
   "x-agentrun-serve": "review/1",
 };
+/** A profile pack, version 1 (packs.ts): per effort its ordered skills and thinking level, per output type its writer
+ *  skills and its file. */
+const SKILLS = { type: "array", maxItems: MAX_PACK_SKILLS, items: { type: "string", pattern: PACK_SKILL.source } };
+const PACK_ROW = { type: "object", additionalProperties: false, required: ["skills"], properties: { skills: SKILLS, thinking: { enum: [...THINKING_LEVELS] } } };
+const PACK: Json = {
+  type: "object", additionalProperties: false, required: ["version", "name", "effort", "outputs"],
+  properties: {
+    version: { const: 1 },
+    name: { type: "string", pattern: PACK_NAME.source },
+    effort: { type: "object", additionalProperties: false, required: [...EFFORTS], properties: Object.fromEntries(EFFORTS.map((effort) => [effort, PACK_ROW])) },
+    outputs: {
+      type: "object", maxProperties: MAX_PACK_OUTPUTS, propertyNames: { pattern: OUTPUT_TYPE.source },
+      additionalProperties: {
+        type: "object", additionalProperties: false, required: ["skills"],
+        properties: { skills: SKILLS, file: { type: "string", maxLength: MAX_OUTPUT_FILE } },
+      },
+    },
+  },
+};
+/** The profile a run was made with, as it is pinned (mandate.ts PinnedProfile). */
+const PINNED_PROFILE: Json = {
+  type: ["object", "null"], additionalProperties: false, required: ["name", "effort", "skills"],
+  properties: {
+    name: { type: "string" }, effort: { enum: [...EFFORTS] }, thinking: { enum: [...THINKING_LEVELS] }, skills: { type: "array", items: { type: "string" } },
+    output: { type: "object", additionalProperties: false, required: ["type", "skills"], properties: { type: { type: "string" }, file: { type: "string" }, skills: { type: "array", items: { type: "string" } } } },
+  },
+  description: "The profile pack the run was made with (`profile`, `output` on its request), resolved then and pinned: the pack's name, the effort row it used, that row's thinking level when the pack sets one, every skill it loads in order, and its output type with the file the deliverable goes to and the writer skills; null when the run named none.",
+  "x-agentrun-serve": "profile/1",
+};
+
 /** This server's own properties on the contract's objects, outside the contract, by where they go (a schema of
  *  components.schemas, then property names down to the object that takes them). Each is marked x-agentrun-serve with
  *  the addition that made it: `harness/1` is the one a later contract version would take on; `model/1` and `serve/1`
  *  are what this server added before it marked them. */
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  RunCreate: {
+    revision: { type: "string", description: "A revision of the agent to run, by its id; absent, the agent's current revision.", "x-agentrun-serve": "serve/1" },
+    profile: {
+      oneOf: [{ type: "string", description: "The name of a pack this server ships (capabilities.profiles)." }, PACK],
+      description: "A profile pack for the run: what it loads at its effort and for its output type. Its skills come from the agent's revision, else from the shipped pack; one neither holds is 422. Absent with `output`, the shipped `default` pack. A workflow run takes none.",
+      "x-agentrun-serve": "profile/1",
+    },
+    output: { type: "string", description: "An output type of the run's profile: its writer skills join the run's, and its file is where the deliverable goes. One the pack does not name is 422.", "x-agentrun-serve": "profile/1" },
+  },
   Run: {
+    profile: PINNED_PROFILE,
     review: REVIEW,
     imported_from: {
       type: ["object", "null"],
@@ -418,6 +459,15 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     archived_at: { type: ["string", "null"], description: "When the agent was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
   },
   Capabilities: {
+    profiles: {
+      type: "array",
+      description: "The profile packs this server ships, which a run may name (`profile`): each one's name, the efforts it takes, and its output types (`output`) with the file each writes, null when none.",
+      items: {
+        type: "object", additionalProperties: false, required: ["name", "efforts", "outputs"],
+        properties: { name: { type: "string" }, efforts: { type: "array", items: { enum: [...EFFORTS] } }, outputs: { type: "array", items: { type: "object", additionalProperties: false, required: ["type", "file"], properties: { type: { type: "string" }, file: { type: ["string", "null"] } } } } },
+      },
+      "x-agentrun-serve": "profile/1",
+    },
     harnesses: {
       type: "array",
       description: "Each harness a revision may name, and whether this server runs it; when not, why.",

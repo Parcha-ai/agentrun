@@ -103,10 +103,10 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
   return { model: { provider, modelId } };
 }
 
-/** A run's thinking level: its `effort`, else its revision's `thinking`, else the host's `AGENT_THINKING`, else medium.
- *  Never off. */
-export function thinkingOf(env: NodeJS.ProcessEnv, revision?: string): ModelThinkingLevel {
-  const level = [env[EFFORT_ENV], revision, env.AGENT_THINKING].find((name) => (THINKING_LEVELS as readonly unknown[]).includes(name));
+/** A run's thinking level: its profile pack's effort row's `thinking` (`pack`), else its `effort`, else its revision's
+ *  `thinking`, else the host's `AGENT_THINKING`, else medium. Never off. */
+export function thinkingOf(env: NodeJS.ProcessEnv, revision?: string, pack?: string): ModelThinkingLevel {
+  const level = [pack, env[EFFORT_ENV], revision, env.AGENT_THINKING].find((name) => (THINKING_LEVELS as readonly unknown[]).includes(name));
   return (level ?? "medium") as ModelThinkingLevel;
 }
 

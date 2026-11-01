@@ -18,6 +18,8 @@ export function script(spec, given = {}) {
   if (/Say your thinking\./.test(text)) return [{ say: `Thinking ${spec.thinking}.`, usd: 0.001 }];
   // Writes the run's deck with the write tool, then answers as "Say your system." does (pack-job.test.mjs).
   if (/Make the slides, then say your system\./.test(text)) return [{ call: "write", args: { path: "slides.html", content: SLIDES }, usd: 0.001 }, { say: `Thinking ${spec.thinking}.\nNative: ${(given.skills ?? []).map((skill) => skill.name).join(", ") || "none"}\n${text}`, usd: 0.001 }];
+  // The session's thinking level, then its whole system prompt, as the answer.
+  if (/Say your system\./.test(text)) return [{ say: `Thinking ${spec.thinking}.\n${text}`, usd: 0.001 }];
   if (/Price unknown\./.test(text)) return [{ say: "Priced unknown.", usd: null }];
   // A chat whose second turn has a request of unknown price.
   if (/Second turn unpriced\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: null }, { end: true, usd: 0.001 }];

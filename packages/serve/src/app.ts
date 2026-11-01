@@ -27,6 +27,7 @@ import { imageLoader } from "./pdf-pages.js";
 import { type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
+import { type PinnedProfile, withMandate } from "./mandate.js";
 import { promptOf, systemOf } from "./skills.js";
 import { isObject } from "./validate.js";
 
@@ -73,7 +74,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // gets a start mark of its own, which its error entry answers.
   const marked = await markRequests(chosen.models, cancelledIn(where.root));
   const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced, refused: marked.refused });
-  const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
+  // The profile pack the run was made with, pinned in its serve.json (run-profile.ts): its thinking, its mandate, and the
+  // bundled skills staged beside the revision's.
+  const pinned = revision.kind === "agentic" ? await readJson(join(where.root, RUN_META)) : null;
+  const profile = isObject(pinned?.profile) ? (pinned.profile as unknown as PinnedProfile) : undefined;
+  const skillFiles = revision.kind === "agentic" ? [...Object.keys(revision.body.skills), ...(Array.isArray(pinned?.staged_skills) ? pinned.staged_skills.filter((path): path is string => typeof path === "string") : [])] : [];
+  const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined, profile?.thinking);
   const registry = createRegistry();
   registry.install(CodingTools);
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
@@ -81,7 +87,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
     // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts).
     const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
-    const { system: instructions, native } = await systemOf(revision.body.instructions, Object.keys(revision.body.skills), where.work, check);
+    const { system: instructions, native } = await systemOf(withMandate(revision.body.instructions, profile), skillFiles, where.work, check);
     const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
@@ -127,7 +133,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work);
+    const instructions = await promptOf(withMandate(revision.body.instructions, profile), skillFiles, where.work);
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => marked.open(durable) } as unknown as AppOptions;
   }
   const meta = await readJson(join(where.root, RUN_META));

@@ -235,3 +235,28 @@ test("the decision providers' widening to parallel is its own addition, decision
   assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
 });
+
+test("the run request takes exactly the fields the served RunCreate names: the contract's, and this server's own marked (revision, profile, output)", async (t) => {
+  const { RUN_CREATE_FIELDS } = await import("../dist/server.js");
+  const { doc } = await served(t);
+  const fields = doc.components.schemas.RunCreate.properties;
+  assert.deepEqual(Object.keys(fields).sort(), [...RUN_CREATE_FIELDS].sort(), "every field POST /agents/{agent_id}/runs takes, and no other");
+  const own = Object.fromEntries(Object.entries(fields).filter(([, schema]) => schema["x-agentrun-serve"]).map(([field, schema]) => [field, schema["x-agentrun-serve"]]));
+  assert.deepEqual(own, { revision: "serve/1", profile: "profile/1", output: "profile/1" });
+  for (const field of Object.keys(own)) assert.ok(doc.info["x-agentrun-serve"].fields.includes(`RunCreate.${field}`), field);
+  assert.equal(doc.components.schemas.Run.properties.profile["x-agentrun-serve"], "profile/1", "a run names the profile it pinned");
+  assert.equal(doc.components.schemas.Capabilities.properties.profiles["x-agentrun-serve"], "profile/1", "capabilities list the packs this server ships");
+});
+
+test("a run made with an inline profile meets the served Run schema, its pinned profile included", async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const skills = { "effort-x/SKILL.md": "---\nname: effort-x\ndescription: d\n---\nE\n", "writer-x/SKILL.md": "---\nname: writer-x\ndescription: d\n---\nW\n" };
+  assert.equal((await api("POST", "/agents", { ...agent("profiled", { skills: ["effort-x", "writer-x"] }), skills })).status, 201);
+  const profile = { version: 1, name: "inline", effort: { low: { skills: ["effort-x"], thinking: "high" }, medium: { skills: ["effort-x"] }, high: { skills: ["effort-x"] } }, outputs: { report: { skills: ["writer-x"], file: "report.md" } } };
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/RunCreate" }, { input: { content: "hi" }, effort: "low", profile, output: "report" }), [], "the request");
+  const run = (await api("POST", "/agents/profiled/runs", { input: { content: "hi" }, effort: "low", profile, output: "report" })).body;
+  // kind, revision and archived_at are this server's own and not yet marked (a gap of their own): only they are set aside.
+  const { kind: _k, revision: _r, archived_at: _a, ...contract } = run;
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Run" }, contract), [], JSON.stringify(run.profile));
+});

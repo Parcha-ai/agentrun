@@ -3,6 +3,7 @@
 // the run's workspace the output lands in. A pack is policy only: skill names and levels, never a skill's text.
 // packIssues checks a pack's shape; resolvePack reads a checked pack for one run. Neither reads a file or the
 // environment. defaultPack reads the pack serve ships, built next to this module (dist/packs/default).
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type { InputIssue } from "./errors.js";
@@ -167,6 +168,15 @@ export function resolvePack(pack: Pack, { effort = "medium", output }: PackAsk =
     ...(output !== undefined && writer ? { output: { type: output, ...(writer.file !== undefined ? { file: writer.file } : {}), skills: [...writers] } } : {}),
   };
 }
+
+/** A pack this server ships: the pack, and the directory its bundled skills are in (`<skillsDir>/<name>/SKILL.md`). */
+export type ShippedPack = { pack: Pack; skillsDir: string };
+const SHIPPED = new Map<string, ShippedPack>();
+SHIPPED.set("default", { pack: JSON.parse(readFileSync(new URL("./packs/default/pack.json", import.meta.url), "utf8")) as Pack, skillsDir: fileURLToPath(new URL("./packs/default/skills/", import.meta.url)) });
+
+/** The packs this server ships, by name: what a run's `profile` may name, and `default`, the pack an `output` alone uses
+ *  when there is one. Capabilities list them. */
+export const shippedPacks = (): Map<string, ShippedPack> => SHIPPED;
 
 /** The pack serve ships, `default`: its pack.json, and the directory its skills are in (`<skills>/<name>/SKILL.md`). */
 export async function defaultPack(): Promise<{ pack: Pack; skills: string }> {

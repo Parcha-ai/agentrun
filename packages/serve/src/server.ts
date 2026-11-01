@@ -24,6 +24,8 @@ import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./ru
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
+import { shippedPacks } from "./packs.js";
+import { runProfileOf } from "./run-profile.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
@@ -203,6 +205,14 @@ export function workflowTitle(name: string, input: Record<string, unknown>): str
   return words.length ? `${name}${/[?!:.]$/.test(name) ? "" : ":"} ${words.join(", ")}` : name;
 }
 
+/** The fields POST /agents/{agent_id}/runs takes: the contract's RunCreate, with this server's `revision`, `profile` and
+ *  `output` (openapi.ts marks them). Any other is 422 not_allowed. */
+export const RUN_CREATE_FIELDS: readonly string[] = Object.freeze(["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id", "profile", "output"]);
+
+/** The packs this server ships, as capabilities list them: each one's name, the efforts it takes, and its output types
+ *  with the file each writes (null when none). */
+const profilesView = () => [...shippedPacks()].map(([name, { pack }]) => ({ name, efforts: [...EFFORTS], outputs: Object.entries(pack.outputs).map(([type, output]) => ({ type, file: output.file ?? null })) }));
+
 export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
   const models = modelSource(env);
   return {
@@ -225,6 +235,8 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
     /** What a workflow revision's run gets: each model node runs on the model of its tier (`models.fast`,
      *  `models.default`, `models.strong`) with the tools it names of `node_tools`; a node that names no thinking level
      *  thinks at the run's effort, or medium. */
+    /** The profile packs a run may name (`profile`), and the output types each takes (`output`). */
+    profiles: profilesView(),
     workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS, ...(decisionsOf(env).some((offer) => offer.available) ? [DECISION_ADAPTER] : [])], decisions: { providers: decisionsOf(env) } },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
@@ -471,7 +483,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async () => {
-      const issues = Object.keys(body).filter((k) => !["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+      const issues = Object.keys(body).filter((k) => !RUN_CREATE_FIELDS.includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
       if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
       if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
       if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
@@ -487,9 +499,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const input = body.input as Json;
       const wrong = await inputIssuesOf(revision, input);
       if (wrong.length) throw invalid(wrong);
+      // A profile pack, when the body names one: resolved and checked now, pinned with the run (run-profile.ts).
+      const profile = runProfileOf(body, revision);
       await runnable(revision);
       const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, input) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-      const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}) });
+      const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(profile ? { profile } : {}) });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
     });
   }

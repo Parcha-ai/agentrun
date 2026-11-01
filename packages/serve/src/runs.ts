@@ -33,6 +33,8 @@ import { durationMs } from "./print.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
+import type { PinnedProfile } from "./mandate.js";
+import { type RunProfile, stageSkills } from "./run-profile.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 
 export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
@@ -87,6 +89,11 @@ type RunMeta = {
   input?: Json;
   effort?: string;
   max_cost_usd?: number;
+  /** The profile pack the run was made with, resolved then (run-profile.ts): read by its process at every launch. */
+  profile?: PinnedProfile;
+  /** The pack's bundled skill files staged into work/.agents/skills when the run was made, by path below it: its process
+   *  reads them beside the revision's. */
+  staged_skills?: string[];
   error?: { code: string; message: string; details?: { reason: string } };
   /** A workflow run's output, once it completed. */
   output?: unknown;
@@ -428,6 +435,8 @@ export class Runs {
       ...(isObject(stored?.input) ? { input: stored.input } : {}),
       ...(typeof stored?.effort === "string" ? { effort: stored.effort } : {}),
       ...(typeof stored?.max_cost_usd === "number" ? { max_cost_usd: stored.max_cost_usd } : {}),
+      ...(isObject(stored?.profile) ? { profile: stored.profile as PinnedProfile } : {}),
+      ...(Array.isArray(stored?.staged_skills) ? { staged_skills: stored.staged_skills.filter((path): path is string => typeof path === "string") } : {}),
       ...(stored?.error ? { error: stored.error } : {}),
       ...(stored && "output" in stored ? { output: stored.output } : {}),
       ...(isObject(stored?.review) ? { review: stored.review as SavedReview } : {}),
@@ -1143,7 +1152,7 @@ export class Runs {
     this.starting++;
   }
 
-  async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number; profile?: RunProfile }): Promise<Run> {
     await this.sweepOnce();
     await this.takePlace();
     try {
@@ -1156,14 +1165,18 @@ export class Runs {
     }
   }
 
-  private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number; profile?: RunProfile }): Promise<Run> {
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
+    // The pack's bundled skills, beside the revision's that startRun seeded: once, as the revision's are seeded once.
+    const staged = options.profile ? await stageSkills(started.workspace, options.profile.bundled) : [];
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
       created_at: new Date().toISOString(),
       input: options.input,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
+      ...(options.profile ? { profile: options.profile.pinned } : {}),
+      ...(staged.length ? { staged_skills: staged } : {}),
     };
     await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
@@ -1400,6 +1413,7 @@ export class Runs {
       state,
       title: run.meta.title,
       ...(run.meta.effort ? { effort: run.meta.effort } : {}),
+      profile: run.meta.profile ?? null,
       created_at: run.meta.created_at,
       updated_at: run.updatedAt,
       ended_at: endedAt,
