@@ -24,6 +24,7 @@
       "RunError",
       "RunFileError",
       "RunRecordError",
+      "SOCKET_PATH_MAX",
       "ServeConfigError",
       "ServeError",
       "StoreBehindSealError",

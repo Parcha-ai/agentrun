@@ -9,10 +9,10 @@
 // unix socket instead (`socket`): made 0600, it is reached through the file system, so a run in a container that shares
 // its directory with the host is reachable from both sides.
 import { createHash, timingSafeEqual } from "node:crypto";
-import { chmodSync, lstatSync, readFileSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { connect, isIP, type AddressInfo } from "node:net";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { isMainThread } from "node:worker_threads";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -47,9 +47,10 @@ export interface ServeOptions {
   readonly token?: string;
   /**
    * Listen on this unix socket instead of a TCP address: `port`, `host` and `url` are refused beside it. The socket is
-   * made 0600, so only its owner can connect, and `url` (run.json's holder) is `unix:<absolute path>`. A socket already
-   * there that refuses a connection is a dead door's and is replaced; one that answers is a live door's, and it and
-   * anything that is not a socket are refused and left as they are. A path longer than a socket address holds
+   * made 0600, so only its owner can connect, in its directory (made 0700 when missing), and `url` (run.json's holder)
+   * is `unix:<absolute path>`. A socket already there that refuses a connection is a dead door's and is replaced; one
+   * that answers is a live door's, and it and anything that is not a socket are refused and left as they are. Bind a
+   * run's socket only while holding the run (see `clearSocket`). A path longer than a socket address holds
    * (`SOCKET_PATH_MAX` bytes) is refused, never cut. The socket goes when the server closes or the process exits. For a
    * run in a local directory: `requestRun` reaches only `http:` and `https:` doors.
    */
@@ -138,24 +139,30 @@ const isWildcard = (host: string) => {
  */
 export const SOCKET_PATH_MAX = process.platform === "linux" ? 107 : 103;
 
+/** `path` made absolute, as a door's socket listens on it: refused when a socket address cannot hold it whole. */
+export function doorSocketPath(path: string): string {
+  const absolute = resolve(path);
+  const bytes = Buffer.byteLength(absolute);
+  if (bytes > SOCKET_PATH_MAX) {
+    throw new ServeConfigError("SERVE_SOCKET_TOO_LONG", `the door socket ${absolute} is ${bytes} bytes, and a unix socket path holds at most ${SOCKET_PATH_MAX} here: name a shorter one`);
+  }
+  return absolute;
+}
+
 /** The absolute path a door on a socket listens on: no TCP address beside it, and a path a socket address holds whole. */
 function socketPathOf(options: ServeOptions): string {
   const tcp = (["port", "host", "url"] as const).filter((name) => options[name] !== undefined);
   if (tcp.length) throw new ServeConfigError("SERVE_SOCKET_INVALID", `a door on a unix socket has no TCP address: drop ${tcp.join(", ")}`);
-  const path = resolve(options.socket!);
-  const bytes = Buffer.byteLength(path);
-  if (bytes > SOCKET_PATH_MAX) {
-    throw new ServeConfigError("SERVE_SOCKET_TOO_LONG", `the door socket ${path} is ${bytes} bytes, and a unix socket path holds at most ${SOCKET_PATH_MAX} here: name a shorter one`);
-  }
-  return path;
+  return doorSocketPath(options.socket!);
 }
 
 /**
  * Clears `path` for a door's socket: nothing there, or a socket that refuses a connection (a dead door's, removed). A
  * socket that answers is a live door's, and is refused; so is anything that is not a socket, or a socket this process
- * cannot probe, and each is left where it is. Two starts that both find the same dead socket could each remove it in turn,
- * the second after the first listens there; that needs two instances of one run starting at once, which its owner lock
- * settles, so nothing here guards it. A start that finds a live door never touches it.
+ * cannot probe, and each is left where it is. Between the probe and the bind nothing here holds the path: two starts that
+ * both find the same dead socket could each remove it in turn, the second after the first listens there. So whoever binds
+ * a run's socket holds the run first: the CLI binds it once the run's owner lock is held (`afterClaim`), before run.json
+ * names it, and a second instance of the run stops at that lock, before it touches the socket.
  */
 async function clearSocket(path: string): Promise<void> {
   let found: Stats;
@@ -445,6 +452,8 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
   let url: string;
   let forget = () => {};
   if (socket !== undefined) {
+    // A directory that is not there yet (a new run's) is made private to its owner.
+    mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
     await clearSocket(socket);
     const mine = await listenOnSocket(server, socket);
     // A drain, a park or a fence ends the instance with process.exit, which closes no server: the socket goes then too.

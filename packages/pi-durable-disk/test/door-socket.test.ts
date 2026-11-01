@@ -4,7 +4,7 @@
 // themselves answer as on loopback: door-exchange.test.ts runs the recorded exchange over a socket too.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { createServer as createNetServer } from "node:net";
@@ -18,6 +18,7 @@ import { scratchRoot } from "./_run-support.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const APP = fileURLToPath(new URL("./fixtures/lifecycle-app.ts", import.meta.url));
+const HOLD_LOCK = fileURLToPath(new URL("./fixtures/hold-owner-lock.ts", import.meta.url));
 const TOKEN = "door-socket-token";
 
 type Reply = { status: number; body: Record<string, any>; headers: Record<string, unknown> };
@@ -57,6 +58,53 @@ const refusedWith = (code: string, message?: RegExp) => (error: unknown) => {
   return true;
 };
 
+/** A 0600 file under `root` holding the door's token. */
+function tokenFile(root: string): string {
+  const file = join(root, "door-token");
+  writeFileSync(file, `${TOKEN}\n`, { mode: 0o600 });
+  return file;
+}
+
+/** `node cli.ts <args>` as a group of its own (started at once, or by `start()`), its stderr log lines as JSON. */
+function instance(root: string, args: string[], now = true) {
+  const out = join(root, "out");
+  mkdirSync(out, { recursive: true });
+  const events: Record<string, unknown>[] = [];
+  let stderr = "";
+  let child: ChildProcess | undefined;
+  let exited!: (code: number | null) => void;
+  const done = new Promise<number | null>((resolve) => (exited = resolve));
+  const start = () => {
+    child = spawn(process.execPath, [CLI, ...args], { detached: true, stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, PDA_TEST_OUT: out } });
+    createInterface({ input: child.stderr! }).on("line", (line) => {
+      stderr += `${line}\n`;
+      try {
+        events.push(JSON.parse(line) as Record<string, unknown>);
+      } catch {
+        // not a log line
+      }
+    });
+    child.once("close", (code) => exited(code));
+  };
+  if (now) start();
+  return {
+    get child() {
+      return child!;
+    },
+    events,
+    exited: done,
+    start,
+    stderr: () => stderr,
+    kill: () => {
+      try {
+        if (child?.pid) process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // gone
+      }
+    },
+  };
+}
+
 describe("the door on a unix socket", () => {
   it("is made 0600 whatever the umask, is named unix:<absolute path>, takes the bearer token as loopback does, and is gone once closed", async () => {
     const dir = scratchRoot("door-socket-mode");
@@ -92,12 +140,11 @@ describe("the door on a unix socket", () => {
     try {
       const socket = join(dir.root, "door.sock");
       await deadSocket(socket);
-      const dead = lstatSync(socket);
-      assert.ok(dead.isSocket());
+      assert.ok(lstatSync(socket).isSocket());
+      await assert.rejects(call(socket, "GET", "/status"), { code: "ECONNREFUSED" }, "nothing listens behind it");
       servers.push(await serveRun({ socket, token: TOKEN }));
       const live = lstatSync(socket);
-      assert.notEqual(live.ino, dead.ino, "the dead socket was replaced");
-      assert.equal((await call(socket, "GET", "/status", { token: TOKEN })).status, 503);
+      assert.equal((await call(socket, "GET", "/status", { token: TOKEN })).status, 503, "the dead socket was replaced by a live door");
 
       await assert.rejects(serveRun({ socket, token: TOKEN }), refusedWith("SERVE_SOCKET_IN_USE", /live door's socket/));
       assert.equal(lstatSync(socket).ino, live.ino, "the live door's socket is where it was");
@@ -180,34 +227,14 @@ describe("--serve-socket", () => {
     assert.match(text, /"error":"SERVE_SOCKET_TOO_LONG"/);
   });
 
-  it("an instance serves its run on the socket, run.json's holder names it, and the socket goes when the instance drains and exits", { timeout: 90_000 }, async () => {
+  it("a new run's instance makes its directory, serves on the socket, names it in run.json, and removes it when it drains and exits", { timeout: 90_000 }, async () => {
     const dir = scratchRoot("door-socket-instance");
-    const out = join(dir.root, "out");
     const run = join(dir.root, "run");
-    mkdirSync(out);
-    mkdirSync(run);
     const socket = join(run, "door.sock");
-    const tokenFile = join(dir.root, "door-token");
-    writeFileSync(tokenFile, `${TOKEN}\n`, { mode: 0o600 });
-    const child = spawn(process.execPath, [CLI, "run", "--dir", run, "--app", APP, "--serve-socket", socket, "--serve-token-file", tokenFile], {
-      detached: true,
-      stdio: ["ignore", "ignore", "pipe"],
-      env: { ...process.env, PDA_TEST_OUT: out },
-    });
-    const events: Record<string, unknown>[] = [];
-    let stderr = "";
-    createInterface({ input: child.stderr! }).on("line", (line) => {
-      stderr += `${line}\n`;
-      try {
-        events.push(JSON.parse(line) as Record<string, unknown>);
-      } catch {
-        // not a log line
-      }
-    });
-    const exited = new Promise<number | null>((resolve) => child.once("close", (code) => resolve(code)));
+    const pdd = instance(dir.root, ["run", "--dir", run, "--app", APP, "--serve-socket", socket, "--serve-token-file", tokenFile(dir.root)]);
     try {
-      const running = await until("the instance's door", () => events.find((e) => e.event === "running"), 30_000);
-      assert.equal(running.serve, `unix:${socket}`, stderr);
+      const running = await until("the instance's door", () => pdd.events.find((e) => e.event === "running"), 30_000);
+      assert.equal(running.serve, `unix:${socket}`, pdd.stderr());
       const holder = (JSON.parse(readFileSync(join(run, "run.json"), "utf8")) as { holder: { serve?: unknown } }).holder;
       assert.equal(holder.serve, `unix:${socket}`, "run.json's holder names the socket");
       assert.equal((lstatSync(socket).mode & 0o777).toString(8), "600");
@@ -215,15 +242,52 @@ describe("--serve-socket", () => {
       const answered = await call(socket, "POST", "/submit", { token: TOKEN, body: { requestId: "s1", content: "hello", wait: true } });
       assert.equal(answered.status, 200, JSON.stringify(answered.body));
       assert.equal(answered.body.answer.text, "echo: hello");
-      process.kill(child.pid!, "SIGTERM");
-      assert.equal(await exited, 0, stderr);
+      process.kill(pdd.child.pid!, "SIGTERM");
+      assert.equal(await pdd.exited, 0, pdd.stderr());
       assert.equal(existsSync(socket), false, "the instance's exit removed its socket");
     } finally {
-      try {
-        process.kill(-child.pid!, "SIGKILL");
-      } catch {
-        // gone
-      }
+      pdd.kill();
+      dir.remove();
+    }
+  });
+
+  it("the socket is cleared and bound only under the run's owner lock: an instance that cannot take it leaves a dead socket as it found it", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("door-socket-held");
+    const run = join(dir.root, "run");
+    mkdirSync(run);
+    const socket = join(run, "door.sock");
+    const lock = spawn(process.execPath, [HOLD_LOCK, run], { stdio: ["ignore", "pipe", "inherit"] });
+    let held = "";
+    lock.stdout!.setEncoding("utf8").on("data", (chunk: string) => (held += chunk));
+    const pdd = instance(dir.root, ["run", "--dir", run, "--app", APP, "--serve-socket", socket, "--serve-token-file", tokenFile(dir.root)], false);
+    try {
+      await until("the lock held by another process", () => held.includes("held"), 30_000);
+      await deadSocket(socket);
+      const dead = lstatSync(socket);
+      pdd.start();
+      assert.equal(await pdd.exited, 76, pdd.stderr());
+      assert.match(pdd.stderr(), /OWNER_LOCK_HELD/);
+      assert.equal(lstatSync(socket).ino, dead.ino, "the dead socket is where it was: nothing cleared it without the lock");
+    } finally {
+      lock.kill("SIGKILL");
+      pdd.kill();
+      dir.remove();
+    }
+  });
+
+  it("a refusal once the lock is held (a file at the socket's path) exits 2 by name and leaves the file", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("door-socket-file");
+    const run = join(dir.root, "run");
+    mkdirSync(run);
+    const socket = join(run, "door.sock");
+    writeFileSync(socket, "kept\n");
+    const pdd = instance(dir.root, ["run", "--dir", run, "--app", APP, "--serve-socket", socket, "--serve-token-file", tokenFile(dir.root)]);
+    try {
+      assert.equal(await pdd.exited, 2, pdd.stderr());
+      assert.match(pdd.stderr(), /SERVE_SOCKET_INVALID/);
+      assert.equal(readFileSync(socket, "utf8"), "kept\n");
+    } finally {
+      pdd.kill();
       dir.remove();
     }
   });

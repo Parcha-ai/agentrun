@@ -17,7 +17,7 @@ import { archilEnv } from "./env.ts";
 import { BoxUnavailableError, exitCodeFor, FencedError, PdaError } from "./errors.ts";
 import { fork } from "./fork.ts";
 import { drain, recordWake, watchParking, type BusyState, type Parking } from "./park.ts";
-import { isLoopback, readServeToken, serveRun, type RunServer } from "./serve.ts";
+import { doorSocketPath, isLoopback, readServeToken, serveRun, type RunServer, type ServeOptions } from "./serve.ts";
 import { dockerHost } from "./hosts/docker.ts";
 import { localHost, procStartTicks } from "./hosts/local-host.ts";
 import { processTable, thisBoot } from "./process-table.ts";
@@ -279,6 +279,8 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
     if (tcp.length) throw new UsageError(`--serve-socket serves on a unix socket in place of a TCP address: drop ${tcp.map((name) => `--${name}`).join(", ")}`);
     if (dir === undefined) throw new UsageError("--serve-socket serves a run in a local directory (--dir); a disk's run is reached from other hosts, through --serve-url");
   }
+  // Refused here (SERVE_SOCKET_TOO_LONG) before anything opens.
+  const socketPath = serveSocket === undefined ? undefined : doorSocketPath(serveSocket);
   const tokenFile = str(values["serve-token-file"]);
   if (servePort !== undefined && tokenFile === undefined && !isLoopback(serveHost)) throw new UsageError(`--serve-host ${serveHost} is not loopback: name a --serve-token-file`);
   const serveToken = tokenFile === undefined ? undefined : readServeToken(tokenFile);
@@ -296,16 +298,19 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   if (dir !== undefined && typeof holder.startTicks !== "number") holder.startTicks = procStartTicks(process.pid);
   const cgroup = watchdogOwnsCgroup(holder);
   if (cgroup.warning) log("cgroup not owned", { warning: cgroup.warning });
-  // The server is up before the run opens (its address goes into the holder); parking starts after.
+  // The server is up before the run opens (its address goes into the holder); parking starts after. A socket's address is
+  // its path, known before it listens: it is cleared and bound once the run's owner lock is held (`afterClaim`, before
+  // run.json names it), so a second instance of the run, which stops at that lock, never touches the live one's socket.
   let parking: Parking | undefined;
   let server: RunServer | undefined;
-  if (servePort !== undefined || serveSocket !== undefined) {
+  const serve = (where: Pick<ServeOptions, "port" | "host" | "url" | "socket">) =>
+    serveRun({ ...where, token: serveToken, root: rootOptions, onIdle: () => parking?.check() });
+  if (servePort !== undefined) {
     const url = str(values["serve-url"]);
-    const where = serveSocket !== undefined ? { socket: serveSocket } : { port: Number(servePort), host: serveHost, ...(url ? { url } : {}) };
-    server = await serveRun({ ...where, token: serveToken, root: rootOptions, onIdle: () => parking?.check() });
+    server = await serve({ port: Number(servePort), host: serveHost, ...(url ? { url } : {}) });
     holder.serve = server.url;
-  }
-  const idleMs = ms("park-idle") ?? (server ? parkMs : undefined);
+  } else if (socketPath !== undefined) holder.serve = `unix:${socketPath}`;
+  const idleMs = ms("park-idle") ?? (servePort !== undefined || socketPath !== undefined ? parkMs : undefined);
   const steps: Record<string, number> = {};
   let run: DurableRun;
   try {
@@ -314,6 +319,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
       // A local directory is its own claim (no mount, no token); a disk's run is mounted with a token.
       ...(dir === undefined ? { mountToken: await readToken(values), mountRoot, host: { archil: str(values.archil) } } : localRun(dir)),
       afterClaim: async (claim) => {
+        if (socketPath !== undefined) server = await serve({ socket: socketPath });
         app = await loadApp(str(values.app)!, { ref, root: claim.root, work: claim.work, store: claim.store });
         const { onOpen: _onOpen, beforeResume, root: appRoot, wake: _wake, door: _door, ...harness } = app;
         Object.assign(rootOptions, appRoot ?? {});
