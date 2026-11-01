@@ -235,7 +235,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 </Field>
               )}
               <Field label="Model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
-                <input value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder={modelDefault?.text ?? "provider/model"} className={input} />
+                <input value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
               </Field>
             </div>
           )}

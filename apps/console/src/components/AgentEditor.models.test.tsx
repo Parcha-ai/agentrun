@@ -11,10 +11,10 @@ const agentOn = (harness: string, model?: string): Agent => ({ agent_id: "calc",
 const settings = (agent: Agent) => renderToStaticMarkup(createElement(AgentEditor, { agent, caps, step: "settings" }));
 
 describe("AgentEditor, the Model field", () => {
-  it("on pi, names the server's default without the gateway's prefix, the full id in its title", () => {
+  it("on pi, names the server's default without the gateway's prefix, the full id in its title; the placeholder is a value a save takes", () => {
     const html = settings(agentOn("pi"));
     expect(html).toContain(`Empty uses the server&#x27;s default (<span title="agent-model/gpt-6-luna">gpt-6-luna</span>).`);
-    expect(html).toContain('placeholder="gpt-6-luna"');
+    expect(html).toContain('placeholder="provider/model"');
   });
   it("on claude-agent or codex, offers no default it may not run: the person chooses a model", () => {
     for (const harness of ["claude-agent", "codex"]) {
