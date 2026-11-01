@@ -36,6 +36,8 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
 export type FauxAction =
   | { say: string; usd?: number | null }
   | { call: string; args?: unknown; usd?: number | null }
+  /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls. */
+  | { calls: { call: string; args?: unknown }[]; usd?: number | null }
   | { submit: unknown; usd?: number | null }
   /** The reply ends the turn without a submission. */
   | { end: true; usd?: number | null }
@@ -138,16 +140,18 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("say" in action) io.onEvent({ type: "text", delta: action.say });
             else if ("end" in action) return await end("completed");
             else {
-              const name = "call" in action ? action.call : "submit";
-              const args = "call" in action ? action.args ?? {} : { value: action.submit };
-              const callId = `${spec.key}:${index}`;
-              const tool = tools.get(name);
-              await append(FAUX_RECORDS.call, { callId, name });
-              io.onEvent({ type: "tool_start", callId, name, args });
-              const result = tool ? await tool.call(args, { callId, signal }).catch((error: Error) => ({ text: error.message, isError: true })) : { text: `unknown tool ${name}`, isError: true };
-              if (tool) stats.calls.push(name);
-              await append(FAUX_RECORDS.result, { callId, isError: result.isError === true });
-              io.onEvent({ type: "tool_end", callId, name, isError: result.isError === true });
+              const asked = "calls" in action ? action.calls.map((c) => ({ name: c.call, args: c.args ?? {} }))
+                : [{ name: "call" in action ? action.call : "submit", args: "call" in action ? action.args ?? {} : { value: action.submit } }];
+              for (const [n, { name, args }] of asked.entries()) {
+                const callId = "calls" in action ? `${spec.key}:${index}.${n}` : `${spec.key}:${index}`;
+                const tool = tools.get(name);
+                await append(FAUX_RECORDS.call, { callId, name });
+                io.onEvent({ type: "tool_start", callId, name, args });
+                const result = tool ? await tool.call(args, { callId, signal }).catch((error: Error) => ({ text: error.message, isError: true })) : { text: `unknown tool ${name}`, isError: true };
+                if (tool) stats.calls.push(name);
+                await append(FAUX_RECORDS.result, { callId, isError: result.isError === true });
+                io.onEvent({ type: "tool_end", callId, name, isError: result.isError === true });
+              }
             }
           }
         } catch (error) {

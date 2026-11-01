@@ -13,7 +13,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-adapters/host";
-import { type EntryLike, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { type EntryLike, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
 /** A run's cap in USD, passed to its process. */
@@ -63,13 +63,15 @@ const figureOf = (value: unknown): number | undefined => (typeof value === "numb
  *  timeline counts them (pi-durable-agent's meter: every start, less those withdrawn, against the answers after the first
  *  mark, and a summary's starts against its costs), so the two agree on how many were cut. */
 function openRequests(entries: readonly EntryLike[]): { generation: number; compaction: number } {
-  let [marked, answered, refused, compacting, compactions] = [0, 0, 0, 0, 0];
+  let [marked, answered, refused, compacting, compactions, continued] = [0, 0, 0, 0, 0, 0];
   for (const entry of entries) {
     const message = entry.model?.[0] as { stopReason?: unknown } | undefined;
     const data = (entry.data ?? {}) as Record<string, unknown>;
     const summary = data.request === "compaction";
     if (entry.kind === REQUEST_REFUSED) refused += 1;
     else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") refused -= 1;
+    else if (entry.kind === REQUEST_CONTINUED) continued += 1;
+    else if (entry.kind === "pi.assistant" && continued > 0 && message) continued -= 1;
     else if (entry.kind === REQUEST_STARTED) summary ? (compacting += 1) : (marked += 1);
     else if (entry.kind === REQUEST_ENDED) { if (data.unsent === true) summary ? (compacting -= 1) : (marked -= 1); }
     else if (entry.kind === REQUEST_COST) compactions += 1;
