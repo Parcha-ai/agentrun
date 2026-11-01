@@ -1,19 +1,17 @@
-// The page's own files (src/page) and the vendored OpenAPI contract (src/openapi) are plain files; tsc leaves them out,
-// so the build copies them next to the server.
+// The vendored OpenAPI contract (src/openapi) is a plain file; tsc leaves it out, so the build copies it next to the server.
 import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-cpSync(join(root, "src", "page"), join(root, "dist", "page"), { recursive: true });
 cpSync(join(root, "src", "openapi"), join(root, "dist", "openapi"), { recursive: true });
 
 // The console (apps/console), when its own build ran first: its index.html and Vite's assets, never a source map, into
-// dist/console, which the server answers at /console/. Without that build the server says so there.
+// dist/console, which the server answers at /. Without that build the server says so there.
 const built = join(root, "..", "..", "apps", "console", "dist");
 if (existsSync(join(built, "index.html"))) {
   const index = readFileSync(join(built, "index.html"), "utf8");
-  // The server's CSP (src/page.ts) runs no inline script or style, and the console is served below /console/.
+  // The server's CSP (src/page.ts) runs no inline script or style, and the console's paths stay relative to it.
   const problems = [
     [/<script\b(?![^>]*\ssrc\s*=)[^>]*>/i, "an inline <script>"],
     [/<style[\s>]/i, "a <style> block"],

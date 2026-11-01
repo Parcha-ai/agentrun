@@ -93,8 +93,8 @@ export type ServeOptions = {
   fauxHarness?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
-  /** The console's built files, answered at /console/ (default dist/console beside the server, which this package's build
-   *  copies from apps/console/dist). */
+  /** The console's built files, answered at / (default dist/console beside the server, which this package's build copies
+   *  from apps/console/dist). */
   console?: string;
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
