@@ -44,7 +44,7 @@ The token is made once, mode 0600, in the data directory: `DIR/.token` for `--da
 never print it, echo it or write it anywhere else:
 
 ```sh
-export AGENTRUN_API_KEY="$(cat .agentrun/.token)"
+export AGENTRUN_API_KEY=$(cat .agentrun/.token)
 ```
 
 ## 3. Connect over MCP

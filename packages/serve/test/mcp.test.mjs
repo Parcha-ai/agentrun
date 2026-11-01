@@ -9,6 +9,8 @@ import { call, cookieOf, serve } from "./support.mjs";
 const TOOLS = ["whoami", "agents_list", "agents_create", "agents_revise", "runs_start", "runs_get", "runs_events", "runs_files", "runs_respond", "runs_cancel"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const INIT = { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "test", version: "1" } };
+/** A password for a test's owner, plainly no secret (as owner-auth.test.mjs makes them). */
+const notSecret = (name) => `not-a-secret-${name}`;
 
 /** One JSON-RPC message to the endpoint, as an MCP client sends it: the token, JSON, and both answer types accepted. */
 function mcpClient(server, { token = server.token, headers = {} } = {}) {
@@ -111,7 +113,7 @@ test("demo: an MCP client sets up and drives an agent: initialize, the ten tools
 
   // The token alone is taken.
   const page = { "content-type": "application/json", origin: server.url };
-  const owned = await call(server.port, { method: "POST", path: "/v2/setup", headers: page, body: { password: "correct horse battery staple" } });
+  const owned = await call(server.port, { method: "POST", path: "/v2/setup", headers: page, body: { password: notSecret("owner") } });
   assert.equal(owned.status, 201, owned.text);
   const cookie = cookieOf(owned);
   assert.equal((await call(server.port, { path: "/v2/agents", headers: { cookie } })).status, 200, "the cookie opens the rest of /v2");
