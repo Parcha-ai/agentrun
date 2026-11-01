@@ -77,6 +77,9 @@ function worstOf(calculateCost: typeof import("@earendil-works/pi-ai").calculate
  *  input bound (`inputTokensMax`, inputBound of its body; undefined when the body could not be measured). */
 export interface CapGuard {
   beforeRequest(request: { spentUsd: number | null; inFlight: readonly { inputTokensMax?: number }[]; inputTokensMax?: number }): undefined | { refuse: string };
+  /** The worst case a request this guard admitted is held at (its input bound and output ceiling at the model's price):
+   *  what the runner records for it, and counts it at when its own cost never comes in (cut short, or by a crash). */
+  worstOf?(request: { inputTokensMax?: number }): number | undefined;
 }
 
 /** A run on another harness: before each request, what the run has spent, plus the worst case of each request still in
@@ -101,6 +104,7 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
       if (spentUsd + held + worst > cap) return { refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${(spentUsd + held).toFixed(6)} spent or in flight the run would pass its cap of $${cap}: the run is out of budget.` };
       return undefined;
     },
+    worstOf: ({ inputTokensMax }) => (typeof inputTokensMax === "number" && Number.isFinite(inputTokensMax) ? price(inputTokensMax, output) : undefined),
   };
 }
 

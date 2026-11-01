@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-adapters, @parcha/agentrun-serve
+kind: fix
+---
+A capped `claude-agent` or `codex` run goes on after one of its requests was cut, by a stop or by a crash, while its cap leaves room: the cut request counts at the worst case the cap held for it, not as a spend no one knows. Before, the model proxy booked a response cut short at an unknown cost and a crash left a request with no booking, so the run's spend became unknown and every later request was refused with `spend_cap_reached`.
+- A harness runner's `beforeRequest` may answer `{ holdUsd }`, what the host holds for the request. The runner writes it on the request's `runner.request` record (`heldUsd`) before the request leaves, and the spend it shows the host (`spentUsd`) counts a request at that figure when the request's own cost never comes in: a response cut short, or a request a crash cut off, read by a later process. A request with no such figure (a session written before this release, or a host that holds none) leaves the spend unknown, as before. The cost booked for the request is still unknown, so the run's shown cost is unchanged.
+- serve's cap holds each request it admits at its worst case (its measured input bound and its model's output ceiling, at the model's price) and hands that figure to the runner. A capped run whose process died mid-request is opened again and goes on at that figure, and is refused with the cap's message once the figure leaves no room.
