@@ -48,8 +48,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {
       if (!BOUND_TOOLS.includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
-      // Another harness gets the host tools only (host-tools.ts: the file tools and fetch_page): any other tool this
-      // host binds, ask_person among them, is pi's here and refuses the run, never runs without it.
+      // Another harness gets the host tools only (host-tools.ts: the file tools, fetch_page and web_fetch): any other
+      // tool this host binds, ask_person among them, is pi's here and refuses the run, never runs without it.
       else if (harness !== DEFAULT_HARNESS && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
       else unset(`definition.tools[${index}]`, tool);
     });

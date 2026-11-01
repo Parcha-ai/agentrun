@@ -5,6 +5,6 @@ export type { ClaudeAgentPin } from "./errors.js";
 export type { ClaudeAgentAdapterOptions, ClaudeAgentProvider, ClaudeAgentSkill, ClaudeAgentThinking } from "./adapter.js";
 export { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION as CLAUDE_AGENT_CLI_VERSION } from "./versions.js";
 export { findClaudeExecutable as claudeAgentExecutable } from "./binary.js";
-export { anthropicPolicy, OWN_TOOL_PREFIX, thinks } from "./host/policy.js";
-export type { AnthropicPolicyOptions } from "./host/policy.js";
+export { anthropicPolicy, CLAUDE_WEB_SEARCH_TOOL, CLAUDE_WEB_SEARCH_USD, OWN_TOOL_PREFIX, thinks } from "./host/policy.js";
+export type { AnthropicPolicyOptions, AnthropicUsage } from "./host/policy.js";
 export type { ChildCommand, ConfineChild } from "./host/machine.js";

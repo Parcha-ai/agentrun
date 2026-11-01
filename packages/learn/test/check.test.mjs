@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CAPS, checkRun, NO_TOOL_LIST } from "../dist/index.js";
-import { BRANCH, FORK, HOST_TOOLS, NOTE_ID, OLD_NOTE, RUN, check, cleanFiles, index, memo, note, piNote, readme, report, richWorkflow, rules, skill, workflow } from "./support.mjs";
+import { BRANCH, FORK, HOST_TOOLS, MAIN_FILES, NOTE_ID, OLD_NOTE, RUN, check, cleanFiles, index, memo, note, piNote, readme, report, richWorkflow, rules, skill, workflow } from "./support.mjs";
 
 const NOTE = `learnings/${NOTE_ID}.md`;
 const MEMO = `memos/${RUN}.md`;
@@ -446,6 +446,80 @@ test("a value the host names as secret is refused, plain or encoded, and never p
     assert.ok(!JSON.stringify(problems).includes(value));
   }
   assert.deepEqual(check(cleanFiles(), { refuseValues: [value] }), []);
+});
+
+const VALUE = "s3cret-store-pass-7731";
+const hexOf = (text) => Buffer.from(text, "utf8").toString("hex");
+const SK_NAME = `sk-${"q7w2e9r4t1y8u3i6o5p0a2s4"}`;
+/** The clean branch with its skill moved to the folder `name`; the memo proposes `.agents/skills/`, so only the path and
+ *  the skill's own name hold it. */
+const skillNamed = (name) => {
+  const files = withFiles({ [`.agents/skills/${name}/SKILL.md`]: skill({ name }), [MEMO]: memo({ proposed: ["learnings/L-7c21e0a4b9d3.md (new)", ".agents/skills/ (new)", "workflows/find-policies/ (new draft)"] }) });
+  delete files[SKILL];
+  return files;
+};
+/** The clean branch with its draft moved to the folder `name`; neither file nor the memo holds the name. */
+const draftNamed = (name) => {
+  const files = withFiles({ [`workflows/${name}/workflow.json`]: workflow(), [`workflows/${name}/README.md`]: readme, [MEMO]: memo({ proposed: ["learnings/L-7c21e0a4b9d3.md (new)", ".agents/skills/find-policies/ (new)", "workflows/ (new draft)"] }) });
+  delete files[DRAFT];
+  delete files["workflows/find-policies/README.md"];
+  return files;
+};
+const found = (problems) => problems.map((p) => [p.rule, p.path, p.detail]);
+
+test("a skill whose folder is named for a host-named value, in hex, is refused on that path", () => {
+  const path = `.agents/skills/${hexOf(VALUE)}/SKILL.md`;
+  assert.deepEqual(found(check(skillNamed(hexOf(VALUE)), { refuseValues: [VALUE] })), [
+    ["secret_value", path, "its path holds a value the host named as secret"],
+    ["secret_value", path, "it holds a value the host named as secret"],
+  ]);
+});
+
+test("a skill folder named like an sk- key is refused on its path", () => {
+  const path = `.agents/skills/${SK_NAME}/SKILL.md`;
+  assert.deepEqual(found(check(skillNamed(SK_NAME))), [
+    ["secret_shape", path, "its path holds text shaped like a secret (sk- key)"],
+    ["secret_shape", path, "it holds text shaped like a secret (sk- key)"],
+  ]);
+});
+
+test("a workflow folder named for a host-named value, plain or in hex, is refused on both its files", () => {
+  for (const name of [VALUE, hexOf(VALUE)]) {
+    assert.deepEqual(found(check(draftNamed(name), { refuseValues: [VALUE] })), [
+      ["secret_value", `workflows/${name}/workflow.json`, "its path holds a value the host named as secret"],
+      ["secret_value", `workflows/${name}/README.md`, "its path holds a value the host named as secret"],
+    ], name);
+  }
+  const main = [...MAIN_FILES, `workflows/${VALUE}/workflow.json`, `workflows/${VALUE}/README.md`];
+  const deleted = withFiles({ [`workflows/${VALUE}/workflow.json`]: null, [`workflows/${VALUE}/README.md`]: null, ...listing("workflows/") });
+  assert.deepEqual(check(deleted, { main, refuseValues: [VALUE] }), [], "a deleted path is main's name, not the run's");
+});
+
+test("a branch whose name holds a host-named value or a secret's shape is refused, with no path", () => {
+  const branchProblems = (branch, options) => found(check(cleanFiles(), { branch, ...options }).filter((p) => p.path === undefined));
+  assert.deepEqual(branchProblems(`runs/${hexOf(VALUE)}`, { refuseValues: [VALUE] }), [["secret_value", undefined, "the branch's name holds a value the host named as secret"]]);
+  assert.deepEqual(branchProblems(`runs/${SK_NAME}`), [["secret_shape", undefined, "the branch's name holds text shaped like a secret (sk- key)"]]);
+  assert.deepEqual(branchProblems(`feature/${SK_NAME}`).map(([rule]) => rule), ["branch", "secret_shape"]);
+});
+
+test("a name one character off a value or a shape, at the same length, passes", () => {
+  const offByOne = (text, at, char) => text.slice(0, at) + char + text.slice(at + 1);
+  const hex = hexOf(VALUE);
+  const near = { hex: offByOne(hex, hex.length - 1, hex.at(-1) === "0" ? "1" : "0"), plain: offByOne(VALUE, VALUE.length - 1, "0"), shape: offByOne(SK_NAME, 1, "l") };
+  assert.equal(near.hex.length, hex.length);
+  assert.equal(near.plain.length, VALUE.length);
+  assert.deepEqual(check(skillNamed(near.hex), { refuseValues: [VALUE] }), [], near.hex);
+  assert.deepEqual(check(draftNamed(near.plain), { refuseValues: [VALUE] }), [], near.plain);
+  assert.deepEqual(check(skillNamed(near.shape)), [], near.shape);
+  assert.deepEqual(check(cleanFiles(), { branch: `runs/${near.hex}`, refuseValues: [VALUE] }).filter((p) => p.path === undefined), []);
+});
+
+test("a value holding a quote, a backslash or a control character is refused as JSON writes it", () => {
+  for (const value of ['pa"ss\\word-9x7', "pass\tword\u0001-9x7"]) {
+    const written = JSON.stringify(value).slice(1, -1);
+    assert.notEqual(written, value);
+    assert.deepEqual(found(check(withFiles({ [NOTE]: note({ body: `The admin password is ${written} here.` }) }), { refuseValues: [value] })), [["secret_value", NOTE, "it holds a value the host named as secret"]], written);
+  }
 });
 
 test("a planted API-key-shaped string in a note is refused", () => {
