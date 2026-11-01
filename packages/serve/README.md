@@ -84,6 +84,7 @@ at=2026-10-25T21:04:09.010Z event=auth_failed route=/v2/runs reason=wrong_token
 A request's path has no query. `auth_failed` names the route and why (`no_credential`, `wrong_token`,
 `wrong_link_token`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
+One line at start, `event=boxes`, says which boxes this server has ([Boxes](#boxes)); quiet keeps it too.
 
 ## In a container
 
@@ -173,6 +174,31 @@ A run whose end the agent store cannot take (a full disk) still ends: a cancel m
 its rows, and the server writes the end to the store again every 30 s until it lands; a restart before then reads the
 run as the store last had it. A run whose process was killed is opened again on its next message at once: a heartbeat
 of a process that is gone is not trusted.
+
+## Boxes
+
+A box is a machine apart from this one where a run's tools could run. No run uses a box yet. This release sets the boxes
+up and says which ones this server has. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
+(`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
+refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
+log line says what the server found:
+
+    event=boxes available=<ids or none> unavailable=<ids> <id>="<why>" ...
+
+The line gives a reason for each listed box that is unavailable. A reason never holds a key, a command's output or a
+provider's answer.
+
+- `docker`: the `docker` command on PATH, with a daemon that answers `docker version` for this server's user. It needs no key.
+- `daytona`: needs `DAYTONA_API_KEY`. Set `DAYTONA_API_URL` and `DAYTONA_TARGET` when Daytona's defaults do not fit.
+  The probe makes one authenticated read, of a box that does not exist. If Daytona refuses the key, the box is unavailable.
+- `modal`: needs `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and the SDK, which the host installs (`npm install modal`).
+  Its sandboxes live in the app that `AGENTRUN_BOX_APP` names (default `agentrun`). The probe checks that the SDK loads
+  and the token is set. It asks nothing of the provider.
+- `bwrap` is not in this release yet.
+
+The boxes come from `@parcha/pi-transport`, an optional peer of this package; install it beside the server to use any.
+The keys belong to the server alone. The launcher hands them over with the server's other secrets, and no run's process
+gets them, in its environment or on its pipe.
 
 ## Models
 
@@ -615,7 +641,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   origin only.
 - Each run's door listens on loopback and takes only the server's door token.
 - A run's process gets the server's environment (model keys and the `AGENT_MODEL` variables among it) without the
-  server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token.
+  server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token. It gets none of
+  the boxes' keys either ([Boxes](#boxes)).
 - A run's file tools (`read`, `write`, `edit`) reach its own `work/`, and two places of its own beside it: `read` also
   reaches the run's `tmp/` (next to `work/`, where a command's spilled output would go), and a write may also land in a
   temporary directory the run's environment made for a tool (`createTempDir`). Every other path, a link inside `work/`

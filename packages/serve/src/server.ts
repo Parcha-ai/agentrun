@@ -21,6 +21,7 @@ import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js"
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
+import { boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
@@ -302,6 +303,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
+  enabledBoxes(process.env);
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
@@ -330,6 +332,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   const env = withSecrets({ ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
   const caps = capabilities(env, maxRuns, await harnessOffers(env));
+  // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts). No run uses one yet: the log says which this server has.
+  const boxes = await boxRegistry(env);
+  log?.(logLine("boxes", boxesLog(boxes.offers(), enabledBoxes(env))));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
