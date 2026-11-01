@@ -19,7 +19,7 @@ import { readJson, RUN_META } from "./files.js";
 import { HARNESS_OF, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
 import { catalogPrices, type Listed, listedOf } from "./model.js";
-import { DEFAULT_HOST, DEFAULT_PORT, serverUrl } from "./server.js";
+import { DEFAULT_PORT } from "./server.js";
 import { secretCut } from "./secret-cut.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 
@@ -596,7 +596,6 @@ export async function importCommand(
         from: { type: "string" },
         "dry-run": { type: "boolean" },
         all: { type: "boolean" },
-        listen: { type: "string" },
         port: { type: "string" },
       },
     }));
@@ -609,7 +608,7 @@ export async function importCommand(
     console.error(`--port takes a port number\n\n${usage}`);
     return 2;
   }
-  const open = openAt(env, values.listen ?? DEFAULT_HOST, port);
+  const open = openAt(env, port);
   const sources = values.from === undefined ? SOURCES : values.from.split(",").map((s) => s.trim());
   const unknown = sources.filter((s) => !(SOURCES as readonly string[]).includes(s));
   if (unknown.length) {
@@ -667,11 +666,14 @@ async function foundAll(store: AgentStoreReader, runIds: readonly string[]): Pro
   return found;
 }
 
-/** Where a person opens the server: its public address when one is set (as the server takes it), else its own on
- *  `host` and `port`. */
-function openAt(env: NodeJS.ProcessEnv, host: string, port: number): string {
+/** The address the summary's Open line names on this machine: the one a local server listens on by default. */
+const LOCAL = "127.0.0.1"; // key-gate: loopback-rule the default address a server on this machine listens on; a hint printed, the line dials nothing
+
+/** Where a person opens the console: the server's public address when one is set (as the server takes it), else this
+ *  machine's at `port`. A hint after an import, not a server setting. */
+function openAt(env: NodeJS.ProcessEnv, port: number): string {
   const given = env.AGENTRUN_PUBLIC_URL || env.RENDER_EXTERNAL_URL;
   const parsed = given && URL.canParse(given) ? new URL(given) : undefined;
   if (parsed && /^https?:$/.test(parsed.protocol)) return parsed.href.replace(/\/+$/, "");
-  return port === 0 ? `${serverUrl(host, port).replace(/:0$/, "")}:<the port the server picks>` : serverUrl(host, port);
+  return `http://${LOCAL}:${port === 0 ? "<the port the server picks>" : port}`;
 }

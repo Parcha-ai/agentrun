@@ -619,7 +619,7 @@ test("import ends with the summary of every session found, read again from the s
   const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, ...inherited } = process.env;
   const env = { ...inherited, HOME: at, TZ: "America/Puerto_Rico" };
   const block = (...args) => {
-    const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all", "--listen", "0.0.0.0", "--port", "7555", ...args], { env, encoding: "utf8" });
+    const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all", "--port", "7555", ...args], { env, encoding: "utf8" });
     assert.equal(ran.status, 0, ran.stderr);
     return ran.stdout.trimEnd().split("\n").slice(-5);
   };
