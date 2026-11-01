@@ -39,7 +39,8 @@ test('a request cut short in this process (its cost booked unknown) counts at th
   assert.deepEqual(asked, [0, 0.25]);
   await booking.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.01 });
   assert.equal(booking.spentUsd(), 0.26);
-  assert.deepEqual((await runnerRecords(store)).filter(([kind]) => kind === RUNNER_RECORDS.turn), [[RUNNER_RECORDS.turn, { turn: 1, usd: null }], [RUNNER_RECORDS.turn, { turn: 2, usd: 0.01 }]], 'the cut one booked at an unknown price, as before');
+  // The answered one keeps the tokens its answer reported; the cut one reported none, so it keeps none.
+  assert.deepEqual((await runnerRecords(store)).filter(([kind]) => kind === RUNNER_RECORDS.turn), [[RUNNER_RECORDS.turn, { turn: 1, usd: null }], [RUNNER_RECORDS.turn, { turn: 2, usd: 0.01, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }]], 'the cut one booked at an unknown price, as before');
   // A later process reads the same: the turn's unknown cost at the figure its request held.
   assert.equal((await port(store, 0.25)).spentUsd(), 0.26);
 });
