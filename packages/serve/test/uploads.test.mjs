@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { ROUTES, takesBytes } from "../dist/server.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, pathProblem, suffixed, uploadTestHooks } from "../dist/uploads.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, cookieOf, follow, scratch, serve } from "./support.mjs";
+import { agent, call, cookieOf, follow, scratch, serve, storeRun } from "./support.mjs";
 
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 /** A test password, not a real one. */
@@ -106,6 +106,10 @@ test("a reservation is checked as the contract's FileCreate: 422 by field, 400 f
   assert.deepEqual(over.details, { limit: "max_upload_bytes" });
   assert.equal((await api("POST", "/files", { path: "max.bin", size_bytes: MAX_UPLOAD_BYTES })).status, 201, "the limit itself is taken");
   assert.equal((await api("POST", "/files", { path: "folders/keep/their/names.txt", size_bytes: 1 })).status, 201);
+  // Within 1024 characters and 255 bytes a segment, but a run's copy of it would be past the longest path the system opens.
+  const deep = Array.from({ length: 16 }, () => "\u{1d49c}".repeat(63)).join("/");
+  assert.equal([...deep].length, 1023);
+  assert.match((await refused({ path: deep, size_bytes: 1 }, 400, "invalid_file_path")).message, /too long for this server's disk/);
   // A content type is any string, as the contract has it.
   const typed = await api("POST", "/files", { path: "typed.txt", size_bytes: 1, content_type: `text/plain; ${"x=y; ".repeat(100)}charset=utf-8` });
   assert.equal(typed.status, 201, JSON.stringify(typed.body));
@@ -243,7 +247,8 @@ test("a copy that fails ends the run failed with why, starts no process, and the
   assert.deepEqual([read.status, read.error?.code], ["failed", "run_failed"], JSON.stringify(read));
   assert.match(read.error.message, /could not be copied into its workspace: no space left on the test's disk/);
   const dir = join(server.data, "runs", run.body.run_id);
-  assert.deepEqual([await stat(join(dir, "process.log")).catch(() => null), await stat(join(dir, "launching")).catch(() => null)], [null, null], "no process, and no launch mark left");
+  assert.equal(storeRun(server.data, run.body.run_id)?.state, "failed", "the store has its end");
+  assert.deepEqual([await stat(join(dir, "process.log")).catch(() => null), await stat(join(dir, "launching")).catch(() => null)], [null, null], "no process, and, its end in the store, no launch mark left");
   const message = await api("POST", `/runs/${run.body.run_id}/messages`, { content: "Go on." });
   assert.equal(message.status, 409, "a failed run takes no message");
   uploadTestHooks.beforeCopy = undefined;

@@ -1216,11 +1216,16 @@ export class Runs {
       this.markLaunching(run);
       await inputs(work);
     } catch (error) {
-      this.reportedBack(run);
       run.submitted = 0;
-      if (run.outcome || run.cancel) return false;
-      run.error = { code: "run_failed", message: `The run's files could not be copied into its workspace: ${(error as Error).message}`, retryable: false };
-      await this.carryBack(run, "failed");
+      // Cancelled while it copied: it ends so.
+      if (!(run.outcome || run.cancel)) {
+        run.error = { code: "run_failed", message: `The run's files could not be copied into its workspace: ${(error as Error).message}`, retryable: false };
+        await this.carryBack(run, "failed");
+      }
+      // The mark goes only once the store has the run's end: a server that goes down before then finds it, and fails the
+      // run rather than launch it on part of its files.
+      const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
+      if (row && row.state !== "running") this.reportedBack(run);
       return false;
     }
     this.reportedBack(run);

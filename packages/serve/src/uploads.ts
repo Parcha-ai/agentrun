@@ -6,7 +6,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { readJson, tempOf, writeDurable } from "./files.js";
@@ -26,6 +26,12 @@ const BYTES = "bytes";
 const UPLOAD_WINDOW_MS = 86_400_000;
 /** The longest name one path segment takes on disk (NAME_MAX), in bytes. */
 const NAME_MAX = 255;
+/** The longest path the system opens (PATH_MAX), in bytes with its NUL: 1024 on macOS, 4096 elsewhere. */
+const PATH_MAX = process.platform === "darwin" ? 1024 : 4096;
+/** A run id's room in a run's copy of a file: a UUIDv7's 36 characters. */
+const RUN_ID_ROOM = "x".repeat(36);
+/** The room a run's copy may add to each segment: a suffix, at most one past the most files a run names. */
+const SUFFIX_ROOM = `-${MAX_FILES_PER_RUN + 1}`.length;
 const SHA256 = /^[0-9a-f]{64}$/;
 const FIELDS = ["path", "size_bytes", "content_type", "sha256"];
 
@@ -101,6 +107,16 @@ export class Uploads {
   /** `root`: `<data>/files`. */
   constructor(private readonly root: string) {}
 
+  /** Why `path` cannot be a file's path here: not the contract's FilePathString, a segment longer than a name on disk,
+   *  or a run's copy of it (`<data>/runs/<run id>/work/inputs/<path>`, room for a suffix on each segment included) longer
+   *  than a path the system opens. Undefined when it can. */
+  private problemOf(path: string): string | undefined {
+    const problem = pathProblem(path);
+    if (problem) return problem;
+    const longest = Buffer.byteLength(join(dirname(this.root), "runs", RUN_ID_ROOM, "work", INPUTS_DIR, path)) + path.split("/").length * SUFFIX_ROOM + 1;
+    return longest > PATH_MAX ? `path is too long for this server's disk: a run's copy of it would take up to ${longest} bytes, over ${PATH_MAX}` : undefined;
+  }
+
   /** The file `id`, or null when there is none. */
   async get(id: string): Promise<UploadedFile | null> {
     if (!ID.test(id)) return null;
@@ -116,7 +132,7 @@ export class Uploads {
     if (body.content_type !== undefined && typeof body.content_type !== "string") issues.push({ field: "content_type", reason: "wrong_type", message: "content_type is a string" });
     if (body.sha256 !== undefined && !(typeof body.sha256 === "string" && SHA256.test(body.sha256))) issues.push({ field: "sha256", reason: typeof body.sha256 === "string" ? "bad_format" : "wrong_type", message: "sha256 is 64 lowercase hex digits" });
     if (issues.length) throw invalid(issues);
-    const problem = pathProblem(body.path as string);
+    const problem = this.problemOf(body.path as string);
     if (problem) throw new ApiError("invalid_file_path", problem);
     if ((body.size_bytes as number) > MAX_UPLOAD_BYTES) throw new ApiError("payload_too_large", `size_bytes is over ${MAX_UPLOAD_BYTES}, this server's largest upload`, { details: { limit: "max_upload_bytes" } });
     const now = Date.now();
@@ -219,7 +235,8 @@ export class Uploads {
       }
       const file = await this.get(id);
       if (!file) issues.push({ field, reason: "not_an_option", message: `There is no file ${id}: reserve it with POST /files.` });
-      else if (file.status !== "ready" || pathProblem(file.path)) issues.push({ field, reason: "invalid", message: `The file ${id} is not ready: send its bytes with PUT /files/${id} first.` });
+      else if (file.status !== "ready") issues.push({ field, reason: "invalid", message: `The file ${id} is not ready: send its bytes with PUT /files/${id} first.` });
+      else if (this.problemOf(file.path)) issues.push({ field, reason: "invalid", message: `The file ${id} cannot be copied into a run here: ${this.problemOf(file.path)}.` });
       else files.push(file);
     }
     if (issues.length) throw invalid(issues);
