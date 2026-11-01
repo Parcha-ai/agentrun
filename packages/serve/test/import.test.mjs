@@ -259,7 +259,7 @@ test("a current Codex rollout, the person's turns user messages with no user_mes
   const h = { at: join(root, "home"), temp: join(root, "tmp") };
   const project = join(h.at, "code", "lint-bot");
   mkdirSync(project, { recursive: true });
-  const current = codexSession(h.at, project, 21, { prompt: "Lint the code.", then: "Fix what it found.", events: false });
+  const current = codexSession(h.at, project, 21, { prompt: "Lint the code.", then: "<task>Fix what it found.</task>", events: false });
   const older = codexSession(h.at, project, 22, { prompt: "Check the build.", then: "Ship it." });
   const plan = await planImport(options(h));
   assert.deepEqual(plan.skipped, [], "neither is passed over as holding no message of the person's");
@@ -271,8 +271,8 @@ test("a current Codex rollout, the person's turns user messages with no user_mes
     ],
   );
   const turns = async (file) => (await readSession(file, "codex")).turns.map((turn) => (turn.role === "user" ? `user:${turn.text}` : turn.role));
-  // The CLI's AGENTS.md and environment blocks are no turn, and an image's wrapper tags are not the person's words.
-  assert.deepEqual(await turns(current), ["user:Lint the code.", "assistant", "toolResult", "assistant", "user:[image]\nFix what it found.", "assistant"]);
+  // The CLI's AGENTS.md and environment blocks are no turn and an image's wrapper tags no words; a prompt the person tagged is theirs.
+  assert.deepEqual(await turns(current), ["user:Lint the code.", "assistant", "toolResult", "assistant", "user:[image]\n<task>Fix what it found.</task>", "assistant"]);
   assert.deepEqual(await turns(older), ["user:Check the build.", "assistant", "toolResult", "assistant", "user:Ship it.", "assistant"]);
   const store = openStore(join(root, "agents"));
   t.after(() => store.close());

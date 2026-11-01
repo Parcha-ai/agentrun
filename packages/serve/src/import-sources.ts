@@ -264,17 +264,15 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
   }
 }
 
-// What the Codex CLI adds to a user message, not typed by the person: a block that is one tagged element whole
-// (<environment_context>…</environment_context>), or a heading over one (an AGENTS.md: "# …" then <INSTRUCTIONS>…</INSTRUCTIONS>);
-// and a bare tag alone, as around an image.
-const CODEX_CONTEXT = /^\s*(?:#[^\n]*\n\s*)?<([A-Za-z_][\w-]*)(?:\s[^>]*)?>[\s\S]*<\/\1>\s*$/;
-const BARE_TAG = /^\s*<\/?[A-Za-z_][\w-]*(?:\s[^>]*)?>\s*$/;
-const typed = (text: string): boolean => !CODEX_CONTEXT.test(text) && !BARE_TAG.test(text);
-/** The person's words in a Codex user message or user_message event: "" when the CLI wrote all of it. */
-const wordsOf = (content: unknown): string => {
-  if (typeof content === "string") return typed(content) ? content : "";
-  return textOf(Array.isArray(content) ? content.filter((block) => !isObject(block) || typeof block.text !== "string" || typed(block.text)) : content);
-};
+// The blocks the Codex CLI adds to a user message, each one of its own elements whole, an AGENTS.md as a heading over its
+// <INSTRUCTIONS>; and the bare tags around an image. Only these: a prompt the person wrote as a tagged element is theirs,
+// and a block the CLI adds later reads as text until it is named here.
+const CODEX_BLOCK = /^\s*(?:#[^\n]*\n\s*)?<([A-Za-z_]+)(?:\s[^>]*)?>[\s\S]*<\/\1>\s*$/;
+const CODEX_BLOCKS = new Set(["environment_context", "user_instructions", "INSTRUCTIONS", "turn_aborted", "subagent_notification", "skill", "user_shell_command", "user_action", "recommended_plugins", "codex_internal_context"]);
+const IMAGE_TAG = /^\s*<\/?image\b[^>]*>\s*$/;
+const typed = (text: string): boolean => !CODEX_BLOCKS.has(CODEX_BLOCK.exec(text)?.[1] ?? "") && !IMAGE_TAG.test(text);
+/** The person's words in a Codex user message: "" when the CLI wrote all of it. */
+const wordsOf = (content: unknown): string => textOf(Array.isArray(content) ? content.filter((block) => !isObject(block) || typeof block.text !== "string" || typed(block.text)) : content);
 
 function codexRecord(value: Record<string, unknown>, at: number, session: Session, { add, names, provider, turns, codex }: Into): void {
   const payload = isObject(value.payload) ? value.payload : {};
@@ -294,8 +292,7 @@ function codexRecord(value: Record<string, unknown>, at: number, session: Sessio
   if (value.type === "event_msg") {
     if (payload.type === "user_message") {
       codex.events = true;
-      const text = wordsOf(payload.message);
-      if (text) add({ role: "user", text, at });
+      if (str(payload.message)) add({ role: "user", text: payload.message as string, at });
     } else if (payload.type === "task_complete") session.state = "completed";
     else if (payload.type === "turn_aborted") session.state = "stopped";
     else if (payload.type === "error") session.state = "failed";
