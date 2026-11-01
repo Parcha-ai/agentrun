@@ -17,7 +17,7 @@
 //   --exit    with --follow: stop the server once the run(s) end
 //   --port    the server's port (default any free port); --data  a data directory to use (default a fresh one)
 //   --listen  the address serve listens on (default 127.0.0.1; on any other address serve takes every Host name)
-//   --allow-host  on loopback, another Host it accepts, written NAME:PORT as the Host header carries it (repeatable)
+//   --allow-host  on loopback, another hostname it accepts, without its port (repeatable)
 //   --speed   faux latency multiplier (DEMO_FAUX_SPEED; default 1, 0 answers at once)
 //   --report  with --follow: write DIR/<live|faux>-<input>.json per run (verdicts vs labels, latency, cost, models,
 //             citations, agent loops), from the run's graph as the server reports it
@@ -150,13 +150,16 @@ for (const [id, { workflow: name }] of Object.entries(cases)) {
 
 // ---- the run(s)
 const started = [];
+/** What went wrong for --exit's code: a missing input, a refused start, an unreadable graph, or a run that failed or was
+ *  cancelled. A run that completed and waits for a person's review is a success. */
+let failures = 0;
 for (const id of opts["serve-only"] ? [] : useCase === "all" ? Object.keys(cases) : [useCase]) {
   const inputName = useCase === "all" || !opts.input ? cases[id].inputs[0] : opts.input;
   const file = join(here, "inputs", `${inputName}.json`);
-  if (!existsSync(file)) { console.log(`no input ${inputName} (have: ${cases[id].inputs.join(", ")})`); continue; }
+  if (!existsSync(file)) { console.log(`no input ${inputName} (have: ${cases[id].inputs.join(", ")})`); failures++; continue; }
   const postedAt = Date.now();
   const run = await api("POST", `/agents/${id}/runs`, { input: JSON.parse(readFileSync(file, "utf8")) });
-  if (run.status !== 202) { console.log(`run ${id} (${inputName}): ${run.status} ${JSON.stringify(run.body?.error ?? run.body)}`); continue; }
+  if (run.status !== 202) { console.log(`run ${id} (${inputName}): ${run.status} ${JSON.stringify(run.body?.error ?? run.body)}`); failures++; continue; }
   const runId = run.body.run_id ?? run.body.id;
   started.push({ id, runId, inputName, postedAt });
   console.log(`run ${id} (${inputName}): ${runId}\n  ${origin}/?token=${encodeURIComponent(token)}#/runs/${encodeURIComponent(runId)}`);
@@ -189,7 +192,11 @@ function scoreDocuments(reviews) {
 }
 
 function scoreOf(useCaseId, inputName, input, outcome, output) {
-  if (useCaseId === "batch-20") return scoreDocuments(output?.reviews ?? []);
+  if (useCaseId === "batch-20") {
+    // A document the map could not read is a failed item: null in `reviews`, its row in `unreadable`. It is scored as one.
+    const failed = (output?.unreadable ?? []).map((f) => ({ document: input.documents?.[f.item_index] ?? f.label, verdict: "unreadable", reasons: f.message ? [f.message] : [] }));
+    return scoreDocuments([...(output?.reviews ?? []), ...failed]);
+  }
   if (useCaseId === "doc-valid") {
     const verdict = output?.verdict ?? outcome;
     return scoreDocuments([{ document: input.documents[0], verdict: verdict === "doubtful" ? "review" : verdict, decided_by: output?.decided_by, reasons: output?.reasons }]);
@@ -250,7 +257,7 @@ async function follow({ id, runId, inputName, postedAt }) {
   let last = "";
   for (;;) {
     const g = await api("GET", `/runs/${runId}/graph`);
-    if (g.status !== 200) { console.log(`[${id}] graph: ${g.status} ${JSON.stringify(g.body?.error ?? g.body)}`); return; }
+    if (g.status !== 200) { console.log(`[${id}] graph: ${g.status} ${JSON.stringify(g.body?.error ?? g.body)}`); failures++; return; }
     const { run, graph, nodes, decisions = [], totals } = g.body;
     for (const d of decisions) {
       const key = d.id ?? `${d.node}|${d.executionPath}`;
@@ -269,13 +276,14 @@ async function follow({ id, runId, inputName, postedAt }) {
       if (view.review) console.log(`[${id}] review: ${JSON.stringify(view.review)}`);
       if (view.result?.output) console.log(`[${id}] output: ${JSON.stringify(view.result.output).slice(0, 1500)}`);
       if (view.error) console.log(`[${id}] error: ${JSON.stringify(view.error)}`);
+      if (run.status === "failed" || run.status === "cancelled") failures++;
       return;
     }
     await sleep(1000);
   }
 }
 if (opts.follow) await Promise.all(started.map(follow));
-if (opts.follow && opts.exit) { stop(); process.exit(0); }
+if (opts.follow && opts.exit) { stop(); process.exit(failures ? 1 : 0); }
 console.log("serving; Ctrl-C stops the server");
 child.stdout.pipe(process.stdout);
 await new Promise((r) => child.once("exit", r));

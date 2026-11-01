@@ -27,7 +27,7 @@ import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV, withoutFaux } from "./model.js";
-import { NODE_LOG, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
+import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
@@ -258,11 +258,9 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
 export function statusOf(run: Run): { status: Status; state: State } {
   if (run.outcome) return { status: run.outcome, state: "idle" };
   if (run.finishing) return { status: run.finishing, state: "idle" };
-  // A paused workflow run finishes what it has in flight and starts nothing new until it is resumed (pause.ts).
-  // One whose process logged a node has started: between its process's exit and its carry back it still reads working.
-  // A held run read without its directory (a view built for a count) has no marks to read: queued or working by its flag.
-  const dir: string | undefined = run.dir;
-  if (run.kind === "workflow") return dir && pausedIn(dir) ? { status: "paused", state: "idle" } : { status: run.working || (dir !== undefined && existsSync(join(dir, NODE_LOG))) ? "working" : "queued", state: "working" };
+  // A paused workflow run finishes what it has in flight and starts nothing new until it is resumed (pause.ts). A held run
+  // read without its directory (a view built for a count) has no mark to read.
+  if (run.kind === "workflow") return run.dir && pausedIn(run.dir) ? { status: "paused", state: "idle" } : { status: run.working ? "working" : "queued", state: "working" };
   const users = usersOf(run.rows);
   if (run.submitted > 0) return { status: users ? "working" : "queued", state: "working" };
   // No rows is a run not shown yet (adopted, before its first snapshot), whatever an old stop says. Rows with no
