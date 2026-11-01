@@ -453,6 +453,55 @@ short or flipped is `mismatch`; the directories are removed on success, on failu
 archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
 tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
+## A box's archive, unpacked on this machine (`./sync`)
+
+A box is not trusted, so neither is a byte of a tar archive it makes. The host never unpacks one with `tar`:
+`@parcha/pi-transport/sync` reads it with its own reader as it arrives and writes it under one directory.
+
+```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { readStream } from "@parcha/pi-transport";
+import { extractTar } from "@parcha/pi-transport/sync";
+
+const packed = await box.exec(["tar", "-c", "-f", "-", "-C", "/work", "."], undefined, BACKGROUND_CONTEXT);
+if (!packed.ok) throw packed.error;
+const tar = packed.value;
+// Both streams are read: a program whose error pipe fills stops writing its output.
+const [extracted, errors] = await Promise.all([
+	extractTar(tar.stdout, "/data/runs/r1/work", {
+		onSkip: (skip) => console.warn(skip.reason, skip.path, skip.target ?? ""),
+	}),
+	readStream(tar.stderr),
+]);
+const exited = await tar.wait();
+if (!exited.ok || exited.value !== 0) console.warn("tar failed:", new TextDecoder().decode(errors));
+if (extracted.ok && extracted.value.stopped !== undefined) console.warn(extracted.value.stopped.message);
+```
+
+- **Regular files and directories only.** A symbolic or hard link, a device, a pipe or any other member is skipped,
+  counted by reason (`receipt.skipped`, the first 100 by path in `receipt.skips`, each one to `onSkip`), and never
+  created. The skip of a link carries `target`, what the link names, so a caller that keeps links keeps them as data.
+- **Safe names, and only the ones asked for.** A name is refused when it is absolute, holds `.`, `..`, an empty segment
+  or a NUL, or passes 255 bytes a segment or 4095 a path. `admit` decides by path and kind what may be written; a
+  second member of a path is skipped, and a pax global header is not honoured.
+- **Nothing outside the destination.** Every directory is opened from a held handle of the one above with
+  `O_NOFOLLOW`, so a link already in the destination is never followed (`link_in_destination`), and a file never
+  replaces a directory or the other way round (`occupied`). Each file is written under a temporary name and renamed
+  into place; one cut off halfway is removed.
+- **Modes capped.** A file gets at most 0755 (0644 without an execute bit), never setuid, setgid, group or world write;
+  a directory at most 0755. `receipt.masked` counts the files written that lost a bit.
+- **Limits.** The extraction stops cleanly past `maxBytes` of archive (header blocks, pax and long-name payloads and
+  member data, each charged before it is read; default `MAX_PULL_BYTES`, 1 GiB) or `maxEntries` members, written or
+  skipped (default `MAX_PULL_ENTRIES`, 100,000). One pax header or long name holds at most 64 KiB. A bad checksum, a
+  lone zero block or an archive cut short stops it too (`malformed`). What was written before a stop stays, every file
+  whole, and `receipt.stopped` says why.
+
+`openExtractor` is the same reader fed a chunk at a time: `write` until it returns `false`, then `finish`, which waits
+for a write still running. `keep: "newer"` keeps a host file newer than the member. `removeEntries` removes paths
+under a directory by the same walk: a file or a link is unlinked (never what a link names), a directory only when
+empty. A failure of the host's own file system is `transfer_failed`; everything the archive does wrong is in the
+receipt.
+
 ## A home: the session runs somewhere, and can stop without a cut
 
 A session can live in a box too: it moves between boxes, and comes back from a killed process or a lost box.
@@ -639,21 +688,32 @@ says what the host keeps so that it loses no more.
 
 `pullCheckpoint({ session, place, home, epoch, vault, ... })` takes one moment of a session off its box. It holds the
 session (a short drain), makes a sealed copy of the store in the box (`checkpointStore`), takes the workspace manifest,
-pulls the store (`moveFile`) and the files that changed since the previous checkpoint (`moveChanged`) into the vault,
+pulls the store (`moveFile`) and the content of the files that changed since the previous checkpoint into the vault,
 checks all of it, and lets the session go. The session is held through the pull because a file it writes meanwhile
 would no longer match the manifest. `holdMs` bounds the hold (120 s by default): every phase of the pull draws on the same clock, and a pull that outruns it is skipped (`failed`) and lets the session go. A checkpoint exists only when the
 store and the files are both on the host and verified; a store without its files is never kept. The vault
-(`localVault(directory)`: put `begin`/`commit`, `latest`, `get`, `prune`) is the host's disk, a generation per
-checkpoint made with hard links so that a generation costs its delta, and the newest 3 are kept (`keep`).
+(`localVault(directory)`: put `begin`/`commit`, `latest`, `get`, `prune`, and `holds`/`keep`/`content` for file contents)
+is the host's disk, a generation per checkpoint, and the newest 3 are kept (`keep`).
 A pull that does not complete is skipped, never half kept: `busy` (the session did not come to rest, with what held
 it), `changed` (a file moved on), `too_large` (`workspace.maxBytes`) or `failed`; the previous checkpoint stays the
 latest. `checkpointStats()` counts the checkpoints taken and the skips by reason, for a panel that says "checkpoint
 skipped: still running".
 
+A box is not trusted, and a checkpoint is what a box made, so the host never unpacks it. The box sends the bytes of the
+files the pull asks for, end to end, never names or an archive; the vault keeps each file's content once, as a plain
+file named by its SHA-256 and checked against it, so a generation costs its delta. The tree is the record's manifest:
+directories, symbolic links, hard links (`ManifestEntry.link`), named pipes (`kind: "fifo"`), modes (setuid included)
+and times are data the host never makes into anything. A listing with a path outside the tree (absolute, `..`, or
+through a link) is refused before a byte moves (`failed`). A restore writes a tar stream from the record and the
+contents, and the new box's own `tar` makes the tree, links included, there and nowhere else; the tree is then listed
+and hashed in the box against the record. A generation an earlier version kept as a tree the host unpacked is
+`refused` (`VaultError`, named in `no_checkpoint`): it is never read, unpacked or restored, a pull after it takes the
+workspace afresh, and `prune` removes it.
+
 `recoverHome` gains `vault` and `replace(place, context)`. When the lease's box is **gone** (`Box.status` says
 `ended`, or the provider no longer has it; a timeout or an error is never gone), the host's `replace` makes a box for
-the same environment, the newest checkpoint that still checks out (an older generation when it does not) is copied in
-and verified, the lease is taken at the next epoch (move id `restore-<epoch>`, the checkpoint's seal) and the home
+the same environment, the newest checkpoint that still checks out (its store and every content read again; an older
+generation when it does not) is made in it and verified, the lease is taken at the next epoch (move id `restore-<epoch>`, the checkpoint's seal) and the home
 resumes there. `recoverHome` never makes boxes. With no usable checkpoint it fails with `no_checkpoint` and changes
 nothing. The resume order's `move` says `kind: "restore"` and carries the checkpoint's `head` (`Seal.head`): commits of
 the lost box at or after it are gone and their sequence numbers are taken again, so whoever records the session's
