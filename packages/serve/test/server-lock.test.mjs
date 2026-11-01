@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { ServerLockHeldError, startServe, takeServerLock } from "../dist/index.js";
 import { client, FAUX, scratch } from "./support.mjs";
@@ -16,7 +16,8 @@ const refusal = (data) => `agentrun-serve: another server holds this data root (
 
 /** The bin on `data`, its output kept; with `started`, resolves once it printed its address, else once it exited. */
 async function bin(t, data, { started = true, env = {} } = {}) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+  // A home beside the data, not this machine's: a first start counts the sessions in its home for setup's offer.
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data), ...env } });
   t.after(() => child.exitCode === null && child.signalCode === null && child.kill("SIGKILL"));
   const seen = { out: "", err: "" };
   child.stdout.on("data", (chunk) => (seen.out += chunk));

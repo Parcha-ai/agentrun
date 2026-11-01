@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { LAUNCH_COUNT_ENV, LAUNCH_JAM_ENV, LAUNCH_KILL_ENV } from "./fixtures/faux-launch-kills-server.mjs";
@@ -16,7 +16,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A server in a process of its own on `data`, its runs' processes on the launch fixture with `env`. */
 async function serverProcess(t, data, env) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX_LAUNCH, "--drain-timeout", "2s"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+  // A home beside the data, not this machine's: a first start counts the sessions in its home for setup's offer.
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX_LAUNCH, "--drain-timeout", "2s"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data), ...env } });
   t.after(() => child.exitCode === null && child.signalCode === null && child.kill("SIGKILL"));
   let out = "";
   let err = "";
