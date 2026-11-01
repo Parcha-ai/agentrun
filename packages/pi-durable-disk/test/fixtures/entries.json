@@ -285,5 +285,20 @@
       "PinSpec",
       "RootName"
     ]
+  },
+  "./box": {
+    "values": [
+      "BOX_ATTEMPT_LABEL",
+      "BOX_RUN_DIR",
+      "BOX_RUN_LABEL",
+      "BoxHostError",
+      "boxHost"
+    ],
+    "types": [
+      "BoxHostErrorCode",
+      "BoxHostOptions",
+      "BoxStart",
+      "PerStart"
+    ]
   }
 }

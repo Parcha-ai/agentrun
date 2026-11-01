@@ -749,6 +749,40 @@ A local run works on macOS for development, and is weaker there than on Linux in
 the no-key quickstart, the local run's tests (its command records, `run --dir` and `status --dir`, the lease watchdog,
 the file tools' confinement) and the keyless examples on macOS.
 
+### A run on a plain directory in a box
+
+`boxHost({ provider, spec, app, ... })`, from `@parcha/pi-durable-disk/box`, is a host driver whose instance runs a run on
+a plain directory inside a box of any pi-transport provider. `@parcha/pi-transport` is an optional peer that this entry
+needs and the package's root does not. Nothing mounts: no disk, no mount token, no FUSE; `start(ref, mountToken, attempt)`
+takes the run's id from `ref.id` and refuses a mount token, so it is never `ensureRunning`'s driver.
+
+- **The box.** `spec` (an object, or a function of `{ run, attempt }` asked once per create) is created as given, with
+  two labels added: `pi-durable-disk.run` (the run's id) and `pi-durable-disk.attempt`. A positive `maxLifetimeMs` is
+  required; a label key of pi-transport's or of this package's, and a `spec.env` name that says it holds a key, are
+  refused.
+- **The launch.** `files` go up first; then pi-transport's launcher keeps `pi-durable-disk run --dir /run/agentrun/run
+  --id <run> --app <app> --serve 0` and `runArgs` running as `user`, restarting it on failure but not after 0, 65, 70,
+  75 or 76. `BOX_RUN_DIR` names that directory. The door stays on the CLI's default host, the box's own loopback:
+  `runArgs` may not name `--serve-host`. The instance's environment is `env`, the start's own and `PDA_HOLDER` (the
+  handle); the launcher clears the rest, `spec.env` included.
+- **Secrets.** `secrets` (names to values, or a function of the start asked once per launch) ride the launch frame
+  only: the stdin of the exec that starts the launcher, then fd 3 of each incarnation (`PI_TRANSPORT_SECRETS_FD`),
+  never an environment, an argv, a label or a file. A start with secrets needs a box whose facts say `secretsVia: "fd"`
+  (else `UNSUPPORTED`, the box destroyed before any upload or launch) and a `user` that is not root; one without
+  secrets runs on any provider.
+- **One box per run.** The owner lock is the only claim on a plain directory, and it holds only inside one box. So a
+  start lists the run's boxes by label, destroys every older attempt's before it makes or adopts its own (a failed end
+  makes nothing, `STOP_FAILED`), and makes and ends nothing while a newer attempt's box is there (`SUPERSEDED`). Starts,
+  stops and kills of one run go one at a time. This holds for one driver per run, as one server per data root has.
+- **Found again.** A box of the same attempt whose launch runs is adopted (`adopted: true`): nothing is uploaded or
+  launched, and `secrets` is not asked. One that never launched is used; one whose launch ended or was lost is destroyed
+  and replaced, never relaunched (its launcher held the secrets). After a host restart, `status` of the stored handle
+  and a start of the same attempt find the box the same way.
+- **Status, stop and kill.** `status` reads the launch: `starting`, `running`, `restarting` and `stopping` are
+  `running`, `stopped` or an exit 0 is `stopped`, any other end or a lost launcher is `failed`, a box that ended is
+  `gone`, a read that fails is `unknown`. `stop` drains through the launcher (`stopGraceMs`), then destroys the box;
+  `kill` destroys it at once. Errors are `BoxHostError`.
+
 ### A short claim on any path, and a read of what it released
 
 `withClaim` holds one path of a disk exclusively for a moment, outside any run: pi-durable-agent carries an agent's home

@@ -144,7 +144,8 @@ jobs:
     # build, type-check and whole suite run again with pi-durable, chord and pi-ai at 1.0.4, one copy each: an install
     # into the workspace alone left pi-durable 1.0.4 at the root loading the root's chord and pi-ai 1.1.0.
     # scripts/pi-leg.mjs fails the run if another version was resolved, and sets PI_EXPECT_VERSION for the package's own
-    # version guard, which also checks what pi-durable itself loads.
+    # version guard, which also checks what pi-durable itself loads. pi-transport, the optional peer its ./box entry and
+    # tests use, is in the leg so one copy of the family loads; its own suite runs in pi-transport-pi-floor.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -155,7 +156,7 @@ jobs:
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
-      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
+      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-durable-disk,@parcha/pi-transport --tests @parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
         if: always()
         uses: actions/upload-artifact@v4
@@ -167,7 +168,8 @@ jobs:
   agentrun-pi-pi-floor:
     # @parcha/agentrun-pi's peers accept the pi family from 1.0.4, while the workspace develops against 1.1.0. Its build,
     # type-check and whole suite run again with all six family packages at 1.0.4, beside pi-durable-disk at 1.0.4 (its
-    # crash sweeps load both in one process). scripts/pi-leg.mjs fails the run if another version was resolved.
+    # crash sweeps load both in one process), and pi-transport, pi-durable-disk's optional peer, beside them (its own suite
+    # runs in pi-transport-pi-floor). scripts/pi-leg.mjs fails the run if another version was resolved.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -178,7 +180,7 @@ jobs:
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
-      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/agentrun-pi,@parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
+      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/agentrun-pi,@parcha/pi-durable-disk,@parcha/pi-transport --tests @parcha/agentrun-pi,@parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
         if: always()
         uses: actions/upload-artifact@v4

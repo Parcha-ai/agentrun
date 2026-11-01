@@ -1,4 +1,4 @@
-// The package's three entries. Each exports exactly the values and types pinned in test/fixtures/entries.json, so adding or
+// The package's four entries. Each exports exactly the values and types pinned in test/fixtures/entries.json, so adding or
 // removing an export is a reviewed change to that file, not a side effect of an edit elsewhere. And each entry's declarations
 // name only types its caller can import: a host can write the type of everything it passes in or gets back.
 import { describe, it } from "node:test";
@@ -10,9 +10,9 @@ import ts from "typescript";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SRC = join(ROOT, "src");
-const ENTRIES: Record<string, string> = { ".": "src/index.ts", "./lease": "src/lease.ts", "./internals": "src/internals.ts" };
-// Besides the entry itself, what its caller imports from: `./internals` is used beside the root entry.
-const BESIDE: Record<string, string[]> = { ".": [], "./lease": [], "./internals": ["."] };
+const ENTRIES: Record<string, string> = { ".": "src/index.ts", "./lease": "src/lease.ts", "./internals": "src/internals.ts", "./box": "src/box-host.ts" };
+// Besides the entry itself, what its caller imports from: `./internals` and `./box` are used beside the root entry.
+const BESIDE: Record<string, string[]> = { ".": [], "./lease": [], "./internals": ["."], "./box": ["."] };
 const pinned = JSON.parse(readFileSync(join(ROOT, "test/fixtures/entries.json"), "utf8")) as Record<string, { values: string[]; types: string[] }>;
 
 const program = ts.createProgram(

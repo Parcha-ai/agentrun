@@ -324,8 +324,9 @@ reference. [Library](docs/reference.md#library) describes each in full.
 
 Also exported: `ensureRunning` and the host drivers (`localHost`, `dockerHost`, `daytonaHost`), `serveRun` and `requestRun`,
 parking, `fork` and `forkLocal`, `readLocalRunStatus` and `readRunStatus`, `archilControl`, and the typed errors.
-`@parcha/pi-durable-disk/lease` is the narrow entry for a host that owns its Harness; `@parcha/pi-durable-disk/internals` has
-no compatibility promise.
+`@parcha/pi-durable-disk/lease` is the narrow entry for a host that owns its Harness; `@parcha/pi-durable-disk/box` holds
+`boxHost`, which runs a run on a plain directory inside a pi-transport box ([A run on a plain directory in a
+box](docs/reference.md#a-run-on-a-plain-directory-in-a-box)); `@parcha/pi-durable-disk/internals` has no compatibility promise.
 
 ## Reference
 
