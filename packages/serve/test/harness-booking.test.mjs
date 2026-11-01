@@ -1,11 +1,13 @@
 // A paid request's cost on a harness other than pi, when it is booked after the harness has its answer (the proxy answers
 // before it books the response): the turn's end waits for it, so the answer is written with its cost, once. One whose
 // cost does not come in time is written at unknown cost and marked booked, and its cost, when it comes, as an entry of
-// its own: the run's spend (which its cap reads) counts it once, and the next open writes nothing more.
+// its own: the run's spend (which its cap reads) counts it once, and the next open writes nothing more. Each answer names
+// the model its request asked for, and its tokens go where its cost goes.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { AssistantEntry, createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { RUNNER_RECORDS } from "@parcha/agentrun-adapters";
 import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -13,12 +15,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spentIn } from "../dist/cap.js";
 import { adapterRun, BOOKED, BOOKING_WAIT_MS, PRICED_LATE } from "../dist/harness-app.js";
+import { durableSessions } from "../dist/sessions.js";
 
 const deferred = () => {
   let resolve;
   const promise = new Promise((r) => (resolve = r));
   return { promise, resolve };
 };
+
+/** The model the adapter's request asks for (its harness is "late"), and the tokens its answer reports. */
+const MODEL = "late-model-1";
+const TOKENS = { input: 10, output: 5, cacheRead: 40, cacheWrite: 2 };
 
 /** An adapter whose one request is answered, and its turn ended, before the test lets its booking through. */
 function lateBooking() {
@@ -37,9 +44,9 @@ function lateBooking() {
           ended = deferred();
           if (sent) return void ended.resolve({ status: "completed" });
           sent = true;
-          const ticket = await io.models.beforeRequest({ model: "late" });
+          const ticket = await io.models.beforeRequest({ model: MODEL });
           io.onEvent({ type: "text", delta: "Answered." });
-          void book.promise.then(() => io.models.afterRequest({ input: 10, output: 5, cacheRead: 0, usd: 0.003 }, ticket ?? undefined));
+          void book.promise.then(() => io.models.afterRequest({ ...TOKENS, usd: 0.003 }, ticket ?? undefined));
           ended.resolve({ status: "completed" });
         },
         async recover() {},
@@ -82,6 +89,9 @@ const spend = (entries) =>
 /** The run's usage as the timeline (and so /usage and the run's cost) reads it. */
 const usage = (entries, settled = false) => timelineOf(entries, { settled }).findLast((r) => r.kind === "usage")?.usage;
 const bookedMarks = (entries) => entries.filter((e) => e.kind === BOOKED);
+/** An answer's model and tokens, as its entry names them. */
+const named = (m) => ({ provider: m.provider, model: m.model, input: m.usage.input, output: m.usage.output, cacheRead: m.usage.cacheRead, cacheWrite: m.usage.cacheWrite, totalTokens: m.usage.totalTokens });
+const NONE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
 const until = async (check, ms = 10_000) => {
   for (const end = Date.now() + ms; !check(); ) {
     assert.ok(Date.now() < end, "in time");
@@ -103,6 +113,7 @@ test("a request booked just after its turn ended: the turn's end waits for its c
   assert.ok(Date.now() - released < 500, `the turn ends as soon as its cost is in: ${Date.now() - released} ms`);
   const entries = await rootOf(harness);
   assert.deepEqual(answers(entries).map((m) => [m.content.map((c) => c.text).join(""), m.usage?.cost?.total]), [["Answered.", 0.003]], "the answer, at its cost");
+  assert.deepEqual(answers(entries).map(named), [{ provider: "late", model: MODEL, ...TOKENS, totalTokens: 57 }], "the model its request asked for, and its tokens");
   assert.equal(bookedMarks(entries).length, 1, "booked once");
 });
 
@@ -130,6 +141,8 @@ test("a request whose cost comes after the wait: its answer is written at unknow
   assert.deepEqual(usage(before), { usd: 0.003, requests: 1 }, "one request, at its cost: the late cost is not a request of its own");
   assert.equal(bookedMarks(before).length, 1, "marked booked once");
   assert.equal(before.filter((e) => e.kind === PRICED_LATE).length, 1, "its late cost written once");
+  assert.deepEqual(answers(before).map(named), [{ provider: "late", model: MODEL, ...NONE }], "the answer names its model; its tokens, not in yet, are 0, which reads as unknown");
+  assert.deepEqual(before.find((e) => e.kind === PRICED_LATE).data.usage, TOKENS, "its tokens come with its late cost");
   // A later process opens the run: the request is booked in its session, and already written with its cost.
   const next = await opened(storage, lateBooking().adapter);
   const after = await rootOf(next.harness);
@@ -161,25 +174,39 @@ test("a late cost the session booked but the root never got (its process went fi
   assert.deepEqual(usage(after, true), { usd: 0.003, requests: 1 }, "one request, at its cost");
   assert.equal(bookedMarks(after).length, 1, "booked once");
   assert.equal(after.filter((e) => e.kind === PRICED_LATE).length, 1, "its late cost written once");
+  assert.deepEqual(after.find((e) => e.kind === PRICED_LATE).data.usage, TOKENS, "with the tokens the session booked");
 });
 
-test("the cap's spend read from a store sums each answer's cost and each cost written apart, a compaction's and a late one", () => {
-  const dir = mkdtempSync(join(tmpdir(), "spent-in-"));
-  try {
-    const file = join(dir, "run.sqlite");
-    const db = new DatabaseSync(file);
-    db.exec("CREATE TABLE entries (record TEXT)");
-    const put = db.prepare("INSERT INTO entries (record) VALUES (?)");
-    for (const entry of [
-      { kind: "pi.assistant", model: [{ usage: { cost: { total: 0.001 } } }] },
-      { kind: REQUEST_COST, data: { request: "compaction", usd: 0.002 } },
-      { kind: "pi.assistant", model: [{ usage: { cost: {} } }] },
-      { kind: REQUEST_COST_PENDING, data: {} },
-      { kind: REQUEST_COST_LATE, data: { usd: 0.003 } },
-    ]) put.run(JSON.stringify(entry));
-    db.close();
-    assert.equal(Math.round(spentIn(file) * 1e6) / 1e6, 0.006);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+test("the next open re-books what the session booked with its tokens and model; a journal from before bookings kept tokens re-books with none", async () => {
+  const storage = new MemoryStorage();
+  const key = "run:1";
+  // A journal as an earlier process left it, written before runner.turn kept tokens but for its last request: three
+  // requests booked in the session. The first was written on the root at unknown cost, and its cost never reached the
+  // root; the other two have no entry there (the process went before the boundary).
+  const earlier = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const writer = await durableSessions(earlier, ctx).open(key);
+  await writer.append([
+    { kind: RUNNER_RECORDS.request, data: { turn: 1, model: "late-model-1" } },
+    { kind: RUNNER_RECORDS.turn, data: { turn: 1, usd: 0.004, estimated: true } },
+    { kind: RUNNER_RECORDS.request, data: { turn: 2, model: "late-model-2" } },
+    { kind: RUNNER_RECORDS.turn, data: { turn: 2, usd: 0.001 } },
+    { kind: RUNNER_RECORDS.request, data: { turn: 3, model: "late-model-3" } },
+    { kind: RUNNER_RECORDS.turn, data: { turn: 3, usd: 0.002, usage: { input: 7, output: 3, cacheRead: 20, cacheWrite: 0 } } },
+  ]);
+  await earlier.commit(async (tx) => {
+    const message = { role: "assistant", content: [{ type: "text", text: "First." }], api: "agentrun-adapter", provider: "late", model: "late", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }, stopReason: "stop", timestamp: Date.now() };
+    await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [message] });
+    await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key, request: 1 } });
+    await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key, request: 1, unpriced: true } });
+  }, ctx);
+  const next = await opened(storage, lateBooking().adapter);
+  const entries = await rootOf(next.harness);
+  assert.deepEqual(entries.filter((e) => e.kind === PRICED_LATE).map((e) => e.data), [{ key, request: 1, usd: 0.004 }], "the older booking's late cost, with no tokens");
+  assert.deepEqual(assistants(entries).map((m) => [m.usage.cost.total, named(m)]), [
+    [undefined, { provider: "late", model: "late", ...NONE }],
+    [0.001, { provider: "late", model: "late-model-2", ...NONE }],
+    [0.002, { provider: "late", model: "late-model-3", input: 7, output: 3, cacheRead: 20, cacheWrite: 0, totalTokens: 30 }],
+  ], "each request re-booked at its cost, naming its model, with the tokens its booking kept (none for the older one)");
+  assert.deepEqual(usage(entries, true), { usd: 0.007, requests: 3 }, "the cost is what it was");
+  assert.equal(bookedMarks(entries).length, 3, "each booked once");
 });

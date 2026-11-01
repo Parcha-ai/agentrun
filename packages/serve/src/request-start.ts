@@ -121,7 +121,11 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     if (result.stopReason === "aborted") await mark(REQUEST_ENDED, COMPACTION).catch(() => undefined);
     else {
       const total = result.usage?.cost?.total;
-      await mark(REQUEST_COST, { ...COMPACTION, usd: typeof total === "number" ? total : null }).catch(() => undefined);
+      const usd = typeof total === "number" ? total : null;
+      // Its tokens, in pi's shape, when pi counted any: zeros are no count.
+      const u = result.usage;
+      const usage = u && u.input + u.output + u.cacheRead + u.cacheWrite > 0 ? { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite } : undefined;
+      await mark(REQUEST_COST, usage ? { ...COMPACTION, usd, usage: usage as never } : { ...COMPACTION, usd }).catch(() => undefined);
     }
     return result;
   };
