@@ -1,12 +1,15 @@
 // The provider-neutral model proxy, attacked from the side a harness sits on, under a test policy; and the copied
 // layer's pieces a harness waits and builds tools with. No network: the provider is a scripted fetch.
 import assert from 'node:assert/strict';
-import { request } from 'node:http';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createServer, request } from 'node:http';
 import { connect } from 'node:net';
-import { networkInterfaces } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { z } from 'zod';
-import { hostHeaderProblems, matchRoute, parseStrict, ProxyRefusal, reportedCostOf, startModelProxy } from '@parcha/agentrun-adapters/host';
+import { hostHeaderProblems, matchRoute, modelProxyHandler, parseStrict, ProxyRefusal, reportedCostOf, SOCKET_ORIGIN, startModelProxy } from '@parcha/agentrun-adapters/host';
 import { openDrive } from '@parcha/agentrun-adapters/kernel';
 import { waitForSubmissions, zodShapeFromJsonSchema } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
@@ -54,6 +57,7 @@ async function proxy(t, extra = {}) {
     hooks: { beforeRequest: async (r) => { hooks.before.push(r); if (extra.refuse) throw new Error(extra.refuse); }, afterRequest: async (u) => { hooks.after.push(u); if (extra.afterThrows) throw new Error(extra.afterThrows); } },
     price: extra.price ?? (() => 0.001),
     ...(extra.headers ? { headers: extra.headers } : {}),
+    ...(extra.socketPath ? { socketPath: extra.socketPath } : {}),
     fetch: extra.fetch ?? (async (url, init) => { forwarded.push({ url, headers: init.headers, body: JSON.parse(init.body) }); return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream' } }); }),
   }, KEY);
   t.after(() => p.close());
@@ -85,11 +89,11 @@ function signal() {
   return { fire: () => fire(), wait };
 }
 
-/** A raw request to the proxy: any method, any path text, any key, any headers. */
-function send(url, { method = 'POST', path = '/v1/test', key = KEY, headers = {}, body = { model: 'other', input: 'hi' } } = {}) {
+/** A raw request to the proxy: any method, any path text, any key, any headers; over its unix socket with `socketPath`. */
+function send(url, { method = 'POST', path = '/v1/test', key = KEY, headers = {}, body = { model: 'other', input: 'hi' }, socketPath } = {}) {
   const { port } = new URL(url);
   return new Promise((resolve, reject) => {
-    const req = request({ host: '127.0.0.1', port, method, path, headers: { 'content-type': 'application/json', ...(key === null ? {} : { authorization: `Bearer ${key}` }), ...headers } }, (res) => {
+    const req = request({ ...(socketPath ? { socketPath } : { host: '127.0.0.1', port }), method, path, headers: { 'content-type': 'application/json', ...(key === null ? {} : { authorization: `Bearer ${key}` }), ...headers } }, (res) => {
       let text = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { text += c; });
@@ -938,4 +942,76 @@ test("a response's ids refused while the next request's record is written, then 
   const turns = await of(RUNNER_RECORDS.turn);
   assert.deepEqual(turns.filter((d) => d.turn === 2), [{ turn: 2, usd: 0, unsent: true }], 'request 2 withdrawn at $0');
   assert.deepEqual(turns.filter((d) => d.turn === 1), [{ usd: null, cut: true, turn: 1, providerIds: carriedIds(1) }], 'the cut keeps the ids');
+});
+
+/** A directory for a test's sockets, removed after it. */
+function socketDir(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'proxy-sock-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+test("on a unix socket (socketPath) the proxy answers as on loopback: made 0600, it admits only the session key and forwards with the credential; close() removes it", async (t) => {
+  const dir = socketDir(t);
+  const path = join(dir, 'model.sock');
+  const { p, forwarded } = await proxy(t, { socketPath: path });
+  assert.equal(p.socketPath, path);
+  assert.equal(p.url, SOCKET_ORIGIN);
+  const made = statSync(path);
+  assert.ok(made.isSocket());
+  assert.equal(made.mode & 0o777, 0o600);
+  assert.deepEqual(readdirSync(dir), ['model.sock'], 'the directory it was bound in is gone');
+  assert.equal((await send(p.url, { socketPath: path, key: null })).status, 401);
+  assert.equal((await send(p.url, { socketPath: path, key: 'not-the-key' })).status, 401);
+  const ok = await send(p.url, { socketPath: path, path: '/v1/test?beta=true' });
+  assert.equal(ok.status, 200);
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0].url, 'https://provider.invalid/v1/test?beta=true');
+  assert.equal(forwarded[0].headers.authorization, 'Bearer provider-secret');
+  assert.ok(!ok.text.includes('provider-secret') && !JSON.stringify(ok.headers).includes('provider-secret'), "the client never sees the provider's credential");
+  await p.close();
+  assert.equal(existsSync(path), false);
+  assert.deepEqual(readdirSync(dir), []);
+});
+
+test("a socket path: one a crashed host left (nothing answers on it) is replaced; one something answers on, a file that is not a socket, or a path too long to bind is refused and left as it was", async (t) => {
+  const dir = socketDir(t);
+  const path = join(dir, 'model.sock');
+  // A host that dies without closing leaves its socket behind.
+  const child = spawn(process.execPath, ['-e', `require('node:net').createServer().listen(${JSON.stringify(path)}, () => process.stdout.write('up'))`], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  await Promise.race([new Promise((resolve) => child.stdout.once('data', resolve)), exited.then(() => { throw new Error('the child exited before it listened'); })]);
+  child.kill('SIGKILL');
+  await exited;
+  assert.ok(statSync(path).isSocket(), 'the dead host left its socket');
+  const { p } = await proxy(t, { socketPath: path });
+  assert.equal((await send(p.url, { socketPath: path })).status, 200, 'the stale socket was replaced by a live one');
+  await assert.rejects(proxy(t, { socketPath: path }), /already answers/);
+  assert.equal((await send(p.url, { socketPath: path })).status, 200, 'the live one still answers');
+  const file = join(dir, 'notes');
+  writeFileSync(file, 'kept');
+  await assert.rejects(proxy(t, { socketPath: file }), /not a socket/);
+  assert.equal(readFileSync(file, 'utf8'), 'kept');
+  await assert.rejects(proxy(t, { socketPath: join(dir, 'x'.repeat(120)) }), /at most/);
+  assert.deepEqual(readdirSync(dir).sort(), ['model.sock', 'notes'], 'a refused start leaves nothing of its own');
+});
+
+test("the proxy's handler, mounted under a path on a host's own server, matches what follows the mount as the proxy would, and admits nothing once closed", async (t) => {
+  const forwarded = [];
+  const handler = modelProxyHandler({
+    policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret',
+    hooks: { beforeRequest: async () => {}, afterRequest: async () => {} },
+    fetch: async (url) => { forwarded.push(url); return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream' } }); },
+  }, KEY);
+  const server = createServer((req, res) => (req.url.startsWith('/mount/') ? handler.handle(req, res, req.url.slice('/mount'.length)) : res.writeHead(418).end()));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { handler.close(); server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const url = `http://127.0.0.1:${server.address().port}`;
+  assert.equal((await send(url, { path: '/mount/v1/test' })).status, 200);
+  assert.equal((await send(url, { path: '/mount/v1/test', key: null })).status, 401);
+  assert.equal((await send(url, { path: '/mount//v1/test' })).status, 403);
+  assert.deepEqual(forwarded, ['https://provider.invalid/v1/test']);
+  handler.close();
+  assert.equal((await send(url, { path: '/mount/v1/test' })).status, 503, 'a closed handler admits nothing');
+  assert.equal(forwarded.length, 1);
 });

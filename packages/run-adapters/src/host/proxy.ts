@@ -14,8 +14,13 @@
 //    response's usage once it completes (`afterRequest`). Every paid request forwarded is booked exactly once: a response
 //    cut short, or one that says no usage, is booked at an unknown cost.
 // Model spend is accounted only there, by the runner: the proxy keeps no ledger of its own.
+// It listens on the loopback interface, or on a unix socket only its owner can reach (`socketPath`, `listenLocal`). Its
+// handling of a request is its own piece (`modelProxyHandler`), so a host's server can mount it under a path of its own.
 import { createHash, timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
+import { chmod, lstat, mkdtemp, rename, rm, unlink } from "node:fs/promises";
+import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { connect } from "node:net";
+import { dirname, join } from "node:path";
 
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
 export interface ProxyRoute {
@@ -120,6 +125,8 @@ export interface ModelProxyOptions {
    *  after the client's, so the client can neither set nor override them, and before the credential's. Checked when the
    *  proxy starts (`hostHeaderProblems`). */
   headers?: Readonly<Record<string, string>>;
+  /** Listen on a unix socket at this path instead of the loopback interface (see `listenLocal`). */
+  socketPath?: string;
   /** For tests: the fetch the proxy forwards with. */
   fetch?: typeof fetch;
 }
@@ -142,11 +149,105 @@ export function hostHeaderProblems(headers: Readonly<Record<string, unknown>> | 
 }
 
 export interface ModelProxy {
-  /** The proxy's origin, `http://127.0.0.1:<port>`. */
+  /** The proxy's origin: the loopback interface's address and its port; on a unix socket, `SOCKET_ORIGIN`, and a client
+   *  dials `socketPath`. */
   readonly url: string;
+  /** The socket it listens on, when it was started with one. */
+  readonly socketPath?: string;
   /** The key the harness sends, which the proxy admits. */
   readonly key: string;
   close(): Promise<void>;
+}
+
+/** A model proxy's handling of requests, with no listener of its own: what `startModelProxy` serves, and what a host's
+ *  server mounts under a path. */
+export interface ModelProxyHandler {
+  /** Answer one request. `path` is the text the routes are matched against: the request's own by default, or what is left
+   *  of it once a mount has taken its prefix off. */
+  handle(req: IncomingMessage, res: ServerResponse, path?: string): void;
+  /** Admit nothing more, and abort every request in flight. */
+  close(): void;
+}
+
+/** Where `listenLocal` listens, and how it stops. */
+export interface LocalListener {
+  /** Its origin: the loopback interface's address and its port, or `SOCKET_ORIGIN` on a unix socket. */
+  readonly url: string;
+  readonly socketPath?: string;
+  /** Close every connection, stop listening and remove the socket (only the one it made). */
+  close(): Promise<void>;
+}
+
+/** The origin a request over a unix socket names (its Host); nothing dials it. */
+export const SOCKET_ORIGIN = "http://localhost"; // key-gate: loopback-rule the Host header of a request over a unix socket; nothing dials it
+
+/** The address `listenLocal` binds when it has no socket: the loopback interface's. */
+const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the loopback interface, the only one a proxy without a socket binds
+
+/** The longest unix socket path every platform the host runs on can bind (macOS: 104 bytes with its terminator). */
+const SOCKET_PATH_MAX = 103;
+
+/** Whether something answers on the unix socket at `path`. */
+const answers = (path: string): Promise<boolean> => new Promise((resolve) => {
+  const socket = connect(path);
+  socket.once("connect", () => { socket.destroy(); resolve(true); });
+  socket.once("error", () => resolve(false));
+});
+
+/**
+ * Listen with `server` on the loopback interface, at a free port, or with `socketPath` on a unix socket of mode 0600 at
+ * that path. The socket is bound in a new directory of mode 0700 beside the path, made 0600 there, and only then moved to
+ * the path: it is never reachable at the path with a looser mode. A socket nothing answers on (one a crashed host left)
+ * is replaced; one something answers on, or a file that is not a socket, is refused. On close the socket is removed,
+ * unless it is no longer the one it made.
+ */
+export async function listenLocal(server: Server, socketPath?: string): Promise<LocalListener> {
+  const closeServer = () => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); });
+  if (socketPath === undefined) {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, LOOPBACK, () => { server.off("error", reject); resolve(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("agentrun-adapters: the listener has no port");
+    return { url: `http://${address.address}:${address.port}`, close: closeServer };
+  }
+  const dir = dirname(socketPath);
+  // The bound path, `<dir>/.sock-XXXXXX/s`, must fit as well as the final one.
+  if (Buffer.byteLength(socketPath) > SOCKET_PATH_MAX || Buffer.byteLength(dir) + 15 > SOCKET_PATH_MAX) throw new Error(`agentrun-adapters: a unix socket path must be at most ${SOCKET_PATH_MAX} bytes, and its directory at most ${SOCKET_PATH_MAX - 15}`);
+  const there = await lstat(socketPath).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
+  if (there && !there.isSocket()) throw new Error("agentrun-adapters: the socket path holds a file that is not a socket");
+  if (there && (await answers(socketPath))) throw new Error("agentrun-adapters: something already answers on the socket path");
+  const holder = await mkdtemp(join(dir, ".sock-"));
+  const bound = join(holder, "s");
+  let ino: number;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(bound, () => { server.off("error", reject); resolve(); });
+    });
+    // Made 0600 where no one else can reach it (its directory is 0700), checked, then moved into place (over a stale
+    // socket, which goes).
+    await chmod(bound, 0o600);
+    const made = await lstat(bound);
+    if (!made.isSocket() || (made.mode & 0o777) !== 0o600) throw new Error("agentrun-adapters: the socket was not made with mode 0600");
+    await rename(bound, socketPath);
+    ino = made.ino;
+  } catch (error) {
+    await closeServer();
+    throw error;
+  } finally {
+    await rm(holder, { recursive: true, force: true });
+  }
+  return {
+    url: SOCKET_ORIGIN,
+    socketPath,
+    close: async () => {
+      await closeServer();
+      const now = await lstat(socketPath).catch(() => undefined);
+      if (now?.isSocket() && now.ino === ino) await unlink(socketPath).catch(() => {});
+    },
+  };
 }
 
 const UNSAFE_PATH = /[^A-Za-z0-9/_.\-?=&]|\.\.|\/\/|^[^/]|\?.*\?/;
@@ -292,7 +393,6 @@ function baseOf(base: string): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
-/** Start a session's model proxy on the loopback interface, admitting `key`. */
 /**
  * The most input tokens a request with body `sent` (the body `apply` returned, as it is sent) can be billed for: its UTF-8
  * byte count, plus the input the policy says the provider adds that the body does not carry. A provider's tokenizer is a
@@ -312,7 +412,8 @@ export function inputTokensMaxOf(policy: ProviderPolicy, body: Record<string, un
   }
 }
 
-export async function startModelProxy(options: ModelProxyOptions, key: string): Promise<ModelProxy> {
+/** A model proxy's handling of requests, admitting `key`, with no listener of its own (`startModelProxy` gives it one). */
+export function modelProxyHandler(options: ModelProxyOptions, key: string): ModelProxyHandler {
   const { policy, hooks, model } = options;
   if (!key) throw new Error("agentrun-adapters: a model proxy needs the session's key");
   const wrongHeaders = hostHeaderProblems(options.headers);
@@ -341,12 +442,12 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     res.end(JSON.stringify({ error: { message, type: "agentrun_proxy" } }));
   };
 
-  const serve = async (req: IncomingMessage, res: ServerResponse) => {
+  const serve = async (req: IncomingMessage, res: ServerResponse, path: string) => {
     // A request refused before its body is read is drained, so its client gets the answer instead of a reset.
     res.once("finish", () => { if (!req.complete) req.resume(); });
     let route: ProxyRoute;
     let query: string;
-    try { ({ route, query } = matchRoute(policy.routes, req.method ?? "", req.url ?? "")); } catch (error) {
+    try { ({ route, query } = matchRoute(policy.routes, req.method ?? "", path)); } catch (error) {
       // Without the key every request that is not a local route gets the same answer, so the table can't be mapped.
       if (!sameKey(policy.keyOf(req.headers), key)) return refuse(res, 401, "this session's key is required", req);
       const e = error as ProxyRefusal;
@@ -579,21 +680,28 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     }
   };
 
-  const server = createServer((req, res) => { void serve(req, res).catch(() => { if (!res.headersSent) refuse(res, 500, "the proxy failed", req); else res.destroy(); }); });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("agentrun-adapters: the model proxy has no port");
   return {
-    url: `http://127.0.0.1:${address.port}`,
-    key,
-    close: async () => {
+    handle: (req, res, path = req.url ?? "") => {
+      void serve(req, res, path).catch(() => { if (!res.headersSent) refuse(res, 500, "the proxy failed", req); else res.destroy(); });
+    },
+    close: () => {
       closing = true;
       for (const c of inflight) c.abort();
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+/** Start a session's model proxy, admitting `key`: on the loopback interface, or on the unix socket `options.socketPath`. */
+export async function startModelProxy(options: ModelProxyOptions, key: string): Promise<ModelProxy> {
+  const handler = modelProxyHandler(options, key);
+  const listener = await listenLocal(createServer((req, res) => handler.handle(req, res)), options.socketPath);
+  return {
+    url: listener.url,
+    ...(listener.socketPath === undefined ? {} : { socketPath: listener.socketPath }),
+    key,
+    close: async () => {
+      handler.close();
+      await listener.close();
     },
   };
 }
