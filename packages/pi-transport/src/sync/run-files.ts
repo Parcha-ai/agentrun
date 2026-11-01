@@ -118,7 +118,7 @@ export type PullOptions = SyncTransport & {
 	 * does not write while a box holds it); `newer` keeps the host's when its modification time is later.
 	 */
 	readonly keep?: "box" | "newer";
-	/** The most bytes of member data one pull may carry. Default `MAX_PULL_BYTES`. */
+	/** The most bytes one pull's archive may carry, headers and names included. Default `MAX_PULL_BYTES`. */
 	readonly maxBytes?: number;
 	/** The most members one pull may carry, written or skipped. Default `MAX_PULL_ENTRIES`. */
 	readonly maxEntries?: number;
@@ -173,8 +173,14 @@ function deadlineOf(options: SyncTransport, bytes: number): { stallMs: number; d
  * it refuses more input, which ends the relay and the box's side.
  */
 function extractorSink(extractor: Extractor): Starter {
-	return async (_context, state) => {
+	return async (context, state) => {
 		const { exit, settle } = exitOnce();
+		// A cancelled copy (an abort, a stall, a deadline) closes no input: its end is this.
+		context.abortSignal?.addEventListener(
+			"abort",
+			() => settle(err(new BoxError("aborted", "the call was aborted"))),
+			{ once: true },
+		);
 		let failure: WorkspaceError | undefined;
 		state.problems.push(() => failure);
 		const fail = (cause: unknown) => {
@@ -498,7 +504,7 @@ function headersOf(entry: SeedEntry, size: number): Buffer[] {
  * still; its header carries the size it has when opened, and exactly that many bytes follow.
  */
 function hostArchive(entries: readonly SeedEntry[]): Starter {
-	return async () => {
+	return async (context) => {
 		const { exit, settle } = exitOnce();
 		let message = "";
 		async function* chunks(): AsyncGenerator<Uint8Array> {
@@ -535,9 +541,19 @@ function hostArchive(entries: readonly SeedEntry[]): Starter {
 				settle(ok(1));
 			}
 		}
+		const stdout = chunks();
+		// A cancelled copy may leave the archive waiting at a chunk nobody reads: end it, which closes its open file.
+		context.abortSignal?.addEventListener(
+			"abort",
+			() => {
+				settle(err(new BoxError("aborted", "the call was aborted")));
+				void stdout.return(undefined).catch(() => {});
+			},
+			{ once: true },
+		);
 		const process: BoxProcess = {
 			stdin: { write: async () => {}, close: async () => {} },
-			stdout: chunks(),
+			stdout,
 			stderr: (async function* () {
 				await exit;
 				if (message !== "") yield new TextEncoder().encode(message);

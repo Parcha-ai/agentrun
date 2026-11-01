@@ -484,9 +484,10 @@ if (pulled.ok) mark = pulled.value.mark; // kept for the next pull
   a path. Every directory is opened from a held handle of the one above with `O_NOFOLLOW`, so a link already in the
   destination is never followed (`link_in_destination`), and each file is written under a temporary name and renamed
   into place. A file gets at most 0755 (0644 without an execute bit), never setuid, setgid, group or world write; a
-  directory at most 0755. A pull stops cleanly past `maxBytes` of member data (default `MAX_PULL_BYTES`, 1 GiB) or
-  `maxEntries` members (default `MAX_PULL_ENTRIES`, 100,000): what was written is whole and in the mark, and
-  `receipt.stopped` says why. The next pull asks for the rest.
+  directory at most 0755. A pull stops cleanly past `maxBytes` of archive (headers, names and member data; default
+  `MAX_PULL_BYTES`, 1 GiB) or `maxEntries` members (default `MAX_PULL_ENTRIES`, 100,000): what was written is whole
+  and in the mark, and `receipt.stopped` says why. The next pull asks for the rest. Two names of one inode in the box
+  both come back as files: the box packs with `--hard-dereference`, and a hard link member is still refused.
 
 The box needs `sh`, GNU `tar` and `find`, and `split`, `sha256sum`, `cut`, `wc` and `cat` when it moves files, as the
 movers do. No name is ever put in a shell string: the box reads the list on its standard input.

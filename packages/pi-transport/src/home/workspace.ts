@@ -10,8 +10,9 @@ const HASH_SCRIPT = 'cd -- "$1" || exit 3; exec xargs -0 -r sha256sum -z --';
 const TAR_CREATE = "tar -c -f - --null --no-recursion --numeric-owner -T -";
 // For a pull out of a box whose programs may still write: a listed file that is gone by the time it is packed is a
 // warning (`--ignore-failed-read`), and so is one that changed while it was read (tar's exit 1). The archive is whole
-// either way, and the next listing sees the change.
-const TAR_CREATE_TOLERANT = `{ ${TAR_CREATE.replace(" -T -", " --ignore-failed-read -T -")} || [ $? -eq 1 ]; }`;
+// either way, and the next listing sees the change. Two names of one inode both go as files (`--hard-dereference`):
+// the host refuses a hard link member, so the second name would never arrive.
+const TAR_CREATE_TOLERANT = `{ ${TAR_CREATE.replace(" -T -", " --hard-dereference --ignore-failed-read -T -")} || [ $? -eq 1 ]; }`;
 const PACK_SCRIPT = `cd -- "$1" || exit 3; exec ${TAR_CREATE}`;
 /** @internal `PACK_SCRIPT` for a pull: see `TAR_CREATE_TOLERANT`. */
 export const PULL_PACK_SCRIPT = `cd -- "$1" || exit 3; ${TAR_CREATE_TOLERANT}`;

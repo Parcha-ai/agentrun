@@ -219,6 +219,22 @@ describe("the extractor refuses what a hostile box can put in an archive", () =>
 		expect(tree(dest)).toEqual({});
 	});
 
+	it("charges pax and long-name payloads and headers to the byte limit, not only member data", async () => {
+		const name = "n".repeat(60_000);
+		const heavy = (i: number) => [
+			pax({ comment: "c".repeat(60_000) }),
+			longName(`${i}-${name}`.slice(0, 250)),
+			member({ name: "././@LongLink", type: "K", data: Buffer.alloc(60_000, 0x61), magic: "gnu" }),
+			member({ name: `empty-${i}`, data: "" }),
+		];
+		const members = Array.from({ length: 40 }, (_, i) => heavy(i)).flat();
+		const { receipt } = await extract(archive(...members), { maxBytes: 1024 * 1024 });
+		expect(receipt.stopped?.reason).toBe("max_bytes");
+		// About 180 KiB of metadata a member: five fit in 1 MiB, never forty.
+		expect(receipt.written.length).toBeGreaterThan(0);
+		expect(receipt.written.length).toBeLessThan(10);
+	});
+
 	it("stops cleanly at the member limit, counting skipped members too", async () => {
 		const members = Array.from({ length: 50 }, (_, i) =>
 			i % 2 === 0 ? member({ name: `f${i}`, data: "x" }) : member({ name: `l${i}`, type: "2", linkname: "/" }),

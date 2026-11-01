@@ -7,8 +7,8 @@
 // not depend on it), and a file is written to a temporary name in its directory and renamed into place, which
 // replaces a name and never follows it. Modes are capped: a file gets at most 0755 (0644 without an execute bit), a
 // directory at most 0755, never setuid, setgid, sticky, group or world write. The archive may carry at most so many
-// bytes of member data and so many members; past either the extraction stops cleanly before the member, and what was
-// written stays written, every file whole.
+// bytes (headers and names included) and so many members; past either the extraction stops cleanly before the member,
+// and what was written stays written, every file whole.
 //
 // Linux names a held directory `/proc/self/fd/<fd>`, so the kernel starts from the held inode and never walks the
 // directory's own path again. Elsewhere each step is opened by its full path, still with O_NOFOLLOW: that holds against
@@ -19,7 +19,7 @@ import { type FileHandle, lstat, mkdir, open, realpath, rename, rmdir, unlink } 
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import { decodePath, encodePath, WorkspaceError } from "../home/workspace.ts";
 
-/** The most bytes of member data one pull may carry, when the caller names no limit: 1 GiB. */
+/** The most bytes one pull's archive may carry (headers, names, member data), when the caller names no limit: 1 GiB. */
 export const MAX_PULL_BYTES = 1024 * 1024 * 1024;
 /** The most members one pull may carry, written or skipped, when the caller names no limit. */
 export const MAX_PULL_ENTRIES = 100_000;
@@ -93,7 +93,10 @@ export type ExtractStop = {
 };
 
 export type ExtractOptions = {
-	/** The most bytes of member data the archive may carry, written or skipped. Default `MAX_PULL_BYTES`. */
+	/**
+	 * The most bytes the archive may carry: header blocks, pax and long-name payloads, and member data, written or
+	 * skipped (block padding aside). Default `MAX_PULL_BYTES`.
+	 */
 	readonly maxBytes?: number;
 	/** The most members the archive may hold, written or skipped. Default `MAX_PULL_ENTRIES`. */
 	readonly maxEntries?: number;
@@ -374,7 +377,8 @@ class TarExtractor implements Extractor {
 	#longName: string | undefined;
 	#longLink = false;
 	#entries = 0;
-	#dataBytes = 0;
+	/** Bytes of the archive charged to `maxBytes`: header blocks, pax and long-name payloads, member data. */
+	#archiveBytes = 0;
 	#stopped: ExtractStop | undefined;
 	#finished: ExtractReceipt | undefined;
 	/** The directory the last file went into, kept open for the next one in it. */
@@ -403,7 +407,27 @@ class TarExtractor implements Extractor {
 		return this.#stopped;
 	}
 
-	async write(bytes: Uint8Array): Promise<boolean> {
+	/**
+	 * Writes and the finish run one at a time, in the order called. A relay that gives up on a write (a stall, an abort)
+	 * may call `finish` while that write still runs; the finish waits for it, so no handle it uses is closed under it.
+	 */
+	#queue: Promise<unknown> = Promise.resolve();
+
+	#serial<T>(work: () => Promise<T>): Promise<T> {
+		const run = this.#queue.then(work);
+		this.#queue = run.catch(() => {});
+		return run;
+	}
+
+	write(bytes: Uint8Array): Promise<boolean> {
+		return this.#serial(() => this.#write(bytes));
+	}
+
+	finish(): Promise<ExtractReceipt> {
+		return this.#serial(() => this.#finish());
+	}
+
+	async #write(bytes: Uint8Array): Promise<boolean> {
 		if (this.#stopped !== undefined || this.#finished !== undefined) return false;
 		const chunk = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 		let at = 0;
@@ -445,7 +469,7 @@ class TarExtractor implements Extractor {
 		return this.#stopped === undefined;
 	}
 
-	async finish(): Promise<ExtractReceipt> {
+	async #finish(): Promise<ExtractReceipt> {
 		if (this.#finished !== undefined) return this.#finished;
 		const state = this.#state;
 		if (state.kind === "data" && state.file !== undefined) await this.#discard(state.file);
@@ -509,6 +533,7 @@ class TarExtractor implements Extractor {
 			return;
 		}
 		if (this.#zeroBlocks > 0) return this.#stop("malformed", "a lone zero block inside the archive");
+		if (!this.#charge(BLOCK)) return;
 		if (!checksumOk(block)) return this.#stop("malformed", "a header has a bad checksum");
 		const magic = block.toString("latin1", 257, 263);
 		const posix = magic === "ustar\0";
@@ -525,6 +550,8 @@ class TarExtractor implements Extractor {
 				this.#state = { kind: "data", remaining: size, pad: padOf(size) };
 				return;
 			}
+			// Charged before it is read: a box that puts the largest metadata before every empty member pays for it.
+			if (!this.#charge(size)) return;
 			if (this.#gather.length < size + padOf(size)) this.#gather = Buffer.alloc(META_LIMIT + BLOCK);
 			this.#state = size === 0 ? { kind: "header" } : { kind: "meta", type, size };
 			if (size === 0) this.#meta(type, Buffer.alloc(0));
@@ -586,21 +613,27 @@ class TarExtractor implements Extractor {
 		this.#state = { kind: "data", remaining: length, pad: padOf(length), file };
 	}
 
-	/** Count one member of `size` data bytes against the limits; `false` (and stopped) when it would pass one. */
+	/** Count one member of `size` data bytes against both limits; `false` (and stopped) when it would pass one. */
 	#count(size: number): boolean {
 		if (this.#entries + 1 > this.#maxEntries) {
 			this.#stop("max_entries", `the archive holds more than ${this.#maxEntries} members`);
 			return false;
 		}
-		if (this.#dataBytes + size > this.#maxBytes) {
+		if (!this.#charge(size)) return false;
+		this.#entries += 1;
+		return true;
+	}
+
+	/** Charge `size` bytes of the archive to `maxBytes`; `false` (and stopped) when they would pass it. */
+	#charge(size: number): boolean {
+		if (this.#archiveBytes + size > this.#maxBytes) {
 			this.#stop(
 				"max_bytes",
-				`the archive carries more than ${this.#maxBytes} bytes: ${this.#dataBytes} so far, the next member ${size}`,
+				`the archive carries more than ${this.#maxBytes} bytes: ${this.#archiveBytes} so far, the next part ${size}`,
 			);
 			return false;
 		}
-		this.#entries += 1;
-		this.#dataBytes += size;
+		this.#archiveBytes += size;
 		return true;
 	}
 

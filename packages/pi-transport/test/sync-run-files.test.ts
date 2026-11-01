@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
+	linkSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -23,7 +24,7 @@ import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { afterAll, describe, expect, it } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
-import { PULL_PACK_SCRIPT } from "../src/home/workspace.ts";
+import { PULL_PACK_SCRIPT, UNPACK_SCRIPT } from "../src/home/workspace.ts";
 import { type Pipe, pullAgentHome, pullDir, seedAgentHome, seedDir } from "../src/sync/index.ts";
 import { archive, contents, longName, member, tree } from "./sync-support.ts";
 
@@ -260,13 +261,16 @@ describe("what a box holds that a pull will not write", () => {
 	});
 });
 
-/** A box whose packing program for a pull is replaced by `pack` (given the packing command). */
-function packedBy(box: Box, pack: (command: readonly string[]) => readonly string[]): Box {
+/** A box whose program for `script` (a pull's packing, a seed's unpacking) is replaced by `replace`. */
+function packedBy(
+	box: Box,
+	replace: (command: readonly string[]) => readonly string[],
+	script: string = PULL_PACK_SCRIPT,
+): Box {
 	return {
 		id: box.id,
 		facts: () => box.facts(),
-		exec: (command, options, ctx) =>
-			box.exec(command[2] === PULL_PACK_SCRIPT ? pack(command) : command, options, ctx),
+		exec: (command, options, ctx) => box.exec(command[2] === script ? replace(command) : command, options, ctx),
 		upload: (files, ctx) => box.upload(files, ctx),
 		download: (paths, ctx) => box.download(paths, ctx),
 		status: (ctx) => box.status(ctx),
@@ -338,5 +342,53 @@ describe("a box whose programs still write", () => {
 		expect(pulled.files).toBe(1);
 		expect(readFileSync(join(back, "stays"), "utf8")).toBe("stays");
 		expect(pulled.mark.entries.map((entry) => entry.path)).toEqual(["stays"]);
+	});
+});
+
+describe("a copy that stalls", () => {
+	it("ends a pull with timeout, leaving no partial file, when the box stops sending mid-file", async () => {
+		const { box, host, back, inBox } = await setup();
+		writeFileSync(join(host, "big"), randomBytes(200_000));
+		getOrThrow(await seedDir(box, { from: host, to: inBox }, context));
+		const archivePath = join(box.facts().workspace, "half.tar");
+		writeFileSync(archivePath, archive(member({ name: "./big", data: randomBytes(200_000) })));
+		const stalled = packedBy(box, () => [
+			"sh",
+			"-c",
+			'cat > /dev/null; head -c 70000 -- "$1"; exec sleep 60',
+			"sh",
+			archivePath,
+		]);
+		const started = Date.now();
+		const pulled = await pullDir(stalled, { from: inBox, to: back, pipe: { kind: "stream" }, stallMs: 500 }, context);
+		expect(pulled.ok ? "ok" : pulled.error.code).toBe("timeout");
+		expect(Date.now() - started).toBeLessThan(20_000);
+		expect(readdirSync(back)).toEqual([]);
+	});
+
+	it("ends a seed with timeout when the box stops reading", async () => {
+		const { box, host, inBox } = await setup();
+		writeFileSync(join(host, "big"), randomBytes(2_000_000));
+		const stuck = packedBy(box, () => ["sh", "-c", "exec sleep 60"], UNPACK_SCRIPT);
+		const started = Date.now();
+		const seeded = await seedDir(stuck, { from: host, to: inBox, pipe: { kind: "stream" }, stallMs: 500 }, context);
+		expect(seeded.ok ? "ok" : seeded.error.code).toBe("timeout");
+		expect(Date.now() - started).toBeLessThan(20_000);
+	});
+});
+
+describe("hard links in the box", () => {
+	it("pull both names of one inode as files", async () => {
+		const { box, host, back, inBox } = await setup();
+		writeFileSync(join(host, "a"), "shared");
+		getOrThrow(await seedDir(box, { from: host, to: inBox }, context));
+		linkSync(join(inBox, "a"), join(inBox, "b"));
+		mkdirSync(join(inBox, "d"));
+		linkSync(join(inBox, "a"), join(inBox, "d/c"));
+		const pulled = getOrThrow(await pullDir(box, { from: inBox, to: back }, context));
+		expect(pulled.skipped.hardlink).toBe(0);
+		expect(pulled.files).toBe(3);
+		for (const name of ["a", "b", "d/c"]) expect(readFileSync(join(back, name), "utf8")).toBe("shared");
+		expect(statSync(join(back, "a")).ino).not.toBe(statSync(join(back, "b")).ino);
 	});
 });
