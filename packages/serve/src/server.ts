@@ -31,7 +31,7 @@ import { type ServerLock, takeServerLock } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
 export const DEFAULT_PORT = 7340;
-/** The address the server listens on unless told another. */
+/** The address the server listens on unless told another (startServe's `host`). */
 export const DEFAULT_HOST = "127.0.0.1";
 /** The server's address on `host` and `port`: an address of every interface is reached on this machine at its loopback one. */
 export function serverUrl(host: string, port: number): string {
@@ -349,7 +349,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await writeFile(`${keptFile}.partial`, JSON.stringify({ version: 1, entries }), { mode: 0o600 });
         await rename(`${keptFile}.partial`, keptFile);
       }));
-  const host = options.host ?? DEFAULT_HOST;
+  const host = options.host ?? "127.0.0.1";
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
