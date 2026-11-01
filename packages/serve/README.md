@@ -341,7 +341,9 @@ A definition names the harness that runs it: `pi` (the default, and what a defin
 back.
 `GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`. A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
-`409 agent_not_runnable` with `details.harness`; it never runs on pi instead. Today this server runs pi.
+`409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
+`claude-agent` and `codex` when each adapter's package, pins and provider endpoint check out; the harness's `reason`
+says what is missing.
 
 `claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with Anthropic's own model id, and prices the run
 by it: a revision's `anthropic/<model-id>`, its dots as dashes. A gateway such as OpenRouter names the same models with
