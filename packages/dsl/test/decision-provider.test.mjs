@@ -4,7 +4,7 @@
 // question beyond what the provider declares it can answer is refused before the provider is asked.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { judgeFromProvider, DecisionProviderError, runWorkflow, DECISION_INTERRUPTED, DECISION_REFUSED } from '../dist/index.js';
+import { judgeFromProvider, DecisionProviderError, runWorkflow, DECISION_INTERRUPTED, DECISION_REFUSED, imageDimensions } from '../dist/index.js';
 import { DECISION_INTERRUPTED as RECOVERY_DECISION_INTERRUPTED, DECISION_REFUSED as RECOVERY_DECISION_REFUSED } from '../dist/recovery/index.js';
 
 const capabilities = { types: ['noul', 'choice', 'score'], inputs: ['text', 'json'], evidence: 'citations', probability: 'model', grounding: true, replay: 'never', maxQuestions: 2, maxStateBytes: 1000 };
@@ -120,4 +120,17 @@ test('a decision whose outcome is unknown after it was sent escalates as interru
   assert.equal(result.escalation.state.filing, 'case-9');
   assert.equal(asked, 1, 'it is not asked again');
   assert.deepEqual([receipts.length, receipts[0].status, receipts[0].cost_usd], [1, 'failed', 0.001]);
+});
+
+test('imageDimensions reads a PNG\'s IHDR and a JPEG\'s first frame marker past other segments; anything else is null', async () => {
+  const { readFileSync } = await import('node:fs');
+  const be = (n, width) => Array.from({ length: width }, (_, i) => (n >>> (8 * (width - 1 - i))) & 0xff);
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, ...be(1190, 4), ...be(1540, 4), 8, 2, 0, 0, 0]);
+  assert.deepEqual(imageDimensions(png), { width: 1190, height: 1540 });
+  // APP0, a DHT (C4, not a frame) and a progressive frame (C2): the size is the frame's.
+  const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 4, 1, 2, 0xff, 0xc4, 0, 3, 0, 0xff, 0xc2, 0, 11, 8, ...be(1650, 2), ...be(1275, 2), 1, 1, 0x11, 0]);
+  assert.deepEqual(imageDimensions(jpeg), { width: 1275, height: 1650 });
+  for (const bytes of [new Uint8Array(), Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]), Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 4, 1, 2]), Uint8Array.from([0xff, 0xd8, 0xff, 0xda, 0, 2]), Buffer.from('GIF89a')]) {
+    assert.equal(imageDimensions(bytes), null);
+  }
 });

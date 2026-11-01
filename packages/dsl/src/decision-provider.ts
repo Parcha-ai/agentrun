@@ -1,7 +1,9 @@
 // The seam for decision models: a DecisionProvider answers typed questions (noul, choice, score, box) about a state, fast
 // and without an agent harness, and judgeFromProvider makes one the interpreter's runJudge. Jev is one provider and a
 // third-party API another; each passes the conformance suite in `@parcha/agentrun-dsl/testing`.
+import { createHash } from "node:crypto";
 import { completeConfidence, validateAnswers, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
+import type { DecisionImageDigest } from "./decision-receipts.js";
 import type { WorkflowDeps } from "./workflow.js";
 
 type RunJudge = NonNullable<WorkflowDeps["runJudge"]>;
@@ -34,7 +36,38 @@ export interface DecisionCapabilities {
   models?: readonly string[] | null;
 }
 
-export type DecisionRequest = Pick<JudgeParams, "label" | "kind" | "state" | "questions" | "item" | "executionPath" | "model">;
+/** An image a request carries, loaded by the host: its bytes, its type, and the reference it was loaded from. */
+export interface DecisionImage { bytes: Uint8Array; mime: string; ref: string }
+
+/** A PNG's or JPEG's width and height in pixels, read from its header (PNG's IHDR, a JPEG's first frame marker); null
+ *  when the bytes are neither or the header is cut short. A provider with a size cap checks it before a paid call. */
+export function imageDimensions(bytes: Uint8Array): { width: number; height: number } | null {
+  const u16 = (at: number) => (bytes[at]! << 8) | bytes[at + 1]!;
+  const u32 = (at: number) => ((bytes[at]! << 24) >>> 0) + (bytes[at + 1]! << 16) + (bytes[at + 2]! << 8) + bytes[at + 3]!;
+  if (bytes.length >= 24 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[12] === 0x49 && bytes[13] === 0x48 && bytes[14] === 0x44 && bytes[15] === 0x52) {
+    return { width: u32(16), height: u32(20) };
+  }
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  for (let at = 2; at + 3 < bytes.length;) {
+    if (bytes[at] !== 0xff) return null;
+    const marker = bytes[at + 1]!;
+    if (marker === 0xff) { at++; continue; }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) { at += 2; continue; }
+    // A start-of-frame marker (C0-CF but DHT C4, JPG C8 and DAC CC) holds precision, height, width.
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return at + 8 < bytes.length ? { width: u16(at + 7), height: u16(at + 5) } : null;
+    if (marker === 0xd9 || marker === 0xda) return null;
+    at += 2 + u16(at + 2);
+  }
+  return null;
+}
+
+/** How a host reads an image a decision node names: `ref` is the node's resolved reference (a run-relative path). */
+export type LoadImage = (ref: string, ctx: { signal: AbortSignal }) => Promise<{ bytes: Uint8Array; mime: string }>;
+
+export type DecisionRequest = Pick<JudgeParams, "label" | "kind" | "state" | "questions" | "item" | "executionPath" | "model"> & {
+  /** The images, by the token the state or a question names each with; only for a provider whose inputs include image. */
+  images?: Record<string, DecisionImage>;
+};
 
 export interface DecisionContext {
   /** The decision receipt's id: the same request asked again has the same id. */
@@ -122,13 +155,44 @@ export function checkCapabilities(capabilities: DecisionCapabilities, request: P
   }
 }
 
+export interface JudgeFromProviderOptions {
+  deadlineMs?: number | null;
+  /** Reads the images a node names. A request with images on a host without it is refused as configuration. */
+  loadImage?: LoadImage;
+}
+
+/** Loads a request's images through the host's `loadImage`, before anything is sent: a provider that takes no image input,
+ *  a host that cannot load one, or an image that cannot be read is refused, and no request is made. */
+async function loadImages(provider: DecisionProvider, images: Record<string, string>, loadImage: LoadImage | undefined, signal: AbortSignal): Promise<{ loaded: Record<string, DecisionImage>; digests: DecisionImageDigest[] }> {
+  if (!provider.capabilities.inputs.includes("image")) throw new DecisionProviderError("invalid_request", `The provider ${provider.id} takes no image input, and the request carries ${Object.keys(images).length}.`);
+  if (!loadImage) throw new DecisionProviderError("configuration", "The request carries images, and this host has no loadImage to read them.");
+  const loaded: Record<string, DecisionImage> = Object.create(null);
+  const digests: DecisionImageDigest[] = [];
+  for (const [token, ref] of Object.entries(images)) {
+    let image: { bytes: Uint8Array; mime: string };
+    try { image = await loadImage(ref, { signal }); }
+    catch (error) { throw new DecisionProviderError("invalid_request", `The image ${token} (${ref}) could not be read: ${String((error as Error)?.message ?? error).slice(0, 200)}`); }
+    if (!(image?.bytes instanceof Uint8Array) || !image.bytes.byteLength || typeof image.mime !== "string") throw new DecisionProviderError("invalid_request", `The image ${token} (${ref}) read as no image bytes.`);
+    loaded[token] = { bytes: image.bytes, mime: image.mime, ref };
+    digests.push({ token, ref, sha256: createHash("sha256").update(image.bytes).digest("hex"), mime: image.mime, bytes: image.bytes.byteLength });
+  }
+  return { loaded: { ...loaded }, digests };
+}
+
 /** The interpreter's runJudge, answered by `provider`: the request goes to it with the decision's id, its signal and
- *  `deadlineMs`; a choice or score without a confidence gets one derived, and the result names each one's source. The
- *  answers are validated against the questions, and ones that do not match them are invalid_response. */
-export function judgeFromProvider(provider: DecisionProvider, options: { deadlineMs?: number | null } = {}): RunJudge {
+ *  `deadlineMs`, and with the images it names, loaded through `loadImage`; a choice or score without a confidence gets one
+ *  derived, and the result names each one's source and each image's digest. The answers are validated against the
+ *  questions, and ones that do not match them are invalid_response. */
+export function judgeFromProvider(provider: DecisionProvider, options: JudgeFromProviderOptions = {}): RunJudge {
   return async (params) => {
     const request: DecisionRequest = { label: params.label, kind: params.kind, state: params.state, questions: params.questions, ...(params.item ? { item: params.item } : {}), ...(params.executionPath !== undefined ? { executionPath: params.executionPath } : {}), ...(params.model !== undefined ? { model: params.model } : {}) };
     checkCapabilities(provider.capabilities, request);
+    let digests: DecisionImageDigest[] | undefined;
+    if (params.images && Object.keys(params.images).length) {
+      const images = await loadImages(provider, params.images, options.loadImage, params.signal ?? new AbortController().signal);
+      request.images = images.loaded;
+      digests = images.digests;
+    }
     const outcome = await provider.decide(request, { decisionId: params.decisionId ?? "", signal: params.signal ?? new AbortController().signal, deadlineMs: options.deadlineMs ?? null });
     const { answers, confidence_source } = completeConfidence(params.questions, (outcome.answers ?? {}) as Record<string, unknown>);
     try { validateAnswers(params.questions, answers); }
@@ -140,6 +204,7 @@ export function judgeFromProvider(provider: DecisionProvider, options: { deadlin
     const result: JudgeResult = {
       answers, model: outcome.model, usage: outcome.usage, cost_usd: outcome.cost_usd, cost_basis: outcome.cost_basis,
       evidence: outcome.evidence, provider_request_id: outcome.provider_request_id, confidence_source,
+      ...(digests ? { images: digests } : {}),
     };
     return result;
   };
@@ -150,7 +215,7 @@ export function judgeFromProvider(provider: DecisionProvider, options: { deadlin
  *  `deadlineMs`: a node only ever shortens it. The node's bound is kept here: when it passes, the call is cut, and a cut
  *  call may already have been sent and billed, so it is `outcome_unknown` (the decision escalates as interrupted), never
  *  asked again. The result names the provider that answered. */
-export function judgeFromProviders(options: { providers: Readonly<Record<string, DecisionProvider>>; default: string; deadlineMs?: number | null }): RunJudge {
+export function judgeFromProviders(options: { providers: Readonly<Record<string, DecisionProvider>>; default: string; deadlineMs?: number | null; loadImage?: LoadImage }): RunJudge {
   return async (params) => {
     const id = params.provider ?? options.default;
     const provider = Object.hasOwn(options.providers, id) ? options.providers[id] : undefined;
@@ -163,7 +228,7 @@ export function judgeFromProviders(options: { providers: Readonly<Record<string,
     const timer = shorter ? setTimeout(() => cut.abort(new DOMException("The decision node's timeoutMs passed", "TimeoutError")), node) : undefined;
     const signal = params.signal ? AbortSignal.any([params.signal, cut.signal]) : cut.signal;
     try {
-      const result = await judgeFromProvider(provider, { deadlineMs })({ ...params, signal });
+      const result = await judgeFromProvider(provider, { deadlineMs, ...(options.loadImage ? { loadImage: options.loadImage } : {}) })({ ...params, signal });
       return { ...result, provider: id };
     } catch (error) {
       if (cut.signal.aborted && error instanceof DecisionProviderError && (error.code === "aborted" || error.code === "timeout")) {

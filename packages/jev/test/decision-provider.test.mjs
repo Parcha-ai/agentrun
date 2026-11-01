@@ -25,7 +25,7 @@ function build(replies) {
 
 registerDecisionProviderConformance('jev', { canary: KEY, refuses: false, build });
 
-test('a box question is refused before anything is sent: the seam carries no image', async () => {
+test('a box question is refused before anything is sent: no node asks one', async () => {
   let calls = 0;
   const provider = jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', model: 'jev-preview', fetch: async () => { calls++; return json({}); } });
   await assert.rejects(judgeFromProvider(provider)({ label: 'x', kind: 'judge', state: 'a <photo>', questions: { spot: { type: 'box', instructions: 'Where is the door?' } } }), (error) => error.code === 'invalid_request' && /does not answer box questions/.test(error.message), 'refused by the declared capabilities, not inside the request');
@@ -61,7 +61,8 @@ test('jevProvider declares what Jev answers, and the key it reads by name', () =
   assert.equal(provider.id, 'jev');
   assert.deepEqual(provider.needs, ['TYPESAFE_API_KEY']);
   assert.deepEqual(provider.capabilities.types, ['noul', 'choice', 'score']);
-  assert.deepEqual(provider.capabilities.inputs, ['text', 'json']);
+  assert.deepEqual(provider.capabilities.inputs, ['text', 'json', 'image'], 'TypeSafe takes images');
+  assert.deepEqual(jevProvider({ provider: 'openrouter', apiKey: KEY }).capabilities.inputs, ['text', 'json'], 'the OpenRouter route is not verified for images');
   assert.deepEqual([provider.capabilities.evidence, provider.capabilities.probability, provider.capabilities.grounding, provider.capabilities.replay], ['none', 'model', false, 'never']);
   assert.deepEqual(jevProvider({ provider: 'openrouter', apiKey: KEY }).needs, ['OPENROUTER_API_KEY']);
 });
@@ -98,4 +99,49 @@ test('a Jev 200 that breaks the response rules was paid for: invalid_response at
     assert.deepEqual([error.costUsd, error.costBasis], [null, 'unknown']);
     return true;
   });
+});
+
+const PNG = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64'));
+
+test('images reach Jev through the seam as assets under their tokens, with the image header, and the result names their digests', async () => {
+  const seen = [];
+  const fetch = async (_url, init) => {
+    const headers = Object.fromEntries(Object.entries(init.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
+    const form = await new Response(init.body, { headers: { 'content-type': headers['content-type'] } }).formData();
+    const request = JSON.parse(await (typeof form.get('request') === 'string' ? form.get('request') : form.get('request').text()));
+    seen.push({ headers, request, part: new Uint8Array(await form.get(request.assets['<page1>'].part).arrayBuffer()) });
+    return json({ model: 'jev-test', answers: { sealed: { type: 'noul', noul: 0.7 } }, usage: { input_tokens: 900, output_tokens: 0 } });
+  };
+  const loads = [];
+  const judge = judgeFromProvider(jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch }), { loadImage: async (ref) => { loads.push(ref); return { bytes: PNG, mime: 'image/png' }; } });
+  const result = await judge({ label: 'seal', kind: 'judge', state: { page: '<page1>' }, questions: { sealed: { type: 'noul', instructions: 'Does <page1> carry a seal?' } }, images: { '<page1>': 'pages/coi-acme/1.png' } });
+  assert.deepEqual(loads, ['pages/coi-acme/1.png']);
+  assert.equal(seen[0].headers['typesafe-danger-zone-images'], 'true');
+  assert.deepEqual(seen[0].part, PNG);
+  assert.equal(result.answers.sealed.noul, 0.7);
+  assert.equal(result.images.length, 1);
+  assert.deepEqual({ ...result.images[0], sha256: result.images[0].sha256.length }, { token: '<page1>', ref: 'pages/coi-acme/1.png', sha256: 64, mime: 'image/png', bytes: PNG.byteLength });
+});
+
+test('a request with images on the OpenRouter route of Jev, or on a host with no loadImage, is refused before anything is sent', async () => {
+  let calls = 0;
+  const fetch = async () => { calls++; return json({}); };
+  const ask = { label: 'x', kind: 'judge', state: { page: '<p>' }, questions: { q: { type: 'noul', instructions: 'Q?' } }, images: { '<p>': 'a.png' } };
+  await assert.rejects(judgeFromProvider(jevProvider({ provider: 'openrouter', apiKey: KEY, fetch }), { loadImage: async () => ({ bytes: PNG, mime: 'image/png' }) })(ask), (error) => error.code === 'invalid_request');
+  await assert.rejects(judgeFromProvider(jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch }))(ask), (error) => error.code === 'configuration');
+  await assert.rejects(judgeFromProvider(jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch }), { loadImage: async () => { throw new Error('ENOENT'); } })(ask), (error) => error.code === 'invalid_request' && /could not be read/.test(error.message));
+  assert.equal(calls, 0);
+});
+
+test('a 429 with Retry-After is sent again; a 5xx after sending never is', async () => {
+  let calls = 0;
+  const answer = json({ model: 'jev-test', answers: { holds: { type: 'noul', noul: 0.9 } }, usage: { input_tokens: 1, output_tokens: 0 } });
+  const limited = async () => (++calls === 1 ? new Response('{}', { status: 429, headers: { 'retry-after': '0', 'content-type': 'application/json' } }) : answer);
+  const ask = (provider) => provider.decide({ label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Q?' } } }, { decisionId: 'd', signal: new AbortController().signal, deadlineMs: 5000 });
+  const outcome = await ask(jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: limited, retryBaseMs: 1, retryMaxMs: 2 }));
+  assert.equal(outcome.answers.holds.noul, 0.9);
+  assert.equal(calls, 2);
+  calls = 0;
+  await assert.rejects(ask(jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: async () => { calls++; return json({}, 502); }, retryBaseMs: 1, retryMaxMs: 2 })), (error) => error.code === 'outcome_unknown');
+  assert.equal(calls, 1);
 });

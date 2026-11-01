@@ -895,6 +895,11 @@
               "type": "number",
               "title": "timeoutMs"
             },
+            "images": {
+              "description": "The images a decision node sends with its request: each key is a token (such as `\"<page1>\"`) that appears literally in\nthe node's `state` or in a question's text, and each value is a reference to the image, written as a `state` value is\n(`\"{item.pages.0.image}\"`, or a literal path), that resolves to a string the host loads (a run-relative file path).",
+              "$ref": "#/definitions/DecisionImages",
+              "title": "images"
+            },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
               "type": "object",
@@ -975,6 +980,11 @@
             "timeoutMs": {
               "type": "number",
               "title": "timeoutMs"
+            },
+            "images": {
+              "description": "The images a decision node sends with its request: each key is a token (such as `\"<page1>\"`) that appears literally in\nthe node's `state` or in a question's text, and each value is a reference to the image, written as a `state` value is\n(`\"{item.pages.0.image}\"`, or a literal path), that resolves to a string the host loads (a run-relative file path).",
+              "$ref": "#/definitions/DecisionImages",
+              "title": "images"
             },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
@@ -1070,6 +1080,11 @@
             "timeoutMs": {
               "type": "number",
               "title": "timeoutMs"
+            },
+            "images": {
+              "description": "The images a decision node sends with its request: each key is a token (such as `\"<page1>\"`) that appears literally in\nthe node's `state` or in a question's text, and each value is a reference to the image, written as a `state` value is\n(`\"{item.pages.0.image}\"`, or a literal path), that resolves to a string the host loads (a run-relative file path).",
+              "$ref": "#/definitions/DecisionImages",
+              "title": "images"
             },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
@@ -1177,6 +1192,11 @@
             "timeoutMs": {
               "type": "number",
               "title": "timeoutMs"
+            },
+            "images": {
+              "description": "The images a decision node sends with its request: each key is a token (such as `\"<page1>\"`) that appears literally in\nthe node's `state` or in a question's text, and each value is a reference to the image, written as a `state` value is\n(`\"{item.pages.0.image}\"`, or a literal path), that resolves to a string the host loads (a run-relative file path).",
+              "$ref": "#/definitions/DecisionImages",
+              "title": "images"
             },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
@@ -1988,6 +2008,11 @@
             "timeoutMs": {
               "type": "number",
               "title": "timeoutMs"
+            },
+            "images": {
+              "description": "The images a decision node sends with its request: each key is a token (such as `\"<page1>\"`) that appears literally in\nthe node's `state` or in a question's text, and each value is a reference to the image, written as a `state` value is\n(`\"{item.pages.0.image}\"`, or a literal path), that resolves to a string the host loads (a run-relative file path).",
+              "$ref": "#/definitions/DecisionImages",
+              "title": "images"
             }
           },
           "required": [
@@ -2240,6 +2265,11 @@
         "of",
         "predicate"
       ]
+    },
+    "DecisionImages": {
+      "description": "The images a decision node sends with its request: each key is a token (such as `\"<page1>\"`) that appears literally in\nthe node's `state` or in a question's text, and each value is a reference to the image, written as a `state` value is\n(`\"{item.pages.0.image}\"`, or a literal path), that resolves to a string the host loads (a run-relative file path).",
+      "title": "DecisionImages",
+      "type": "object"
     },
     "Workflow": {
       "title": "Workflow",
