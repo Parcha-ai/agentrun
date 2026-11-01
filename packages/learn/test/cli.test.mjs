@@ -224,6 +224,29 @@ test("a value refused in a path, the branch's name or a detail, in hex of any ca
   }
 });
 
+test("a value that holds another refused value is redacted whole, whichever is named first", async (t) => {
+  const [short, long] = ["abcdefgh", "abcdefgh-private-suffix"];
+  const hex = Buffer.from(long).toString("hex");
+  const files = { ...cleanFiles(), [`memos/${RUN}.md`]: memo({ proposed: ["learnings/L-7c21e0a4b9d3.md (new)", ".agents/skills/ (new)", "workflows/find-policies/ (new)"] }), [`.agents/skills/${hex}/SKILL.md`]: skill() };
+  const { dir, tools } = await repo(t, files);
+  for (const json of [true, false]) {
+    const out = cli(dir, ["check", "--base", "main", "--tools", tools, "--refuse-values-from-env", "STORE_PASS,STORE_KEY", ...(json ? ["--json"] : [])], { STORE_PASS: short, STORE_KEY: long });
+    assert.equal(out.status, 1, out.stdout + out.stderr);
+    const printed = out.stdout + out.stderr;
+    for (const form of [long, "private-suffix", hex, Buffer.from("-private-suffix").toString("hex")]) assert.equal(printed.includes(form), false, `${json ? "JSON" : "text"} output holds ${form}`);
+    if (json) assert.ok(found(JSON.parse(out.stdout)).some(([rule, path]) => rule === "secret_value" && path === ".agents/skills/[redacted]/SKILL.md"), out.stdout);
+  }
+});
+
+test("a value that squeezes to nothing leaves both reports readable", async (t) => {
+  const { dir, tools } = await repo(t);
+  for (const json of [true, false]) {
+    const out = cli(dir, ["check", "--base", "main", "--tools", tools, "--refuse-values-from-env", "STORE_PASS", ...(json ? ["--json"] : [])], { STORE_PASS: " ".repeat(8) });
+    if (json) assert.ok(Array.isArray(JSON.parse(out.stdout).problems), out.stdout);
+    else assert.ok(out.stdout.startsWith(`${BRANCH}: `), out.stdout);
+  }
+});
+
 test("over the change cap, no body is read: the count comes first", async (t) => {
   const extra = Object.fromEntries(Array.from({ length: 70 }, (_, i) => [`extra/f${String(i).padStart(2, "0")}.txt`, `file ${i}\n`]));
   const { dir, tools } = await repo(t, { ...cleanFiles(), ...extra });
