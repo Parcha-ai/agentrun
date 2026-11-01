@@ -52,7 +52,8 @@ const unwrap = <T>(result: Result<T, LaunchError>): T => getOrThrow(result as Re
 /** A program that records its own pid in the workspace, then runs `rest`. */
 export const recording = (rest: string): string => `echo $$ >> prog.pids; ${rest}`;
 
-async function pids(box: Box): Promise<number[]> {
+/** The pids the recording program wrote, one per start. */
+export async function pids(box: Box): Promise<number[]> {
 	const read = await sh(box, "cat prog.pids 2>/dev/null");
 	return read.text
 		.split("\n")
