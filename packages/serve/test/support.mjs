@@ -9,6 +9,11 @@ import { startServe } from "../dist/index.js";
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
+// No test reaches a box provider: the boxes the environment running the suite lists are not the tests'. A server here,
+// or one a test starts in a process of its own, probes none; a test that wants a box lists it itself, with its endpoint
+// on loopback (boxes.test.mjs).
+delete process.env.AGENTRUN_BOXES;
+
 export async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
