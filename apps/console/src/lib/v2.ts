@@ -30,7 +30,7 @@ export type Run = {
 };
 
 export type TimelineKind =
-  | "user_message" | "thinking" | "tool_use" | "tool_result" | "waiting" | "usage" | "final_answer" | "phase" | string;
+  | "user_message" | "thinking" | "tool_use" | "tool_result" | "waiting" | "usage" | "final_answer" | "phase" | "decision" | string;
 
 export type TimelineRow = {
   id: string;
@@ -41,7 +41,7 @@ export type TimelineRow = {
   timestamp: string;
   created_at?: string;
   tool_name: string | null;
-  tool_status?: string | null;
+  tool_status?: "success" | "failed" | null;
   tool_input_preview?: string | null;
   tool_result_preview?: string | null;
   agent_label?: string | null;
