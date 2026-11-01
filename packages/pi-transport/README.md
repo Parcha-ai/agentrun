@@ -426,16 +426,17 @@ nothing of sessions beyond "a SQLite file and a directory". Node only.
   The head is one read of `durable_metadata.next_seq`; the schema is compared with the one pi-durable makes, read from
   pi-durable itself, never a copy kept here.
 - **A store from a box.** A store a host verifies or replays into is a file a box made, and a box is not trusted, so this
-  package opens one only one way (`verifyStore`, `replayCommits`): a regular file of at most `DEFAULT_MAX_STORE_BYTES`
-  (1 GiB; `{ maxBytes }` sets another), opened `immutable` and read-only, with `query_only` on, `trusted_schema` off,
-  `cell_size_check` on and no extension loading; on Node 24 also defensive (`SQLITE_DBCONFIG_DEFENSIVE`), with no
-  `ATTACH` and an authorizer that lets only a select, a column read and the quick check through. Node 22's `node:sqlite`
-  has neither defensive mode nor limits nor an authorizer; there the connection that cannot write and the schema check
-  stand in for them. The schema must be pi-durable's, object for object and text for text, before the quick check runs:
-  a trigger, a view, a virtual table or a table of the file's own is `refused`, so nothing the file defines is ever
-  compiled, and a store of another pi-durable schema version is refused too. `replayCommits` never opens the file to
-  write: the rows of pi-durable's tables are read into a store pi-durable makes on the host, which takes the file's
-  place, and the commits go into that one.
+  package opens one only one way (`verifyStore`, `replayCommits`), following SQLite's guidance for a database file another
+  security domain could have written. A regular file of at most `DEFAULT_MAX_STORE_BYTES` (1 GiB; `{ maxBytes }` sets
+  another) has its main file copied, without following a link, into a directory the host makes, so no journal or
+  write-ahead log the box left beside it is read; the size and hash checked are the copy's. The copy is opened
+  `immutable` and read-only, with no extension loading, `trusted_schema` off, `cell_size_check` on and `mmap_size` 0,
+  all of which Node 22's `node:sqlite` accepts. The schema must be pi-durable's, object for object and text for text,
+  before the quick check runs: a trigger, a view, a virtual table or a table of the file's own is `refused`, so nothing
+  the file defines is ever compiled, and a store of another pi-durable schema version is refused too. No SQL comes from
+  the box, only the file: the statements are this package's own. `replayCommits` never opens the file to write: the rows
+  of pi-durable's tables are read into a store pi-durable makes on the host, which takes the file's place, and the
+  commits go into that one.
 - **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
   hash on the way and on the target; it appears at its path whole or not at all.
 - **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,

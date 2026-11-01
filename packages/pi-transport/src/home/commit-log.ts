@@ -33,9 +33,9 @@ export class ReplayError extends Error {
  * the commit a store answers with must be the one the entry names. On an error the entries applied before it stay
  * applied (`error.applied` says which), so a caller may use the store as far as it got.
  *
- * A checkpoint is what a box made, so the file at `path` is never opened to write: its rows are read into a store
- * pi-durable makes here, which takes its place (`rebuildStore`, read-only and defensive, within `options.maxBytes`), and
- * the commits go into that one. A file that is not a store pi-durable makes is `failed` with nothing applied. A `path`
+ * A checkpoint is what a box made, so the file at `path` is never opened to write: its rows are read (from a read-only
+ * copy of its main file, within `options.maxBytes`) into a store pi-durable makes here, which takes its place
+ * (`rebuildStore`), and the commits go into that one. A file that is not a store pi-durable makes is `failed` with nothing applied. A `path`
  * with no file gets a new, empty store.
  */
 export async function replayCommits(

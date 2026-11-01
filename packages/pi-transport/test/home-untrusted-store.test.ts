@@ -49,16 +49,6 @@ const place = (name: string) => {
 	return directory;
 };
 
-/** Node 24's binding has defensive mode, limits and an authorizer; Node 22's has none of the three. */
-const node24 = typeof (DatabaseSync.prototype as { enableDefensive?: unknown }).enableDefensive === "function";
-
-/** The connection with its authorizer taken off (Node 24), so that a case sees the setting beneath it. */
-function bare(path: string): DatabaseSync {
-	const database = openUntrustedConnection(path) as DatabaseSync & { setAuthorizer?: (callback: null) => void };
-	database.setAuthorizer?.(null);
-	return database;
-}
-
 /** The file's bytes and every name beside it: what a refusal must leave as it found. */
 function snapshot(file: string) {
 	return {
@@ -70,6 +60,32 @@ function snapshot(file: string) {
 function sealOf(file: string, head: number): Seal {
 	const bytes = readFileSync(file);
 	return { head, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+/**
+ * A rollback journal that SQLite takes as hot: its header (SQLite's file format, "the rollback journal") and a record for
+ * each of `records`, a page number and the page as it was before a transaction that left the database at `pages` pages.
+ */
+function hotJournal(records: readonly (readonly [number, Buffer])[], pages: number, pageSize: number): Buffer {
+	const sector = 4096;
+	const nonce = 0x5eed1e55;
+	const header = Buffer.alloc(sector);
+	Buffer.from("d9d505f920a163d7", "hex").copy(header, 0);
+	header.writeUInt32BE(records.length, 8);
+	header.writeUInt32BE(nonce, 12);
+	header.writeUInt32BE(pages, 16);
+	header.writeUInt32BE(sector, 20);
+	header.writeUInt32BE(pageSize, 24);
+	const body = records.map(([number, page]) => {
+		let checksum = nonce;
+		for (let at = pageSize - 200; at > 0; at -= 200) checksum = (checksum + (page[at] as number)) >>> 0;
+		const record = Buffer.alloc(4 + pageSize + 4);
+		record.writeUInt32BE(number, 0);
+		page.copy(record, 4);
+		record.writeUInt32BE(checksum, 4 + pageSize);
+		return record;
+	});
+	return Buffer.concat([header, ...body]);
 }
 
 /** Every row of every table of a store, read on a plain connection of the test's own. */
@@ -203,13 +219,12 @@ describe("an ordinary store a box made", () => {
 });
 
 describe("each setting of the connection, on its own", () => {
-	it("writes nothing: no temporary table, and an ATTACH opens no file and makes none (query_only, readOnly)", () => {
+	it("opens nothing to write: an ATTACH opens no file and makes none (readOnly)", () => {
 		const directory = place("writes");
 		const file = join(directory, "store.db");
 		copyFileSync(base.checkpoint, file);
-		const database = bare(file);
+		const database = openUntrustedConnection(file);
 		try {
-			expect(() => database.exec("CREATE TEMP TABLE t (x)")).toThrow(/readonly/);
 			const made = join(directory, "made.db");
 			expect(() => database.exec(`ATTACH '${made}' AS made`)).toThrow();
 			expect(existsSync(made)).toBe(false);
@@ -219,13 +234,13 @@ describe("each setting of the connection, on its own", () => {
 		}
 	});
 
-	it("reads back trusted_schema off, query_only on and cell_size_check on, and a view over a pragma's virtual table does not run", () => {
+	it("reads back trusted_schema off, cell_size_check on and mmap_size 0, and a view over a pragma's virtual table does not run", () => {
 		const file = hostile(base.checkpoint, "trusted", "CREATE VIEW pwn AS SELECT name FROM pragma_table_list;");
-		const database = bare(file);
+		const database = openUntrustedConnection(file);
 		try {
 			const read = (pragma: string) =>
 				Number((database.prepare(`PRAGMA ${pragma}`).get() as Record<string, number>)[pragma]);
-			expect([read("trusted_schema"), read("query_only"), read("cell_size_check")]).toEqual([0, 1, 1]);
+			expect([read("trusted_schema"), read("cell_size_check"), read("mmap_size")]).toEqual([0, 1, 0]);
 			expect(() => database.prepare("SELECT * FROM pwn").all()).toThrow(/unsafe use of virtual table/);
 		} finally {
 			database.close();
@@ -239,89 +254,43 @@ describe("each setting of the connection, on its own", () => {
 		}
 	});
 
-	it("stops at a page whose cells run off its end (cell_size_check), where a plain reader walks them", () => {
+	it("stops at a page whose cells run off its end (cell_size_check), where the same connection without it walks them", () => {
 		const bytes = readFileSync(base.checkpoint);
 		const pageSize = bytes.readUInt16BE(16) === 1 ? 65536 : bytes.readUInt16BE(16);
+		const check = (file: string, cellSizeCheck: boolean) => {
+			const database = openUntrustedConnection(file);
+			try {
+				if (!cellSizeCheck) database.exec("PRAGMA cell_size_check = OFF");
+				return (database.prepare("PRAGMA quick_check").all() as { quick_check: string }[])
+					.map((row) => row.quick_check)
+					.join("\n");
+			} catch (cause) {
+				return `threw: ${String(cause)}`;
+			} finally {
+				database.close();
+			}
+		};
 		let stopped = 0;
 		for (let page = 1; (page + 1) * pageSize <= bytes.length; page++) {
 			const damaged = Buffer.from(bytes);
 			damaged.fill(0xa5, page * pageSize + 100, (page + 1) * pageSize);
 			const file = join(place(`cells-${page}`), "store.db");
 			writeFileSync(file, damaged);
-			const plain = new DatabaseSync(file, { readOnly: true });
-			let walked = "";
-			try {
-				walked = (plain.prepare("PRAGMA quick_check").all() as { quick_check: string }[])
-					.map((row) => row.quick_check)
-					.join("\n");
-			} catch {
-				// A page no reader gets past: not the one this case wants.
-			} finally {
-				plain.close();
-			}
-			if (!/Extends off end of page/.test(walked)) continue;
-			const database = bare(file);
-			try {
-				database.prepare("PRAGMA quick_check").all();
-			} catch (cause) {
-				expect(String(cause)).toMatch(/malformed/);
-				stopped += 1;
-			} finally {
-				database.close();
-			}
+			const walked = check(file, false);
+			if (walked.startsWith("threw") || !/Extends off end of page/.test(walked)) continue;
+			if (/^threw: .*malformed/.test(check(file, true))) stopped += 1;
 		}
-		expect(stopped, "a page a plain reader walks and this connection stops at").toBeGreaterThan(0);
+		expect(stopped, "a page the connection stops at, and walks with cell_size_check off").toBeGreaterThan(0);
 	});
 
 	it("loads no extension (allowExtension: false)", () => {
 		const directory = place("extension");
 		const file = join(directory, "store.db");
 		copyFileSync(base.checkpoint, file);
-		const database = bare(file);
+		const database = openUntrustedConnection(file);
 		try {
 			expect(() => database.loadExtension(join(directory, "library"))).toThrow(/not allowed/);
 			expect(() => database.prepare(`SELECT load_extension('${join(directory, "library")}')`).get()).toThrow();
-		} finally {
-			database.close();
-		}
-	});
-
-	it.runIf(node24)("is defensive (Node 24 and later): writable_schema cannot be turned on", () => {
-		const file = join(place("defensive"), "store.db");
-		copyFileSync(base.checkpoint, file);
-		const database = bare(file);
-		try {
-			database.exec("PRAGMA writable_schema = ON");
-			expect((database.prepare("PRAGMA writable_schema").get() as { writable_schema: number }).writable_schema).toBe(
-				0,
-			);
-		} finally {
-			database.close();
-		}
-	});
-
-	it.runIf(node24)("attaches nothing (Node 24 and later): not even a file that exists", () => {
-		const file = join(place("attach"), "store.db");
-		copyFileSync(base.checkpoint, file);
-		const database = bare(file);
-		try {
-			expect(() => database.exec(`ATTACH '${base.live}' AS other`)).toThrow(/too many attached databases/);
-		} finally {
-			database.close();
-		}
-	});
-
-	it.runIf(node24)("lets only a select, a read and the quick check through its authorizer (Node 24 and later)", () => {
-		const file = hostile(base.checkpoint, "authorizer", "CREATE VIEW plain AS SELECT id FROM entries;");
-		const database = openUntrustedConnection(file);
-		try {
-			expect(database.prepare("SELECT next_seq FROM durable_metadata").get()).toBeDefined();
-			expect(database.prepare("PRAGMA quick_check").all()).toEqual([{ quick_check: "ok" }]);
-			expect(() => database.exec("PRAGMA query_only = OFF")).toThrow(/not authorized/);
-			expect(() => database.prepare("SELECT count(*) FROM entries").get()).toThrow(/not authorized/);
-			// A read inside a view is refused by name.
-			expect(() => database.prepare("SELECT * FROM plain").all()).toThrow(/access to entries.id is prohibited/);
-			expect(() => database.exec(`ATTACH '${base.live}' AS other`)).toThrow(/not authorized/);
 		} finally {
 			database.close();
 		}
@@ -401,6 +370,53 @@ describe("a hostile store is refused cleanly, with nothing in it run and no file
 		expect(readdirSync(dirname(target))).toEqual([]);
 	});
 
+	it("a hot journal beside the file, which would roll a trigger into it", async () => {
+		// A hot journal that holds the pages of the same store with a trigger as the pages "before" is what a crash
+		// between the two would leave, and SQLite rolls it in.
+		const clean = readFileSync(base.checkpoint);
+		const pageSize = clean.readUInt16BE(16) === 1 ? 65536 : clean.readUInt16BE(16);
+		const triggered = readFileSync(
+			hostile(
+				base.checkpoint,
+				"journal-source",
+				"CREATE TRIGGER pwn AFTER INSERT ON entries BEGIN DELETE FROM entries; END;",
+			),
+		);
+		expect(triggered.length).toBe(clean.length);
+		const records: [number, Buffer][] = [];
+		for (let at = 0; at < clean.length; at += pageSize) {
+			const page = triggered.subarray(at, at + pageSize);
+			if (!page.equals(clean.subarray(at, at + pageSize))) records.push([at / pageSize + 1, page]);
+		}
+		expect(records.length).toBeGreaterThan(0);
+		const journal = hotJournal(records, clean.length / pageSize, pageSize);
+		const placed = (name: string) => {
+			const file = join(place(name), "store.db");
+			writeFileSync(file, clean);
+			writeFileSync(`${file}-journal`, journal);
+			return file;
+		};
+		// Live: a connection that may write rolls it back into the file, and the trigger is there.
+		const control = placed("journal-control");
+		const writer = new DatabaseSync(control);
+		try {
+			expect(writer.prepare("SELECT name FROM sqlite_schema WHERE type = 'trigger'").all()).toEqual([
+				{ name: "pwn" },
+			]);
+		} finally {
+			writer.close();
+		}
+		const file = placed("journal");
+		const before = snapshot(file);
+		getOrThrow(await verifyStore(file, sealOf(file, base.seal.head), context));
+		expect(snapshot(file)).toEqual(before);
+		expect(readFileSync(`${file}-journal`).equals(journal)).toBe(true);
+		// The replay reads the main file alone too, and removes the journal, which is not the new store's.
+		getOrThrow(await replayCommits(file, base.seal.head, base.since, context));
+		expect(readdirSync(dirname(file))).toEqual(["store.db"]);
+		expect(dump(file)).toEqual(dump(base.live));
+	});
+
 	it("a table of the file's own, beside the store's", async () => {
 		const file = hostile(
 			base.checkpoint,
@@ -423,7 +439,7 @@ describe("a hostile store is refused cleanly, with nothing in it run and no file
 			damaged.fill(0xa5, page * pageSize + 100, (page + 1) * pageSize);
 			const file = join(place(`damaged-${page}`), "store.db");
 			writeFileSync(file, damaged);
-			const database = bare(file);
+			const database = openUntrustedConnection(file);
 			try {
 				database.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema").all();
 				database.prepare("SELECT next_seq FROM durable_metadata WHERE singleton = 1").get();

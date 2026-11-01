@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { link, lstat, open, rename, rm, stat } from "node:fs/promises";
-import { DatabaseSync, type DatabaseSyncOptions, type SQLInputValue } from "node:sqlite";
+import { constants, createReadStream } from "node:fs";
+import { type FileHandle, link, mkdtemp, open, rename, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -144,84 +146,38 @@ async function withDatabase<T>(path: string, use: (database: DatabaseSync) => T)
 }
 
 // A store that came from elsewhere. A box makes the stores a host checks before a restore (`verifyStore`) and replays
-// commits into (`replayCommits`), and a box is not trusted: its file is input to this process's SQLite. Such a file is
-// opened here and nowhere else, read-only and defensive, and only once its schema is the one pi-durable makes.
-
-/** node:sqlite's options and methods past Node 22's typings. Node 24 has them; Node 22's binding has none of them. */
-type HardenedOptions = DatabaseSyncOptions & {
-	readonly defensive?: boolean;
-	readonly limits?: { readonly attach?: number };
-};
-type HardenedDatabase = DatabaseSync & {
-	readonly enableDefensive?: (active: boolean) => void;
-	readonly setAuthorizer?: (callback: ((action: number, ...names: (string | null)[]) => number) | null) => void;
-};
-
-// SQLite's authorizer codes (sqlite3.h).
-const SQLITE_OK = 0;
-const SQLITE_DENY = 1;
-const SQLITE_PRAGMA = 19;
-const SQLITE_READ = 20;
-const SQLITE_SELECT = 21;
-
-/**
- * What a statement of this package on such a store may do: select, read a column of the main database, and run the quick
- * check. Nothing inside a trigger or a view, no write, no attach, no function, no other pragma.
- */
-function authorize(
-	action: number,
-	first: string | null = null,
-	_second: string | null = null,
-	database: string | null = null,
-	inside: string | null = null,
-): number {
-	if (inside !== null) return SQLITE_DENY;
-	if (action === SQLITE_SELECT) return SQLITE_OK;
-	if (action === SQLITE_READ && database === "main") return SQLITE_OK;
-	if (action === SQLITE_PRAGMA && first === "quick_check") return SQLITE_OK;
-	return SQLITE_DENY;
-}
+// commits into (`replayCommits`), and a box is not trusted: its file is input to this process's SQLite. SQLite's own
+// guidance for a database file another security domain could have written is followed here, and such a file is opened
+// here and nowhere else: a copy of its main file only, read-only, and only once its schema is the one pi-durable makes.
+// No SQL comes from the box, only the file: the statements on it are this package's own and fixed.
 
 /** The pragmas set on such a connection before anything reads its schema, and the value each must read back. */
 const UNTRUSTED_PRAGMAS = [
 	// Functions and virtual tables not marked innocuous are refused in a trigger or a view.
 	["trusted_schema", 0],
-	// No statement on the connection writes, the temporary database included.
-	["query_only", 1],
 	// A b-tree cell whose size does not fit its page is corruption, found when the page is read.
 	["cell_size_check", 1],
+	// No memory-mapped I/O of the file.
+	["mmap_size", 0],
 ] as const;
 
 /**
  * A connection to a store that came from elsewhere, with every setting this package opens one with and nothing checked
- * yet: `withUntrustedStore` checks the file first and the schema after. Exported for the tests that show each setting.
- *
- * - `immutable=1` in the file's URI: no lock is taken, and no journal or write-ahead log is read or made beside the file.
- * - `readOnly`: the file is never opened to write, nor is a database an `ATTACH` would name.
- * - `allowExtension: false`: no extension loads.
- * - `PRAGMA trusted_schema = OFF`, `query_only = ON`, `cell_size_check = ON`, each read back.
- * - Node 24 and later, where the binding has them: `defensive` (SQLITE_DBCONFIG_DEFENSIVE), `limits.attach = 0` (no
- *   `ATTACH`), and an authorizer that allows only `authorize`'s actions. Node 22's binding has none of the three.
+ * yet: `withUntrustedStore` copies the file first and checks the schema after. Exported for the tests that show each
+ * setting: `immutable=1` in the file's URI (no lock, and no journal or write-ahead log read or made beside the file),
+ * `readOnly` (the file is never opened to write, nor is a database an `ATTACH` would name), `allowExtension: false`, and
+ * `PRAGMA trusted_schema = OFF`, `cell_size_check = ON` and `mmap_size = 0`, each read back. All of them work on Node 22.
  */
 export function openUntrustedConnection(path: string): DatabaseSync {
 	const location = pathToFileURL(path);
 	location.searchParams.set("immutable", "1");
-	const options: HardenedOptions = {
-		readOnly: true,
-		allowExtension: false,
-		timeout: 0,
-		defensive: true,
-		limits: { attach: 0 },
-	};
-	const database = new DatabaseSync(location, options) as HardenedDatabase;
+	const database = new DatabaseSync(location, { readOnly: true, allowExtension: false, timeout: 0 });
 	try {
 		for (const [pragma, value] of UNTRUSTED_PRAGMAS) database.exec(`PRAGMA ${pragma} = ${value}`);
 		for (const [pragma, value] of UNTRUSTED_PRAGMAS) {
 			const row = database.prepare(`PRAGMA ${pragma}`).get() as Record<string, unknown> | undefined;
 			if (Number(row?.[pragma]) !== value) throw new Error(`PRAGMA ${pragma} did not take`);
 		}
-		database.enableDefensive?.(true);
-		database.setAuthorizer?.(authorize);
 	} catch (cause) {
 		database.close();
 		throw cause;
@@ -286,43 +242,78 @@ function quickCheck(database: DatabaseSync): void {
 	}
 }
 
-/** The size of the file at `path` when it is a regular file no larger than the limit: refused otherwise. */
-async function untrustedSize(
+/** The copy of a store's main file this process made, and the size and SHA-256 of what it copied. */
+type Copied = { readonly file: string; readonly bytes: number; readonly sha256: string };
+
+/**
+ * Copy the main file of the store at `path`, and nothing beside it, to `to` in a directory this process has just made:
+ * opened without following a link, a regular file, no more than `limit` bytes as it is read. A journal or write-ahead log
+ * a box left beside its file is never beside the copy, so SQLite cannot take it for the copy's own and roll it in.
+ */
+async function copyMainFile(
 	path: string,
-	options: UntrustedStoreOptions | undefined,
-): Promise<Result<number, StoreError>> {
-	const limit = options?.maxBytes ?? DEFAULT_MAX_STORE_BYTES;
-	let facts: Awaited<ReturnType<typeof lstat>>;
+	to: string,
+	limit: number,
+	context: Context,
+): Promise<Result<Copied, StoreError>> {
+	const tooLarge = (bytes: number) =>
+		new StoreError("refused", `${path} has ${bytes} bytes, more than the ${limit} a store may have`);
+	let source: FileHandle;
 	try {
-		facts = await lstat(path);
+		source = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	} catch (cause) {
+		if ((cause as { code?: string }).code === "ELOOP") {
+			return err(new StoreError("refused", `${path} is not a regular file`));
+		}
 		return err(fileError(path, cause));
 	}
-	if (!facts.isFile()) return err(new StoreError("refused", `${path} is not a regular file`));
-	if (facts.size > limit) {
-		return err(new StoreError("refused", `${path} has ${facts.size} bytes, more than the ${limit} a store may have`));
+	try {
+		const facts = await source.stat();
+		if (!facts.isFile()) return err(new StoreError("refused", `${path} is not a regular file`));
+		if (facts.size > limit) return err(tooLarge(facts.size));
+		const target = await open(to, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+		const hash = createHash("sha256");
+		let bytes = 0;
+		try {
+			const buffer = Buffer.alloc(HASH_CHUNK_BYTES);
+			for (;;) {
+				const stopped = aborted(context);
+				if (stopped) return err(stopped);
+				const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
+				if (bytesRead === 0) break;
+				bytes += bytesRead;
+				if (bytes > limit) return err(tooLarge(bytes));
+				const chunk = buffer.subarray(0, bytesRead);
+				hash.update(chunk);
+				await target.writeFile(chunk);
+			}
+		} finally {
+			await target.close();
+		}
+		return ok({ file: to, bytes, sha256: hash.digest("hex") });
+	} catch (cause) {
+		return err(fileError(path, cause));
+	} finally {
+		await source.close();
 	}
-	return ok(facts.size);
 }
 
 /**
  * Open a store that came from elsewhere, check it, and give `use` the connection; the connection is closed after. In
- * order, before `use` runs: a regular file no larger than `maxBytes` (`refused`), the SQLite header (`corrupt`), the
- * connection of `openUntrustedConnection`, a schema the same as the one pi-durable makes (`refused`: no trigger, view,
- * virtual table or other object of the file's own is ever compiled), and SQLite's quick check (`corrupt`), which runs
- * after the schema check so that it evaluates only pi-durable's own constraints. The only place this package opens such
- * a file.
+ * order, before `use` runs: a copy of its main file only, a regular file no larger than `maxBytes` (`refused`), in a
+ * directory this process makes (`copyMainFile`), which `admit` may refuse by its size and SHA-256; the copy's SQLite
+ * header (`corrupt`); the connection of `openUntrustedConnection` on the copy; a schema the same as the one pi-durable
+ * makes (`refused`: no trigger, view, virtual table or other object of the file's own is ever compiled); and SQLite's
+ * quick check (`corrupt`), which runs right after the schema check so that it evaluates only pi-durable's own
+ * constraints. The copy is removed after. The only place this package opens such a file.
  */
 async function withUntrustedStore<T>(
 	path: string,
 	options: UntrustedStoreOptions | undefined,
+	context: Context,
 	use: (database: DatabaseSync) => T,
+	admit: (copied: Copied) => StoreError | undefined = () => undefined,
 ): Promise<Result<T, StoreError>> {
-	const size = await untrustedSize(path, options);
-	if (!size.ok) return size;
-	const header = await hasSqliteHeader(path);
-	if (!header.ok) return header;
-	if (!header.value) return err(new StoreError("corrupt", `${path} is not a SQLite database`));
 	let wanted: readonly SchemaRow[];
 	try {
 		wanted = await storeSchema();
@@ -331,29 +322,57 @@ async function withUntrustedStore<T>(
 			new StoreError("unknown", `could not read the schema pi-durable makes: ${(cause as Error).message}`, cause),
 		);
 	}
-	let database: DatabaseSync;
+	let directory: string;
 	try {
-		database = openUntrustedConnection(path);
+		directory = await mkdtemp(join(tmpdir(), "pi-transport-store-"));
 	} catch (cause) {
-		return err(new StoreError("corrupt", `${path} is not a SQLite database: ${(cause as Error).message}`, cause));
+		return err(
+			new StoreError(
+				"unknown",
+				`could not make a directory for a copy of ${path}: ${(cause as Error).message}`,
+				cause,
+			),
+		);
 	}
 	try {
-		let found: readonly SchemaRow[];
+		const copied = await copyMainFile(
+			path,
+			join(directory, "store.db"),
+			options?.maxBytes ?? DEFAULT_MAX_STORE_BYTES,
+			context,
+		);
+		if (!copied.ok) return copied;
+		const refused = admit(copied.value);
+		if (refused !== undefined) return err(refused);
+		const header = await hasSqliteHeader(copied.value.file);
+		if (!header.ok) return header;
+		if (!header.value) return err(new StoreError("corrupt", `${path} is not a SQLite database`));
+		let database: DatabaseSync;
 		try {
-			found = database.prepare(SCHEMA_SQL).all() as SchemaRow[];
+			database = openUntrustedConnection(copied.value.file);
 		} catch (cause) {
-			return err(
-				new StoreError("corrupt", `${path} has a schema SQLite cannot read: ${(cause as Error).message}`, cause),
-			);
+			return err(new StoreError("corrupt", `${path} is not a SQLite database: ${(cause as Error).message}`, cause));
 		}
-		const problem = schemaProblem(found, wanted);
-		if (problem !== undefined) return err(new StoreError("refused", `${path} is not a store: ${problem}`));
-		quickCheck(database);
-		return ok(use(database));
-	} catch (cause) {
-		return err(new StoreError("corrupt", `${path} is not a store: ${(cause as Error).message}`, cause));
+		try {
+			let found: readonly SchemaRow[];
+			try {
+				found = database.prepare(SCHEMA_SQL).all() as SchemaRow[];
+			} catch (cause) {
+				return err(
+					new StoreError("corrupt", `${path} has a schema SQLite cannot read: ${(cause as Error).message}`, cause),
+				);
+			}
+			const problem = schemaProblem(found, wanted);
+			if (problem !== undefined) return err(new StoreError("refused", `${path} is not a store: ${problem}`));
+			quickCheck(database);
+			return ok(use(database));
+		} catch (cause) {
+			return err(new StoreError("corrupt", `${path} is not a store: ${(cause as Error).message}`, cause));
+		} finally {
+			database.close();
+		}
 	} finally {
-		database.close();
+		await rm(directory, { recursive: true, force: true }).catch(() => {});
 	}
 }
 
@@ -439,7 +458,7 @@ export async function rebuildStore(
 		);
 	}
 	try {
-		copied = await withUntrustedStore(path, options, (source) => {
+		copied = await withUntrustedStore(path, options, context, (source) => {
 			copyRows(source, target, tables);
 			return readHead(source);
 		});
@@ -451,7 +470,8 @@ export async function rebuildStore(
 		return copied;
 	}
 	try {
-		// The old file's journal and log are not the new file's, and SQLite would read them as its own.
+		// The old file's journal and log are not the new file's: pi opens the new one to write, and would roll a journal a
+		// box left here into it.
 		for (const suffix of sidecars) await rm(`${path}${suffix}`, { force: true });
 		await rename(fresh, path);
 	} catch (cause) {
@@ -550,7 +570,7 @@ export async function checkpointStore(path: string, to: string, context: Context
  * Whether the file at `path` is the store the seal names and a sound SQLite database: a regular file within
  * `maxBytes`, its size, its SHA-256, a schema the same as the one pi-durable makes, SQLite's quick check, then the head,
  * in that order. The first difference is the error. The file may come from a box, so it is read as `withUntrustedStore`
- * reads one: only read-only and defensive, and its schema checked before anything else of it is read.
+ * reads one: a copy of its main file, read-only, and its schema checked before anything else of it is read.
  */
 export async function verifyStore(
 	path: string,
@@ -560,17 +580,14 @@ export async function verifyStore(
 ): Promise<Result<void, StoreError>> {
 	const stopped = aborted(context);
 	if (stopped) return err(stopped);
-	const size = await untrustedSize(path, options);
-	if (!size.ok) return size;
-	if (size.value !== seal.bytes) {
-		return err(new StoreError("mismatch", `${path} has ${size.value} bytes, the seal names ${seal.bytes}`));
-	}
-	const hashed = await hashFile(path, context);
-	if (!hashed.ok) return hashed;
-	if (hashed.value.sha256 !== seal.sha256) {
-		return err(new StoreError("mismatch", `${path} has another SHA-256 than the seal`));
-	}
-	const checked = await withUntrustedStore(path, options, readHead);
+	// The size and SHA-256 are the copy's, taken as it is made: the bytes checked are the bytes SQLite opens.
+	const checked = await withUntrustedStore(path, options, context, readHead, (copied) => {
+		if (copied.bytes !== seal.bytes) {
+			return new StoreError("mismatch", `${path} has ${copied.bytes} bytes, the seal names ${seal.bytes}`);
+		}
+		if (copied.sha256 !== seal.sha256) return new StoreError("mismatch", `${path} has another SHA-256 than the seal`);
+		return undefined;
+	});
 	if (!checked.ok) return checked;
 	if (checked.value !== seal.head) {
 		return err(new StoreError("mismatch", `${path} has head ${checked.value}, the seal names ${seal.head}`));
