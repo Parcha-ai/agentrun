@@ -210,3 +210,17 @@ test("a server closed during the import at setup stops it between sessions and w
   assert.equal(count(), atClose, "no run written after close");
   assert.equal(existsSync(join(data, ".import-at-setup")), atClose < 40, "the yes is kept while the import is unfinished");
 });
+
+test("a setup with the box ticked still being answered when the server closes starts no import after close: the yes waits for the next start", { timeout: 60_000 }, async (t) => {
+  const { sessionsHome } = await machine(t);
+  const data = join(await scratch(t), "agents");
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome });
+  // The request is in, hashing the password, when close begins; its handler goes on after its connection is cut.
+  const asked = call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } }).catch(() => undefined);
+  await sleep(10);
+  await server.close();
+  await asked;
+  await sleep(2_000);
+  assert.equal(agentsIn(data), 0, "no agent written after close");
+  assert.ok(existsSync(join(data, ".import-at-setup")), "the owner's yes is kept for the next start");
+});

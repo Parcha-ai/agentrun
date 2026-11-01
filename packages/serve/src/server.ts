@@ -360,9 +360,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // on loopback), planned once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
   // a busy store's wait and the sessions' parsing never hold up a request.
   const offersImport = options.openSetup === true && options.publicUrl === undefined && isLoopback(host);
+  let closing = false;
   const workers = new Map<Worker, Promise<unknown>>();
+  // Once the server closes, no worker starts: a setup still being answered then leaves its yes for the next start.
   const onWorker = (task: ImportTask["task"]): Promise<ImportAnswer> =>
-    new Promise((answered, failed) => {
+    closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
         workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}) } satisfies ImportTask,
       });
@@ -381,7 +383,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const sessionsPlan = () => (planned ??= onWorker("plan").catch((error: unknown) => { planned = undefined; throw error; }));
   // The owner's yes, kept until the import ends: a server stopped (or killed) mid-import goes on with it at its next start.
   const importAsked = join(data, IMPORT_ASKED);
-  let closing = false;
   let importing: Promise<void> | undefined;
   /** The import at setup as the owner's console reads it: running, done with what it took, or stopped (the next start
    *  goes on with it). */
