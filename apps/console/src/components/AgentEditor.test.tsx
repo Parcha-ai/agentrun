@@ -96,7 +96,7 @@ describe("AgentEditor, a new decision agent", () => {
 
   it("picks Decision in the harness picker on create: no instructions, tools or thinking to fill, and Create sends the choice", async () => {
     let saved: { harness?: string; name?: string } | undefined;
-    const { host, click, button, type, act, done } = await mount({ agent: null, caps: { ...caps, decisions: true }, step: "settings", onSave: async (fields: { harness?: string; name?: string }) => { saved = fields; return null; } });
+    const { host, click, button, type, act, done } = await mount({ agent: null, caps: { ...caps, decisionProvider: "jev" }, step: "settings", onSave: async (fields: { harness?: string; name?: string }) => { saved = fields; return null; } });
     const decision = host.querySelector<HTMLInputElement>('input[type=radio][value="decision"]');
     expect(decision?.disabled).toBe(false);
     click(decision);
@@ -118,9 +118,17 @@ describe("AgentEditor, a new decision agent", () => {
     expect(html).toContain("decision workflows");
   });
 
+  it("lays the picker out one column per choice on a wide screen: four with Decision, three without", () => {
+    const three = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: true }] };
+    const group = (html: string) => html.match(/<div class="([^"]*)" role="radiogroup" aria-label="Harness"/)?.[1] ?? "";
+    expect(group(renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...three, decisionProvider: "jev" }, step: "settings" })))).toContain("sm:grid-cols-4");
+    const agent = { agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
+    expect(group(renderToStaticMarkup(createElement(AgentEditor, { agent: agent as never, caps: three, step: "settings" })))).toContain("sm:grid-cols-3");
+  });
+
   it("offers no Decision when editing an agent", () => {
     const agent = { agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
-    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: agent as never, caps: { ...caps, decisions: true }, step: "settings" }));
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: agent as never, caps: { ...caps, decisionProvider: "jev" }, step: "settings" }));
     expect(html).not.toContain('value="decision"');
   });
 });

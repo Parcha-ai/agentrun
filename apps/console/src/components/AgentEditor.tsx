@@ -9,8 +9,9 @@ import { markdown, when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string };
-/** `decisions`: the server runs decision workflows (capabilities list the `runJudge` adapter), so a new agent may be one. */
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; decisions?: boolean };
+/** `decisionProvider`: the decision provider a new decision agent's judge names (agentForm's decisionProvider); none when
+ *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. */
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; decisionProvider?: string };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -75,6 +76,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const workflow = agent?.kind === "workflow";
   // A new agent made as a decision agent: a workflow revision from the starter, so no instructions, tools or thinking.
   const deciding = creating && f.harness === DECISION;
+  const choices = harnessOptions(caps.harnesses, creating ? { available: !!caps.decisionProvider } : undefined);
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
   const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(deciding && s.id === "tools"));
@@ -196,8 +198,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             <div className="max-w-3xl space-y-8">
               {!workflow && (
                 <Field label="Harness" note="What runtime runs this agent." error={fieldError("harness")}>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3" role="radiogroup" aria-label="Harness">
-                    {harnessOptions(caps.harnesses, creating ? { available: !!caps.decisions } : undefined).map((h) => (
+                  <div className={cn("grid grid-cols-1 gap-3", COLUMNS[choices.length] ?? "sm:grid-cols-3")} role="radiogroup" aria-label="Harness">
+                    {choices.map((h) => (
                       <label key={h.id} title={h.reason} className={cn("flex items-start gap-3 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border", h.available ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
                         <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
                         <span><span className="block font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : h.reason}</span></span>
@@ -250,6 +252,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     </div>
   );
 }
+
+/** The harness picker's columns on a wide screen, one per choice: literal class names, so Tailwind keeps them. */
+const COLUMNS: Record<number, string> = { 1: "sm:grid-cols-1", 2: "sm:grid-cols-2", 3: "sm:grid-cols-3", 4: "sm:grid-cols-4" };
 
 const input = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 

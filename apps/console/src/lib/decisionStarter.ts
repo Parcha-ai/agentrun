@@ -1,7 +1,7 @@
 // The workflow a new decision agent starts from. Adapted from the repository's smallest decision demo
-// (examples/decision-demos/workflows/jury.json): one typed question (a judge node) on the server's default decision
-// provider, Jev, instead of four jurors on two providers. A clear answer decides the case; an unclear one goes to a
-// person. Edit it in the Workflow step once the agent is created.
+// (examples/decision-demos/workflows/jury.json): one typed question (a judge node) on the server's decision provider
+// (Jev, the default, or Parallel where Jev does not run) instead of four jurors on two providers. A clear answer decides
+// the case; an unclear one goes to a person. Edit it in the Workflow step once the agent is created.
 
 /** The starter decision workflow (agentrun-dsl v2). */
 export const DECISION_STARTER = {
@@ -146,3 +146,15 @@ export const DECISION_STARTER = {
     ],
   },
 } as const;
+
+/** The decision providers a starter's judge can name with no model: Jev, the default, which a node names by naming none,
+ *  then Parallel. OpenRouter needs a model on every node, and wherever its key is set Jev runs too. */
+export const STARTER_PROVIDERS = ["jev", "parallel"] as const;
+
+/** The starter for a server whose decision provider is `provider`: a copy whose judge names it, unless it is Jev. A
+ *  Parallel judge answers with web research, so it gets the longer timeout the decision demos give it. */
+export function decisionStarter(provider: string = "jev") {
+  const workflow = structuredClone(DECISION_STARTER) as unknown as { root: { steps: Record<string, unknown>[] } } & Record<string, unknown>;
+  if (provider !== "jev") Object.assign(workflow.root.steps[0]!, { provider, ...(provider === "parallel" ? { timeoutMs: 120000 } : {}) });
+  return workflow;
+}

@@ -75,7 +75,9 @@ describe("AgentEditPage", () => {
 });
 
 describe("AgentEditPage, a new decision agent", () => {
-  it("creates a workflow agent from the starter decision workflow, with no harness, and opens it on its Workflow step", async () => {
+  /** Create a decision agent named "Gambling check" on a server whose decision provider is `provider`: what was sent,
+   *  where the page went, and the page and host to look at after. */
+  async function createDecision(provider: string) {
     const { DECISION_STARTER } = await import("@/lib/decisionStarter");
     const made: Agent = { agent_id: "gambling-check", kind: "workflow", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] } };
     let sent: { definition: Record<string, unknown> } | undefined;
@@ -88,7 +90,7 @@ describe("AgentEditPage, a new decision agent", () => {
     };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    const page = (agentId: string | null) => createElement(AgentEditPage, { v2: v2 as never, caps: { ...caps, decisions: true } as never, agentId, go: (hash: string) => { went = hash; } });
+    const page = (agentId: string | null) => createElement(AgentEditPage, { v2: v2 as never, caps: { ...caps, decisionProvider: provider } as never, agentId, go: (hash: string) => { went = hash; } });
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
     act(() => root!.render(page(null)));
@@ -102,11 +104,21 @@ describe("AgentEditPage, a new decision agent", () => {
     });
     await act(async () => { button(/^Create$/)!.click(); });
     await settle();
+    return { DECISION_STARTER, sent, went, host, page, settle };
+  }
+
+  it("creates a workflow agent from the starter decision workflow, with no harness, and opens it on its Workflow step", async () => {
+    const { DECISION_STARTER, sent, went, host, page, settle } = await createDecision("jev");
     expect(sent?.definition).toEqual({ version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] });
     expect(went).toBe("#/agents/gambling-check");
     // The page the create went to: the new workflow agent, opened on its Workflow step.
     act(() => root!.render(page("gambling-check")));
     await settle();
     expect(host.querySelector('button[aria-current="step"]')?.textContent).toMatch(/Workflow/);
+  });
+
+  it("on a server whose decision provider is Parallel, sends a starter whose judge names parallel", async () => {
+    const { sent } = await createDecision("parallel");
+    expect((sent?.definition.workflow as { root: { steps: Record<string, unknown>[] } }).root.steps[0]).toMatchObject({ node: "judge", provider: "parallel" });
   });
 });

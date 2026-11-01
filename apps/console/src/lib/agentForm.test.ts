@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBody, DECISION, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers } from "./agentForm";
+import { createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
 import { ClientError } from "./client";
 import agent from "../fixtures/agent.invoice-checker.json";
@@ -114,6 +114,32 @@ describe("a decision agent", () => {
     expect(body).toEqual({ definition: { version: 1, name: "Gambling check", description: "Is a payment for gambling?", workflow: DECISION_STARTER, skills: [], tools: [] } });
     expect(body.definition.workflow).not.toBe(DECISION_STARTER);
     expect(createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [] }).definition).not.toHaveProperty("description");
+  });
+
+  // Capabilities' workflows as serve lists them (server.ts: adapters, and decisions.providers from decisions.ts).
+  const workflows = (available: Record<string, boolean>) => ({
+    adapters: ["runNode", "runEffect", ...(Object.values(available).some(Boolean) ? ["runJudge"] : [])],
+    decisions: { providers: ["jev", "parallel", "openrouter"].map((id) => (available[id] ? { id, available: true } : { id, available: false, reason: `no key for ${id}` })) },
+  });
+
+  it("names the server's decision provider: Jev first, then Parallel; none when the server runs no decision workflows a starter can use", () => {
+    expect(decisionProvider(workflows({ jev: true, parallel: true, openrouter: true }))).toBe("jev");
+    expect(decisionProvider(workflows({ parallel: true }))).toBe("parallel");
+    expect(decisionProvider(workflows({}))).toBeUndefined();
+    // OpenRouter needs a model on every node, and where its key is set Jev runs too: alone, it is no starter's provider.
+    expect(decisionProvider(workflows({ openrouter: true }))).toBeUndefined();
+    expect(decisionProvider({ adapters: ["runNode", "runEffect"] })).toBeUndefined();
+    expect(decisionProvider({ adapters: ["runNode", "runJudge"] })).toBe("jev");
+    expect(decisionProvider(undefined)).toBeUndefined();
+  });
+
+  it("on a server whose only decision provider is Parallel, the starter's judge names parallel, with the decision demos' longer timeout", () => {
+    const provider = decisionProvider(workflows({ parallel: true }));
+    const made = createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [], decisionProvider: provider }).definition.workflow as typeof DECISION_STARTER;
+    expect(made.root.steps[0]).toMatchObject({ node: "judge", provider: "parallel", timeoutMs: 120000 });
+    expect({ ...made, root: { ...made.root, steps: [DECISION_STARTER.root.steps[0], ...made.root.steps.slice(1)] } }).toEqual(DECISION_STARTER);
+    expect(createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [], decisionProvider: "jev" }).definition.workflow).toEqual(DECISION_STARTER);
+    expect(DECISION_STARTER.root.steps[0]).not.toHaveProperty("provider");
   });
 
   it("starts from a decision workflow with an example input: a typed question, a threshold, and a person for an unclear answer", () => {

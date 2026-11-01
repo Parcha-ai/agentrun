@@ -1,5 +1,5 @@
 import type { ClientError } from "./client";
-import { DECISION_STARTER } from "./decisionStarter";
+import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 
 export type HarnessId = "pi" | "claude-agent" | "codex";
 export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; skills: string[]; tools: string[]; [field: string]: unknown };
@@ -39,12 +39,22 @@ export function same(a: unknown, b: unknown): boolean {
  *  choice in the form only, never a harness id: the revision names no harness, so its model nodes run on the default. */
 export const DECISION = "decision";
 
+/** The decision provider a new decision agent's judge names, from the server's capabilities (`workflows`): the first
+ *  of the starter's providers available here, Jev first. None when the server runs no decision workflows (no `runJudge`
+ *  adapter) or none of those providers runs here; a server that lists no providers runs its default, Jev. */
+export function decisionProvider(workflows: { adapters?: string[]; decisions?: { providers?: { id: string; available: boolean }[] } } | undefined): string | undefined {
+  if (!workflows?.adapters?.includes("runJudge")) return undefined;
+  const providers = workflows.decisions?.providers;
+  if (!providers) return "jev";
+  return STARTER_PROVIDERS.find((id) => providers.some((p) => p.id === id && p.available));
+}
+
 /** The body that creates an agent: its first revision, with what the form names and no skills yet. A decision agent is
- *  the starter decision workflow (a copy), with no instructions, harness, thinking, model or tools: a workflow revision
- *  keeps none of those beside its workflow. */
-export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; thinking?: string; model?: string }): { definition: Definition } {
+ *  the starter decision workflow on the server's decision provider, with no instructions, harness, thinking, model or
+ *  tools: a workflow revision keeps none of those beside its workflow. */
+export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; thinking?: string; model?: string; decisionProvider?: string }): { definition: Definition } {
   if (f.harness === DECISION) {
-    return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: structuredClone(DECISION_STARTER), skills: [], tools: [] } };
+    return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: decisionStarter(f.decisionProvider), skills: [], tools: [] } };
   }
   return {
     definition: {

@@ -82,7 +82,7 @@ export function AgentEditPage({ v2, caps, agentId, go }: { v2: Client; caps: Edi
         let saved;
         try {
           if (!agent) {
-            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], thinking: fields.thinking, model: fields.model }));
+            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], thinking: fields.thinking, model: fields.model, decisionProvider: caps.decisionProvider }));
             go(`#/agents/${encodeURIComponent(made.agent_id)}`);
             return null;
           }
