@@ -24,8 +24,10 @@ export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean
     <AgentsList agents={agents} archived={archived} onArchivedChange={(on) => go(on ? "#/agents?archived=true" : "#/agents")} error={error}
       actions={{
         onOpen: (id) => go(`#/agents/${encodeURIComponent(id)}`),
+        onEdit: (id) => go(`#/agents/${encodeURIComponent(id)}/edit`),
         onNew: () => go("#/agents/new"),
-        onRuns: (id) => go(`#/runs?agent=${encodeURIComponent(id)}`),
+        // The agent's page opens on its Runs tab.
+        onRuns: (id) => go(`#/agents/${encodeURIComponent(id)}`),
         onArchive: async (id, archive) => { try { await (archive ? v2.archiveAgent(id) : v2.unarchiveAgent(id)); load(); } catch (e) { setError(problemOf(e).message); } },
       }} />
   );
@@ -83,6 +85,7 @@ export function AgentEditPage({ v2, caps, agentId, go }: { v2: Client; caps: Edi
         try {
           if (!agent) {
             const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], thinking: fields.thinking, model: fields.model }));
+            // A new agent lands on its own page.
             go(`#/agents/${encodeURIComponent(made.agent_id)}`);
             return null;
           }

@@ -13,6 +13,13 @@ describe("route", () => {
     expect(route("#/runs/r1")).toEqual({ section: "runs", run: "r1" });
     expect(route("#/runs?agent=calc")).toEqual({ section: "runs", runsOf: "calc" });
   });
+  it("opens an agent's page at its address, and its editor under /edit; a new agent and the archived list are unchanged", () => {
+    expect(route("#/agents/x")).toEqual({ section: "agents", agent: "x" });
+    expect(route("#/agents/x/edit")).toEqual({ section: "agents", agent: "x", edit: true });
+    expect(route("#/agents/new")).toEqual({ section: "agents", agent: null });
+    expect(route("#/agents?archived=true")).toEqual({ section: "agents", archived: true });
+    expect(route("#/agents")).toEqual({ section: "agents", archived: false });
+  });
 });
 
 // A server without GET /v2/stats (or one that fails it) says so on the page, never a "Loading..." that never ends.
@@ -67,5 +74,33 @@ describe("App, Mission Control after a failed read", () => {
     expect(statsCalls).toBe(2);
     expect(host.textContent).toContain("Mission Control");
     expect(host.textContent).not.toContain("could not be read");
+  });
+});
+
+describe("App, an agent's address", () => {
+  it("opens the agent's page, and /edit opens its editor", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const calc = { agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [{ id: "pi", available: true }], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/agents") return json(200, { agents: [calc], next_cursor: null });
+      if (path === "/v2/agents/calc") return json(200, calc);
+      if (path === "/v2/agents/calc/runs" || path === "/v2/agents/calc/revisions") return json(200, { runs: [], revisions: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/agents/calc";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const wait = async (ok: () => boolean) => { const end = Date.now() + 4000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); };
+    await wait(() => !!host.textContent?.includes("No runs of this agent yet."));
+    expect(host.querySelector('[role="tab"]')?.textContent).toBe("Runs");
+    expect(host.textContent).not.toContain("Save revision");
+    await act(async () => { location.hash = "#/agents/calc/edit"; window.dispatchEvent(new HashChangeEvent("hashchange")); });
+    await wait(() => !!host.textContent?.includes("Save revision"));
+    expect(host.textContent).toContain("Save revision");
+    expect(host.querySelector('[role="tab"]')).toBeNull();
   });
 });
