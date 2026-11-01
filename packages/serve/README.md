@@ -275,6 +275,32 @@ page it reads is filed under the run's `work/evidence/`, each read in a file of 
 reads at once included. There is no recording and no live view. When the run is let go (its work done, or a SIGTERM)
 the sessions it still holds are released at Browserbase.
 
+## Tool keys
+
+A tool's key comes from one of two places. The server's own environment, through its launcher: `PARALLEL_API_KEY`,
+`MONID_API_KEY` and `BROWSERBASE_API_KEY` are among the secrets it hands the server over its pipe. Or the page, by
+name: `PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one, field by field (`parallel` takes
+`PARALLEL_API_KEY`, `monid` `MONID_API_KEY`, `browserbase` `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`), and
+`DELETE` forgets it. `GET /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and
+each field's `set` and `source` (`server`, `stored` or null): never a value, nor any part of one. A field the server is
+started with is the server's, and wins: saving it is `409 key_set_by_server`. A value is text of at most 1024 bytes
+with no control character (`422` otherwise).
+
+A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
+name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal
+key. With `AGENTRUN_SEAL_KEY` not set, the launcher keeps it in `agentrun/seal.key` under `$XDG_CONFIG_HOME` (or
+`~/.config`), making it the first time: 32 random bytes in base64, 0600 in a 0700 directory, and one another user can
+read is refused, not changed. It is outside the data directory on purpose: a copy or a backup of the data directory
+holds the keys as ciphertext alone, and opens nowhere without the seal key. With no seal key (started with no launcher and
+no `AGENTRUN_SEAL_KEY`, or with no home directory) nothing is saved, never in the clear: `409 no_sealing_key`, and capabilities' `features.tool_keys.at_rest` is
+`unavailable` (`sealed` otherwise).
+
+A stored value that does not open is never a reason not to start. It reads `set: false, stored_unreadable: true`, and
+`reenter` names those fields with why: `seal_key_missing`, `seal_key_changed` (a lost `seal.key` is made anew, so it
+shows as this) or `file_unreadable`. The log says so once, naming the condition and the file, never a value; a `PUT` of
+the value seals it again under the current key. In a container, `~/.config` is the container's own and goes with it:
+pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new container opens the keys the volume holds.
+
 ## What it serves
 
 | Route | Here |
@@ -299,6 +325,7 @@ the sessions it still holds are released at Browserbase.
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; a poll never answers `home_busy` (`stale: true` marks a last whole view). An agentic run has none (`404`). |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
+| `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the

@@ -29,6 +29,10 @@ export const ERROR_STATUS = {
   internal: 500,
   unsupported_here: 501,
   unavailable: 503,
+  // This server's own, beside the contract's list (openapi.ts marks them): a tool key its launcher sets, and a tool key
+  // saved with no seal key to keep it under.
+  key_set_by_server: 409,
+  no_sealing_key: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;
