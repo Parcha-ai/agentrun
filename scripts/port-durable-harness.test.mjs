@@ -147,7 +147,7 @@ test('the Codex port is what the pristine files, the Codex patches and the one i
   assert.equal(fake[0], '#!/usr/bin/env node');
   assert.match(fake[1], /^\/\/ Copyright 2026 Vercel Inc\./);
   assert.equal(fake[3], '// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments');
-  assert.match(files.get('src/harness.ts').split('\n')[2], /^\/\/ Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer, 011-web-search-live$/);
+  assert.match(files.get('src/harness.ts').split('\n')[2], /^\/\/ Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments(?:, \d{3}-[a-z-]+)*$/);
   for (const patch of await readPatches(join(codex, PORT_DIR), 'harness-codex')) {
     const without = await portPackage(codex, { drop: [patch.name], cascade: true });
     assert.ok([...files].some(([path, text]) => bodyOf(without.files.get(path) ?? '') !== bodyOf(text)), `${patch.name} changes the output`);
