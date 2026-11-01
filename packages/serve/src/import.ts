@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { type EntryLike, type RunMetrics, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
+import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
 import { readJson, RUN_META } from "./files.js";
 import { childFiles, HARNESS_OF, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
@@ -219,8 +219,10 @@ export async function untiedFound(plan: Plan): Promise<Found[]> {
   for (const { file, source } of plan.untied) {
     const stats = await stat(file).catch(() => null);
     if (!stats || stats.size > MAX_SESSION_BYTES) continue;
-    const session = await readSession(file, source, { seen: seen.get(source) ?? seen.set(source, new Set()).get(source)! }).catch(() => undefined);
-    if (session) found.push({ source, agent: "", untied: true, metrics: runMetricsOf(entriesOf(session)) });
+    const counted = seen.get(source) ?? seen.set(source, new Set()).get(source)!;
+    const session = await readSession(file, source, { seen: counted }).catch(() => undefined);
+    // Its own subagents, which name it, are its too.
+    if (session) found.push({ source, agent: "", untied: true, metrics: metricsOf(session, await readChildren(plan, session, counted)) });
   }
   return found;
 }
@@ -274,12 +276,32 @@ async function readChildren(plan: Plan, session: Session, seen: Set<string>): Pr
   return out;
 }
 
-/** A run's metrics with its subagents' requests in them: their tokens, requests, models and tool calls. The run's model
- *  stays its own. */
+/** A subagent's requests in its session's transcript: each one a request with no answer of its own there, its usage and
+ *  its cost (none known: null), as a request's cost is written with no answer (REQUEST_COST). The timeline shows none of
+ *  them, and its usage row, the run's cost and runMetricsOf all count each one. */
+const subagentMarks = (children: readonly Session[]): EntryLike[] =>
+  children.flatMap((child) =>
+    child.turns.flatMap((turn) => {
+      if (turn.role !== "assistant") return [];
+      const { input, output, cacheRead, cacheWrite } = turn.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      return [{ kind: REQUEST_COST, data: { request: "subagent", usd: turn.costUsd ?? null, usage: { input, output, cacheRead, cacheWrite } } } as EntryLike];
+    }),
+  );
+
+/** A session's entries as its transcript holds them, its subagents' requests with them (subagentMarks). */
+const runEntries = (session: Session, children: readonly Session[]): EntryLike[] => [...entriesOf(session), ...subagentMarks(children)];
+
+/** What a session used, its subagents' requests with it: runMetricsOf of its entries, and its subagents' models and tool
+ *  calls, which their marks do not carry. */
+function metricsOf(session: Session, children: readonly Session[]): RunMetrics {
+  return withChildren(runMetricsOf(runEntries(session, children)), children.map((child) => runMetricsOf(entriesOf(child))));
+}
+
+/** A run's metrics with its subagents' models and tool calls in them (their requests and tokens are in its entries). The
+ *  run's model stays its own. */
 function withChildren(own: RunMetrics, children: readonly RunMetrics[]): RunMetrics {
   const sum = { ...own, models: { ...own.models }, tools: Object.fromEntries(Object.entries(own.tools).map(([name, tool]) => [name, { ...tool }])) };
   for (const child of children) {
-    for (const key of ["input", "cacheRead", "cacheWrite", "output", "requests", "unmetered"] as const) sum[key] += child[key];
     for (const [name, n] of Object.entries(child.models)) sum.models[name] = (sum.models[name] ?? 0) + n;
     for (const [name, tool] of Object.entries(child.tools)) {
       const into = (sum.tools[name] ??= { calls: 0, errors: 0 });
@@ -491,14 +513,15 @@ const entriesOf = (session: Session): EntryLike[] =>
  *  and its own requests by hour. */
 function measured(session: Session, children: readonly Session[] = []): Pick<Found, "metrics" | "hours"> {
   return {
-    metrics: { ...withChildren(runMetricsOf(entriesOf(session)), children.map((child) => runMetricsOf(entriesOf(child)))), activeMs: session.activeMs },
+    metrics: { ...metricsOf(session, children), activeMs: session.activeMs },
     hours: hoursOf(session.turns.flatMap((turn) => (turn.role === "assistant" ? [turn.at] : []))),
   };
 }
 
-/** The run's transcript, into a store file at `storePath`, each string with the environment's key values cut out; the
- *  entries written, read back as the run's own timeline reads them. */
-async function writeTimeline(storePath: string, session: Session, cut: (value: unknown) => unknown): Promise<EntryLike[]> {
+/** The run's transcript, into a store file at `storePath`, each string with the environment's key values cut out, its
+ *  subagents' requests after its own turns (subagentMarks); the entries written, read back as the run's own timeline
+ *  reads them. */
+async function writeTimeline(storePath: string, session: Session, cut: (value: unknown) => unknown, children: readonly Session[] = []): Promise<EntryLike[]> {
   const { createModels } = await import("@earendil-works/pi-ai/models");
   const storage = await openNodeSqliteStorage(storePath);
   // No model is asked anything: the catalog is only what opening a Harness takes.
@@ -513,6 +536,7 @@ async function writeTimeline(storePath: string, session: Session, cut: (value: u
           ...(data ? { data: data as never } : {}),
         });
       }
+      for (const { kind, data } of subagentMarks(children)) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data: cut(data) as never });
     }, ctx);
   } finally {
     await harness.close(ctx);
@@ -539,8 +563,9 @@ async function writeTimeline(storePath: string, session: Session, cut: (value: u
 /** What a run's requests cost at the catalog's list prices, each at its own provider's entry for its model: undefined when
  *  one request's tokens are unknown or its provider does not list its model (the request was served at a price no one
  *  lists here). A provider's $0 entry is $0. A request of no tokens costs nothing at any price. */
-async function estimateOf(entries: readonly EntryLike[], metrics: RunMetrics, catalog: () => Promise<ReadonlyMap<string, readonly Listed[]>>): Promise<number | undefined> {
-  if (metrics.unmetered > 0) return undefined;
+async function estimateOf(entries: readonly EntryLike[], catalog: () => Promise<ReadonlyMap<string, readonly Listed[]>>): Promise<number | undefined> {
+  // Unknown when one answer priced here has unknown tokens (a failed one's counts are its own, as runMetricsOf reads them).
+  if (runMetricsOf(entries.filter((entry) => entry.kind === "pi.assistant")).unmetered > 0) return undefined;
   const { calculateCost } = await import("@earendil-works/pi-ai");
   let total = 0;
   for (const entry of entries) {
@@ -637,17 +662,18 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
         report.skipped.push({ what: listed.file, why: "holds only records of sessions imported already" });
         continue;
       }
-      const subagents = (await readChildren(plan, session, seen(listed.source))).map(entriesOf);
+      const subagents = await readChildren(plan, session, seen(listed.source));
       const read: SourceFile = { path_sha256: hash(listed.file), size: stats.size, mtime_ms: stats.mtimeMs };
       // The transcript is whole before its run is: written beside the store, then moved into the run's directory.
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
       let started: { runId: string; dir: string; storePath: string } | undefined;
       try {
-        const entries = await writeTimeline(pending, session, json);
-        // Its subagents' requests are the run's too: in its metrics, though its transcript is its own.
-        const metrics: StoredMetrics = { ...withChildren(runMetricsOf(entries), subagents.map(runMetricsOf)), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
+        // Its subagents' requests are the run's too: marked in its transcript, so its timeline's usage row counts what its
+        // metrics do, one number for the run.
+        const entries = await writeTimeline(pending, session, json, subagents);
+        const metrics: StoredMetrics = { ...withChildren(runMetricsOf(entries), subagents.map((child) => runMetricsOf(entriesOf(child)))), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
         // A session its source did not price: the catalog's estimate, beside its cost (unknown), never written as it.
-        const estimate = session.costUsd === undefined ? await estimateOf([...entries, ...subagents.flat()], metrics, catalog) : undefined;
+        const estimate = session.costUsd === undefined ? await estimateOf([...entries, ...subagents.flatMap(entriesOf)], catalog) : undefined;
         if (estimate !== undefined) Object.assign(metrics, { costUsdEst: estimate, costBasis: "catalog" });
         if (heldRun !== undefined) {
           started = { runId: heldRun, dir: join(store.dir, "runs", heldRun), storePath: store.runStorePath(heldRun) };

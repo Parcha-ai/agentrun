@@ -819,3 +819,45 @@ test("a subagent whose file names no parent is no session and no run: its tokens
   t.after(() => store.close());
   assert.equal(store.listRuns().length, 1, "no run for the subagent");
 });
+
+test("one number per run: an imported run's timeline usage row counts its subagents' requests, as its stored metrics do, and its transcript gives the same totals", async (t) => {
+  const { data, store, runs } = await importedOne(t, (home, project) => {
+    claudeSession(home, project, 115);
+    claudeSubagent(home, project, 115, 1);
+    codexSession(home, project, 116);
+    codexSession(home, project, 117, { subagent: true, parent: sessionId(116) });
+  });
+  for (const run of runs) {
+    const stored = store.runMetrics(run.id);
+    // As the run's page reads it: its root conversation's entries, settled.
+    const db = new DatabaseSync(join(data, "runs", run.id, "store", "run.sqlite"), { readOnly: true });
+    const entries = db.prepare("SELECT record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").all().map((row) => JSON.parse(row.record));
+    db.close();
+    assert.equal(timelineOf(entries, { settled: true }).findLast((r) => r.kind === "usage")?.usage.requests, stored.requests, run.importedFrom.source);
+    assert.equal(stored.requests, 4, "the session's two and its subagent's two");
+    const own = runMetricsOf(entries);
+    assert.deepEqual([own.input, own.cacheRead, own.cacheWrite, own.output, own.requests, own.unmetered], [stored.input, stored.cacheRead, stored.cacheWrite, stored.output, stored.requests, stored.unmetered]);
+    assert.equal(timelineOf(entries, { settled: true }).filter((r) => r.kind !== "usage").length, timelineOf(entries.filter((e) => e.kind !== "agentrun.request_cost"), { settled: true }).filter((r) => r.kind !== "usage").length, "the marks show no row");
+  }
+});
+
+test("an untied subagent's own subagents count in the summary's totals with it, and are no session or run either", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "untied");
+  mkdirSync(project, { recursive: true });
+  claudeSession(home, project, 120);
+  codexSession(home, project, 121, { subagent: true, parent: null });
+  codexSession(home, project, 122, { subagent: true, parent: sessionId(121) });
+  const data = join(root, "agents");
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+  // 2,688 + 1,965 + 1,965 tokens; cache reads 2,300 + 1,500 + 1,500 of 2,608 + 1,900 + 1,900 input; one Bash call, two shell.
+  const block = lines.slice(-5);
+  assert.deepEqual(block.slice(0, 2), ["Found 1 session  Claude Code 1", "Imported into 1 agent (one per project)"]);
+  assert.match(block[2], /^\+ 6\.6K tokens \(83% cached\) · /);
+  assert.match(block[3], / · top tool: shell \(67%\)$/);
+  const store = openStoreReader(data);
+  t.after(() => store.close());
+  assert.equal(store.listRuns().length, 1);
+});
