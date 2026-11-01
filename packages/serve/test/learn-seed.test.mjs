@@ -290,6 +290,22 @@ test("a main whose commit git cannot read, and notes that cannot be copied into 
   await seedFailed(api, data, "lost", full.runId, full.prompt);
 });
 
+test("a copy that fails once its pin is in place (the run's directory not synced): the pin goes too, so the run is seed_failed and nothing learned reaches its instructions", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: SYSTEM });
+  await learned(api, data, "unsynced", { instructions: "Answer the question." });
+  let pinned;
+  learningTestHooks.afterPin = (runDir) => {
+    pinned = JSON.parse(readFileSync(join(runDir, "learning.json"), "utf8"));
+    throw new Error("the run's directory could not be synced");
+  };
+  t.after(() => void (learningTestHooks.afterPin = undefined));
+  const run = await ran(api, "unsynced");
+  learningTestHooks.afterPin = undefined;
+  assert.equal(pinned?.learned?.trim(), INDEX.trim(), "the pin was in place, with the index, when the copy failed");
+  assert.equal(learnedIn(run.prompt), undefined, "no # Learned in the run's instructions");
+  await seedFailed(api, data, "unsynced", run.runId, run.prompt);
+});
+
 /** A request's system prompt, as text. */
 const systemText = (body) => (typeof body?.system === "string" ? body.system : (body?.system ?? []).map((block) => block?.text ?? "").join("\n"));
 

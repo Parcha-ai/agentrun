@@ -232,13 +232,14 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
   });
 }
 
-/** Test seams, tests only: before a run's learned files are written. */
-export const learningTestHooks: { beforePin?: (runDir: string) => Promise<void> | void } = {};
+/** Test seams, tests only: before a run's learned files are written, and once its pin is in place. */
+export const learningTestHooks: { beforePin?: (runDir: string) => Promise<void> | void; afterPin?: (runDir: string) => Promise<void> | void } = {};
 
 /** Writes `seed` into the run just made in `runDir`: the index and each active note into `work/.learning/`, made fresh
  *  (whatever was there goes), then the pin, last. A write that fails leaves no `.learning/` and no pin, and throws. */
 export async function pinSeed(runDir: string, work: string, seed: Seed): Promise<Pin> {
   const dir = join(work, LEARNED_DIR);
+  const pinFile = join(runDir, LEARNING_PIN);
   try {
     await learningTestHooks.beforePin?.(runDir);
     await rm(dir, { recursive: true, force: true });
@@ -248,9 +249,13 @@ export async function pinSeed(runDir: string, work: string, seed: Seed): Promise
     for (const [file, text] of files) await writeFile(join(dir, file), text, { flag: "wx" });
     const learned = seed.index === undefined ? "" : loadedIndex(seed.index);
     const pin: Pin = { seed: seed.sha, ...(learned.trim() ? { learned } : {}) };
-    await writeDurable(join(runDir, LEARNING_PIN), `${JSON.stringify(pin)}\n`);
+    await writeDurable(pinFile, `${JSON.stringify(pin)}\n`);
+    await learningTestHooks.afterPin?.(runDir);
     return pin;
   } catch (error) {
+    // writeDurable renames the pin into place before it syncs the run's directory, so a failure there leaves the pin
+    // behind: it goes too, or the run's instructions would still say what it learned, of notes it has no copy of.
+    await rm(pinFile, { force: true }).catch(() => undefined);
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
