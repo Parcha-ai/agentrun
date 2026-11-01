@@ -15,6 +15,7 @@ import { runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { startServe } from "../dist/index.js";
 import { planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
+import { summaryLines } from "../dist/import-summary.js";
 import { claudeSession, codexSession, piSession } from "./fixtures/import-sessions.mjs";
 import { client, FAUX, scratch } from "./support.mjs";
 
@@ -570,4 +571,81 @@ test("a pi request that failed imports as failed, at its 0 tokens; one cut short
   const two = metricsOf(data, store, cut.id);
   assert.deepEqual([two.metrics.requests, two.metrics.unmetered, two.metrics.input], [2, 1, 100]);
   assert.deepEqual(two.answers[1].content, [{ type: "text", text: "Read: three notes." }]);
+});
+
+/** The catalog's list price of `provider/id` for these tokens, from pi-ai's catalog itself (USD per million). */
+async function listPrice(provider, id, { input = 0, output = 0, cacheRead = 0, cacheWrite = 0 }) {
+  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  const { cost } = builtinModels().getModels().find((m) => m.provider === provider && m.id === id);
+  return (input * cost.input + output * cost.output + cacheRead * cost.cacheRead + cacheWrite * cost.cacheWrite) / 1e6;
+}
+
+test("a run its source did not price gets the catalog's estimate, its cost still unknown; an unlisted model or a request of unknown tokens leaves it unknown, a source's cost is kept with none, and a model listed at $0 is $0", async (t) => {
+  const { store, runs } = await importedOne(t, (home, project) => {
+    codexSession(home, project, 51, { model: "gpt-5.5" });
+    codexSession(home, project, 52);
+    codexSession(home, project, 53, { model: "gpt-5.5", usage: "none" });
+    claudeSession(home, project, 54, { unknownCost: true });
+    claudeSession(home, project, 55);
+    piSession(home, project, 56, { provider: "google", modelId: "gemma-4-26b-a4b-it", costs: [null, null] });
+  });
+  const priced = runs.map((run) => {
+    const { costUsdEst, costBasis } = store.runMetrics(run.id);
+    return [run.importedFrom.source, run.costUsd ?? null, costUsdEst ?? null, costBasis ?? null];
+  });
+  const codex = await listPrice("openai", "gpt-5.5", { input: 300 + 100, cacheRead: 600 + 900, output: 40 + 25 });
+  const claude = await listPrice("anthropic", "claude-sonnet-5", { input: 3 + 5, cacheRead: 1000 + 1300, cacheWrite: 200 + 100, output: 50 + 30 });
+  assert.ok(codex > 0 && claude > 0);
+  assert.deepEqual(priced, [
+    ["codex", null, Math.round(codex * 1e6) / 1e6, "catalog"],
+    ["codex", null, null, null],
+    ["codex", null, null, null],
+    ["claude-code", null, Math.round(claude * 1e6) / 1e6, "catalog"],
+    ["claude-code", 0.0421, null, null],
+    ["pi", null, 0, "catalog"],
+  ]);
+});
+
+test("import ends with the summary of every session found, read again from the store once held; a dry run prints the same from what it would import; hours are local", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const [site, tests, notes] = ["acme-site", "test-runner", "field-notes"].map((name) => join(at, "code", name));
+  for (const dir of [site, tests, notes]) mkdirSync(dir, { recursive: true });
+  claudeSession(at, site, 61);
+  claudeSession(at, site, 62, { unknownCost: true });
+  codexSession(at, tests, 63);
+  piSession(at, notes, 64);
+  const data = join(root, "agents");
+  const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, ...inherited } = process.env;
+  const env = { ...inherited, HOME: at, TZ: "America/Puerto_Rico" };
+  const block = (...args) => {
+    const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all", "--listen", "0.0.0.0", "--port", "7555", ...args], { env, encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    return ran.stdout.trimEnd().split("\n").slice(-5);
+  };
+  // Every request at 09:01 or 09:03 UTC: 05:00 in Puerto Rico (UTC-4). Bash is two of the four tool calls.
+  const expected = [
+    "Found 4 sessions  Claude Code 2 · Codex 1 · pi 1",
+    "Imported into 3 agents (one per project)",
+    "+ 8.4K tokens (84% cached) · 0.2 h of agent time",
+    "+ Busiest hour: 05:00 · top tool: Bash (50%)",
+    "Open http://127.0.0.1:7555/",
+  ];
+  const dry = block("--dry-run");
+  assert.deepEqual(dry, [expected[0], "Would import into 3 agents (one per project)", ...expected.slice(2)]);
+  assert.equal(existsSync(data), false, "the dry run wrote nothing");
+  assert.deepEqual(block(), expected);
+  assert.deepEqual(block(), expected, "run again, every session is held, and counted from the store");
+});
+
+test("the summary says unknown where it has no data", () => {
+  const lines = summaryLines([{ source: "codex", agent: "a" }, { source: "pi", agent: "b", metrics: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, tools: {} } }], "http://127.0.0.1:7340");
+  assert.deepEqual(lines, [
+    "Found 2 sessions  Codex 1 · pi 1",
+    "Imported into 2 agents (one per project)",
+    "+ tokens unknown · agent time unknown · 1 session unknown",
+    "+ Busiest hour: unknown · top tool: none",
+    "Open http://127.0.0.1:7340/",
+  ]);
+  assert.deepEqual(summaryLines([], "http://127.0.0.1:7340").slice(0, 4), ["Found 0 sessions", "Imported into 0 agents (one per project)", "+ tokens unknown · agent time unknown", "+ Busiest hour: unknown · top tool: unknown"]);
 });

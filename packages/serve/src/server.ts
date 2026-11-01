@@ -31,6 +31,13 @@ import { type ServerLock, takeServerLock } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
 export const DEFAULT_PORT = 7340;
+/** The address the server listens on unless told another. */
+export const DEFAULT_HOST = "127.0.0.1";
+/** The server's address on `host` and `port`: an address of every interface is reached on this machine at its loopback one. */
+export function serverUrl(host: string, port: number): string {
+  const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  return `http://${shown.includes(":") ? `[${shown}]` : shown}:${port}`;
+}
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const TOKEN_FILE = ".token";
 const DOOR_TOKEN_FILE = ".door-token";
@@ -342,7 +349,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await writeFile(`${keptFile}.partial`, JSON.stringify({ version: 1, entries }), { mode: 0o600 });
         await rename(`${keptFile}.partial`, keptFile);
       }));
-  const host = options.host ?? "127.0.0.1";
+  const host = options.host ?? DEFAULT_HOST;
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
@@ -903,9 +910,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done())));
   const address = server.address() as AddressInfo;
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...(options.allowHosts ?? [])].map((h) => `${h.toLowerCase()}:${address.port}`));
-  // An address of every interface is reached on this machine at its loopback one.
-  const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
-  const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
+  const url = serverUrl(host, address.port);
   owner?.attach(options.publicUrl ?? url);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   return {

@@ -17,6 +17,9 @@ import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, op
 import { type EntryLike, type RunMetrics, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
 import { readJson, RUN_META } from "./files.js";
 import { HARNESS_OF, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
+import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
+import { catalogPrices, type Listed, listedOf } from "./model.js";
+import { DEFAULT_HOST, DEFAULT_PORT, serverUrl } from "./server.js";
 import { secretCut } from "./secret-cut.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 
@@ -46,6 +49,8 @@ export type ImportOptions = {
   now?: number;
   /** The temp directory whose projects are left out (default the OS's). */
   temp?: string;
+  /** Read each session's turns while planning, and measure it (`Plan.found`): what a dry run's summary counts. */
+  measure?: boolean;
 };
 export type Skipped = { what: string; why: string };
 export type ProjectPlan = {
@@ -54,8 +59,9 @@ export type ProjectPlan = {
   name: string;
   sessions: Session[];
 };
-/** `already`: the session files an earlier import took whole, left unread. */
-export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number };
+/** `already`: the session files an earlier import took whole, left unread; `held`, their runs. `found`: each planned
+ *  session measured, when the plan was made to (`measure`). */
+export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; found?: Found[] };
 export type ImportReport = {
   agents: {
     id: string;
@@ -79,14 +85,15 @@ const importedIn = (store: AgentStoreReader) => new Map(store.listRuns().flatMap
 /** The file by the sha256 of its path, never the path: a path can hold what the cut takes out of everything written. */
 type SourceFile = { path_sha256: string; size: number; mtime_ms: number };
 const sameFile = (seen: SourceFile | undefined, stats: { size: number; mtimeMs: number }) => seen !== undefined && seen.size === stats.size && seen.mtime_ms === stats.mtimeMs;
-/** The session files the store's imports read whole, by their path's sha256: each from a run whose transcript is there. */
-async function filesIn(store: AgentStoreReader): Promise<Map<string, SourceFile>> {
-  const out = new Map<string, SourceFile>();
+/** The session files the store's imports read whole, by their path's sha256, with their run: each from a run whose
+ *  transcript is there. */
+async function filesIn(store: AgentStoreReader): Promise<Map<string, SourceFile & { run: string }>> {
+  const out = new Map<string, SourceFile & { run: string }>();
   for (const run of store.listRuns()) {
     if (!run.importedFrom || !existsSync(store.runStorePath(run.id))) continue;
     const meta = (await readJson(join(store.dir, "runs", run.id, RUN_META))) as { source_file?: SourceFile } | null;
     const seen = meta?.source_file;
-    if (seen && typeof seen.path_sha256 === "string" && typeof seen.size === "number" && typeof seen.mtime_ms === "number") out.set(seen.path_sha256, seen);
+    if (seen && typeof seen.path_sha256 === "string" && typeof seen.size === "number" && typeof seen.mtime_ms === "number") out.set(seen.path_sha256, { ...seen, run: run.id });
   }
   return out;
 }
@@ -95,18 +102,22 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 
 /** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Reads no turns,
  *  and no file `store`'s imports already read whole and that has not changed since. */
-export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir() }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
+export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
   const skipped: Skipped[] = [];
-  const seen = store ? await filesIn(store) : new Map<string, SourceFile>();
+  const seen = store ? await filesIn(store) : new Map<string, SourceFile & { run: string }>();
   let already = 0;
+  const held: string[] = [];
+  const found: Found[] = [];
   const projects = new Map<string, ProjectPlan>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
     for (const file of await sessionFiles(home, source)) {
       const stats = await stat(file).catch(() => null);
       if (!stats) continue;
-      if (sameFile(seen.get(hash(file)), stats)) {
+      const known = seen.get(hash(file));
+      if (sameFile(known, stats)) {
         already += 1;
+        held.push(known!.run);
         continue;
       }
       if (now - stats.mtimeMs < LIVE_MS) {
@@ -121,7 +132,7 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
         continue;
       }
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
-      const session = await readSession(file, source, { turns: false }).catch((error: unknown) => void skipped.push(unread(file, error)));
+      const session = await readSession(file, source, { turns: measure }).catch((error: unknown) => void skipped.push(unread(file, error)));
       if (!session) continue;
       if (session.child) continue;
       if (!session.cwd) {
@@ -159,6 +170,10 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
           }),
         );
       project.sessions.push(session);
+      if (measure) {
+        found.push({ source, agent: project.agentId, ...measured(session) });
+        session.turns = [];
+      }
     }
   }
   for (const project of projects.values()) project.sessions.sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? ""));
@@ -166,6 +181,8 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
     projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)),
     skipped,
     already,
+    held,
+    ...(measure ? { found } : {}),
   };
 }
 
@@ -321,7 +338,7 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
   const [provider, ...id] = (turn.model ?? model ?? "imported/unknown").split("/");
   const cost = turn.costUsd;
   // A request the source gave no counts for keeps zeros, which a run's metrics read as unmetered, never as 0 tokens.
-  const { input, output, cacheRead, cacheWrite } = turn.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const { input, output, cacheRead, cacheWrite, cacheWrite1h } = turn.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   return {
     entry: AssistantEntry as unknown as typeof UserEntry,
     model: {
@@ -336,6 +353,7 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
         output,
         cacheRead,
         cacheWrite,
+        ...(cacheWrite1h !== undefined ? { cacheWrite1h } : {}),
         totalTokens: input + output + cacheRead + cacheWrite,
         cost: cost === undefined ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
       },
@@ -346,9 +364,24 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
   };
 };
 
-/** The run's transcript, into a store file at `storePath`, each string with the environment's key values cut out; its
- *  metrics, read back from the entries written, as the run's own timeline reads them. */
-async function writeTimeline(storePath: string, session: Session, cut: (value: unknown) => unknown): Promise<RunMetrics> {
+/** The entries `message` makes of a session's turns, as a transcript holds them. */
+const entriesOf = (session: Session, cut: (value: unknown) => unknown = (value) => value): EntryLike[] =>
+  session.turns.map((turn) => {
+    const { entry, model, data } = message(turn, session.model);
+    return { kind: entry.kind, model: [cut(model)], ...(data ? { data } : {}) } as EntryLike;
+  });
+
+/** What a session read whole used, and when it asked: its metrics and time at work, and its requests by hour. */
+function measured(session: Session): Pick<Found, "metrics" | "hours"> {
+  return {
+    metrics: { ...runMetricsOf(entriesOf(session)), activeMs: session.activeMs },
+    hours: hoursOf(session.turns.flatMap((turn) => (turn.role === "assistant" ? [turn.at] : []))),
+  };
+}
+
+/** The run's transcript, into a store file at `storePath`, each string with the environment's key values cut out; the
+ *  entries written, read back as the run's own timeline reads them. */
+async function writeTimeline(storePath: string, session: Session, cut: (value: unknown) => unknown): Promise<EntryLike[]> {
   const { createModels } = await import("@earendil-works/pi-ai/models");
   const storage = await openNodeSqliteStorage(storePath);
   // No model is asked anything: the catalog is only what opening a Harness takes.
@@ -371,10 +404,10 @@ async function writeTimeline(storePath: string, session: Session, cut: (value: u
   // beside it, where nothing else may move.
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(storePath);
-  let metrics: RunMetrics;
+  let entries: EntryLike[];
   try {
     db.exec("PRAGMA journal_mode = DELETE");
-    metrics = runMetricsOf((db.prepare("SELECT record FROM entries ORDER BY id").all() as { record: string }[]).map((row) => JSON.parse(row.record) as EntryLike));
+    entries = (db.prepare("SELECT record FROM entries ORDER BY id").all() as { record: string }[]).map((row) => JSON.parse(row.record) as EntryLike);
   } finally {
     db.close();
   }
@@ -383,7 +416,27 @@ async function writeTimeline(storePath: string, session: Session, cut: (value: u
     await chmod(file, 0o600).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
-  return metrics;
+  return entries;
+}
+
+/** What a run's requests cost at the catalog's list prices, by their model's own provider (`listedOf`): undefined when one
+ *  request's tokens are unknown or its model is not listed. A request of no tokens costs nothing at any price. */
+async function estimateOf(entries: readonly EntryLike[], metrics: RunMetrics, catalog: () => Promise<ReadonlyMap<string, readonly Listed[]>>): Promise<number | undefined> {
+  if (metrics.unmetered > 0) return undefined;
+  const { calculateCost } = await import("@earendil-works/pi-ai");
+  let total = 0;
+  for (const entry of entries) {
+    const answer = entry.kind === "pi.assistant" ? (entry.model?.[0] as { provider?: string; model?: string; usage?: Record<string, number> } | undefined) : undefined;
+    if (!answer?.usage) continue;
+    const { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cacheWrite1h } = answer.usage;
+    if (input + output + cacheRead + cacheWrite === 0) continue;
+    const id = answer.provider && answer.model ? `${answer.provider}/${answer.model}` : undefined;
+    const cost = id ? listedOf(await catalog(), id, answer.provider) : undefined;
+    if (!cost) return undefined;
+    const usage = { input, output, cacheRead, cacheWrite, ...(cacheWrite1h !== undefined ? { cacheWrite1h } : {}), totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    total += calculateCost({ cost } as never, usage).total;
+  }
+  return Math.round(total * 1e6) / 1e6;
 }
 
 /** The revision of `harness` an earlier import made for the agent, else a new one (current when the agent is new). */
@@ -433,6 +486,8 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
 export async function runImport(store: AgentStore, plan: Plan, options: ImportOptions): Promise<ImportReport> {
   const { text, json } = secretCut(options.env);
   const report: ImportReport = { agents: [], skipped: [...plan.skipped], already: plan.already };
+  let prices: Promise<Map<string, Listed[]>> | undefined;
+  const catalog = () => (prices ??= catalogPrices());
   const held = importedIn(store);
   for (const project of plan.projects) {
     const created = !store.readAgent(project.agentId);
@@ -464,7 +519,11 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
       let started: { runId: string; dir: string; storePath: string } | undefined;
       try {
-        const metrics: StoredMetrics = { ...(await writeTimeline(pending, session, json)), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
+        const entries = await writeTimeline(pending, session, json);
+        const metrics: StoredMetrics = { ...runMetricsOf(entries), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
+        // A session its source did not price: the catalog's estimate, beside its cost (unknown), never written as it.
+        const estimate = session.costUsd === undefined ? await estimateOf(entries, metrics, catalog) : undefined;
+        if (estimate !== undefined) Object.assign(metrics, { costUsdEst: estimate, costBasis: "catalog" });
         if (heldRun !== undefined) {
           started = { runId: heldRun, dir: join(store.dir, "runs", heldRun), storePath: store.runStorePath(heldRun) };
           if ((await mkdir(dirname(started.storePath), { recursive: true })) !== undefined) for (const made of [started.dir, dirname(started.storePath)]) await chmod(made, 0o700);
@@ -536,12 +595,20 @@ export async function importCommand(
         from: { type: "string" },
         "dry-run": { type: "boolean" },
         all: { type: "boolean" },
+        listen: { type: "string" },
+        port: { type: "string" },
       },
     }));
   } catch (error) {
     console.error(`${(error as Error).message}\n\n${usage}`);
     return 2;
   }
+  const port = values.port === undefined ? DEFAULT_PORT : Number(values.port);
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    console.error(`--port takes a port number\n\n${usage}`);
+    return 2;
+  }
+  const open = openAt(env, values.listen ?? DEFAULT_HOST, port);
   const sources = values.from === undefined ? SOURCES : values.from.split(",").map((s) => s.trim());
   const unknown = sources.filter((s) => !(SOURCES as readonly string[]).includes(s));
   if (unknown.length) {
@@ -559,24 +626,51 @@ export async function importCommand(
     // A dry run writes nothing, not even a store: one there already is only read.
     const reader = existsSync(join(dir, STORE_FILE)) ? openStoreReader(dir) : undefined;
     let plan: Plan;
+    let found: Found[];
     try {
-      plan = await planImport(options, reader);
+      plan = await planImport({ ...options, measure: true }, reader);
       for (const line of describePlan(plan, reader)) out(line);
+      found = [...plan.found!, ...(reader ? await foundAll(reader, plan.held) : [])];
     } finally {
       reader?.close();
     }
     out(`${plan.projects.length} projects, ${plan.projects.reduce((n, p) => n + p.sessions.length, 0)} sessions; nothing was written (dry run)`);
+    for (const line of summaryLines(found, open, { dryRun: true })) out(line);
     return 0;
   }
   const store = openStore(dir);
   try {
-    const report = await runImport(store, await planImport(options, store), options);
+    const plan = await planImport(options, store);
+    const report = await runImport(store, plan, options);
     for (const agent of report.agents) out(`${agent.cwd}  ${agent.created ? "new agent" : "agent held"} ${agent.id}  imported ${agent.runs}${agent.finished ? `, finished ${agent.finished}` : ""}${agent.already ? `, already imported ${agent.already}` : ""}`);
     if (report.already) out(`already imported, unchanged: ${report.already} session files (not read again)`);
     for (const s of report.skipped) out(`skipped ${s.what}: ${s.why}`);
     out(`${report.agents.length} agents, ${report.agents.reduce((n, a) => n + a.runs, 0)} runs imported into ${dir}`);
+    // Every session found: those imported now, those held before, and those whose file an earlier import read whole.
+    const held = importedIn(store);
+    const runs = [...plan.projects.flatMap((p) => p.sessions.flatMap((s) => held.get(`${s.source}:${s.id}`) ?? [])), ...plan.held];
+    for (const line of summaryLines(await foundAll(store, runs), open)) out(line);
     return 0;
   } finally {
     store.close();
   }
+}
+
+/** The imported runs `runIds` of `store`, each once, as found. */
+async function foundAll(store: AgentStoreReader, runIds: readonly string[]): Promise<Found[]> {
+  const found: Found[] = [];
+  for (const id of new Set(runIds)) {
+    const run = await foundIn(store, id);
+    if (run) found.push(run);
+  }
+  return found;
+}
+
+/** Where a person opens the server: its public address when one is set (as the server takes it), else its own on
+ *  `host` and `port`. */
+function openAt(env: NodeJS.ProcessEnv, host: string, port: number): string {
+  const given = env.AGENTRUN_PUBLIC_URL || env.RENDER_EXTERNAL_URL;
+  const parsed = given && URL.canParse(given) ? new URL(given) : undefined;
+  if (parsed && /^https?:$/.test(parsed.protocol)) return parsed.href.replace(/\/+$/, "");
+  return port === 0 ? `${serverUrl(host, port).replace(/:0$/, "")}:<the port the server picks>` : serverUrl(host, port);
 }

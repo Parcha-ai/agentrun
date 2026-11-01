@@ -24,8 +24,9 @@ export type ToolCall = {
   name: string;
   arguments: Record<string, unknown>;
 };
-/** A request's tokens as pi counts them: `input` is the input neither read from nor written to the cache. */
-export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number };
+/** A request's tokens as pi counts them: `input` is the input neither read from nor written to the cache;
+ *  `cacheWrite1h`, the part of `cacheWrite` kept for an hour, which Anthropic prices higher. */
+export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h?: number };
 /** An assistant turn is one model request: `model` the one it ran on ("provider/model"), `effort` the effort or
  *  thinking level it ran at, `usage` its tokens, each absent when the source does not say; `error`, why it failed. A
  *  note is a line the harness itself wrote in the conversation: no request, nor the person's. */
@@ -142,6 +143,14 @@ const tokensOf = (usage: unknown, [input, cacheRead, cacheWrite, output]: readon
   if (counts.input === undefined || counts.output === undefined || counts.cacheRead === undefined || counts.cacheWrite === undefined) return undefined;
   if (cachedIn) counts.input -= counts.cacheRead + counts.cacheWrite;
   return counts.input >= 0 ? (counts as Usage) : undefined;
+};
+/** `usage` with the part of its cache writes kept for an hour, when `long` is a count of at most its writes. */
+const withLong = (usage: Usage | undefined, long: unknown): Usage | undefined =>
+  usage && Number.isSafeInteger(long) && (long as number) >= 0 && (long as number) <= usage.cacheWrite ? { ...usage, cacheWrite1h: long as number } : usage;
+/** The most of each count of two records of one request. */
+const most = (a: Usage, b: Usage): Usage => {
+  const long = Math.max(a.cacheWrite1h ?? -1, b.cacheWrite1h ?? -1);
+  return { input: Math.max(a.input, b.input), output: Math.max(a.output, b.output), cacheRead: Math.max(a.cacheRead, b.cacheRead), cacheWrite: Math.max(a.cacheWrite, b.cacheWrite), ...(long >= 0 ? { cacheWrite1h: long } : {}) };
 };
 const CLAUDE_TOKENS = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"];
 // OpenAI's input_tokens holds the cached tokens, and its output_tokens the reasoning.
@@ -302,12 +311,12 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
     // Each record repeats the request's usage, the final one the most of each count (an earlier record may hold only the
     // stream's start).
     const key = str(message.id);
-    const usage = tokensOf(message.usage, CLAUDE_TOKENS);
+    const usage = withLong(tokensOf(message.usage, CLAUDE_TOKENS), isObject(message.usage) && isObject(message.usage.cache_creation) ? message.usage.cache_creation.ephemeral_1h_input_tokens : undefined);
     const held = key ? current.keyed.get(key) : undefined;
     if (held) {
       held.text = [held.text, text].filter(Boolean).join("\n");
       held.calls.push(...calls);
-      if (usage) held.usage = held.usage ? { input: Math.max(held.usage.input, usage.input), output: Math.max(held.usage.output, usage.output), cacheRead: Math.max(held.usage.cacheRead, usage.cacheRead), cacheWrite: Math.max(held.usage.cacheWrite, usage.cacheWrite) } : usage;
+      if (usage) held.usage = held.usage ? most(held.usage, usage) : usage;
       return;
     }
     if (!key && !text && calls.length === 0) return;
@@ -542,7 +551,7 @@ function piRecord(value: Record<string, unknown>, at: number, session: Session, 
     session.costUsd = priced.unknown ? undefined : priced.sum;
     session.state = message.stopReason === "error" ? "failed" : message.stopReason === "aborted" ? "stopped" : "completed";
     // A request cut before its end has only the start of its counts: unknown, as a live run's.
-    const tokens = message.stopReason === "aborted" ? undefined : tokensOf(message.usage, PI_TOKENS);
+    const tokens = message.stopReason === "aborted" ? undefined : withLong(tokensOf(message.usage, PI_TOKENS), isObject(message.usage) ? message.usage.cacheWrite1h : undefined);
     add({
       role: "assistant",
       text,

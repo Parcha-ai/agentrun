@@ -27,8 +27,8 @@ const claudeUsage = (input, cacheRead, cacheWrite, output) => ({ input_tokens: i
  *  `parallel`, the first request also reads a file, its record after the Bash call's result, and the read fails; the
  *  answer's text record is written twice, and the answer runs on `answerModel`, `pause` minutes after the result. With
  *  `failed`, the answer is the CLI's API-error turn; with `noted`, the CLI's own "No response requested." follows the
- *  interrupt. */
-export function claudeSession(home, cwd, n, { prompt = "List the files.", output = "README.md", cost = 0.0421, sidechain = false, interrupted = false, failed = false, noted = false, env = {}, slug = cwd.replaceAll("/", "-"), usage = true, effort = "high", parallel = false, answerModel = "claude-sonnet-5", pause = 0 } = {}) {
+ *  interrupt. With `unknownCost`, the CLI could not price a model it used. */
+export function claudeSession(home, cwd, n, { prompt = "List the files.", output = "README.md", cost = 0.0421, unknownCost = false, sidechain = false, interrupted = false, failed = false, noted = false, env = {}, slug = cwd.replaceAll("/", "-"), usage = true, effort = "high", parallel = false, answerModel = "claude-sonnet-5", pause = 0 } = {}) {
   const id = sessionId(n);
   const base = {
     sessionId: id,
@@ -201,7 +201,7 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
       type: "cost-state",
       sessionId: id,
       totalCostUSD: cost,
-      hasUnknownModelCost: false,
+      hasUnknownModelCost: unknownCost,
       startTime: T0,
     },
   ];
@@ -216,10 +216,10 @@ const plus = (a, b) => Object.fromEntries(Object.keys(a).map((key) => [key, a[ke
 /** A Codex session in `cwd`: the CLI's own context, a question, a shell call and its output, an answer; tokens only, no
  *  cost. Each of the person's turns is a user message and, as older Codex wrote it, a user_message event too; with
  *  `events: false`, as current Codex writes it, the user message alone. `then` is a second turn, with an image, on
- *  `thenModel`. Each request's usage is in a token_count event (the first one written twice), with `usage: "records"`
+ *  `thenModel` (else `model`). Each request's usage is in a token_count event (the first one written twice), with `usage: "records"`
  *  also in a token_usage_record (the first one written twice), with `usage: "none"` in neither. With `failing`, the first
  *  request also runs two calls that fail: one whose output says so, one whose completed item does, after its output. */
-export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, aborted = false, events = true, then, thenModel = "gpt-sol-6.1", usage = "token_count", failing = false } = {}) {
+export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, aborted = false, events = true, then, model = "gpt-sol-6.1", thenModel = model, usage = "token_count", failing = false } = {}) {
   const id = sessionId(n);
   const text = (value) => ({ type: "input_text", text: value });
   const requests = [codexUsage(900, 600, 40, 10), codexUsage(1000, 900, 25, 5), codexUsage(1200, 1000, 10, 0)];
@@ -284,7 +284,7 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
     {
       timestamp: at(0),
       type: "turn_context",
-      payload: { cwd, model: "gpt-sol-6.1", effort: "medium" },
+      payload: { cwd, model, effort: "medium" },
     },
     {
       timestamp: at(0),
@@ -356,7 +356,7 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
  *  (with `counted: false`, zeros, as pi writes a request it did not measure), the session at thinking level `thinking`.
  *  With `answerModel`, a model change before the answer; with `readFails`, the read's result is an error. `ended`: how the
  *  answer's request ended ("error": no answer, zero usage; "aborted": cut, its counts only the start). */
-export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "three notes", costs = [0.002, 0.003], fresh = false, counted = true, thinking = "high", answerModel, readFails = false, ended = "stop" } = {}) {
+export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "three notes", costs = [0.002, 0.003], fresh = false, counted = true, thinking = "high", answerModel, readFails = false, ended = "stop", provider = "anthropic", modelId = "claude-sonnet-5" } = {}) {
   const id = sessionId(n);
   const usage = (total) => ({
     input: counted ? 100 : 0,
@@ -374,8 +374,8 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
       id: "e1",
       parentId: null,
       timestamp: at(0),
-      provider: "anthropic",
-      modelId: "claude-sonnet-5",
+      provider,
+      modelId,
     },
     { type: "thinking_level_change", id: "e1b", parentId: "e1", timestamp: at(0), thinkingLevel: thinking },
     {
@@ -404,8 +404,8 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
             arguments: { path: "notes.md" },
           },
         ],
-        provider: "anthropic",
-        model: "claude-sonnet-5",
+        provider,
+        model: modelId,
         api: "anthropic-messages",
         usage: usage(costs[0]),
         stopReason: "toolUse",
@@ -426,7 +426,7 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
         timestamp: t(2),
       },
     },
-    ...(answerModel ? [{ type: "model_change", id: "e4b", parentId: "e4", timestamp: at(2), provider: "anthropic", modelId: answerModel }] : []),
+    ...(answerModel ? [{ type: "model_change", id: "e4b", parentId: "e4", timestamp: at(2), provider, modelId: answerModel }] : []),
     {
       type: "message",
       id: "e5",
@@ -435,8 +435,8 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
       message: {
         role: "assistant",
         content: ended === "error" ? [] : [{ type: "text", text: `Read: ${output}.` }],
-        provider: "anthropic",
-        model: answerModel ?? "claude-sonnet-5",
+        provider,
+        model: answerModel ?? modelId,
         api: "anthropic-messages",
         usage: ended === "error" ? { ...usage(0), input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } : usage(costs[1]),
         stopReason: ended,
