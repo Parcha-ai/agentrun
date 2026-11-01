@@ -75,7 +75,7 @@ describe("AgentEditPage", () => {
 });
 
 describe("AgentsPage, where an agent's card goes", () => {
-  it("opens the agent's page from its card and its History icon, and the editor from its Edit icon", async () => {
+  it("opens the agent's page from its card, its Runs tab from its History icon, and the editor from its Edit icon", async () => {
     const went: string[] = [];
     const v2 = { listAgents: async () => ({ agents: [agentAt("r1", "Answer.")], next_cursor: null }) };
     const host = document.body.appendChild(document.createElement("div"));
@@ -86,7 +86,7 @@ describe("AgentsPage, where an agent's card goes", () => {
     click([...host.querySelectorAll("li button")].find((b) => b.textContent?.includes("Calc") && !b.getAttribute("aria-label")));
     click(host.querySelector('[aria-label="Edit Calc"]'));
     click(host.querySelector('[aria-label="Runs of Calc"]'));
-    expect(went).toEqual(["#/agents/calc", "#/agents/calc/edit", "#/agents/calc"]);
+    expect(went).toEqual(["#/agents/calc", "#/agents/calc/edit", "#/agents/calc/runs"]);
   });
 });
 

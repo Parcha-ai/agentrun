@@ -23,11 +23,11 @@ describe("MissionControl", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     for (const s of ["Mission Control", ">2<", ">7<", "Active", "Needs input", "Failed"]) expect(html).toContain(s);
   });
-  it("links each recent run to its page, and each agent to its page (which opens on its runs)", () => {
+  it("links each recent run to its page, and each agent to its page's Runs tab", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     expect(html).toContain('href="#/runs/run-1"');
     expect(html).toContain('href="#/runs/run-2"');
-    expect(html).toContain('href="#/agents/calc"');
+    expect(html).toContain('href="#/agents/calc/runs"');
   });
   it("renders a store with nothing in it, without error", () => {
     const empty: MissionView = { agents: 0, runs: { total: 0, active: 0, needsInput: 0, failed: 0, statusUnknown: 0 }, perAgent: [], cost: { usd: null, basis: null, unknownRuns: 0 }, recent: [] };

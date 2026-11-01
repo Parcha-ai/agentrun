@@ -15,15 +15,15 @@ import { allPages, type Capabilities, ClientError, createClient } from "@/lib/cl
 import { appendRuns } from "@/lib/idempotency";
 import type { Run } from "@/lib/v2";
 
-/** `agent`: an agent's page, or with `edit` its editor; null is a new agent's editor. */
-type Where = { section: Section; run?: string; agent?: string | null; edit?: boolean; runsOf?: string; archived?: boolean };
+/** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. */
+type Where = { section: Section; run?: string; agent?: string | null; edit?: boolean; tab?: string; runsOf?: string; archived?: boolean };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
   if (h === "#/agents/new") return { section: "agents", agent: null };
-  m = h.match(/^#\/agents\/([^/?]+)(\/edit)?$/);
-  if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
+  m = h.match(/^#\/agents\/([^/?]+)(?:\/([a-z]+))?$/);
+  if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
   if (h.startsWith("#/playground")) return { section: "playground" };
   // Mission Control is the first page: the bare address, and the old start page's, land there.
@@ -177,7 +177,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
         : where.section === "agents"
         ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} go={go} />
-          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} defaultModel={editorCaps.defaultModel} go={go} />
+          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} defaultModel={editorCaps.defaultModel} go={go} />
           : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={editorCaps} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}

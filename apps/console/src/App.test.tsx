@@ -2,6 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, route } from "./App";
+import { agentHash } from "@/components/AgentPage";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
@@ -15,10 +16,16 @@ describe("route", () => {
   });
   it("opens an agent's page at its address, and its editor under /edit; a new agent and the archived list are unchanged", () => {
     expect(route("#/agents/x")).toEqual({ section: "agents", agent: "x" });
+    expect(route("#/agents/x/workflow")).toEqual({ section: "agents", agent: "x", tab: "workflow" });
     expect(route("#/agents/x/edit")).toEqual({ section: "agents", agent: "x", edit: true });
     expect(route("#/agents/new")).toEqual({ section: "agents", agent: null });
     expect(route("#/agents?archived=true")).toEqual({ section: "agents", archived: true });
     expect(route("#/agents")).toEqual({ section: "agents", archived: false });
+  });
+  it("gives an agent whose id is new addresses that never open the create form", () => {
+    expect(route(agentHash("new"))).toEqual({ section: "agents", agent: "new", tab: "runs" });
+    expect(route(agentHash("new", "edit"))).toEqual({ section: "agents", agent: "new", edit: true });
+    expect(route(agentHash("a b"))).toEqual({ section: "agents", agent: "a b" });
   });
 });
 

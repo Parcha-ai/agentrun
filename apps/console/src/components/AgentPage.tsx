@@ -14,22 +14,24 @@ import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
 type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void };
-export type AgentTab = "runs" | "workflow";
 
-/** The page's tabs, in order. A tab shows only on an agent it has content for; a new one is one entry here. */
-const TABS: { id: AgentTab; label: string; shows: (a: Agent) => boolean; Body: (p: TabProps) => JSX.Element }[] = [
+/** The page's tabs, in order, each at `#/agents/{id}/{tab}`. A tab shows only on an agent it has content for; a new one
+ *  is one entry here. */
+const TABS: { id: string; label: string; shows: (a: Agent) => boolean; Body: (p: TabProps) => JSX.Element }[] = [
   { id: "runs", label: "Runs", shows: () => true, Body: RunsTab },
   { id: "workflow", label: "Workflow", shows: (a) => a.kind === "workflow", Body: WorkflowTab },
 ];
 
 const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
-const editHash = (id: string) => `#/agents/${encodeURIComponent(id)}/edit`;
+
+/** An agent's address: its page, one of its tabs, or `edit` for its editor. `#/agents/new` is the create form, so an
+ *  agent whose id is "new" is given its Runs tab's address instead. */
+export const agentHash = (id: string, view?: string) => `#/agents/${encodeURIComponent(id)}${view ? `/${view}` : id === "new" ? "/runs" : ""}`;
 
 /** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, and a tab per thing it has. */
-export function AgentPage({ v2, agentId, defaultModel, go, tab: initialTab }: { v2: Client; agentId: string; defaultModel?: string; go: (hash: string) => void; tab?: AgentTab }) {
+export function AgentPage({ v2, agentId, defaultModel, go, tab }: { v2: Client; agentId: string; defaultModel?: string; go: (hash: string) => void; tab?: string }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<AgentTab>(initialTab ?? "runs");
   useEffect(() => {
     let live = true;
     setAgent(null); setError(null);
@@ -60,7 +62,7 @@ export function AgentPage({ v2, agentId, defaultModel, go, tab: initialTab }: { 
           <Chip>{agent.kind}</Chip>
           {agent.archived_at && <Chip tone="muted">Archived</Chip>}
           <span className="flex-1" />
-          <Button size="sm" onClick={() => go(editHash(agent.agent_id))}><Pencil aria-hidden /> Edit</Button>
+          <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit</Button>
         </div>
         {d.description && <p className="mt-2 max-w-3xl text-[14px] text-muted-foreground">{d.description}</p>}
         <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2" aria-label="Current revision">
@@ -71,7 +73,7 @@ export function AgentPage({ v2, agentId, defaultModel, go, tab: initialTab }: { 
       </header>
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map((t) => (
-          <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => setTab(t.id)}
+          <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}
             className={cn("caps -mb-px border-b-2 px-3 py-3 text-[12px]", at.id === t.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>
             {t.label}
           </button>
@@ -93,7 +95,8 @@ function RunsTab({ agent, v2 }: TabProps) {
     const n = ++asked.current;
     setError(null);
     if (after) setMore(true);
-    v2.listAgentRuns(agent.agent_id, 50, after)
+    // An archived agent's runs are archived with it: the server lists them only when asked for the archived ones.
+    v2.listAgentRuns(agent.agent_id, 50, after, !!agent.archived_at)
       .then((r) => { if (n === asked.current) { setRuns((x) => (after ? appendRuns(x ?? [], r.runs) : r.runs)); setCursor(r.next_cursor); } })
       .catch((e) => { if (n === asked.current) setError(problemOf(e)); })
       .finally(() => { if (n === asked.current) setMore(false); });
@@ -136,7 +139,7 @@ function WorkflowTab({ agent, go }: TabProps) {
         <span className="caps text-[11px] font-semibold">Graph</span>
         <span className="font-mono text-[11px] text-muted-foreground">{graph.nodes.length} nodes · rev {agent.definition.version}</span>
         <span className="flex-1" />
-        <Button size="sm" onClick={() => go(editHash(agent.agent_id))}><Pencil aria-hidden /> Edit the workflow</Button>
+        <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit the workflow</Button>
       </div>
       <div className="min-h-[360px] overflow-auto bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] px-4 py-5">
         {graph.nodes.length ? <WorkflowGraph graph={graph} marks={marks} label="The workflow's graph" minScale={0.55} />

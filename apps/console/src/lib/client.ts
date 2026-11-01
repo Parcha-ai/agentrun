@@ -67,7 +67,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
     listRuns: (limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
-    listAgentRuns: (id: string, limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+    /** `archived`: the archived runs only (an archived agent's runs are all archived with it). */
+    listAgentRuns: (id: string, limit = 50, cursor?: string | null, archived = false) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}${archived ? "&archived=true" : ""}`),
     listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
       const q = new URLSearchParams();
       if (archived) q.set("archived", "true");

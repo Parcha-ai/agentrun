@@ -13,16 +13,20 @@ const runsOf = (slug: string) => recorded<{ runs: Run[] }>(`agent.${slug}.runs`)
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-async function open(agent: Agent, runs: Run[] = runsOf("invoice-checker"), next: string | null = null, more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>) {
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string };
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const v2 = {
     getAgent: async (id: string) => { asked.push(`agent ${id}`); return { agent, etag: null }; },
-    listAgentRuns: async (id: string, _limit: number, cursor?: string | null) => { asked.push(`runs ${id}${cursor ? ` after ${cursor}` : ""}`); return cursor && more ? more() : { runs, next_cursor: next }; },
+    listAgentRuns: async (id: string, _limit: number, cursor?: string | null, archived?: boolean) => {
+      asked.push(`runs ${id}${cursor ? ` after ${cursor}` : ""}${archived ? " archived" : ""}`);
+      return cursor && more ? more() : { runs, next_cursor: next };
+    },
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: editorCaps.defaultModel, go: (h: string) => went.push(h) })));
+  act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: editorCaps.defaultModel, go: (h: string) => went.push(h), tab })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -56,7 +60,7 @@ describe("AgentPage", () => {
     const runs = runsOf("invoice-checker");
     // A cost the server does not know is left out, never shown as $0.
     const unknown = { ...runs[runs.length - 1], cost: null };
-    const page = await open(agentFixture("invoice-checker"), [...runs.slice(0, -1), unknown]);
+    const page = await open(agentFixture("invoice-checker"), { runs: [...runs.slice(0, -1), unknown] });
     expect(page.asked).toEqual(["agent invoice-checker", "runs invoice-checker"]);
     expect(page.tabs()).toEqual(["Runs"]);
     expect(page.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
@@ -74,7 +78,7 @@ describe("AgentPage", () => {
   });
 
   it("says when the agent has no runs yet", async () => {
-    const page = await open(agentFixture("invoice-checker"), []);
+    const page = await open(agentFixture("invoice-checker"), { runs: [] });
     expect(page.host.textContent).toContain("No runs of this agent yet.");
     expect(page.host.querySelector('ul[aria-label="Runs"]')).toBeNull();
   });
@@ -82,10 +86,10 @@ describe("AgentPage", () => {
   it("reads the next page with Load more, and a failed one keeps the runs already read", async () => {
     const runs = runsOf("invoice-checker");
     let fail = true;
-    const page = await open(agentFixture("invoice-checker"), runs.slice(0, 5), "c2", async () => {
+    const page = await open(agentFixture("invoice-checker"), { runs: runs.slice(0, 5), next: "c2", more: async () => {
       if (fail) throw new Error("the network went away");
       return { runs: runs.slice(5), next_cursor: null };
-    });
+    } });
     const count = () => page.host.querySelectorAll('ul[aria-label="Runs"] a').length;
     expect(count()).toBe(5);
     await page.click(/^Load more$/);
@@ -99,21 +103,38 @@ describe("AgentPage", () => {
     expect(page.asked).toEqual(["agent invoice-checker", "runs invoice-checker", "runs invoice-checker after c2", "runs invoice-checker after c2"]);
   });
 
-  it("has a Workflow tab only for a workflow agent, and draws its graph read-only with a way to the editor", async () => {
-    const page = await open(agentFixture("support-triage"), runsOf("support-triage"));
+  it("has a Workflow tab only for a workflow agent, at its own address", async () => {
+    const page = await open(agentFixture("support-triage"), { runs: runsOf("support-triage") });
     expect(page.tabs()).toEqual(["Runs", "Workflow"]);
     // A workflow revision has no harness, model or thinking of its own.
     expect(page.fact("Harness")).toBeUndefined();
     await page.click(/^Workflow$/);
+    expect(page.went).toEqual(["#/agents/support-triage/workflow"]);
+  });
+
+  it("draws a workflow agent's graph read-only on its Workflow tab, with a way to the editor", async () => {
+    const page = await open(agentFixture("support-triage"), { tab: "workflow" });
+    expect(page.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Workflow");
     expect(page.host.querySelector('svg[role="img"]')?.getAttribute("aria-label")).toBe("The workflow's graph");
     expect(page.host.querySelectorAll("textarea, input, select, [contenteditable]").length).toBe(0);
     await page.click(/Edit the workflow/);
     expect(page.went).toEqual(["#/agents/support-triage/edit"]);
   });
 
-  it("shows an archived agent as archived, and goes back to the archived agents", async () => {
-    const page = await open(archivedAgents()[0], []);
+  it("opens an agentic agent on its Runs tab whatever tab the address names", async () => {
+    const page = await open(agentFixture("invoice-checker"), { tab: "workflow" });
+    expect(page.tabs()).toEqual(["Runs"]);
+    expect(page.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
+    expect(page.host.querySelector('ul[aria-label="Runs"]')).toBeTruthy();
+  });
+
+  it("shows an archived agent as archived, with its runs, which are archived with it, and goes back to the archived agents", async () => {
+    const agent = archivedAgents()[0];
+    const runs = runsOf("invoice-checker").slice(0, 2).map((r) => ({ ...r, agent_id: agent.agent_id, archived_at: agent.archived_at }));
+    const page = await open(agent, { runs });
     expect([...page.host.querySelectorAll("header span")].some((s) => s.textContent === "Archived")).toBe(true);
+    expect(page.asked).toEqual([`agent ${agent.agent_id}`, `runs ${agent.agent_id} archived`]);
+    expect(page.host.querySelectorAll('ul[aria-label="Runs"] a').length).toBe(2);
     await page.click(/^Agents$/);
     expect(page.went).toEqual(["#/agents?archived=true"]);
   });

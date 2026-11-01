@@ -138,7 +138,8 @@ describe("paging", () => {
     await v2.listAgents({ archived: true, cursor: "a3" });
     await v2.listRevisions("x", "r2");
     await v2.listAgentRuns("x", 50, "u2");
-    expect(calls.map((c) => c.url)).toEqual(["/v2/agents?cursor=a2", "/v2/agents?archived=true&cursor=a3", "/v2/agents/x/revisions?cursor=r2", "/v2/agents/x/runs?limit=50&cursor=u2"]);
+    await v2.listAgentRuns("x", 50, "u3", true);
+    expect(calls.map((c) => c.url)).toEqual(["/v2/agents?cursor=a2", "/v2/agents?archived=true&cursor=a3", "/v2/agents/x/revisions?cursor=r2", "/v2/agents/x/runs?limit=50&cursor=u2", "/v2/agents/x/runs?limit=50&cursor=u3&archived=true"]);
   });
 
   it("reads every page: all() follows next_cursor to the end", async () => {
