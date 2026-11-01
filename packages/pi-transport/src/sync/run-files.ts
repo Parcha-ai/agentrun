@@ -15,6 +15,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProcess } from "../box/box.ts";
@@ -100,7 +101,10 @@ export type SeedReceipt = {
 	readonly bytes: number;
 	/** Entries of this machine that are not sent: links (never followed), pipes, sockets, devices. */
 	readonly skipped: Readonly<Record<SkipReason, number>>;
-	/** The first pull's `since`: the box's listing of `to` after the seed, with the SHA-256 of each file sent. */
+	/**
+	 * The first pull's `since`: the box's listing of what was sent, after the seed, with the SHA-256 of each file. What
+	 * the box held before is not in it, so the first pull brings it.
+	 */
 	readonly mark: Manifest;
 	readonly totalMs: number;
 };
@@ -252,6 +256,33 @@ export async function pullDir(
 	options: PullOptions,
 	context: Context,
 ): Promise<Result<PullReceipt, WorkspaceError>> {
+	const key = await realpath(options.to).catch(() => resolve(options.to));
+	const before = pulling.get(key) ?? Promise.resolve();
+	const run = before.then(() => pullInto(box, options, context));
+	const settled = run.then(
+		() => {},
+		() => {},
+	);
+	pulling.set(key, settled);
+	try {
+		return await run;
+	} finally {
+		if (pulling.get(key) === settled) pulling.delete(key);
+	}
+}
+
+/**
+ * Pulls into one directory run one at a time, from their first check to their mark: two home pulls never both pass the
+ * check against the same bytes, and the hash a pull records after writing is of what it wrote. One process holds a
+ * data root, so this is per process.
+ */
+const pulling = new Map<string, Promise<void>>();
+
+async function pullInto(
+	box: Box,
+	options: PullOptions,
+	context: Context,
+): Promise<Result<PullReceipt, WorkspaceError>> {
 	const started = performance.now();
 	const pipe = pipeOf(box, options.pipe, options.chunkBytes);
 	if (!pipe.ok) return pipe;
@@ -325,7 +356,8 @@ export async function pullDir(
 			const kind = now.get(entry.path);
 			// A path that changed kind goes first, so the new entry does not meet the old one.
 			if (kind !== undefined && kind === entry.kind) continue;
-			if (guard && entry.kind === "file" && (await hostChanged(entry.path))) {
+			// Whatever the mark recorded there: a file another run put where this box had a directory is not removed.
+			if (guard && (await hostChanged(entry.path))) {
 				skip({ path: entry.path, reason: "host_changed" });
 				continue;
 			}
@@ -385,13 +417,12 @@ export async function pullDir(
 		outcome.directories = extracted.directories;
 		outcome.bytes = extracted.bytes;
 		outcome.masked = extracted.masked;
-		for (const path of extracted.written) written.add(path);
-		if (guard) {
-			for (const path of extracted.written) {
-				const hash = asked.get(path) === "file" ? await hostHash(options.to, path) : undefined;
-				if (typeof hash === "string") hashes.set(path, hash);
-				else hashes.delete(path);
-			}
+		for (const path of extracted.written) {
+			written.add(path);
+			// Whatever `overwrite` is, so a mark from any pull can guard the next one.
+			const hash = asked.get(path) === "file" ? await hostHash(options.to, path) : undefined;
+			if (typeof hash === "string") hashes.set(path, hash);
+			else hashes.delete(path);
 		}
 	}
 
@@ -685,12 +716,16 @@ export async function seedDir(
 		context,
 	);
 	if (!moved.ok) return moved;
-	// The first mark: the box's own listing (its times are the box's), with the hash of each file as it was sent.
+	// The first mark: the box's own listing (its times are the box's) of what was sent, with the hash of each file as
+	// it was sent. What the box already held is left out, so the first pull asks for it.
 	const listed = await list(box, options.to, { callTimeoutMs: options.callTimeoutMs }, context, undefined, []);
 	if (!listed.ok) return listed;
-	const marked = listed.value
-		.filter((entry) => entry.kind !== "symlink")
-		.map((entry) => (sent.has(entry.path) ? { ...entry, sha256: sent.get(entry.path) as string } : entry));
+	const sentDirectories = new Set(entries.filter((entry) => entry.kind === "directory").map((entry) => entry.path));
+	const marked = listed.value.flatMap((entry) => {
+		if (entry.kind === "directory" && sentDirectories.has(entry.path)) return [entry];
+		const sha256 = entry.kind === "file" ? sent.get(entry.path) : undefined;
+		return sha256 === undefined ? [] : [{ ...entry, sha256 }];
+	});
 	return ok({
 		files: files.length,
 		directories: entries.length - files.length,

@@ -531,7 +531,9 @@ if (pulled.ok) mark = pulled.value.mark; // kept for the next pull
   replace, or a mirrored deletion remove, the host's copy only while that copy is still the bytes the mark records: the
   SHA-256 of what was seeded into the box, or of what the last pull wrote. A host copy that changed since (another run's
   pull, a host edit) wins; the box's file is not fetched, and the skip is counted and named as `host_changed`. The
-  mark keeps the hashes: `seedDir` returns the first one, each pull the next.
+  mark keeps the hashes: `seedDir` returns the first one (what it sent; what the box already held comes on the first
+  pull), each pull the next. Pulls into one directory run one at a time in a process, from the first check to the mark,
+  so two runs' pulls into one home never both pass the check against the same bytes.
 - **The archive is not trusted.** Every pulled member goes through `extractTar` (above), never `tar`. Two names of one
   inode in the box both come back as files: the box packs with `--hard-dereference`, and a hard link member is still
   refused.

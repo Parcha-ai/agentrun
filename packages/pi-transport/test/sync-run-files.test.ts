@@ -2,7 +2,7 @@
 // the extractor writes this machine's. Seed then pull round-trips a tree; a second pull brings only what changed; an
 // agent home's `learning/` never comes back; deletions are mirrored only when asked.
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -437,5 +437,82 @@ describe("hard links in the box", () => {
 		expect(pulled.files).toBe(3);
 		for (const name of ["a", "b", "d/c"]) expect(readFileSync(join(back, name), "utf8")).toBe("shared");
 		expect(statSync(join(back, "a")).ino).not.toBe(statSync(join(back, "b")).ino);
+	});
+});
+
+describe("the seed-hash rule, under concurrency and change", () => {
+	it("lets one of two concurrent home pulls write a file, and the other keeps it as host_changed", async () => {
+		const { box: a, host } = await setup();
+		const b = getOrThrow(await provider.create({ maxLifetimeMs: 600_000 }, context));
+		boxes.push(b);
+		const inA = join(a.facts().workspace, "home");
+		const inB = join(b.facts().workspace, "home");
+		writeFileSync(join(host, "notes.md"), "v1");
+		const markA = getOrThrow(await seedAgentHome(a, { from: host, to: inA }, context)).mark;
+		const markB = getOrThrow(await seedAgentHome(b, { from: host, to: inB }, context)).mark;
+		writeFileSync(join(inA, "notes.md"), "A's write");
+		writeFileSync(join(inB, "notes.md"), "B's write");
+		// Each pack waits a moment first, so the two pulls overlap when nothing serializes them.
+		const slow = (box: Box) =>
+			packedBy(box, (command) => ["sh", "-c", 'sleep 0.5; exec sh -c "$1" sh "$2"', "sh", command[2]!, command[4]!]);
+		const [pa, pb] = await Promise.all([
+			pullAgentHome(slow(a), { from: inA, to: host, since: markA, pipe: { kind: "stream" } }, context),
+			pullAgentHome(slow(b), { from: inB, to: host, since: markB, pipe: { kind: "stream" } }, context),
+		]);
+		const [ra, rb] = [getOrThrow(pa), getOrThrow(pb)];
+		expect(ra.files + rb.files).toBe(1);
+		expect(ra.skipped.host_changed + rb.skipped.host_changed).toBe(1);
+		const winner = ra.files === 1 ? ra : rb;
+		const final = readFileSync(join(host, "notes.md"), "utf8");
+		expect(final).toBe(ra.files === 1 ? "A's write" : "B's write");
+		const recorded = winner.mark.entries.find((entry) => entry.path === "notes.md")?.sha256;
+		expect(recorded).toBe(createHash("sha256").update(final).digest("hex"));
+	});
+
+	it("does not remove a file another run put where this box's mark had a directory", async () => {
+		const { box, host } = await setup();
+		const inBox = join(box.facts().workspace, "home");
+		mkdirSync(join(host, "d"));
+		writeFileSync(join(host, "d/x"), "v1");
+		const mark = getOrThrow(await seedAgentHome(box, { from: host, to: inBox }, context)).mark;
+		rmSync(join(host, "d"), { recursive: true });
+		writeFileSync(join(host, "d"), "another run's file");
+		rmSync(join(inBox, "d"), { recursive: true });
+		const pulled = getOrThrow(
+			await pullAgentHome(box, { from: inBox, to: host, since: mark, mirrorDeletes: true }, context),
+		);
+		expect(readFileSync(join(host, "d"), "utf8")).toBe("another run's file");
+		expect(pulled.skips).toContainEqual({ path: "d", reason: "host_changed" });
+		expect(pulled.removed).toBe(0);
+	});
+
+	it("brings on the first pull what the box held before the seed", async () => {
+		const { box, host, inBox } = await setup();
+		mkdirSync(inBox, { recursive: true });
+		writeFileSync(join(inBox, "already-there"), "the box's own");
+		writeFileSync(join(host, "seeded"), "seeded");
+		const mark = getOrThrow(await seedDir(box, { from: host, to: inBox }, context)).mark;
+		expect(mark.entries.map((entry) => entry.path)).toEqual(["seeded"]);
+		const back = join(host, "..", "back");
+		const pulled = getOrThrow(await pullDir(box, { from: inBox, to: back, since: mark }, context));
+		expect(readFileSync(join(back, "already-there"), "utf8")).toBe("the box's own");
+		expect(pulled.files).toBe(1);
+	});
+
+	it("records written hashes in a default pull, so a later guarded pull takes the box's next change", async () => {
+		const { box, host, inBox } = await setup();
+		writeFileSync(join(host, "f"), "v1");
+		const seeded = getOrThrow(await seedDir(box, { from: host, to: inBox }, context)).mark;
+		writeFileSync(join(inBox, "f"), "v2");
+		writeFileSync(join(inBox, "new"), "new");
+		const plain = getOrThrow(await pullDir(box, { from: inBox, to: host, since: seeded }, context));
+		writeFileSync(join(inBox, "f"), "v3");
+		writeFileSync(join(inBox, "new"), "newer");
+		const guarded = getOrThrow(
+			await pullDir(box, { from: inBox, to: host, since: plain.mark, overwrite: "if_unchanged" }, context),
+		);
+		expect(guarded.skipped.host_changed).toBe(0);
+		expect(readFileSync(join(host, "f"), "utf8")).toBe("v3");
+		expect(readFileSync(join(host, "new"), "utf8")).toBe("newer");
 	});
 });
