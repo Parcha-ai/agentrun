@@ -100,8 +100,9 @@ async function filesIn(store: AgentStoreReader): Promise<Map<string, SourceFile 
 const unread = (file: string, error: unknown): Skipped => ({ what: file, why: `not read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})` });
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
-/** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Reads no turns,
- *  and no file `store`'s imports already read whole and that has not changed since. */
+/** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Keeps no turns
+ *  (with `measure`, only until each session is measured), and reads no file `store`'s imports already read whole and
+ *  that has not changed since. */
 export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
   const skipped: Skipped[] = [];
   const seen = store ? await filesIn(store) : new Map<string, SourceFile & { run: string }>();
@@ -365,10 +366,10 @@ const message = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
 };
 
 /** The entries `message` makes of a session's turns, as a transcript holds them. */
-const entriesOf = (session: Session, cut: (value: unknown) => unknown = (value) => value): EntryLike[] =>
+const entriesOf = (session: Session): EntryLike[] =>
   session.turns.map((turn) => {
     const { entry, model, data } = message(turn, session.model);
-    return { kind: entry.kind, model: [cut(model)], ...(data ? { data } : {}) } as EntryLike;
+    return { kind: entry.kind, model: [model], ...(data ? { data } : {}) } as EntryLike;
   });
 
 /** What a session read whole used, and when it asked: its metrics and time at work, and its requests by hour. */
