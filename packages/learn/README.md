@@ -97,3 +97,29 @@ four sections under it and its notes with its own tools, as the reflect skill sa
 git. The prompt names no harness's tool. `reflectPrompt` refuses a run id the layout would refuse and a `dir` that is
 not an absolute path or holds a space or an unseen character. The turn's paid requests are held to `reserveUsd`, which
 the host keeps back from the run's cap for it.
+
+## Grade a run's branch
+
+```js
+import { gradePrompt, parseVerdict } from "@parcha/agentrun-learn";
+
+// Once the checker and the injection screen have passed runs/<run id>:
+const prompt = gradePrompt({ run: run.id, instructions: agent.instructions, index: mainIndex, changes });
+const verdict = parseVerdict(await grader(prompt), changes); // { merge, reason, items: [{ path, keep, question?, why }] }
+```
+
+`changes` are the branch's changed files against `main`, `{ path, status, text, before }`: `text` is the branch's, on
+every change but a deletion, and `before` is `main`'s, on a modification. `index` is `main`'s `learnings/INDEX.md` and
+`instructions` the agent's standing instructions, as the host keeps them. The prompt holds `GRADE_RUBRIC`, the rubric's
+one statement, and fences each file, the index and the instructions as data to judge, never to follow: the fence's
+token is one no fenced text holds, so no text can close its fence. It asks for one JSON verdict, with one item for each
+changed file but the memo and the index.
+
+`parseVerdict` fails closed. It reads one JSON object, alone, in prose or in one fenced block. Two objects, a missing
+item, an item named twice or for a path the grader was not asked about, and `merge` with an item not kept are each no
+merge; so is an answer it cannot read, with the reason "the grader's verdict could not be read". The reason and
+each item's `why` come back as one line of at most 500 characters, with control and unseen characters gone. The branch
+merges only when `verdict.merge` is true, every item kept; otherwise it stays unmerged, with the verdict. Neither
+function calls a model or runs git: the host does both. `gradePrompt` throws on input no checked branch holds (a run id
+the layout refuses, a path outside the layout, an unseen character), and `parseVerdict` never throws on the grader's
+answer.
