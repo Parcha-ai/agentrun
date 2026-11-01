@@ -236,7 +236,9 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
-
+| `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
+| `monid.inspect` | One monid endpoint before it runs: `{provider, endpoint}` in, the JSON Schemas of its input (`pathParams`, `queryParams`, `body`), its price, notes and documentation out | `MONID_API_KEY` | no, no |
+| `monid.run` | Run one monid endpoint, paid per call from the monid wallet: `{provider, endpoint, input}` in, the run's `output`, `price` and `cost` out | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/`, the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
 
@@ -263,6 +265,18 @@ doing) is kept in the run's own store, so a run opened again on its directory re
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
 reads at once included. There is no recording and no live view. When the run is let go (its work done, or a SIGTERM)
 the sessions it still holds are released at Browserbase.
+
+`monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
+endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs
+it. Each run is paid per call from the monid workspace's wallet, and is sent once, never retried. An async provider's
+run is read until it ends, about two minutes at most, and asked to stop at monid when the run stops or it outlasts
+that. A refusal comes back as `{error, status?}` in words: the wallet too low (402), a workspace control such as its
+budget (`BLOCKED`), `FAILED`, `TIMED_OUT`, the provider's own error (not charged). The model reads each answer as JSON
+cut at 60,000 characters, the whole of it then filed under the run's `work/evidence/monid/`. An answer carries what
+monid charged (`cost`, in dollars); the run's own cost and its spend cap do not count it yet. They run on pi only for
+now (another harness saves a revision naming one with a warning, and refuses its runs), where the model and the run's
+timeline see them as `monid_discover`, `monid_inspect` and `monid_run`: a model API takes no dot in a tool's name. The
+key is a secret like the model keys: a run's process gets it over its pipe, never in its environment.
 
 ## What it serves
 
@@ -509,8 +523,9 @@ export default function reply(context, faux) {
 
 `startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
 the `browser` tool's `{ provider, driver }` in place of Browserbase's (pi-browser's fake backend,
-`test/fixtures/faux-browser.mjs`), and `fetch_page`'s `{ lookup, fetchImpl }` in place of the system's resolver and
-undici (a table of names and pages, `test/fixtures/faux-web.mjs`). Each is honored only with `faux`.
+`test/fixtures/faux-browser.mjs`), `fetch_page`'s `{ lookup, fetchImpl }` in place of the system's resolver and
+undici (a table of names and pages, `test/fixtures/faux-web.mjs`), and, as `fauxMonid`, the fetch the monid tools send
+through in place of monid's API (`test/fixtures/faux-monid.mjs`). Each is honored only with `faux`.
 
 `faux.message`, `faux.text`, `faux.thinking` and `faux.toolCall` are pi-ai's faux helpers; `faux.signal` is aborted when
 the turn is stopped. A workflow's model node offers the `submit` tool (in its system message's `toolsAdded`), and

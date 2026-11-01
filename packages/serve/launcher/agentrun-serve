@@ -12,7 +12,7 @@
 # name is gone before any secret is written, and only this shell writes it, with its builtin printf; `env -u` drops
 # every name from what COMMAND inherits too. The condition: this runs before any run's process exists. A process of the
 # same user started earlier could open the FIFO while it is named.
-SECRETS='AGENTRUN_TOKEN AGENTRUN_API_KEY AGENT_MODEL_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY BROWSERBASE_API_KEY OPENROUTER_API_KEY TYPESAFE_API_KEY PARALLEL_API_KEY'
+SECRETS='AGENTRUN_TOKEN AGENTRUN_API_KEY AGENT_MODEL_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY BROWSERBASE_API_KEY OPENROUTER_API_KEY TYPESAFE_API_KEY PARALLEL_API_KEY MONID_API_KEY'
 set -eu
 # Each secret out of the environment and into an unexported variable of this shell (agentrun_secret_<NAME>).
 for name in $SECRETS; do

@@ -29,7 +29,7 @@ const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
 /** The decision keys: held by the server like the rest, and handed to a workflow run's process only on its decision
  *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
 const DECISION_KEYS = ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"];
-const READ = [...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY", "OPENROUTER_API_KEY", ...DECISION_KEYS];
+const READ = [...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY", "OPENROUTER_API_KEY", "MONID_API_KEY", ...DECISION_KEYS];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const digest = (value) => createHash("sha256").update(value).digest("hex").slice(0, 16);
 const read = (path) => {
