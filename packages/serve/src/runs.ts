@@ -176,7 +176,8 @@ export type Run = {
   settles: number;
   updatedAt: string;
   /** Where its status stood for its notices (`notify`): input_required, an end once carried back, or `other`. Unset
-   *  until this server has first read the run, so a run it adopts notices nothing of where it already stood. */
+   *  until this server has first read the run, so a run it adopts notices nothing of where it already stood; UNREAD for
+   *  an agentic run adopted live, whose rows come with its first snapshot. */
   moment?: string;
 };
 
@@ -260,6 +261,8 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
   return (id) => !live.has(id) && !isLive(id);
 }
 
+/** A live run adopted with no rows yet: where it stands is read from its first snapshot, notifying nothing. */
+const UNREAD = "unread";
 /** Where a run's status stands for its notices: input_required, an end once carried back, else other. */
 const momentOf = (run: Run): string => {
   const { status } = statusOf(run);
@@ -463,7 +466,7 @@ export class Runs {
       this.adoptProcess(run, record);
     }
     this.refresh(run);
-    run.moment = momentOf(run);
+    run.moment = run.kind === "agentic" && run.orphan !== undefined && !run.rows.length ? UNREAD : momentOf(run);
     return run;
   }
 
@@ -675,12 +678,15 @@ export class Runs {
     const { status, state } = statusOf(run);
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     const [seen, moment] = [run.moment, momentOf(run)];
-    if (seen === undefined || seen === moment) return;
+    if (seen === UNREAD && run.rows.length) run.moment = moment;
+    if (seen === undefined || seen === UNREAD || seen === moment) return;
     run.moment = moment;
     if (moment === "other" || !this.options.notify) return;
     const waits = moment === "input_required";
     try {
-      this.options.notify(waits ? "run.needs_input" : "run.ended", { run_id: run.id, agent_id: run.agentId, status, title: run.meta.title }, waits ? (run.meta.stopped_at ?? meaningful(run.rows)?.id ?? "") : (run.endedAt ?? ""));
+      // A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on).
+      const at = waits ? ((stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "") : (run.endedAt ?? "");
+      this.options.notify(waits ? "run.needs_input" : "run.ended", { run_id: run.id, agent_id: run.agentId, status, title: run.meta.title }, at);
     } catch (error) {
       warn(run.id, `its notice was not queued: ${(error as Error).message}`);
     }

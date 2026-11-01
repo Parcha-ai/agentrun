@@ -50,6 +50,9 @@ export class Webhooks {
   private readonly key: Buffer | undefined;
   private deliveries: Delivery[];
   private readonly timers = new Set<NodeJS.Timeout>();
+  /** The tries in flight, which close() stops and waits for: nothing is written once it is closed. */
+  private readonly trying = new Set<Promise<void>>();
+  private readonly stop = new AbortController();
   private closed = false;
 
   /** `env` is the server's own (withSecrets); `say` takes a log line's fields; `retryMs` the waits between tries. */
@@ -58,7 +61,11 @@ export class Webhooks {
     this.outbox = join(data, OUTBOX_FILE);
     this.key = sealKeyOf(env[SEAL_KEY_ENV]);
     this.deliveries = this.readOutbox();
-    // A restart goes on with the deliveries an earlier server left pending, each at its next try's time.
+    // A restart goes on with the deliveries an earlier server left pending, each at its next try's time; a ping is tried
+    // once, so one left in flight failed.
+    const pings = this.deliveries.filter((d) => d.status === "pending" && d.event === "ping");
+    for (const ping of pings) Object.assign(ping, { status: "failed", error: "the server stopped before its answer", next_at: null });
+    if (pings.length) this.writeOutbox();
     for (const delivery of this.deliveries) if (delivery.status === "pending") this.schedule(delivery, Math.max(0, (delivery.next_at ?? 0) - Date.now()));
   }
 
@@ -81,6 +88,8 @@ export class Webhooks {
   }
 
   private writeOutbox(): void {
+    // Closed, the data directory may be another server's already.
+    if (this.closed) return;
     // The pending, and the newest of those done.
     const done = this.deliveries.filter((d) => d.status !== "pending").slice(-DELIVERIES_KEPT);
     this.deliveries = this.deliveries.filter((d) => d.status === "pending" || done.includes(d));
@@ -176,10 +185,14 @@ export class Webhooks {
     return viewOf(delivery);
   }
 
-  close(): void {
+  /** Stops: no try starts, those in flight are cut and waited for, and nothing more is written. A delivery cut here is
+   *  still pending on disk, for the next server (its receiver may then get it twice, with the same delivery id). */
+  async close(): Promise<void> {
     this.closed = true;
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
+    this.stop.abort();
+    await Promise.allSettled([...this.trying]);
   }
 
   private enqueue(event: Delivery["event"], eventId: string, runId: string | null, payload: Record<string, unknown>, now = true): Delivery {
@@ -203,9 +216,15 @@ export class Webhooks {
     this.timers.add(timer);
   }
 
+  private attempt(delivery: Delivery, retry: boolean): Promise<void> {
+    const trying = this.tryOnce(delivery, retry).finally(() => this.trying.delete(trying));
+    this.trying.add(trying);
+    return trying;
+  }
+
   /** One try: POSTed, signed, to the URL set now; no redirect followed, at most 10 s. Not 2xx: tried again after the
    *  next wait (`retry`), else failed, and the log says so. */
-  private async attempt(delivery: Delivery, retry: boolean): Promise<void> {
+  private async tryOnce(delivery: Delivery, retry: boolean): Promise<void> {
     if (this.closed || delivery.status !== "pending") return;
     const config = this.config();
     const now = Date.now();
@@ -220,7 +239,7 @@ export class Webhooks {
         const timestamp = String(Math.floor(now / 1000));
         try {
           const res = await fetch(config.url, {
-            method: "POST", redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS),
+            method: "POST", redirect: "manual", signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), this.stop.signal]),
             headers: { "content-type": "application/json", "user-agent": "agentrun-serve-webhook/1", [WEBHOOK_HEADERS.event]: delivery.event, [WEBHOOK_HEADERS.delivery]: delivery.id, [WEBHOOK_HEADERS.timestamp]: timestamp, [WEBHOOK_HEADERS.signature]: signatureOf(opened.secret, timestamp, delivery.body) },
             body: delivery.body,
           });
@@ -233,12 +252,12 @@ export class Webhooks {
         }
       }
     }
-    if (this.closed && failure) return;
+    if (this.closed) return;
     delivery.error = failure ?? null;
     const wait = retry && failure && config ? this.retryMs[delivery.attempts - 1] : undefined;
     if (!failure) Object.assign(delivery, { status: "delivered", next_at: null });
     else if (wait !== undefined) {
-      delivery.next_at = now + wait;
+      delivery.next_at = Date.now() + wait;
       this.schedule(delivery, wait);
     } else {
       Object.assign(delivery, { status: "failed", next_at: null });

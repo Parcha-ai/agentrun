@@ -2,22 +2,25 @@
 // is made by the server, shown once, and kept sealed; a delivery not answered 2xx is tried again, then logged as
 // failed, and a pending one goes on after a restart.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
+import { processAlive } from "@parcha/agentrun-adapters/host";
 import { startServe } from "../dist/index.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const sealKey = () => randomBytes(32).toString("base64");
 const SEAL = ["AGENTRUN_SEAL_KEY"];
 
 /** A receiver on 127.0.0.1 at a port of its own: each request to its own path, with its headers and body, answered
- *  `answer(n)` (n from 1). A request to another path (another process's, at a port it once had) is not counted. `down`:
- *  every connection is reset, as a receiver that is not there. */
+ *  `answer(n)` (n from 1; a promise holds the answer until it settles). A request to another path (another process's,
+ *  at a port it once had) is not counted. `down`: every connection is reset, as a receiver that is not there. */
 async function receiver(t, answer = () => 200, down = false) {
   const got = [];
   const path = `/hook/${randomBytes(8).toString("hex")}`;
@@ -28,8 +31,9 @@ async function receiver(t, answer = () => 200, down = false) {
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       got.push({ method: req.method, path: req.url, headers: req.headers, body: Buffer.concat(chunks).toString("utf8") });
-      const status = answer(got.length);
-      res.writeHead(status, status >= 300 && status < 400 ? { location: "http://127.0.0.1:1/elsewhere" } : {}).end();
+      void Promise.resolve(answer(got.length)).then((status) => {
+        if (!res.destroyed) res.writeHead(status, status >= 300 && status < 400 ? { location: "http://127.0.0.1:1/elsewhere" } : {}).end();
+      });
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -219,4 +223,120 @@ test("settings: http or https only, no user or password, known events; no seal k
   await follow(api, quiet.run_id, ["completed"]);
   await sleep(300);
   assert.equal(hook.got.length, 1, "no webhook, no delivery");
+});
+
+/** A server on `data` in a process of its own, killed as a crash does at the test's end at the latest. */
+async function serverProcess(t, data) {
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => child.kill("SIGKILL"));
+  let out = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  await until(() => /AGENTRUN_API_KEY=/.test(out), "the server's banner");
+  return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], readFileSync(join(data, ".token"), "utf8").trim()) };
+}
+
+test("a run that ends while its server stops still gives its notice: kept pending, delivered by the next server", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "10s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  let api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "soon", "Answer soon.");
+  await until(async () => (await api("GET", `/runs/${run.run_id}`)).body.status === "working", "the run works");
+  // The stop drains the run's turn: it answers, and is carried back, while the server closes.
+  await first.close();
+  stopped = true;
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  api = client(next.baseUrl, next.token);
+  assert.equal((await api("GET", `/runs/${run.run_id}`)).body.status, "completed", "it ended while its server stopped");
+  await until(() => ofEvent(hook.got, "run.ended").some((r) => JSON.parse(r.body).run.run_id === run.run_id), "its run.ended");
+});
+
+test("a try in flight when its server closes is cut and waited for; nothing is written after, and the next server delivers it; a ping left pending is not tried again", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const hook = await receiver(t, (n) => (n === 1 ? held.then(() => 200) : 200));
+  t.after(() => release());
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  let api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url, events: ["run.ended"] })).status, 201);
+  const run = await startRun(api, "held", "hi");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => hook.got.length === 1, "the held try");
+  const outbox = join(data, "webhook-outbox.json");
+  const before = readFileSync(outbox, "utf8");
+  const started = Date.now();
+  await first.close();
+  stopped = true;
+  assert.ok(Date.now() - started < 8_000, "the try is cut, not waited out");
+  release();
+  await sleep(200);
+  assert.equal(readFileSync(outbox, "utf8"), before, "nothing written after the close");
+  const [pending] = JSON.parse(before).deliveries;
+  assert.deepEqual([pending.status, pending.attempts], ["pending", 0]);
+  // A ping an earlier server left in flight: the next one marks it failed and never tries it.
+  const left = JSON.parse(before);
+  left.deliveries.push({ ...pending, id: `dlv_${"0".repeat(32)}`, event: "ping", event_id: "evt_ping", run_id: null, body: JSON.stringify({ id: "evt_ping", event: "ping", at: new Date().toISOString(), run: null }) });
+  writeFileSync(outbox, JSON.stringify(left));
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  api = client(next.baseUrl, next.token);
+  await until(() => hook.got.length === 2, "the try after the restart");
+  assert.equal(hook.got[1].headers["x-agentrun-delivery"], pending.id);
+  const view = await until(async () => {
+    const { deliveries } = (await api("GET", "/settings/webhook/deliveries")).body;
+    return deliveries.find((d) => d.id === pending.id)?.status === "delivered" && deliveries;
+  }, "delivered");
+  const ping = view.find((d) => d.event === "ping");
+  assert.deepEqual([ping.status, ping.error], ["failed", "the server stopped before its answer"]);
+  await sleep(300);
+  assert.equal(hook.got.length, 2, "the ping is not sent again");
+});
+
+test("a run stopped, then asked a question on its next turn, gives two needs_input notices with different ids", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const { api } = await serve(t);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url, events: ["run.needs_input"] })).status, 201);
+  const run = await startRun(api, "ask-later", "Take your time.", { tools: ["ask_person"] });
+  await until(async () => (await api("GET", `/runs/${run.run_id}`)).body.status === "working", "the run works");
+  await until(async () => (await api("POST", `/runs/${run.run_id}/stop`, {})).body.stopped === true, "the stop");
+  await until(() => hook.got.length === 1, "the stop's notice");
+  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "Ask me now." })).status, 202);
+  await until(() => hook.got.length === 2, "the question's notice");
+  const [stop, question] = hook.got.map((r) => JSON.parse(r.body));
+  assert.deepEqual([stop.event, question.event, question.run.status], ["run.needs_input", "run.needs_input", "input_required"]);
+  assert.notEqual(stop.id, question.id, "a new wait, a new id");
+});
+
+test("a run waiting for its person when its server dies gives no new notice from the server that adopts its process; its end does", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await serverProcess(t, data);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(first.api, "asks", "Pick a region.", { tools: ["ask_person"] });
+  await until(() => ofEvent(hook.got, "run.needs_input").length === 1, "the wait's notice");
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { holder } = JSON.parse(readFileSync(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  assert.ok(processAlive(holder.pid), "its process outlived the server");
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  await follow(api, run.run_id, ["input_required"]);
+  await sleep(500);
+  assert.equal(ofEvent(hook.got, "run.needs_input").length, 1, "the same wait, no new notice");
+  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" })).status, 202);
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofEvent(hook.got, "run.ended").length === 1, "its end's notice");
 });

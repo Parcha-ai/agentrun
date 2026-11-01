@@ -965,8 +965,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
     async close() {
-      webhooks.close();
+      // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
       await runs.close();
+      await webhooks.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();
       lock.release();
