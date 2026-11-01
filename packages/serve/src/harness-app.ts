@@ -23,7 +23,8 @@ import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import type { CapGuard } from "./cap.js";
 import { durableSessions } from "./sessions.js";
-import { parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
+import { parallelOf } from "./web-fetch.js";
+import { WEB_TOOLS } from "./web-search.js";
 import { REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
@@ -93,8 +94,8 @@ export function adapterRun(
   cap?: CapGuard,
   cancelled: () => boolean = () => false,
 ): AdapterRun {
-  // web_fetch's Parallel key, read as the run's app loads, before its process starts one of its own (web-fetch.ts).
-  if (tools.includes(WEB_FETCH_TOOL)) parallelOf(process.env);
+  // The web tools' Parallel key, read as the run's app loads, before its process starts one of its own (web-fetch.ts).
+  if (tools.some((tool) => WEB_TOOLS.includes(tool))) parallelOf(process.env);
   // The run's cap, or its cancel, refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
   const CANCELLED = "the run was cancelled: the model request was not sent";

@@ -237,6 +237,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
 | `web_fetch` | Read one web page from a public host through Parallel's extract, else fetched as `fetch_page` fetches it: `{url}` in, `fetch_page`'s Page plus `via`, `"parallel"` or `"direct"` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_search` | Search the web through Parallel's Search API: `{query, n?}` in, `{query, results: [{url, title, published?, snippet}]}` or `{error}` out | `PARALLEL_API_KEY` | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/`, the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
@@ -265,8 +266,15 @@ $0.001 a URL) and `via` is `"parallel"`, with status 200 and the absolute links 
 when Parallel lists the URL in its errors, answers with no content, a 5xx or not within 60 s, it is `fetch_page`'s
 fetch, `via: "direct"`; a 401 or 403 stops Parallel for the rest of the run. A URL passes the guard's own check before
 anything is sent to Parallel: a URL `fetch_page` refuses is refused here too and never leaves the machine. The key
-reaches an agentic run only when its revision names `web_fetch`, on the run's decision descriptor (see
+reaches an agentic run only when its revision names `web_fetch` or `web_search`, on the run's decision descriptor (see
 [Decision workflows](#decision-workflows)), read once into the run process's memory: never into its environment, a child or a file.
+
+`web_search` searches through Parallel's Search API (`POST https://api.parallel.ai/v1/search`, its `fast` mode, about
+$0.001 a search), on every harness, and needs `PARALLEL_API_KEY`: without it the tool shows `missing` in capabilities,
+an agent naming it saves with a warning and its run is refused (`409`). The query is cut at 200 characters, `n` is 1 to
+25 (10 by default), and each result's excerpts become one snippet of at most 500 characters. A result is a lead: the
+agent reads the page with `web_fetch`. A 5xx, no answer within 60 s or a refused key answers `{error}`, with nothing
+searched instead; a 401 or 403 to either web tool stops Parallel for both for the rest of the run.
 
 The `browser` tool runs Browserbase sessions, never a Chrome on this machine. The keys come from the server's
 environment and reach the run's process as the rest of it does. A session's custody (its lease, its tag, what it was
@@ -395,9 +403,9 @@ typed answers and their probabilities.
   failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
 - The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
   server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands the values to a workflow
-  run's process, and Parallel's alone to an agentic run whose revision names `web_fetch`, once, by name, on an
+  run's process, and Parallel's alone to an agentic run naming `web_fetch` or `web_search`, once, by name, on an
   inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each
-  launch, a resume after a restart included. The process reads them once into its decision providers and `web_fetch`,
+  launch, a resume after a restart included. The process reads them once into its decision providers and web tools,
   closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an
   environment, an argument list or a file, and no program the run starts inherits it. With no key, no descriptor is
   opened. On the OpenRouter route Jev's key comes on the same descriptor, never from the run's environment; that key is

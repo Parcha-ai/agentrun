@@ -92,6 +92,9 @@ export default function reply(context, faux) {
     const urls = JSON.parse(fetches[2]);
     return results < urls.length ? faux.message(faux.toolCall(fetches[1] ?? "fetch_page", { url: urls[results] }), { stopReason: "toolUse" }) : faux.message("Fetched.");
   }
+  // Searches the web once for what its first message says, with web_search, then says so.
+  const query = /^Search the web for (.+)$/s.exec(first)?.[1];
+  if (query) return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 3 }), { stopReason: "toolUse" }) : faux.message("Searched.");
   if (browse) return results === 0 ? faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" }) : faux.message(`Seen: ${textOf(context.messages.at(-1))}`);
   // A follow-up whose answer starts only after a minute: a stop before then cuts it before its first content.
   if (users.length > 1 && last === "Slowly, please.") return slow(faux, 60_000, "Done slowly.");

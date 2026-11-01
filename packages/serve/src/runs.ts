@@ -29,7 +29,7 @@ import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV, thinkingOf, withoutFaux } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { WEB_FETCH_TOOL } from "./web-fetch.js";
+import { WEB_TOOLS } from "./web-search.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
@@ -126,8 +126,8 @@ export type Run = {
   revision: string;
   /** The harness its revision names, read at its first message. */
   harness?: string;
-  /** Its agentic revision names web_fetch: its process is handed Parallel's key for it (web-fetch.ts). */
-  webFetch?: true;
+  /** Its agentic revision names a web tool (WEB_TOOLS): its process is handed Parallel's key for it (web-search.ts). */
+  webTool?: true;
   /** Imported history (`agentrun-serve import`): the source it was run in, and its id there. It takes no message, and a
    *  stop or a cancel moves nothing. */
   imported?: { source: string; session: string };
@@ -464,7 +464,7 @@ export class Runs {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
       working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
-      ...(revision?.kind === "agentic" && revision.body.tools.includes(WEB_FETCH_TOOL) ? { webFetch: true as const } : {}),
+      ...(revision?.kind === "agentic" && revision.body.tools.some((tool) => WEB_TOOLS.includes(tool)) ? { webTool: true as const } : {}),
     };
   }
 
@@ -835,12 +835,12 @@ export class Runs {
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
     // The decision keys are never in a run's environment, which its tools and its model's provider read (childEnv leaves
     // out every secret): a workflow run's process gets them once on an inherited pipe, by name, for its decision
-    // providers and web_fetch alone (decisions.ts), and an agentic run's process Parallel's alone when it names
-    // web_fetch.
+    // providers and web tools alone (decisions.ts), and an agentic run's process Parallel's alone when it names a web
+    // tool (web_fetch, web_search).
     delete env[DECISION_KEY_FD_ENV];
     // Chosen from the secrets this server holds: out of its environment once its launcher hands them over (secrets.ts).
     const offered = decisionKeysOf(withSecrets(process.env));
-    const decisionKeys = run.kind === "workflow" ? offered : run.webFetch && offered[PARALLEL_KEY_ENV] ? { [PARALLEL_KEY_ENV]: offered[PARALLEL_KEY_ENV] } : {};
+    const decisionKeys = run.kind === "workflow" ? offered : run.webTool && offered[PARALLEL_KEY_ENV] ? { [PARALLEL_KEY_ENV]: offered[PARALLEL_KEY_ENV] } : {};
     const handsKey = Object.keys(decisionKeys).length > 0;
     this.markLaunching(run);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);

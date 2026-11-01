@@ -21,9 +21,10 @@ const PORTS = new Set(["", "80", "443"]);
 
 export type WebPage = Page & { via: "parallel" | "direct" };
 type GuardOptions = Omit<PublicFetchOptions, "maxBytes">;
-/** Parallel's extract for one run: a page it read, or undefined for any failure; `live` is false once a 401 or 403 said
- *  the key is not served. */
-export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal): Promise<Page | undefined> };
+/** Parallel for one run, on one key: `read`, its extract, a page it read or undefined for any failure; `post`, one request
+ *  to another of its endpoints (web_search's, web-search.ts). Neither retries, and each stops at 60 s. `live` is false
+ *  once a 401 or 403 to either said the key is not served. */
+export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal): Promise<Page | undefined>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response> };
 
 /** The absolute http(s) URLs a markdown text links to (`[text](url)`), each once and without its fragment, in order. A
  *  URL ends at whitespace or at the ")" that closes the link, so parentheses it holds in pairs (a wiki title's) stay. */
@@ -48,17 +49,22 @@ function linksOf(markdown: string): string[] {
  *  from it, status 200 (Parallel answers a page it could not read in `errors`, with no content). */
 export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Extract {
   let refused = false;
+  const post: Extract["post"] = async (url, body, signal) => {
+    const response = await send(url, {
+      method: "POST",
+      headers: { "x-api-key": apiKey, "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.any([AbortSignal.timeout(PARALLEL_TIMEOUT_MS), ...(signal ? [signal] : [])]),
+    });
+    if (response.status === 401 || response.status === 403) refused = true;
+    return response;
+  };
   return {
     live: () => !refused,
+    post,
     async read(url, signal) {
       try {
-        const response = await send(PARALLEL_EXTRACT_URL, {
-          method: "POST",
-          headers: { "x-api-key": apiKey, "content-type": "application/json" },
-          body: JSON.stringify({ urls: [url], advanced_settings: { full_content: { max_chars_per_result: TEXT_CAP } } }),
-          signal: AbortSignal.any([AbortSignal.timeout(PARALLEL_TIMEOUT_MS), ...(signal ? [signal] : [])]),
-        });
-        if (response.status === 401 || response.status === 403) refused = true;
+        const response = await post(PARALLEL_EXTRACT_URL, { urls: [url], advanced_settings: { full_content: { max_chars_per_result: TEXT_CAP } } }, signal);
         if (!response.ok) return void (await response.body?.cancel().catch(() => undefined));
         const { results } = (await response.json()) as { results?: Array<{ url?: unknown; title?: unknown; full_content?: unknown } | null> };
         const row = results?.find((r) => typeof r?.url === "string" && typeof r.full_content === "string" && r.full_content.trim() !== "");

@@ -15,6 +15,8 @@ import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 import { parallelOf, WEB_FETCH_TOOL, webFetch, webFetchTool } from "./web-fetch.js";
+import { WEB_SEARCH_TOOL, webSearch, webSearchTool } from "./web-search.js";
+import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }`, in place of
@@ -194,6 +196,18 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
       return { tools: [tool], extensions: [extension] };
     },
     effect: async (args, run) => webFetch(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), parallel: parallelOf(run.env), signal: run.signal }),
+  },
+  [WEB_SEARCH_TOOL]: {
+    summary: "Search the web through Parallel's Search API: { query, n? } -> { query, results: [{ url, title, published?, snippet }] }, 1 to 25 results, each snippet at most 500 characters; { error } when Parallel gives no answer.",
+    needs: [PARALLEL_KEY_ENV],
+    nodes: true,
+    bind: async (host) => {
+      const tool = webSearchTool(host.env) as unknown as ToolRegistration;
+      const extension = defineExtension({ name: "web-search", tools: [tool] });
+      host.install(extension);
+      return { tools: [tool], extensions: [extension] };
+    },
+    effect: async (args, run) => webSearch(args, parallelOf(run.env), run.signal),
   },
   browser: browserTool,
   [PDF_PAGES_TOOL]: callOnly(

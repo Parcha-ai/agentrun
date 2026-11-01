@@ -653,9 +653,9 @@ test("only a run that asks Parallel or names a web tool holds the Parallel key, 
   assert.equal(last.status, "completed", JSON.stringify(run.error));
   assert.deepEqual(run.result.output, CLEAN, "the model node's process, and an sh and a node -e it starts, see neither the key nor its descriptor");
   assert.deepEqual((await seen()).parallel.map((c) => [c.path, c.authorized]), [["/v1/decisions", true], ["/v1/extract", true]], "Parallel got the key from the decision node and from web_fetch, on the one read");
-  // Agentic runs, each held in its first turn: one naming web_fetch holds the key as the workflow does, one naming no web
-  // tool was never handed it.
-  for (const tool of ["web_fetch", "read"]) {
+  // Agentic runs, each held in its first turn: one naming web_fetch, or web_search alone, holds the key as the workflow
+  // does, one naming no web tool was never handed it.
+  for (const tool of ["web_fetch", "web_search", "read"]) {
     const hold = join(await scratch(t), "go");
     const id = `holds-${tool.replace("_", "-")}`;
     assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: "Hold.", tools: [tool] } })).status, 201);
@@ -664,7 +664,7 @@ test("only a run that asks Parallel or names a web tool holds the Parallel key, 
     const pid = await processOf(data, started.body.run_id);
     const environ = await readFile(`/proc/${pid}/environ`, "utf8");
     assert.equal(environ.includes(PARALLEL_CANARY), false, `${tool}: the run's process environment holds no copy of the key`);
-    assert.equal(keyFdIn(environ), tool === "web_fetch" ? KEY_FD : undefined, `${tool}: handed the key only when it names web_fetch`);
+    assert.equal(keyFdIn(environ), tool === "read" ? undefined : KEY_FD, `${tool}: handed the key only when it names a web tool`);
     assert.equal(await handedSocket(pid, KEY_FD), false, `${tool}: no key descriptor open`);
     await writeFile(hold, "");
     await follow(api, started.body.run_id, ["completed"]);
