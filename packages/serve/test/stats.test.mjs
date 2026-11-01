@@ -170,6 +170,8 @@ test("GET /v2/stats's from, to and agent bound analytics alone: the other number
   assert.deepEqual([analytics.totals.runs, analytics.totals.tokens, analytics.by_day.map((d) => d.day)], [1, 1120, ["2026-10-02"]], "from is inclusive, to exclusive: the run at 2026-10-03T00:00 is out");
   const leap = await api("GET", "/stats?from=2024-02-29T00:00:00.5z");
   assert.deepEqual([leap.status, leap.body.analytics?.filter.from], [200, "2024-02-29T00:00:00.500Z"], "a date that exists, lowercase z and a fraction too");
+  const exact = await api("GET", "/stats?to=2026-10-03T00:00:00.000Z");
+  assert.deepEqual([exact.status, exact.body.analytics?.filter.to], [200, "2026-10-03T00:00:00.000Z"], "three fraction digits: a millisecond, taken as it is");
   const coder = (await api("GET", "/stats?agent=coder")).body.analytics;
   assert.deepEqual([coder.filter.agent, coder.totals.runs, coder.by_harness_effort.map((g) => g.harness)], ["coder", 1, ["codex"]]);
   const nobody = (await api("GET", "/stats?agent=nobody")).body.analytics;
@@ -177,8 +179,9 @@ test("GET /v2/stats's from, to and agent bound analytics alone: the other number
   assert.ok(all.totals.runs > analytics.totals.runs);
   const { doc, schema } = await statsSchema(baseUrl);
   assert.deepEqual(schemaProblems(doc, schema, day.body), []);
-  // An impossible date or time is refused, never rolled forward to another (02-30 would read as 03-02); so is a date alone.
-  for (const query of ["from=yesterday", "to=2026-13-45T00:00:00Z", "from=2026-02-30T00:00:00Z", "to=2026-10-02T24:00:00Z", `from=${encodeURIComponent("2026-10-02T00:00:00+24:00")}`, "from=2026-10-02", `from=${encodeURIComponent("+275760-09-13T00:00:00Z")}`, `from=${encodeURIComponent("0000-01-01T00:00:00+01:00")}`, `agent=${encodeURIComponent("../x")}`, "agent="]) {
+  // An impossible date or time is refused, never rolled forward to another (02-30 would read as 03-02); so is a date alone,
+  // and a fraction finer than a millisecond, which would be cut (.0005 would read .000) and move the bound.
+  for (const query of ["to=2026-10-03T00:00:00.0005Z", "from=2026-10-02T00:00:00.123456Z", "from=yesterday", "to=2026-13-45T00:00:00Z", "from=2026-02-30T00:00:00Z", "to=2026-10-02T24:00:00Z", `from=${encodeURIComponent("2026-10-02T00:00:00+24:00")}`, "from=2026-10-02", `from=${encodeURIComponent("+275760-09-13T00:00:00Z")}`, `from=${encodeURIComponent("0000-01-01T00:00:00+01:00")}`, `agent=${encodeURIComponent("../x")}`, "agent="]) {
     const bad = await api("GET", `/stats?${query}`);
     assert.deepEqual([bad.status, bad.body.error?.code], [400, "bad_request"], query);
   }

@@ -32,9 +32,10 @@ export function statsView(stats: StoreStats, runs: Runs) {
 
 // ---- analytics: the runs' metrics summed (AgentStoreReader.analytics), over the runs `from`, `to` and `agent` pick ----
 
-const DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/;
-/** The UTC time an RFC 3339 date-time names, or undefined for anything else: an impossible date or time included, which
- *  Date.parse would roll forward (02-30 to 03-02). */
+const DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,3})?(Z|[+-](\d{2}):(\d{2}))$/;
+/** The UTC time an RFC 3339 date-time names, to the millisecond, or undefined for anything else: an impossible date or
+ *  time, which Date.parse would roll forward (02-30 to 03-02), and a finer fraction, which it would cut (a bound of
+ *  .0005 would read .000), included. */
 function utcOf(text: string): string | undefined {
   const m = DATE_TIME.exec(text.toUpperCase());
   if (!m) return undefined;
@@ -56,7 +57,7 @@ export function analyticsFilter(url: URL): AnalyticsFilter {
     const text = url.searchParams.get(key);
     if (text === null) continue;
     const iso = utcOf(text);
-    if (iso === undefined) throw new ApiError("bad_request", "from and to are RFC 3339 date-times that exist");
+    if (iso === undefined) throw new ApiError("bad_request", "from and to are RFC 3339 date-times that exist, to the millisecond");
     filter[key] = iso;
   }
   const agent = url.searchParams.get("agent");

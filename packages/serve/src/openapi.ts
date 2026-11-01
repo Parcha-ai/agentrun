@@ -254,8 +254,8 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "getStats", tags: ["runs"], summary: "Counts and cost over every agent and run",
       description: "Read from the agent store's aggregates alone: no run's files are opened. Archived agents and runs are left out of every number but their own counts. `from`, `to` and `agent` bound `analytics` only; every other number is the whole store's.",
       parameters: [
-        { name: "from", in: "query", required: false, description: "Runs started at or after this RFC 3339 date-time. Default no bound.", schema: { type: "string", format: "date-time" }, "x-agentrun-serve": "stats/2" },
-        { name: "to", in: "query", required: false, description: "Runs started before this RFC 3339 date-time. Default no bound.", schema: { type: "string", format: "date-time" }, "x-agentrun-serve": "stats/2" },
+        { name: "from", in: "query", required: false, description: "Runs started at or after this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.", schema: { type: "string", format: "date-time" }, "x-agentrun-serve": "stats/2" },
+        { name: "to", in: "query", required: false, description: "Runs started before this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.", schema: { type: "string", format: "date-time" }, "x-agentrun-serve": "stats/2" },
         { name: "agent", in: "query", required: false, description: "One agent's runs.", schema: ref("schemas/Id"), "x-agentrun-serve": "stats/2" },
       ],
       responses: { "200": json(STATS, "The counts and the cost."), ...errors(400, 401, 429, 500) },
