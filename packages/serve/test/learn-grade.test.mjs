@@ -1,0 +1,142 @@
+// One grader decides whether a run's checked notes join main: a bounded call on the agent's own model, read fail-closed.
+// The injection screen runs only with an independent judge (Jev). What the grade spends is booked on /v2/usage's
+// `learning` meter and kept on the run's learning; a server that goes mid-grade grades the run once at its next start,
+// and a run is merged once, never twice. GET /v2/stats counts how the runs that tried to learn fared.
+import assert from "node:assert/strict";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { test } from "node:test";
+import { CANARY } from "./fixtures/faux-jev.mjs";
+import { note } from "./fixtures/faux-learn.mjs";
+import { ended, git, LEARN, learner, made, mergesOf, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { agent, scratch, serve, withEnv } from "./support.mjs";
+
+const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
+const PLAN = [["check-units.md", note("Check units", "Convert every amount to one unit before comparing")]];
+const callsIn = (file) => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+
+test("the grader's verdict decides: a drop, a merge that keeps no note and an answer that is no verdict are dropped as grader, with the verdict kept; a model that fails is grade_failed", { timeout: 150_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  const cases = [
+    ["Grade: drop.", "grader", { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "check-units.md", keep: false, question: "General", why: "It is about one case." }] }],
+    ["Grade: sly.", "grader", { merge: false, reason: "the grader said merge, but did not keep every item", items: [{ file: "check-units.md", keep: false, question: "General", why: "It is about one case." }] }],
+    ["Grade: garbage.", "grader", { merge: false, reason: "the grader's verdict could not be read", items: [] }],
+    ["Grade: fail.", "grade_failed", undefined],
+  ];
+  for (const [rule, reason, verdict] of cases) {
+    const id = rule.toLowerCase().replace(/[^a-z]+/g, "-").replace(/-$/, "");
+    await made(api, learner(id, { instructions: rule, plan: PLAN }));
+    const runId = await started(api, id);
+    const { view, rows } = await ended(api, runId);
+    assert.equal(view.result.final_answer, "Job answer.");
+    settled(view, rows, "dropped", reason);
+    const { learning } = await savedOf(data, runId);
+    assert.deepEqual(learning.verdict, verdict, rule);
+    assert.equal(git(repoOf(data, id), ["rev-list", "--count", "main"]), "1", `${rule}: nothing merged`);
+    // Asked once, whatever it answered; its cost kept, unknown when the call failed.
+    assert.equal(learning.cost_usd.grade === null, reason === "grade_failed", JSON.stringify(learning.cost_usd));
+  }
+  assert.equal(callsIn(calls).filter((call) => call.kind === "grade").length, cases.length, "one grader call a run");
+});
+
+test("with no independent judge there is no injection screen: Jev is never asked, the grader alone decides, and the run merges", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  withEnv(t, { AGENTRUN_TEST_FAUX_JEV_CALLS: join(dir, "jev.jsonl"), AGENTRUN_TEST_FAUX_CALLS: join(dir, "calls.jsonl") }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD"]);
+  const { api } = await serve(t, { learning: "on", faux: LEARN, fauxJev: FAUX_JEV });
+  await made(api, learner("unscreened", { plan: PLAN }));
+  const { view, rows } = await ended(api, await started(api, "unscreened"));
+  settled(view, rows, "merged");
+  assert.deepEqual(callsIn(join(dir, "jev.jsonl")), [], "Jev was never asked");
+  assert.equal(callsIn(join(dir, "calls.jsonl")).length, 1, "the grader was");
+});
+
+test("with Jev here, the screen runs first: a note it scores at or over the threshold drops the run as screen, the grader never asked, and Jev's cost is the grade's; a Jev that cannot judge drops it as screen_down", { timeout: 150_000 }, async (t) => {
+  const dir = await scratch(t);
+  const jev = join(dir, "jev.jsonl");
+  const calls = join(dir, "calls.jsonl");
+  withEnv(t, { TYPESAFE_API_KEY: CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: jev, AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_NO_USAGE", "AGENTRUN_TEST_FAUX_GRADE_HOLD"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, fauxJev: FAUX_JEV });
+  await made(api, learner("screened", { plan: PLAN }));
+  // The faux Jev scores every yes-or-no question 0.92: over the threshold.
+  const runId = await started(api, "screened");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "dropped", "screen");
+  assert.ok(callsIn(jev).length >= 1 && callsIn(jev).every((call) => call.authorized && call.pid === process.pid), "the server asked Jev, with its key");
+  assert.deepEqual(callsIn(calls), [], "the grader was never asked");
+  const { learning } = await savedOf(data, runId);
+  assert.equal(learning.verdict, undefined);
+  assert.ok(learning.cost_usd.grade > 0 && learning.tokens.grade.input === 120 * callsIn(jev).length, JSON.stringify(learning));
+  process.env.AGENTRUN_TEST_FAUX_JEV_STATUS = "503";
+  const down = await ended(api, await started(api, "screened"));
+  settled(down.view, down.rows, "dropped", "screen_down");
+  assert.deepEqual(callsIn(calls), [], "still never the grader");
+});
+
+test("a server that goes mid-grade grades the run once at its next start; a run whose kept verdict is merged again is the merge already on main, never a second", { timeout: 180_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls, AGENTRUN_TEST_FAUX_GRADE_HOLD: "1" }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  const first = await serve(t, { learning: "on", faux: LEARN });
+  const { data } = first;
+  await made(first.api, learner("held", { plan: PLAN }));
+  const runId = await started(first.api, "held");
+  for (let i = 0; callsIn(calls).length === 0; i++) {
+    assert.ok(i < 1200, "the grader is asked");
+    await sleep(50);
+  }
+  assert.equal((await first.api("GET", `/runs/${runId}`)).body.learning.state, "proposed");
+  await first.close();
+  const saved = JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8"));
+  assert.deepEqual([saved.learning.state, saved.learning.verdict], ["proposed", undefined], "nothing was decided");
+  // The next start grades it, once.
+  delete process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD;
+  const second = await serve(t, { learning: "on", faux: LEARN, data });
+  const { view, rows } = await ended(second.api, runId);
+  settled(view, rows, "merged");
+  assert.equal(callsIn(calls).length, 2, "one grader call per server");
+  const repo = repoOf(data, "held");
+  const main = git(repo, ["rev-parse", "main"]);
+  assert.equal(mergesOf(repo, runId).length, 1);
+  await second.close();
+  // A server that went after the verdict was kept and before the merge was saved: the run reads proposed, verdict kept.
+  const merged = JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8"));
+  writeFileSync(join(data, "runs", runId, "serve.json"), JSON.stringify({ ...merged, learning: { ...merged.learning, state: "proposed", merged: undefined } }));
+  const third = await serve(t, { learning: "on", faux: LEARN, data });
+  const again = await ended(third.api, runId);
+  settled(again.view, again.rows, "merged");
+  assert.equal((await savedOf(data, runId)).learning.merged, main, "the merge already on main");
+  assert.equal(git(repo, ["rev-parse", "main"]), main, "main did not move");
+  assert.equal(mergesOf(repo, runId).length, 1, "merged once");
+  assert.equal(callsIn(calls).length, 2, "the kept verdict was not asked again");
+});
+
+test("GET /v2/usage books each grade under the meter learning, by agent and by day; GET /v2/stats counts the runs that tried to learn, over its filters, and a restarted server counts the same", { timeout: 180_000 }, async (t) => {
+  withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS"]);
+  const first = await serve(t, { learning: "on", faux: LEARN });
+  const { api, data } = first;
+  await made(api, learner("counted", { plan: PLAN, once: true }));
+  await made(api, agent("mute", { learning: true }));
+  await made(api, agent("plain", { tools: ["write"] }));
+  const merged = await ended(api, await started(api, "counted"));
+  const empty = await ended(api, await started(api, "counted"));
+  const mute = await ended(api, await started(api, "mute"));
+  await ended(api, await started(api, "plain"));
+  assert.deepEqual([merged.view.learning.state, empty.view.learning.reason, mute.view.learning.reason], ["merged", "empty", "no_write_tool"]);
+  const grade = (await savedOf(data, merged.view.run_id)).learning.cost_usd.grade;
+  assert.ok(grade > 0);
+  const byMeter = (await api("GET", "/usage?group_by=meter")).body;
+  const line = byMeter.lines.find((entry) => entry.meter === "learning");
+  assert.equal(line.usd, Math.round(grade * 1e6) / 1e6);
+  assert.ok(byMeter.lines.find((entry) => entry.meter === "tokens").usd > 0, "the runs' own cost stays under tokens");
+  assert.ok((await api("GET", "/usage?group_by=agent")).body.lines.find((entry) => entry.group === "counted").usd >= line.usd);
+
+  const want = { runs: 3, merged: 1, dropped: { empty: 1, no_write_tool: 1 }, in_progress: 0 };
+  assert.deepEqual((await api("GET", "/stats")).body.learning, want);
+  assert.deepEqual((await api("GET", "/stats?agent=mute")).body.learning, { runs: 1, merged: 0, dropped: { no_write_tool: 1 }, in_progress: 0 });
+  assert.deepEqual((await api("GET", `/stats?from=${new Date(Date.now() + 60_000).toISOString()}`)).body.learning, { runs: 0, merged: 0, dropped: {}, in_progress: 0 });
+  await first.close();
+  const again = await serve(t, { learning: "on", faux: LEARN, data });
+  assert.deepEqual((await again.api("GET", "/stats")).body.learning, want, "read back from the runs' records");
+  assert.equal((await again.api("GET", "/usage?group_by=meter")).body.lines.find((entry) => entry.meter === "learning").usd, line.usd, "booked once");
+});
