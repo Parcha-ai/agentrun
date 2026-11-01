@@ -27,6 +27,16 @@ const ref = (name: string) => ({ $ref: `#/components/${name}` });
 const errors = (...codes: number[]) =>
   Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 404: "NotFound", 409: "Conflict", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal" }[code]}`)]));
 const json = (schema: unknown, description: string) => ({ description, content: { "application/json": { schema } } });
+/** GET /runs/{run_id}/output's answer: the output a run's profile pinned, by its type, and its file and that file's
+ *  address, or null for both when the output is the run's final answer. */
+const RUN_OUTPUT = {
+  type: "object", additionalProperties: false, required: ["run_id", "type", "path", "url"],
+  properties: {
+    run_id: { type: "string" }, type: { type: "string", description: "The output type the run was made with." },
+    path: { type: ["string", "null"], description: "The output's file in the run's workspace, as the profile names it; null when the output is the run's final answer (`result.final_answer`)." },
+    url: { type: ["string", "null"], description: "The file's address, GET /v2/runs/{run_id}/files/{path}, which reads it, or 404 while it is not there; GET /v2/runs/{run_id}/files lists it with its size. Null with no file." },
+  },
+};
 /** GET /health's answer (host.ts Health). */
 const HEALTH = {
   type: "object", additionalProperties: false, required: ["status", "checks"],
@@ -295,6 +305,15 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       responses: { "200": json(RUN_GRAPH, "The run's graph as it stands."), ...errors(401, 404, 429, 500) },
     },
   },
+  "/runs/{run_id}/output": {
+    get: {
+      operationId: "getRunOutput", tags: ["runs"], summary: "Where a run's output is",
+      description: "The output the run's profile pinned when it was made (`profile`, `output` on its request): its type, and its file in the run's workspace with that file's address under /files, or null for both when the output is the run's final answer. It reads nothing on disk: the files routes say whether the file is there, and its size. 404 for a run made with no profile, or whose profile gave it no output.",
+      parameters: [ref("parameters/RunId")],
+      responses: { "200": json(RUN_OUTPUT, "The run's output: its type, and its file and address."), ...errors(401, 404, 429, 500) },
+      "x-agentrun-serve": "output/1",
+    },
+  },
   "/workflows/validate": {
     post: {
       operationId: "validateWorkflow", tags: ["agents"], summary: "Check a workflow definition without saving it",
@@ -537,6 +556,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   "Features/runs": {
     pause_workflow_runs: { type: "boolean", description: "POST /runs/{run_id}/pause and /resume hold and release a workflow run.", "x-agentrun-serve": "pause/1" },
     graph: { type: "boolean", description: "GET /runs/{run_id}/graph draws a workflow run, live.", "x-agentrun-serve": "pause/1" },
+    output: { type: "boolean", description: "GET /runs/{run_id}/output names the output a run's profile pinned: its type, and its file and that file's address.", "x-agentrun-serve": "output/1" },
     list: { type: "boolean", description: "`GET /runs`.", "x-agentrun-serve": "serve/1" },
     kinds: { type: "array", items: { enum: ["agentic", "workflow"] }, description: "The kinds of run this server starts.", "x-agentrun-serve": "serve/1" },
   },

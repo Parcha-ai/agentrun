@@ -179,6 +179,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/output$/, name: "getRunOutput" },
   { method: "POST", pattern: /^\/files$/, name: "createFile", capability: "files.upload" },
   { method: "PUT", pattern: /^\/files\/([^/]+)$/, name: "uploadFile", capability: "files.upload" },
   { method: "POST", pattern: /^\/quotes$/, name: "createQuote", capability: "quotes" },
@@ -244,7 +245,7 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
        *  lists only those) and kept, with its history; a run of an archived agent is refused. */
       archive: { agents: true, runs: true, list_param: "archived", routes: ["POST /agents/{id}/archive", "POST /agents/{id}/unarchive", "POST /runs/{id}/archive", "POST /runs/{id}/unarchive"] },
       home: { export: false, import: false, check: false },
-      runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true },
+      runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true, output: true },
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: false, read: true, range: false, during_run: true },
@@ -589,6 +590,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return out;
   }
 
+  /**
+   * The run's output, as its profile pinned it (run-profile.ts): its type, and its file and that file's address, or null
+   * for both when the output is the run's final answer. Nothing on disk is read: the files routes say whether the file
+   * is there, and its size. A run with no profile, or a profile with no output, names none: 404.
+   */
+  function outputOf(run: Run) {
+    const profile = run.meta.profile;
+    if (!profile) throw new ApiError("not_found", "This run was made with no profile, so it names no output: a run names one with profile and output.");
+    if (!profile.output) throw new ApiError("not_found", `This run's profile (${profile.name}) gave it no output: a run names one with output.`);
+    const { type, file } = profile.output;
+    return { run_id: run.id, type, path: file ?? null, url: file === undefined ? null : `/v2/runs/${run.id}/files/${file.split("/").map(encodeURIComponent).join("/")}` };
+  }
+
   async function readFileRoute(req: IncomingMessage, res: ServerResponse, url: URL, run: Run, raw: string): Promise<void> {
     let rel: string;
     try {
@@ -889,6 +903,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await runs.pause(await needRun(id), found.name === "pauseRun"));
       case "readRunFile":
         return readFileRoute(req, res, url, await needRun(id), second!);
+      case "getRunOutput":
+        return send(res, 200, outputOf(await needRun(id)));
       case "getUsage":
         return send(res, 200, await usage(url));
       case "getStats": {
