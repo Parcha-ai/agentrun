@@ -182,10 +182,13 @@ test("runs_get names the question a waiting run asked, runs_respond answers it, 
   await mcp.tool("agents_create", { id: "asker", name: "Asker", instructions: "Answer.", tools: ["ask_person"] });
   const { run_id } = (await mcp.tool("runs_start", { agent_id: "asker", input: { content: "Pick a region." } })).structuredContent;
   const waiting = await mcp.until(run_id, ["input_required"]);
-  assert.equal(waiting.pending.question, "Which region should I use?");
-  assert.equal(typeof waiting.pending.asked_at, "string");
+  assert.deepEqual([waiting.pending.kind, waiting.pending.question, typeof waiting.pending.asked_at], ["question", "Which region should I use?", "string"]);
+  // The run's own field, as GET /v2/runs/{id} gives it: no scan of its timeline.
+  assert.deepEqual((await v2(server, "GET", `/runs/${run_id}`)).body.pending, waiting.pending);
   assert.equal((await mcp.tool("runs_respond", { run_id, content: "eu" })).structuredContent.mode, "answer");
-  assert.deepEqual(JSON.parse((await mcp.until(run_id, ["completed"])).result.final_answer), { region: "eu" });
+  const answered = await mcp.until(run_id, ["completed"]);
+  assert.deepEqual(JSON.parse(answered.result.final_answer), { region: "eu" });
+  assert.equal(answered.pending, null, "answered, it waits on nothing");
 
   const slow = (await mcp.tool("runs_start", { agent_id: "asker", input: { content: "Take your time." } })).structuredContent;
   await mcp.until(slow.run_id, ["working"]);
