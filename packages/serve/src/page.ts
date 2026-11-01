@@ -65,7 +65,8 @@ async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir:
   if (!type || !rel.split("/").every((segment) => CONSOLE_SEGMENT.test(segment))) return missing();
   const [root, real] = await Promise.all([realpath(dir).catch(() => null), realpath(join(dir, rel)).catch(() => null)]);
   if (!root || !real) {
-    return rel === "index.html" ? send(req, res, 404, "text/plain; charset=utf-8", "This server was built without its console: build apps/console, then rebuild the server.\n") : missing();
+    // A refusal (a wrong link token) stays a refusal on a server without its console: only a plain miss is a 404.
+    return rel === "index.html" ? send(req, res, status === 200 ? 404 : status, "text/plain; charset=utf-8", "This server was built without its console: build apps/console, then rebuild the server.\n") : missing();
   }
   if (!real.startsWith(root + sep) || !(await stat(real)).isFile()) return missing();
   send(req, res, status, type, await readFile(real), { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store" });

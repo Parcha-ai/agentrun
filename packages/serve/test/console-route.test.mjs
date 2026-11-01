@@ -79,7 +79,7 @@ test("the old page's files are gone: each is a 404, with the token or without", 
   }
 });
 
-test("a server built without its console answers / with a plain 404 that says so, and its assets with 404s", async (t) => {
+test("a server built without its console answers / with a plain 404 that says so, its assets with 404s, and a wrong link token with a 401", async (t) => {
   const server = await serve(t, { console: join(await scratch(t), "no-console") });
   const index = await call(server.port, { path: "/" });
   assert.equal(index.status, 404);
@@ -87,6 +87,10 @@ test("a server built without its console answers / with a plain 404 that says so
   assert.match(index.text, /^This server was built without its console/);
   assert.equal((await call(server.port, { path: "/assets/index-Ab12Cd34.js" })).status, 404);
   assert.equal((await call(server.port, { path: "/console/" })).headers.location, "/");
+  const wrong = await call(server.port, { path: "/?token=wrong" });
+  assert.deepEqual([wrong.status, wrong.headers["set-cookie"]], [401, undefined], "a wrong link token is still refused, as a refusal");
+  assert.match(wrong.text, /^This server was built without its console/);
+  assert.equal((await call(server.port, { path: `/?token=${server.token}` })).status, 303, "the right one still sets the cookie");
 });
 
 test("with accounts the console is public and its /v2 calls hold the owner's session: setup, the session, a GET, and a write from this origin", async (t) => {
