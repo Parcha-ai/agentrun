@@ -16,7 +16,15 @@
  *  names are its own fields, since they decide which branch runs, so a route that gains or loses a branch is rewritten. It
  *  is not an identity and not a saved revision's sha256: two nodes with the same check are not the same node, and a check
  *  that stayed only means no change was seen. A graph built by hand may leave it out. */
-export type GraphNode = { path: string; kind: string; label: string; via?: string; changeCheck?: string };
+export type GraphNode = { path: string; kind: string; label: string; via?: string; changeCheck?: string } & GraphDecision;
+
+/** One typed question a decision node asks, as a viewer shows it: its id, its type (`unknown` when its schema is not a
+ *  question the reader recognizes), its instructions, and a choice's options. */
+export type GraphQuestion = { id: string; type: "noul" | "choice" | "score" | "unknown"; instructions: string; options?: string[] };
+/** What a decision node (judge, pick, sift, a judged route, or a loop or escalate whose predicate is `ask`) says about
+ *  its decision, read from the document: the provider and model it names (absent when it names none), its questions, and
+ *  the tokens of the images it sends. A graph of another node carries none of these. */
+export type GraphDecision = { provider?: string; model?: string; questions?: GraphQuestion[]; images?: string[] };
 
 /** How control reaches `to` from `from`.
  *  - `next`: a chain enters its first step and each step is followed by the next; a loop enters its body, which runs again
@@ -76,14 +84,15 @@ const ownFields = (node: Json): Json => {
 export function workflowGraph(workflow: unknown): WorkflowGraph {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
-  const visit = (node: unknown, path: string, depth: number): void => {
+  const visit = (node: unknown, path: string, depth: number, schemas: Json): void => {
     if (!isObject(node) || typeof node.node !== "string" || depth > MAX_DEPTH) return;
     nodes.push({ path, kind: node.node, label: typeof node.label === "string" ? node.label : node.node,
-      ...(node.node === "call" && typeof node.via === "string" ? { via: node.via } : {}), changeCheck: fnv1a(canonicalJson(ownFields(node))) });
-    const child = (target: unknown, at: string, kind: GraphEdgeKind, from = path): void => {
+      ...(node.node === "call" && typeof node.via === "string" ? { via: node.via } : {}), changeCheck: fnv1a(canonicalJson(ownFields(node))),
+      ...decisionOf(node, schemas) });
+    const child = (target: unknown, at: string, kind: GraphEdgeKind, from = path, inner = schemas): void => {
       if (!isObject(target) || typeof target.node !== "string" || depth + 1 > MAX_DEPTH) return;
       edges.push({ from, to: at, kind });
-      visit(target, at, depth + 1);
+      visit(target, at, depth + 1, inner);
     };
     switch (node.node) {
       case "chain":
@@ -97,12 +106,66 @@ export function workflowGraph(workflow: unknown): WorkflowGraph {
       case "route":
         if (isObject(node.branches)) for (const [name, branch] of Object.entries(node.branches)) if (isObject(branch)) child(branch.body, `${path}/branches/${pointer(name)}/body`, "route");
         break;
-      case "workflow": if (isObject(node.workflow)) child(node.workflow.root, `${path}/workflow/root`, "child"); break;
+      case "workflow": if (isObject(node.workflow)) child(node.workflow.root, `${path}/workflow/root`, "child", path, isObject(node.workflow.schemas) ? node.workflow.schemas : {}); break;
     }
   };
-  visit(isObject(workflow) ? workflow.root : undefined, "/root", 0);
+  visit(isObject(workflow) ? workflow.root : undefined, "/root", 0, isObject(workflow) && isObject(workflow.schemas) ? workflow.schemas : {});
   return { nodes, edges };
 }
+
+/** The questions of a question schema (`out` of a judge or sift): a flat object whose properties are the questions, a
+ *  string enum a choice, a boolean a noul, an integer a score; a local `#/definitions/<id>` reference is followed. */
+const schemaQuestions = (schemaId: unknown, schemas: Json): GraphQuestion[] => {
+  const root = typeof schemaId === "string" && Object.hasOwn(schemas, schemaId) ? schemas[schemaId] : undefined;
+  const resolve = (spec: unknown): unknown => {
+    for (let hops = 0; isObject(spec) && typeof spec.$ref === "string" && hops < 8; hops += 1) {
+      const id = /^#\/definitions\/(.+)$/.exec(spec.$ref)?.[1];
+      const inline = isObject(root) && isObject(root.definitions) ? root.definitions : {};
+      spec = id === undefined ? undefined : Object.hasOwn(inline, id) ? inline[id] : Object.hasOwn(schemas, id) ? schemas[id] : undefined;
+    }
+    return spec;
+  };
+  const object = resolve(root);
+  if (!isObject(object) || !isObject(object.properties)) return [];
+  return Object.entries(object.properties).map(([id, raw]) => {
+    const spec = resolve(raw);
+    const instructions = isObject(spec) && typeof spec.description === "string" ? spec.description : "";
+    const types = isObject(spec) ? (Array.isArray(spec.type) ? spec.type : [spec.type]).filter((type) => type !== "null") : [];
+    if (isObject(spec) && Array.isArray(spec.enum)) return { id, type: "choice" as const, instructions, options: spec.enum.map(String) };
+    if (types.length === 1 && types[0] === "boolean") return { id, type: "noul" as const, instructions };
+    if (types.length === 1 && types[0] === "integer") return { id, type: "score" as const, instructions };
+    return { id, type: "unknown" as const, instructions };
+  });
+};
+
+/** A decision node's provider, model, questions and image tokens, as written. */
+const decisionOf = (node: Json, schemas: Json): GraphDecision => {
+  let source: Json = node;
+  let questions: GraphQuestion[] | undefined;
+  const text = (value: unknown): string => typeof value === "string" ? value : "";
+  switch (node.node) {
+    case "judge": case "sift": questions = schemaQuestions(node.out, schemas); break;
+    case "pick": questions = [{ id: "pick", type: "choice", instructions: text(node.instructions) }]; break;
+    case "route":
+      if (node.valuePath !== undefined) return {};
+      questions = [{ id: "branch", type: "choice", instructions: text(node.instructions), options: isObject(node.branches) ? Object.keys(node.branches) : [] }];
+      break;
+    case "loop": case "escalate": {
+      const predicate = node.node === "loop" ? node.until : node.when;
+      if (!isObject(predicate) || predicate.predicate !== "ask") return {};
+      source = predicate;
+      questions = [{ id: "holds", type: "noul", instructions: text(predicate.instructions) }];
+      break;
+    }
+    default: return {};
+  }
+  return {
+    ...(typeof source.provider === "string" ? { provider: source.provider } : {}),
+    ...(typeof source.model === "string" ? { model: source.model } : {}),
+    questions,
+    ...(isObject(source.images) && Object.keys(source.images).length ? { images: Object.keys(source.images) } : {}),
+  };
+};
 
 /** What a run has done at a node. A node inside a map's or a loop's body stands for every item or iteration, and the record names
  *  only those that started, so it is `done` only once the map or loop is: until then it is `working`, and a done node never

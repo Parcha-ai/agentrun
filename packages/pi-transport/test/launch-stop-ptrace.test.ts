@@ -2,7 +2,7 @@
 // 1 or more, MEASURED in the box by the root launcher at its start, before it reads the frame: a box that reports no such
 // fact is measured all the same, 0 on a box with its own kernel (a vm) is raised to 1 and read back, and 0 where it cannot
 // be raised refuses. A stop drains the program (SIGTERM, then the grace), then runs `beforeStop`, then kills what is left.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
@@ -488,6 +488,45 @@ describe("a stop in progress", () => {
 		await box.destroy(context);
 	});
 
+	it("ends the program without setsid too: the drain's SIGTERM reaches it, and the kill ends one deaf to it and what it started", async () => {
+		const box = await boxOn(false, false);
+		try {
+			const polite = getOrThrow(
+				await launch(
+					box,
+					"polite",
+					{ argv: ["sh", "-c", "trap ': > got-term; exit 0' TERM; while :; do sleep 1; done"] },
+					context,
+				),
+			);
+			expect(getOrThrow(await launchStop(box, polite.launch, { graceMs: 5_000 }, context)).phase).toBe("stopped");
+			expect(await fileIn(box, "got-term")).toBeDefined();
+			const deaf = getOrThrow(
+				await launch(
+					box,
+					"deaf",
+					{
+						argv: [
+							"sh",
+							"-c",
+							"trap '' TERM; sleep 300 & echo $! > child.pid; echo $$ > prog.pid; while :; do sleep 1; done",
+						],
+					},
+					context,
+				),
+			);
+			const pids = await until("the program's ids", async () => {
+				const [program, child] = [await fileIn(box, "prog.pid"), await fileIn(box, "child.pid")];
+				return program && child ? [Number(program), Number(child)] : undefined;
+			});
+			expect(getOrThrow(await launchStop(box, deaf.launch, { graceMs: 300 }, context)).phase).toBe("stopped");
+			// Gone, or a zombie its new parent has yet to reap: neither runs.
+			expect(pids.map((pid) => /^ [^Z]/.test(statOf(pid)))).toEqual([false, false]);
+		} finally {
+			await box.destroy(context);
+		}
+	});
+
 	for (const setsid of [true, false]) {
 		it(`ends what the watchdog was running as it killed it, so its lock's mkdir never takes the lock after the stop (${setsid ? "with" : "without"} setsid)`, async () => {
 			const box = await boxOn(setsid, true);
@@ -511,6 +550,121 @@ describe("a stop in progress", () => {
 			}
 		});
 
+		it(`never reports the launch stopped while a process of the program it killed is still listed: the stop fails by name (${setsid ? "with" : "without"} setsid)`, async () => {
+			const box = await boxOn(setsid, false);
+			try {
+				const started = getOrThrow(await launch(box, "unended", { argv: ["sleep", "300"] }, context));
+				const at = (file: string) => join(started.directory, file);
+				const runner = Number(readFileSync(at("pid.1"), "utf8").trim());
+				// The stop's own process table lists one process it cannot end: in the program's group (setsid) or under its
+				// runner (no setsid), at an id past any kernel's pid_max, so a signal to it reaches nothing.
+				const proc = mkdtempSync(join(root, "proc-"));
+				mkdirSync(join(proc, "4194999"));
+				writeFileSync(
+					join(proc, "4194999", "stat"),
+					setsid ? `4194999 (held) S 1 ${runner} ${runner} 0\n` : `4194999 (held) S ${runner} 4194999 4194999 0\n`,
+				);
+				writeFileSync(at("launcher.sh"), LAUNCHER_SCRIPT.replace(PROC_LINE, `PROC='${proc}'`));
+				const stopped = await launchStop(box, started.launch, { graceMs: 300 }, context);
+				expect(stopped.ok ? "stopped" : stopped.error.message).toMatch(
+					setsid
+						? /the program did not end: its group \d+ still there/
+						: /the program did not end: 4194999 still there/,
+				);
+				expect(existsSync(at("stop.done"))).toBe(false);
+				expect(readFileSync(at("state"), "utf8")).toContain('"phase":"stopping"');
+			} finally {
+				await box.destroy(context);
+			}
+		});
+
+		if (!setsid)
+			it("a stop that cannot record what it kills still kills the program, fails by name, and writes no stop.done", async () => {
+				const box = await boxOn(false, false);
+				try {
+					const started = getOrThrow(
+						await launch(
+							box,
+							"unrecorded",
+							{ argv: ["sh", "-c", "trap '' TERM; echo $$ > prog.pid; while :; do sleep 1; done"] },
+							context,
+						),
+					);
+					const at = (file: string) => join(started.directory, file);
+					const program = Number(await until("the program's id", async () => fileIn(box, "prog.pid")));
+					// A record the stop cannot write: a directory where its file goes (a mv onto it moves the file inside).
+					mkdirSync(at("stop.killed"));
+					const stopped = await launchStop(box, started.launch, { graceMs: 300 }, context);
+					expect(stopped.ok ? "stopped" : stopped.error.message).toMatch(
+						/the stop could not record what it killed/,
+					);
+					expect(existsSync(at("stop.done"))).toBe(false);
+					expect(readFileSync(at("state"), "utf8")).toContain('"phase":"stopping"');
+					// Gone, or a zombie its new parent has yet to reap: never frozen and left.
+					await until("the program killed", async () => (/^ [^Z]/.test(statOf(program)) ? undefined : true));
+				} finally {
+					await box.destroy(context);
+				}
+			});
+
+		if (!setsid)
+			it("a stop that takes over a failed one finds what it killed: it fails while a recorded process lives, ends once it is gone, and never touches an id another process has taken since", async () => {
+				const box = await boxOn(false, false);
+				// A process of the test's own, written down under another start: the id a recorded process left, taken since.
+				const other = spawn("sleep", ["600"], { stdio: "ignore" });
+				try {
+					// Deaf to SIGTERM, so its runner is still there at the kill, with the process the stop cannot end under it.
+					const started = getOrThrow(
+						await launch(
+							box,
+							"taken",
+							{ argv: ["sh", "-c", "trap '' TERM; while :; do sleep 1; done"] },
+							context,
+						),
+					);
+					const at = (file: string) => join(started.directory, file);
+					const runner = Number(readFileSync(at("pid.1"), "utf8").trim());
+					// The stop's own table, on the real clock: every process there is now, and one under the runner it cannot end.
+					const proc = mkdtempSync(join(root, "proc-"));
+					for (const name of readdirSync("/proc"))
+						if (/^\d+$/.test(name)) symlinkSync(`/proc/${name}`, join(proc, name));
+					symlinkSync("/proc/uptime", join(proc, "uptime"));
+					mkdirSync(join(proc, "4194999"));
+					writeFileSync(join(proc, "4194999", "stat"), `4194999 (held) S ${runner} 4194999 4194999 0\n`);
+					writeFileSync(at("launcher.sh"), LAUNCHER_SCRIPT.replace(PROC_LINE, `PROC='${proc}'`));
+					// A later stop takes the stop over once the failed one is past its deadline: here at once, as the stop that died
+					// in "is taken over by a later stop" leaves it.
+					const stop = async () => {
+						if (existsSync(at("stop.deadline"))) writeFileSync(at("stop.deadline"), "0\n");
+						return launchStop(box, started.launch, { graceMs: 300 }, context);
+					};
+					const first = await stop();
+					expect(first.ok ? "stopped" : first.error.message).toMatch(
+						/the program did not end: 4194999 still there/,
+					);
+					expect(readFileSync(at("stop.killed"), "utf8")).toMatch(new RegExp(`^${runner} \\d+$`, "m"));
+					const start = readFileSync(`/proc/${other.pid}/stat`, "utf8")
+						.replace(/^.*\) /, "")
+						.split(" ")[19];
+					writeFileSync(
+						at("stop.killed"),
+						`${readFileSync(at("stop.killed"), "utf8")}${other.pid} ${Number(start) + 1}\n`,
+					);
+					const taken = await stop();
+					expect(taken.ok ? "stopped" : taken.error.message).toMatch(
+						/the program did not end: 4194999 still there/,
+					);
+					expect(existsSync(at("stop.done"))).toBe(false);
+					rmSync(join(proc, "4194999"), { recursive: true });
+					expect(getOrThrow(await stop()).phase).toBe("stopped");
+					expect(existsSync(at("stop.done"))).toBe(true);
+					expect(/^ [^Z]/.test(statOf(other.pid ?? 0))).toBe(true);
+				} finally {
+					other.kill("SIGKILL");
+					await box.destroy(context);
+				}
+			});
+
 		it(`removes the trim lock only once what it killed is gone: a process of the watchdog's still listed holds it (${setsid ? "with" : "without"} setsid)`, async () => {
 			const box = await boxOn(setsid, false);
 			try {
@@ -519,10 +673,12 @@ describe("a stop in progress", () => {
 				const watch = Number(readFileSync(at("watch.pid"), "utf8").trim());
 				// A trim lock held by nobody keeps the watchdog in its lock's wait, so the stop is the one that ends it.
 				mkdirSync(at("trim"));
-				// The stop's own process table, with a clock that stands still (its 2 s bound never passes), listing one process it
-				// cannot end: in the watchdog's group (setsid) or its child (no setsid). Its id is past any kernel's pid_max, so a
-				// signal to it reaches nothing.
+				// The stop's own process table, with a clock that stands still (its 2 s bound never passes): every process there is
+				// now, and one more it cannot end, in the watchdog's group (setsid) or its child (no setsid). Its id is past any
+				// kernel's pid_max, so a signal to it reaches nothing.
 				const proc = mkdtempSync(join(root, "proc-"));
+				for (const name of readdirSync("/proc"))
+					if (/^\d+$/.test(name)) symlinkSync(`/proc/${name}`, join(proc, name));
 				writeFileSync(join(proc, "uptime"), "100.00 0\n");
 				mkdirSync(join(proc, "4194999"));
 				writeFileSync(

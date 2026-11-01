@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { AgentHomeError, openStore } from "@parcha/pi-durable-agent";
-import { agent, answerFlow, flowAgent, follow, scratch, serve } from "./support.mjs";
+import { startServe } from "../dist/index.js";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** How long a reader holds the store while an edit's commit waits for it. A wait that blocked the event loop would hold
@@ -286,4 +287,31 @@ test("two workflow edits whose body checks are in flight together are each check
   assert.deepEqual(outcome(await Promise.all([put("Answer D.", {}, { "if-match": etag }), put("Answer E.", {}, { "if-match": etag })])), [[200, null, null], [412, "precondition_failed", null]]);
   both();
   assert.equal(await count(), 4);
+});
+
+test("an escalated workflow's review.at is its ended_at, one saved end time, even when its end waits for a held store, and after a restart", async (t) => {
+  const { api, data, close } = await serve(t, { carryBackRetry: { delaysMs: Array(60).fill(100) }, settleRetryMs: 120_000 });
+  const gated = answerFlow("Answer soon.");
+  gated.schemas.In.properties.amount = { type: "number" };
+  gated.root.steps.push({ node: "escalate", label: "too big", when: { predicate: "gte", path: "amount", n: 500 }, kind: "review", stage: "gate", summary: "needs a person" });
+  assert.equal((await api("POST", "/agents", flowAgent("late-end", gated))).status, 201);
+  const started = await api("POST", "/agents/late-end/runs", { input: { question: "Answer soon.", amount: 600 } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["working"]);
+  // Another writer holds the store past the run's end: its end is written, and its ended_at stamped, when it lets go.
+  const release = hold(t, data);
+  await sleep(2_500);
+  release();
+  await follow(api, runId, ["completed"], { deadlineMs: 15_000 });
+  const same = (view) => [view.status, view.review?.kind, view.review?.at === view.ended_at];
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual(same(run), ["completed", "review", true], `review.at ${run.review?.at}, ended_at ${run.ended_at}`);
+  const listed = (await api("GET", "/runs")).body.runs.find((row) => row.run_id === runId);
+  assert.deepEqual([...same(listed), listed.ended_at], ["completed", "review", true, run.ended_at], "the list says the same");
+  await close();
+  const again = await startServe({ data, port: 0, faux: FAUX });
+  t.after(() => again.close());
+  const read = client(again.baseUrl, again.token);
+  assert.deepEqual([...same((await read("GET", "/runs")).body.runs.find((row) => row.run_id === runId)), (await read("GET", `/runs/${runId}`)).body.review?.at], ["completed", "review", true, run.ended_at], "and the next server reads the same time");
 });

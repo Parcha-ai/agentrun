@@ -20,6 +20,10 @@ export const SECRET_NAMES: readonly string[] = (() => {
   return list.split(" ").filter(Boolean);
 })();
 
+/** The decision keys among them: a workflow run's process gets them only on its decision descriptor (decisions.ts),
+ *  never with the secrets on its pipe, which are its tools' environment. */
+export const DECISION_KEYS: readonly string[] = ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"];
+
 const held = new Map<string, string>();
 /** Whether this process was handed its secrets over a pipe, and closed it. */
 let handed: { fd: number; closed: boolean } | undefined;

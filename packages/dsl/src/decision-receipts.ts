@@ -1,9 +1,26 @@
 // Decision receipts: one record per typed-question request, holding what was asked, what came back, the
 // rule that turns those answers into an action (its thresholds included) and the action itself. A receipt
 // alone explains a decision: `rederiveDecision` recomputes the action from it without a model call.
-import { answerConfidence, answersToValue, type CompiledQuestions, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
+import type { CostBasis, DecisionEvidence } from "./decision-provider.js";
+import { answerConfidence, answersToValue, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 
 export const DECISION_RECEIPT_VERSION = 1;
+
+/** The escalation kind of a decision its provider refused: the run ends `escalated` at stage "decision", for a person. */
+export const DECISION_REFUSED = "decision_refused";
+
+/** The escalation kind of a run whose decision was asked by an earlier process and never answered there: it is routed to
+ *  review instead of being asked, and paid for, again. Its stage is `decision`. */
+export const DECISION_INTERRUPTED = "decision_interrupted";
+
+/** The most of the state a receipt keeps, as UTF-8 JSON bytes: a larger state is kept as the first this many bytes of its
+ *  JSON text, with `state_truncated: true`. */
+export const DECISION_STATE_MAX_BYTES = 64 * 1024;
+
+/** An image a request carried, as its receipt names it: the token the request used, the reference the host loaded, and
+ *  the image's SHA-256, type and size (never the bytes). The digest fields are null when the image was never loaded (a
+ *  request that failed before its images were read). */
+export type DecisionImageDigest = { token: string; ref: string; sha256: string | null; mime: string | null; bytes: number | null };
 
 /** The typed questions the interpreter asks: the five question nodes and predicates, and a generative
  *  node's `verify` clause. */
@@ -65,6 +82,24 @@ export type DecisionReceipt = {
   request_sha256: string | null;
   /** Wall time of the judge call, in milliseconds. */
   latency_ms: number;
+  /** The questions whose answer came back as a refusal, when any did. A refusal decodes to no value: the request is
+   *  `failed` and the run escalates (DECISION_REFUSED), except a route with an `unsure` branch, which takes that branch. */
+  refused?: string[];
+  /** For each choice and score answer, whether its confidence is the provider's own or was derived from its
+   *  probabilities; present when the judge said. */
+  confidence_source?: Record<string, ConfidenceSource>;
+  /** The provider that answered, when the host's judge names it or the node pins it. */
+  provider?: string;
+  /** The sources the provider grounded its answers in, unless the node said `evidence: "off"`; absent when it gave none. */
+  evidence?: DecisionEvidence[];
+  /** How `cost_usd` was reached (reported by the provider, estimated by the host, unknown), when the judge said. */
+  cost_basis?: CostBasis;
+  /** The images the request carried, by digest; absent when it carried none. */
+  images?: DecisionImageDigest[];
+  /** The state the judge saw: the value itself, or, past `DECISION_STATE_MAX_BYTES` of JSON, the first that many bytes of
+   *  its JSON text (a string) with `state_truncated: true`. Absent on a receipt recorded before it was kept. */
+  state?: unknown;
+  state_truncated?: boolean;
   error?: string;
 };
 
@@ -92,6 +127,8 @@ export function rederiveDecision(receipt: Pick<DecisionReceipt, "rule" | "answer
       // An answered route carries its branch answer; a receipt without one decided nothing.
       const answer = answers.branch;
       if (!answer || typeof answer !== "object") return null;
+      // A refused route has no branch of its own: it took the unsure branch, and without one it decided nothing.
+      if (answer.type === "refusal") return rule.unsure ? { branch: null, taken: rule.unsure.branch, unsure: true, refused: true } : null;
       const branch = answer.choice;
       // The chosen branch must be a string; when the rule carries `branches` (recorded since this check was
       // added) it must name one of them. A rule recorded before `branches` skips the membership check, so an

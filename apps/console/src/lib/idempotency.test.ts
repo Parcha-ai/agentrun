@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendRuns, keeper, sendOnce } from "./idempotency";
+import { appendRuns, keeper, sendOnce, uuid } from "./idempotency";
 
 describe("keeper", () => {
   it("keeps one key per request: the same request again reuses it, a changed one gets a new one", () => {
@@ -38,5 +38,14 @@ describe("appendRuns", () => {
   it("adds the next page's runs once: a run the offset cursor sends again is not repeated", () => {
     const r = (id: string) => ({ run_id: id }) as never;
     expect(appendRuns([r("a"), r("b")], [r("b"), r("c")]).map((x: { run_id: string }) => x.run_id)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("uuid", () => {
+  it("makes a v4 UUID without crypto.randomUUID, as on a plain-http host", () => {
+    const real = crypto.randomUUID;
+    Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+    try { expect(uuid()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/); }
+    finally { Object.defineProperty(crypto, "randomUUID", { value: real, configurable: true }); }
   });
 });

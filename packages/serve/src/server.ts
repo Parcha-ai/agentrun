@@ -9,6 +9,7 @@ import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
+import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
@@ -20,7 +21,8 @@ import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js"
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
-import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
+import { DOCUMENTS_ENV } from "./pdf-pages.js";
+import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { statsView } from "./stats.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
@@ -65,6 +67,12 @@ export type ServeOptions = {
   token?: string;
   /** Default 7340; 0 is any free port. */
   port?: number;
+  /** A read-only directory of documents a workflow's `pdf_pages` calls read by file name (`--documents`); default
+   *  AGENTRUN_SERVE_DOCUMENTS. */
+  documents?: string;
+  /** Run workflows' `code` nodes (`--allow-code-nodes`; default AGENTRUN_SERVE_CODE_NODES=1). Off, a workflow with one saves
+   *  with a warning and its run is 409: a code node runs in the run's process through `new Function`, which is no sandbox. */
+  allowCodeNodes?: boolean;
   /** A faux model module (no key, no network): see the README. */
   faux?: string;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
@@ -73,6 +81,15 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export gives `fetch_page` its `{ lookup, fetchImpl }` (the tests' fake
    *  network), in place of the system's resolver and undici. */
   fauxWeb?: string;
+  /** With `faux` only: a module whose default export is the fetch Jev's runner sends through (the tests' fake), in place
+   *  of TypeSafe's API. */
+  fauxJev?: string;
+  /** With `faux` only: a module whose default export is the fetch the Parallel provider sends through (the tests' fake),
+   *  in place of Parallel's API. */
+  fauxParallel?: string;
+  /** With `faux` only: a module whose default export is the fetch OpenRouter's decision models send through, in place of
+   *  OpenRouter's System One API (`@parcha/agentrun-decisions/testing/faux-system-one` is one). */
+  fauxOpenrouter?: string;
   /** A module scripting the faux harness (`script(spec)`): every harness but pi runs on it (harness.ts). */
   fauxHarness?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
@@ -146,6 +163,10 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/archive$/, name: "archiveRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/unarchive$/, name: "unarchiveRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/kill$/, name: "killRun", capability: "runs.kill" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/graph$/, name: "getRunGraph" },
+  { method: "POST", pattern: /^\/workflows\/validate$/, name: "validateWorkflow" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/pause$/, name: "pauseRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
   { method: "POST", pattern: /^\/files$/, name: "createFile", capability: "files.upload" },
@@ -156,6 +177,19 @@ export const ROUTES: readonly Route[] = [
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
+/** A workflow run's title: its agent's name and a few words of its input, never the input's JSON ("Batch review: 20
+ *  documents, as_of 2026-10-30"). */
+export function workflowTitle(name: string, input: Record<string, unknown>): string {
+  const words = Object.entries(input).slice(0, 3).map(([key, value]) => {
+    if (Array.isArray(value)) return value.length === 1 && typeof value[0] === "string" ? value[0] : `${value.length} ${key}`;
+    if (typeof value === "string") return value.length > 40 ? `${value.slice(0, 39)}…` : value;
+    if (typeof value === "number" || typeof value === "boolean") return `${key} ${value}`;
+    return key;
+  });
+  // A name that ends in its own punctuation ("Is this certificate valid?") takes no colon after it.
+  return words.length ? `${name}${/[?!:.]$/.test(name) ? "" : ":"} ${words.join(", ")}` : name;
+}
+
 export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
   const models = modelSource(env);
   return {
@@ -178,14 +212,14 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
     /** What a workflow revision's run gets: each model node runs on the model of its tier (`models.fast`,
      *  `models.default`, `models.strong`) with the tools it names of `node_tools`; a node that names no thinking level
      *  thinks at the run's effort, or medium. */
-    workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS] },
+    workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS, ...(decisionsOf(env).some((offer) => offer.available) ? [DECISION_ADAPTER] : [])], decisions: { providers: decisionsOf(env) } },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
       /** This server's own routes, outside the contract: an archived agent or run is hidden from the lists (`?archived=true`
        *  lists only those) and kept, with its history; a run of an archived agent is refused. */
       archive: { agents: true, runs: true, list_param: "archived", routes: ["POST /agents/{id}/archive", "POST /agents/{id}/unarchive", "POST /runs/{id}/archive", "POST /runs/{id}/unarchive"] },
       home: { export: false, import: false, check: false },
-      runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"] },
+      runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true },
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: false, read: true, range: false, during_run: true },
@@ -284,11 +318,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  const env = withSecrets({ ...withoutFaux(process.env), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
+  const env = withSecrets({ ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
   const caps = capabilities(env, maxRuns, await harnessOffers(env));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const documents = options.documents ?? process.env[DOCUMENTS_ENV];
+  if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -391,7 +427,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const named = harness ? { harness } : {};
     if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, missing, ...named } });
     const tier = blockers.find((b) => b.tier)?.tier;
-    throw new ApiError("agent_not_runnable", message, { details: { adapters: blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])), unbound, missing, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}), ...named } });
+    const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
+    throw new ApiError("agent_not_runnable", message, { details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.codeNodes || b.shell), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...named } });
   }
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
@@ -432,7 +469,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const wrong = await inputIssuesOf(revision, input);
       if (wrong.length) throw invalid(wrong);
       await runnable(revision);
-      const title = typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+      const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, input) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
       const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}) });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
     });
@@ -791,6 +828,28 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const files = (await walk(join(run.dir, "work"))).sort((a, b) => a.path.localeCompare(b.path));
         return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: files.length > FILE_LIST_CAP });
       }
+      case "validateWorkflow": {
+        const body = await bodyOf(req);
+        const extra = Object.keys(body).filter((k) => k !== "workflow" && k !== "tools");
+        if (extra.length) throw invalid(extra.map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` })));
+        if (!isObject(body.workflow)) throw invalid([{ field: "workflow", reason: body.workflow === undefined ? "missing" : "wrong_type", message: "workflow is the workflow definition, an object" }]);
+        if (body.tools !== undefined && !(Array.isArray(body.tools) && body.tools.every((t) => typeof t === "string"))) throw invalid([{ field: "tools", reason: "wrong_type", message: "tools is a list of tool names" }]);
+        const { workflowIssues } = await import("@parcha/pi-durable-agent/workflow");
+        const { issues, warnings } = await workflowIssues(body.workflow, body.tools as string[] | undefined);
+        // What a save refuses on this host (a model node's tool, a code node where none runs), and what it lacks yet.
+        if (!issues.length) {
+          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never }).catch(() => [])) {
+            if (blocker.host) warnings.push(blocker.message);
+            else issues.push({ path: "", code: "NOT_RUNNABLE_HERE", message: blocker.message });
+          }
+        }
+        return send(res, 200, { ok: issues.length === 0, issues, warnings });
+      }
+      case "getRunGraph":
+        return send(res, 200, await runs.graph(await needRun(id)));
+      case "pauseRun":
+      case "resumeRun":
+        return send(res, 200, await runs.pause(await needRun(id), found.name === "pauseRun"));
       case "readRunFile":
         return readFileRoute(req, res, url, await needRun(id), second!);
       case "getUsage":

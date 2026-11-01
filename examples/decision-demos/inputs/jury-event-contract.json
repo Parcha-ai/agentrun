@@ -1,0 +1,9 @@
+{
+  "case_id": "jury-event-contract",
+  "payment": {
+    "descriptor": "FORECASTLY EXCHANGE 8885550163 NY",
+    "memo": "Event contracts: 120 YES on 'Fed cuts rates in December' at $0.41",
+    "amount": "USD 49.20",
+    "merchant_site": "Forecastly is a regulated exchange for event contracts. Trade on the outcome of economic, weather and political events; a contract pays $1 if the event happens."
+  }
+}

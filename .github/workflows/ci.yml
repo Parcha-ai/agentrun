@@ -48,6 +48,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: node scripts/changes.mjs --check --base "$BASE_SHA"
       - run: npm install --global npm@11.21.0 --ignore-scripts
+      - name: Install poppler, Ghostscript and ffmpeg
+        # agentrun-serve's pdf_pages draws pages with poppler, and its tests make their PDFs with Ghostscript and a wide
+        # PNG with ffmpeg: the durable shard runs serve's suite.
+        if: matrix.shard == 'durable'
+        run: |
+          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
+          pdftoppm -v && gs --version && ffmpeg -version | head -1
       - run: npm ci --ignore-scripts
       - run: npm run build
       - if: matrix.shard == 'checks'
@@ -202,6 +211,14 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
+      - name: Install poppler, Ghostscript and ffmpeg
+        # The first suites run agentrun-serve's, whose pdf_pages tests need them (as the durable test shard does).
+        if: matrix.suites == 'first'
+        run: |
+          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
+          pdftoppm -v && gs --version && ffmpeg -version | head -1
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: The clean consumer and the reference example at the leg's pi
@@ -418,6 +435,10 @@ jobs:
           test/local-run.test.ts test/cli-local.test.ts test/quickstart.test.ts test/confine.test.ts
           test/examples/kill-9.test.ts test/examples/audit-across-crashes.test.ts test/examples/no-double-charge.test.ts
           test/examples/fork-into-many.test.ts test/examples/serve-and-park.test.ts
+      - name: The server hands a workflow run its decision key
+        # macOS aborts the parent of a spawn with a pipe at descriptor 16 or above; a run with a decision key must not.
+        working-directory: packages/serve
+        run: node --test --test-timeout=240000 test/decision-key.test.mjs
       - name: The stranger's no-key quickstart
         # The README's quickstart, then the keyless examples against the registry's beta (#557). On a Mac the walk installs
         # 0.1.0-beta.14 at the least, the first release that runs there (the spec's examples.platformFloors).
