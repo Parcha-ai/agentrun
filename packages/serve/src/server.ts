@@ -936,7 +936,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "getAgentLearning": {
         await needAgent(id);
         const rows = await agents.request(() => agents.store.listRuns({ agent: id }));
-        const { runs: _, ...counts } = await learningStats(rows, { agent: id }, (row) => runs.learningOfRow(row), true);
+        const { runs: _, ...counts } = await learningStats(rows, { agent: id }, (row) => runs.learningOfRow(row));
         return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts));
       }
       case "listLearningNotes":

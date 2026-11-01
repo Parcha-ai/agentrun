@@ -309,8 +309,8 @@ export async function runLearning(run: Run, shown: Shown, secrets: readonly stri
     merged: merged ?? null,
     verdict: verdict ? { merge: verdict.merge, reason: shown.text(verdict.reason) } : null,
     problems: (problems ?? []).map((problem) => printable(problem, secrets)),
-    // The end-of-run turn's share of the run's cost is not measured apart: unknown.
-    cost_usd: { reflect: null, grade: cost_usd?.grade ?? null },
+    // The grade's alone: the end-of-run turn's cost is in the run's own totals.
+    cost_usd: { grade: cost_usd?.grade ?? null },
     tokens: { grade: tokens?.grade ?? null },
   };
 }

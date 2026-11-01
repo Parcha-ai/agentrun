@@ -229,7 +229,7 @@ const LEARNING_COUNTS = closed({
   merged: COUNT,
   dropped: { type: "object", additionalProperties: COUNT, propertyNames: { enum: [...LEARNING_REASONS] }, description: "By reason (Run.learning.reason): only reasons with one run or more." },
   in_progress: { ...COUNT, description: "Seeded, reflecting or proposed." },
-}, "How the agent's runs that tried to learn fared, archived runs included, as GET /stats counts them.");
+}, "How the agent's runs that tried to learn fared, archived runs left out: GET /stats' `learning` with `agent`, less `runs`.");
 const AGENT_LEARNING = closed({
   agent: { type: "string" },
   main: { ...NULL_STRING, description: "Main's head commit; null while the agent has no learning folder (its learning was never on), when every page is empty." },
@@ -248,7 +248,7 @@ const RUN_LEARNING = {
       merged: { ...NULL_STRING, description: "Its merge commit on main, once merged." },
       verdict: { oneOf: [closed({ merge: { type: "boolean" }, reason: { type: "string" } }), { type: "null" }], description: "The grader's, once it judged." },
       problems: { type: "array", items: PROBLEM, description: "The checker's, when the reason is `checker`." },
-      cost_usd: closed({ reflect: { type: ["number", "null"], description: "The end-of-run turn's share of the run's cost: in the run's totals, not measured apart here, so null." }, grade: { type: ["number", "null"], description: "The grade's, outside the run (GET /usage's `learning` meter); null before a grade ran, or when its cost is unknown." } }),
+      cost_usd: closed({ grade: { type: ["number", "null"], description: "The grade's, outside the run (GET /usage's `learning` meter); null before a grade ran, or when its cost is unknown. The end-of-run turn's cost is in the run's own totals." } }),
       tokens: closed({ grade: { oneOf: [closed({ input: COUNT, cache_read: COUNT, cache_write: COUNT, output: COUNT }), { type: "null" }], description: "The grade's tokens; `input` excludes cached input." } }),
     }),
     { type: "null" },

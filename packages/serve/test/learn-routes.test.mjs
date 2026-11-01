@@ -92,7 +92,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   const learned2 = (await api("GET", `/runs/${two}/learning`)).body;
   meets("/runs/{run_id}/learning", learned2);
   assert.deepEqual({ ...learned2, at: undefined, detail: undefined, cost_usd: undefined, tokens: undefined }, { run: two, state: "dropped", reason: "grader", detail: undefined, at: undefined, seed: main1, merged: null, verdict: { merge: false, reason: "A note is about the one case it came from." }, problems: [], cost_usd: undefined, tokens: undefined });
-  assert.ok(learned2.cost_usd.reflect === null && learned2.cost_usd.grade > 0 && learned2.tokens.grade.input > 0, JSON.stringify(learned2));
+  assert.ok(Object.keys(learned2.cost_usd).join() === "grade" && learned2.cost_usd.grade > 0 && learned2.tokens.grade.input > 0, JSON.stringify(learned2));
   assert.deepEqual((await api("GET", `/runs/${two}/learning/diff`)).body, { base: main1, head: null, files: [{ path: "prefers-tables.md", status: "added", patch: added(TABLES) }] });
   const learned1 = (await api("GET", `/runs/${one}/learning`)).body;
   assert.deepEqual([learned1.state, learned1.merged, learned1.verdict.merge], ["merged", main1, true]);
@@ -193,10 +193,15 @@ test("a person sees what the agent learned and controls it: the view, the log by
   const log2 = (await api("GET", `/agents/${id}/learning/log?limit=3&cursor=${log1.next_cursor}`)).body;
   assert.deepEqual([log1.total, log1.items.length, log2.items.map((c) => c.by), log2.next_cursor], [5, 3, [{ user: true }, { run: one }], null]);
   for (const query of ["limit=0", "limit=201", "limit=x", "cursor=bm9wZQ", "status=bogus"]) assert.equal((await api("GET", `/agents/${id}/learning/notes?${query}`)).status, 400, query);
-  assert.deepEqual((await api("GET", `/agents/${id}/learning`)).body.counts, { merged: 1, dropped: { grader: 2 }, in_progress: 0 });
+  // The counts leave archived runs out, as GET /stats does: an archived drop is no longer counted, and the two agree.
+  const counted = async () => [(await api("GET", `/agents/${id}/learning`)).body.counts, (({ runs: _, ...rest }) => rest)((await api("GET", `/stats?agent=${id}`)).body.learning)];
+  assert.deepEqual(await counted(), [{ merged: 1, dropped: { grader: 2 }, in_progress: 0 }, { merged: 1, dropped: { grader: 2 }, in_progress: 0 }]);
+  assert.equal((await api("POST", `/runs/${two}/archive`)).status, 200);
+  assert.deepEqual(await counted(), [{ merged: 1, dropped: { grader: 1 }, in_progress: 0 }, { merged: 1, dropped: { grader: 1 }, in_progress: 0 }]);
 
-  // An archived agent's learning reads, its runs still counted, and takes a person's write, as its definition does.
+  // An archived agent's learning reads, counted as GET /stats counts it, and takes a person's write, as its definition does.
   assert.equal((await api("POST", `/agents/${id}/archive`)).status, 200);
-  assert.deepEqual((await api("GET", `/agents/${id}/learning`)).body.counts, { merged: 1, dropped: { grader: 2 }, in_progress: 0 });
+  const [mine, stats] = await counted();
+  assert.deepEqual(mine, stats);
   assert.equal((await write(`${files}/zz-later.md`, note("Later", "Written while archived"), { "if-match": blob("zz-later.md") })).status, 200);
 });
