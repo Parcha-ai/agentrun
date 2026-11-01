@@ -18,7 +18,7 @@ export const FAUX_WEB_ENV = "AGENTRUN_SERVE_FAUX_WEB";
 export const TEXT_CAP = 60_000;
 export const LINKS_CAP = 200;
 export const TITLE_CAP = 500;
-const TIMEOUT_MS = 30_000;
+export const TIMEOUT_MS = 30_000;
 
 export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 

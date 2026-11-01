@@ -10,7 +10,7 @@
 import { defineTool } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
-import { clip, fetchOptions, fetchPage, LINKS_CAP, type Page, TEXT_CAP, TITLE_CAP, URL_PARAMETERS } from "./fetch-page.js";
+import { clip, fetchOptions, fetchPage, LINKS_CAP, type Page, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, URL_PARAMETERS } from "./fetch-page.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 
@@ -25,16 +25,23 @@ type GuardOptions = Omit<PublicFetchOptions, "maxBytes">;
  *  the key is not served. */
 export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal): Promise<Page | undefined> };
 
-/** The absolute http(s) URLs a markdown text links to, each once and without its fragment, in order. */
+/** The absolute http(s) URLs a markdown text links to (`[text](url)`), each once and without its fragment, in order. A
+ *  URL ends at whitespace or at the ")" that closes the link, so parentheses it holds in pairs (a wiki title's) stay. */
 function linksOf(markdown: string): string[] {
   const links = new Set<string>();
-  for (const [, href] of markdown.matchAll(/\]\((https?:\/\/[^\s)]+)/g)) {
-    const link = URL.parse(href!);
+  for (let at = markdown.indexOf("]("); at !== -1 && links.size < LINKS_CAP; at = markdown.indexOf("](", at + 2)) {
+    let end = at + 2;
+    for (let depth = 0; end < markdown.length && !/\s/.test(markdown[end]!); end++) {
+      if (markdown[end] === "(") depth++;
+      else if (markdown[end] === ")" && depth-- === 0) break;
+    }
+    const href = markdown.slice(at + 2, end);
+    const link = /^https?:\/\//i.test(href) ? URL.parse(href) : null;
     if (!link) continue;
     link.hash = "";
     links.add(link.href);
   }
-  return [...links].slice(0, LINKS_CAP);
+  return [...links];
 }
 
 /** Parallel's extract on `apiKey`: one URL a request, its full content as the page's text (markdown), its links read
@@ -65,20 +72,22 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
   };
 }
 
-/** Whether the public-host guard passes `url`: fetch_page's port check, then publicFetch's own checks of the first hop
- *  (scheme, name, every address it resolves to), stopped before it dials. */
-async function passes(url: string, options: GuardOptions): Promise<boolean> {
+/** Whether the public-host guard passes `url` within `ms` and the caller's signal: fetch_page's port check, then
+ *  publicFetch's own checks of the first hop (scheme, name, every address it resolves to), stopped before it dials. A
+ *  check that runs out of time (a resolver that does not answer) does not pass; publicFetch ends a lookup at the abort. */
+async function passes(url: string, options: GuardOptions, ms: number): Promise<boolean> {
   const target = URL.parse(url);
   if (!target || !PORTS.has(target.port)) return false;
   const { publicFetch } = await import("@parcha/pi-browser");
   const checked = new Error("checked, not dialled");
-  return publicFetch(url, { ...options, fetchImpl: async () => { throw checked; } }).then(() => false, (error: unknown) => error === checked);
+  const signal = AbortSignal.any([AbortSignal.timeout(ms), ...(options.signal ? [options.signal] : [])]);
+  return publicFetch(url, { ...options, signal, fetchImpl: async () => { throw checked; } }).then(() => false, (error: unknown) => error === checked);
 }
 
-/** The page at `url` as a WebPage: through `parallel` when it is given and live and the guard passes the URL, else (or
- *  when it answers no page) through fetch_page's guarded fetch. */
-export async function webFetch(url: unknown, { parallel, ...options }: GuardOptions & { parallel?: Extract | null } = {}): Promise<WebPage> {
-  if (parallel?.live() && typeof url === "string" && (await passes(url, options))) {
+/** The page at `url` as a WebPage: through `parallel` when it is given and live and the guard passes the URL within
+ *  `checkMs` (default fetch_page's 30 s), else (or when it answers no page) through fetch_page's guarded fetch. */
+export async function webFetch(url: unknown, { parallel, checkMs = TIMEOUT_MS, ...options }: GuardOptions & { parallel?: Extract | null; checkMs?: number } = {}): Promise<WebPage> {
+  if (parallel?.live() && typeof url === "string" && (await passes(url, options, checkMs))) {
     const page = await parallel.read(url, options.signal);
     if (page) return { ...page, via: "parallel" };
   }

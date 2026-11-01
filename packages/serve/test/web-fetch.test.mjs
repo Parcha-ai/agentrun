@@ -39,6 +39,31 @@ test("with a key, a public page is read through Parallel's extract: via parallel
   assert.deepEqual(net.dialled, [], "the guard checked the URL without dialling it, and the direct fetch never ran");
 });
 
+test("a page's links keep the parentheses a URL holds in pairs, a wiki title's, and end at the one that closes the link", async () => {
+  const full_content = "See [the function](https://en.wikipedia.org/wiki/Function_(mathematics)) and [the other page](https://other.example/y#top).";
+  const send = async () => new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Links", full_content }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  const page = await parallelExtract(CANARY, send).read(PUBLIC);
+  assert.deepEqual(page.links, ["https://en.wikipedia.org/wiki/Function_(mathematics)", "https://other.example/y"]);
+});
+
+test("a guard check whose lookup never answers does not pass within its bound: nothing goes to Parallel, the direct fetch answers", async (t) => {
+  withEnv(t, {}, [MODE]);
+  const { sent, send } = parallel();
+  const net = network();
+  // The check's lookup, the first, never settles; the direct fetch's, the next, answers from the table.
+  let lookups = 0;
+  const lookup = (host) => (lookups++ === 0 ? new Promise(() => {}) : net.lookup(host));
+  // The bound's timer does not hold a process open: this does, as a run's door does in its process.
+  const open = setInterval(() => {}, 1_000);
+  t.after(() => clearInterval(open));
+  const started = performance.now();
+  const page = await webFetch(PUBLIC, { ...net, lookup, parallel: parallelExtract(CANARY, send), checkMs: 50 });
+  assert.ok(performance.now() - started < 2_000, "the check gave up at its bound, not at Parallel's or the fetch's timeout");
+  assert.deepEqual([page.ok, page.title, page.via], [true, "Public page", "direct"], JSON.stringify(withoutText(page)));
+  assert.deepEqual(sent, [], "Parallel was sent nothing");
+  assert.equal(lookups, 2);
+});
+
 test("the URL in Parallel's errors, a 5xx, or a request that fails falls back to the guarded direct fetch: via direct, Parallel still tried next time", async (t) => {
   withEnv(t, {}, [MODE]);
   for (const mode of ["errors", "500", "503", "throws"]) {
@@ -77,7 +102,7 @@ test("a URL the guard refuses is never sent to Parallel: refused as fetch_page r
 
 test("a 401 or 403 stops Parallel for the rest of the run: the next read goes straight to the direct fetch", async (t) => {
   withEnv(t, {}, [MODE]);
-  for (const [key, mode] of [["not-the-key", ""], [CANARY, "403"]]) {
+  for (const [key, mode] of [["not-a-secret", ""], [CANARY, "403"]]) {
     const { sent, send } = parallel(mode);
     const extract = parallelExtract(key, send);
     const pages = [await webFetch(PUBLIC, { ...network(), parallel: extract }), await webFetch(PUBLIC, { ...network(), parallel: extract })];
