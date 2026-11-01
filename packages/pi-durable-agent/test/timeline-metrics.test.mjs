@@ -177,6 +177,16 @@ test("past 100 distinct tools a run keeps the 100 with the most calls and sums t
   assert.equal(Object.keys(runMetricsOf(entries.slice(0, 2 * (3 + 99 * 2))).tools).length, 100);
 });
 
+test("a tie for the last kept place goes to the tool called first, though its call never returned", () => {
+  const names = Array.from({ length: 101 }, (_, i) => `t${i}`);
+  // One answer calls t0 to t100; t0's call is interrupted, so it is tallied only at the end, after every other result.
+  const entries = [answer(names.map((name) => call(`k-${name}`, name)), usage(1, 1)), ...names.slice(1).map((name) => result(`k-${name}`, name, "ok"))];
+  const { tools } = runMetricsOf(entries);
+  assert.deepEqual(tools.t0, { calls: 1, errors: 1 }, "kept: called first");
+  assert.equal(tools.t100, undefined);
+  assert.deepEqual(tools[METRIC_NAMES.otherTools], { calls: 1, errors: 0 });
+});
+
 test("an empty or missing tool name counts under \"…unnamed tool\"; a name that starts with \"…\" gets another, so it is never one of those", () => {
   const entries = [
     answer([call("c1", "")], usage(1, 1)), result("c1", "", "no such tool", 0, { isError: true }),

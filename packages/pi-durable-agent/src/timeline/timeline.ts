@@ -495,11 +495,14 @@ export function timelineOf(entries: readonly EntryLike[], options: TimelineOptio
 export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
   const meter = createMeter();
   const seen = new Set<string>();
-  // Each call by `conversation:id`, and whether a result closed it, as the timeline pairs them.
+  // Each call by `conversation:id`, its tool's name as kept, and whether a result closed it, as the timeline pairs them.
   const calls = new Map<string, { name: string; done: boolean }>();
   const tools = new Map<string, ToolMetrics>();
-  const tally = (named: string | undefined, failed: boolean) => {
-    const name = named ? metricName(named) : METRIC_NAMES.unnamedTool;
+  // Each tool's place by its first call, or its first result with no call: a tie for the last kept place goes by it.
+  const order = new Map<string, number>();
+  const see = (name: string) => void (order.has(name) || order.set(name, order.size));
+  const tally = (name: string, failed: boolean) => {
+    see(name);
     const tool = tools.get(name) ?? { calls: 0, errors: 0 };
     tool.calls += 1;
     if (failed) tool.errors += 1;
@@ -515,16 +518,21 @@ export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
     if (meter.push(entry) === "answer" && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
       for (const block of blocksOf(message)) {
         const [id, name] = [str(block.id), str(block.name)];
-        if (block.type === "toolCall" && id && name) calls.set(`${conv}:${id}`, { name, done: false });
+        if (block.type !== "toolCall" || !id || !name) continue;
+        const key = metricName(name);
+        calls.set(`${conv}:${id}`, { name: key, done: false });
+        see(key);
       }
     } else if (entry.kind === "pi.tool-result" && message) {
       const call = calls.get(`${conv}:${str(message.toolCallId) ?? ""}`);
       if (call) call.done = true;
-      tally(call?.name ?? str(message.toolName), message.isError === true);
+      const named = str(message.toolName);
+      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), message.isError === true);
     }
   }
   for (const call of calls.values()) if (!call.done) tally(call.name, true);
-  return { ...meter.settled(), tools: keepBusiest(tools, (t) => t.calls, (a, b) => ({ calls: a.calls + b.calls, errors: a.errors + b.errors }), METRIC_NAMES.otherTools) };
+  const ordered = new Map([...tools].sort(([a], [b]) => order.get(a)! - order.get(b)!));
+  return { ...meter.settled(), tools: keepBusiest(ordered, (t) => t.calls, (a, b) => ({ calls: a.calls + b.calls, errors: a.errors + b.errors }), METRIC_NAMES.otherTools) };
 }
 
 const roleOf = (entry: unknown): unknown => {
