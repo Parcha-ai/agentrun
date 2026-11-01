@@ -3,6 +3,6 @@ export { foldLabel, inputPreview, labelOf, registerLabel, registerTurnEnding, ty
 export { renderText } from "./render-text.js";
 export { cut, scrubUrls } from "./util.js";
 export {
-  CAPS, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf, timelineReducer,
+  CAPS, METRIC_NAMES, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf, timelineReducer,
   type AgentEventLike, type EntryLike, type RunMetrics, type TimelineEvent, type TimelineKind, type TimelineOptions, type ToolMetrics,
 } from "./timeline.js";
