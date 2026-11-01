@@ -27,16 +27,18 @@ function view(fields: Record<string, ToolKeyField>, reenter: ToolKeys["reenter"]
   };
 }
 
-type Call = { method: string; path: string; body: unknown };
+type Call = { method: string; path: string; type: string | null; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-/** A server that answers GET with `views` in turn (the last one again after) and PUT and DELETE with `write`. */
+/** A server that answers GET with `views` in turn (the last one again after) and PUT and DELETE with `write`. As serve
+ *  does, it takes the session cookie on a write only when the write is JSON: one that is not is 401, bodiless or not. */
 function server(views: ToolKeys[], write: (call: Call) => Response | Promise<Response> = () => new Response(null, { status: 204 })) {
   const calls: Call[] = [];
   let read = 0;
   const fetch = (async (url: string, init?: RequestInit) => {
-    const call = { method: init?.method ?? "GET", path: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined };
+    const call = { method: init?.method ?? "GET", path: String(url), type: new Headers(init?.headers).get("content-type"), body: init?.body ? JSON.parse(String(init.body)) : undefined };
     calls.push(call);
     if (call.method === "GET") return json(200, views[Math.min(read++, views.length - 1)]);
+    if (!call.type?.startsWith("application/json")) return json(401, { error: { code: "unauthenticated", message: "this route needs Authorization: Bearer <the token in the data directory>", retryable: false } });
     return write(call);
   }) as typeof globalThis.fetch;
   return { v2: createClient({ fetch }), calls };
@@ -88,7 +90,7 @@ describe("KeysPage", () => {
     await page.type("BROWSERBASE_API_KEY", FAKE);
     await page.click(page.row("Browserbase"), /^Save$/);
     const writes = calls.filter((c) => c.method !== "GET");
-    expect(writes).toEqual([{ method: "PUT", path: "/v2/settings/tool-keys/browserbase", body: { values: { BROWSERBASE_API_KEY: FAKE } } }]);
+    expect(writes).toEqual([{ method: "PUT", path: "/v2/settings/tool-keys/browserbase", type: "application/json", body: { values: { BROWSERBASE_API_KEY: FAKE } } }]);
     expect(calls.filter((c) => c.method === "GET" && c.path === "/v2/settings/tool-keys")).toHaveLength(2);
     expect(page.row("Browserbase").textContent).toContain("BROWSERBASE_API_KEYset · saved here");
     expect(page.input("BROWSERBASE_API_KEY")).toBeNull();
@@ -197,7 +199,9 @@ describe("KeysPage", () => {
     await page.click(page.row("Parallel"), /^Remove$/);
     expect(calls.filter((c) => c.method === "DELETE")).toEqual([]);
     await page.click(page.row("Parallel"), /^Remove$/);
-    expect(calls.filter((c) => c.method === "DELETE")).toEqual([{ method: "DELETE", path: "/v2/settings/tool-keys/parallel", body: undefined }]);
+    // Bodiless, and still JSON: the cookie counts on a write only with that type.
+    expect(calls.filter((c) => c.method === "DELETE")).toEqual([{ method: "DELETE", path: "/v2/settings/tool-keys/parallel", type: "application/json", body: undefined }]);
+    expect(page.row("Parallel").textContent).not.toContain("The key was not removed");
     expect(page.row("Parallel").textContent).toContain("PARALLEL_API_KEYnot set");
     expect(changed).toBe(1);
   });
