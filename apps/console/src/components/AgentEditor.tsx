@@ -88,6 +88,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     const p = await onSave(fields, note);
     setSaving(false); setProblem(p); setSaved(!p); if (!p) setNote("");
   };
+  // The tools that reach the web which this agent's harness runs here, for the notice when it has none of them.
+  const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -107,7 +109,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       )}
       {notice && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-warning-text md:px-8" role="alert">{notice}</p>}
       {!workflow && !reachesWeb(f.tools ?? []) && (
-        <p className="border-b bg-card px-5 py-2.5 font-mono text-[12px] text-muted-foreground md:px-8">This agent can't reach the web: fetch_page isn't among its tools{toolsFor(f.harness ?? "pi", caps.tools).some((t) => t.name === "fetch_page") ? "." : ` (${f.harness ?? "pi"} doesn't run it on this server).`}</p>
+        <p className="border-b bg-card px-5 py-2.5 font-mono text-[12px] text-muted-foreground md:px-8">This agent can't reach the web: {webHere.length ? `tick ${webHere.join(" or ")} in Tools.` : `${f.harness ?? "pi"} runs no web tool on this server.`}</p>
       )}
       {problem?.kind === "invalid" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">The server refused the save: {problem.message}</p>}
       {problem?.kind === "other" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">{problem.message}</p>}
@@ -172,7 +174,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     return (
                       <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
                         <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-[hsl(var(--primary))]" />
-                        <span>{t.name}{why && <span className="ml-2 text-[11px] text-muted-foreground">{why}</span>}</span>
+                        <span className="min-w-0">{t.name}{why && <span className="ml-2 text-[11px] text-muted-foreground">{why}</span>}
+                          {t.summary && <span className="mt-0.5 line-clamp-2 block font-sans text-[11px] text-muted-foreground" title={t.summary}>{t.summary}</span>}</span>
                       </label></li>
                     );
                   })}
