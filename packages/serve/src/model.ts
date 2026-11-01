@@ -269,11 +269,6 @@ export async function catalogPrices(): Promise<Map<string, Listed[]>> {
   return out;
 }
 
-/** A gateway model's catalog price: the paid entry of the provider its ref names, when the catalog lists one. Else, as
- *  the gateway does not say whose model answers (a named provider is a hint), the highest any provider lists, so the
- *  estimate and a cap on it err high: one entry's whole price, the one with the most input plus output (the first of
- *  equals), so a $0 entry never wins over a paid one, a named provider's included. An id the catalog lists at $0 is a
- *  known $0; one it does not list has no price (undefined). */
 /** The catalog's price of model `id`, undefined when it does not list the model; listed at $0 is $0. */
 export function listedOf(catalog: ReadonlyMap<string, readonly Listed[]>, id: string, named: string | undefined): ModelCost | undefined {
   // A revision's ref names its provider: priced as that provider's entry for the model, whether it went whole or bare.
@@ -284,6 +279,11 @@ export function listedOf(catalog: ReadonlyMap<string, readonly Listed[]>, id: st
   return listedPrice(catalog.get(id.slice(slash + 1)) ?? [], id.slice(0, slash));
 }
 
+/** A gateway model's catalog price: the paid entry of the provider its ref names, when the catalog lists one. Else, as
+ *  the gateway does not say whose model answers (a named provider is a hint), the highest any provider lists, so the
+ *  estimate and a cap on it err high: one entry's whole price, the one with the most input plus output (the first of
+ *  equals), so a $0 entry never wins over a paid one, a named provider's included. An id the catalog lists at $0 is a
+ *  known $0; one it does not list has no price (undefined). */
 function listedPrice(entries: readonly Listed[], named: string | undefined): ModelCost | undefined {
   if (!entries.length) return undefined;
   const own = named === undefined ? undefined : entries.find((entry) => entry.provider === named);
