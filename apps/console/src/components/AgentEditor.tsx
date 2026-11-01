@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
-import { type Agent, type AgentFields, DECISION, defaultTools, harnessOptions, reachesWeb, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, DECISION, defaultTools, harnessOptions, isStarter, reachesWeb, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -82,12 +82,12 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const fieldWarning = (field: string) => warningsFor(warnings, field).map((w) => w.message).join(" ") || undefined;
   const set = (patch: AgentFields) => { setF((x) => ({ ...x, ...patch })); setSaved(false); };
   const workflow = agent?.kind === "workflow";
-  // A new agent made as a decision agent: a workflow revision from the starter, so no instructions, tools or thinking.
-  const deciding = creating && f.harness === DECISION;
+  // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
+  const starting = creating && isStarter(f.harness);
   const choices = harnessOptions(caps.harnesses, creating ? { available: !!caps.decisionProvider } : undefined);
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
-  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(deciding && s.id === "tools"));
+  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools"));
   const at = steps.findIndex((s) => s.id === step);
   const save = async () => {
     if (!onSave) return;
@@ -129,7 +129,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           </ul>
         </div>
       )}
-      {!workflow && !deciding && !reachesWeb(f.tools ?? []) && (
+      {!workflow && !starting && !reachesWeb(f.tools ?? []) && (
         <p className="border-b bg-card px-5 py-2.5 font-mono text-[12px] text-muted-foreground md:px-8">This agent can't reach the web: {webHere.length ? `tick ${webHere.join(" or ")} in Tools.` : `${f.harness ?? "pi"} runs no web tool on this server.`}</p>
       )}
       {problem?.kind === "invalid" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">The server refused the save: {problem.message}</p>}
@@ -164,9 +164,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               <Field label="Description" optional note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("description")} warning={fieldWarning("description")}>
                 <input value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} className={cn(input, !creating && "text-muted-foreground")} />
               </Field>
-              {deciding ? (
+              {starting ? (
                 <Field label="Workflow">
-                  <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">A decision agent is a workflow. It starts from a starter decision workflow: one typed question, and a person when the answer is unclear or not confident enough. Create it, then edit its nodes in the Workflow step.</p>
+                  <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">{f.harness === DECISION
+                    ? "A decision agent is a workflow. It starts from a starter decision workflow: one typed question, and a person when the answer is unclear or not confident enough. Create it, then edit its nodes in the Workflow step."
+                    : "A workflow agent starts from a one-step workflow: an agent node that does what its input's task asks. Create it, then edit its nodes, or paste a workflow's JSON over it, in the Workflow step."}</p>
                 </Field>
               ) : workflow ? (
                 <Field label="Workflow" note="This agent is a workflow. Edit its nodes in the Workflow step: the graph redraws as you type and the server checks it." warning={fieldWarning("workflow")}>
@@ -227,7 +229,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   </div>
                 </Field>
               )}
-              {!workflow && !deciding && (
+              {!workflow && !starting && (
                 <Field label="Thinking" note="How hard the model thinks before it answers." error={fieldError("thinking")} warning={fieldWarning("thinking")}>
                   <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Thinking">
                     {caps.thinking.map((t) => (
@@ -238,7 +240,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   </div>
                 </Field>
               )}
-              {!deciding && (
+              {!starting && (
                 <Field label="Model" optional note={caps.defaultModel ? `Empty uses the server's default (${caps.defaultModel}).` : undefined} error={fieldError("model")} warning={fieldWarning("model")}>
                   <input value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder={caps.defaultModel ?? "provider/model"} className={input} />
                 </Field>
@@ -280,14 +282,14 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         {step === "history" && <span className="flex-1" />}
         {saved && <span className="caps text-[11px] text-success-text">Saved</span>}
         {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
-        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !deciding && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>}
+        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>}
       </footer>
     </div>
   );
 }
 
 /** The harness picker's columns on a wide screen, one per choice: literal class names, so Tailwind keeps them. */
-const COLUMNS: Record<number, string> = { 1: "sm:grid-cols-1", 2: "sm:grid-cols-2", 3: "sm:grid-cols-3", 4: "sm:grid-cols-4" };
+const COLUMNS: Record<number, string> = { 1: "sm:grid-cols-1", 2: "sm:grid-cols-2", 3: "sm:grid-cols-3", 4: "sm:grid-cols-4", 5: "sm:grid-cols-5" };
 
 const input = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 

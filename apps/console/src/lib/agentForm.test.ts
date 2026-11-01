@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers } from "./agentForm";
+import { createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers, WORKFLOW } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
+import { WORKFLOW_STARTER } from "./workflowStarter";
 import { ClientError } from "./client";
 import agent from "../fixtures/agent.invoice-checker.json";
 import workflow from "../fixtures/agent.support-triage.json";
@@ -101,9 +102,9 @@ describe("harnessOptions", () => {
 describe("a decision agent", () => {
   it("is offered on create after the harnesses, as a choice and never a harness id: available when the server runs decision workflows, else disabled with why", () => {
     expect(DECISION).toBe("decision");
-    expect(harnessOptions(caps.body.harnesses, { available: true }).map((h) => h.id)).toEqual(["pi", "claude-agent", "codex", "decision"]);
-    expect(harnessOptions(caps.body.harnesses, { available: true }).at(-1)).toEqual({ id: "decision", label: "Decision", available: true, reason: undefined });
-    const off = harnessOptions([{ id: "pi", available: true }], { available: false }).at(-1)!;
+    expect(harnessOptions(caps.body.harnesses, { available: true }).map((h) => h.id)).toEqual(["pi", "claude-agent", "codex", "decision", "workflow"]);
+    expect(harnessOptions(caps.body.harnesses, { available: true }).find((h) => h.id === "decision")).toEqual({ id: "decision", label: "Decision", available: true, reason: undefined });
+    const off = harnessOptions([{ id: "pi", available: true }], { available: false }).find((h) => h.id === "decision")!;
     expect([off.id, off.available]).toEqual(["decision", false]);
     expect(off.reason).toMatch(/decision workflows/);
     expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain("decision");
@@ -166,6 +167,38 @@ describe("a decision agent", () => {
       expect(nodes).not.toContain("code");
       expect(JSON.stringify(workflow)).not.toMatch(/"via":"(?:executor|shell)"/);
     }
+  });
+});
+
+describe("a general workflow agent", () => {
+  it("is offered on create after Decision, available on every server, a server with no decision provider included; never when editing", () => {
+    expect(WORKFLOW).toBe("workflow");
+    for (const available of [true, false]) {
+      expect(harnessOptions(caps.body.harnesses, { available }).at(-1)).toEqual({ id: "workflow", label: "Workflow", available: true, reason: undefined });
+    }
+    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain("workflow");
+  });
+
+  it("is created as a workflow revision from the general starter: no instructions, harness, thinking, model or tools, and no decision provider", () => {
+    const body = createBody({ name: "Next steps", description: "Says what to do next.", instructions: "Typed before the choice.", harness: WORKFLOW, tools: ["read"], thinking: "high", model: "faux/faux-1" });
+    expect(body).toEqual({ definition: { version: 1, name: "Next steps", description: "Says what to do next.", workflow: WORKFLOW_STARTER, skills: [], tools: [] } });
+    expect(body.definition.workflow).not.toBe(WORKFLOW_STARTER);
+    expect(createBody({ name: "W", description: "", instructions: "", harness: WORKFLOW, tools: [], decisionProvider: "parallel" }).definition.workflow).toEqual(WORKFLOW_STARTER);
+  });
+
+  // A default server refuses the run of a workflow with a code node (no --allow-code-nodes), and a decision node needs a
+  // decision provider: the general starter has neither, so any server runs it.
+  it("has no code node and no decision node: one agent step in a chain, with an example input", () => {
+    const kinds = (node: unknown): string[] => {
+      if (Array.isArray(node)) return node.flatMap(kinds);
+      if (!node || typeof node !== "object") return [];
+      const own = typeof (node as { node?: unknown }).node === "string" ? [(node as { node: string }).node] : [];
+      return [...own, ...Object.values(node).flatMap(kinds)];
+    };
+    const workflow = createBody({ name: "W", description: "", instructions: "", harness: WORKFLOW, tools: [] }).definition.workflow as typeof WORKFLOW_STARTER;
+    expect(kinds(workflow.root)).toEqual(["chain", "agent"]);
+    expect(JSON.stringify(workflow)).not.toMatch(/"node":"(?:code|judge|escalate)"|"via":"(?:executor|shell)"|"provider"/);
+    expect(workflow.schemas.Input.examples).toHaveLength(1);
   });
 });
 
