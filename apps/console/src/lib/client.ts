@@ -23,6 +23,11 @@ export class ClientError extends Error {
  *  workflow ("" for the document itself). */
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
 
+/** `GET /v2/setup/import`'s answer: the counts before the owner is set, the import's state after. */
+export type ImportOffer = { projects: number; sessions: number };
+export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" };
+export type SetupImport = ImportOffer | ImportState;
+
 export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean } } };
 export type Client = ReturnType<typeof createClient>;
 
@@ -62,7 +67,17 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       throw e;
     }),
     signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
-    setup: (password: string, code?: string) => call<{ signed_in: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}) } }),
+    /** Sets the owner's password. `importSessions`: the owner ticked setup's box, so the server imports this machine's
+     *  sessions once the password is set; never sent otherwise. */
+    setup: (password: string, code?: string, importSessions = false) =>
+      call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importSessions ? { import: true } : {}) } }),
+    /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, how many
+     *  sessions setup's box would import; after, to the signed-in owner, how the import asked for at setup stands. Null
+     *  where the server offers none (404) or refuses the read. */
+    setupImport: () => call<SetupImport>("GET", "/setup/import").catch((e) => {
+      if (e instanceof ClientError && (e.status === 404 || e.status === 403)) return null;
+      throw e;
+    }),
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),

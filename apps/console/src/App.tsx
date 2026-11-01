@@ -10,7 +10,7 @@ import { RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
-import { allPages, type Capabilities, ClientError, createClient } from "@/lib/client";
+import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState } from "@/lib/client";
 import { appendRuns } from "@/lib/idempotency";
 import type { Run } from "@/lib/v2";
 
@@ -42,6 +42,17 @@ function setupCodeOnce(): string | null {
   return capturedSetup.code;
 }
 
+/** How often the console reads an import under way. Exported for its test. */
+export const IMPORT_POLL_MS = 1000;
+
+/** The import asked for at setup, as a line. */
+function importLine(s: ImportState): string {
+  if (s.state === "running") return "Importing this machine's sessions: agents appear as they arrive.";
+  if (s.state === "stopped") return "The import of this machine's sessions stopped. It goes on when the server starts again.";
+  const runs = `${s.runs.toLocaleString("en-US")} session${s.runs === 1 ? "" : "s"}`;
+  return `Imported ${runs} into ${s.agents.toLocaleString("en-US")} agent${s.agents === 1 ? "" : "s"}${s.skipped ? `; ${s.skipped.toLocaleString("en-US")} left out` : ""}.`;
+}
+
 /** The console over the server it is served from, behind its sign-in: agents, runs, and a run followed live. */
 export function App() {
   const v2 = useMemo(() => createClient(), []);
@@ -55,11 +66,19 @@ export function App() {
     setAuth(authMode(r, probe));
   };
   useEffect(() => { readSession().catch(() => setAuth("sign_in")); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Setup's box, offered only where the server answers with this machine's sessions (on loopback, before an owner).
+  const [offer, setOffer] = useState<ImportOffer | null>(null);
+  useEffect(() => {
+    if (auth !== "setup") return;
+    let live = true;
+    v2.setupImport().then((r) => { if (live && r && "sessions" in r) setOffer(r); }).catch(() => {});
+    return () => { live = false; };
+  }, [v2, auth]);
   if (auth === null) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
   if (auth !== "signed_in") {
     return (
-      <SignIn key={auth} mode={auth} code={setupCode} onSubmit={async (password, code) => {
-        try { await (auth === "setup" ? v2.setup(password, code) : v2.signIn(password)); setAuth("signed_in"); return null; }
+      <SignIn key={auth} mode={auth} code={setupCode} offer={offer} onSubmit={async (password, code, importSessions) => {
+        try { await (auth === "setup" ? v2.setup(password, code, importSessions) : v2.signIn(password)); setAuth("signed_in"); return null; }
         catch (e) {
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
           if (e instanceof ClientError && e.status === 403 && auth === "setup") { await readSession().catch(() => {}); }
@@ -86,9 +105,25 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [error, setError] = useState<string | null>(null);
   const asked = useRef(0);
   const go = (hash: string) => { location.hash = hash; };
-  useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
+  // The import asked for at setup (here, or before the server restarted): read until it ends, then the agents' names again.
+  const [imported, setImported] = useState<ImportState | null>(null);
+  const [namesTry, setNamesTry] = useState(0);
   useEffect(() => {
-    v2.capabilities().then(setCaps).catch(() => {});
+    let live = true;
+    (async () => {
+      for (;;) {
+        const s = await v2.setupImport().catch(() => null);
+        if (!live || !s || !("state" in s)) return;
+        setImported(s);
+        if (s.state !== "running") return void setNamesTry((n) => n + 1);
+        await new Promise((r) => setTimeout(r, IMPORT_POLL_MS));
+      }
+    })();
+    return () => { live = false; };
+  }, [v2]);
+  useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
+  useEffect(() => { v2.capabilities().then(setCaps).catch(() => {}); }, [v2]);
+  useEffect(() => {
     // Every page of agents, for their names.
     (async () => {
       const all: Record<string, string> = {};
@@ -100,7 +135,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       }
       setNames(all);
     })().catch(() => {});
-  }, [v2]);
+  }, [v2, namesTry]);
   useEffect(() => {
     if (where.section !== "runs" || where.run) return;
     // Only the newest request lands: a slower answer for all runs never replaces one agent's runs, or the reverse.
@@ -166,6 +201,12 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }}>
       {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
+      {imported && (
+        <p className="flex items-center gap-3 border-b bg-card px-5 py-3 font-mono text-[13px] md:px-8" role="status">
+          <span className="flex-1">{importLine(imported)}</span>
+          {imported.state !== "running" && <button type="button" className="caps border px-2 py-1 text-[11px] hover:bg-accent" onClick={() => setImported(null)}>Dismiss</button>}
+        </p>
+      )}
       {where.section === "playground" && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "mission"
