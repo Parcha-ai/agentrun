@@ -5,7 +5,7 @@
 // another read on the same machine and boot. On macOS a pid freed and handed out again within the same second would pass
 // for the old process; pids there are handed out in order up to 99999 before one is reused.
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 
 /** A live process (a zombie is not one): its parent, its group, and its start. */
@@ -37,9 +37,23 @@ export interface ProcessSnapshot {
   commandLine(pid: number): string;
 }
 
+/** Where a reader sees processes from, each part undefined when it cannot be read: its pid namespace (`pid:[<inode>]`),
+ *  the start of that namespace's PID 1, and the time now, both in clock ticks since boot (the clock of /proc/<pid>/stat's
+ *  start field: /proc/uptime times USER_HZ, never a wall clock). */
+export interface ProcessOrigin {
+  readonly pidns?: string;
+  readonly pid1Start?: number;
+  readonly nowTicks?: number;
+}
+
+/** Clock ticks per second as /proc reports them (USER_HZ, the kernel's ABI): 100 on every architecture Node runs on. */
+const USER_HZ = 100;
+
 export interface ProcessTable {
   /** A new look. Through ps it throws when the listing cannot be had or read: no process is ever taken for gone on a failed read. */
   snapshot(): ProcessSnapshot;
+  /** Where this reader sees processes from (Linux); absent through ps, whose one namespace makes it moot (macOS). */
+  origin?(): ProcessOrigin;
   /** This boot's id; undefined when it cannot be read. */
   bootId(): string | undefined;
   /** How often a recorder's walk is worth repeating: a /proc read is cheap, a ps listing is not. */
@@ -176,6 +190,27 @@ export function procTable(proc = "/proc", readText: (path: string) => string = (
       } catch {
         return undefined;
       }
+    },
+    origin() {
+      let pidns: string | undefined;
+      let nowTicks: number | undefined;
+      try {
+        pidns = readlinkSync(join(proc, "self", "ns", "pid"));
+      } catch {
+        // unknown
+      }
+      try {
+        const seconds = Number(read("uptime").split(" ")[0]);
+        if (Number.isFinite(seconds) && seconds >= 0) nowTicks = Math.floor(seconds * USER_HZ);
+      } catch {
+        // unknown
+      }
+      const pid1Start = snapshot.info(1)?.start;
+      return {
+        ...(pidns === undefined ? {} : { pidns }),
+        ...(pid1Start === undefined || !Number.isFinite(pid1Start) ? {} : { pid1Start }),
+        ...(nowTicks === undefined ? {} : { nowTicks }),
+      };
     },
     walkMs: 100,
   };
