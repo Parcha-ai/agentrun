@@ -85,9 +85,11 @@ Over a cap is refused, never cut.
 - A run never deletes a note, the index or a memo. A note leaves use by its `status` (`superseded` or `retired`). A
   skill or a workflow draft may be deleted as a whole: a workflow folder that still holds a file holds both of its files.
 - Every changed path but the memo and `learnings/INDEX.md` is named under the memo's `## Proposed changes`.
-- No file holds text shaped like a secret (well-known key prefixes such as AWS, Google, GitHub, Slack and `sk-` keys,
-  JSON web tokens, URLs with a password, and PEM private-key headers), or a value the host names as secret. Whether a
-  note holds one case's data is the review's judgment, not the checker's.
+- Nothing the run writes holds text shaped like a secret (well-known key prefixes such as AWS, Google, GitHub, Slack
+  and `sk-` keys, JSON web tokens, URLs with a password, and PEM private-key headers), or a value the host names as
+  secret: not a file, not a path it adds or changes, not its branch's name. A value counts as written, as JSON writes
+  it, percent or form encoded, in base64 or in hex. Whether a note holds one case's data is the review's judgment, not
+  the checker's.
 - A workflow draft names only what runs on the workflow DSL on any harness: see [Workflow drafts](#workflow-drafts).
 
 ## The memo
@@ -238,8 +240,8 @@ when there is one, the file; it never prints a value it refused.
 | `encoding` | not UTF-8 |
 | `lfs_pointer` | a Git LFS pointer |
 | `invisible_unicode` | a character a reader does not see, by code point |
-| `secret_shape` | text shaped like a secret, by kind |
-| `secret_value` | a value the host named as secret |
+| `secret_shape` | text shaped like a secret, by kind, in a file or its path, or in the branch's name |
+| `secret_value` | a value the host named as secret, in a file or its path, or in the branch's name |
 | `memo_missing` | the branch carries no memo of its own |
 | `memo` | the memo's front matter or sections are out of shape |
 | `memo_run` | the memo's `run` is not the branch's |
