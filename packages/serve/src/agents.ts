@@ -165,23 +165,28 @@ export class Agents {
       const texts = await this.request(() => this.texts(held.map(([, sha]) => sha)));
       files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
     }
-    // An edit that names no harness or learning switch keeps the agent's, as it keeps its skill files: absent here is
-    // unchanged, not the default.
+    // An edit that names no harness keeps the agent's, as it keeps its skill files: absent here is unchanged, not pi.
     const current = entry.revision?.body.harness;
-    const learning = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.learning : undefined;
-    const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && current ? { harness: current } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}) }, files, note);
+    const revision = this.revisionOf(definition.harness === undefined && current ? { ...definition, harness: current } : definition, files, note);
     await this.checked(revision);
     await check?.(revision);
+    // An edit that names no learning switch keeps the switch of the revision it commits on, read in the same try as the
+    // commit, never the one read before the checks above: another edit may set it while they run. No check reads it.
+    const onto = (now: AgentEntry): NewRevision => {
+      const kept = now.revision?.kind === "agentic" ? now.revision.body.learning : undefined;
+      return revision.kind === "agentic" && definition.learning === undefined && kept !== undefined ? { ...revision, learning: kept } : revision;
+    };
     // Each try reads the current revision, checks against it and commits on it in one go: a try a busy store sent back
     // checks again, and the store refuses the commit if another writer moved the current revision after this read.
     const attempt = async (): Promise<AgentEntry | undefined> => {
       const now = held(this.entry(agent.id) ?? entry);
-      if (!contract && now.revision && sameRevision(now.revision, revision)) {
+      const next = onto(now);
+      if (!contract && now.revision && sameRevision(now.revision, next)) {
         this.checkVersion(definition, now.version);
         return now;
       }
       if (!contract) this.checkVersion(definition, now.revisions + 1);
-      await this.store.commitRevision(agent.id, revision, { setCurrent: true, ifCurrent: now.revision?.id ?? null });
+      await this.store.commitRevision(agent.id, next, { setCurrent: true, ifCurrent: now.revision?.id ?? null });
       return undefined;
     };
     for (let tries = 1; ; tries++) {

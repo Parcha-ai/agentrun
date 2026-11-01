@@ -1,8 +1,11 @@
 // Edits are revisions: each definition an agent had is kept, a run pins one, and every run of every agent is listed.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { test } from "node:test";
-import { agent, answerFlow, flowAgent, follow, serve, startRun, storeRun } from "./support.mjs";
+import { Agents } from "../dist/agents.js";
+import { checkDefinitionBody } from "../dist/validate.js";
+import { agent, answerFlow, flowAgent, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 
 test("PUT definition commits a new revision whose parent is the current one and makes it current; skills carry over", async (t) => {
@@ -228,4 +231,24 @@ test("the switch: kept on a revision when a definition sets it, true or false, a
   assert.deepEqual(wrong.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "wrong_type"]]);
   const flow = await api("POST", "/agents", flowAgent("flow", undefined, { learning: true }));
   assert.deepEqual(flow.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "not_allowed"]]);
+});
+
+test("an edit that leaves the switch out, checked while another edit turns learning on, lands on that edit and keeps learning on", async (t) => {
+  const agents = new Agents(join(await scratch(t), "agents"));
+  t.after(() => agents.close());
+  const edit = (definition) => checkDefinitionBody({ definition: { name: "x", ...definition } }, { creating: false });
+  const read = await agents.create(checkDefinitionBody(agent("x")));
+  assert.equal(read.revision.body.learning, undefined);
+  // B leaves the switch out and reads the agent before A; its checks hold until A, which turns learning on, has landed.
+  let started, release;
+  const running = new Promise((resolve) => (started = resolve));
+  const held = new Promise((resolve) => (release = resolve));
+  const b = agents.commit(read, edit({ instructions: "Answer briefly." }), { check: () => (started(), held) });
+  await running;
+  const a = await agents.commit(read, edit({ instructions: "Answer.", learning: true }));
+  assert.equal(a.revision.body.learning, true);
+  release();
+  const landed = await b;
+  assert.deepEqual([landed.revision.parent, landed.version, landed.revision.body.instructions], [a.revision.id, 3, "Answer briefly."], "B landed on A, no If-Match");
+  assert.equal(landed.revision.body.learning, true, "B keeps the switch of the revision it landed on, not the one it first read");
 });
