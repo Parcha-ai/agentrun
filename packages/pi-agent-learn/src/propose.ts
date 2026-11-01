@@ -2,7 +2,8 @@ import type { Session } from "@earendil-works/pi-durable";
 import type { Repo } from "@parcha/pi-git-remote";
 import { type Caps, createGuard } from "./guard.js";
 import { type Draft, runBranchFiles } from "./branch.js";
-import { COMMIT_SHA, RUN_ID, runBranch, WORKFLOW_NAME } from "./layout.js";
+import { COMMIT_SHA, memoPath, RUN_ID, runBranch, WORKFLOW_NAME } from "./layout.js";
+import { type Reflection, reflectionProblem } from "./reflect.js";
 import { learningsAt, readSeed } from "./seed.js";
 import type { ServedRun } from "./serving.js";
 import { collectCandidates } from "./tool.js";
@@ -13,11 +14,13 @@ import { collectUses, collectWorkflows, COPIED_TEXT, copiesRead, liveRevisionAt,
 export type ProposeTarget = Parameters<typeof collectCandidates>[0];
 
 /** A saved workflow the step left out of the proposal, and why, in words that name nothing the run read. */
+/** What the proposal left out, and why: a saved workflow by its name, or `reflection`, the memo's two sections. */
 export type Withheld = { readonly name: string; readonly reason: string };
 
 /** `proposed`: one commit made and pushed. `already`: the run's branch held a commit for this run, so none was made, and it
  *  is pushed again. `empty`: nothing to propose. `refused`: the guard objected; nothing was committed or pushed.
- *  `withheld`, when there are any: the saved workflows that carry text the run read (`read`), proposed with none of it. */
+ *  `withheld`, when there are any: the saved workflows that carry text the run read (`read`), proposed with none of it,
+ *  and the reflection when it was out of shape or the guard refused it, the memo then holding the host's lines. */
 export type ProposeResult =
   | { readonly status: "proposed" | "already"; readonly sha: string; readonly withheld?: readonly Withheld[] }
   | { readonly status: "empty"; readonly withheld?: readonly Withheld[] }
@@ -81,6 +84,10 @@ export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> &
   readonly outcome?: "completed" | "failed" | "stopped";
   /** What the run cost, when the host knows it, for the memo. */
   readonly costUsd?: number;
+  /** The agent's reply to `REFLECT_PROMPT`, read with `parseReflection`: the memo's "What happened" and "What could be
+   *  better" in its own words. Out of shape, or holding what the guard refuses (a secret, this case's data), it is left
+   *  out and the host's lines stand; the notes are proposed either way. */
+  readonly reflection?: Reflection;
   /**
    * The untrusted texts the run read (the pages its tools fetched, say). A saved workflow any `COPIED_TEXT` characters of
    * whose strings (case and whitespace folded) appear in one is withheld: its records stay out of the proposal and the result
@@ -105,7 +112,7 @@ export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> &
  *  branch on the shared layout, from the commit the run was seeded from: the memo, a note per lesson, fact or correction,
  *  one more use on each note it used, the index, a draft per workflow, and `uses/<run id>.json`. */
 export async function proposeLearning(options: ProposeOptions): Promise<ProposeResult> {
-  const { target, uses: usesSource, workflows, untrusted, read, workDir, seedSha, served, outcome, costUsd, ...rest } = options;
+  const { target, uses: usesSource, workflows, untrusted, read, workDir, seedSha, served, outcome, costUsd, reflection, ...rest } = options;
   const candidates = await collectCandidates(target);
   let records = workflows;
   let uses = await usesSource?.(target);
@@ -132,7 +139,13 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
   const out = <T extends object>(result: T): T => (withheld.length ? { ...result, withheld } : result);
   const described = new Map(candidates.filter((c) => c.type === "workflow" && typeof c.id === "string").map((c) => [c.id!, c.text] as const));
   const names = [...new Set([...Object.keys(records ?? {}), ...described.keys()])].sort();
-  if (candidates.length === 0 && uses === undefined && names.length === 0) return out({ status: "empty" as const });
+  // A run that noted nothing still proposes its memo when it reflected.
+  const nothing = candidates.length === 0 && uses === undefined && names.length === 0;
+  if (nothing && reflection === undefined) return out({ status: "empty" as const });
+  if (nothing && reflectionProblem(reflection!) !== undefined) {
+    withheld.push({ name: "reflection", reason: reflectionProblem(reflection!)! });
+    return out({ status: "empty" as const });
+  }
   if (typeof rest.runId !== "string" || !RUN_ID.test(rest.runId)) return { status: "refused", refusals: [{ reason: "invalid", detail: "the run id is not valid" }] };
   // The commit the run was seeded from: its branch starts there, and its memo and notes name it. A run that was not seeded
   // starts from main as it is now.
@@ -159,10 +172,26 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
     drafts.push({ name, ...(workflow === undefined ? {} : { workflow }), ...(described.has(name) ? { description: described.get(name)! } : {}) });
   }
   const { learnings } = await learningsAt(rest.repo, base);
-  const files = runBranchFiles({
+  const filesWith = (agent?: Reflection) => runBranchFiles({
     runId: rest.runId, base, seeded: seed !== undefined, candidates, untrusted: untrusted === true, learnings, drafts,
     ...(json === undefined ? {} : { uses: `${json}\n` }), ...(outcome ? { outcome } : {}), ...(costUsd === undefined ? {} : { costUsd }),
+    ...(agent ? { reflection: agent } : {}),
   });
-  const result = await proposeFiles({ ...rest, files, candidates, parent: base });
+  const secrets = rest.secrets === undefined ? undefined : [...rest.secrets];
+  const caseValues = rest.caseValues === undefined ? undefined : [...rest.caseValues];
+  let files = filesWith();
+  if (reflection !== undefined) {
+    const problem = reflectionProblem(reflection);
+    if (problem) withheld.push({ name: "reflection", reason: problem });
+    else {
+      const reflected = filesWith(reflection);
+      const memo = memoPath(rest.runId);
+      const hits = createGuard(rest.caps)({ role: "run", runId: rest.runId, files: reflected, candidates, ...(secrets ? { secrets } : {}), ...(caseValues ? { caseValues } : {}) }).filter((r) => r.path === memo);
+      if (hits.length) withheld.push({ name: "reflection", reason: `the guard: ${[...new Set(hits.map((r) => r.reason))].join(", ")}` });
+      else files = reflected;
+      if (hits.length && nothing) return out({ status: "empty" as const });
+    }
+  }
+  const result = await proposeFiles({ ...rest, ...(secrets ? { secrets } : {}), ...(caseValues ? { caseValues } : {}), files, candidates, parent: base });
   return result.status === "refused" ? result : out(result);
 }
