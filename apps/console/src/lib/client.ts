@@ -55,7 +55,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   const agent = (id: string) => `/agents/${encodeURIComponent(id)}`;
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
   // A create's warnings come on its answer, and the agent's page that opens next reads the agent again (a read carries
-  // none): they are kept here and put on a read of that same revision.
+  // none): they are kept here and put on a read of that same revision, until the next save or make-current of the agent,
+  // after which they may be stale (the host can be set up since), so they go.
   const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
@@ -91,10 +92,11 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  landed first. The answer's ETag is the new revision, for the next edit. */
     updateDefinition: async (id: string, body: { definition: Partial<Definition>; note?: string; skills?: Record<string, string> }, etag: string | null) => {
       const r = await callTagged<Agent>("PUT", `${agent(id)}/definition`, { body, headers: etag ? { "if-match": etag } : {} });
+      created.delete(id);
       return { agent: r.body, etag: r.etag };
     },
     listRevisions: (id: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: string; definition: Definition }[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
-    setCurrent: (id: string, revision: string) => call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }),
+    setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
     getRun: (id: string) => call<Run>("GET", run(id)),

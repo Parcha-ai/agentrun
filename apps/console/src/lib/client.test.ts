@@ -102,6 +102,27 @@ describe("agents", () => {
     expect((await v2.getAgent("a1")).agent.warnings, "another revision has its own").toBeUndefined();
   });
 
+  it("drops a create's warnings once the agent is saved again or another revision is made current: back on the first revision, none", async () => {
+    const warnings = [{ field: "definition.model", reason: "not_set_up_here", message: "No key for openai." }];
+    const made = { agent_id: "a1", kind: "agentic", revision: "rev-1", revisions: 1, archived_at: null, definition: { version: 1, name: "a1", skills: [], tools: [] } };
+    for (const later of ["save", "make current"] as const) {
+      let current = made.revision;
+      const { fn } = fakeFetch((c) => {
+        if (c.init?.method === "POST" && c.url.endsWith("/agents")) return json(201, { ...made, warnings });
+        if (c.init?.method === "POST") return json(200, { ...made, revision: (current = JSON.parse(String(c.init.body)).revision) });
+        if (c.init?.method === "PUT") return json(200, { ...made, revision: (current = "rev-2"), warnings: [] });
+        return json(200, { ...made, revision: current });
+      });
+      const v2 = createClient({ fetch: fn });
+      await v2.createAgent({ definition: made.definition });
+      expect((await v2.getAgent("a1")).agent.warnings).toEqual(warnings);
+      if (later === "save") await v2.updateDefinition("a1", { definition: { version: 2 } }, "rev-1");
+      else await v2.setCurrent("a1", "rev-0");
+      await v2.setCurrent("a1", "rev-1");
+      expect((await v2.getAgent("a1")).agent.warnings, `after a ${later}, the first revision again`).toBeUndefined();
+    }
+  });
+
   it("lists archived agents with the server's list parameter, and archives through its route", async () => {
     const { fn, calls } = fakeFetch(() => json(200, { agents: [], next_cursor: null }));
     const v2 = createClient({ fetch: fn });
