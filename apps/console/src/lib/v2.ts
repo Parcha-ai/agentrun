@@ -19,6 +19,8 @@ export type Run = {
   status: RunStatus;
   state: RunState;
   title: string;
+  /** The effort the run was started with; absent when it was started with none. */
+  effort?: string;
   created_at: string;
   updated_at?: string;
   ended_at: string | null;

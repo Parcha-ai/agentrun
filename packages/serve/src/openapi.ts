@@ -280,6 +280,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
   RunSummary: {
+    effort: { $ref: "#/components/schemas/Effort", description: "The effort the run was started with, as the run shows it; absent when it was started with none.", "x-agentrun-serve": "effort/1" },
     review: REVIEW,
     imported_from: {
       type: ["object", "null"],

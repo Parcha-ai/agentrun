@@ -1,6 +1,7 @@
 import { workflowGraph } from "@dsl/graph";
 import { ArrowLeft, Bot, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { RunBar } from "@/components/RunBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -28,8 +29,9 @@ const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.me
  *  agent whose id is "new" is given its Runs tab's address instead. */
 export const agentHash = (id: string, view?: string) => `#/agents/${encodeURIComponent(id)}${view ? `/${view}` : id === "new" ? "/runs" : ""}`;
 
-/** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, and a tab per thing it has. */
-export function AgentPage({ v2, agentId, defaultModel, go, tab }: { v2: Client; agentId: string; defaultModel?: string; go: (hash: string) => void; tab?: string }) {
+/** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a run bar (none for an archived
+ *  agent, which takes no runs), and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`). */
+export function AgentPage({ v2, agentId, defaultModel, efforts = [], go, tab }: { v2: Client; agentId: string; defaultModel?: string; efforts?: string[]; go: (hash: string) => void; tab?: string }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -71,6 +73,7 @@ export function AgentPage({ v2, agentId, defaultModel, go, tab }: { v2: Client; 
           ))}
         </dl>
       </header>
+      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} />}
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map((t) => (
           <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}
@@ -79,12 +82,13 @@ export function AgentPage({ v2, agentId, defaultModel, go, tab }: { v2: Client; 
           </button>
         ))}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8"><at.Body agent={agent} v2={v2} go={go} /></div>
+      <div role="tabpanel" aria-label={at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8"><at.Body agent={agent} v2={v2} go={go} /></div>
     </div>
   );
 }
 
-/** The agent's runs, newest first: each row its status, title, when, how long once ended, and its cost once known. */
+/** The agent's runs, newest first: each row its status, title, its effort when it was given one, when, how long once
+ *  ended, and its cost once known. */
 function RunsTab({ agent, v2 }: TabProps) {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -114,6 +118,7 @@ function RunsTab({ agent, v2 }: TabProps) {
             <a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 hover:bg-accent">
               <StatusBadge run={r} />
               <span className="min-w-0 flex-1 truncate text-[14px]" title={r.title}>{r.title}</span>
+              {r.effort && <Chip>effort {r.effort}</Chip>}
               <span className="font-mono text-[12px] text-muted-foreground">{when(r.created_at)}</span>
               {r.ended_at && <span className="font-mono text-[12px] text-muted-foreground" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
               {r.cost && r.cost.usd !== null && <span className="font-mono text-[12px] text-muted-foreground">{cost(r.cost)}</span>}

@@ -23,7 +23,8 @@ const editor = (slug: string, extra: Partial<React.ComponentProps<typeof AgentEd
 // An agent's page over its recorded agent and runs.
 const agentPage = (slug: string, { runs = true, tab }: { runs?: boolean; tab?: "workflow" } = {}) => {
   const v2 = { getAgent: async () => ({ agent: agentFixture(slug), etag: null }), listAgentRuns: async () => (runs ? recorded<unknown>(`agent.${slug}.runs`).body : { runs: [], next_cursor: null }) };
-  return page(<AgentPage v2={v2 as never} agentId={slug} defaultModel={editorCaps.defaultModel} go={noop} tab={tab} />);
+  const efforts = recorded<{ features: { efforts: string[] } }>("capabilities").body.features.efforts;
+  return page(<AgentPage v2={v2 as never} agentId={slug} defaultModel={editorCaps.defaultModel} efforts={efforts} go={noop} tab={tab} />);
 };
 
 export const List: Story = { render: () => page(<AgentsList agents={agentsList()} actions={{ onOpen: noop, onEdit: noop, onNew: noop, onRuns: noop, onArchive: noop }} />) };
