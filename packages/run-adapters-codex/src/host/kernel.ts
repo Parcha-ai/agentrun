@@ -1,10 +1,10 @@
-// The kernel names the copied Codex harness imports, from @parcha/agentrun-adapters/kernel, plus the three it needs that a
+// The kernel names the copied Codex harness imports, from @parcha/agentrun-kernel/kernel, plus the three it needs that a
 // local session does not otherwise have: the Harness shape, the name of an `unavailable` step, and the optional
 // documents reader (a sandbox's Files manifest; absent here). Written for AgentRun.
-import type { DriveContext as KernelDriveContext } from "@parcha/agentrun-adapters/kernel";
+import type { DriveContext as KernelDriveContext } from "@parcha/agentrun-kernel/kernel";
 
-export type { EffectRecord, HostTool, ReplayPolicy, SessionState, Submission } from "@parcha/agentrun-adapters/kernel";
-export { Unavailable } from "@parcha/agentrun-adapters/kernel";
+export type { EffectRecord, HostTool, ReplayPolicy, SessionState, Submission } from "@parcha/agentrun-kernel/kernel";
+export { Unavailable } from "@parcha/agentrun-kernel/kernel";
 
 /** A drive context; `docs` is a sandbox's documents reader, which a local session has none of. */
 export type DriveContext = KernelDriveContext & {

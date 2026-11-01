@@ -1,4 +1,4 @@
-// What the Codex CLI's model requests may carry through the session's model proxy (@parcha/agentrun-adapters/host),
+// What the Codex CLI's model requests may carry through the session's model proxy (@parcha/agentrun-kernel/host),
 // written for AgentRun. The routes are the ones the pinned CLI (0.164.0) calls, recorded behind a loopback proxy:
 //  - `GET /`, a probe it sends without a key as it starts, answered here (never forwarded, never booked);
 //  - `POST /v1/responses`, a paid request, streamed.
@@ -21,7 +21,7 @@
 // limit), each `data:` line parsed as JSON on its own, never matched as text. OpenAI counts cached and cache-write tokens
 // inside `input_tokens`; they are booked apart (as pi-ai books them), and reasoning tokens inside `output_tokens`.
 import type { IncomingHttpHeaders } from "node:http";
-import { providerInputOverhead, ProxyRefusal, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-adapters/host";
+import { providerInputOverhead, ProxyRefusal, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },

@@ -2,8 +2,8 @@
 // name and JSON pointer. The cases are SCHEMA_CHECK_CASES, which each adapter's own check() test runs too.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { toolSchemaProblems } from '@parcha/agentrun-adapters';
-import { SCHEMA_CHECK_CASES } from '@parcha/agentrun-adapters/testing';
+import { toolSchemaProblems } from '@parcha/agentrun-kernel';
+import { SCHEMA_CHECK_CASES } from '@parcha/agentrun-kernel/testing';
 
 /** The JSON pointers a problem list names (`<tool>: <pointer>: <why>`). */
 const pointers = (tool, problems) => problems.map((p) => {

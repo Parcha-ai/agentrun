@@ -8,9 +8,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after } from 'node:test';
-import { toolSchemaProblems } from '@parcha/agentrun-adapters';
-import { memorySessionStore, SCHEMA_CHECK_CASES } from '@parcha/agentrun-adapters/testing';
-import { codexAdapter } from '@parcha/agentrun-codex';
+import { toolSchemaProblems } from '@parcha/agentrun-kernel';
+import { memorySessionStore, SCHEMA_CHECK_CASES } from '@parcha/agentrun-kernel/testing';
+import { codexAdapter } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 import { codexSchemaProblems, describeDropped, describedDescription, DESCRIBED_HEADING, stripDescribed } from '../dist/schema.js';
@@ -265,7 +265,7 @@ test('a cyclic schema (an object that contains itself, which only code can build
   const { spawnSync } = await import('node:child_process');
   const script = `
     process.env.AGENTRUN_CODEX_STANDIN = '1';
-    const { codexAdapter } = await import('@parcha/agentrun-codex');
+    const { codexAdapter } = await import('@parcha/agentrun-harness-codex');
     const cyclic = { type: 'object', properties: {}, not: {} }; cyclic.properties.self = cyclic;
     const codex = codexAdapter({ model: 'm', provider: { origin: 'https://p.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
     const problems = codex.check({ key: 's', label: 'x', system: [], tools: [{ name: 'cyc', description: 'd', inputSchema: cyclic, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });

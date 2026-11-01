@@ -18,7 +18,7 @@ Each package's README is its API reference. Packages with no dependency on the o
 
 | Path | What an agent must know |
 | --- | --- |
-| `packages/dsl` | `@parcha/agentrun-dsl`: types, validator, interpreter (`src/workflow.ts`), CLI (`agentrun`). Node reference: `skills/author/references/language.md`, generated from `src/author.ts` (edit the source); judgment design: `jev-decisions.md` beside it. `schema/workflow.schema.json` is generated too |
+| `packages/dsl` | `@parcha/agentrun-dsl`: types, validator, interpreter (`src/workflow.ts`), CLI (`agentrun-dsl`). Node reference: `skills/author/references/language.md`, generated from `src/author.ts` (edit the source); judgment design: `jev-decisions.md` beside it. `schema/workflow.schema.json` is generated too |
 | `packages/jev`, `packages/pi` | `runJudge` adapter for Jev, and `jevProvider` (Jev as a `DecisionProvider`); the Pi extension (`/agentrun`) and Pi-backed `runNode` |
 | `packages/pi-durable-disk` | Durable pi host on Archil. Tests run on `src/*.ts`; `PDA_LIVE=1` suites need Archil (or Daytona) credentials and run nowhere by default |
 | `packages/pi-browser` | Synced snapshot of the agentrun harness's `packages/pi-browser`: never edit it here. Real-Chrome suites run only in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`) |

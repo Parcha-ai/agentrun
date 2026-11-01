@@ -3,8 +3,8 @@
 // halted it (a spend cap, the transcript mirror, a refused spawn).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { abortedOutcome, SessionHalt } from '@parcha/agentrun-adapters/kernel';
-import { fauxAdapter, memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { abortedOutcome, SessionHalt } from '@parcha/agentrun-kernel/kernel';
+import { fauxAdapter, memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const abortedBy = (reason) => { const c = new AbortController(); c.abort(reason); return c.signal; };
 const live = new AbortController().signal;

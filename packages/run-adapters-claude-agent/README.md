@@ -1,16 +1,15 @@
-# @parcha/agentrun-claude-agent
+# @parcha/agentrun-harness-claude
 
 The Claude Agent SDK as an AgentRun harness (adapter id `claude-agent`): a DSL `agent` node runs on the Claude Agent CLI
-through `@parcha/agentrun-adapters`, durable in AgentRun's own store, with the host's tools as its only tools. It is held:
-not on npm yet.
+through `@parcha/agentrun-kernel`, durable in AgentRun's own store, with the host's tools as its only tools.
 
 The host brings the SDK: `@anthropic-ai/claude-agent-sdk` is an exact optional peer dependency (0.3.286, whose CLI is
 2.1.286), used under Anthropic's terms, and this package never ships it. Install it with its optional dependencies (they
 carry the CLI for your platform), or load it where your runtime installed it and pass it in.
 
 ```ts
-import { createHarnessRunner } from "@parcha/agentrun-adapters";
-import { claudeAgentAdapter } from "@parcha/agentrun-claude-agent";
+import { createHarnessRunner } from "@parcha/agentrun-kernel";
+import { claudeAgentAdapter } from "@parcha/agentrun-harness-claude";
 
 const runNode = createHarnessRunner(
   claudeAgentAdapter({
@@ -39,7 +38,7 @@ const runNode = createHarnessRunner(
   refused, and each search the provider reports is booked at $10 per 1,000 (`CLAUDE_WEB_SEARCH_USD`) beside the tokens,
   into the session's cost and spend cap. WebFetch stays off. Default off.
 - **The model behind a proxy.** The CLI talks to a model proxy on the loopback interface with a key of its session's
-  own; it never holds the provider key, a sign-in or the operator's settings. The proxy (`@parcha/agentrun-adapters/host`
+  own; it never holds the provider key, a sign-in or the operator's settings. The proxy (`@parcha/agentrun-kernel/host`
   with this package's Anthropic policy) forwards only the routes the pinned CLI calls, fixes the model, refuses
   provider-hosted tools and anything the provider would run or fetch on its own, offers the model only the session's
   tools, and asks the runner before every paid request. Every paid request is booked once; the runner alone accounts

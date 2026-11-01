@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-adapters, @parcha/agentrun-claude-agent
+packages: @parcha/agentrun-kernel, @parcha/agentrun-harness-claude
 kind: feature
 ---
 A host tool may answer with images (a screenshot): `HostTool.call`'s result takes `images: [{ mimeType, data }]` (base64) beside its text. The kernel records them with the call's outcome, so a call answered from its record answers with the same images.

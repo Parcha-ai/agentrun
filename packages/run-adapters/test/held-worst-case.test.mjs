@@ -5,8 +5,8 @@
 // The booked cost itself is unchanged: such a request is still booked at an unknown price.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { HarnessRunError, modelPortFor, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { HarnessRunError, modelPortFor, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const key = 'chat:c1';
 /** The booking of session `key` in a new process, its host holding `hold` for each request (none when undefined). */

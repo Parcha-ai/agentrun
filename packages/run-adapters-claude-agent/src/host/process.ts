@@ -1,5 +1,5 @@
 // The process-harness names the copied Claude Agent harness imports: the copied layer from
-// @parcha/agentrun-adapters/process, and, written for AgentRun, the session machine's types (a local machine,
+// @parcha/agentrun-kernel/process, and, written for AgentRun, the session machine's types (a local machine,
 // machine.ts), its brand, and the model route the harness describes for the session's model proxy (policy.ts).
 //
 // Model spend is accounted only by the runner, through the proxy's hooks (`runner.request` before a request leaves,
@@ -11,8 +11,8 @@ import type { DriveContext } from "./kernel.js";
 export {
   BuiltinCalls, NativeJournal, openTurn, placeSubmissions, recoveryNote, replayBy, restartEvent, toolBridge, waitForSubmissions,
   zodShapeFromJsonSchema,
-} from "@parcha/agentrun-adapters/process";
-export type { JournalRecord, TranscriptEntry } from "@parcha/agentrun-adapters/process";
+} from "@parcha/agentrun-kernel/process";
+export type { JournalRecord, TranscriptEntry } from "@parcha/agentrun-kernel/process";
 
 export type KillSignal = "SIGTERM" | "SIGKILL" | "SIGINT";
 
@@ -116,11 +116,11 @@ export const gatewayHandler = (options: GatewayHandlerOptions): GatewayHandler =
 
 /** The provider credential when the harness is given none: the adapter always gives one, so this refuses. */
 export const gatewayCredential = async (): Promise<string> => {
-  throw new Error("agentrun-claude-agent: no provider credential was given to the harness");
+  throw new Error("agentrun-harness-claude: no provider credential was given to the harness");
 };
 /** The provider's base URL when the harness is given none: the adapter always gives one. */
 export const gatewayUrl = (): string => {
-  throw new Error("agentrun-claude-agent: no provider URL was given to the harness");
+  throw new Error("agentrun-harness-claude: no provider URL was given to the harness");
 };
 
 /** Upstream's model steps (a trace of each request through its gateway). The runner accounts requests here: nothing to trace. */

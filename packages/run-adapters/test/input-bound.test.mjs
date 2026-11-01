@@ -6,11 +6,11 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
-import { createHarnessRunner, modelPortFor } from '@parcha/agentrun-adapters';
-import * as host from '@parcha/agentrun-adapters/host';
+import { createHarnessRunner, modelPortFor } from '@parcha/agentrun-kernel';
+import * as host from '@parcha/agentrun-kernel/host';
 
 const { ProxyRefusal, startModelProxy } = host;
-import { fauxAdapter, memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { fauxAdapter, memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const KEY = 'session-key-for-tests';
 /** One paid route; `overhead` is what the provider adds for this body, as the policy says. */

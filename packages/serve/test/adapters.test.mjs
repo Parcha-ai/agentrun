@@ -114,7 +114,7 @@ test("a gateway base that could send a key somewhere else than it reads is refus
 });
 
 test("claude-agent with no SDK and no key: the reason is the missing SDK, with its install line, never the key a person would set first", async () => {
-  const real = await import("@parcha/agentrun-claude-agent");
+  const real = await import("@parcha/agentrun-harness-claude");
   // The package itself is here (as in serve's image); its SDK is not: the adapter's own check, with nothing installed.
   const noSdk = async () => ({ ...real, claudeAgentAdapter: () => real.verifyClaudeAgent({}, () => undefined) });
   const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
@@ -131,7 +131,7 @@ test("claude-agent with no SDK and no key: the reason is the missing SDK, with i
 });
 
 test("claude-agent's native skills reach the adapter as serve gives them, and an adapter with none is given no skills option", async () => {
-  const real = await import("@parcha/agentrun-claude-agent");
+  const real = await import("@parcha/agentrun-harness-claude");
   const given = [];
   const load = async () => ({ ...real, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
   const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
@@ -147,7 +147,7 @@ test("claude-agent's native skills reach the adapter as serve gives them, and an
 test("claude-agent's check of skills is the installed adapter's own skillProblems; none where the package is not installed", async () => {
   const { claudeSkillCheck } = await import("../dist/adapters.js");
   assert.equal(typeof claudeSkillCheck, "function", "adapters.js exports claudeSkillCheck");
-  const real = await import("@parcha/agentrun-claude-agent");
+  const real = await import("@parcha/agentrun-harness-claude");
   assert.equal(await claudeSkillCheck(async () => real), real.skillProblems, "the adapter's own function, not a copy");
   assert.equal(await claudeSkillCheck(), real.skillProblems, "by default, the package installed beside serve");
   assert.equal(await claudeSkillCheck(() => Promise.reject(new Error("Cannot find package"))), undefined, "not installed: no check, so every skill stays inlined");

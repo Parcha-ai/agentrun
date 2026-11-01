@@ -1,12 +1,12 @@
-// The process-harness names the copied Codex harness imports: the copied layer from @parcha/agentrun-adapters/process,
+// The process-harness names the copied Codex harness imports: the copied layer from @parcha/agentrun-kernel/process,
 // and, written for AgentRun, the session machine's types (a local machine, machine.ts), its brand, the model route the
 // harness describes for its model proxy (the policy), and model-step tracking (nothing to track locally).
 import type { DriveContext } from "./kernel.js";
 
 export {
   BuiltinCalls, failureText, Mutex, NativeJournal, openTurn, placeSubmissions, recoveryNote, recoverySystemNote, recoveryUserTurn, restartEvent, toolBridge, toolKey, transcriptOf,
-} from "@parcha/agentrun-adapters/process";
-export type { BuiltinStart, ToolResult, TranscriptEntry } from "@parcha/agentrun-adapters/process";
+} from "@parcha/agentrun-kernel/process";
+export type { BuiltinStart, ToolResult, TranscriptEntry } from "@parcha/agentrun-kernel/process";
 
 /** A child's line protocol: one JSON value per line out, lines in. */
 export interface LineChannel {
@@ -134,11 +134,11 @@ export const gatewayHandler = (options: GatewayHandlerOptions): GatewayHandler =
 
 /** The provider credential when the harness is given none: the adapter always gives one, so this refuses. */
 export const gatewayCredential = async (): Promise<string> => {
-  throw new Error("agentrun-codex: no provider credential was given to the Codex harness");
+  throw new Error("agentrun-harness-codex: no provider credential was given to the Codex harness");
 };
 /** The provider's base URL when the harness is given none: the adapter always gives one. */
 export const gatewayUrl = (): string => {
-  throw new Error("agentrun-codex: no provider URL was given to the Codex harness");
+  throw new Error("agentrun-harness-codex: no provider URL was given to the Codex harness");
 };
 
 /** Model steps: a sandbox's tracing of each request. A local session reports usage through its proxy instead. */

@@ -2,7 +2,7 @@
 //
 // A session is the copied Codex harness (harness.ts) driven over the session's own records (the kernel's openDrive on
 // the writer the runner lends, `io.writer`), on a local machine (host/machine.ts): Codex's app-server with its built-in tools off, its
-// model behind the session's loopback proxy (@parcha/agentrun-adapters/host), and the host's tools, exactly those `spec.tools` names,
+// model behind the session's loopback proxy (@parcha/agentrun-kernel/host), and the host's tools, exactly those `spec.tools` names,
 // as its only tools. Every paid request passes the runner's `beforeRequest` first, and its usage comes back through
 // `afterRequest`.
 //
@@ -11,18 +11,18 @@
 // skills turned off. With no shell, the model reads a skill's files with `read_skill_file`.
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-adapters";
-import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-adapters";
-import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
-import { pendingSubmissions } from "@parcha/agentrun-adapters/kernel";
-import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
+import { READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
+import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
+import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
+import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
+import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { CODEX_VERSION } from "./binary.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
 import { type ConfineChild, localMachine, type MachineSeed, sessionDir } from "./host/machine.js";
-import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
+import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 
 /** A name app-server accepts for a dynamic tool. */
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -107,7 +107,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   // The skills first: a skill Codex would skip or list under another name is the host's to fix, binary or not.
   const skills = options.skills ?? [];
   const skillsWrong = skillProblems(skills);
-  if (skillsWrong.length) throw new Error(`agentrun-codex: ${skillsWrong.join("; ")}`);
+  if (skillsWrong.length) throw new Error(`agentrun-harness-codex: ${skillsWrong.join("; ")}`);
   const seed = skills.length ? skillsSeed(skills) : undefined;
   // The binary is checked once, here, against the pins: a mismatch or a missing binary is the host's to report, before
   // any run starts (CodexPinMismatch, CodexNotInstalled). A test's stand-in runs no Codex.
@@ -149,9 +149,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
     },
     async open(spec, io) {
       const problems = this.check(spec);
-      if (problems.length) throw new Error(`agentrun-codex: ${problems.join("; ")}`);
+      if (problems.length) throw new Error(`agentrun-harness-codex: ${problems.join("; ")}`);
       const dir = io.dir ?? (options.sessionsDir ? join(options.sessionsDir, createHash("sha256").update(spec.key).digest("hex").slice(0, 32)) : undefined);
-      if (!dir) throw new Error("agentrun-codex: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
+      if (!dir) throw new Error("agentrun-harness-codex: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
 
       // With skills the model also reads their files (read_skill_file), from the session's own copy of them.
       const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(sessionDir(dir, "codex-home"), SKILLS_DIR), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
@@ -230,7 +230,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       // A drive that was halted (an interrupt) holds the session no more: the next turn opens a fresh one, on the same
       // writer (the adapter never opens the session itself).
       const ready = async () => {
-        if (closed) throw new Error("agentrun-codex: the session is closed");
+        if (closed) throw new Error("agentrun-harness-codex: the session is closed");
         if (running) await running;
         if (drive.signal.aborted && !io.signal.aborted) drive = await open();
       };
@@ -243,12 +243,12 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           void run();
         },
         async recover() {
-          if (state !== "open_turn") throw new Error("agentrun-codex: there is no turn to recover");
+          if (state !== "open_turn") throw new Error("agentrun-harness-codex: there is no turn to recover");
           await ready();
           void run();
         },
         async turnEnd() {
-          if (!running) throw new Error("agentrun-codex: no turn is in flight");
+          if (!running) throw new Error("agentrun-harness-codex: no turn is in flight");
           return running;
         },
         async interrupt() {

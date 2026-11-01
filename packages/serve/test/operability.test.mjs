@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { processAlive } from "@parcha/agentrun-adapters/host";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, scratch, withEnv } from "./support.mjs";
 

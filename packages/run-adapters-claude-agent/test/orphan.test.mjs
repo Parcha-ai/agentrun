@@ -16,8 +16,8 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
-import { fakeAnthropic } from '@parcha/agentrun-claude-agent/testing';
+import { verifyClaudeAgent } from '@parcha/agentrun-harness-claude';
+import { fakeAnthropic } from '@parcha/agentrun-harness-claude/testing';
 
 const HOST = fileURLToPath(new URL('./fixtures/orphan-host.mjs', import.meta.url));
 const RUNS = Math.max(1, Number(process.env.AGENTRUN_ORPHAN_RUNS) || 1);

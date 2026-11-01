@@ -11,7 +11,7 @@ import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { processAlive } from "@parcha/agentrun-adapters/host";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsOf, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";

@@ -1,4 +1,4 @@
-// What the Claude Agent CLI's model requests may carry through the session's model proxy (@parcha/agentrun-adapters/host),
+// What the Claude Agent CLI's model requests may carry through the session's model proxy (@parcha/agentrun-kernel/host),
 // written for AgentRun. The routes are the ones the pinned CLI calls:
 //  - `HEAD /api/hello`, its connectivity check, answered by the proxy;
 //  - `POST /v1/messages?beta=true`, a paid request;
@@ -18,7 +18,7 @@
 // is dropped, so the model is offered exactly the host's tools. With `webSearch`, one hosted tool passes: Anthropic's web
 // search, exactly as the pinned CLI asks for it in the request its WebSearch tool makes. Usage is read from the stream's
 // `message_start` (input and cache tokens) and its last `message_delta` (output, and the searches the provider ran).
-import { providerInputOverhead, ProxyRefusal, type InputShape, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-adapters/host";
+import { providerInputOverhead, ProxyRefusal, type InputShape, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";

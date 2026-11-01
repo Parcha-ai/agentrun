@@ -1,11 +1,11 @@
-// The Codex policy behind the session's model proxy (@parcha/agentrun-adapters/host), through a real proxy to a scripted
+// The Codex policy behind the session's model proxy (@parcha/agentrun-kernel/host), through a real proxy to a scripted
 // provider, on a request and a stream the pinned CLI (0.164.0) exchanged with a Responses provider, recorded with their
 // ids replaced (test/fixtures). No network.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { after, test } from 'node:test';
-import * as host from '@parcha/agentrun-adapters/host';
+import * as host from '@parcha/agentrun-kernel/host';
 import { codexPolicy, usageOf } from '../dist/host/policy.js';
 
 const { startModelProxy } = host;

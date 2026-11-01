@@ -190,9 +190,9 @@ try {
     }
     console.log(`Packed and inspected ${manifest.name}@${manifest.version} (${names.length} files)`);
   }
-  assert.ok(attributed.includes('@parcha/agentrun-adapters'), 'the harness seam is checked for its attribution');
-  assert.ok(attributed.includes('@parcha/agentrun-claude-agent'), 'the Claude Agent adapter is checked for its attribution');
-  assert.ok(attributed.includes('@parcha/agentrun-codex'), 'the Codex adapter is checked for its attribution');
+  assert.ok(attributed.includes('@parcha/agentrun-kernel'), 'the harness seam is checked for its attribution');
+  assert.ok(attributed.includes('@parcha/agentrun-harness-claude'), 'the Claude Agent adapter is checked for its attribution');
+  assert.ok(attributed.includes('@parcha/agentrun-harness-codex'), 'the Codex adapter is checked for its attribution');
   receipt.checks.push(`Boundary rules passed on every package; attribution rules for vercel-labs/durable-harness code passed: ${attributed.join(', ')}.`);
   receipt.checks.push('Archive paths, file allowlist, heuristic secret scan, and dependency boundary inspection passed.');
   const consumer = join(temporary, 'consumer');
@@ -332,10 +332,10 @@ import * as learnCheck from '@parcha/agentrun-learn';
 import * as decisions from '@parcha/agentrun-decisions';
 import { judgeFromProvider } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
-import * as adapters from '@parcha/agentrun-adapters';
-import * as adaptersTesting from '@parcha/agentrun-adapters/testing';
-import * as adaptersKernel from '@parcha/agentrun-adapters/kernel';
-import * as adaptersProcess from '@parcha/agentrun-adapters/process';
+import * as adapters from '@parcha/agentrun-kernel';
+import * as adaptersTesting from '@parcha/agentrun-kernel/testing';
+import * as adaptersKernel from '@parcha/agentrun-kernel/kernel';
+import * as adaptersProcess from '@parcha/agentrun-kernel/process';
 import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
@@ -500,8 +500,8 @@ const keep = async (store: WorkflowStore, workflow: Workflow): Promise<[StoredWo
 void keep;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'workflows-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'adapters-consumer.ts'), `import { openDrive, Restart, type Drive, type EffectRecord } from '@parcha/agentrun-adapters/kernel';
-import { NativeJournal, placeSubmissions } from '@parcha/agentrun-adapters/process';
+  await writeFile(join(consumer, 'adapters-consumer.ts'), `import { openDrive, Restart, type Drive, type EffectRecord } from '@parcha/agentrun-kernel/kernel';
+import { NativeJournal, placeSubmissions } from '@parcha/agentrun-kernel/process';
 const place = async (drive: Drive): Promise<[EffectRecord | undefined, NativeJournal]> => { await placeSubmissions(drive, drive.pending()); return [drive.state().effects.get('k'), new NativeJournal(drive)]; };
 const kernel: [typeof openDrive, typeof Restart] = [openDrive, Restart];
 void [place, kernel];
@@ -638,7 +638,7 @@ void [demo, localHost, placeAt, options, boxes, useTool];
   await mkdir(claudeConsumer);
   await writeFile(join(claudeConsumer, 'package.json'), JSON.stringify({ name: 'agentrun-claude-agent-consumer', version: '1.0.0', private: true, type: 'module' }));
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...['dsl', 'run-adapters', 'run-adapters-claude-agent'].map(directory => tarballs[packageDirectories.indexOf(directory)])], claudeConsumer);
-  const claudeChecks = async () => JSON.parse((await run(process.execPath, ['--input-type=module', '-e', `import { verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
+  const claudeChecks = async () => JSON.parse((await run(process.execPath, ['--input-type=module', '-e', `import { verifyClaudeAgent } from '@parcha/agentrun-harness-claude';
 try { console.log(JSON.stringify({ cliPath: verifyClaudeAgent({}).cliPath })); } catch (e) { console.log(JSON.stringify({ name: e.name, message: e.message, install: e.install })); }`], claudeConsumer)).stdout.trim());
   const missing = await claudeChecks();
   assert.equal(missing.name, 'ClaudeAgentNotInstalled', `the adapter without its SDK: ${JSON.stringify(missing)}`);
@@ -648,7 +648,7 @@ try { console.log(JSON.stringify({ cliPath: verifyClaudeAgent({}).cliPath })); }
   await run(installCommand, installArgs, claudeConsumer);
   const installed = await claudeChecks();
   assert.ok(installed.cliPath, `after "${missing.install}", the adapter's checks still fail: ${JSON.stringify(installed)}`);
-  receipt.checks.push(`@parcha/agentrun-claude-agent without its SDK prints one install line ("${missing.install}"); run as printed in a clean consumer, it makes the adapter's pins pass.`);
+  receipt.checks.push(`@parcha/agentrun-harness-claude without its SDK prints one install line ("${missing.install}"); run as printed in a clean consumer, it makes the adapter's pins pass.`);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });

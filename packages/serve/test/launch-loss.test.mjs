@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { processAlive } from "@parcha/agentrun-adapters/host";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { LAUNCH_COUNT_ENV, LAUNCH_JAM_ENV, LAUNCH_KILL_ENV } from "./fixtures/faux-launch-kills-server.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, client, scratch, storeRun } from "./support.mjs";

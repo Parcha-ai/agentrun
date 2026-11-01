@@ -7,8 +7,8 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { test } from 'node:test';
 import { crc32, deflateSync } from 'node:zlib';
-import * as host from '@parcha/agentrun-adapters/host';
-import { anthropicPolicy } from '@parcha/agentrun-claude-agent';
+import * as host from '@parcha/agentrun-kernel/host';
+import { anthropicPolicy } from '@parcha/agentrun-harness-claude';
 import * as claudePolicy from '../dist/host/policy.js';
 
 const { startModelProxy } = host;

@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-adapters, @parcha/agentrun-serve
+packages: @parcha/agentrun-kernel, @parcha/agentrun-serve
 kind: fix
 ---
 A capped `claude-agent` or `codex` run goes on after one of its requests was cut, by a stop or by a crash, while its cap leaves room: the cut request counts at the worst case the cap held for it, not as a spend no one knows. Before, the model proxy booked a response cut short at an unknown cost and a crash left a request with no booking, so the run's spend became unknown and every later request was refused with `spend_cap_reached`.

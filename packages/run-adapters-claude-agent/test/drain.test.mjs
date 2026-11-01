@@ -8,10 +8,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test as nodeTest } from 'node:test';
-import { createHarnessRunner, HarnessRunError } from '@parcha/agentrun-adapters';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { claudeAgentAdapter } from '@parcha/agentrun-claude-agent';
-import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-claude-agent/testing';
+import { createHarnessRunner, HarnessRunError } from '@parcha/agentrun-kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { claudeAgentAdapter } from '@parcha/agentrun-harness-claude';
+import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-harness-claude/testing';
 
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);

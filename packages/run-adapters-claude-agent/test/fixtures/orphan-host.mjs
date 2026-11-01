@@ -5,8 +5,8 @@
 //   {"tool": "started"}  when its one host tool (wait, which never returns) is called;
 //   {"idle": true}       when the turn has ended (argv[4] is "idle").
 import { existsSync } from 'node:fs';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { claudeAgentAdapter } from '@parcha/agentrun-claude-agent';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { claudeAgentAdapter } from '@parcha/agentrun-harness-claude';
 
 const [url, dir, point] = process.argv.slice(2);
 const say = (report) => process.stdout.write(`${JSON.stringify(report)}\n`);

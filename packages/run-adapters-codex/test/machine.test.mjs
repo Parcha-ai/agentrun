@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { parentWatched, processAlive } from '@parcha/agentrun-adapters/host';
+import { parentWatched, processAlive } from '@parcha/agentrun-kernel/host';
 import { CODEX_ROUTES, gatewayHandler, isBrandedMachine } from '../dist/host/process.js';
 import { childEnv, confined, localMachine } from '../dist/host/machine.js';
 import { UNWATCHED } from '../dist/scripts.js';
@@ -320,9 +320,9 @@ test("a seed of files is in its private directory at acquire and again after eve
     await machine.close();
   }
   for (const path of ['../escape', 'skills/../../escape', '/etc/passwd', '.hidden', 'skills/.system/x', './x', 'a//b', 'a/', '', 'a\\b', 'a\u0000b']) {
-    assert.throws(() => localMachine({ dir: scratch(), proxy: { hooks, tools: [] }, seed: { dir: 'codex-home', files: { [path]: 'x' } } }), /agentrun-codex: the seed path .* is not a plain relative path inside codex-home/, JSON.stringify(path));
+    assert.throws(() => localMachine({ dir: scratch(), proxy: { hooks, tools: [] }, seed: { dir: 'codex-home', files: { [path]: 'x' } } }), /agentrun-harness-codex: the seed path .* is not a plain relative path inside codex-home/, JSON.stringify(path));
   }
   for (const where of ['work', '..', 'codex-home/skills']) {
-    assert.throws(() => localMachine({ dir: scratch(), proxy: { hooks, tools: [] }, seed: { dir: where, files: { 'a.md': 'x' } } }), /agentrun-codex: a seed goes in one of the machine's private directories/, where);
+    assert.throws(() => localMachine({ dir: scratch(), proxy: { hooks, tools: [] }, seed: { dir: where, files: { 'a.md': 'x' } } }), /agentrun-harness-codex: a seed goes in one of the machine's private directories/, where);
   }
 });

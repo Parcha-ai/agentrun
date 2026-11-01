@@ -41,7 +41,7 @@ export type CodexPin = "binary_sha256" | "version" | "package_version";
 export class CodexPinMismatch extends Error {
   readonly code = "CODEX_PIN_MISMATCH";
   constructor(readonly pin: CodexPin, readonly expected: string, readonly found: string, readonly path?: string) {
-    super(`agentrun-codex: the Codex ${pin === "package_version" ? "platform package" : "binary"}${path ? ` at ${path}` : ""} is not the pinned build: its ${pin.replace("_", " ")} is ${found}, not ${expected}`);
+    super(`agentrun-harness-codex: the Codex ${pin === "package_version" ? "platform package" : "binary"}${path ? ` at ${path}` : ""} is not the pinned build: its ${pin.replace("_", " ")} is ${found}, not ${expected}`);
     this.name = "CodexPinMismatch";
   }
 }
@@ -51,7 +51,7 @@ export class CodexPinMismatch extends Error {
 export class CodexNotInstalled extends Error {
   readonly code = "CODEX_NOT_INSTALLED";
   constructor(readonly detail?: string) {
-    super(`agentrun-codex: Codex ${CODEX_VERSION} is not installed${detail ? ` (${detail})` : ""}; ${CODEX_INSTALL}`);
+    super(`agentrun-harness-codex: Codex ${CODEX_VERSION} is not installed${detail ? ` (${detail})` : ""}; ${CODEX_INSTALL}`);
     this.name = "CodexNotInstalled";
   }
 }

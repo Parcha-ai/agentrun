@@ -4,13 +4,13 @@
 // and an unknown spend is refused. Each "process" here is a store open, a booking and a faux session on one memory store.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { modelPortFor } from '@parcha/agentrun-adapters';
-import { FAUX_RECORDS, fauxAdapter, memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { modelPortFor } from '@parcha/agentrun-kernel';
+import { FAUX_RECORDS, fauxAdapter, memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const PROMPT = 'One more thing before you finish.';
 const SESSION = 'chat:r1';
 // Each test imports the step itself, so a missing export fails that test by name.
-const kernel = () => import('@parcha/agentrun-adapters/kernel');
+const kernel = () => import('@parcha/agentrun-kernel/kernel');
 
 /** One process: the session's writer, its booking with the follow-up's guard ahead of the host's, and its faux session.
  *  `commits` counts the runs of a `never` tool, the follow-up's own side effect. */

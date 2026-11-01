@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { READ_SKILL_FILE, readSkillFileTool } from '@parcha/agentrun-adapters';
+import { READ_SKILL_FILE, readSkillFileTool } from '@parcha/agentrun-kernel';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-skill-files-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -92,8 +92,8 @@ test("a skills root reached through a link (as /tmp is on some machines) still r
 });
 
 test("skillProblems, the check every adapter runs on a host's skills: a plain name, a SKILL.md that names it with a description, plain relative paths, 1 MiB in all", async () => {
-  const { skillProblems } = await import('@parcha/agentrun-adapters');
-  assert.equal(typeof skillProblems, 'function', '@parcha/agentrun-adapters exports skillProblems');
+  const { skillProblems } = await import('@parcha/agentrun-kernel');
+  assert.equal(typeof skillProblems, 'function', '@parcha/agentrun-kernel exports skillProblems');
   const md = (name, extra = 'description: d') => `---\nname: ${name}\n${extra}\n---\nbody\n`;
   const wrong = (skill) => skillProblems([skill]).join('; ');
   assert.deepEqual(skillProblems([{ name: 'research', files: { 'SKILL.md': md('research'), 'reference/sources.md': 'x' } }]), []);

@@ -1,11 +1,11 @@
-# @parcha/agentrun-codex
+# @parcha/agentrun-harness-codex
 
-Codex as an AgentRun harness: a DSL `agent` node runs on Codex through `@parcha/agentrun-adapters`, durable in AgentRun's
-own store, with the host's tools as its only tools. It is held: not on npm yet.
+Codex as an AgentRun harness: a DSL `agent` node runs on Codex through `@parcha/agentrun-kernel`, durable in AgentRun's
+own store, with the host's tools as its only tools.
 
 ```ts
-import { createHarnessRunner } from "@parcha/agentrun-adapters";
-import { codexAdapter } from "@parcha/agentrun-codex";
+import { createHarnessRunner } from "@parcha/agentrun-kernel";
+import { codexAdapter } from "@parcha/agentrun-harness-codex";
 
 const runNode = createHarnessRunner(
   codexAdapter({
@@ -44,7 +44,7 @@ const runNode = createHarnessRunner(
   no shell). The skills are written into the session's `CODEX_HOME` at the start of every drive, where Codex lists a
   user's skills even in a turn with its built-ins off (it lists none from a working directory's `.agents/skills` there).
   Codex's bundled skills (imagegen, openai-docs, skill-creator, skill-installer, ...) are off in every session, with
-  skills or without. The skills are checked when the adapter is made, by `skillProblems` of `@parcha/agentrun-adapters`,
+  skills or without. The skills are checked when the adapter is made, by `skillProblems` of `@parcha/agentrun-kernel`,
   the Claude adapter's check: a lowercase name, a `SKILL.md` whose front matter names it and describes it, plain
   relative paths, 1 MiB in all. Codex itself skips a skill with no front matter or no description and lists one under
   its front matter's name, so each of those is refused here instead.

@@ -7,7 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { processAlive } from '@parcha/agentrun-adapters/host';
+import { processAlive } from '@parcha/agentrun-kernel/host';
 import { reap } from './reference-demo-helpers.mjs';
 
 test('a file that leaves a child (with one of its own), a server and a pipe held by a child\'s child open fails naming each, and its process exits in seconds; what its own after() closes is not named', { timeout: 120_000 }, async (t) => {

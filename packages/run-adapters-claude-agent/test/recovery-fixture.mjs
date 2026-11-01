@@ -1,9 +1,9 @@
 // A turn a crash cut off with one tool call in each status, and the system note made of it: a copy of the shared fixture
 // of harness-process patch 010 (port/recovery-note-data, 966b23fff), so this adapter's note says exactly what the shared
 // one will. Once that patch is on main, this file goes and the test imports run-adapters' own fixture.
-import { openDrive } from '@parcha/agentrun-adapters/kernel';
-import { placeSubmissions, toolBridge } from '@parcha/agentrun-adapters/process';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { openDrive } from '@parcha/agentrun-kernel/kernel';
+import { placeSubmissions, toolBridge } from '@parcha/agentrun-kernel/process';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const tool = (name, replay, execute) => ({ name, description: name, inputSchema: { type: 'object' }, replay, execute });

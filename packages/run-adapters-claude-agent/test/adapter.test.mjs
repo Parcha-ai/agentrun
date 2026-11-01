@@ -7,11 +7,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test as nodeTest } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
-import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
-import { foldSession } from '@parcha/agentrun-adapters/kernel';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { ClaudeAgentThinkingOff, claudeAgentAdapter, thinkingOf } from '@parcha/agentrun-claude-agent';
-import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-claude-agent/testing';
+import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
+import { foldSession } from '@parcha/agentrun-kernel/kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { ClaudeAgentThinkingOff, claudeAgentAdapter, thinkingOf } from '@parcha/agentrun-harness-claude';
+import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-harness-claude/testing';
 
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
@@ -129,8 +129,8 @@ test("the Skill gate: a session skill by its qualified name is allowed as asked,
 
 test("a host header the proxy would refuse is refused when the adapter is made, by the adapter, naming the header", () => {
   const make = (headers) => claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k', headers }, sdk: fakeSdk(), standIn: { command: process.execPath } });
-  assert.throws(() => make({ Authorization: 'x' }), /^Error: agentrun-claude-agent: provider\.headers: .*authorization/i);
-  assert.throws(() => make({ 'x-tags': 'a\r\nb' }), /agentrun-claude-agent: provider\.headers: /);
+  assert.throws(() => make({ Authorization: 'x' }), /^Error: agentrun-harness-claude: provider\.headers: .*authorization/i);
+  assert.throws(() => make({ 'x-tags': 'a\r\nb' }), /agentrun-harness-claude: provider\.headers: /);
   assert.doesNotThrow(() => make({ 'x-litellm-tags': 'job:1' }));
 });
 

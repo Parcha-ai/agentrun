@@ -27,7 +27,7 @@ npx @parcha/agentrun-dsl@beta validate workflow.json input.json --trusted
 npx @parcha/agentrun-dsl@beta dry-run workflow.json input.json --trusted
 ```
 
-Structural checks, including unknown node fields, always run. Supplied inputs also check the input schema and reachable input keys. Dry-run checks synthetic execution wiring, not model quality or effect delivery. Its `status` says whether every check ran: `passed`, `failed` (`ok` is false, `problems` say why), or `not_run`: `ok` stays true, but a path could not be exercised (for example, a synthetic judgment escalated or a schema cannot be synthesized), and `skipped` gives the reasons. A `not_run` result is not execution proof. `agentrun dry-run` exits 1 on a failure and 0 otherwise; with `--strict` it exits 3 when the status is `not_run`.
+Structural checks, including unknown node fields, always run. Supplied inputs also check the input schema and reachable input keys. Dry-run checks synthetic execution wiring, not model quality or effect delivery. Its `status` says whether every check ran: `passed`, `failed` (`ok` is false, `problems` say why), or `not_run`: `ok` stays true, but a path could not be exercised (for example, a synthetic judgment escalated or a schema cannot be synthesized), and `skipped` gives the reasons. A `not_run` result is not execution proof. `agentrun-dsl dry-run` exits 1 on a failure and 0 otherwise; with `--strict` it exits 3 when the status is `not_run`.
 
 ### Read validation errors
 

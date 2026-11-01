@@ -7,7 +7,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { processAlive } from "@parcha/agentrun-adapters/host";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";

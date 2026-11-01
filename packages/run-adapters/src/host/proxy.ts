@@ -290,7 +290,7 @@ export const sameKey = (given: string, key: string): boolean => {
 function baseOf(base: string): string {
   const url = new URL(base);
   // A backslash is a path separator to the URL parser, so it could move the base to a path the text does not read as.
-  if (url.username || url.password || url.search || url.hash || base.includes("\\")) throw new Error("agentrun-adapters: a model proxy's base is an origin and a path, with no userinfo, query, fragment or backslash");
+  if (url.username || url.password || url.search || url.hash || base.includes("\\")) throw new Error("agentrun-kernel: a model proxy's base is an origin and a path, with no userinfo, query, fragment or backslash");
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
@@ -319,9 +319,9 @@ export function inputTokensMaxOf(policy: ProviderPolicy, body: Record<string, un
 
 export async function startModelProxy(options: ModelProxyOptions, key: string): Promise<ModelProxy> {
   const { policy, hooks, model } = options;
-  if (!key) throw new Error("agentrun-adapters: a model proxy needs the session's key");
+  if (!key) throw new Error("agentrun-kernel: a model proxy needs the session's key");
   const wrongHeaders = hostHeaderProblems(options.headers);
-  if (wrongHeaders.length) throw new Error(`agentrun-adapters: ${wrongHeaders.join("; ")}`);
+  if (wrongHeaders.length) throw new Error(`agentrun-kernel: ${wrongHeaders.join("; ")}`);
   const hostHeaders = { ...options.headers };
   const forward = options.fetch ?? fetch;
   const origin = baseOf(options.origin);
@@ -590,7 +590,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     server.listen(0, "127.0.0.1", () => resolve());
   });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("agentrun-adapters: the model proxy has no port");
+  if (!address || typeof address === "string") throw new Error("agentrun-kernel: the model proxy has no port");
   return {
     url: `http://127.0.0.1:${address.port}`,
     key,

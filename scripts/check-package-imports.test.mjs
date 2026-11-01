@@ -36,7 +36,7 @@ test('a planted host import or dependency goes red, in the seam and in a harness
     },
     'the Pi runtime in a harness package': async (dir) => {
       await mkdir(join(dir, 'packages/run-adapters-codex/src'), { recursive: true });
-      await writeFile(join(dir, 'packages/run-adapters-codex/package.json'), JSON.stringify({ name: '@parcha/agentrun-codex' }));
+      await writeFile(join(dir, 'packages/run-adapters-codex/package.json'), JSON.stringify({ name: '@parcha/agentrun-harness-codex' }));
       await writeFile(join(dir, 'packages/run-adapters-codex/src/index.ts'), "export { createPiRunner } from '@parcha/agentrun-pi';\n");
     },
   };

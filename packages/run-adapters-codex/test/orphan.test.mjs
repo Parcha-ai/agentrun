@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { processAlive } from '@parcha/agentrun-adapters/host';
+import { processAlive } from '@parcha/agentrun-kernel/host';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 

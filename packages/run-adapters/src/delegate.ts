@@ -100,7 +100,7 @@ export function delegateProblems(options: Pick<DelegateOptions, "agents" | "tool
 /** The `delegate` host tool: refuses a bad definition when made. */
 export function delegateTool(options: DelegateOptions): HostTool {
   const problems = delegateProblems(options);
-  if (problems.length) throw new Error(`agentrun-adapters: delegate: ${problems.join("; ")}`);
+  if (problems.length) throw new Error(`agentrun-kernel: delegate: ${problems.join("; ")}`);
   const byName = new Map(options.tools.map((t) => [t.name, t]));
   const names = Object.keys(options.agents);
   // One child at a time, whatever the harness's own tool calls do.
