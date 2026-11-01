@@ -160,6 +160,50 @@ test("a claude-agent run whose process dies while a request is in flight resumes
   }
 });
 
+/** A request's system prompt, as text. */
+const systemText = (body) => (typeof body?.system === "string" ? body.system : (body?.system ?? []).map((block) => block?.text ?? "").join("\n"));
+/** Whether `text` is anywhere in a request's body, as its JSON writes it. */
+const holds = (body, text) => JSON.stringify(body).includes(JSON.stringify(text).slice(1, -1));
+
+test("a claude-agent run's skills: one the adapter takes is the Skill tool's (agentrun:<name>) and not in the system prompt until the model loads it, while one it would refuse (no front matter) stays inlined", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const CITE = `not-a-secret-${"cite"}-skill-body`;
+  const LEGACY = `not-a-secret-${"legacy"}-skill-body`;
+  let loaded = false;
+  const fake = await fakeAnthropic({
+    reply: (request) => {
+      // The first turn offered the Skill tool loads cite; every other request is answered.
+      if (!loaded && request.tools.includes("Skill")) {
+        loaded = true;
+        return { tool: { name: "Skill", input: { skill: "agentrun:cite" } } };
+      }
+      return { text: "Claude answered." };
+    },
+  });
+  t.after(() => fake.close());
+  const { api } = await claudeServe(t, fake);
+  const skills = {
+    "cite/SKILL.md": `---\nname: cite\ndescription: How this agent cites its sources.\n---\n${CITE}: cite every source you read.\n`,
+    "cite/reference/sources.md": "Primary sources first.\n",
+    "legacy/SKILL.md": `# Legacy\n${LEGACY}: the old way.\n`,
+  };
+  const created = await api("POST", "/agents", { ...agent("skilled", { harness: "claude-agent", model: `anthropic/${MODEL}`, skills: ["cite", "legacy"] }), skills });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const run = await api("POST", "/agents/skilled/runs", { input: { content: "Use the cite skill, then answer." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
+  const asked = fake.messages();
+  const first = asked.find((m) => m.tools.includes("Skill"));
+  assert.ok(first, `the Skill tool is offered: ${JSON.stringify(asked.map((m) => m.tools))}`);
+  assert.ok(first.tools.some((name) => name.endsWith("read_skill_file")), `with the adapter's read_skill_file for a skill's other files: ${first.tools}`);
+  assert.ok(holds(first.body, "agentrun:cite"), "the model is shown cite as the run's skill");
+  assert.ok(!holds(first.body, "agentrun:legacy"), "and not legacy, which the adapter refuses");
+  assert.ok(!holds(first.body, '<skill name="cite">'), "cite is not inlined");
+  assert.ok(!holds(first.body, CITE), "none of cite's SKILL.md is sent before the model loads it");
+  const system = systemText(first.body);
+  assert.ok(system.includes("Answer.") && system.includes(`<skill name="legacy">\n# Legacy\n${LEGACY}: the old way.\n</skill>`), `legacy stays inlined in the system prompt: ${system.slice(-2000)}`);
+  assert.ok(asked.slice(asked.indexOf(first) + 1).some((m) => holds(m.body.messages, CITE)), "loading cite puts its SKILL.md before the model");
+});
+
 /** This test's own caller, by its user-agent. */
 const PROBE_AGENT = "serve-log-test";
 /** A value no log may carry, sent as a bearer and in a query string. */

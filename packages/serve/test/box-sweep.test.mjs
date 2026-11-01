@@ -227,13 +227,18 @@ test("a start sweep that fails once is tried again by the next run, not kept: on
 test("archiving a run lets its box go; archiving an agent lets every one of its runs' boxes go", linux, async (t) => {
   const reaped = [];
   const box = { reap: async (r) => (reaped.push(r.id), { empty: true, left: 0, by: "pidns" }) };
-  // The sweep at start reaps the record (its writer is gone); a new record, as a later box would leave, is the archive's.
+  // The sweep at start reaps the record (its writer is gone) and marks it; a new record, as a later box would leave, is
+  // the archive's. A later box's record is written by a run process, which starts only once the sweep is done, while
+  // requests are answered before that: so the new record goes in once the sweep's mark is on disk, and the sweep writes
+  // it no more.
   const one = await servedWithRecord(t, { pid: 4242, startTime: "9", writer: await goneWriter() }, box);
-  await one.api("GET", "/runs");
+  for (const deadline = Date.now() + 10_000; !(await stored(one.runDir)).reaped; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < deadline, `the start sweep marked the record it reaped: ${reaped}`);
+  assert.deepEqual(reaped, [`box-${one.id}`], "the start sweep reaped the record it found");
   await writeFile(join(one.runDir, "box.json"), `${JSON.stringify({ id: "box-later", pid: 4243, startTime: "9", writer: await goneWriter() })}\n`);
   assert.equal((await one.api("POST", `/runs/${one.id}/archive`)).status, 200);
   assert.ok(reaped.includes("box-later"), `the run archive reaped it: ${reaped}`);
-  assert.equal((await stored(one.runDir)).reaped.by, "pidns");
+  const marked = await stored(one.runDir);
+  assert.deepEqual([marked.id, marked.reaped.by], ["box-later", "pidns"], "its own record is the one marked");
   // The run itself unarchived: only its agent's archive archives it now.
   assert.equal((await one.api("POST", `/runs/${one.id}/unarchive`)).status, 200);
   await writeFile(join(one.runDir, "box.json"), `${JSON.stringify({ id: "box-agent", pid: 4244, startTime: "9", writer: await goneWriter() })}\n`);
