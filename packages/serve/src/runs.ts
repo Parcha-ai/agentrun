@@ -168,6 +168,9 @@ export type Run = {
   decisionCost?: number | null;
   /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). */
   decisions?: Record<string, unknown>[];
+  /** How many of a workflow run's llm calls' answers its node log held when its rows were last read: their cost is in its
+   *  rows (each a REQUEST_COST entry, committed before its answer is logged), so its graph counts only the later ones. */
+  llmRead?: number;
   /** What every conversation of its store says it used, as the settle that ends it read them. */
   metrics?: RunMetrics;
   relaunches: number;
@@ -517,6 +520,7 @@ export class Runs {
       const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
       // Decisions it cannot read add no rows: the run's cost read says unknown (readDecisionCost).
       try { run.decisions = durableDecisions(file); } catch { run.decisions = undefined; }
+      run.llmRead = (await readNodeLog(run.dir)).filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done").length;
     }
     run.working = false;
     noteAnswer(run, entries);
@@ -1004,10 +1008,9 @@ export class Runs {
    *  the run's unknown, never $0. Read at its end and again when a restarted server adopts it as ended. */
   private async readDecisionCost(run: Run): Promise<void> {
     const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
-    const receipts = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
-    // Its `llm` calls' completions are paid as its decisions are, outside its model nodes' rows: from the node log.
-    const completions = (await readNodeLog(run.dir)).flatMap((line) => (line.t === "effect.end" && line.tool === "llm" && line.status === "done" ? [isObject(line.output) && typeof line.output.cost_usd === "number" ? line.output.cost_usd : null] : []));
-    const paid = [...receipts, ...completions];
+    // Not its `llm` calls: each completes on the run's marked models, so its cost is a REQUEST_COST entry its usage row
+    // already sums (request-start.ts).
+    const paid = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
     if (paid.length) run.decisionCost = paid.every((cost) => typeof cost === "number") ? (paid as number[]).reduce((a, b) => a + b, 0) : null;
   }
 
@@ -1329,7 +1332,7 @@ export class Runs {
     const { runGraph } = await import("./graph-view.js");
     const given = {
       run: { id: run.id, agent: run.agentId, revision: run.revision, status, paused: status === "paused", startedAt: run.meta.created_at, endedAt: ended ? (run.endedAt ?? run.updatedAt) : null },
-      ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows),
+      ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows), llmRead: run.llmRead ?? 0,
     };
     // A poll never answers home_busy: a store still held answers the live view, or the last whole one, marked stale.
     try {
