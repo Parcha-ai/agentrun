@@ -223,8 +223,8 @@ test("a System One request that fails after it was sent (a 503) is sent once, an
   await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.equal((await seen()).length, 1, "a request that may have been answered and billed is never sent again");
-  assert.equal(run.status, "failed");
-  assert.equal(run.error?.code, "escalated", JSON.stringify(run.error));
+  // An escalated run ends completed and waits for review, never failed.
+  assert.deepEqual([run.status, run.error, run.review?.kind], ["completed", null, "decision_interrupted"], JSON.stringify([run.error, run.review]));
   assert.deepEqual(escalations(join(data, "runs", runId, "store", "run.sqlite")), ["decision_interrupted"], "the run waits for review as an interrupted decision");
 });
 
