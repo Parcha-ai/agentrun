@@ -125,3 +125,22 @@ not be read". An item for the receipt is ignored. The reason and each item's `wh
 item kept; otherwise it stays unmerged, with the verdict. Neither function calls a model or runs git: the host does
 both. `gradePrompt` throws on input no checked branch holds (a run id the layout refuses, a path outside the layout, an
 unseen character), and `parseVerdict` never throws on the grader's answer.
+
+## Notes in Claude Code's auto-memory format
+
+A host that keeps what an agent learned as a folder of notes in Claude Code's auto-memory format reads and builds it
+with these. Each note is `<slug>.md`: front matter with `name`, `description` and `type` (`user`, `feedback`, `project`
+or `reference`), and optionally `status: superseded` or `retired` with `superseded_by` (no status: active), then its
+text. `MEMORY.md` is the index, one line per active note.
+
+```js
+import { activeNotes, buildIndex, loadedIndex, parseNoteFile } from "@parcha/agentrun-learn";
+
+const note = parseNoteFile("refund-policy-path.md", text); // { file, name, description, type, status, superseded_by, body }, or why not
+const active = activeNotes(notes); // the active ones, by file name
+const index = buildIndex(notes); // "- [name](file.md) — description\n" per active note; "" with none
+const read = loadedIndex(index); // what a run reads: the first 200 lines, within 25 KB
+```
+
+`parseNoteFile` answers a list of problems for a note out of shape, or a file name that is `MEMORY.md`, hidden or under a
+directory. Keys it does not know are left alone. The checker above still checks the older layout in [SPEC.md](SPEC.md).

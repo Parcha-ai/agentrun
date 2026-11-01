@@ -1,5 +1,6 @@
 // Edits are revisions: each definition an agent had is kept, a run pins one, and every run of every agent is listed.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { agent, answerFlow, flowAgent, follow, serve, startRun, storeRun } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
@@ -154,7 +155,7 @@ test("GET /runs lists every agent's runs newest first, filtered by agent, revisi
   await follow(api, c.run_id, ["completed"]);
   const all = (await api("GET", "/runs")).body;
   assert.deepEqual(all.runs.map((r) => r.run_id), [c.run_id, b.run_id, a.run_id]);
-  assert.deepEqual(Object.keys(all.runs[0]).sort(), ["agent_id", "agent_version", "archived_at", "cost", "created_at", "ended_at", "error", "imported_from", "kind", "review", "revision", "run_id", "sha", "state", "status", "title"]);
+  assert.deepEqual(Object.keys(all.runs[0]).sort(), ["agent_id", "agent_version", "archived_at", "cost", "created_at", "ended_at", "error", "imported_from", "kind", "learning", "review", "revision", "run_id", "sha", "state", "status", "title"]);
   assert.deepEqual(all.runs.map((r) => r.review), [null, null, null], "no run here escalated, so none waits for review");
   assert.deepEqual((await api("GET", "/runs?agent=one")).body.runs.map((r) => r.run_id), [c.run_id, a.run_id]);
   assert.deepEqual((await api("GET", "/runs?status=failed")).body.runs.map((r) => [r.run_id, r.agent_id, r.error.code]), [[b.run_id, "two", "run_failed"]], "a failed run keeps its own error");
@@ -204,4 +205,27 @@ test("two PUTs that read the same ETag race: the store compares If-Match inside 
     const revisions = (await api("GET", `/agents/raced-${i}/revisions`)).body.revisions;
     assert.deepEqual(revisions.map((r) => r.parent), [created.revision, null], "one edit landed, on the revision both read");
   }
+});
+
+/** JSON with every object's keys sorted, as the agent store hashes a revision. */
+const canonical = (value) => (Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value));
+
+test("the switch: kept on a revision when a definition sets it, true or false, and carried over by an edit that leaves it out; absent, the revision's id is the one it had before the switch, and a workflow keeps none", async (t) => {
+  const { api } = await serve(t);
+  const made = (await api("POST", "/agents", agent("plain"))).body;
+  assert.equal("learning" in made.definition, false, "absent: no default is echoed");
+  const body = { instructions: "Answer.", skills: {}, tools: [] };
+  assert.equal(made.revision, createHash("sha256").update(canonical({ agent: "plain", parent: null, kind: "agentic", body })).digest("hex"), "a definition that leaves it out hashes as before");
+  for (const learning of [true, false]) {
+    const id = `set-${learning}`;
+    const created = (await api("POST", "/agents", agent(id, { learning }))).body;
+    assert.equal(created.definition.learning, learning);
+    const edited = await api("PUT", `/agents/${id}/definition`, { definition: { name: id, instructions: "Answer briefly." } });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    assert.equal(edited.body.definition.learning, learning, "an edit that leaves it out keeps it");
+  }
+  const wrong = await api("POST", "/agents", agent("wrong", { learning: "yes" }));
+  assert.deepEqual(wrong.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "wrong_type"]]);
+  const flow = await api("POST", "/agents", flowAgent("flow", undefined, { learning: true }));
+  assert.deepEqual(flow.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "not_allowed"]]);
 });

@@ -1,7 +1,8 @@
 // GET /v2/openapi.json: the agentrun.v2/0 contract as vendored, with this server's marks. It holds every route the
 // server serves and nothing it does not, the contract's operations unchanged, and its references whole.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { ROUTES } from "../dist/server.js";
@@ -224,4 +225,41 @@ test("the decision providers' widening to parallel is its own addition, decision
   assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
   assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
+});
+
+test("learning is this server's own addition, learning/1: the definition's switch, the server's in capabilities, and a run's learning whole on its read and short in lists, and the answers meet the document", { timeout: 120_000 }, async (t) => {
+  const { api, baseUrl, data } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const schemas = doc.components.schemas;
+  for (const [schema, field] of [["DefinitionInput", "learning"], ["Run", "learning"], ["RunSummary", "learning"], ["Features", "learning"]]) {
+    assert.equal(schemas[schema].properties[field]?.["x-agentrun-serve"], "learning/1", `${schema}.${field} is marked`);
+    assert.ok(doc.info["x-agentrun-serve"].fields.includes(`${schema}.${field}`), `info lists ${schema}.${field}`);
+  }
+  assert.equal(schemas.DefinitionInput.properties.learning.default, false, "off unless an agent says so");
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.equal(caps.features.learning, "on", "the server's switch is on by default");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, caps), []);
+  // A run seeded, one whose folder cannot be made (a file where it goes), and one of an agent that does not learn.
+  assert.equal((await api("POST", "/agents", agent("learner", { learning: true }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("blocked", { learning: true }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  await mkdir(join(data, "homes", "blocked"), { recursive: true });
+  await writeFile(join(data, "homes", "blocked", "learning"), "not a folder");
+  const runs = {};
+  for (const id of ["learner", "blocked", "plain"]) {
+    const started = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    runs[id] = started.body.run_id;
+  }
+  const want = { learner: ["seeded", null], blocked: ["dropped", "seed_failed"], plain: null };
+  for (const [id, runId] of Object.entries(runs)) {
+    const read = (await api("GET", `/runs/${runId}`)).body;
+    assert.deepEqual(read.learning && [read.learning.state, read.learning.reason], want[id], id);
+    assert.deepEqual(schemaProblems(doc, schemas.Run.properties.learning, read.learning), [], `${id}: ${JSON.stringify(read.learning)}`);
+    const listed = (await api("GET", `/agents/${id}/runs`)).body.runs[0];
+    assert.deepEqual(listed.learning, want[id] && { state: want[id][0], reason: want[id][1] }, `${id} in its list`);
+    assert.deepEqual(schemaProblems(doc, schemas.RunSummary.properties.learning, listed.learning), [], id);
+  }
+  // The positive control: the same check sees a state the document does not hold.
+  assert.notDeepEqual(schemaProblems(doc, schemas.Run.properties.learning, { state: "merged", reason: null, detail: null, at: new Date().toISOString() }), []);
 });
