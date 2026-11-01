@@ -1,0 +1,50 @@
+{
+  "model": "gpt-5.4-mini",
+  "stream": true,
+  "input": [
+    {
+      "type": "message",
+      "id": "<message-id>",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "What is the capital of France?"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "request_user_input",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "type": "web_search",
+      "external_web_access": true
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "summary": "auto"
+  },
+  "store": false,
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "prompt_cache_key": "<prompt-cache-key>",
+  "client_metadata": {
+    "turn_id": "<turn_id>",
+    "x-codex-window-id": "<x-codex-window-id>",
+    "x-codex-turn-metadata": "<x-codex-turn-metadata>",
+    "root_turn_id": "<root_turn_id>",
+    "thread_id": "<thread_id>",
+    "x-codex-installation-id": "<x-codex-installation-id>",
+    "session_id": "<session_id>"
+  }
+}

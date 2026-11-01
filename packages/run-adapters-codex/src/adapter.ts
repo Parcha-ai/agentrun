@@ -3,8 +3,8 @@
 // A session is the copied Codex harness (harness.ts) driven over the session's own records (the kernel's openDrive on
 // the writer the runner lends, `io.writer`), on a local machine (host/machine.ts): Codex's app-server with its built-in tools off, its
 // model behind the session's loopback proxy (@parcha/agentrun-adapters/host), and the host's tools, exactly those `spec.tools` names,
-// as its only tools. Every paid request passes the runner's `beforeRequest` first, and its usage comes back through
-// `afterRequest`.
+// as its only tools (beside the provider's own web search, when `webSearch` turns it on). Every paid request passes the
+// runner's `beforeRequest` first, and its usage comes back through `afterRequest`.
 //
 // The host's skills (`skills`) are the only skills Codex lists to the model: written into the session's CODEX_HOME at the
 // start of every drive, where Codex finds a user's skills even in a turn with no environment, and Codex's own bundled
@@ -34,6 +34,9 @@ export interface CodexProvider {
   credential: () => Promise<string> | string;
 }
 
+/** Codex's own web search, as a session may turn it on: `live` (it searches the web as it runs). */
+export type CodexWebSearch = "live";
+
 export interface CodexAdapterOptions {
   /** The provider's model id, or one per tier (`default` when a node names none). */
   model: string | { default: string; fast?: string; strong?: string };
@@ -43,6 +46,10 @@ export interface CodexAdapterOptions {
   confine?: ConfineChild;
   /** The price of a response; null (or no function) records its cost as unknown. */
   price?: ModelProxyOptions["price"];
+  /** Codex's own web search, on the provider (OpenAI's hosted `web_search` tool): `"live"` sets `web_search = "live"` in
+   *  Codex's config, the model proxy admits exactly the tool Codex then sends, and each search a response ran is added to
+   *  its price at the model's per-call price (unknown for a model with no known search price). Default off. */
+  webSearch?: CodexWebSearch;
   /** The most output tokens one request may ask for. Default 32 000. */
   maxOutputTokens?: number;
   /** The model's context window. Default 272 000. */
@@ -104,6 +111,7 @@ function skillsSeed(skills: readonly HostSkill[]): MachineSeed {
 }
 
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
+  if (options.webSearch !== undefined && options.webSearch !== "live") throw new TypeError("agentrun-codex: webSearch is \"live\" or absent");
   // The skills first: a skill Codex would skip or list under another name is the host's to fix, binary or not.
   const skills = options.skills ?? [];
   const skillsWrong = skillProblems(skills);
@@ -177,6 +185,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             dir,
             ...(options.confine ? { confine: options.confine } : {}),
             ...(seed ? { seed } : {}),
+            ...(options.webSearch ? { webSearch: options.webSearch } : {}),
             proxy: {
               hooks: io.models,
               tools: tools.map((t) => t.name),
