@@ -1,8 +1,8 @@
 import type { Stats } from "./mission";
-import type { Agent, Definition } from "./agentForm";
+import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Run, RunFiles, TimelinePage, TimelineRow } from "./v2";
+import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -22,6 +22,18 @@ export class ClientError extends Error {
 /** POST /v2/workflows/validate's answer: issues refuse a save, warnings only advise. Paths are JSON Pointers into the
  *  workflow ("" for the document itself). */
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
+
+/** A runs list's filter (GET /v2/runs's `status` and `archived`): runs in one status, and the archived runs in place of
+ *  the others. */
+export type RunsFilter = { status?: RunStatus; archived?: boolean };
+
+const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived }: RunsFilter = {}) => {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (cursor) q.set("cursor", cursor);
+  if (status) q.set("status", status);
+  if (archived) q.set("archived", "true");
+  return `?${q}`;
+};
 
 export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean } } };
 export type Client = ReturnType<typeof createClient>;
@@ -54,6 +66,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   }
   const agent = (id: string) => `/agents/${encodeURIComponent(id)}`;
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
+  // A create's warnings come on its answer, and the agent's page that opens next reads the agent again (a read carries
+  // none): they are kept here and put on a read of that same revision, until the next save or make-current of the agent,
+  // after which they may be stale (the host can be set up since), so they go.
+  const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
     /** The owner's session; its status too, since a server without accounts answers 404. */
@@ -66,27 +82,41 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
-    listRuns: (limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
-    listAgentRuns: (id: string, limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+    listRuns: (limit = 50, cursor?: string | null, filter?: RunsFilter) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs${runsQuery(limit, cursor, filter)}`),
+    /** `filter`: one status and the archived runs only, or (the agent page's) just `archived`: the archived runs only (an
+     *  archived agent's runs are all archived with it). */
+    listAgentRuns: (id: string, limit = 50, cursor?: string | null, filter: RunsFilter | boolean = {}) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs${runsQuery(limit, cursor, typeof filter === "boolean" ? { archived: filter } : filter)}`),
     listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
       const q = new URLSearchParams();
       if (archived) q.set("archived", "true");
       if (cursor) q.set("cursor", cursor);
       return call<{ agents: Agent[]; next_cursor: string | null }>("GET", `/agents${q.size ? `?${q}` : ""}`);
     },
-    getAgent: async (id: string) => { const r = await callTagged<Agent>("GET", agent(id)); return { agent: r.body, etag: r.etag }; },
-    createAgent: (body: { definition: Definition; skills?: Record<string, string> }) => call<Agent>("POST", "/agents", { body }),
+    getAgent: async (id: string) => {
+      const r = await callTagged<Agent>("GET", agent(id));
+      const kept = created.get(id);
+      return { agent: kept && kept.revision === r.body.revision && !r.body.warnings ? { ...r.body, warnings: kept.warnings } : r.body, etag: r.etag };
+    },
+    createAgent: async (body: { definition: Definition; skills?: Record<string, string> }) => {
+      const made = await call<Agent>("POST", "/agents", { body });
+      if (made.warnings?.length) created.set(made.agent_id, { revision: made.revision, warnings: made.warnings });
+      return made;
+    },
     /** Saves a new revision. `etag` is the revision the edit was made on: the server refuses the save (412) when another
      *  landed first. The answer's ETag is the new revision, for the next edit. */
     updateDefinition: async (id: string, body: { definition: Partial<Definition>; note?: string; skills?: Record<string, string> }, etag: string | null) => {
       const r = await callTagged<Agent>("PUT", `${agent(id)}/definition`, { body, headers: etag ? { "if-match": etag } : {} });
+      created.delete(id);
       return { agent: r.body, etag: r.etag };
     },
     listRevisions: (id: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: string; definition: Definition }[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
-    setCurrent: (id: string, revision: string) => call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }),
+    setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
     getRun: (id: string) => call<Run>("GET", run(id)),
+    /** Hides a run from the runs list (or shows it again), its history kept. The answer is the run. */
+    archiveRun: (id: string) => call<Run>("POST", `${run(id)}/archive`, { body: {} }),
+    unarchiveRun: (id: string) => call<Run>("POST", `${run(id)}/unarchive`, { body: {} }),
     /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run. */
     startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number }, idempotencyKey: string) => {
       const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });
@@ -110,6 +140,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     resumeRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/resume`, { body: {} }),
     /** The server's own check of a workflow (the DSL's validator, no code run, nothing stored). 404 on a server without it. */
     validateWorkflow: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => call<WorkflowCheck>("POST", "/workflows/validate", { body, signal }),
+    /** GET /v2/stats with its `analytics` bounded: runs started at or after `from`, of `agent`. Every other number is the
+     *  whole store's, and an older server, which has no analytics, leaves both unread. */
+    statsOver: ({ from, agent: of }: { from?: string; agent?: string }) => {
+      const q = new URLSearchParams();
+      if (from) q.set("from", from);
+      if (of) q.set("agent", of);
+      return call<Stats>("GET", `/stats${q.size ? `?${q}` : ""}`);
+    },
     /** A run file's URL on this origin (a rendered page's image), for an <img>: the session cookie goes with it. */
     fileUrl: (id: string, path: string) => `${base}${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),

@@ -15,7 +15,7 @@ import {
 	type BoxStatus,
 	isReservedLabel,
 } from "./box.ts";
-import { refuseNetworkFields } from "./network.ts";
+import { refuseMounts, refuseNetworkFields } from "./network.ts";
 
 /** What one Archil `exec` call is allowed to run, as the service states it: a call is cut at 300 s. */
 const MAX_EXEC_MS = 300_000;
@@ -554,7 +554,8 @@ class ArchilExecBox implements Box {
  * attached the same box run one command at a time and neither loses a write; this process also orders its own calls.
  * Files go through the object API, which takes no checkout: write a box's files from one process at a time.
  * Refused before any call: a GPU, a snapshot, a `workspace`, an isolation other than `vm`, more than 2 vCPU or 3938 MiB,
- * a label key in the providers' namespace, an env of any kind (an exec carries only the command), and a lifetime that is not positive.
+ * a label key in the providers' namespace, an env of any kind (an exec carries only the command), any `mounts`, and a lifetime that is
+ * not positive.
  */
 export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 	const safe = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
@@ -621,6 +622,8 @@ export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 			}
 			const refusedNetwork = refuseNetworkFields(spec, "archil-exec");
 			if (refusedNetwork !== undefined) return err(refusedNetwork);
+			const refusedMounts = refuseMounts(spec, "archil-exec");
+			if (refusedMounts !== undefined) return err(refusedMounts);
 			if (spec.gpu !== undefined) return err(new BoxError("unsupported", "an Archil exec has no GPU"));
 			if (spec.snapshot !== undefined) return err(new BoxError("unsupported", "an archil-exec box starts empty"));
 			if (spec.workspace !== undefined) {

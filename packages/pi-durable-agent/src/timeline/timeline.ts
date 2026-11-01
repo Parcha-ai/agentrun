@@ -81,6 +81,144 @@ export type TimelineOptions = {
   now?: () => number;
 };
 
+/** A tool's calls in a run, and how many failed. */
+export type ToolMetrics = { calls: number; errors: number };
+/** What a run's entries say it used (`runMetricsOf`). Tokens as pi counts them: `input` is the input neither read from
+ *  nor written to the cache, so the whole input is `input + cacheRead + cacheWrite`. */
+export type RunMetrics = {
+  input: number; cacheRead: number; cacheWrite: number; output: number;
+  /** Model requests, as the usage row of a run that ended counts them. */
+  requests: number;
+  /** Of `requests`, those whose tokens are unknown: in no sum. A request cut before its end, a usage with no input or
+   *  output count, and one that reports no input at all (a writer's zeros for a request it did not measure). */
+  unmetered: number;
+  /** Requests by `provider/model`; `model` is the one with the most (the first seen of a tie), absent when none names one. */
+  models: Record<string, number>; model?: string;
+  /** By tool name. A call with no result was interrupted: it counts as failed. */
+  tools: Record<string, ToolMetrics>;
+};
+type Tokens = Pick<RunMetrics, "input" | "cacheRead" | "cacheWrite" | "output">;
+const tokenCount = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
+/** A usage's tokens: undefined unless it has an input and an output count (a cache count it omits is 0), and unless it
+ *  has some input. A request that reached a model always sent some, so a usage with none is a writer's zeros for a
+ *  request it did not measure (an imported transcript's, a harness answer's written with no booking): unknown, never 0.
+ *  `failed`: a failed request's counts are taken as they are, as its cost is. */
+function tokensOf(usage: unknown, failed = false): Tokens | undefined {
+  const u = obj(usage);
+  const [input, output, cacheRead, cacheWrite] = [tokenCount(u?.input), tokenCount(u?.output), u?.cacheRead === undefined ? 0 : tokenCount(u.cacheRead), u?.cacheWrite === undefined ? 0 : tokenCount(u.cacheWrite)];
+  if (input === undefined || output === undefined || cacheRead === undefined || cacheWrite === undefined) return undefined;
+  return failed || input + cacheRead + cacheWrite > 0 ? { input, cacheRead, cacheWrite, output } : undefined;
+}
+
+/** A run's model requests as its entries mark them: how many, what they cost and the tokens they used. The usage row
+ *  and runMetricsOf count through it. `push` says what an entry was: an answer (a `pi.assistant` that is a request), a
+ *  mark (a request's mark or cost, or pi's answer to a request that never left: nothing to show), or neither. */
+function createMeter() {
+  let requests = 0;
+  // The run's cost: the known sum, the costs no one knows, and the costs written as pending, still to come (each with
+  // whether its answer's tokens were unknown: its late cost's usage then stands in for them).
+  let known = 0;
+  let unknown = 0;
+  const pending: boolean[] = [];
+  const addCost = (cost: unknown) => (typeof cost === "number" && Number.isFinite(cost) ? (known += cost) : (unknown += 1));
+  let marked = 0;
+  let inFlight = false;
+  let refused = 0;
+  // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
+  // answer). Earlier answers are a run's from before requests were marked.
+  let answered = 0;
+  // Compactions, apart: one may run beside a generation. Each closes with its cost, or with an end when aborted.
+  let compactions = 0;
+  let compacting = 0;
+  let compactionOpen = false;
+  const tokens: Tokens = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
+  // Requests whose tokens are unknown, and whether the latest answer's were.
+  let unmetered = 0;
+  let lastUnmetered = false;
+  const addTokens = (counted: Tokens | undefined) => {
+    if (!counted) return void (unmetered += 1);
+    for (const key of ["input", "cacheRead", "cacheWrite", "output"] as const) tokens[key] += counted[key];
+  };
+  const models = new Map<string, number>();
+
+  function push(entry: EntryLike): "answer" | "mark" | undefined {
+    const message = entry.model?.[0];
+    const data = obj(entry.data);
+    if (entry.kind === REQUEST_REFUSED) {
+      refused += 1;
+    } else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") {
+      // pi's answer to a request that never left: nothing to count or show.
+      refused -= 1;
+    } else if (entry.kind === REQUEST_STARTED && isCompaction(entry)) {
+      compacting += 1;
+      compactionOpen = true;
+    } else if (entry.kind === REQUEST_ENDED && isCompaction(entry)) {
+      if (unsent(entry)) compacting -= 1;
+      compactionOpen = false;
+    } else if (entry.kind === REQUEST_COST) {
+      compactions += 1;
+      compactionOpen = false;
+      addCost(data?.usd);
+      addTokens(tokensOf(data?.usage));
+    } else if (entry.kind === REQUEST_COST_PENDING) {
+      // The answer just before it was counted as a cost unknown: it is one still to come.
+      if (unknown > 0) (unknown -= 1), pending.push(lastUnmetered);
+    } else if (entry.kind === REQUEST_COST_LATE) {
+      // The answer it prices was written before its usage came in: its usage, when it has one, is that answer's tokens.
+      const late = tokensOf(data?.usage);
+      if (pending.shift() && late) (unmetered -= 1), addTokens(late);
+      addCost(data?.usd);
+    } else if (entry.kind === REQUEST_STARTED) {
+      marked += 1;
+      inFlight = true;
+    } else if (entry.kind === REQUEST_ENDED) {
+      if (unsent(entry)) marked -= 1;
+      inFlight = false;
+    } else if (entry.kind === "pi.assistant" && message) {
+      requests += 1;
+      if (marked > 0) answered += 1;
+      const name = str(message.model);
+      if (name) {
+        const key = str(message.provider) ? `${str(message.provider)}/${name}` : name;
+        models.set(key, (models.get(key) ?? 0) + 1);
+      }
+      // A request cut before its end has no final usage: its stream had reported none (the Responses API reports it at
+      // the end) or only the start (Anthropic's input and first token), never what the provider charged. Unknown.
+      const aborted = message.stopReason === "aborted";
+      addCost(aborted ? undefined : obj(obj(message.usage)?.cost)?.total);
+      const counted = aborted ? undefined : tokensOf(message.usage, message.stopReason === "error");
+      lastUnmetered = !counted;
+      addTokens(counted);
+      return "answer";
+    } else return undefined;
+    return "mark";
+  }
+
+  /** The usage row's count and cost; undefined while there is nothing to count. `settled`: nothing is running. */
+  function usage(settled: boolean): { usd: number | null; requests: number } | undefined {
+    // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
+    // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
+    // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
+    // process that ended.
+    const open = (flying: boolean) => (flying && !settled ? 1 : 0);
+    const cut = marked - open(inFlight) > answered || compacting - open(compactionOpen) > compactions;
+    if (!requests && !compactions && !cut) return undefined;
+    const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
+    return { usd: unknown > 0 || pending.length > 0 || cut ? null : Math.round(known * 1e6) / 1e6, requests: count };
+  }
+
+  /** The counts of a run that ended: a request it cut has unknown tokens. */
+  function settled(): Omit<RunMetrics, "tools"> {
+    const all = usage(true)?.requests ?? 0;
+    const cut = Math.max(0, marked - answered) + Math.max(0, compacting - compactions);
+    let model: string | undefined;
+    for (const [key, n] of models) if (model === undefined || n > models.get(model)!) model = key;
+    return { ...tokens, requests: all, unmetered: Math.min(all, unmetered + cut), models: Object.fromEntries(models), ...(model !== undefined ? { model } : {}) };
+  }
+
+  return { push, usage, settled };
+}
+
 type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean };
 
 const TAG = /^[\w.-]{1,64}$/;
@@ -112,22 +250,7 @@ function createProjector(options: TimelineOptions) {
   let stamp = 0;
   let root: number | undefined;
   let current = options.conversationId ?? 0;
-  let requests = 0;
-  // The run's cost: the known sum, the costs no one knows, and the costs written as pending, still to come.
-  let known = 0;
-  let unknown = 0;
-  let pending = 0;
-  const addCost = (cost: unknown) => (typeof cost === "number" && Number.isFinite(cost) ? (known += cost) : (unknown += 1));
-  let marked = 0;
-  let inFlight = false;
-  let refused = 0;
-  // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
-  // answer). Earlier answers are a run's from before requests were marked.
-  let answered = 0;
-  // Compactions, apart: one may run beside a generation. Each closes with its cost, or with an end when aborted.
-  let compactions = 0;
-  let compacting = 0;
-  let compactionOpen = false;
+  const meter = createMeter();
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -189,39 +312,10 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
-    if (entry.kind === REQUEST_REFUSED) {
-      refused += 1;
-    } else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") {
-      // pi's answer to a request that never left: nothing to count or show.
-      refused -= 1;
-    } else if (entry.kind === REQUEST_STARTED && isCompaction(entry)) {
-      compacting += 1;
-      compactionOpen = true;
-    } else if (entry.kind === REQUEST_ENDED && isCompaction(entry)) {
-      if (unsent(entry)) compacting -= 1;
-      compactionOpen = false;
-    } else if (entry.kind === REQUEST_COST) {
-      compactions += 1;
-      compactionOpen = false;
-      addCost(obj(entry.data)?.usd);
-    } else if (entry.kind === REQUEST_COST_PENDING) {
-      // The answer just before it was counted as a cost unknown: it is one still to come.
-      if (unknown > 0) (unknown -= 1), (pending += 1);
-    } else if (entry.kind === REQUEST_COST_LATE) {
-      if (pending > 0) pending -= 1;
-      addCost(obj(entry.data)?.usd);
-    } else if (entry.kind === REQUEST_STARTED) {
-      marked += 1;
-      inFlight = true;
-    } else if (entry.kind === REQUEST_ENDED) {
-      if (unsent(entry)) marked -= 1;
-      inFlight = false;
-    } else if (entry.kind === "pi.assistant" && message) {
-      requests += 1;
-      if (marked > 0) answered += 1;
-      // A request cut before its end has no final usage: its stream had reported none (the Responses API reports it at
-      // the end) or only the start (Anthropic's input and first token), never what the provider charged. Unknown.
-      addCost(message.stopReason === "aborted" ? undefined : obj(obj(message.usage)?.cost)?.total);
+    const metered = meter.push(entry);
+    if (metered === "mark") {
+      // A request's mark or cost, or pi's answer to a request that never left: counted, nothing to show.
+    } else if (metered === "answer" && message) {
       if (message.stopReason === "error") {
         const why = str(message.errorMessage) ?? "unknown error";
         add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
@@ -343,18 +437,12 @@ function createProjector(options: TimelineOptions) {
   }
 
   function usage(): TimelineEvent | undefined {
-    // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
-    // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
-    // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
-    // process that ended.
-    const open = (flying: boolean) => (flying && !options.settled ? 1 : 0);
-    const cut = marked - open(inFlight) > answered || compacting - open(compactionOpen) > compactions;
-    if ((!requests && !compactions && !cut) || root === undefined) return undefined;
-    const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
-    const total = unknown > 0 || pending > 0 || cut ? null : Math.round(known * 1e6) / 1e6;
+    const counted = meter.usage(options.settled === true);
+    if (!counted || root === undefined) return undefined;
+    const { usd, requests } = counted;
     return make("usage", root, `${root}:usage`, {
-      summary: `Cost so far: ${total === null ? "unknown" : dollars(total)} over ${count} model request${count === 1 ? "" : "s"}`,
-      usage: { usd: total, requests: count },
+      summary: `Cost so far: ${usd === null ? "unknown" : dollars(usd)} over ${requests} model request${requests === 1 ? "" : "s"}`,
+      usage: { usd, requests },
     });
   }
 
@@ -378,6 +466,43 @@ export function timelineOf(entries: readonly EntryLike[], options: TimelineOptio
   if (options.settled) for (const [id, call] of projector.open()) projector.interrupt(call, id);
   const usage = projector.usage();
   return usage ? [...projector.rows(), usage] : [...projector.rows()];
+}
+
+/** What a run that ended used, from the entries of every conversation of its store, in log order (`SELECT record FROM
+ *  entries ORDER BY id`): its model requests and their tokens, counted as its usage row counts them (a cut request's
+ *  tokens are unknown), and its tool calls. Pure, like timelineOf. */
+export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
+  const meter = createMeter();
+  const seen = new Set<string>();
+  // Each call by `conversation:id`, and whether a result closed it, as the timeline pairs them.
+  const calls = new Map<string, { name: string; done: boolean }>();
+  const tools = new Map<string, ToolMetrics>();
+  const tally = (name: string, failed: boolean) => {
+    const tool = tools.get(name) ?? { calls: 0, errors: 0 };
+    tool.calls += 1;
+    if (failed) tool.errors += 1;
+    tools.set(name, tool);
+  };
+  for (const entry of records) {
+    const conv = entry.conversationId ?? 0;
+    if (entry.id !== undefined) {
+      if (seen.has(`${conv}:${entry.id}`)) continue;
+      seen.add(`${conv}:${entry.id}`);
+    }
+    const message = entry.model?.[0];
+    if (meter.push(entry) === "answer" && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
+      for (const block of blocksOf(message)) {
+        const [id, name] = [str(block.id), str(block.name)];
+        if (block.type === "toolCall" && id && name) calls.set(`${conv}:${id}`, { name, done: false });
+      }
+    } else if (entry.kind === "pi.tool-result" && message) {
+      const call = calls.get(`${conv}:${str(message.toolCallId) ?? ""}`);
+      if (call) call.done = true;
+      tally(call?.name ?? str(message.toolName) ?? "tool", message.isError === true);
+    }
+  }
+  for (const call of calls.values()) if (!call.done) tally(call.name, true);
+  return { ...meter.settled(), tools: Object.fromEntries(tools) };
 }
 
 const roleOf = (entry: unknown): unknown => {

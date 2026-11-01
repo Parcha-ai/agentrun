@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+A profile pack (version 1) and its resolver, not yet wired to any route. A pack maps each effort (`low`, `medium`, `high`) to an ordered list of skill names and an optional thinking level, and each output type to its writer skills, the workspace file the output lands in, and optional per-effort writer skills. `packIssues` returns every issue with a pack as `422` field issues pointing into it (`effort.low.skills[0]`), refusing unknown keys, skill names that are not 1 to 64 lowercase letters, digits and dashes starting with a letter or digit (the Agent Skills name rule, so nested, spaced, dot-leading and uppercase names are refused), output files that are not plain relative workspace paths, and lists or output maps over 32 entries. `resolvePack` reads a checked pack for one run: effort defaults to `medium`, the output to the pack's `default_output`, and the skills are the effort row's then the writer's, each once in first-seen order.

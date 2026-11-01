@@ -17,6 +17,13 @@ describe("runState", () => {
     expect(runState("input_required", "idle", "agentic")).toMatchObject({ label: "Stopped", tone: "warning", needsYou: true });
   });
 
+  it("reads a run that ended escalated (failed, its error's code escalated) as Escalated, never Failed", () => {
+    expect(view("failed", "idle", "agentic", ON, true, { code: "escalated" })).toMatchObject({ label: "Escalated", tone: "warning", final: true, live: false });
+    expect(view("failed", "idle", "workflow", ON, true, { code: "escalated" }).label).toBe("Escalated");
+    for (const error of [null, undefined, { code: "run_failed" }, { code: "spend_cap_reached" }]) expect(view("failed", "idle", "agentic", ON, true, error)).toMatchObject({ label: "Failed", tone: "error" });
+    expect(view("completed", "idle", "agentic", ON, true, { code: "escalated" }).label, "only a failed run").toBe("Completed");
+  });
+
   it("reads working with no live turn as working: the server relaunches it on its own", () => {
     expect(runState("working", "idle", "agentic")).toMatchObject({ label: "Working", tone: "active", live: true, needsYou: false });
   });

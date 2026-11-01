@@ -1,4 +1,4 @@
-import { Brain, ChevronRight, CircleAlert, CircleDollarSign, FileText, Flag, LoaderCircle, MessageCircleQuestion, User, Wrench } from "lucide-react";
+import { Brain, ChevronRight, CircleAlert, CircleDollarSign, FileText, Flag, LoaderCircle, MessageCircleQuestion, Scale, User, Wrench } from "lucide-react";
 import { useState } from "react";
 import { Chip } from "@/components/ui/chip";
 import { clock } from "@/lib/format";
@@ -7,7 +7,7 @@ import type { TimelineRow } from "@/lib/v2";
 
 const ICON: Record<string, typeof Brain> = {
   user_message: User, thinking: Brain, tool_use: Wrench, tool_result: Wrench, waiting: MessageCircleQuestion,
-  usage: CircleDollarSign, final_answer: FileText, phase: Flag, error: CircleAlert,
+  usage: CircleDollarSign, final_answer: FileText, phase: Flag, error: CircleAlert, decision: Scale,
 };
 
 /** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: "). */
@@ -20,13 +20,13 @@ const title = (row: TimelineRow) => {
   return text;
 };
 const label = (row: TimelineRow) =>
-  ({ user_message: "You", thinking: "Thinking", tool_use: row.tool_name ?? "Tool", tool_result: row.tool_name ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error" })[row.kind] ?? row.kind;
+  ({ user_message: "You", thinking: "Thinking", tool_use: row.tool_name ?? "Tool", tool_result: row.tool_name ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision" })[row.kind] ?? row.kind;
 
 function Row({ row, last }: { row: TimelineRow; last: boolean }) {
   const [open, setOpen] = useState(false);
   const Icon = ICON[row.kind] ?? Flag;
   const detail = row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text;
-  const failed = row.tool_status === "error" || row.kind === "error";
+  const failed = row.tool_status === "failed" || row.kind === "error";
   return (
     <li className="relative flex gap-3">
       <div className="flex w-7 shrink-0 flex-col items-center">
