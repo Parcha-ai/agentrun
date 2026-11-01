@@ -192,8 +192,9 @@ test("settings: http or https only, no user or password, known events; no seal k
   const hook = await receiver(t);
   const { api } = await serve(t);
   assert.deepEqual((await api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended"], at_rest: "sealed" });
+  const withUser = Object.assign(new URL("https://example.com/hook"), { username: "user", password: "pass" }).href;
   for (const [body, field] of [
-    [{ url: "ftp://example.com/hook" }, "url"], [{ url: "file:///etc/passwd" }, "url"], [{ url: "not a url" }, "url"], [{ url: "https://user:pass@example.com/hook" }, "url"],
+    [{ url: "ftp://example.com/hook" }, "url"], [{ url: "file:///etc/passwd" }, "url"], [{ url: "not a url" }, "url"], [{ url: withUser }, "url"],
     [{ url: `https://example.com/${"a".repeat(2048)}` }, "url"], [{}, "url"], [{ url: hook.url, events: [] }, "events"], [{ url: hook.url, events: ["run.started"] }, "events"],
     [{ url: hook.url, events: ["run.ended", "run.ended"] }, "events"], [{ url: hook.url, secret: "mine" }, "secret"],
   ]) {
