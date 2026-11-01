@@ -172,10 +172,13 @@ test("a workflow run's metrics count every model node's conversation", async (t)
   assert.deepEqual(m.tools, { submit: { calls: 2, errors: 0 } });
 });
 
-test("metrics the store refuses never hold up a run's end: it ends without them", async (t) => {
+test("a tool name past what the store keeps is cut to fit: the run ends with its metrics, the name as its first 255 characters and \"…\"", async (t) => {
   const { api, data } = await serve(t);
   const { run_id: runId } = await startRun(api, "long", "Call a tool with a long name.");
   await follow(api, runId, ["completed"]);
   assert.equal(storeRun(data, runId).state, "completed");
-  assert.equal(metricsOf(data, runId), undefined);
+  const m = metricsOf(data, runId);
+  assert.ok(m, "the run keeps its metrics");
+  assert.deepEqual(m.tools, { [`${"t".repeat(255)}…`]: { calls: 1, errors: 1 } }, "the made-up tool, cut; its call failed: no such tool");
+  assert.equal(m.requests, 2);
 });
