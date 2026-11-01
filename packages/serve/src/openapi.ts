@@ -9,6 +9,7 @@ import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
+import { DELIVERIES_KEPT, WEBHOOK_EVENTS, WEBHOOK_HEADERS } from "./webhooks.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 
 type Json = Record<string, unknown>;
@@ -143,6 +144,25 @@ const TOOL_KEYS_VIEW = closed({
   },
 });
 const KEY_ID = { name: "key_id", in: "path", required: true, description: "The tool key: one of GET /settings/tool-keys' ids.", schema: { type: "string" } };
+const WEBHOOK_EVENT = { enum: [...WEBHOOK_EVENTS] };
+const WEBHOOK_SET_FIELDS = {
+  configured: { const: true }, url: { type: "string" }, events: { type: "array", items: WEBHOOK_EVENT },
+  signing: { enum: ["sealed", "seal_key_missing", "unreadable"], description: "Whether the secret signs here: `sealed`; `seal_key_missing` (the server was handed no seal key) or `unreadable` (sealed under another, or damaged), when deliveries fail until POST .../rotate makes a new one. Never the secret." },
+  updated_at: { type: "string", format: "date-time" },
+};
+const WEBHOOK_SET = closed(WEBHOOK_SET_FIELDS);
+/** GET /settings/webhook (webhooks.ts): the webhook, or none; never its secret. */
+const WEBHOOK_VIEW = { oneOf: [closed({ configured: { const: false } }), WEBHOOK_SET] };
+const WEBHOOK_SECRET = { type: "string", description: `The signing secret, shown this once: keep it where the receiver checks \`${WEBHOOK_HEADERS.signature}\`.` };
+const WEBHOOK_DELIVERY = closed({
+  id: { type: "string", description: `The delivery, as \`${WEBHOOK_HEADERS.delivery}\` names it: the same on each try.` },
+  event: { enum: [...WEBHOOK_EVENTS, "ping"] }, event_id: { type: "string", description: "The body's `id`: the same notice of the same moment has the same one." },
+  run_id: { type: ["string", "null"] }, created_at: { type: "string", format: "date-time" },
+  status: { enum: ["pending", "delivered", "failed"] }, attempts: { type: "integer", minimum: 0 },
+  status_code: { type: ["integer", "null"], description: "The receiver's answer to the last try; null when it was not reached." },
+  error: { type: ["string", "null"], description: "Why the last try failed: an answer not 2xx (a redirect is not followed), no answer in 10 s, or not reached." },
+  last_attempt_at: { type: ["string", "null"], format: "date-time" }, next_attempt_at: { type: ["string", "null"], format: "date-time" },
+});
 const PAUSED = { type: "object", additionalProperties: false, required: ["run_id", "paused", "status"], properties: { run_id: { type: "string" }, paused: { type: "boolean" }, status: ref("schemas/RunStatus") } };
 
 /** POST .../archive and .../unarchive: hide an agent and its runs, or one run, from the lists, and show them again. */
@@ -290,6 +310,51 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
   },
+  "/settings/webhook": {
+    get: {
+      operationId: "getWebhook", tags: ["local"], summary: "The webhook this server POSTs run notices to, if one is set; never its secret",
+      responses: { "200": json(WEBHOOK_VIEW, "The webhook, or `configured: false`."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+    put: {
+      operationId: "saveWebhook", tags: ["local"], summary: "Set the webhook's URL and events",
+      description: `Each event is POSTed to \`url\` as JSON \`{id, event, at, run: {run_id, agent_id, status, title}}\`: \`run.needs_input\` when a run comes to need its person (input_required), \`run.ended\` when it ends (completed, failed or cancelled). Headers: \`${WEBHOOK_HEADERS.event}\`, \`${WEBHOOK_HEADERS.delivery}\`, \`${WEBHOOK_HEADERS.timestamp}\` (Unix seconds) and \`${WEBHOOK_HEADERS.signature}\`: \`v1=\` and the hex HMAC-SHA256 of \`<timestamp>.<body>\` under the secret. Not answered 2xx in 10 s (no redirect followed), a delivery is tried again after 10 s, 1 min and 5 min, then logged as failed; pending ones go on after a restart, and one may come again then, with the same \`id\`. The first PUT makes the secret and answers 201 with it, once; a later PUT keeps it and answers 200. \`events\` defaults to both. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters, or for an unknown event; 409 no_sealing_key when the server was handed no seal key to keep the secret under.`,
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: { type: "string", format: "uri", maxLength: 2048 }, events: { type: "array", minItems: 1, uniqueItems: true, items: WEBHOOK_EVENT } } } } } },
+      responses: {
+        "201": json(closed({ ...WEBHOOK_SET_FIELDS, secret: WEBHOOK_SECRET }), "Set, with its secret, shown this once."),
+        "200": json(WEBHOOK_SET, "Changed; the secret is kept."),
+        ...errors(400, 401, 409, 415, 422, 429, 500),
+      },
+      "x-agentrun-serve": "webhook/1",
+    },
+    delete: {
+      operationId: "deleteWebhook", tags: ["local"], summary: "Remove the webhook; its pending deliveries are dropped, the log of those done is kept",
+      responses: { "204": { description: "Removed." }, ...errors(401, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+  },
+  "/settings/webhook/rotate": {
+    post: {
+      operationId: "rotateWebhookSecret", tags: ["local"], summary: "Make the webhook a new secret, shown once; the old one signs nothing more",
+      responses: { "200": json(closed({ secret: WEBHOOK_SECRET }), "The new secret."), ...errors(401, 404, 409, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+  },
+  "/settings/webhook/test": {
+    post: {
+      operationId: "testWebhook", tags: ["local"], summary: "Deliver a `ping` now, once, and say how it went",
+      description: "The body is `{id, event: \"ping\", at, run: null}`, signed as every delivery is. It is tried once, never again, and kept in the deliveries.",
+      responses: { "200": json(WEBHOOK_DELIVERY, "The ping's delivery: `delivered`, or `failed` with why."), ...errors(401, 404, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+  },
+  "/settings/webhook/deliveries": {
+    get: {
+      operationId: "listWebhookDeliveries", tags: ["local"], summary: `The pending deliveries and the last ${DELIVERIES_KEPT} done, newest first`,
+      responses: { "200": json(closed({ deliveries: { type: "array", items: WEBHOOK_DELIVERY } }), "Each delivery, without its body."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+  },
   ...archiving("agents", "Agent", ref("parameters/AgentId"), "The agent, with archived_at."),
   ...archiving("runs", "Run", ref("parameters/RunId"), "The run, with archived_at."),
 };
@@ -430,6 +495,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: { routes: { type: "boolean" }, at_rest: { enum: ["sealed", "unavailable"] } },
       description: "GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept `sealed` under the seal key the server was handed; `unavailable` with none, when nothing is kept.",
       "x-agentrun-serve": "toolkeys/1",
+    },
+    webhooks: {
+      type: "object", additionalProperties: false, required: ["routes", "events", "at_rest"],
+      properties: { routes: { type: "boolean" }, events: { type: "array", items: WEBHOOK_EVENT }, at_rest: { enum: ["sealed", "unavailable"] } },
+      description: "/settings/webhook: one URL POSTed, signed, at each of `events`; its secret kept `sealed` under the seal key the server was handed, `unavailable` with none, when no webhook is set.",
+      "x-agentrun-serve": "webhook/1",
     },
   },
   "Features/agents": { revisions: { type: "boolean", description: "`GET /agents/{agent_id}/revisions` and `POST /agents/{agent_id}/current`.", "x-agentrun-serve": "serve/1" } },

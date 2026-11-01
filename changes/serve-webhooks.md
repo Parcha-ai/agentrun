@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+A webhook tells you when a run needs its person and when it ends. `PUT /v2/settings/webhook` with `{url, events?}` sets one URL; each `run.needs_input` (the run is `input_required`) and `run.ended` (completed, failed or cancelled) is POSTed to it as `{id, event, at, run: {run_id, agent_id, status, title}}`, signed: `x-agentrun-signature: v1=<hex>` is the HMAC-SHA256 of `<x-agentrun-timestamp>.<body>` under a secret the server makes at the first PUT, shows once, and keeps sealed under `AGENTRUN_SEAL_KEY` (as tool keys are). A delivery not answered 2xx in 10 s is tried again after 10 s, 1 min and 5 min, then logged as failed; no redirect is followed. Pending deliveries survive a restart (`DIR/webhook-outbox.json`). `GET /v2/settings/webhook/deliveries` lists the last ones, `POST .../test` sends a ping, `POST .../rotate` makes a new secret, `DELETE` removes the webhook. The routes are in the OpenAPI document as this server's own (`webhook/1`), and capabilities say `features.webhooks`.

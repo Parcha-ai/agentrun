@@ -175,6 +175,9 @@ export type Run = {
   /** Settles of this run not yet done: while any is, nothing starts its process again. */
   settles: number;
   updatedAt: string;
+  /** Where its status stood for its notices (`notify`): input_required, an end once carried back, or `other`. Unset
+   *  until this server has first read the run, so a run it adopts notices nothing of where it already stood. */
+  moment?: string;
 };
 
 const ASKED = "Asked you: ";
@@ -257,6 +260,12 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
   return (id) => !live.has(id) && !isLive(id);
 }
 
+/** Where a run's status stands for its notices: input_required, an end once carried back, else other. */
+const momentOf = (run: Run): string => {
+  const { status } = statusOf(run);
+  return status === "input_required" || (TERMINAL.has(status) && run.settled) ? status : "other";
+};
+
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {
   if (run.outcome) return { status: run.outcome, state: "idle" };
@@ -282,7 +291,10 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify };
+/** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
+ *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
+export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string }, marker: string) => void;
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, and the seal key
  *  the tool keys are kept under (tool-keys.ts). */
@@ -451,6 +463,7 @@ export class Runs {
       this.adoptProcess(run, record);
     }
     this.refresh(run);
+    run.moment = momentOf(run);
     return run;
   }
 
@@ -661,6 +674,16 @@ export class Runs {
   private mark(run: Run): void {
     const { status, state } = statusOf(run);
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
+    const [seen, moment] = [run.moment, momentOf(run)];
+    if (seen === undefined || seen === moment) return;
+    run.moment = moment;
+    if (moment === "other" || !this.options.notify) return;
+    const waits = moment === "input_required";
+    try {
+      this.options.notify(waits ? "run.needs_input" : "run.ended", { run_id: run.id, agent_id: run.agentId, status, title: run.meta.title }, waits ? (run.meta.stopped_at ?? meaningful(run.rows)?.id ?? "") : (run.endedAt ?? ""));
+    } catch (error) {
+      warn(run.id, `its notice was not queued: ${(error as Error).message}`);
+    }
   }
 
   // ---- the door -------------------------------------------------------------------------------------------------------
@@ -1119,6 +1142,7 @@ export class Runs {
     };
     await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
+    run.moment = "other";
     this.runs.set(run.id, run);
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;
