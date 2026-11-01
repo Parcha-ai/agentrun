@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-adapters";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import type { ModelRef } from "./model.js";
+import type { SkillCheck, SkillFiles } from "./skills.js";
 
 /** The one line that installs each harness beside serve. */
 export const INSTALL: Record<string, string> = {
@@ -63,9 +64,10 @@ export class HarnessUnavailable extends Error {}
 type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite: number };
 /** A child's command under the run's confinement (pi-durable-disk's confinePrefix): only added in front. */
 export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>) => { command: string; args: string[] };
-/** What a run's adapter needs of serve: its model, the catalog that prices it as it prices pi's runs, and the run's
- *  confinement for the harness's own process. */
-export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild };
+/** What a run's adapter needs of serve: its model, the catalog that prices it as it prices pi's runs, the run's
+ *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, which its own check took:
+ *  skills.ts). */
+export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[] };
 
 /** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
  *  the run confines nothing, since an adapter refuses a confinement that adds nothing. */
@@ -160,9 +162,19 @@ export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { 
 /** The package that runs claude-agent, imported by a name the build does not resolve: it is installed beside serve
  *  only by the person who wants it (its SDK is an optional peer). */
 const CLAUDE_PACKAGE = "@parcha/agentrun-claude-agent";
+const loadClaude = (): Promise<unknown> => import(CLAUDE_PACKAGE);
+
+/** The installed claude-agent adapter's own check of the skills it would load (its skillProblems), from `load` (a test
+ *  gives its own): what it refuses stays in the run's prompt (skills.ts), so claudeOf never hands it a skill it throws
+ *  on. None where the package is not installed, or has no such check: every skill stays inlined, and claudeOf says
+ *  what is missing. */
+export async function claudeSkillCheck(load: () => Promise<unknown> = loadClaude): Promise<SkillCheck | undefined> {
+  const claude = (await load().catch(() => undefined)) as { skillProblems?: unknown } | undefined;
+  return typeof claude?.skillProblems === "function" ? (claude.skillProblems as SkillCheck) : undefined;
+}
 
 /** claude-agent's adapter, from `load` (the installed package; a test gives its own). */
-export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = () => import(CLAUDE_PACKAGE)): Promise<AgentAdapter> {
+export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = loadClaude): Promise<AgentAdapter> {
   const claude = (await load().catch(() => {
     throw new HarnessUnavailable(`claude-agent is not installed here: ${INSTALL["claude-agent"]}`);
   })) as { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter };
@@ -179,7 +191,8 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   let adapter: AgentAdapter;
   try {
     const native = { ...needs, model: { ...needs.model, modelId: claudeModelId(needs.model) } };
-    adapter = claude.claudeAgentAdapter({ model: { default: native.model.modelId }, provider: provider ?? { origin: "", credential: () => "" }, price: priceOf(native), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}) });
+    // The skills only when there are some: with none, the adapter keeps its Skill tool off.
+    adapter = claude.claudeAgentAdapter({ model: { default: native.model.modelId }, provider: provider ?? { origin: "", credential: () => "" }, price: priceOf(native), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}) });
   } catch (error) {
     const message = (error as Error).message;
     throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`);

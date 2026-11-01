@@ -26,6 +26,10 @@ export const DEFAULT_LEASE_MARGIN_MS = 15_000;
 export const RUN_STATUSES = ["running", "sleeping", "paused", "done", "failed"] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
+/** The box an open's run ran in, as the host resolved it for that open (serve's capabilities.box.mode). */
+export const BOX_MODES = ["bwrap", "seatbelt", "provider", "unsandboxed", "unavailable"] as const;
+export type BoxMode = (typeof BOX_MODES)[number];
+
 /**
  * The incarnation that wrote the record: the host driver's name and enough to find and stop the process. Fields beyond
  * the five named here are the host driver's own handle (a unit name, a mountpoint), kept as written so the supervisor
@@ -57,6 +61,9 @@ export interface RunRecord {
   /** Wall-clock time of the last status transition (ISO 8601). */
   readonly updatedAt: string;
   readonly detail: JsonValue | null;
+  /** The box this incarnation's run runs in, exactly as its open was given it (`boxMode`); absent when it was given none.
+   *  The next open reads it to tell a switch of box from this open's. */
+  readonly box?: { readonly mode: BoxMode };
 }
 
 /** `run.json` is missing a field, has one of the wrong type, or is not JSON. Exit 65 (EX_DATAERR): a restart cannot fix it. */
@@ -100,6 +107,10 @@ export function parseRunRecord(text: string): RunRecord {
   if (r.wakeAt !== null && !isInstant(r.wakeAt)) throw new RunRecordError("wakeAt must be an ISO 8601 instant or null");
   if (r.heartbeatAt !== null && !isInstant(r.heartbeatAt)) throw new RunRecordError("heartbeatAt must be an ISO 8601 instant or null");
   if (!isInstant(r.updatedAt)) throw new RunRecordError("updatedAt must be an ISO 8601 instant");
+  const box = r.box as { mode?: unknown } | undefined | null;
+  if (box !== undefined && (typeof box !== "object" || box === null || !(BOX_MODES as readonly unknown[]).includes(box.mode))) {
+    throw new RunRecordError(`box must be { mode: one of ${BOX_MODES.join(", ")} }`);
+  }
   return {
     run: r.run,
     status: r.status as RunStatus,
@@ -110,6 +121,7 @@ export function parseRunRecord(text: string): RunRecord {
     heartbeatAt: r.heartbeatAt as string | null,
     updatedAt: r.updatedAt,
     detail: r.detail === undefined ? null : (r.detail as JsonValue),
+    ...(box === undefined ? {} : { box: { mode: box.mode as BoxMode } }),
   };
 }
 

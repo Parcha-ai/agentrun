@@ -1,28 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { EditorCaps } from "@/components/AgentEditor";
+import { AgentPage } from "@/components/AgentPage";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { KeysPage } from "@/components/KeysPage";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
-import { missionFrom, type MissionView } from "@/lib/mission";
+import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult } from "@/components/Playground";
 import { type Agent, toolOffers } from "@/lib/agentForm";
-import { RunsList } from "@/components/RunsList";
+import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
-import { allPages, type Capabilities, ClientError, createClient } from "@/lib/client";
+import { allPages, type Capabilities, ClientError, createClient, type RunsFilter } from "@/lib/client";
 import { appendRuns } from "@/lib/idempotency";
-import type { Run } from "@/lib/v2";
+import type { Run, RunStatus } from "@/lib/v2";
 
-type Where = { section: Section; run?: string; agent?: string | null; runsOf?: string; archived?: boolean; settings?: "keys" };
+/** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
+ *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
+type Where = { section: Section; run?: string; agent?: string | null; edit?: boolean; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: "keys" };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
   if (h === "#/agents/new") return { section: "agents", agent: null };
-  m = h.match(/^#\/agents\/([^/?]+)$/);
-  if (m) return { section: "agents", agent: decodeURIComponent(m[1]) };
+  m = h.match(/^#\/agents\/([^/?]+)(?:\/([a-z]+))?$/);
+  if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
   if (h.startsWith("#/playground")) return { section: "playground" };
   // Settings, a page per address: #/settings/keys (and #/settings) for now; a later one is one more name here.
@@ -30,8 +33,20 @@ export function route(h: string = location.hash): Where {
   if (m) return { section: "settings", settings: (m[1] ?? "keys") as "keys" };
   // Mission Control is the first page: the bare address, and the old start page's, land there.
   if (h === "" || h === "#" || h === "#/" || h.startsWith("#/start") || h.startsWith("#/mission")) return { section: "mission" };
-  m = h.match(/^#\/runs\?agent=([^&]+)$/);
-  return m ? { section: "runs", runsOf: decodeURIComponent(m[1]) } : { section: "runs" };
+  if (!h.startsWith("#/runs?")) return { section: "runs" };
+  // The runs list's filters live in the address, so a reload keeps them: one agent, one state, the archived runs.
+  const q = new URLSearchParams(h.slice("#/runs?".length));
+  const agent = q.get("agent"), status = q.get("status") as RunStatus | null;
+  return { section: "runs", ...(agent ? { runsOf: agent } : {}), ...(status && RUN_STATUSES.includes(status) ? { status } : {}), ...(q.get("archived") === "true" ? { archived: true } : {}) };
+}
+
+/** The runs list's address for these filters. Exported for its test. */
+export function runsHash({ runsOf, status, archived }: { runsOf?: string } & RunsFilter): string {
+  const q = new URLSearchParams();
+  if (runsOf) q.set("agent", runsOf);
+  if (status) q.set("status", status);
+  if (archived) q.set("archived", "true");
+  return `#/runs${q.size ? `?${q}` : ""}`;
 }
 
 /** The setup link's code, taken from the address once per page load and then kept: React may run a state initializer
@@ -83,6 +98,10 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [mission, setMission] = useState<MissionView | null>(null);
   const [missionError, setMissionError] = useState<string | null>(null);
   const [missionTry, setMissionTry] = useState(0);
+  // The range and agent Mission Control's analytics are asked for; a change reads them again, the page kept meanwhile.
+  const [statsRange, setStatsRange] = useState<StatsRange>("30d");
+  const [statsAgent, setStatsAgent] = useState<string | null>(null);
+  const [missionReading, setMissionReading] = useState(false);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
@@ -105,12 +124,13 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       setNames(all);
     })().catch(() => {});
   }, [v2]);
+  const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
   useEffect(() => {
     if (where.section !== "runs" || where.run) return;
     // Only the newest request lands: a slower answer for all runs never replaces one agent's runs, or the reverse.
     const n = ++asked.current;
     setRuns(null); setError(null);
-    (where.runsOf ? v2.listAgentRuns(where.runsOf) : v2.listRuns())
+    (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, null, runsFilter) : v2.listRuns(50, null, runsFilter))
       .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); } })
       .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
   }, [v2, where]);
@@ -140,12 +160,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   useEffect(() => {
     if (where.section !== "mission") return;
     let live = true;
-    setMissionError(null);
-    Promise.all([v2.stats(), v2.listRuns(10)])
+    setMissionError(null); setMissionReading(true);
+    const from = rangeFrom(statsRange);
+    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), v2.listRuns(10)])
       .then(([s, r]) => { if (live) setMission(missionFrom(s, r.runs)); })
-      .catch((e) => { if (live) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
+      .catch((e) => { if (live) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); })
+      .finally(() => { if (live) setMissionReading(false); });
     return () => { live = false; };
-  }, [v2, where.section, missionTry]);
+  }, [v2, where.section, missionTry, statsRange, statsAgent]);
   const revsAsked = useRef(0);
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
@@ -175,15 +197,19 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         : where.section === "settings"
         ? <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={() => { v2.capabilities().then(setCaps).catch(() => {}); }} />
         : where.section === "mission"
-        ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)} />
+        ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
+            scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
         : where.section === "agents"
-        ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} go={go} /> : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={editorCaps} agentId={where.agent} go={go} />
+        ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} go={go} />
+          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} defaultModel={editorCaps.defaultModel} go={go} />
+          : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={editorCaps} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
-            onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor) : v2.listRuns(50, cursor)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); } }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
+            filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
+            onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); } }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
     </Shell>
   );
 }
