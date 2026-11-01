@@ -58,6 +58,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
           pdftoppm -v && gs --version && ffmpeg -version | head -1
       - run: npm ci --ignore-scripts
+      - name: The console, built before the server so the server's build copies it into its dist
+        # verify-packages --console then checks the packed server carries it, its files scanned like every packed file.
+        if: matrix.shard == 'checks'
+        working-directory: apps/console
+        run: npm ci --ignore-scripts && npm run build
       - run: npm run build
       - if: matrix.shard == 'checks'
         run: npm run typecheck
@@ -74,7 +79,7 @@ jobs:
       - if: matrix.shard == 'checks'
         run: node scripts/check-generated.mjs
       - if: matrix.shard == 'checks'
-        run: node scripts/verify-packages.mjs
+        run: node scripts/verify-packages.mjs --console
       - if: matrix.shard == 'checks' && matrix.node == '22.23.2'
         run: npm run verify:source
       - if: matrix.shard == 'checks' && matrix.node == '22.19.0'
