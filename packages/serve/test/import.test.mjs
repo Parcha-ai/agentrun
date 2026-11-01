@@ -15,6 +15,7 @@ import { startServe } from "../dist/index.js";
 import { planImport, runImport } from "../dist/import.js";
 import { readSession } from "../dist/import-sources.js";
 import { claudeSession, codexSession, piSession } from "./fixtures/import-sessions.mjs";
+import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, scratch } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -114,8 +115,13 @@ test("each project is one agent with a revision per harness, its CLAUDE.md or AG
   assert.equal(view.status, 200);
   assert.equal(view.body.status, "completed");
   assert.deepEqual(view.body.imported_from, { source: "claude-code", session: "00000000-0000-4000-8000-000000000001" });
-  const listed = (await api("GET", `/agents/${site.id}/runs`)).body.runs;
+  const page = (await api("GET", `/agents/${site.id}/runs`)).body;
+  const listed = page.runs;
   assert.equal(listed.length, 3);
+  // An imported run and its summaries meet the served document whole.
+  const doc = (await api("GET", "/openapi.json")).body;
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Run" }, view.body), [], JSON.stringify(view.body));
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/RunList" }, page), [], JSON.stringify(page));
   assert.ok(listed.every((r) => r.imported_from?.source), "each listed run says where it was imported from");
   assert.equal((await api("GET", `/runs/${runs[2].id}`)).body.cost.usd, null, "Codex records no cost: unknown, never 0");
   assert.equal((await api("GET", `/runs/${runs[0].id}`)).body.cost.usd, 0.0421);

@@ -340,12 +340,20 @@ const REVIEW: Json = {
   description: "Set when a workflow run escalated: it completed, and waits for a person to review it. Like every workflow run, it takes no messages (501 unsupported_here).",
   "x-agentrun-serve": "review/1",
 };
+/** What this server's run answers carry beyond the contract's Run and RunSummary: added before they were marked, so
+ *  `serve/1`. */
+const RUN_FIELDS: Record<string, Json> = {
+  revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
+  kind: { enum: ["agentic", "workflow"], description: "The revision's kind: an agentic run, or a workflow run.", "x-agentrun-serve": "serve/1" },
+  archived_at: { type: ["string", "null"], description: "When the run, or its agent, was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
+};
 /** This server's own properties on the contract's objects, outside the contract, by where they go (a schema of
  *  components.schemas, then property names down to the object that takes them). Each is marked x-agentrun-serve with
  *  the addition that made it: `harness/1` is the one a later contract version would take on; `model/1` and `serve/1`
  *  are what this server added before it marked them. */
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Run: {
+    ...RUN_FIELDS,
     review: REVIEW,
     imported_from: {
       type: ["object", "null"],
@@ -358,6 +366,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
   RunSummary: {
+    ...RUN_FIELDS,
+    effort: { $ref: "#/components/schemas/Effort", description: "The effort the run was started with, as the run shows it; absent when it was started with none.", "x-agentrun-serve": "effort/1" },
+    error: { oneOf: [{ $ref: "#/components/schemas/RunError" }, { type: "null" }], description: "Set when `failed`, as the run's own.", "x-agentrun-serve": "serve/1" },
     review: REVIEW,
     imported_from: {
       type: ["object", "null"],
