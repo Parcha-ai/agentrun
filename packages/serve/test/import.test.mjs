@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { openStore, openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { planImport, runImport } from "../dist/import.js";
+import { readSession } from "../dist/import-sources.js";
 import { claudeSession, codexSession, piSession } from "./fixtures/import-sessions.mjs";
 import { client, FAUX, scratch } from "./support.mjs";
 
@@ -251,6 +252,32 @@ test("run again, it imports only what it has not; a session written lately, a ch
   assert.deepEqual([unchanged.projects.length, unchanged.already], [0, 5]);
   const all = await planImport(options(h, { all: true }));
   assert.deepEqual(all.projects.map((p) => p.name).sort(), ["acme-site", "field-notes", "gone", "scratch-project", "test-runner"]);
+});
+
+test("a current Codex rollout, the person's turns user messages with no user_message event, imports without --all, its user turns the person's words alone; an older one, with both, has each turn once", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "lint-bot");
+  mkdirSync(project, { recursive: true });
+  const current = codexSession(h.at, project, 21, { prompt: "Lint the code.", then: "<task>Fix what it found.</task>", events: false });
+  const older = codexSession(h.at, project, 22, { prompt: "Check the build.", then: "Ship it." });
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped, [], "neither is passed over as holding no message of the person's");
+  assert.deepEqual(
+    plan.projects.flatMap((p) => p.sessions).map((s) => [s.file, s.users, s.firstPrompt]),
+    [
+      [current, 2, "Lint the code."],
+      [older, 2, "Check the build."],
+    ],
+  );
+  const turns = async (file) => (await readSession(file, "codex")).turns.map((turn) => (turn.role === "user" ? `user:${turn.text}` : turn.role));
+  // The CLI's AGENTS.md and environment blocks are no turn and an image's wrapper tags no words; a prompt the person tagged is theirs.
+  assert.deepEqual(await turns(current), ["user:Lint the code.", "assistant", "toolResult", "assistant", "user:[image]\n<task>Fix what it found.</task>", "assistant"]);
+  assert.deepEqual(await turns(older), ["user:Check the build.", "assistant", "toolResult", "assistant", "user:Ship it.", "assistant"]);
+  const store = openStore(join(root, "agents"));
+  t.after(() => store.close());
+  const report = await runImport(store, plan, options(h));
+  assert.deepEqual(report.agents.map((a) => [a.cwd, a.runs]), [[project, 2]]);
 });
 
 test("the CLI's --dry-run lists each project and writes nothing; the import itself is the explicit command", async (t) => {
