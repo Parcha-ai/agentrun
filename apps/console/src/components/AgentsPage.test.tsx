@@ -1,7 +1,8 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentEditPage } from "./AgentsPage";
+import { AgentEditPage, AgentsPage } from "./AgentsPage";
+import { AgentPage } from "./AgentPage";
 import { ClientError } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
 
@@ -104,21 +105,55 @@ describe("AgentEditPage, a new decision agent", () => {
     });
     await act(async () => { button(/^Create$/)!.click(); });
     await settle();
-    return { DECISION_STARTER, sent, went, host, page, settle };
+    return { DECISION_STARTER, sent, went, host, v2, settle };
   }
 
-  it("creates a workflow agent from the starter decision workflow, with no harness, and opens it on its Workflow step", async () => {
-    const { DECISION_STARTER, sent, went, host, page, settle } = await createDecision("jev");
+  it("creates a workflow agent from the starter decision workflow, with no harness, and opens its page on the Workflow tab", async () => {
+    const { DECISION_STARTER, sent, went, host, v2, settle } = await createDecision("jev");
     expect(sent?.definition).toEqual({ version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] });
-    expect(went).toBe("#/agents/gambling-check");
-    // The page the create went to: the new workflow agent, opened on its Workflow step.
-    act(() => root!.render(page("gambling-check")));
+    expect(went).toBe("#/agents/gambling-check/workflow");
+    // The page the create went to: the new workflow agent's own page, its Workflow tab current.
+    act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: "gambling-check", tab: "workflow", go: () => {} })));
     await settle();
-    expect(host.querySelector('button[aria-current="step"]')?.textContent).toMatch(/Workflow/);
+    expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toMatch(/Workflow/);
   });
 
   it("on a server whose decision provider is Parallel, sends a starter whose judge names parallel", async () => {
     const { sent } = await createDecision("parallel");
     expect((sent?.definition.workflow as { root: { steps: Record<string, unknown>[] } }).root.steps[0]).toMatchObject({ node: "judge", provider: "parallel" });
+  });
+});
+
+describe("AgentsPage, where an agent's card goes", () => {
+  it("opens the agent's page from its card, its Runs tab from its History icon, and the editor from its Edit icon", async () => {
+    const went: string[] = [];
+    const v2 = { listAgents: async () => ({ agents: [agentAt("r1", "Answer.")], next_cursor: null }) };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentsPage, { v2: v2 as never, archived: false, go: (h: string) => went.push(h) })));
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
+    click([...host.querySelectorAll("li button")].find((b) => b.textContent?.includes("Calc") && !b.getAttribute("aria-label")));
+    click(host.querySelector('[aria-label="Edit Calc"]'));
+    click(host.querySelector('[aria-label="Runs of Calc"]'));
+    expect(went).toEqual(["#/agents/calc", "#/agents/calc/edit", "#/agents/calc/runs"]);
+  });
+});
+
+describe("AgentEditPage, a new agent", () => {
+  it("lands on the new agent's page once it is created", async () => {
+    const went: string[] = [];
+    const v2 = { createAgent: async () => agentAt("r1", "Answer.") };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentEditPage, { v2: v2 as never, caps: caps as never, agentId: null, go: (h: string) => went.push(h) })));
+    const type = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => act(() => {
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    type(host.querySelector('input[placeholder="e.g., Invoice checker"]') as HTMLInputElement, "Calc");
+    type(host.querySelector("textarea") as HTMLTextAreaElement, "Answer.");
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Create")!.click(); });
+    expect(went).toEqual(["#/agents/calc"]);
   });
 });

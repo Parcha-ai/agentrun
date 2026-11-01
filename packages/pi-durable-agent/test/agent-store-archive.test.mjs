@@ -86,9 +86,9 @@ test("nothing is deleted: an unarchive appends a row, and the database refuses a
 test("a store written before archiving (no archive_changes table) opens: the reader lists it with nothing archived, and the writer adds the table and archives", async () => {
   const { dir, store, runId } = await seeded();
   store.close();
-  // The differences archiving (and later, imports) make to the file: drop them, and the file is as an earlier version wrote it.
+  // The differences archiving (and later, imports and run metrics) make to the file: drop them, and the file is as an earlier version wrote it.
   const db = new DatabaseSync(path.join(dir, "store.sqlite"));
-  for (const table of ["run_imports", "archive_changes"]) {
+  for (const table of ["run_tool_metrics", "run_metrics", "run_imports", "archive_changes"]) {
     for (const { type, name } of db.prepare("SELECT type, name FROM sqlite_master WHERE (tbl_name = ? OR sql LIKE '%' || ? || '%') AND type != 'table' AND sql IS NOT NULL").all(table, table)) db.exec(`DROP ${type.toUpperCase()} ${name}`);
     db.exec(`DROP TABLE ${table}`);
   }

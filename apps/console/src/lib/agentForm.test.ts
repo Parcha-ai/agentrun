@@ -209,9 +209,13 @@ describe("tools by default (tools on, Miguel's rule), and whether the agent reac
     const said = toolOffers([{ name: "read", available: true, harnesses: ["pi", "codex"] }, { name: "fetch_page", available: true, harnesses: ["pi", "codex"] }, { name: "ask_person", available: true, harnesses: ["pi"] }]);
     expect(defaultTools("codex", said)).toEqual(["read", "fetch_page"]);
   });
-  it("reaches the web only with fetch_page", () => {
-    expect(reachesWeb(["read", "fetch_page"])).toBe(true);
-    expect(reachesWeb(["read", "write"])).toBe(false);
+  it("reaches the web with any of fetch_page, web_fetch and web_search, and with none of them does not", () => {
+    for (const web of ["fetch_page", "web_fetch", "web_search"]) expect(reachesWeb(["read", web]), web).toBe(true);
+    expect(reachesWeb(["read", "write", "ask_person"])).toBe(false);
+    expect(reachesWeb([])).toBe(false);
+  });
+  it("keeps what each tool does, as the server says it", () => {
+    expect(toolOffers([{ name: "web_fetch", available: true, summary: "Read one public web page." }])).toEqual([{ name: "web_fetch", available: true, summary: "Read one public web page." }]);
   });
 });
 

@@ -155,6 +155,6 @@ test("a workflow's call node runs fetch_page: the Page is its output, a refusal 
     other.root.steps[0].tool = tool;
     const refused = await api("POST", "/agents", { definition: { id: `call-${tool}`, name: tool, workflow: other, tools: [tool] } });
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => f.field)], [422, ["definition.workflow"]], tool);
-    assert.match(refused.body.error.fields[0].message, new RegExp(`call nodes run the tools fetch_page, pdf_pages, llm here; this workflow also calls ${tool}\\.`));
+    assert.match(refused.body.error.fields[0].message, new RegExp(`call nodes run the tools fetch_page, web_fetch, pdf_pages, llm here; this workflow also calls ${tool}\\.`));
   }
 });
