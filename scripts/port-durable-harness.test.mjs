@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { bodyOf, checkPort, header, parsePatch, portPackage, PORT_DIR, readPatches, rewriteImports, upgradeReport } from './port-durable-harness.mjs';
+import { bodyOf, budgetLines, budgetProblems, checkPort, header, parsePatch, portPackage, PORT_DIR, readPatches, rewriteImports, upgradeReport } from './port-durable-harness.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const packageDir = join(root, 'packages', 'run-adapters');
@@ -74,7 +74,12 @@ test('each patch is a file with its reason: a missing field, a name that is not 
   assert.equal(parsePatch('001-x', ok).Reason, 'r');
   assert.throws(() => parsePatch('001-x', ok.replace('Reason: r\n', '')), /patch 001-x: no Reason line/);
   assert.throws(() => parsePatch('001-y', ok), /patch 001-y: its Patch line says 001-x/);
-  assert.throws(() => parsePatch('001-x', ok.replace('Upstream: ours', 'Upstream: maybe')), /Upstream is "offer" or "ours"/);
+  assert.throws(() => parsePatch('001-x', ok.replace('Upstream: ours', 'Upstream: maybe')), /Upstream is "ours", or "offer: <the upstream function>: <the bug it fixes>"/);
+  // An offer names what upstream can act on: the function it changes and the bug, else it is refused by name.
+  for (const bare of ['Upstream: offer', 'Upstream: offer: repairOutput', 'Upstream: offer: repairOutput: a bug']) {
+    assert.throws(() => parsePatch('001-x', ok.replace('Upstream: ours', bare)), /Upstream is "ours", or "offer: <the upstream function>: <the bug it fixes>"/, bare);
+  }
+  assert.deepEqual(parsePatch('001-x', ok.replace('Upstream: ours', 'Upstream: offer: repairOutput: a safe call is told it may have taken effect')).offer, { function: 'repairOutput', bug: 'a safe call is told it may have taken effect' });
   assert.throws(() => parsePatch('001-x', ok.replace('Pins: t\n', '')), /no Pins line/);
   assert.throws(() => parsePatch('001-x', ok.replace('---\ndiff', 'diff')), /no "---" line/);
   assert.throws(() => parsePatch('001-x', ok.replace('Reason: r', 'Because: r')), /header line .* is not one of/);
@@ -102,7 +107,10 @@ test('a patch that changes nothing is named, and dropping a patch that others ar
     '001-begin-reservation', '002-message-prefix', '003-comments-name-this-host', '004-comments-name-the-session-writer', '005-comments-name-the-agent-sdk', '008-tool-images', '009-recovery-system-note', '010-recovery-note-statuses-only',
   ]);
   for (const patch of await readPatches(join(packageDir, PORT_DIR), 'harness-process')) assert.ok(patch.Reason.length > 20, `${patch.name} says why`);
-  assert.equal((await readPatches(join(packageDir, PORT_DIR), 'harness-process'))[0].Upstream, 'offer', 'begin() is the one offered upstream');
+  // The fix offered upstream is the Codex harness's 012 (repairOutput); 001's begin() is ours (relabelled when offers got their own
+  // budget: it changes 39 lines, over the offer cap, and they were always counted with ours).
+  assert.deepEqual((await readPatches(join(packageDir, PORT_DIR), 'harness-process')).filter((p) => p.offer).map((p) => p.name), []);
+  assert.equal((await readPatches(join(packageDir, PORT_DIR), 'harness-process'))[0].Upstream, 'ours');
 });
 
 test('the mutant of every patch differs from the port: a patch whose absence changes nothing would be dead weight', async () => {
@@ -374,4 +382,36 @@ test('the command line refuses a value flag with no value and an unknown option:
     assert.match(run.stderr, /usage/i, args.join(' '));
     assert.equal(stamp(), before, `${args.join(' ')} wrote nothing`);
   }
+});
+
+/** Copies of both packages (the Codex port's import table is the kernel's), with `plant` applied to the Codex one. */
+async function codexCopy(plant = async () => {}) {
+  const top = join(scratch, `b${made += 1}`);
+  for (const name of ['run-adapters', 'run-adapters-codex']) await cp(join(root, 'packages', name), join(top, 'packages', name), { recursive: true, filter: (path) => !/\/(?:node_modules|dist)(?:\/|$)/.test(path) });
+  const dir = join(top, 'packages', 'run-adapters-codex');
+  await plant(dir);
+  return dir;
+}
+const OFFERED = `${PORT_DIR}/patches/harness-codex/012-cut-off-safe-call.patch`;
+
+test("the vendored budget: a copy's own patches change under 60 lines, and the fixes it offers upstream under 20 more", { skip: !existsSync(join(root, 'packages', 'run-adapters-codex', PORT_DIR)) && 'the Codex package is not in this tree' }, async (t) => {
+  const codex = join(root, 'packages', 'run-adapters-codex');
+  // 012 passes: offered upstream, it is counted apart from the Codex harness's own patches, under its own cap.
+  const here = (await budgetLines(codex))['src/harness.ts'];
+  t.diagnostic(`src/harness.ts: ${here.ours} lines its own, ${here.offer} offered upstream`);
+  assert.ok(here.offer > 0 && here.offer < 20 && here.ours < 60, JSON.stringify(here));
+  assert.deepEqual(await budgetProblems(codex), []);
+  // An "ours" patch still counts in the 60: 012 relabelled ours moves its lines to the harness's own count.
+  const relabel = (text) => text.replace(/^Upstream: offer: .*$/m, 'Upstream: ours');
+  const ours = await codexCopy(edit(OFFERED, relabel));
+  assert.deepEqual((await budgetLines(ours))['src/harness.ts'], { ours: here.ours + here.offer, offer: 0 });
+  // A larger fix, 012 with twenty more lines: labelled "offer" it is refused by the offer cap, labelled "ours" by the 60.
+  const larger = (text) => text
+    .replace('@@ -1254,6 +1254,7 @@', '@@ -1254,6 +1254,27 @@')
+    .replace('+  if (recoveryNote(state)', `${'+  //\n'.repeat(20)}+  if (recoveryNote(state)`);
+  const big = await codexCopy(edit(OFFERED, larger));
+  assert.equal((await budgetLines(big))['src/harness.ts'].offer, here.offer + 20);
+  assert.match((await budgetProblems(big)).join('\n'), /^src\/harness\.ts: its offer patches change \d+ lines \(fewer than 20\): a larger fix is ours, or split$/m);
+  const bigOurs = await codexCopy(edit(OFFERED, (text) => relabel(larger(text))));
+  assert.match((await budgetProblems(bigOurs)).join('\n'), /^src\/harness\.ts: its own patches change \d+ lines against upstream \(fewer than 60\)$/m);
 });

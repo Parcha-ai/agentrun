@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer, 010-repair-without-a-note
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer, 010-repair-without-a-note, 012-cut-off-safe-call
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -1257,6 +1257,7 @@ export function repairOutput(state: SessionState, call: RolloutCall): string {
   if (!e && call.name === 'write_stdin') return 'Interrupted: the session stopped, and the process this input was for was stopped with it. Check the state its command left before running it again.';
   if (!e) return 'Not executed: the session stopped before this call started. Call it again if it is still needed.';
   if (e.status === 'completed') return typeof e.output === 'string' ? e.output : JSON.stringify(e.output);
+  if (recoveryNote(state)?.calls.find((c) => c.callId === call.callId)?.status === 'retryable') return 'Interrupted before it reported a result. It is safe to repeat.';
   if (e.status === 'failed' && e.error) {
     if (e.error.interrupted && e.replay === 'safe') return 'Interrupted before it reported a result. It is safe to repeat.';
     return failureText(e.error);

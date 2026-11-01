@@ -1,0 +1,18 @@
+Patch: 012-cut-off-safe-call
+Reason: after a crash the drive marks a safe call it finds unfinished for a retry (pending), never failed, so the output for a call the rollout has no output for told a safe tool it may have taken effect while the recovery note sent with it said it was safe to repeat; the output now takes the note's own classification of the call first, and keeps upstream's rule for a failed, interrupted safe call, which the note classes the same way
+Upstream: offer: repairOutput: a call a crash cut off whose tool is safe is told it may have taken effect, since the drive marks it pending for a retry and only a failed, interrupted safe call was told it is safe to repeat
+Pins: a host tool's call a crash cut off is told by its own replay policy: a safe one may be repeated, a never one may have taken effect
+Pins: a cut-off call's output says what the recovery note of the same turn says of it, never the opposite
+---
+diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
+index e4f76c1..4042604 100644
+--- a/packages/harness-codex/src/harness.ts
++++ b/packages/harness-codex/src/harness.ts
+@@ -1254,6 +1254,7 @@ export function repairOutput(state: SessionState, call: RolloutCall): string {
+   if (!e && call.name === 'write_stdin') return 'Interrupted: the session stopped, and the process this input was for was stopped with it. Check the state its command left before running it again.';
+   if (!e) return 'Not executed: the session stopped before this call started. Call it again if it is still needed.';
+   if (e.status === 'completed') return typeof e.output === 'string' ? e.output : JSON.stringify(e.output);
++  if (recoveryNote(state)?.calls.find((c) => c.callId === call.callId)?.status === 'retryable') return 'Interrupted before it reported a result. It is safe to repeat.';
+   if (e.status === 'failed' && e.error) {
+     if (e.error.interrupted && e.replay === 'safe') return 'Interrupted before it reported a result. It is safe to repeat.';
+     return failureText(e.error);
