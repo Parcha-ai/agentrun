@@ -44,6 +44,12 @@ describe("runMarks", () => {
     expect(m.items![MAP].some((it) => it.status === "held")).toBe(true);
     expect(m.items![MAP].some((it) => it.status === "working")).toBe(false);
   });
+  it("holds a selected in-flight item's body too, not only the rest of the graph", () => {
+    const g = batchPausedRun();
+    const working = g.nodes[MAP].items!.find((it) => it.status === "working")!;
+    const m = runMarks(g, { path: MAP, item: working.index });
+    expect(Object.values(m.status!)).not.toContain("working");
+  });
   it("marks the route's taken branch, item cells and a verdict outside a map", () => {
     const m = runMarks(kybRun(), null);
     expect(m.taken).toEqual(["/root/steps/3/branches/review/body"]);

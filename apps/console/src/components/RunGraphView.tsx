@@ -7,10 +7,13 @@ import { Chip } from "@/components/ui/chip";
 import { costOf, elapsed, elapsedNow, isFinal, itemCounts, type RunGraph, runMarks, type Selection, usd } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 
+/** A refusal asking again cannot change: the route or the run is not there, or the request is not allowed. */
+export const isPermanent = (e: unknown) => [400, 401, 403, 404, 405, 410, 422].includes((e as { status?: number } | null)?.status ?? 0);
+
 /** Reads a workflow run's graph now and again every `everyMs` until the run has ended (a paused run is still read: it
  *  can be resumed elsewhere). A retryable refusal (the store busy with the run's own write) is asked again after the wait
  *  the server names, and the last graph read stays shown; `readAt` says when that was. */
-export function useRunGraph(load: (signal: AbortSignal) => Promise<RunGraph>, { everyMs = 1000, key = "" }: { everyMs?: number; key?: string } = {}) {
+export function useRunGraph(load: (signal: AbortSignal) => Promise<RunGraph>, { everyMs = 1000, key = "", enabled = true }: { everyMs?: number; key?: string; enabled?: boolean } = {}) {
   const [data, setData] = useState<RunGraph | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [readAt, setReadAt] = useState(0);
@@ -18,6 +21,7 @@ export function useRunGraph(load: (signal: AbortSignal) => Promise<RunGraph>, { 
   const loader = useRef(load);
   loader.current = load;
   useEffect(() => {
+    if (!enabled) return;
     const ctl = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
@@ -36,12 +40,14 @@ export function useRunGraph(load: (signal: AbortSignal) => Promise<RunGraph>, { 
         setError(e);
         const retry = e as { retryable?: boolean; retryAfterMs?: number };
         if (retry.retryable) { timer = setTimeout(tick, Math.min(everyMs, retry.retryAfterMs ?? 500)); return; }
+        // A permanent refusal (a server without the route, a run it does not know) is not asked again.
+        if (isPermanent(e)) return;
       }
       timer = setTimeout(tick, everyMs);
     };
     void tick();
     return () => { ctl.abort(); clearTimeout(timer); };
-  }, [key, everyMs, nudge]);
+  }, [key, everyMs, nudge, enabled]);
   return { data, error, readAt, reload: () => setNudge((n) => n + 1) };
 }
 

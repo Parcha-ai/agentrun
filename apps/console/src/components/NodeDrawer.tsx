@@ -197,8 +197,10 @@ function Jury({ data, path, onSelect }: { data: RunGraph; path: string; onSelect
 
 /** One map item: each node of the map's body in order, with what it did for this item. */
 function ItemDetail({ data, mapPath, index, status, fileUrl, zoom }: { data: RunGraph; mapPath: string; index: number; status: string; fileUrl: FileUrl; zoom: (src: string) => void }) {
-  const body = data.graph.nodes.filter((n) => n.path.startsWith(`${mapPath}/body`) && !CONTAINERS.has(n.kind));
-  const records = body.map((n) => ({ n, ds: data.decisions.filter((d) => d.node === n.path && d.item === index), es: data.effects.filter((e) => e.node === n.path && e.item === index) }));
+  // Every body node with a record for this item: a leaf, or a container that decides (a judged route).
+  const body = data.graph.nodes.filter((n) => n.path.startsWith(`${mapPath}/body`));
+  const records = body.map((n) => ({ n, ds: data.decisions.filter((d) => d.node === n.path && d.item === index), es: data.effects.filter((e) => e.node === n.path && e.item === index) }))
+    .filter((r) => !CONTAINERS.has(r.n.kind) || r.ds.length || r.es.length);
   if (status === "pending") return <p className="border border-dashed px-4 py-3 text-[13px] text-muted-foreground">Not started: this item waits for a free slot in the map.</p>;
   return (
     <div className="space-y-5">
@@ -370,7 +372,11 @@ function Citations({ evidence }: { evidence: Evidence[] }) {
 
 /** A tool call: its input, and its output (a rendered page shows as its image). */
 export function ToolCard({ e, fileUrl, zoom, compact = false }: { e: Effect; fileUrl: FileUrl; zoom: (src: string) => void; compact?: boolean }) {
-  const out = e.output as { pages?: { page: number; image: string }[]; text?: string; error?: { code?: string; message?: string } } | null;
+  const raw = e.output;
+  // An answer of false, 0 or "" is an answer: only an absent one is not.
+  const answered = raw !== null && raw !== undefined;
+  const out = (raw && typeof raw === "object" ? raw : null) as { pages?: { page: number; image: string }[]; text?: string; error?: { code?: string; message?: string } } | null;
+  const going = !e.endedAt && !["done", "ok", "failed", "stopped"].includes(e.status);
   const failure = e.error ?? (out?.error ? `${out.error.code ? `${out.error.code}: ` : ""}${out.error.message ?? ""}` : null);
   const tone = e.status === "done" || e.status === "ok" ? "success" : e.status === "failed" ? "error" : e.status === "stopped" ? "muted" : "active";
   return (
@@ -394,8 +400,8 @@ export function ToolCard({ e, fileUrl, zoom, compact = false }: { e: Effect; fil
             ))}
           </div>
         )}
-        {out && !failure && <details className="group"><summary className="caps flex cursor-pointer list-none items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground"><ChevronRight className="size-3 transition-transform group-open:rotate-90" aria-hidden /> Output</summary><Pre value={out} small /></details>}
-        {!out && !failure && <p className="font-mono text-[12px] text-muted-foreground">{e.status === "stopped" ? "Stopped before it answered." : "Running…"}</p>}
+        {answered && !failure && <details className="group"><summary className="caps flex cursor-pointer list-none items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground"><ChevronRight className="size-3 transition-transform group-open:rotate-90" aria-hidden /> Output</summary><Pre value={raw} small /></details>}
+        {!answered && !failure && <p className="font-mono text-[12px] text-muted-foreground">{e.status === "stopped" ? "Stopped before it answered." : going ? "Running…" : "Finished with no output."}</p>}
       </div>
     </section>
   );
