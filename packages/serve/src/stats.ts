@@ -32,16 +32,31 @@ export function statsView(stats: StoreStats, runs: Runs) {
 
 // ---- analytics: the runs' metrics summed (AgentStoreReader.analytics), over the runs `from`, `to` and `agent` pick ----
 
-/** The query's `from` and `to` (RFC 3339, read as GET /usage reads them) and `agent` (an agent id): 400 for one that is
- *  not. Each absent is no bound. */
+const DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/;
+/** The UTC time an RFC 3339 date-time names, or undefined for anything else: an impossible date or time included, which
+ *  Date.parse would roll forward (02-30 to 03-02). */
+function utcOf(text: string): string | undefined {
+  const m = DATE_TIME.exec(text.toUpperCase());
+  if (!m) return undefined;
+  const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number];
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day || hour > 23 || minute > 59 || second > 59) return undefined;
+  if (m[9] !== undefined && (Number(m[9]) > 23 || Number(m[10]) > 59)) return undefined;
+  const at = Date.parse(text.toUpperCase());
+  const iso = Number.isFinite(at) ? new Date(at).toISOString() : "";
+  return /^\d{4}-/.test(iso) ? iso : undefined;
+}
+
+/** The query's `from` and `to` (RFC 3339 date-times) and `agent` (an agent id): 400 for one that is not. Each absent is
+ *  no bound. */
 export function analyticsFilter(url: URL): AnalyticsFilter {
   const filter: AnalyticsFilter = {};
   for (const key of ["from", "to"] as const) {
     const text = url.searchParams.get(key);
     if (text === null) continue;
-    const at = Date.parse(text);
-    const iso = Number.isFinite(at) ? new Date(at).toISOString() : "";
-    if (!/^\d{4}-/.test(iso)) throw new ApiError("bad_request", "from and to are RFC 3339 times");
+    const iso = utcOf(text);
+    if (iso === undefined) throw new ApiError("bad_request", "from and to are RFC 3339 date-times that exist");
     filter[key] = iso;
   }
   const agent = url.searchParams.get("agent");
