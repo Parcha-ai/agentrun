@@ -21,7 +21,7 @@ import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
-import { type ConfineChild, localMachine, sessionDir } from "./host/machine.js";
+import { type ConfineChild, localMachine, type MachineSeed, sessionDir } from "./host/machine.js";
 import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
 
 /** A name app-server accepts for a dynamic tool. */
@@ -98,10 +98,9 @@ const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.da
  *  (this adapter's, with the built-ins off), where it lists none of a working directory's `.agents/skills`. */
 const SKILLS_DIR = "skills";
 
-/** The skills as the files the session's CODEX_HOME holds: `skills/<name>/<path>`. */
-function skillFiles(skills: readonly HostSkill[]) {
-  const encoder = new TextEncoder();
-  return skills.flatMap((skill) => Object.entries(skill.files).map(([path, text]) => ({ path: `${SKILLS_DIR}/${skill.name}/${path}`, bytes: encoder.encode(text) })));
+/** The skills as the files the session's CODEX_HOME holds (`skills/<name>/<path>`): the machine's seed. */
+function skillsSeed(skills: readonly HostSkill[]): MachineSeed {
+  return { dir: "codex-home", files: Object.fromEntries(skills.flatMap((skill) => Object.entries(skill.files).map(([path, text]) => [`${SKILLS_DIR}/${skill.name}/${path}`, text]))) };
 }
 
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
@@ -109,7 +108,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   const skills = options.skills ?? [];
   const skillsWrong = skillProblems(skills);
   if (skillsWrong.length) throw new Error(`agentrun-codex: ${skillsWrong.join("; ")}`);
-  const seed = skills.length ? { "codex-home": skillFiles(skills) } : undefined;
+  const seed = skills.length ? skillsSeed(skills) : undefined;
   // The binary is checked once, here, against the pins: a mismatch or a missing binary is the host's to report, before
   // any run starts (CodexPinMismatch, CodexNotInstalled). A test's stand-in runs no Codex.
   const checked = options.standIn ? undefined : verifyCodex().path;
