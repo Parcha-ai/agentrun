@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/test/fake-anthropic.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 007-fake-anthropic-real-shape
+// Changed by Parcha, patches: 007-fake-anthropic-real-shape, 015-web-search
 /**
  * A scripted Anthropic Messages API for the real Claude Code CLI (docs/workspaces.md
  * §11.4, "the restart-on-a-new-sandbox tests"): what `query()` and the pinned
