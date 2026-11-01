@@ -97,6 +97,26 @@ export type RunMetrics = {
   /** By tool name. A call with no result was interrupted: it counts as failed. */
   tools: Record<string, ToolMetrics>;
 };
+/** How runMetricsOf keeps the names a run's entries hold, which a model writes and may make up: each is one the agent
+ *  store takes (non-empty, at most `max` UTF-16 units, no lone surrogate), the same name always the same key. A longer
+ *  one is cut to its first `max - 1` units and "…". A run keeps its `kept` busiest tools and models (the first seen of a
+ *  tie); the rest are summed under `otherTools` or `otherModels`, and a tool result with no name counts under
+ *  `unnamedTool`. Those three start with one "…", and no entry's name does: one that starts with "…" gets another. */
+export const METRIC_NAMES = Object.freeze({ max: 256, kept: 100, otherTools: "…other tools", otherModels: "…other models", unnamedTool: "…unnamed tool" });
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+/** A name from an entry, non-empty, as runMetricsOf keeps it (METRIC_NAMES). */
+function metricName(name: string): string {
+  const whole = (name.startsWith("…") ? `…${name}` : name).replace(LONE_SURROGATE, "\uFFFD");
+  if (whole.length <= METRIC_NAMES.max) return whole;
+  const kept = whole.slice(0, METRIC_NAMES.max - 1);
+  return `${/[\uD800-\uDBFF]$/.test(kept) ? kept.slice(0, -1) : kept}…`;
+}
+/** `counts` as a record of its METRIC_NAMES.kept busiest names (the first seen of a tie), the rest summed under `other`. */
+function keepBusiest<T>(counts: Map<string, T>, size: (value: T) => number, sum: (a: T, b: T) => T, other: string): Record<string, T> {
+  if (counts.size <= METRIC_NAMES.kept) return Object.fromEntries(counts);
+  const ranked = [...counts].sort(([, a], [, b]) => size(b) - size(a));
+  return Object.fromEntries([...ranked.slice(0, METRIC_NAMES.kept), [other, ranked.slice(METRIC_NAMES.kept).map(([, value]) => value).reduce(sum)]]);
+}
 type Tokens = Pick<RunMetrics, "input" | "cacheRead" | "cacheWrite" | "output">;
 const tokenCount = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
 /** A usage's tokens: undefined unless it has an input and an output count (a cache count it omits is 0), and unless it
@@ -179,7 +199,7 @@ function createMeter() {
       if (marked > 0) answered += 1;
       const name = str(message.model);
       if (name) {
-        const key = str(message.provider) ? `${str(message.provider)}/${name}` : name;
+        const key = metricName(str(message.provider) ? `${str(message.provider)}/${name}` : name);
         models.set(key, (models.get(key) ?? 0) + 1);
       }
       // A request cut before its end has no final usage: its stream had reported none (the Responses API reports it at
@@ -213,7 +233,8 @@ function createMeter() {
     const cut = Math.max(0, marked - answered) + Math.max(0, compacting - compactions);
     let model: string | undefined;
     for (const [key, n] of models) if (model === undefined || n > models.get(model)!) model = key;
-    return { ...tokens, requests: all, unmetered: Math.min(all, unmetered + cut), models: Object.fromEntries(models), ...(model !== undefined ? { model } : {}) };
+    const kept = keepBusiest(models, (n) => n, (a, b) => a + b, METRIC_NAMES.otherModels);
+    return { ...tokens, requests: all, unmetered: Math.min(all, unmetered + cut), models: kept, ...(model !== undefined ? { model } : {}) };
   }
 
   return { push, usage, settled };
@@ -474,10 +495,14 @@ export function timelineOf(entries: readonly EntryLike[], options: TimelineOptio
 export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
   const meter = createMeter();
   const seen = new Set<string>();
-  // Each call by `conversation:id`, and whether a result closed it, as the timeline pairs them.
+  // Each call by `conversation:id`, its tool's name as kept, and whether a result closed it, as the timeline pairs them.
   const calls = new Map<string, { name: string; done: boolean }>();
   const tools = new Map<string, ToolMetrics>();
+  // Each tool's place by its first call, or its first result with no call: a tie for the last kept place goes by it.
+  const order = new Map<string, number>();
+  const see = (name: string) => void (order.has(name) || order.set(name, order.size));
   const tally = (name: string, failed: boolean) => {
+    see(name);
     const tool = tools.get(name) ?? { calls: 0, errors: 0 };
     tool.calls += 1;
     if (failed) tool.errors += 1;
@@ -493,16 +518,21 @@ export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
     if (meter.push(entry) === "answer" && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
       for (const block of blocksOf(message)) {
         const [id, name] = [str(block.id), str(block.name)];
-        if (block.type === "toolCall" && id && name) calls.set(`${conv}:${id}`, { name, done: false });
+        if (block.type !== "toolCall" || !id || !name) continue;
+        const key = metricName(name);
+        calls.set(`${conv}:${id}`, { name: key, done: false });
+        see(key);
       }
     } else if (entry.kind === "pi.tool-result" && message) {
       const call = calls.get(`${conv}:${str(message.toolCallId) ?? ""}`);
       if (call) call.done = true;
-      tally(call?.name ?? str(message.toolName) ?? "tool", message.isError === true);
+      const named = str(message.toolName);
+      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), message.isError === true);
     }
   }
   for (const call of calls.values()) if (!call.done) tally(call.name, true);
-  return { ...meter.settled(), tools: Object.fromEntries(tools) };
+  const ordered = new Map([...tools].sort(([a], [b]) => order.get(a)! - order.get(b)!));
+  return { ...meter.settled(), tools: keepBusiest(ordered, (t) => t.calls, (a, b) => ({ calls: a.calls + b.calls, errors: a.errors + b.errors }), METRIC_NAMES.otherTools) };
 }
 
 const roleOf = (entry: unknown): unknown => {
