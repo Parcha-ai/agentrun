@@ -16,7 +16,6 @@ export const UNSUPPORTED: Readonly<Record<string, string>> = {
   "home.export": "This server does not export a home yet.",
   "home.import": "This server does not import a home yet.",
   "runs.kill": "This server does not kill a run's process yet.",
-  "files.upload": "This server takes no uploads yet.",
   quotes: "This server has no billing, so it gives no quotes.",
 };
 

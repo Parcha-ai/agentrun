@@ -155,7 +155,8 @@ export function withEnv(t, vars, names = Object.keys(vars)) {
   Object.assign(process.env, vars);
 }
 
-/** One raw request to the server on `port` (Host 127.0.0.1:port unless given): status, headers, text and parsed JSON. */
+/** One raw request to the server on `port` (Host 127.0.0.1:port unless given): status, headers, text and parsed JSON.
+ *  `body` is sent as it is when a string or a Buffer, else as JSON. */
 export function call(port, { method = "GET", path = "/", headers = {}, body } = {}) {
   const sent = Object.fromEntries(Object.entries({ host: `127.0.0.1:${port}`, ...headers }).filter(([, value]) => value !== undefined));
   return new Promise((resolve, reject) => {
@@ -172,7 +173,7 @@ export function call(port, { method = "GET", path = "/", headers = {}, body } = 
       });
     });
     req.once("error", reject);
-    req.end(body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body));
+    req.end(body === undefined ? undefined : typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body));
   });
 }
 

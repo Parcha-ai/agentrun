@@ -52,8 +52,8 @@ test("every route the server serves is in the document, and every operation in i
     else assert.equal(op["x-agentrun-serve-unsupported"], undefined, `${op.operationId} is served`);
     if (route.capability) assert.equal(op["x-agentrun-serve-unsupported"].capability, route.capability);
   }
-  assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 6, "the six this server answers 501");
-  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported.length, 6);
+  assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 4, "the four this server answers 501");
+  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported.length, 4);
 });
 
 test("the contract's operations are as vendored; this server's own are added and marked x-agentrun-serve", async (t) => {

@@ -275,6 +275,9 @@ export function statusOf(run: Run): { status: Status; state: State } {
 
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
+/** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. */
+export type StartOptions = { input: Json; title: string; effort?: string; maxCostUsd?: number; inputs?: (work: string) => Promise<unknown> };
+
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
@@ -1087,7 +1090,8 @@ export class Runs {
     this.starting++;
   }
 
-  async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  /** `inputs` copies the run's files into its work/ (uploads.ts), after the store made it and before its process starts. */
+  async create(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
     await this.sweepOnce();
     await this.takePlace();
     try {
@@ -1100,7 +1104,7 @@ export class Runs {
     }
   }
 
-  private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  private async start(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
@@ -1115,6 +1119,23 @@ export class Runs {
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;
     this.refresh(run);
+    if (options.inputs) {
+      // Under the launch mark: a server that goes down while it copies leaves it, and the next start fails the run
+      // rather than run it on part of its files. Copied whole, the mark goes, and the launch makes its own.
+      this.markLaunching(run);
+      try {
+        await options.inputs(started.workspace);
+      } catch (error) {
+        this.reportedBack(run);
+        run.submitted = 0;
+        // Cancelled while it copied: it ended so already.
+        if (run.outcome || run.cancel) return run;
+        run.error = { code: "run_failed", message: `The run's files could not be copied into its workspace: ${(error as Error).message}`, retryable: false };
+        await this.carryBack(run, "failed");
+        return run;
+      }
+      this.reportedBack(run);
+    }
     this.launch(run);
     if (revision.kind === "workflow") return run;
     void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => {

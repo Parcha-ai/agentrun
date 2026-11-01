@@ -1,8 +1,8 @@
 // The page at "/": pi-durable-agent's store page over the agent store in the data directory, with this package's
 // serve.js and serve.css beside it. A browser holds the owner's session cookie (owner.ts), or the server's token as a
 // cookie that the printed link sets once; either stands in for the Bearer header on /v2, and for a write only from the
-// page's own origin with a JSON body. With accounts, a browser holding neither gets the setup page (no password yet) or
-// the sign-in page.
+// page's own origin with a JSON body, or with any body on a route that takes bytes (a PUT marked `raw` in server.ts).
+// With accounts, a browser holding neither gets the setup page (no password yet) or the sign-in page.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -68,7 +68,8 @@ function send(req: IncomingMessage, res: ServerResponse, status: number, type: s
 const refuse = (req: IncomingMessage, res: ServerResponse, error: ApiError) =>
   send(req, res, error.status, "application/json", JSON.stringify(error.body(String(res.getHeader("x-request-id") ?? ""))), error.headers);
 
-type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner };
+/** `takesBytes`: whether a request of `method` to `path` (under /v2) goes to a route whose body is bytes (server.ts). */
+type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; takesBytes?: (method: string | undefined, path: string) => boolean };
 
 const redirect = (res: ServerResponse, location: string) => (res.writeHead(303, { ...SECURITY, location, "content-length": 0 }), void res.end());
 
@@ -108,13 +109,15 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
 /**
  * Answers the page's paths ("/", its files and its /api/*) and returns true; returns false for every other path. On a
  * /v2 path with no Authorization header, the page's cookie becomes the Bearer header for a GET or HEAD, and for any other
- * method only when the request's Origin is the page's own origin and its body is application/json.
+ * method only when the request's Origin is the page's own origin and its body is application/json, or the request is a
+ * PUT to a route that takes bytes, with any content type.
  */
 export function answerPage(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): boolean {
   const held = server.owner ? signedIn(req, server.owner) : cookiesOf(req, cookieName(req)).some((value) => same(value, sessionOf(server.token)));
   if (raw.startsWith("/v2/")) {
     const safe = req.method === "GET" || req.method === "HEAD";
-    if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && isJson(req)))) req.headers.authorization = `Bearer ${server.token}`;
+    const bytes = req.method === "PUT" && server.takesBytes?.(req.method, raw.slice(3)) === true;
+    if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && (isJson(req) || bytes)))) req.headers.authorization = `Bearer ${server.token}`;
     return false;
   }
   const accountPage = server.owner !== undefined && (raw === "/setup" || raw === "/sign-in" || Boolean(ACCOUNT_FILES[raw]));
