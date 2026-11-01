@@ -10,10 +10,14 @@
 // index and active notes into the run's `work/.learning/` and pins the commit in the run's directory (`learning.json`),
 // with what the run reads of the index. The run's process reads that pin (withLearned, for app.ts) and never runs git, so
 // it may run anywhere its directory is.
+//
+// The host never follows a symbolic link into the folder (agentFolder): a link at the agent's home, at its `learning/`
+// or at `learning/.git`, or a `MEMORY.md` that is one when the host writes it, is refused, and the run starts with
+// nothing learned.
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { constants, existsSync } from "node:fs";
+import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import { INDEX_FILE, loadedIndex, NOTE_FILE, parseNoteFile } from "@parcha/agentrun-learn";
 import { writeDurable } from "./files.js";
 import { isObject } from "./validate.js";
@@ -61,6 +65,50 @@ const GIT_TIMEOUT_MS = 60_000;
  *  host writes. */
 const homeDir = (data: string, agentId: string): string => join(data, "homes", agentId);
 export const learningRepo = (data: string, agentId: string): string => join(homeDir(data, agentId), "learning");
+
+/** Makes `dir` where it is absent: a plain `mkdir`, never recursive (which would follow a link on the way). One that is
+ *  there, whatever it is, is left for the check after. */
+async function makeDir(dir: string): Promise<void> {
+  try {
+    await mkdir(dir, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+    throw error;
+  }
+  await learningTestHooks.afterMkdir?.(dir);
+}
+
+/** Throws when `path` is a symbolic link or not a directory, by `lstat`, which never follows one. A missing one passes
+ *  when `absent` says it may be. What it throws names `path` in the data directory, never where a link points. */
+async function refuseLink(data: string, path: string, absent = false): Promise<void> {
+  let stats;
+  try {
+    stats = await lstat(path);
+  } catch (error) {
+    if (absent && (error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (stats.isSymbolicLink()) throw new Error(`${relative(data, path)} is a symbolic link, and the host never follows one into a learning folder`);
+  if (!stats.isDirectory()) throw new Error(`${relative(data, path)} is not a directory`);
+}
+
+/** The agent's learning folder, its home and the folder made where absent, one level at a time, each checked after it
+ *  is made: neither, nor the folder's `.git` once there, may be a symbolic link or anything but a directory, or the
+ *  host's git, its writes and its commits would land where the link points. A link swapped in for a part just made is
+ *  caught by the check after. `<data>/homes` is the operator's, as the data directory is. Every path into the folder
+ *  goes through it, in the agent's queue: before anything reads or makes the repository, and again once `git init`
+ *  has made `.git`. A refusal throws, so the run starts with nothing learned (seed_failed). */
+async function agentFolder(data: string, agentId: string): Promise<string> {
+  const home = homeDir(data, agentId);
+  const repo = learningRepo(data, agentId);
+  await makeDir(dirname(home));
+  for (const dir of [home, repo]) {
+    await makeDir(dir);
+    await refuseLink(data, dir);
+  }
+  await refuseLink(data, join(repo, ".git"), true);
+  return repo;
+}
 
 /** Before every command: a `-c` flag wins over the repository's own config. No hook or fsmonitor runs, no replace ref
  *  is read, a commit is never signed (which would run a program), and no transport runs, so nothing is fetched lazily. */
@@ -152,16 +200,20 @@ async function mainOf(cwd: string, repo: string): Promise<string | undefined> {
 
 /** Makes the agent's folder, or finishes one whose making stopped before main: `init` with no template, then the host's
  *  one commit on main, holding an empty `MEMORY.md` alone, made with plumbing. The working tree and the index show that
- *  commit's tree first (written here, never checked out), and main is created last, only where it is not there yet: a
- *  making that stops anywhere before leaves no main, and the next one does it all again. Called in the queue. */
-async function openAgentRepo(cwd: string, repo: string): Promise<string> {
+ *  commit's tree first (written here, never checked out; a `MEMORY.md` that is a link is refused, never written
+ *  through), and main is created last, only where it is not there yet: a making that stops anywhere before leaves no
+ *  main, and the next one does it all again. Called in the queue, on the folder agentFolder made and checked; `check`
+ *  checks it again once `.git` is made. */
+async function openAgentRepo(cwd: string, repo: string, check: () => Promise<unknown>): Promise<string> {
   const known = await mainOf(cwd, repo);
   if (known) return known;
-  await mkdir(repo, { recursive: true, mode: 0o700 });
   await git(cwd, undefined, ["init", "-q", "--template=", "--initial-branch=main", repo]);
+  await check();
   const blob = line(await git(cwd, repo, ["hash-object", "-w", "--no-filters", "--stdin"], ""));
   const tree = line(await git(cwd, repo, ["mktree"], `100644 blob ${blob}\t${INDEX_FILE}\n`));
-  await writeFile(join(repo, INDEX_FILE), "");
+  await writeFile(join(repo, INDEX_FILE), "", { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW }).catch((error: NodeJS.ErrnoException) => {
+    throw error.code === "ELOOP" ? new Error(`the learning folder's ${INDEX_FILE} is a symbolic link, and the host never writes through one`) : error;
+  });
   await git(cwd, repo, ["read-tree", tree]);
   const commit = line(await git(cwd, repo, ["commit-tree", tree, "-m", "host: the agent's learning folder"]));
   await git(cwd, repo, ["update-ref", "-m", "host: the agent's learning folder", "refs/heads/main", commit, ""]);
@@ -223,17 +275,22 @@ async function readSeed(cwd: string, repo: string, sha: string): Promise<Seed> {
 /** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent, and
  *  what that commit holds. In the agent's queue. */
 export function seedOf(data: string, agentId: string): Promise<Seed> {
-  const repo = learningRepo(data, agentId);
-  const home = homeDir(data, agentId);
   return withAgentRepo(data, agentId, async () => {
-    await mkdir(home, { recursive: true, mode: 0o700 });
-    const sha = await openAgentRepo(home, repo);
+    const check = () => agentFolder(data, agentId);
+    const repo = await check();
+    const home = homeDir(data, agentId);
+    const sha = await openAgentRepo(home, repo, check);
     return readSeed(home, repo, sha);
   });
 }
 
-/** Test seams, tests only: before a run's learned files are written, and once its pin is in place. */
-export const learningTestHooks: { beforePin?: (runDir: string) => Promise<void> | void; afterPin?: (runDir: string) => Promise<void> | void } = {};
+/** Test seams, tests only: once a part of an agent's learning folder is made (before its check), before a run's
+ *  learned files are written, and once its pin is in place. */
+export const learningTestHooks: {
+  afterMkdir?: (dir: string) => Promise<void> | void;
+  beforePin?: (runDir: string) => Promise<void> | void;
+  afterPin?: (runDir: string) => Promise<void> | void;
+} = {};
 
 /** Writes `seed` into the run just made in `runDir`: the index and each active note into `work/.learning/`, made fresh
  *  (whatever was there goes), then the pin, last. A write that fails leaves no `.learning/` and no pin, and throws. */

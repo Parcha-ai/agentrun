@@ -2,10 +2,11 @@
 // Code's auto-memory format (MEMORY.md, the index, and a file per note), and every run of it starts from main there: the
 // index in its instructions under `# Learned`, and the index and active notes in `work/.learning/`, on pi, claude-agent
 // and codex alike. Learning is off unless the agent says so, and the server's switch turns it off for all. A learning
-// fault never refuses a run. The server is the folder's only writer, and no hook runs.
+// fault never refuses a run. The server is the folder's only writer, no hook runs, and it never follows a symbolic link
+// into it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
@@ -304,6 +305,75 @@ test("a copy that fails once its pin is in place (the run's directory not synced
   assert.equal(pinned?.learned?.trim(), INDEX.trim(), "the pin was in place, with the index, when the copy failed");
   assert.equal(learnedIn(run.prompt), undefined, "no # Learned in the run's instructions");
   await seedFailed(api, data, "unsynced", run.runId, run.prompt);
+});
+
+/** A scratch directory holding one file, `kept`, for a planted link to point at (or at its file). */
+async function linkTarget(t) {
+  const target = await scratch(t);
+  writeFileSync(join(target, "kept"), "kept\n");
+  return target;
+}
+
+/** What the server writes to its stderr while test `t` runs. */
+function stderrOf(t) {
+  const said = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    said.push(String(chunk));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => void (process.stderr.write = write));
+  return said;
+}
+
+/** That run `runId` of agent `id` was refused the link it met: seed_failed, the link's target as it was, and the
+ *  warning naming a link in the data directory, never the target. */
+async function refusedLink(api, data, id, runId, prompt, target, said) {
+  await seedFailed(api, data, id, runId, prompt);
+  assert.deepEqual(readdirSync(target), ["kept"], "nothing is made where the link points");
+  assert.equal(readFileSync(join(target, "kept"), "utf8"), "kept\n", "nothing is written through the link");
+  const warning = said.find((text) => text.includes(`the agent ${id}'s learning folder could not be read`)) ?? "";
+  assert.match(warning, /is a symbolic link/, said.join(""));
+  assert.ok(!warning.includes(target), warning);
+}
+
+// A link left in an agent's home before its learning was on, by something that could write there: at the home itself,
+// at its learning folder, at the folder's .git, or at MEMORY.md in a folder whose making stopped before main. The host
+// refuses it and never follows it, so its git init, writes and commits never land where the link points.
+const PLANTED = {
+  "homes/<agent>": (data, id, target) => (mkdirSync(join(data, "homes"), { recursive: true }), symlinkSync(target, join(data, "homes", id))),
+  "homes/<agent>/learning": (data, id, target) => (mkdirSync(join(data, "homes", id), { recursive: true }), symlinkSync(target, repoOf(data, id))),
+  "learning/.git": (data, id, target) => (mkdirSync(repoOf(data, id), { recursive: true }), symlinkSync(target, join(repoOf(data, id), ".git"))),
+  "learning/MEMORY.md": (data, id, target) => (mkdirSync(repoOf(data, id), { recursive: true }), symlinkSync(join(target, "kept"), join(repoOf(data, id), "MEMORY.md"))),
+};
+for (const [where, plant] of Object.entries(PLANTED)) {
+  test(`a symbolic link at ${where}, there before the agent's first run: the run completes with nothing learned, seed_failed, nothing is made or written where the link points, and the warning names the link, not its target`, { timeout: 120_000 }, async (t) => {
+    const { api, data } = await serve(t, { faux: SYSTEM });
+    const target = await linkTarget(t);
+    assert.equal((await api("POST", "/agents", agent("linked", { learning: true, instructions: "Answer the question." }))).status, 201);
+    plant(data, "linked", target);
+    const said = stderrOf(t);
+    const run = await ran(api, "linked");
+    await refusedLink(api, data, "linked", run.runId, run.prompt, target, said);
+  });
+}
+
+test("a link swapped in for the learning folder the host has just made is caught by the check after the mkdir, never followed", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: SYSTEM });
+  const target = await linkTarget(t);
+  assert.equal((await api("POST", "/agents", agent("swapped", { learning: true, instructions: "Answer the question." }))).status, 201);
+  const repo = repoOf(data, "swapped");
+  learningTestHooks.afterMkdir = (dir) => {
+    if (!dir.endsWith(join("swapped", "learning"))) return;
+    rmSync(dir, { recursive: true });
+    symlinkSync(target, dir);
+  };
+  t.after(() => void (learningTestHooks.afterMkdir = undefined));
+  const said = stderrOf(t);
+  const run = await ran(api, "swapped");
+  learningTestHooks.afterMkdir = undefined;
+  assert.ok(lstatSync(repo).isSymbolicLink(), "the hook swapped the link in");
+  await refusedLink(api, data, "swapped", run.runId, run.prompt, target, said);
 });
 
 /** A request's system prompt, as text. */
