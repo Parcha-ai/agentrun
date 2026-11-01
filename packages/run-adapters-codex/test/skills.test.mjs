@@ -82,11 +82,12 @@ test("a session lists the host's skill to the model and none of Codex's bundled 
   assert.deepEqual(readdirSync(join(without.session, 'work')), [], 'nothing in the working directory');
 });
 
-test("read_skill_file gives the model a skill's SKILL.md and its reference file, exactly, and refuses a file the skill does not list", { skip, timeout: 180_000 }, async () => {
-  const r = await node({ skills: [SKILL], first: [readCall('call_md', 'research-method', 'SKILL.md'), readCall('call_ref', 'research-method', 'reference/sources.md'), readCall('call_other', 'research-method', '../../config.toml')] });
+test("read_skill_file gives the model a skill's SKILL.md and its reference file, exactly, and refuses a file the skill does not list or a path that climbs out of it", { skip, timeout: 180_000 }, async () => {
+  const r = await node({ skills: [SKILL], first: [readCall('call_md', 'research-method', 'SKILL.md'), readCall('call_ref', 'research-method', 'reference/sources.md'), readCall('call_unlisted', 'research-method', 'notes.md'), readCall('call_other', 'research-method', '../../config.toml')] });
   assert.deepEqual(r.output, { answer: 'ok' });
   assert.equal(r.outputs.get('call_md'), SKILL.files['SKILL.md']);
   assert.equal(r.outputs.get('call_ref'), 'Primary sources first.\n');
+  assert.match(r.outputs.get('call_unlisted') ?? '', /is not one of the skill research-method's files/);
   assert.match(r.outputs.get('call_other') ?? '', /absolute or climbs/);
   // The skills are the session's own, under its CODEX_HOME (outside every writable root of the model's commands), and
   // nothing is written to the working directory.

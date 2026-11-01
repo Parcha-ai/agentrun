@@ -12,7 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, type AdapterSession, type AgentAdapter, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-adapters";
+import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-adapters";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-adapters";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
@@ -32,51 +32,13 @@ export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", 
  *  that name or, unless the CLI has a command or skill of that name (`CLAUDE_AGENT_CLI_SKILL_NAMES`), by its bare one. */
 export const CLAUDE_AGENT_SKILLS_PLUGIN = "agentrun";
 
-/** A skill the model may load (the Skill tool): its name, and its files by path, `SKILL.md` among them. */
-export interface ClaudeAgentSkill {
-  /** Lowercase letters, digits and dashes; `SKILL.md`'s front matter names it the same. */
-  name: string;
-  /** Each file's text by its path inside the skill (`SKILL.md`, `reference/sources.md`). */
-  files: Readonly<Record<string, string>>;
-}
-
-const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const SKILL_PATH = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/){0,4}[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
-const SKILL_BYTES = 1024 * 1024;
+/** A skill the model may load (the Skill tool): its name, and its files by path, `SKILL.md` among them. The shape every
+ *  adapter takes a host's skills in (`HostSkill`, from @parcha/agentrun-adapters). */
+export interface ClaudeAgentSkill extends HostSkill {}
 
 /** The skills, checked: each a name, a `SKILL.md` whose front matter has that name and a description, and files at plain
- *  relative paths, 1 MiB in all; or the problems. */
-export function skillProblems(skills: readonly ClaudeAgentSkill[]): string[] {
-  const problems: string[] = [];
-  const seen = new Set<string>();
-  let bytes = 0;
-  for (const skill of skills) {
-    const name = String(skill?.name ?? "");
-    if (!SKILL_NAME.test(name)) { problems.push(`the skill name ${JSON.stringify(name.slice(0, 80))} is not lowercase letters, digits and dashes`); continue; }
-    if (seen.has(name)) problems.push(`the skill ${name} is given twice`);
-    seen.add(name);
-    const files = skill.files ?? {};
-    const md = files["SKILL.md"];
-    const front = typeof md === "string" ? /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(md)?.[1] : undefined;
-    if (front === undefined) problems.push(`the skill ${name} has no SKILL.md with front matter`);
-    else {
-      if (!new RegExp(`^name:\\s*(['"]?)${name}\\1\\s*$`, "m").test(front)) problems.push(`the skill ${name}'s SKILL.md names it otherwise`);
-      if (!/^description:\s*\S/m.test(front)) problems.push(`the skill ${name}'s SKILL.md has no description`);
-    }
-    // A path that is another's folder (reference, and reference/sources.md) can't be written as both.
-    const paths = new Set(Object.keys(files));
-    for (const folder of new Set([...paths].flatMap((path) => path.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))))) {
-      if (paths.has(folder)) problems.push(`the skill ${name}'s ${folder} is both a file and a folder`);
-    }
-    for (const [path, text] of Object.entries(files)) {
-      if (!SKILL_PATH.test(path) || path.split("/").some((part) => part === "." || part === "..")) problems.push(`the skill ${name}'s file ${JSON.stringify(path.slice(0, 80))} is not a plain relative path`);
-      if (typeof text !== "string") problems.push(`the skill ${name}'s file ${path} is not text`);
-      else bytes += Buffer.byteLength(text);
-    }
-  }
-  if (bytes > SKILL_BYTES) problems.push(`the skills hold ${bytes} bytes, more than ${SKILL_BYTES}`);
-  return problems;
-}
+ *  relative paths, 1 MiB in all; or the problems. @parcha/agentrun-adapters' own check, which the Codex adapter runs too. */
+export { skillProblems };
 
 /** Writes the skills as the local plugin at `dir` (replacing what was there), and returns their plugin-qualified names. */
 function writeSkillsPlugin(dir: string, skills: readonly ClaudeAgentSkill[]): string[] {

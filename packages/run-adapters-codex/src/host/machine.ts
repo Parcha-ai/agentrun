@@ -1,6 +1,7 @@
 // The local session machine, written for AgentRun: where a session's Codex runs when the host runs it on its own box.
 //  - The session gets private directories under its own directory (home, config, codex-home, tmp, cache; mode 0700),
 //    and an empty working directory (`work`), never the host's workspace: a tool-less Codex has nothing to read there.
+//    What the host seeds (its skills, under codex-home) is in them at the start of every drive, after the wipe.
 //  - A child's environment is an allowlist: PATH, LANG and TZ from this process, plus what the harness names (its homes,
 //    and the per-session proxy key). Nothing else is inherited, so no provider key, token or host secret reaches it.
 //  - A child's git stops at the session's directory (GIT_CEILING_DIRECTORIES), and the host may start every child under its
@@ -26,6 +27,9 @@ export const INHERITED_ENV = Object.freeze(["PATH", "LANG", "TZ"] as const);
 const DIRS: readonly CacheDir[] = ["home", "config", "codex-home", "tmp", "cache"];
 const STDERR_TAIL = 8 * 1024;
 
+/** One of a session's private directories under its own directory `dir`, where the local machine makes it. */
+export const sessionDir = (dir: string, which: CacheDir): string => join(normalize(dir), which);
+
 export interface LocalMachineOptions {
   /** The session's own directory. The machine makes its private directories in it and deletes only those. */
   dir: string;
@@ -45,6 +49,10 @@ export interface LocalMachineOptions {
   };
   /** For tests: the process environment the allowlist reads. Default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>;
+  /** Files the session's private directories hold from the start of each drive (paths relative to each): written when
+   *  the machine is acquired and again after every wipe, which the harness runs before it starts Codex. The host's skills,
+   *  under codex-home. */
+  seed?: Partial<Readonly<Record<CacheDir, readonly CacheFile[]>>>;
 }
 
 /** A command and its arguments, as the machine starts it. */
@@ -153,9 +161,21 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     const base = normalize(options.dir);
     if (!isAbsolute(base)) throw new Error("agentrun-codex: the session directory must be an absolute path");
     mkdirSync(base, { recursive: true, mode: 0o700 });
-    const dirs = Object.fromEntries(DIRS.map((d) => [d, join(base, d)])) as Record<CacheDir, string>;
+    const dirs = Object.fromEntries(DIRS.map((d) => [d, sessionDir(base, d)])) as Record<CacheDir, string>;
     const root = join(base, "work");
     for (const dir of [...Object.values(dirs), root]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const upload = (dir: CacheDir, files: readonly CacheFile[]) => {
+      for (const file of files) {
+        const path = inside(dirs[dir], file.path);
+        mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+        writeFileSync(path, file.bytes, { mode: file.mode ?? 0o600 });
+      }
+    };
+    const seed = () => {
+      for (const dir of DIRS) upload(dir, options.seed?.[dir] ?? []);
+    };
+    // Before the proxy starts: a seed that cannot be written is refused with nothing left running.
+    seed();
 
     const key = randomBytes(32).toString("base64url");
     const route = model.options;
@@ -212,18 +232,14 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         return proc;
       },
       files: {
-        upload: async (dir: CacheDir, files: readonly CacheFile[]) => {
-          for (const file of files) {
-            const path = inside(dirs[dir], file.path);
-            mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-            writeFileSync(path, file.bytes, { mode: file.mode ?? 0o600 });
-          }
-        },
+        upload: async (dir: CacheDir, files: readonly CacheFile[]) => upload(dir, files),
+        // Everything goes, then the seed is written again: what a drive starts with is the host's, never an earlier drive's.
         wipe: async () => {
           for (const dir of Object.values(dirs)) {
             rmSync(dir, { recursive: true, force: true });
             mkdirSync(dir, { recursive: true, mode: 0o700 });
           }
+          seed();
         },
       },
       tail: async (dir: CacheDir, path: string, tailOptions = {}): Promise<MachineTail> => {
