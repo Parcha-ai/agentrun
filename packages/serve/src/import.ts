@@ -61,9 +61,10 @@ export type ProjectPlan = {
 };
 /** `already`: the session files an earlier import took whole, left unread; `held`, the runs an import would not take
  *  again: theirs, and (when measuring) those of planned sessions the store holds already. `children`: the files of each
- *  session's subagents, by `source:session`, whose usage is the session's. `found`: each other planned session measured,
+ *  session's subagents, by `source:session`, whose usage is the session's; `untied`, those of subagents whose file names
+ *  no parent, counted in a summary's totals alone. `found`: each other planned session measured,
  *  when the plan was made to (`measure`). */
-export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, string[]>; found?: Found[] };
+export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, string[]>; untied: { file: string; source: Source }[]; found?: Found[] };
 export type ImportReport = {
   agents: {
     id: string;
@@ -113,6 +114,7 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   const found: Found[] = [];
   const children = new Map<string, string[]>();
   const child = (key: string, file: string) => void children.set(key, [...(children.get(key) ?? []), file]);
+  const untied: Plan["untied"] = [];
   const projects = new Map<string, ProjectPlan>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
@@ -139,16 +141,17 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
       const session = await readSession(file, source, { turns: false }).catch((error: unknown) => void skipped.push(unread(file, error)));
       if (!session) continue;
-      // A subagent's session is no run of its own: its usage is its parent's, when its file names the parent.
-      if (session.child) {
-        if (session.parent) child(`${source}:${session.parent}`, file);
+      // A subagent's session is no run of its own: its usage is its parent's, when its file names the parent; else it
+      // counts in the totals alone, where its project would.
+      if (session.child && session.parent) {
+        child(`${source}:${session.parent}`, file);
         continue;
       }
       if (!session.cwd) {
         skipped.push({ what: file, why: "no project directory in it" });
         continue;
       }
-      if (!all && session.users === 0) {
+      if (!all && session.users === 0 && !session.child) {
         skipped.push({ what: file, why: "no message of the person's" });
         continue;
       }
@@ -167,6 +170,10 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
           continue;
         }
       }
+      if (session.child) {
+        untied.push({ file, source });
+        continue;
+      }
       let project = projects.get(cwd);
       if (!project)
         projects.set(
@@ -183,7 +190,7 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
     if (source === "claude-code") for (const { file, parent } of await childFiles(home)) child(`${source}:${parent}`, file);
   }
   for (const project of projects.values()) project.sessions.sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? ""));
-  const plan: Plan = { projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children };
+  const plan: Plan = { projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, untied };
   if (!measure) return plan;
   // Measured in the import's own order, a record or response counted once across files, each session with its
   // subagents; a session the store holds already from its run, as the import counts it, not from its file now.
@@ -203,6 +210,19 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
     }
   }
   return { ...plan, found };
+}
+
+/** The subagents tied to no session: each one's tokens and tool calls, for a summary's totals, each response once. */
+export async function untiedFound(plan: Plan): Promise<Found[]> {
+  const seen = new Map<Source, Set<string>>();
+  const found: Found[] = [];
+  for (const { file, source } of plan.untied) {
+    const stats = await stat(file).catch(() => null);
+    if (!stats || stats.size > MAX_SESSION_BYTES) continue;
+    const session = await readSession(file, source, { seen: seen.get(source) ?? seen.set(source, new Set()).get(source)! }).catch(() => undefined);
+    if (session) found.push({ source, agent: "", untied: true, metrics: runMetricsOf(entriesOf(session)) });
+  }
+  return found;
 }
 
 /** A session that holds only records an earlier file of the import holds (a resumed session's copy of them). */
@@ -734,7 +754,7 @@ export async function importCommand(
     try {
       plan = await planImport({ ...options, measure: true }, reader);
       for (const line of describePlan(plan, reader)) out(line);
-      found = [...plan.found!, ...(reader ? await foundAll(reader, plan.held) : [])];
+      found = [...plan.found!, ...(reader ? await foundAll(reader, plan.held) : []), ...(await untiedFound(plan))];
     } finally {
       reader?.close();
     }
@@ -753,7 +773,7 @@ export async function importCommand(
     // Every session found: those imported now, those held before, and those whose file an earlier import read whole.
     const held = importedIn(store);
     const runs = [...plan.projects.flatMap((p) => p.sessions.flatMap((s) => held.get(`${s.source}:${s.id}`) ?? [])), ...plan.held];
-    for (const line of summaryLines(await foundAll(store, runs), open)) out(line);
+    for (const line of summaryLines([...(await foundAll(store, runs)), ...(await untiedFound(plan))], open)) out(line);
     return 0;
   } finally {
     store.close();

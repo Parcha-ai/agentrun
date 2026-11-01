@@ -798,3 +798,24 @@ test("a session's subagents are no runs of their own: their requests, tokens and
   db.close();
   assert.equal(answers, 2, "the transcript holds the session's own answers");
 });
+
+test("a subagent whose file names no parent is no session and no run: its tokens and tool calls count in the summary's totals alone", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "untied");
+  mkdirSync(project, { recursive: true });
+  claudeSession(home, project, 110);
+  codexSession(home, project, 111, { subagent: true, parent: null });
+  const data = join(root, "agents");
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+  // The Claude Code session's 2,688 tokens and the subagent's 1,965 (cache reads 2,300 + 1,500 of 2,608 + 1,900 input);
+  // Bash and the subagent's shell call, one each.
+  const block = lines.slice(-5);
+  assert.deepEqual(block.slice(0, 2), ["Found 1 session  Claude Code 1", "Imported into 1 agent (one per project)"]);
+  assert.match(block[2], /^\+ 4\.7K tokens \(84% cached\) · /);
+  assert.match(block[3], / · top tool: Bash \(50%\)$/);
+  const store = openStoreReader(data);
+  t.after(() => store.close());
+  assert.equal(store.listRuns().length, 1, "no run for the subagent");
+});

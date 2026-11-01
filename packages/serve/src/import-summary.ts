@@ -6,12 +6,14 @@ import type { RunMetrics } from "@parcha/pi-durable-agent/timeline";
 import { SOURCES, type Source } from "./import-sources.js";
 
 /** A session an import found: its source and agent; what it used (undefined: unknown), with its time at work; and its
- *  model requests by local hour of the day (undefined: their times are unknown). */
+ *  model requests by local hour of the day (undefined: their times are unknown). `untied`: a subagent's session whose
+ *  file names no parent, so no session of its own either: its tokens and tool calls count in the totals, nothing else. */
 export type Found = {
   source: Source;
   agent: string;
   metrics?: Pick<RunMetrics, "input" | "cacheRead" | "cacheWrite" | "output" | "tools"> & { activeMs?: number };
   hours?: number[];
+  untied?: boolean;
 };
 
 const NAMES: Record<Source, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
@@ -50,16 +52,18 @@ const plural = (n: number, one: string) => `${count(n)} ${one}${n === 1 ? "" : "
 
 /** The summary's lines for `found`, ending with where to open the server (`open`, its address). `dryRun`: what an import
  *  would take, nothing taken yet. */
-export function summaryLines(found: readonly Found[], open: string, { dryRun = false }: { dryRun?: boolean } = {}): string[] {
+export function summaryLines(everything: readonly Found[], open: string, { dryRun = false }: { dryRun?: boolean } = {}): string[] {
+  // Sessions, agents, time and hours are the sessions'; tokens and tool calls take in the untied subagents' too.
+  const found = everything.filter((f) => !f.untied);
   const by = SOURCES.map((source) => [source, found.filter((f) => f.source === source).length] as const).filter(([, n]) => n > 0);
   const agents = new Set(found.map((f) => f.agent)).size;
-  const measured = found.flatMap((f) => (f.metrics ? [f.metrics] : []));
+  const measured = everything.flatMap((f) => (f.metrics ? [f.metrics] : []));
   const sum = (of: (m: (typeof measured)[number]) => number) => measured.reduce((n, m) => n + of(m), 0);
   const prompt = sum((m) => m.input + m.cacheRead + m.cacheWrite);
   const tokens = prompt + sum((m) => m.output);
-  const timed = measured.filter((m) => m.activeMs !== undefined);
+  const timed = found.flatMap((f) => (f.metrics?.activeMs !== undefined ? [f.metrics] : []));
   const hours = timed.reduce((n, m) => n + m.activeMs!, 0) / 3_600_000;
-  const unknown = found.length - measured.length;
+  const unknown = found.filter((f) => !f.metrics).length;
   const used = [
     tokens > 0 ? `${compact.format(tokens)} tokens (${prompt ? Math.round((100 * sum((m) => m.cacheRead)) / prompt) : 0}% cached)` : "tokens unknown",
     timed.length ? `${hours < 10 ? hours.toFixed(1) : count(Math.round(hours))} h of agent time` : "agent time unknown",
