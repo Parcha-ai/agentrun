@@ -70,6 +70,6 @@ test('CLI inspection requires no trust flag and produces JSON without executing 
     const output = execFileSync(process.execPath, [cli.pathname, 'inspect', file, '--json'], { encoding: 'utf8' });
     assert.equal(JSON.parse(output).checked, 'structure-only');
     await assert.rejects(readFile(marker), { code: 'ENOENT' });
-    assert.throws(() => execFileSync(process.execPath, [cli.pathname, 'inspect', file, '--typo'], { stdio: 'pipe' }), /Usage: agentrun inspect/);
+    assert.throws(() => execFileSync(process.execPath, [cli.pathname, 'inspect', file, '--typo'], { stdio: 'pipe' }), /Usage: agentrun-dsl inspect/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
