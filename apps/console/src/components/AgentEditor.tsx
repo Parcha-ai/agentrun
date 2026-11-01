@@ -1,8 +1,8 @@
 import { Archive, ArrowLeft, ArrowRight, Check, FileText, History, Settings, TriangleAlert, Wrench } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
-import { type Agent, type AgentFields, harnessOptions, type SaveProblem, type ToolOffer } from "@/lib/agentForm";
+import { type Agent, type AgentFields, defaultTools, harnessOptions, reachesWeb, type SaveProblem, type ToolOffer, toolsFor } from "@/lib/agentForm";
 import { markdown, when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -40,7 +40,15 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initial);
-  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: d?.tools ?? [] });
+  // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own.
+  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools) : d?.tools ?? [] });
+  // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
+  const [toolsTouched, setToolsTouched] = useState(false);
+  // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
+  const toolsKey = caps.tools.map((t) => `${t.name}:${t.available}:${(t.harnesses ?? []).join("+")}`).join(",");
+  useEffect(() => {
+    if (creating && !toolsTouched) setF((x) => ({ ...x, tools: defaultTools(x.harness ?? "pi", caps.tools) }));
+  }, [toolsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -77,6 +85,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         </div>
       )}
       {notice && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-warning-text md:px-8" role="alert">{notice}</p>}
+      {!workflow && !reachesWeb(f.tools ?? []) && (
+        <p className="border-b bg-card px-5 py-2.5 font-mono text-[12px] text-muted-foreground md:px-8">This agent can't reach the web: fetch_page isn't among its tools{toolsFor(f.harness ?? "pi", caps.tools).some((t) => t.name === "fetch_page") ? "." : ` (${f.harness ?? "pi"} doesn't run it on this server).`}</p>
+      )}
       {problem?.kind === "invalid" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">The server refused the save: {problem.message}</p>}
       {problem?.kind === "other" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">{problem.message}</p>}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
@@ -126,16 +137,16 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
 
           {step === "tools" && (
             <div className="max-w-3xl space-y-6">
-              <Field label="Tools" note="The tools this server offers. The agent can call the ones you pick." error={fieldError("tools")}>
+              <Field label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")}>
                 <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {caps.tools.map((t) => {
+                    const runs = toolsFor(f.harness ?? "pi", caps.tools).some((x) => x.name === t.name);
                     const on = f.tools?.includes(t.name) ?? false;
-                    // A tool the server can't run now (a setting it lacks) can't be newly picked; its lack is said.
-                    const lacks = !t.available && !on;
+                    const why = !runs ? `Not on ${f.harness ?? "pi"} on this server` : !t.available ? `Needs ${(t.missing ?? []).join(", ")}` : undefined;
                     return (
-                      <li key={t.name}><label title={lacks ? `Needs ${(t.missing ?? []).join(", ")}` : undefined} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", lacks ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
-                        <input type="checkbox" value={t.name} checked={on} disabled={lacks} onChange={() => set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] })} className="accent-[hsl(var(--primary))]" />
-                        {t.name}
+                      <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
+                        <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-[hsl(var(--primary))]" />
+                        <span>{t.name}{why && <span className="ml-2 text-[11px] text-muted-foreground">{why}</span>}</span>
                       </label></li>
                     );
                   })}
@@ -155,7 +166,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-3" role="radiogroup" aria-label="Harness">
                     {harnessOptions(caps.harnesses).map((h) => (
                       <label key={h.id} title={h.reason} className={cn("flex items-start gap-3 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border", h.available ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
-                        <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id })} className="mt-1 accent-[hsl(var(--primary))]" />
+                        <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
                         <span><span className="block font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : h.reason}</span></span>
                       </label>
                     ))}
