@@ -46,9 +46,13 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED });
   assert.deepEqual(listed.body.keys.map((k) => [k.id, k.unlocks, k.harnesses]), [
     ["parallel", ["web_fetch", "web_search", "decisions.parallel"], ["pi", "claude-agent", "codex"]],
-    ["monid", ["monid.discover", "monid.inspect", "monid.run"], ["pi", "claude-agent", "codex"]],
+    ["monid", ["monid.discover", "monid.inspect", "monid.run"], ["pi"]],
     ["browserbase", ["browser"], ["pi"]],
   ]);
+  // Each key's harnesses are those capabilities give every tool it unlocks, so the two cannot drift apart.
+  const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
+  for (const key of listed.body.keys) for (const name of key.unlocks.filter((unlock) => unlock in tools)) assert.deepEqual(tools[name], key.harnesses, `${key.id} unlocks ${name}`);
+  assert.deepEqual(listed.body.keys.find((key) => key.id === "monid").unlocks.filter((name) => name in tools), ["monid.discover", "monid.inspect", "monid.run"], "each monid tool is checked");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
   const file = join(data, "tool-keys.json");

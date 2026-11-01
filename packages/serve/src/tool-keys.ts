@@ -25,7 +25,8 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
  *  kept the same way), what it unlocks, and the harnesses that run what it unlocks. */
 export const TOOL_KEYS = [
   { id: "parallel", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "web_search", "decisions.parallel"], harnesses: [...HARNESSES] },
-  { id: "monid", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid.discover", "monid.inspect", "monid.run"], harnesses: [...HARNESSES] },
+  // pi only until the monid tools are host tools (tools.ts, host-tools.ts): what capabilities say of them.
+  { id: "monid", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid.discover", "monid.inspect", "monid.run"], harnesses: [DEFAULT_HARNESS] },
   { id: "browserbase", label: "Browserbase", fields: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], unlocks: ["browser"], harnesses: [DEFAULT_HARNESS] },
 ] as const;
 const FIELDS: readonly string[] = TOOL_KEYS.flatMap((row) => row.fields);
