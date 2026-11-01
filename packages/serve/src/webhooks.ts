@@ -251,9 +251,13 @@ export class Webhooks {
     }
     if (this.closed) return attempt;
     attempt.error = failure ?? null;
-    message.attempts += 1;
     this.attempts.push(attempt);
-    const gone = attempt.status_code === 410;
+    // The schedule counts the message's own tries: a redelivery is a try of its own, and leaves it as it was.
+    if (!how.redelivery) message.attempts += 1;
+    // A 410 turns off the webhook as this try found it: one set again or removed while the try waited is not its to turn
+    // off, and the 410 is then a failure like any other.
+    const standing = this.config();
+    const gone = attempt.status_code === 410 && config !== undefined && standing !== undefined && standing.url === config.url && standing.updated_at === config.updated_at && !standing.disabled;
     const wait = how.retry && failure && config && !gone ? this.retryMs[message.attempts - 1] : undefined;
     if (!failure) Object.assign(message, { status: "delivered", next_at: null });
     else if (!how.redelivery && wait !== undefined) {
@@ -266,11 +270,11 @@ export class Webhooks {
       Object.assign(message, { status: "failed", next_at: null });
       this.say({ condition: "delivery_failed", type: message.type, webhook_id: message.id, attempts: message.attempts, ...(attempt.status_code !== null ? { status_code: attempt.status_code } : {}), error: failure! });
     }
-    if (gone && config && !config.disabled) {
+    if (gone) {
       // Gone: the receiver says this endpoint is no more. Off, its pending messages dropped, until a PUT sets it again.
       const disabled = { at: attempt.at, reason: "the receiver answered 410 Gone" };
-      this.write({ ...config, disabled });
-      this.say({ condition: "webhook_disabled", url: config.url, reason: disabled.reason });
+      this.write({ ...standing!, disabled });
+      this.say({ condition: "webhook_disabled", url: standing!.url, reason: disabled.reason });
       this.drop("the webhook is off: its receiver answered 410");
       return attempt;
     }

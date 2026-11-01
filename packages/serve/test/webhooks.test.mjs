@@ -208,6 +208,43 @@ test("a 410 turns the webhook off, says so and sends nothing more until a PUT se
   await until(() => hook.got.length === 2, "sent again");
 });
 
+test("a 410 that comes back after the webhook was set to another URL turns nothing off: the message goes on to the new URL", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const old = await receiver(t, () => held.then(() => 410));
+  t.after(() => release());
+  const fresh = await receiver(t);
+  const { api } = await serve(t, { webhookRetryMs: [100, 100] });
+  assert.equal((await api("PUT", "/settings/webhook", { url: old.url })).status, 201);
+  const run = await startRun(api, "moved", "hi");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => old.got.length === 1, "the try held at the old URL");
+  assert.equal((await api("PUT", "/settings/webhook", { url: fresh.url })).status, 200);
+  release();
+  await until(() => fresh.got.length === 1, "the message at the new URL");
+  assert.equal(fresh.got[0].headers["webhook-id"], old.got[0].headers["webhook-id"]);
+  const view = (await api("GET", "/settings/webhook")).body;
+  assert.deepEqual([view.url, view.disabled], [fresh.url, null], "the new setting stands, on");
+});
+
+test("redeliveries that fail leave the message's own schedule as it was: it is still tried on every wait", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t, () => 500);
+  const lines = [];
+  const { api } = await serve(t, { webhookRetryMs: [1_500, 100, 100], log: (line) => lines.push(line) });
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "redone", "hi");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => hook.got.length === 1, "the first try");
+  const id = hook.got[0].headers["webhook-id"];
+  for (let i = 0; i < 4; i++) assert.equal((await api("POST", `/settings/webhook/deliveries/${id}/redeliver`, {})).body.status_code, 500);
+  const failed = await until(() => lines.find((line) => line.includes("condition=delivery_failed")), "the message failed");
+  assert.ok(failed.includes("attempts=4"), `its own four tries, every wait: ${failed}`);
+  const tries = (await api("GET", "/settings/webhook/deliveries")).body.attempts;
+  assert.deepEqual([tries.filter((a) => !a.redelivery).length, tries.filter((a) => a.redelivery).length], [4, 4]);
+});
+
 test("redeliver sends a message of the log again, once, under the same webhook-id and body, signed anew", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
