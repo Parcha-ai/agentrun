@@ -1,6 +1,7 @@
 // The local session machine, written for AgentRun: where a session's Codex runs when the host runs it on its own box.
 //  - The session gets private directories under its own directory (home, config, codex-home, tmp, cache; mode 0700),
 //    and an empty working directory (`work`), never the host's workspace: a tool-less Codex has nothing to read there.
+//    A seed of files the host gives is in one of them at the start of every drive: written at acquire and after each wipe.
 //  - A child's environment is an allowlist: PATH, LANG and TZ from this process, plus what the harness names (its homes,
 //    and the per-session proxy key). Nothing else is inherited, so no provider key, token or host secret reaches it.
 //  - A child's git stops at the session's directory (GIT_CEILING_DIRECTORIES), and the host may start every child under its
@@ -26,6 +27,30 @@ export const INHERITED_ENV = Object.freeze(["PATH", "LANG", "TZ"] as const);
 const DIRS: readonly CacheDir[] = ["home", "config", "codex-home", "tmp", "cache"];
 const STDERR_TAIL = 8 * 1024;
 
+/** One of a session's private directories under its own directory `dir`, where the local machine makes it. */
+export const sessionDir = (dir: string, which: CacheDir): string => join(normalize(dir), which);
+
+/** Files one of the machine's private directories holds at the start of every drive: each file's text by its path
+ *  relative to that directory. */
+export interface MachineSeed {
+  dir: CacheDir;
+  files: Readonly<Record<string, string>>;
+}
+
+/** The seed's files as the machine writes them; throws, naming the first path that is not a plain relative path inside
+ *  its directory (empty, absolute, a backslash or NUL, an empty part, or a part that starts with a dot, `..` among them),
+ *  or a directory that is not one of the machine's private ones. */
+function seedFiles(seed: MachineSeed | undefined): readonly CacheFile[] {
+  if (seed === undefined) return [];
+  if (!DIRS.includes(seed.dir)) throw new Error(`agentrun-codex: a seed goes in one of the machine's private directories (${DIRS.join(", ")}), not ${JSON.stringify(String(seed.dir).slice(0, 40))}`);
+  const encoder = new TextEncoder();
+  return Object.entries(seed.files).map(([path, text]) => {
+    if (!path || path.startsWith("/") || /[\\\0]/.test(path) || path.split("/").some((part) => part === "" || part.startsWith("."))) throw new Error(`agentrun-codex: the seed path ${JSON.stringify(path.slice(0, 80))} is not a plain relative path inside ${seed.dir}`);
+    if (typeof text !== "string") throw new Error(`agentrun-codex: the seed file ${JSON.stringify(path.slice(0, 80))} is not text`);
+    return { path, bytes: encoder.encode(text) };
+  });
+}
+
 export interface LocalMachineOptions {
   /** The session's own directory. The machine makes its private directories in it and deletes only those. */
   dir: string;
@@ -45,6 +70,9 @@ export interface LocalMachineOptions {
   };
   /** For tests: the process environment the allowlist reads. Default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>;
+  /** Files one of the session's private directories holds at the start of every drive: written when the machine is
+   *  acquired and again after every wipe, which the harness runs before it starts Codex. Its paths are checked here. */
+  seed?: MachineSeed;
 }
 
 /** A command and its arguments, as the machine starts it. */
@@ -148,14 +176,27 @@ function start(options: MachineSpawn, from: Readonly<Record<string, string | und
 /** A machine factory for sessions under `options.dir`: each acquire makes the directories fresh and starts a proxy. */
 export function localMachine(options: LocalMachineOptions): AcquireMachine {
   const from = options.env ?? process.env;
+  const seeded = seedFiles(options.seed);
   return async ({ ctx, model }) => {
     if (!model) throw new Error("agentrun-codex: the harness gave the machine no model route");
     const base = normalize(options.dir);
     if (!isAbsolute(base)) throw new Error("agentrun-codex: the session directory must be an absolute path");
     mkdirSync(base, { recursive: true, mode: 0o700 });
-    const dirs = Object.fromEntries(DIRS.map((d) => [d, join(base, d)])) as Record<CacheDir, string>;
+    const dirs = Object.fromEntries(DIRS.map((d) => [d, sessionDir(base, d)])) as Record<CacheDir, string>;
     const root = join(base, "work");
     for (const dir of [...Object.values(dirs), root]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const upload = (dir: CacheDir, files: readonly CacheFile[]) => {
+      for (const file of files) {
+        const path = inside(dirs[dir], file.path);
+        mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+        writeFileSync(path, file.bytes, { mode: file.mode ?? 0o600 });
+      }
+    };
+    const seed = () => {
+      if (options.seed) upload(options.seed.dir, seeded);
+    };
+    // Before the proxy starts: a seed that cannot be written is refused with nothing left running.
+    seed();
 
     const key = randomBytes(32).toString("base64url");
     const route = model.options;
@@ -212,18 +253,14 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         return proc;
       },
       files: {
-        upload: async (dir: CacheDir, files: readonly CacheFile[]) => {
-          for (const file of files) {
-            const path = inside(dirs[dir], file.path);
-            mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-            writeFileSync(path, file.bytes, { mode: file.mode ?? 0o600 });
-          }
-        },
+        upload: async (dir: CacheDir, files: readonly CacheFile[]) => upload(dir, files),
+        // Everything goes, then the seed is written again: what a drive starts with is the host's, never an earlier drive's.
         wipe: async () => {
           for (const dir of Object.values(dirs)) {
             rmSync(dir, { recursive: true, force: true });
             mkdirSync(dir, { recursive: true, mode: 0o700 });
           }
+          seed();
         },
       },
       tail: async (dir: CacheDir, path: string, tailOptions = {}): Promise<MachineTail> => {

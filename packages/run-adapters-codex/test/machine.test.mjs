@@ -241,3 +241,29 @@ test("a machine acquired again announces nothing until its own proxy has seen an
     await second.close();
   }
 });
+
+test("a seed of files is in its private directory at acquire and again after every wipe; a seed path that is not plain and relative, or a directory not the machine's own, is refused when the machine is made", async () => {
+  const dir = scratch();
+  const seed = { dir: 'codex-home', files: { 'skills/cite/SKILL.md': 'cite', 'skills/cite/reference/sources.md': 'sources' } };
+  const acquire = localMachine({ dir, proxy: { hooks, tools: [] }, seed });
+  const machine = await acquire({ ctx: { runId: 'r-seed' }, model: gatewayHandler(route) });
+  try {
+    const home = machine.dirs['codex-home'];
+    const read = (path) => readFileSync(join(home, path), 'utf8');
+    assert.deepEqual([read('skills/cite/SKILL.md'), read('skills/cite/reference/sources.md')], ['cite', 'sources'], 'at acquire');
+    writeFileSync(join(home, 'skills', 'cite', 'SKILL.md'), 'changed');
+    writeFileSync(join(home, 'stale.txt'), 'from an earlier drive');
+    await machine.files.wipe();
+    assert.deepEqual([read('skills/cite/SKILL.md'), read('skills/cite/reference/sources.md')], ['cite', 'sources'], 'written again after the wipe');
+    assert.equal(existsSync(join(home, 'stale.txt')), false, 'the wipe still wipes everything else');
+    assert.equal(existsSync(join(machine.dirs.home, 'skills')), false, 'only the seed\'s own directory');
+  } finally {
+    await machine.close();
+  }
+  for (const path of ['../escape', 'skills/../../escape', '/etc/passwd', '.hidden', 'skills/.system/x', './x', 'a//b', 'a/', '', 'a\\b', 'a\u0000b']) {
+    assert.throws(() => localMachine({ dir: scratch(), proxy: { hooks, tools: [] }, seed: { dir: 'codex-home', files: { [path]: 'x' } } }), /agentrun-codex: the seed path .* is not a plain relative path inside codex-home/, JSON.stringify(path));
+  }
+  for (const where of ['work', '..', 'codex-home/skills']) {
+    assert.throws(() => localMachine({ dir: scratch(), proxy: { hooks, tools: [] }, seed: { dir: where, files: { 'a.md': 'x' } } }), /agentrun-codex: a seed goes in one of the machine's private directories/, where);
+  }
+});
