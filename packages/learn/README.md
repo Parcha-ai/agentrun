@@ -12,13 +12,14 @@ tarball (`npm pack -w @parcha/agentrun-learn`).
 ## Notes
 
 ```js
-import { activeNotes, buildIndex, loadedIndex, parseNoteFile, supersede } from "@parcha/agentrun-learn";
+import { activeNotes, buildIndex, loadedIndex, parseNoteFile, retire, supersede } from "@parcha/agentrun-learn";
 
 const note = parseNoteFile("refund-policy-path.md", text); // { file, name, description, type, status, superseded_by, supersedes, keys, body }, or why not
 const active = activeNotes(notes); // the active ones, by file name
 const index = buildIndex(notes); // "- [name](file.md) — description\n" per active note; "" with none
 const read = loadedIndex(index); // what a run reads: the first 200 lines, within 25 KB
 const marked = supersede(oldText, "refund-v2.md"); // the old note with status: superseded and superseded_by
+const gone = retire(text); // a person's retire: status: retired, and no superseded_by
 ```
 
 ## Asking a run what it learned
@@ -52,6 +53,10 @@ The host reads the run's copy itself, regular files only and never following a l
 against the commit the run started from. `ok` means the new notes (`notes`, parsed, with their text) go to the grader;
 each problem is `{ rule, path?, detail }`, printable as it is. [SPEC.md](SPEC.md#the-checks) lists the rules.
 `mergeProblems(base, notes)` asks the merge's own questions again of `main` at merge time.
+
+`checkNote(path, bytes, refuseValues)` checks one note by itself, as a person writes it through the host: its name, the
+4096-byte cap, UTF-8, hidden characters, secret shapes and the host's values, and its front matter. It answers
+`{ problems, note? }`. A person may set `status` and `superseded_by`; what only a run may not do is `checkProposal`'s.
 
 ## Grading it
 
