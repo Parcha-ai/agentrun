@@ -1,6 +1,7 @@
 // Fixtures a test builds for itself: a directory of its own under the temp root, and images written with nothing but
 // Node; and the size an image's header states, read the way the package reads it.
 
+import { rmSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -15,9 +16,27 @@ export type FixtureDir = {
   remove(): Promise<void>;
 };
 
-/** A new directory under the temp root (`TMPDIR` when set). */
+const made = new Set<string>();
+let sweeping = false;
+/** Removes every directory not yet removed when the process ends, however it ends: it exits, throws, or is told to stop (the
+ *  signal is passed on once they are gone, so it still ends the process). */
+function removeAtEnd(path: string): void {
+  made.add(path);
+  if (sweeping) return;
+  sweeping = true;
+  const sweep = () => {
+    for (const dir of [...made]) {
+      try { rmSync(dir, { recursive: true, force: true }); made.delete(dir); } catch { /* one that will not go never stops the rest, or the signal */ }
+    }
+  };
+  process.on("exit", sweep);
+  for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { try { sweep(); } finally { process.kill(process.pid, signal); } });
+}
+
+/** A new directory under the temp root (`TMPDIR` when set), removed by `remove()` or, failing that, when the process ends. */
 export async function fixtureDir(prefix = "pi-vision-"): Promise<FixtureDir> {
   const path = await mkdtemp(join(tmpdir(), prefix));
+  removeAtEnd(path);
   return {
     path,
     async file(name, content) {
@@ -27,7 +46,7 @@ export async function fixtureDir(prefix = "pi-vision-"): Promise<FixtureDir> {
       await writeFile(target, content);
       return target;
     },
-    remove: () => rm(path, { recursive: true, force: true }),
+    remove: async () => { await rm(path, { recursive: true, force: true }); made.delete(path); },
   };
 }
 
