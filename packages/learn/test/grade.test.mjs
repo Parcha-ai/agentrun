@@ -221,6 +221,28 @@ test("a missing item, an item named twice, or one for a path the grader was not 
   assert.equal(dropped([...GRADED.filter((path) => path !== README).map((path) => item(path)), item("workflows/other/README.md")]).merge, false);
 });
 
+test("the host's receipt uses/<run id>.json gets no item, and an item naming it is ignored", () => {
+  const receipt = { path: `uses/${RUN}.json`, status: "added", text: '{"uses": []}\n' };
+  const list = [changes()[0], changes()[1], changes()[3], receipt];
+  const note = item(NEW_NOTE);
+  assert.deepEqual(parseVerdict(answer({ items: [note] }), list), { merge: true, reason: "Every item is general, new and consistent with main.", items: [note] });
+  // Kept or not, an item for the receipt never counts: not as an unknown path, not as an item the merge must keep.
+  for (const keep of [true, false]) {
+    assert.deepEqual(parseVerdict(answer({ items: [note, item(receipt.path, keep)] }), list).items, [note], String(keep));
+    assert.equal(parseVerdict(answer({ items: [item(receipt.path, keep), note] }), list).merge, true, String(keep));
+  }
+  // The note's item is still needed, and the memo and the index still get none.
+  assert.equal(parseVerdict(answer({ items: [item(receipt.path)] }), list).merge, false);
+  assert.equal(parseVerdict(answer({ items: [note, item(MEMO)] }), list).merge, false);
+
+  const prompt = gradePrompt(input({ changes: list }));
+  assert.ok(prompt.includes(`for no other: ${NEW_NOTE}.`));
+  assert.ok(prompt.includes(`The memo ${MEMO}, ${INDEX} and the host's receipt ${receipt.path} are context, not items.`));
+  assert.deepEqual(fencesOf(prompt).body(`${receipt.path} on the branch`), [shown(receipt.text)]);
+  assert.throws(() => gradePrompt(input({ changes: [...changes(), { ...receipt, path: `uses/${OLD_RUN}.json` }] })), /another run's receipt/);
+  assert.throws(() => parseVerdict(answer(), [...list, { ...receipt, path: `uses/${OLD_RUN}.json` }]), /more than one receipt/);
+});
+
 test("merge with any item not kept drops the branch", () => {
   for (const path of GRADED) {
     const items = GRADED.map((p) => item(p, p !== path));

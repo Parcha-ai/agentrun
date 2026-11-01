@@ -63,26 +63,30 @@ const REASON_MAX = 500;
 
 const STATUSES = new Set(["added", "modified", "deleted"]);
 
-/** The paths that get an item: every changed path but the run's memo and the index. Throws on changes no checked
- *  branch could hold. */
-function gradedPaths(changes: readonly GradeChange[], run?: string): string[] {
+/** The paths that get an item: every changed path but the run's memo, the index and the host's receipt
+ *  `uses/<run>.json`, which never reaches main, so the grader never judges it and an item naming it is ignored. Throws
+ *  on changes no checked branch could hold. */
+function gradedPaths(changes: readonly GradeChange[], run?: string): { graded: string[]; receipt: string | undefined } {
   if (!Array.isArray(changes)) throw new Error("the changes must be an array of { path, status }");
   const seen = new Set<string>();
   const graded: string[] = [];
-  let memos = 0;
+  const own: { memo?: string; uses?: string } = {};
   for (const change of changes) {
     const path: unknown = change?.path;
     if (typeof path !== "string" || !placeOf(path)) throw new Error("each change's path must be one the learning layout holds");
     if (seen.has(path)) throw new Error(`the changes name ${path} twice`);
     seen.add(path);
-    if (placeOf(path)!.kind === "memo") {
-      if (run !== undefined && path !== `${LAYOUT.memos}/${run}.md`) throw new Error("the changes hold another run's memo");
-      if (++memos > 1) throw new Error("the changes hold more than one memo");
+    const { kind } = placeOf(path)!;
+    if (kind === "memo" || kind === "uses") {
+      const name = kind === "memo" ? "memo" : "receipt";
+      if (run !== undefined && path !== (kind === "memo" ? `${LAYOUT.memos}/${run}.md` : `${LAYOUT.uses}/${run}.json`)) throw new Error(`the changes hold another run's ${name}`);
+      if (own[kind] !== undefined) throw new Error(`the changes hold more than one ${name}`);
+      own[kind] = path;
       continue;
     }
     if (path !== LAYOUT.index) graded.push(path);
   }
-  return graded;
+  return { graded, receipt: own.uses };
 }
 
 function checkText(value: unknown, what: string): string {
@@ -114,7 +118,7 @@ function fenceToken(run: string, texts: readonly string[]): string {
 export function gradePrompt(input: GradeInput): string {
   const { run, instructions, index, changes } = input ?? ({} as GradeInput);
   if (typeof run !== "string" || !RUN_ID.test(run)) throw new Error("the run id is not one the learning layout accepts");
-  const graded = gradedPaths(changes, run);
+  const { graded, receipt } = gradedPaths(changes, run);
   if (instructions !== undefined) checkText(instructions, "the instructions");
   checkText(index, "main's index");
   // Paths are in the fence lines' labels; each is checked with the texts so the token is nowhere but in its own lines.
@@ -168,7 +172,9 @@ export function gradePrompt(input: GradeInput): string {
     "## Your verdict",
     "",
     `Give one item for each of these paths, each once, and for no other: ${graded.length ? graded.join(", ") : "none"}.`,
-    `The memo ${LAYOUT.memos}/${run}.md and ${LAYOUT.index} are context, not items.`,
+    receipt === undefined
+      ? `The memo ${LAYOUT.memos}/${run}.md and ${LAYOUT.index} are context, not items.`
+      : `The memo ${LAYOUT.memos}/${run}.md, ${LAYOUT.index} and the host's receipt ${receipt} are context, not items.`,
     "",
     "Answer with one JSON object and nothing else, in this shape:",
     '{"merge": true or false, "reason": "<one line>", "items": [{"path": "<a path above>", "keep": true or false, "question": "<the question it failed>", "why": "<one sentence>"}]}',
@@ -215,10 +221,12 @@ function theObject(text: string): Record<string, unknown> | undefined {
 const drop = (reason: string, items: readonly VerdictItem[] = []): Verdict => ({ merge: false, reason, items });
 
 /** The grader's verdict from its answer, failing closed: anything it cannot read, an item missing, named twice or for a
- *  path the branch does not change, or a merge with an item not kept, is no merge. `changes` are the ones the prompt
+ *  path the branch does not change, or a merge with an item not kept, is no merge. An item for the host's receipt
+ *  `uses/<run>.json` is dropped from the verdict, whatever it says. `changes` are the ones the prompt
  *  was built from. Throws only when `changes` is not a list a checked branch could hold, never on the answer. */
 export function parseVerdict(text: unknown, changes: readonly GradeChange[]): Verdict {
-  const graded = new Set(gradedPaths(changes));
+  const { graded: list, receipt } = gradedPaths(changes);
+  const graded = new Set(list);
   const answer = typeof text === "string" ? theObject(text) : undefined;
   if (!answer || typeof answer.merge !== "boolean" || typeof answer.reason !== "string" || !Array.isArray(answer.items)) return UNREADABLE;
 
@@ -228,6 +236,7 @@ export function parseVerdict(text: unknown, changes: readonly GradeChange[]): Ve
     const question = item.question ?? undefined;
     if (question !== undefined && typeof question !== "string") return UNREADABLE;
     const asked = question === undefined ? "" : oneLine(question, REASON_MAX);
+    if (item.path === receipt) continue;
     items.push({ path: item.path, keep: item.keep, ...(asked ? { question: asked } : {}), why: oneLine(item.why, REASON_MAX) });
   }
 

@@ -111,15 +111,15 @@ const verdict = parseVerdict(await grader(prompt), changes); // { merge, reason,
 `changes` are the branch's changed files against `main`, `{ path, status, text, before }`: `text` is the branch's, on
 every change but a deletion, and `before` is `main`'s, on a modification. `index` is `main`'s `learnings/INDEX.md` and
 `instructions` the agent's standing instructions, as the host keeps them. The prompt holds `GRADE_RUBRIC`, the rubric's
-one statement, and fences each file, the index and the instructions as data to judge, never to follow: the fence's
-token is one no fenced text holds, so no text can close its fence. It asks for one JSON verdict, with one item for each
-changed file but the memo and the index.
+one statement, and fences each file, the index and the
+instructions as data to judge, never to follow: the fence's token is one no fenced text holds, so no text can close its
+fence. It asks for one JSON verdict, with one item for each changed file but the memo, the index and the host's receipt
+`uses/<run id>.json`, which never reaches `main`.
 
-`parseVerdict` fails closed. It reads one JSON object, alone, in prose or in one fenced block. Two objects, a missing
-item, an item named twice or for a path the grader was not asked about, and `merge` with an item not kept are each no
-merge; so is an answer it cannot read, with the reason "the grader's verdict could not be read". The reason and
-each item's `why` come back as one line of at most 500 characters, with control and unseen characters gone. The branch
-merges only when `verdict.merge` is true, every item kept; otherwise it stays unmerged, with the verdict. Neither
-function calls a model or runs git: the host does both. `gradePrompt` throws on input no checked branch holds (a run id
-the layout refuses, a path outside the layout, an unseen character), and `parseVerdict` never throws on the grader's
-answer.
+`parseVerdict` fails closed. It reads one JSON object, alone, in prose or in one fenced block. Two objects, a missing item, an item named twice or for a path the grader was not asked about, and `merge`
+with an item not kept are each no merge; so is an answer it cannot read, with the reason "the grader's verdict could
+not be read". An item for the receipt is ignored. The reason and each item's `why` come back as one line of at most
+500 characters, with control and unseen characters gone. The branch merges only when `verdict.merge` is true, every
+item kept; otherwise it stays unmerged, with the verdict. Neither function calls a model or runs git: the host does
+both. `gradePrompt` throws on input no checked branch holds (a run id the layout refuses, a path outside the layout, an
+unseen character), and `parseVerdict` never throws on the grader's answer.
