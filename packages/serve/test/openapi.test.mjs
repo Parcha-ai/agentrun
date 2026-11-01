@@ -156,6 +156,12 @@ test("the served definition takes exactly the fields this server takes: a contra
   assert.ok(shape, "the document gives agent_not_runnable's details");
   assert.deepEqual(schemaProblems(doc, shape, run.body.error.details), [], JSON.stringify(run.body.error.details));
   assert.equal(run.body.error.details.harness, "claude-agent");
+  // A place whose box this server does not have: the same, with the box.
+  assert.equal((await api("POST", "/agents", agent("boxed", { place: { mode: "sandbox", box: "docker" } }))).status, 201);
+  const boxed = await api("POST", "/agents/boxed/runs", { input: { content: "hi" } });
+  assert.deepEqual([boxed.status, boxed.body.error.code], [409, "agent_not_runnable"]);
+  assert.deepEqual(schemaProblems(doc, shape, boxed.body.error.details), [], JSON.stringify(boxed.body.error.details));
+  assert.equal(boxed.body.error.details.box, "docker");
   // An archived agent is refused the same way, with when it was archived.
   assert.equal((await api("POST", "/agents", agent("put-away"))).status, 201);
   assert.equal((await api("POST", "/agents/put-away/archive")).status, 200);
@@ -197,13 +203,13 @@ test("the document is OpenAPI 3.1 in shape: operations with responses, ids uniqu
   walk(doc);
 });
 
-test("live answers meet the served document: capabilities, and an agent made, read and edited on each harness, against the contract plus exactly its marked properties", async (t) => {
+test("live answers meet the served document: capabilities, and an agent made, read and edited on each harness and place, against the contract plus exactly its marked properties", async (t) => {
   const { baseUrl } = await serve(t);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const { api } = await serve(t);
   const check = (name, value) => assert.deepEqual(schemaProblems(doc, { $ref: `#/components/schemas/${name}` }, value), [], `${name}: ${JSON.stringify(value)}`);
   check("Capabilities", (await api("GET", "/capabilities")).body);
-  for (const [id, body] of [["on-pi", agent("on-pi", { model: "faux/faux-1", thinking: "high" })], ["on-claude", agent("on-claude", { harness: "claude-agent" })], ["on-codex", flowAgent("on-codex", undefined, { harness: "codex" })]]) {
+  for (const [id, body] of [["on-pi", agent("on-pi", { model: "faux/faux-1", thinking: "high" })], ["on-claude", agent("on-claude", { harness: "claude-agent" })], ["in-runner", agent("in-runner", { place: { mode: "runner" } })], ["in-bwrap", agent("in-bwrap", { place: { mode: "sandbox", box: "bwrap" } })], ["in-sandbox", agent("in-sandbox", { place: { mode: "sandbox", box: "daytona" } })], ["on-codex", flowAgent("on-codex", undefined, { harness: "codex" })]]) {
     const { warnings: _, ...made } = (await api("POST", "/agents", body)).body;
     const read = (await api("GET", `/agents/${id}`)).body;
     if (id !== "on-codex") {
@@ -214,6 +220,11 @@ test("live answers meet the served document: capabilities, and an agent made, re
     // A workflow definition keeps no instructions, which v2/0 requires of every definition: the one gap left, for v2/1.
     for (const answer of [made, read]) assert.deepEqual([...new Set(schemaProblems(doc, { $ref: "#/components/schemas/Agent" }, answer))], ["$.definition.instructions: is required"]);
   }
+  // The document's place takes the two modes the server takes, and refuses what it refuses.
+  const place = doc.components.schemas.DefinitionInput.properties.place;
+  for (const box of ["bwrap", "docker"]) assert.deepEqual(schemaProblems(doc, place, { mode: "sandbox", box }), []);
+  assert.notDeepEqual(schemaProblems(doc, place, { mode: "tool-box", box: "bwrap" }), []);
+  assert.notDeepEqual(schemaProblems(doc, place, { mode: "runner", box: "docker" }), []);
   // The same check sees a field the document does not hold: the positive control.
   assert.notDeepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, { ...(await api("GET", "/capabilities")).body, unheard_of: 1 }), []);
 });
