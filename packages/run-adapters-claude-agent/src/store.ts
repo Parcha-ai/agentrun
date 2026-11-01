@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/store.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27/28: imports from AgentRun's seam; a call's tool_result entry can be awaited too (`resultBarrier`), so a refusal the CLI made is told only once it is in the log.
+// Changed by Parcha, imports rewritten for AgentRun; patches: 009-tool-result-barrier-and-refusals
 import type { JournalRecord, NativeJournal, TranscriptEntry } from './host/process.js';
 
 /**

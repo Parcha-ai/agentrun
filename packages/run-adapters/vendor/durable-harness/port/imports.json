@@ -17,6 +17,12 @@
       },
       "packages/harness-codex/src/code-mode.ts": {
         "harness-codex": "src/code-mode.ts"
+      },
+      "packages/harness-claude-code/src/host/tool-server.ts": {
+        "harness-claude-code": "src/host/tool-server.ts"
+      },
+      "packages/harness-claude-code/src/cli-names.ts": {
+        "harness-claude-code": "src/cli-names.ts"
       }
     }
   },
@@ -277,6 +283,12 @@
       "keep": true
     },
     "@anthropic-ai/claude-agent-sdk": {
+      "keep": true
+    },
+    "@modelcontextprotocol/sdk/client/index.js": {
+      "keep": true
+    },
+    "@modelcontextprotocol/sdk/inMemory.js": {
       "keep": true
     }
   }
