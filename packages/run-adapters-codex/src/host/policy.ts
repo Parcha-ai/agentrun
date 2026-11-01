@@ -441,9 +441,9 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     unwatched: options.announce ? () => options.announce!.failed() : undefined,
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
     // The content a web search feeds the model is billed as input, and neither it nor the searches one response runs has a
-    // stated bound: a body that offers web search cannot be measured, so its input is unknown.
+    // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured.
     serverInputOverhead: search ? (body) => {
-      if (Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search")) throw new Error("a web search's content and calls have no stated bound");
+      if (Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search")) return undefined;
       return responsesServerInputOverhead(body);
     } : responsesServerInputOverhead,
   };

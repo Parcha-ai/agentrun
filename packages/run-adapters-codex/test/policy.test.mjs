@@ -510,6 +510,8 @@ test('web search off: the live web search tool the CLI sends is dropped, a tool_
 });
 
 test('web search live: the recorded request reaches the provider with exactly its live web search tool, and a tool_choice naming it passes', async () => {
+  const policy = codexPolicy({ model: 'gpt-5.4-mini', tools: ['lookup'], webSearch: 'live' });
+  assert.deepEqual([policy.serverInputOverhead({ tools: [LIVE_TOOL] }), policy.serverInputOverhead({ tools: [LOOKUP] })], [undefined, 0], 'no bound with web search, as the policy says it: no failure');
   const { p, forwarded, asked } = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini' });
   assert.deepEqual(LIVE_TOOL, { type: 'web_search', external_web_access: true });
   const r = await send(p.url, { body: { ...LIVE_REQUEST, tools: [...LIVE_REQUEST.tools, LOOKUP] } });
