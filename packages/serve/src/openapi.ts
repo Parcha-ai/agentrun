@@ -161,7 +161,31 @@ const archiving = (collection: string, noun: string, id: Json, answer: string): 
   );
 
 /** This server's own routes, outside the contract. */
+/** One JSON-RPC 2.0 message, and the answer to a request (POST /mcp). */
+const RPC_MESSAGE = { type: "object", required: ["jsonrpc"], properties: { jsonrpc: { const: "2.0" }, id: { type: ["string", "number"] }, method: { type: "string" }, params: { type: "object" } } };
+const RPC_ANSWER = {
+  type: "object", required: ["jsonrpc", "id"],
+  properties: { jsonrpc: { const: "2.0" }, id: { type: ["string", "number", "null"] }, result: {}, error: { type: "object", required: ["code", "message"], properties: { code: { type: "integer" }, message: { type: "string" } } } },
+};
 const EXTENSIONS: Record<string, Record<string, Json>> = {
+  "/mcp": {
+    post: {
+      operationId: "callMcp", tags: ["local"], summary: "The MCP endpoint: this API's tools, for a coding agent",
+      description:
+        "The Model Context Protocol over Streamable HTTP: one JSON-RPC 2.0 message per POST (initialize, ping, tools/list, tools/call), answered as JSON, with no stream (any other method is 405) and no session. The tools list, read and create agents, start runs, read a run, its timeline and its files, and send a run a message; each one calls one of this API's routes in process, with the caller's token, and answers as that route does (a refusal is a result with isError and the route's error). The token only: the page's session cookie is never taken here, and a browser Origin other than this server's own is 403. A refusal of the request itself carries a JSON-RPC error.",
+      requestBody: { required: true, content: { "application/json": { schema: RPC_MESSAGE } } },
+      responses: {
+        "200": json(RPC_ANSWER, "The request's answer: its result, or its JSON-RPC error."),
+        "202": { description: "A notification, or a response, taken. No body." },
+        "400": json(RPC_ANSWER, "Not one JSON-RPC 2.0 request (a batch is not taken), or an MCP-Protocol-Version this server does not speak."),
+        "401": json(RPC_ANSWER, "No token, or not this server's."),
+        "403": json(RPC_ANSWER, "An Origin other than this server's own."),
+        "413": json(RPC_ANSWER, "The body is over 1 MiB."),
+        "415": json(RPC_ANSWER, "The body is not application/json."),
+      },
+      "x-agentrun-serve": "mcp/1",
+    },
+  },
   "/openapi.json": {
     get: {
       operationId: "getOpenapi", tags: ["capabilities"], summary: "This document", security: [{}],

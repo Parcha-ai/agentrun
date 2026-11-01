@@ -1,0 +1,32 @@
+# AgentRun Server
+
+> The open platform's server for agents: make an agent (a prompt with tools, or a typed workflow), run it, and read what it did, over one HTTP API at `/v2`, an MCP endpoint at `/v2/mcp`, and a CLI. Every run is kept: its timeline, its files and its cost.
+
+The API's routes take `Authorization: Bearer <token>`, all but `GET /v2/health`, `GET /v2/capabilities` and `GET /v2/openapi.json`; this file needs none. The token is in the server's data directory (`<data>/.token`, by default `~/.local/share/agentrun/agents/.token`), or is `AGENTRUN_TOKEN` when the server was started with it. Links below are relative to this server.
+
+## API
+
+- [OpenAPI document](/v2/openapi.json): every route and schema, the `agentrun.v2/0` contract with this server's own routes marked `x-agentrun-serve`.
+- [Capabilities](/v2/capabilities): what this server runs (harnesses, tools, models, efforts) and what it does not.
+- `POST /v2/agents` makes an agent from `{definition, skills?, note?}`: an agentic definition is `{id, version: 1, name, instructions, tools, skills}`, with optional `model`, `thinking` and `harness`; a workflow one holds `workflow` in place of `instructions`. A refusal is `422 input_invalid` naming each field.
+- `POST /v2/agents/{id}/runs` starts a run: `{input, effort?, revision?, max_cost_usd?}`. An agentic run's input is `{content: "the first message"}`. Send an `Idempotency-Key` to make a retry safe.
+- `GET /v2/runs/{id}` is a run's status (`queued`, `working`, `input_required`, `completed`, `failed`, `cancelled`, `paused`), its `result` (`final_answer`, or a workflow's `output`), `error` and `cost` (`usd` is null while unknown, never $0).
+- `GET /v2/runs/{id}/timeline?after=0&wait_ms=5000` pages the run's steps; follow `next_after` until a page is `final` with `has_more` false.
+- `GET /v2/runs/{id}/files` lists what the run wrote, and `GET /v2/runs/{id}/files/{path}` reads one.
+- `POST /v2/runs/{id}/messages` with `{content}` answers a run that asked a question (`input_required`), or follows up.
+
+## MCP
+
+- [MCP endpoint](/v2/mcp): Streamable HTTP, one JSON-RPC message per POST, answered as JSON; the token as a Bearer header, never a cookie. Tools: `list_agents`, `get_agent`, `create_agent`, `start_run`, `list_runs`, `get_run`, `get_timeline`, `list_run_files`, `read_run_file`, `send_message`. Each calls the route above that does the same, and checks and answers as it does.
+- Claude Code: `claude mcp add --transport http agentrun <server>/v2/mcp --header "Authorization: Bearer <token>"`.
+- Codex: `codex mcp add agentrun --url <server>/v2/mcp --bearer-token-env-var AGENTRUN_API_KEY`.
+
+## CLI
+
+- `agentrun-serve` (or `node packages/serve/dist/cli.js` in a checkout of the repository) starts the server on the loopback address, port 7340: `--data DIR` for the agent store, `--port N`, `--faux MODULE` for a model with no key and no network.
+- It prints `AGENTRUN_BASE_URL=...` at every start, and `AGENTRUN_API_KEY=...` with the token at the start that made it (later starts say where it is kept): the two variables a client reads.
+
+## Optional
+
+- [Skill for coding agents](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/skills/agentrun-serve/SKILL.md): install, start, create an agent, run it, read its results, and connect over MCP, step by step.
+- [README](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/README.md): every flag, model, tool and route.

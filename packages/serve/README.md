@@ -326,12 +326,33 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
+| `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON. Each tool calls one of these routes in process with the caller's token. The token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
 feature, and capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
 browser sign-ins (`sign_ins: false`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
+
+## For coding agents
+
+A coding agent (Claude Code, Codex) sets the server up and drives it with
+[`skills/agentrun-serve/SKILL.md`](skills/agentrun-serve/SKILL.md), shipped in this package. `GET /llms.txt`, at the
+server's root and without a credential, is the API in brief ([`src/llms.txt`](src/llms.txt)): the routes a client
+needs, the MCP endpoint and the CLI, with no data of the server's.
+
+`POST /v2/mcp` is the MCP endpoint. Its tools are `list_agents`, `get_agent`, `create_agent`, `start_run`, `list_runs`,
+`get_run`, `get_timeline`, `list_run_files`, `read_run_file` and `send_message`. Each calls the route that does the same
+in process, with the caller's token, so it checks and answers as that route does: a refusal is a tool result with
+`isError` holding the route's `error`, and `create_agent` refuses a definition exactly as `POST /v2/agents` does. A file
+comes back as text, an image or a blob, up to 4 MiB. The endpoint takes the token only (the page's session cookie is
+never taken there), refuses a browser `Origin` other than this server's own, and on loopback refuses a `Host` that is not
+a loopback name, as every route does.
+
+```sh
+claude mcp add --transport http agentrun "$AGENTRUN_BASE_URL/mcp" --header "Authorization: Bearer $AGENTRUN_API_KEY"
+codex mcp add agentrun --url "$AGENTRUN_BASE_URL/mcp" --bearer-token-env-var AGENTRUN_API_KEY
+```
 
 ## Harnesses
 
