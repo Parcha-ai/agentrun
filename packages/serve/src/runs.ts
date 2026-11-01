@@ -6,9 +6,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, lstatSync, openSync, realpathSync, rmSync } from "node:fs";
+import { type ClientRequest, request as httpRequest } from "node:http";
 import { open as openFile, rm, stat } from "node:fs/promises";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
-import type { Writable } from "node:stream";
+import { Readable, type Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-adapters/host";
@@ -72,8 +73,8 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
 const holderPid = (record: Json | null) => (isObject(record?.holder) && Number.isSafeInteger(record.holder.pid) ? (record.holder.pid as number) : undefined);
 
-/** A live run's door: a loopback origin, or a unix socket in the run's directory, whose routes go to `origin`. */
-type Door = { origin: string; socket?: string };
+/** A live run's door: a loopback origin, or a unix socket in the run's directory. */
+type Door = { origin: string } | { socket: string };
 /** Where a run launched with `doorSocket` serves its door: a socket in its own directory. */
 const DOOR_SOCKET = "door.sock";
 
@@ -95,16 +96,30 @@ export function socketIn(dir: string, path: string): string | undefined {
   }
 }
 
+/** Statuses whose answer has no body: a Response refuses one. */
+const NO_BODY = new Set([101, 204, 205, 304]);
+
 /** One request to a run's door, its answer read by `read`: a loopback door with the global fetch, as always; a socket
- *  door with undici's fetch on a dispatcher of its own, dialled at the socket and closed once `read` is done. */
+ *  door with node:http over its `socketPath`, on a connection of its own, its answer the same Response shape (the body
+ *  streamed as it comes) and its connection closed once `read` is done. `init`'s headers are a plain record here. */
 async function knock<T>(door: Door, path: string, init: RequestInit, read: (res: Response) => Promise<T>): Promise<T> {
-  if (door.socket === undefined) return read(await fetch(new URL(path, door.origin), init));
-  const { Agent, fetch: socketFetch } = await import("undici");
-  const dispatcher = new Agent({ connect: { socketPath: door.socket } });
+  if ("origin" in door) return read(await fetch(new URL(path, door.origin), init));
+  let req: ClientRequest | undefined;
+  const res = await new Promise<Response>((resolve, reject) => {
+    const options = { socketPath: door.socket, path, method: init.method ?? "GET", headers: init.headers as Record<string, string> | undefined, agent: false as const };
+    req = httpRequest(init.signal ? { ...options, signal: init.signal } : options, (answer) => {
+      const status = answer.statusCode ?? 502;
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(answer.headers)) if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+      resolve(new Response(NO_BODY.has(status) ? null : (Readable.toWeb(answer) as unknown as ReadableStream<Uint8Array>), { status, headers }));
+    });
+    req.once("error", reject);
+    req.end(typeof init.body === "string" ? init.body : undefined);
+  });
   try {
-    return await read((await socketFetch(new URL(path, door.origin), { ...init, dispatcher } as never)) as unknown as Response);
+    return await read(res);
   } finally {
-    void dispatcher.destroy().catch(() => undefined);
+    req?.destroy();
   }
 }
 type WorkflowEnding = { status: "complete" | "escalated" | "refused" | "stopped"; code?: string; message?: string };
@@ -516,8 +531,7 @@ export class Runs {
     const serve = record.holder.serve;
     if (serve.startsWith("unix:")) {
       const socket = socketIn(run.dir, serve.slice("unix:".length));
-      // The origin names the door's routes only: the connection goes to the socket, and the door reads no Host header.
-      return socket === undefined ? undefined : { origin: "http://door", socket };
+      return socket === undefined ? undefined : { socket };
     }
     const url = URL.parse(serve);
     return url?.protocol === "http:" && isLoopback(url.hostname) ? { origin: url.origin } : undefined;
