@@ -107,10 +107,11 @@ export async function readWorkBytes(work: string, rel: string, { maxBytes }: { m
  * this server may read it: a link is skipped and never followed, so no target's size or time is read. Each entry left out
  * for what it is goes to `refused` with its reason (a link, not a regular file, another hard link), and so does a
  * directory that cannot be read: its contents are unknown, never empty. work/ itself unread throws `WorkRefused` (no
- * working copy). `skip` leaves a name (and what is below it) out unreported; `visit` returning false stops the walk.
+ * working copy). `skip` (given the name and its path below `work`) leaves it, and what is below it, out unreported;
+ * `visit` returning false stops the walk.
  * Directories are entered down to `depth` levels.
  */
-export async function walkWork(work: string, visit: (path: string, stats: Stats, readable: boolean) => boolean | void, { skip = () => false, depth = WALK_DEPTH, refused = () => {} }: { skip?: (name: string) => boolean; depth?: number; refused?: (path: string, reason: RefusedReason) => void } = {}): Promise<void> {
+export async function walkWork(work: string, visit: (path: string, stats: Stats, readable: boolean) => boolean | void, { skip = () => false, depth = WALK_DEPTH, refused = () => {} }: { skip?: (name: string, path: string) => boolean; depth?: number; refused?: (path: string, reason: RefusedReason) => void } = {}): Promise<void> {
   const { real, confinement } = confinementOf(work);
   const into = async (rel: string, level: number): Promise<boolean> => {
     const abs = rel ? join(real, rel) : real;
@@ -138,7 +139,7 @@ export async function walkWork(work: string, visit: (path: string, stats: Stats,
       }
       await workspaceTestHooks.afterList?.(rel || ".");
       for (const name of names) {
-        if (skip(name)) continue;
+        if (skip(name, rel ? `${rel}/${name}` : name)) continue;
         // By the held directory: a name swapped for a link reads as the link, which is skipped.
         let gone = false;
         const stats = await lstat(`${pin.dir}/${name}`).catch((error) => void (gone = (error as NodeJS.ErrnoException)?.code === "ENOENT"));

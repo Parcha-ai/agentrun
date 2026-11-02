@@ -575,24 +575,33 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- files ----------------------------------------------------------------------------------------------------------
 
-  type FileView = { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true; host_owned?: true };
+  type FileView = { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true };
   const fileView = (path: string, st: { size: number; mtimeMs: number }): FileView => ({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null });
 
   /** The files under `base` (a run's work/, an agent's home), through no link (workspace.ts): each regular file's own size
-   *  and time, a dot-name left out. `deep` when a directory below WALK_DEPTH was there and not entered. */
-  async function walk(base: string): Promise<{ files: FileView[]; deep: boolean }> {
+   *  and time, a dot-name left out. `deep` when a directory below WALK_DEPTH was there and not entered. In a `home`, a
+   *  host-owned name at its top is the host's: named in `owned`, and nothing below it walked. */
+  async function walk(base: string, home = false): Promise<{ files: FileView[]; deep: boolean; owned: string[] }> {
     const out: FileView[] = [];
+    const owned: string[] = [];
     let deep = false;
-    if (!(await lstat(base).catch(() => null))?.isDirectory()) return { files: out, deep };
+    if (!(await lstat(base).catch(() => null))?.isDirectory()) return { files: out, deep, owned };
     // The directory unreadable as a whole lists nothing; what the walk could not read in it is left out.
     await walkWork(base, (path, st, readable) => {
       if (st.isFile()) out.push({ ...fileView(path, st), ...(readable ? {} : { unreadable: true }) });
       else if (st.isDirectory() && path.split("/").length > WALK_DEPTH) deep = true;
       return out.length <= FILE_LIST_CAP;
-    }, { skip: (name) => name.startsWith(".") }).catch((error) => {
+    }, {
+      skip: (name, path) => {
+        if (name.startsWith(".")) return true;
+        if (!home || path !== name || !hostOwnedOf(name)) return false;
+        owned.push(name);
+        return true;
+      },
+    }).catch((error) => {
       if (!(error instanceof WorkRefused)) throw error;
     });
-    return { files: out, deep };
+    return { files: out, deep, owned };
   }
 
   /** A file path as the URL sends it, each segment percent-decoded. */
@@ -643,23 +652,29 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- an agent's home --------------------------------------------------------------------------------------------------
 
-  /** The host-owned path of the home that `path` is at or under, if any. */
-  const hostOwnedOf = (path: string) => HOME_HOST_OWNED.find((owned) => path === owned || path.startsWith(`${owned}/`));
+  /** The host-owned path of the home that `path` is at or under, if any: on the path as normalized, and in any case, as a
+   *  disk that folds case (macOS's, by default) reaches learning/ as Learning/ too. */
+  const hostOwnedOf = (path: string) => {
+    const at = posix.normalize(path).replace(/^\/+/, "").toLowerCase();
+    return HOME_HOST_OWNED.find((owned) => at === owned.toLowerCase() || at.startsWith(`${owned.toLowerCase()}/`));
+  };
 
   /** A path in an agent's home as its routes take it, checked as a run's file path is, and at most 1024 characters with
-   *  no segment over 255 bytes. A write anywhere in a host-owned path is refused first, on the path as normalized, so
-   *  `./learning/x` and `a/../learning/x` are refused as learning/ is; and a write goes no deeper than the list does. */
-  function homePath(raw: string, write: boolean): string {
+   *  no segment over 255 bytes. Anything at or under a host-owned path is refused first, read or written, so
+   *  `./learning/x`, `a/../LeArNiNg/x` and `Learning/x` are refused as learning/ is; and a write goes no deeper than the
+   *  list does. */
+  function homePath(raw: string, agentId: string, write: boolean): string {
     const rel = decodedPath(raw);
-    const owned = write ? hostOwnedOf(posix.normalize(rel).replace(/^\/+/, "")) : undefined;
-    if (owned) throw new ApiError("system_file_forbidden", `${owned}/ is written by the server, not through the API`, { details: { reason: "host_owned" } });
+    const owned = hostOwnedOf(rel);
+    // Its notes are read through the learning API alone, which redacts them; never raw here.
+    if (owned) throw new ApiError("system_file_forbidden", write ? `${owned}/ is written by the server, not through the API` : `read it through /v2/agents/${agentId}/${owned}`, { details: { reason: "host_owned" } });
     checkedPath(rel, "the server's own, not a file of the home");
     if (rel.length > 1024 || rel.split("/").some((p) => Buffer.byteLength(p) > 255)) throw new ApiError("invalid_file_path", "the path is over 1024 characters, or a segment of it over 255 bytes");
     if (write && rel.split("/").length - 1 > WALK_DEPTH) throw new ApiError("invalid_file_path", `a file is written at most ${WALK_DEPTH} directories deep, as deep as the list goes`);
     return rel;
   }
 
-  /** The agent's home, `homes/<agent_id>/`: null while nothing was ever written to it, made with homes/ (0700) when
+  /** The agent's home, `homes/<its home key>/`: null while nothing was ever written to it, made with homes/ (0700) when
    *  `make`. Neither is ever a link: a read finds no home there, and a write is refused. */
   async function homeDir(agentId: string, make: boolean): Promise<string | null> {
     const home = homeOf(data, agentId);
@@ -925,20 +940,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "listHomeFiles": {
         await needAgent(id);
         const home = await homeDir(id, false);
-        const { files, deep } = home ? await walk(home) : { files: [], deep: false };
-        const listed = files.map((file) => (hostOwnedOf(file.path) ? { ...file, host_owned: true as const } : file)).sort((a, b) => a.path.localeCompare(b.path));
+        const { files, deep, owned } = home ? await walk(home, true) : { files: [], deep: false, owned: [] };
+        // A host-owned path there is one entry by its name, and none of what is in it.
+        const listed = [...files, ...owned.map((path) => ({ path, host_owned: true as const }))].sort((a, b) => a.path.localeCompare(b.path));
         return send(res, 200, { agent_id: id, files: listed.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || listed.length > FILE_LIST_CAP });
       }
       case "readHomeFile": {
         await needAgent(id);
-        const rel = homePath(second!, false);
+        const rel = homePath(second!, id, false);
         const home = await homeDir(id, false);
         if (!home) throw new ApiError("not_found", "no such file");
         return sendFile(req, res, url, home, rel, "another user");
       }
       case "writeHomeFile": {
         await needAgent(id);
-        const rel = homePath(second!, true);
+        const rel = homePath(second!, id, true);
         const bytes = await bytesOf(req);
         // Each write lands whole (a temporary file renamed over the old one); of two at once, the last rename wins.
         const st = await homeDir(id, true).then((home) => writeWorkFile(home!, rel, bytes)).catch(homeRefusal);
@@ -946,7 +962,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "deleteHomeFile": {
         await needAgent(id);
-        const rel = homePath(second!, true);
+        const rel = homePath(second!, id, true);
         const home = await homeDir(id, false);
         if (!home) throw new ApiError("not_found", "no such file");
         await removeWorkFile(home, rel).catch(homeRefusal);

@@ -182,7 +182,7 @@ const archiving = (collection: string, noun: string, id: Json, answer: string): 
     ]),
   );
 
-/** A file of an agent's home, listed as a run's file is (RunFile), and marked where only the host writes it. */
+/** A file of an agent's home, listed as a run's file is (RunFile). */
 const HOME_FILE = {
   type: "object", additionalProperties: false, required: ["path", "size_bytes", "modified_at"],
   properties: {
@@ -191,12 +191,19 @@ const HOME_FILE = {
     modified_at: ref("schemas/Timestamp"),
     content_type: { type: ["string", "null"] },
     unreadable: { type: "boolean", const: true, description: "Present when this server cannot read the file (another user made it private): reading it answers 403 `system_file_forbidden` with `details.reason` `unreadable`." },
-    host_owned: { type: "boolean", const: true, description: "Present on a file at or under a path of `capabilities.home.host_owned`: read here, written only by the server." },
+  },
+};
+/** A host-owned path of the home that is there: one entry by its name, with nothing of what is in it. */
+const HOME_HOST_ENTRY = {
+  type: "object", additionalProperties: false, required: ["path", "host_owned"],
+  properties: {
+    path: { type: "string", description: "Its name at the top of the home, as it is on disk (`learning`)." },
+    host_owned: { type: "boolean", const: true, description: "A path of `capabilities.home.host_owned`: only the server writes it, and what is in it is read through `/v2/agents/{agent_id}/learning`, never listed or served here." },
   },
 };
 const HOME_FILES = {
   type: "object", additionalProperties: false, required: ["agent_id", "files", "complete", "truncated"],
-  properties: { agent_id: ref("schemas/Id"), files: { type: "array", items: HOME_FILE }, complete: { type: "boolean", description: "Always true here: the home is on this server's disk." }, truncated: { type: "boolean", description: "The list stopped at the server's cap: its count of files, or a directory more than 16 deep." } },
+  properties: { agent_id: ref("schemas/Id"), files: { type: "array", items: { oneOf: [HOME_FILE, HOME_HOST_ENTRY] } }, complete: { type: "boolean", description: "Always true here: the home is on this server's disk." }, truncated: { type: "boolean", description: "The list stopped at the server's cap: its count of files, or a directory more than 16 deep." } },
 };
 /** Where an agent's home's files are listed; each file's own path is below it. */
 const HOME_FILES_AT = "/agents/{agent_id}/home/files";
@@ -207,7 +214,7 @@ const HOME_PATH = {
 };
 const RAW = { "application/octet-stream": { schema: { type: "string", contentMediaType: "application/octet-stream" } }, "*/*": { schema: { type: "string" } } };
 const HOME_PATHS = "A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`.";
-const HOME_WRITES = "A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`), as normalized, so `./learning/x` too, is `403 system_file_forbidden` with `details.reason` `host_owned`. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's.";
+const HOME_WRITES = "A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`), as normalized and in any case, so `./Learning/x` too, is `403 system_file_forbidden` with `details.reason` `host_owned`. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's.";
 
 /** This server's own routes, outside the contract. */
 /** One JSON-RPC 2.0 message, and the answer to a request (POST /mcp). */
@@ -371,7 +378,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   [HOME_FILES_AT]: {
     get: {
       operationId: "listHomeFiles", tags: ["agents"], summary: "Every file in the agent's home",
-      description: "The agent's home is a directory of its own on this server's disk, kept across its runs (runs do not see it yet). Every regular file in it, recursively, listed as a run's files are (`GET /runs/{run_id}/files`): reached through no link, a name that starts with `.` left out. A home never written to lists none. A file at or under a path of `capabilities.home.host_owned` carries `host_owned: true`.",
+      description: "The agent's home is a directory of its own on this server's disk, kept across its runs (runs do not see it yet). Every regular file in it, recursively, listed as a run's files are (`GET /runs/{run_id}/files`): reached through no link, a name that starts with `.` left out. A home never written to lists none. A path of `capabilities.home.host_owned` that is there (`learning`) is one entry, `{path, host_owned: true}`, with none of what is in it.",
       parameters: [ref("parameters/AgentId")],
       responses: { "200": json(HOME_FILES, "The files."), ...errors(401, 404, 429, 500) },
       "x-agentrun-serve": "home/1",
@@ -380,7 +387,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   [`${HOME_FILES_AT}/{path}`]: {
     get: {
       operationId: "readHomeFile", tags: ["agents"], summary: "One file of the agent's home, raw",
-      description: `Raw bytes with the file's content type, as a run's file is read (\`GET /runs/{run_id}/files/{path}\`): \`nosniff\`, a CSP on HTML, \`?download=1\` for an attachment. A host-owned file is read as any other. ${HOME_PATHS} A link on the way is \`404 not_found\`.`,
+      description: `Raw bytes with the file's content type, as a run's file is read (\`GET /runs/{run_id}/files/{path}\`): \`nosniff\`, a CSP on HTML, \`?download=1\` for an attachment. ${HOME_PATHS} A path at or under one of \`capabilities.home.host_owned\` (\`learning/\`), as normalized and in any case, is \`403 system_file_forbidden\` with \`details.reason\` \`host_owned\`: read it through \`/v2/agents/{agent_id}/learning\`. A link on the way is \`404 not_found\`.`,
       parameters: [ref("parameters/AgentId"), HOME_PATH, { name: "download", in: "query", required: false, description: "`1` forces a download.", schema: { type: "integer", enum: [0, 1], default: 0 } }],
       responses: {
         "200": { description: "The whole file.", headers: { "Content-Disposition": ref("headers/ContentDisposition"), "X-Content-Type-Options": ref("headers/NoSniff") }, content: RAW },
@@ -512,10 +519,10 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: "object", additionalProperties: false, required: ["disk", "host_owned", "max_file_bytes"],
       properties: {
         disk: { enum: ["local"], description: "Where the homes are: this server's disk, under its data directory." },
-        host_owned: { type: "array", items: { type: "string" }, description: "The paths in a home only the server writes: listed and read through the API, and a PUT or DELETE at or under one is 403 `system_file_forbidden`." },
+        host_owned: { type: "array", items: { type: "string" }, description: "The paths in a home only the server writes, never served here: each that is there is one entry of the list (`host_owned: true`), and a GET, PUT or DELETE at or under one, in any case, is 403 `system_file_forbidden`." },
         max_file_bytes: { type: "integer", minimum: 1, description: "The largest file a PUT takes: `limits.max_body_bytes`. Over it, 413 `payload_too_large` naming `max_body_bytes`." },
       },
-      description: "Each agent's home: a directory of its own, kept across its runs, its files listed, read, written and deleted at `/agents/{agent_id}/home/files`.",
+      description: "Each agent's home: a directory of its own (its id in lower case and 16 hex digits of the id's SHA-256, so ids that differ only in case never share one), kept across its runs, its files listed, read, written and deleted at `/agents/{agent_id}/home/files`.",
       "x-agentrun-serve": "home/1",
     },
     secrets: {
@@ -588,7 +595,7 @@ const NOT_RUNNABLE_DETAILS = { oneOf: [BLOCKED_DETAILS, ARCHIVED_DETAILS] };
 /** What a file refused `403 system_file_forbidden` holds in `error.details` here, when it holds any (a dot-name holds none). */
 const FORBIDDEN_DETAILS = {
   type: "object", additionalProperties: false, required: ["reason"],
-  properties: { reason: { enum: ["unreadable", "host_owned", "link"], description: "`unreadable`: another user made the file private. `host_owned`: a write or a delete in an agent's home at or under a path only the server writes. `link`: a write or a delete in an agent's home through a link." } },
+  properties: { reason: { enum: ["unreadable", "host_owned", "link"], description: "`unreadable`: another user made the file private. `host_owned`: a read, write or delete in an agent's home at or under a path only the server writes, in any case. `link`: a write or a delete in an agent's home through a link." } },
 };
 
 /** The contract as vendored, read once. */

@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
+import { homeOf } from "../dist/files.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -260,12 +261,16 @@ test("an agent's home is its own addition, home/1: its routes and capabilities.h
   assert.equal(written.status, 200);
   const json = (op, status) => op.responses[status].content["application/json"].schema;
   assert.deepEqual(schemaProblems(doc, json(file.put, "200"), await written.json()), []);
-  // A host-owned file, planted as the server would, lists marked.
-  await mkdir(join(data, "homes", "keeper", "learning"));
-  await writeFile(join(data, "homes", "keeper", "learning", "l.md"), "learned");
+  // A host-owned note, planted as the server would: learning lists as one entry of its own shape, the note not at all.
+  await mkdir(join(homeOf(data, "keeper"), "learning"));
+  await writeFile(join(homeOf(data, "keeper"), "learning", "l.md"), "learned");
   const listed = (await api("GET", "/agents/keeper/home/files")).body;
-  assert.deepEqual(listed.files.map((f) => [f.path, f.host_owned]), [["learning/l.md", true], ["notes/a.md", undefined]]);
+  assert.deepEqual(listed.files.map((f) => [f.path, f.host_owned]), [["learning", true], ["notes/a.md", undefined]]);
   assert.deepEqual(schemaProblems(doc, json(files.get, "200"), listed), []);
+  // Each entry is exactly one of the two shapes: a file's entry is no host entry, and a host entry no file's.
+  assert.notDeepEqual(schemaProblems(doc, json(files.get, "200"), { ...listed, files: [{ ...listed.files[1], host_owned: true }] }), []);
+  const read = await (await fetch(`${home}/learning/l.md`, { headers })).json();
+  assert.deepEqual([read.error.code, read.error.details], ["system_file_forbidden", { reason: "host_owned" }]);
   const forbidden = await (await fetch(`${home}/learning/l.md`, { method: "PUT", headers, body: "x" })).json();
   const shape = doc.components.schemas.ErrorBody.properties.details["x-agentrun-serve-details"]?.system_file_forbidden;
   assert.ok(shape, "the document gives system_file_forbidden's details");

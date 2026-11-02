@@ -351,8 +351,9 @@ above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap
 
 ## Agent home
 
-Each agent has a home, a directory of its own at `<data>/homes/<agent_id>/`, kept across its runs; runs do not see it
-yet. `GET /v2/agents/{id}/home/files` lists every file in it, recursively, in the shape of a run's file list (with
+Each agent has a home, a directory of its own at `<data>/homes/<key>/`, kept across its runs; runs do not see it yet.
+The key is the agent's id in lower case and 16 hex digits of the id's SHA-256, so two ids that differ only in case
+(`keeper`, `Keeper`) never share a home on a disk that folds case, as macOS's does by default. `GET /v2/agents/{id}/home/files` lists every file in it, recursively, in the shape of a run's file list (with
 `agent_id` in place of `run_id`), and a home never written to lists none. Below it, a file's own path: `GET` reads the
 file as a run's file is read, and `PUT` writes the raw body as the file, whole (a temporary file renamed over it,
 `0600`), making the directories on the way and the home itself on the first write, and answers its entry; of two writes
@@ -360,9 +361,11 @@ at once, the last wins. A body over `capabilities.home.max_file_bytes` (`limits.
 `DELETE` removes a file (`204`; `404` when it is not there) and leaves an emptied directory in place. Paths are checked
 as a run's are, a write goes at most 16 directories deep (as deep as the list goes), and a link anywhere on the way is
 never followed: a read is `404`, a write or a delete
-`403 system_file_forbidden`. `learning/` is written by the server alone: listed with `host_owned: true` and read, but a
-`PUT` or `DELETE` at or under it, however the path is spelled (`./learning/x`), is `403`. An archived agent's home is
-read and written as its definition is. `GET` and `PUT /agents/{id}/home`, the contract's packed home, stay `501`.
+`403 system_file_forbidden`. `learning/` is the server's alone: the list shows it as one entry,
+`{"path": "learning", "host_owned": true}`, with none of its notes, and a `GET`, `PUT` or `DELETE` at or under it, in
+any case and however the path is spelled (`./Learning/x`), is `403 system_file_forbidden` (`details.reason`
+`host_owned`); its notes are read through `/v2/agents/{id}/learning`. An archived agent's home is read and written as
+its definition is. `GET` and `PUT /agents/{id}/home`, the contract's packed home, stay `501`.
 
 ## For coding agents
 

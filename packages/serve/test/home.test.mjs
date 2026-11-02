@@ -8,13 +8,14 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { confineTestHooks as confineHooks } from "@parcha/pi-durable-disk/internals";
+import { homeKey, homeOf } from "../dist/files.js";
 import { agent, serve } from "./support.mjs";
 
 /** A server with the agent `keeper`, and where its home is on disk. */
 async function served(t) {
   const server = await serve(t);
   assert.equal((await server.api("POST", "/agents", agent("keeper"))).status, 201);
-  return { ...server, home: join(server.data, "homes", "keeper") };
+  return { ...server, home: homeOf(server.data, "keeper") };
 }
 
 /** A request to the agent's home files, or to the file at `path` below them, sent as written: fetch would fold `..` and
@@ -151,29 +152,62 @@ test("a directory swapped for a link between the check and the write is refused,
   assert.deepEqual(await readdir(elsewhere), [], "nothing was written through the link");
 });
 
-test("learning/ is the server's: a PUT or DELETE there is 403 however the path is spelled, while a file planted there is read and listed host_owned", async (t) => {
+test("learning/ is the server's in any case: a GET, PUT or DELETE there is 403 however the path is spelled, nothing is made, and the list shows learning as one entry with none of its notes", async (t) => {
   const server = await served(t);
   assert.equal((await put(server, "mine.md", "mine")).status, 200);
   await mkdir(join(server.home, "learning", "deep"), { recursive: true });
   await writeFile(join(server.home, "learning", "notes.md"), "# Learned\n");
   await writeFile(join(server.home, "learning", "deep", "more.txt"), "more");
 
-  for (const path of ["learning/x.md", "learning", "learning/notes.md", "learning/new/dir.txt", "./learning/x", "a/../learning/x", "%2e/learning/x", "learning//x", "learning%2Fx", "/learning/x"]) {
+  const spellings = ["learning/x.md", "learning", "learning/notes.md", "learning/deep/more.txt", "learning/new/dir.txt", "./learning/x", "a/../learning/x", "%2e/learning/x", "learning//x", "learning%2Fx", "/learning/x", "Learning/x", "LEARNING/x", "./Learning/x", "a/../LeArNiNg/x", "Learning/notes.md", "LEARNING"];
+  for (const path of spellings) {
     const written = await put(server, path, "overwritten");
     assert.deepEqual([...refused(written), written.body.error.details?.reason], [403, "system_file_forbidden", "host_owned"], `PUT ${path}: ${JSON.stringify(written.body)}`);
     assert.equal(written.body.error.message, "learning/ is written by the server, not through the API");
-    assert.deepEqual(refused(await del(server, path)), [403, "system_file_forbidden"], `DELETE ${path}`);
+    const removed = await del(server, path);
+    assert.deepEqual([...refused(removed), removed.body.error.details?.reason], [403, "system_file_forbidden", "host_owned"], `DELETE ${path}`);
+    for (const query of ["", "?download=1"]) {
+      const read = await get(server, `${path}${query}`);
+      assert.deepEqual([...refused(read), read.body.error?.details?.reason], [403, "system_file_forbidden", "host_owned"], `GET ${path}${query}`);
+      assert.equal(read.body.error.message, "read it through /v2/agents/keeper/learning");
+      assert.ok(!read.bytes.toString().includes("Learned"), "no note is served");
+    }
   }
-  assert.equal(await readFile(join(server.home, "learning", "notes.md"), "utf8"), "# Learned\n", "the planted file is untouched");
-  assert.equal(existsSync(join(server.home, "learning", "x.md")) || existsSync(join(server.home, "learning", "x")), false);
+  assert.deepEqual((await readdir(server.home)).sort(), ["learning", "mine.md"], "no Learning/, LEARNING/ or a/ was made");
+  assert.deepEqual((await readdir(join(server.home, "learning"))).sort(), ["deep", "notes.md"]);
+  assert.equal(await readFile(join(server.home, "learning", "notes.md"), "utf8"), "# Learned\n", "the planted note is untouched");
 
-  const read = await get(server, "learning/notes.md");
-  assert.deepEqual([read.status, read.body], [200, "# Learned\n"]);
-  const listed = (await files(server)).body.files.map(({ path, host_owned }) => ({ path, host_owned }));
-  assert.deepEqual(listed, [{ path: "learning/deep/more.txt", host_owned: true }, { path: "learning/notes.md", host_owned: true }, { path: "mine.md", host_owned: undefined }]);
-  // A name that only starts like it is the client's.
+  const listed = (await files(server)).body;
+  assert.deepEqual(listed.files.find((f) => f.path === "learning"), { path: "learning", host_owned: true }, "learning is one entry, its name alone");
+  assert.deepEqual(listed.files.map((f) => f.path), ["learning", "mine.md"], "none of its notes is listed");
+  assert.equal(listed.files.find((f) => f.path === "mine.md").host_owned, undefined);
+  // A name that only starts like it, or a learning/ below the top, is the client's.
   assert.equal((await put(server, "learning2/x.md", "x")).status, 200);
-  assert.equal((await files(server)).body.files.find((f) => f.path === "learning2/x.md").host_owned, undefined);
+  assert.equal((await put(server, "notes/learning/y.md", "y")).status, 200);
+  assert.equal((await get(server, "notes/learning/y.md")).body, "y");
+  const again = (await files(server)).body.files;
+  assert.deepEqual(again.map((f) => f.path), ["learning", "learning2/x.md", "mine.md", "notes/learning/y.md"]);
+  assert.ok(again.filter((f) => f.path !== "learning").every((f) => f.host_owned === undefined && typeof f.size_bytes === "number"));
+});
+
+test("two agents whose ids differ only in case get homes of their own: keys that differ in any case, in lower case only, and neither sees the other's files", async (t) => {
+  const server = await served(t);
+  assert.equal((await server.api("POST", "/agents", agent("Keeper"))).status, 201, "the store keeps Keeper apart from keeper");
+  const [lower, upper] = [homeKey("keeper"), homeKey("Keeper")];
+  assert.notEqual(lower.toLowerCase(), upper.toLowerCase(), "a disk that folds case still tells them apart");
+  for (const key of [lower, upper]) {
+    assert.equal(key, key.toLowerCase(), "lower case only");
+    assert.match(key, /^[a-z0-9._-]+-[0-9a-f]{16}$/);
+  }
+  assert.equal(homeOf(server.data, "Keeper"), join(server.data, "homes", upper));
+  assert.equal((await put(server, "only-lower.md", "lower")).status, 200);
+  assert.equal((await put(server, "only-upper.md", "upper", "Keeper")).status, 200);
+  assert.deepEqual((await files(server)).body.files.map((f) => f.path), ["only-lower.md"]);
+  assert.deepEqual((await files(server, "Keeper")).body.files.map((f) => f.path), ["only-upper.md"]);
+  assert.deepEqual(refused(await get(server, "only-upper.md")), [404, "not_found"], "keeper does not read Keeper's file");
+  assert.deepEqual(refused(await get(server, "only-lower.md", "Keeper")), [404, "not_found"], "nor Keeper keeper's");
+  assert.deepEqual(refused(await del(server, "only-upper.md")), [404, "not_found"], "nor delete it");
+  assert.deepEqual((await readdir(join(server.data, "homes"))).sort(), [lower, upper].sort());
 });
 
 test("a write goes as deep as the list does: 16 directories, written and listed; 17 refused; a deeper one planted on disk marks the list truncated", async (t) => {
@@ -204,10 +238,11 @@ test("a write that makes directories syncs each into its parent before it is ans
   assert.equal((await put(server, "a/b/c.txt", "c")).status, 200);
   const data = await realpath(server.data);
   const dirs = synced.filter((path) => !path.endsWith(".tmp"));
-  for (const dir of [data, join(data, "homes"), join(data, "homes", "keeper"), join(data, "homes", "keeper", "a"), join(data, "homes", "keeper", "a", "b")]) assert.ok(dirs.includes(dir), `${dir} is synced: ${JSON.stringify(dirs)}`);
+  const home = join(data, "homes", homeKey("keeper"));
+  for (const dir of [data, join(data, "homes"), home, join(home, "a"), join(home, "a", "b")]) assert.ok(dirs.includes(dir), `${dir} is synced: ${JSON.stringify(dirs)}`);
   synced.length = 0;
   assert.equal((await put(server, "a/b/d.txt", "d")).status, 200);
-  assert.deepEqual(synced.filter((path) => !path.endsWith(".tmp")), [join(data, "homes", "keeper", "a", "b")], "a write in a directory already there syncs that one alone");
+  assert.deepEqual(synced.filter((path) => !path.endsWith(".tmp")), [join(home, "a", "b")], "a write in a directory already there syncs that one alone");
 });
 
 test("a body over the cap is 413 and writes nothing; one at the cap is taken", async (t) => {
@@ -225,7 +260,7 @@ test("a body over the cap is 413 and writes nothing; one at the cap is taken", a
 test("an unknown agent is 404 on every home route; an archived agent's home is read and written, as its definition is", async (t) => {
   const server = await served(t);
   for (const answer of [await files(server, "nobody"), await get(server, "a.txt", "nobody"), await put(server, "a.txt", "x", "nobody"), await del(server, "a.txt", "nobody")]) assert.deepEqual(refused(answer), [404, "not_found"]);
-  assert.equal(existsSync(join(server.data, "homes", "nobody")), false, "no home is made for an agent that is not there");
+  assert.equal(existsSync(homeOf(server.data, "nobody")), false, "no home is made for an agent that is not there");
 
   assert.equal((await put(server, "before.md", "before")).status, 200);
   assert.equal((await server.api("POST", "/agents/keeper/archive")).status, 200);

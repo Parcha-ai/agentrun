@@ -1,5 +1,5 @@
 // The small JSON files the server reads and writes beside the agent store.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync, renameSync, type Stats, unlinkSync, writeSync } from "node:fs";
 import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -19,7 +19,10 @@ export const LAUNCH_LOST = "server_lost_at_launch";
 export const HOMES_DIR = "homes";
 /** Paths in an agent's home that only the host writes (another component owns them): read through the API, never written through it. */
 export const HOME_HOST_OWNED = ["learning"];
-export const homeOf = (data: string, agentId: string): string => join(data, HOMES_DIR, agentId);
+/** An agent's home directory's name: its id in lower case, then 16 hex digits of the id's SHA-256. Ids that differ only
+ *  in case get names that differ in any case, so on a disk that folds case (macOS's, by default) they never share one. */
+export const homeKey = (agentId: string): string => `${agentId.toLowerCase()}-${createHash("sha256").update(agentId, "utf8").digest("hex").slice(0, 16)}`;
+export const homeOf = (data: string, agentId: string): string => join(data, HOMES_DIR, homeKey(agentId));
 
 /** The file parsed as JSON, or null when it is missing, unreadable, or not whole JSON (a half-written file). */
 export const readJson = (path: string): Promise<Json | null> =>
