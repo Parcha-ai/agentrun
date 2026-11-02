@@ -1,4 +1,4 @@
-// What the Codex CLI's model requests may carry through the session's model proxy (@parcha/agentrun-adapters/host),
+// What the Codex CLI's model requests may carry through the session's model proxy (@parcha/agentrun-kernel/host),
 // written for AgentRun. The routes are the ones the pinned CLI (0.164.0) calls, recorded behind a loopback proxy:
 //  - `GET /`, a probe it sends without a key as it starts, answered here (never forwarded, never booked);
 //  - `POST /v1/responses`, a paid request, streamed.
@@ -25,7 +25,7 @@
 // inside `input_tokens`; they are booked apart (as pi-ai books them), and reasoning tokens inside `output_tokens`. The
 // searches a response ran are read from the same event, its `tool_usage.web_search.num_requests`.
 import type { IncomingHttpHeaders } from "node:http";
-import { providerInputOverhead, ProxyRefusal, type ModelProxyOptions, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-adapters/host";
+import { providerInputOverhead, ProxyRefusal, type ModelProxyOptions, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },

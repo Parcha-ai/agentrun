@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-adapters
+packages: @parcha/agentrun-kernel
 kind: feature
 ---
 `delegateTool`: a lead hands one task to a named sub-agent, `delegate({ agent, task, context? })`, as an ordinary host tool for a lead on any harness. Each call runs a durable child `agent` node with the agent's own system prompt, only its own subset of the lead's tools, and a fixed answer shape (`DELEGATE_RESULT_SCHEMA`: `answer`, `citations`, `gaps`).

@@ -3,8 +3,8 @@
 // replay, the deadline share, one child at a time, and the events nested under the lead's call.
 import assert from 'node:assert/strict';
 import { test as nodeTest } from 'node:test';
-import { createHarnessRunner, DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
-import { FAUX_RECORDS, fauxAdapter, memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { createHarnessRunner, DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
+import { FAUX_RECORDS, fauxAdapter, memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const test = (name, fn) => nodeTest(name, { timeout: 30_000 }, fn);
 async function until(ready, what) {

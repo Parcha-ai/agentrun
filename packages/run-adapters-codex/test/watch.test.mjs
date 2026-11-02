@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { PARENT_WATCH_SHIM, parentWatchHere, processAlive, SETPRIV } from '@parcha/agentrun-adapters/host';
+import { PARENT_WATCH_SHIM, parentWatchHere, processAlive, SETPRIV } from '@parcha/agentrun-kernel/host';
 
 // How the child was watched is read from /proc; the kill itself is checked wherever the tests run.
 const NO_PROC = process.platform !== 'linux' && 'the parent chain is read from /proc, which only Linux has';

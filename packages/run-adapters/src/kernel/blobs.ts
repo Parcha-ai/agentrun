@@ -21,7 +21,7 @@ export async function sha256Hex(content: string): Promise<string> {
  *  resolves. A hash that is not the text's is refused. */
 export async function writeBlob(world: KernelWorld, runId: string, text: string, options: { hash?: string; pieceChars?: number } = {}): Promise<string> {
   const hash = await sha256Hex(text);
-  if (options.hash !== undefined && options.hash !== hash) throw new TypeError("agentrun-adapters: a blob's hash must be its text's sha256");
+  if (options.hash !== undefined && options.hash !== hash) throw new TypeError("agentrun-kernel: a blob's hash must be its text's sha256");
   const size = options.pieceChars ?? BLOB_PIECE_CHARS;
   const count = Math.max(1, Math.ceil(text.length / size));
   const records = Array.from({ length: count }, (_, piece) => ({ kind: BLOB_RECORD, data: { hash, piece, count, text: text.slice(piece * size, (piece + 1) * size) } }));
@@ -29,7 +29,7 @@ export async function writeBlob(world: KernelWorld, runId: string, text: string,
     await world.store.append(records);
   } catch (error) {
     // A newer drive holds the session, as for an effect's own writes.
-    if (error instanceof SessionFenced) throw new Restart(`agentrun-adapters: ${error.message}`);
+    if (error instanceof SessionFenced) throw new Restart(`agentrun-kernel: ${error.message}`);
     throw error;
   }
   return hash;

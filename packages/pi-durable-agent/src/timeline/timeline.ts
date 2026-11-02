@@ -71,6 +71,12 @@ export const REQUEST_CONTINUED = "agentrun.request_continued";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
 const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
+/** A tool result an abort wrote (pi-durable's `aborted` diagnostic): the call was cut by a stop or a cancel, which ended
+ *  its turn, not failed on its own. */
+const abortedCall = (entry: EntryLike) => {
+  const diagnostics = obj(entry.data)?.diagnostics;
+  return Array.isArray(diagnostics) && diagnostics.some((diagnostic) => obj(diagnostic)?.code === "aborted");
+};
 
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
@@ -276,6 +282,9 @@ function createProjector(options: TimelineOptions) {
   // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
   // the person's next message, not a steer.
   const ended = new Map<number, boolean>();
+  // Conversations whose turn an abort cut since their latest tool round (a stop, a cancel): an aborted tool, or a model
+  // request that had left and was aborted. That turn is over too, so the next message comes in a new turn, never a steer.
+  const cutTurns = new Set<number>();
   const systems = new Set<number>();
   const browsers = new Set<number>();
   const children = new Map<number, string>();
@@ -389,6 +398,10 @@ function createProjector(options: TimelineOptions) {
       const view = viewOf(message);
       // A call that failed ended nothing: the agent goes on after it, so a message then is still a steer.
       ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name) && !view.isError);
+      // One an abort cut did end the turn. A round's results come in as its calls end, so one that ended before the abort
+      // comes first and never clears it.
+      if (abortedCall(entry)) cutTurns.add(conv);
+      else cutTurns.delete(conv);
       const args = call?.args ?? {};
       const named = label(name, args, view);
       if (call) {
@@ -431,11 +444,14 @@ function createProjector(options: TimelineOptions) {
       else if (state === "declined") add(make("user_message", conv, base, { summary: "You declined to sign in", session }));
     } else if (message?.role === "user" && (entry.kind === "pi.user" || !entry.kind.startsWith("pi."))) {
       const author = str(obj(entry.data)?.author);
-      const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv);
+      const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv) && !cutTurns.has(conv);
       const text = textOf(message);
       add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text }));
     }
     if (["pi.user", "pi.assistant", "pi.tool-result"].includes(entry.kind)) previous.set(conv, entry.kind);
+    // A model request an abort cut after the round: its end mark is written only for an aborted request (not a withdrawn
+    // one, nor a compaction's). The turn it would have gone on with is over.
+    else if (entry.kind === REQUEST_ENDED && !unsent(entry) && !isCompaction(entry)) cutTurns.add(conv);
     return out;
   }
 

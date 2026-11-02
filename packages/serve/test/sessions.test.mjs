@@ -5,9 +5,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { SessionFenced } from "@parcha/agentrun-adapters";
+import { SessionFenced } from "@parcha/agentrun-kernel";
 import { FencedError } from "@parcha/pi-durable-disk";
-import { foldSession, openDrive } from "@parcha/agentrun-adapters/kernel";
+import { foldSession, openDrive } from "@parcha/agentrun-kernel/kernel";
 import { durableSessions } from "../dist/sessions.js";
 
 const harnessOn = (storage) => Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);

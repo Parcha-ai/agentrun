@@ -1,6 +1,6 @@
 // The image ships no coding-agent CLI whose licence has not been reviewed, and the Codex CLI it does ship is the pinned
 // build: docker/image-check.sh refuses a tree that holds the Claude Agent SDK (or a platform package of it) or the Claude
-// CLI, at the top or nested, and a tree whose Codex CLI is missing or is not the build @parcha/agentrun-codex is pinned to.
+// CLI, at the top or nested, and a tree whose Codex CLI is missing or is not the build @parcha/agentrun-harness-codex is pinned to.
 // The Dockerfile removes the Claude packages after the build and runs the check on the final image's tree.
 //
 // A tree's Codex is the adapter's built dist and the pinned binary of this machine's platform (a link to the installed
@@ -33,7 +33,7 @@ const check = (root, extra = {}) => spawnSync("sh", [CHECK, root], { cwd: dirnam
  *  does. `binary` is what sits at the platform package's binary path: the installed pinned one (a link), a script, or
  *  nothing. */
 async function codexInto(root, { binary = "pinned", platformVersion } = {}) {
-  const adapter = join(root, "node_modules/@parcha/agentrun-codex");
+  const adapter = join(root, "node_modules/@parcha/agentrun-harness-codex");
   await mkdir(adapter, { recursive: true });
   await cp(join(CODEX_PACKAGE, "package.json"), join(adapter, "package.json"));
   await cp(join(CODEX_PACKAGE, "dist"), join(adapter, "dist"), { recursive: true });
@@ -140,7 +140,7 @@ test("the image check refuses a tree's wrong Codex even when CODEX_BIN names the
 test("the image check refuses a tree without the Codex adapter to check its CLI with", async (t) => {
   const result = check(await tree(t, kept, {}, null));
   assert.equal(result.status, 1, `exit ${result.status}: ${result.stdout}`);
-  assert.match(result.stderr, /no @parcha\/agentrun-codex/);
+  assert.match(result.stderr, /no @parcha\/agentrun-harness-codex/);
 });
 
 test("the Dockerfile removes the CLIs after the build and runs the check on the final image's tree", async () => {
