@@ -2,6 +2,8 @@
 // every session line happen here, so neither holds up a request the server answers. `plan` counts what an import would
 // take; `import` takes it. The message "stop" ends either between two files or two sessions; what is written stays, and
 // the next import goes on from there. Its one message back is its answer.
+// Before anything loads node:sqlite, as in the server's own thread: its ExperimentalWarning is not the server's to print.
+import "./quiet-sqlite-warning.js";
 import { parentPort, workerData } from "node:worker_threads";
 import { openStore } from "@parcha/pi-durable-agent";
 import { planImport, runImport } from "./import.js";

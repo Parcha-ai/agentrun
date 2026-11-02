@@ -397,6 +397,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
         workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}) } satisfies ImportTask,
+        // The server's own flags, but for --input-type: its launcher starts it from a string (node --input-type=module
+        // -e), and a worker started from a file with that flag is refused.
+        execArgv: process.execArgv.filter((arg) => !arg.startsWith("--input-type")),
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
       let answer: ImportAnswer | undefined;

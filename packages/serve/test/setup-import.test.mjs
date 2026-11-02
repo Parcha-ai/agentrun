@@ -2,6 +2,7 @@
 // on this machine only. Nothing is imported unless the owner ticks it as they set the password; ticked, the sessions
 // arrive, and the signed-in owner can read how the import stands.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
@@ -11,9 +12,10 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { claudeSession, codexSession } from "./fixtures/import-sessions.mjs";
+import { claudeSession, codexSession, piSession } from "./fixtures/import-sessions.mjs";
 import { call, cookieOf, FAUX, scratch, serve } from "./support.mjs";
 
+const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const json = { "content-type": "application/json" };
 const page = (server) => ({ ...json, origin: `http://127.0.0.1:${server.port}` });
 const pw = (name) => `not-a-secret-${name}`;
@@ -255,4 +257,44 @@ test("a server that fails to listen takes up no import and starts no count: it h
   await sleep(3_000);
   assert.equal(agentsIn(data), 0, "nothing imported by a server that never started");
   assert.ok(existsSync(join(data, ".import-at-setup")), "the yes is kept for a start that listens");
+});
+
+test("under its launcher (node started from a string), setup counts this machine's sessions and imports them, and the worker prints nothing", { timeout: 90_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const site = join(home, "code", "acme-site");
+  mkdirSync(site, { recursive: true });
+  claudeSession(home, site, 1);
+  codexSession(home, site, 2);
+  piSession(home, site, 3);
+  // Its own temp directory, apart from the home: a project under the temp directory is left out.
+  const [data, config, temp] = [join(root, "agents"), join(root, "config"), join(root, "tmp")];
+  mkdirSync(temp, { recursive: true });
+  const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
+  const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config } });
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  t.after(async () => {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {}
+    await exited;
+  });
+  let [out, err] = ["", ""];
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (const deadline = Date.now() + 30_000; !/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.test(out); ) {
+    assert.ok(Date.now() < deadline, `the server started: ${out}${err}`);
+    await sleep(50);
+  }
+  const port = Number(/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.exec(out)[1]);
+  const read = () => call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  let found = await read();
+  for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
+  assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 3 }], err);
+  const made = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin: `http://127.0.0.1:${port}` }, body: { password: PASSWORD, import: true } });
+  assert.deepEqual([made.status, made.json], [201, { signed_in: true, importing: true }], made.text);
+  const state = async () => (await call(port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
+  for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
+  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 3, skipped: 0 }, err);
+  assert.equal(err, "", "no line on stderr: no refused worker, no node:sqlite warning");
 });
