@@ -323,7 +323,7 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     apply: (body, route) => applyAnthropic(body, route, options),
     // `apply` let through only the session's model or its small one.
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
-    serverInputOverhead: (body) => anthropicServerInputOverhead(body, options.webSearchAllowance),
+    serverInputOverhead: options.webSearchAllowance === undefined ? anthropicServerInputOverhead : (body) => anthropicServerInputOverhead(body, options.webSearchAllowance),
     usageOf: anthropicUsage,
   };
 }

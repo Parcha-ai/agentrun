@@ -69,6 +69,8 @@ export const REQUEST_COST_LATE = "agentrun.request_cost_late";
  *  the answer's own entry was already in (a harness reports each call as it runs it, and its host writes an answer at its
  *  first call's end). It shows as that answer's, and is no request: no count, no cost, no tokens. */
 export const REQUEST_CONTINUED = "agentrun.request_continued";
+const COMPACTION = "compaction";
+const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
 /** A side request's mark: its `request` is a label (a generation's, a harness's request number, is not). */
 const isSide = (entry: EntryLike) => typeof obj(entry.data)?.request === "string";
 const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
@@ -453,8 +455,8 @@ function createProjector(options: TimelineOptions) {
     }
     if (["pi.user", "pi.assistant", "pi.tool-result"].includes(entry.kind)) previous.set(conv, entry.kind);
     // A model request an abort cut after the round: its end mark is written only for an aborted request (not a withdrawn
-    // one, nor a side request's: a compaction's or a tool's own). The turn it would have gone on with is over.
-    else if (entry.kind === REQUEST_ENDED && !unsent(entry) && !isSide(entry)) cutTurns.add(conv);
+    // one, nor a compaction's). The turn it would have gone on with is over.
+    else if (entry.kind === REQUEST_ENDED && !unsent(entry) && !isCompaction(entry)) cutTurns.add(conv);
     return out;
   }
 
