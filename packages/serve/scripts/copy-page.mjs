@@ -1,10 +1,12 @@
-// The vendored OpenAPI contract (src/openapi) is a plain file; tsc leaves it out, so the build copies it next to the server.
+// The vendored OpenAPI contract (src/openapi) and llms.txt are plain files; tsc leaves them out, so the build copies them
+// next to the server.
 import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 cpSync(join(root, "src", "openapi"), join(root, "dist", "openapi"), { recursive: true });
+cpSync(join(root, "src", "llms.txt"), join(root, "dist", "llms.txt"));
 
 // The console (apps/console), when its own build ran first: its index.html and Vite's assets, never a source map, into
 // dist/console, which the server answers at /. Without that build the server says so there.

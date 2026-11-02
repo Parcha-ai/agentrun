@@ -77,6 +77,16 @@ test("the contract's operations are as vendored; this server's own are added and
     // for whether it is required and what it says, and the rest as vendored.
     assert.ok(doc.info["x-agentrun-serve"].changed.includes(`${method.toUpperCase()} ${path}`), `${op.operationId} is listed as changed`);
     for (const mark of Object.values(changes)) assert.match(mark, /^[a-z]+\/\d+$/);
+    if (op.operationId === "getTimeline") {
+      // A page's limit: the contract's parameters, then this server's one, and the rest as vendored.
+      assert.deepEqual(Object.keys(changes), ["limit"]);
+      assert.deepEqual(op.parameters.slice(0, -1), original.parameters);
+      assert.deepEqual([op.parameters.at(-1).name, op.parameters.at(-1).in, op.parameters.at(-1).required], ["limit", "query", false]);
+      const { parameters: _a, ...same } = rest;
+      const { parameters: _b, ...vendoredSame } = original;
+      assert.ok(isDeepStrictEqual(same, vendoredSame), "getTimeline is the contract's but for its limit");
+      continue;
+    }
     assert.deepEqual(Object.keys(changes).sort(), ["If-Match", "requestBody"]);
     const schema = (o) => o.requestBody.content["application/json"].schema;
     assert.deepEqual(schema(op).oneOf[0], schema(original), "the contract's body is one of the two");

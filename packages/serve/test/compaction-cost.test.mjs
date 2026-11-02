@@ -1,5 +1,5 @@
 // pi's compaction summary is a paid request: a run that compacts counts it in its requests and its cost, and /usage
-// agrees with the run's cost.
+// agrees with the run's cost. Its cost entry carries its tokens.
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -37,6 +37,10 @@ test("a run that compacts counts the summary as a paid request: its cost is in t
   assert.equal(summaries.length, compactions.length, "each summary's cost is written");
   const summarized = summaries.reduce((sum, entry) => sum + entry.data.usd, 0);
   assert.ok(summarized > 0, "a summary is paid");
+  for (const { data } of summaries) {
+    assert.deepEqual(Object.keys(data.usage ?? {}).sort(), ["cacheRead", "cacheWrite", "input", "output"], "each summary's cost entry carries its tokens, in pi's shape");
+    assert.ok(Object.values(data.usage).every(Number.isSafeInteger) && data.usage.input > 0 && data.usage.output > 0, `a summary's tokens are counts: ${JSON.stringify(data.usage)}`);
+  }
   const { rows } = await follow(api, run.run_id, ["completed"]);
   const usage = usageOf(rows);
   assert.equal(usage.requests, answers.length + summaries.length, "every request counts: the answers and the summaries");

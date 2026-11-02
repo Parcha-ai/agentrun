@@ -183,7 +183,31 @@ const archiving = (collection: string, noun: string, id: Json, answer: string): 
   );
 
 /** This server's own routes, outside the contract. */
+/** One JSON-RPC 2.0 message, and the answer to a request (POST /mcp). */
+const RPC_MESSAGE = { type: "object", required: ["jsonrpc"], properties: { jsonrpc: { const: "2.0" }, id: { type: ["string", "number"] }, method: { type: "string" }, params: { type: "object" } } };
+const RPC_ANSWER = {
+  type: "object", required: ["jsonrpc", "id"],
+  properties: { jsonrpc: { const: "2.0" }, id: { type: ["string", "number", "null"] }, result: {}, error: { type: "object", required: ["code", "message"], properties: { code: { type: "integer" }, message: { type: "string" } } } },
+};
 const EXTENSIONS: Record<string, Record<string, Json>> = {
+  "/mcp": {
+    post: {
+      operationId: "callMcp", tags: ["local"], summary: "The MCP endpoint: this API's tools, for a coding agent",
+      description:
+        "The Model Context Protocol over Streamable HTTP: one JSON-RPC 2.0 message per POST (initialize, ping, tools/list, tools/call), answered as JSON, stateless: no stream (any other method is 405) and no session. Ten tools: whoami, agents_list, agents_create, agents_revise, runs_start, runs_get, runs_events, runs_files, runs_respond and runs_cancel. Each calls this API's routes in process, with the caller's token, and answers as they do: the route's JSON as structured content, a refusal as a result with isError and the route's error. A run is started, then polled; no call is held open for one. The token only: the page's session cookie is never taken here, and a browser Origin other than this server's own is 403. A refusal of the request itself carries a JSON-RPC error.",
+      requestBody: { required: true, content: { "application/json": { schema: RPC_MESSAGE } } },
+      responses: {
+        "200": json(RPC_ANSWER, "The request's answer: its result, or its JSON-RPC error."),
+        "202": { description: "A notification, or a response, taken. No body." },
+        "400": json(RPC_ANSWER, "Not one JSON-RPC 2.0 request (a batch is not taken), or an MCP-Protocol-Version this server does not speak."),
+        "401": json(RPC_ANSWER, "No token, or not this server's."),
+        "403": json(RPC_ANSWER, "An Origin other than this server's own."),
+        "413": json(RPC_ANSWER, "The body is over 1 MiB."),
+        "415": json(RPC_ANSWER, "The body is not application/json."),
+      },
+      "x-agentrun-serve": "mcp/1",
+    },
+  },
   "/openapi.json": {
     get: {
       operationId: "getOpenapi", tags: ["capabilities"], summary: "This document", security: [{}],
@@ -539,6 +563,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // What this server changes in a contract operation, by the addition that made it.
   update["x-agentrun-serve-changed"] = { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" };
   const changed = ["PUT /agents/{agent_id}/definition"];
+  // A timeline page of at most `limit` rows: the contract's pages hold up to 500, more than a small client reads at once.
+  const timeline = (doc.paths["/runs/{run_id}/timeline"] as Json).get as Json;
+  timeline.parameters = [...(timeline.parameters as Json[]), { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } }];
+  timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1" };
+  changed.push("GET /runs/{run_id}/timeline");
   // A workflow run pauses here (POST /runs/{run_id}/pause): its status reads `paused` until it is resumed.
   const runStatus = schemas.RunStatus as Json & { enum?: string[] };
   if (Array.isArray(runStatus.enum) && !runStatus.enum.includes("paused")) {
