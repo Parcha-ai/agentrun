@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/config.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 001-code-mode-host, 004-names, 006-comments
+// Changed by Parcha, patches: 001-code-mode-host, 004-names, 006-comments, 013-agents-off
 /**
  * The `config.toml` a session's `CODEX_HOME` gets: the model and its
  * provider (the session's model proxy), and Codex's built-in tools and side
@@ -32,7 +32,7 @@ export const BUILTINS_OFF: Record<string, boolean> = {
   in_app_browser: false,
   // Code mode's JavaScript runtime (no Node, no file system, no network): the only way a code-mode model such as luna
   // calls a tool. Its nested tools are the dynamic tools plus Codex's own apply_patch and MCP resource readers, which
-  // run nothing here (read-only, approvals declined, no MCP server); its sub-agent tools are removed by agents.max_depth.
+  // run nothing here (read-only, approvals declined, no MCP server); its sub-agent tools are removed by agents.enabled.
   code_mode_host: true,
   tool_suggest: false,
   skill_search: false,
@@ -131,8 +131,9 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
     ...(options.cwd ? { projects: { [options.cwd]: { trust_level: 'untrusted' } } } : {}),
     features: { ...BUILTINS_OFF },
     analytics: { enabled: false },
-    // No sub-agents: with code mode's host on, `multi_agent = false` alone still leaves its multi_agent_v1 tools.
-    agents: { max_depth: 0 },
+    // No sub-agents. `multi_agent = false` turns off only V1, and a model Codex's catalog marks V2 (luna, sol) still gets V2's
+    // collaboration tools and a developer message saying it can spawn sub-agents: `enabled = false` turns off both.
+    agents: { enabled: false, max_depth: 0 },
   };
   return merge(base, options.extra ?? {});
 }

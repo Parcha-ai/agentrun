@@ -162,7 +162,10 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         builtins: false,
         // Codex's bundled skills (imagegen, skill-installer, ...), which it writes under `$CODEX_HOME/skills/.system` at every
         // start, are off in every session, skills or not: the model is shown the host's skills and no others.
-        config: { skills: { bundled: { enabled: false } } },
+        // Codex's `<permissions instructions>` message is off too. It describes Codex's own sandbox ("`sandbox_mode` is
+        // `read-only`: The sandbox only permits reading files"), which binds only Codex's built-in tools, and those are off
+        // here. The host's tools write, and a model that believed the message refused to write at all (autoqa F13).
+        config: { skills: { bundled: { enabled: false } }, include_permissions_instructions: false },
         model: modelFor(spec),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
         ...(effort ? { effort } : {}),

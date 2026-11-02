@@ -711,13 +711,15 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 
 | Export | Does |
 |---|---|
-| `timelineOf(entries, options?)` | The rows of a stored conversation, in log order. The options (`TimelineOptions`) are `settled` (nothing is running: a call with no result is interrupted), `conversationId` (for entries and events that carry none), `agentLabel` (a row's `agent_label`, from its conversation id), `labels` (labels for this call only), `caps` (the cut lengths of `CAPS`), and `now`, the clock for retry and poll waits, which only live rows use |
+| `timelineOf(entries, options?)` | The rows of a stored conversation, in log order, with the usage row, when there is one, last. The options (`TimelineOptions`) are `settled` (nothing is running: a call with no result is interrupted), `conversationId` (for entries and events that carry none), `agentLabel` (a row's `agent_label`, from its conversation id), `labels` (labels for this call only), `caps` (the cut lengths of `CAPS`), and `now`, the clock for retry and poll waits, which only live rows use |
 | `timelineReducer(options?)` | Live rows, with the same options. `apply(events)` takes the `snapshot` event, then each batch from `watchEvents`, and returns `{ rows, drop }` (upsert the rows by id, delete the `drop` ids); `rows()` returns every row now, in log order; `isLive(id)` says whether a row is live (one the events made, which goes when it ends) rather than one a committed entry made, which a host keeps showing though a later snapshot of a compacted conversation no longer holds it |
 | `groupTimeline(rows)` | Rows to groups, for a page: rounds of calls, folds and nested calls, each a `Group` |
 | `foldCalls(calls)` | Adjacent calls of one tool, folded into `Fold`s. A call with inner rows keeps its own line |
 | `failedCall(call)` | Whether a call's result has `tool_status` `failed` |
 | `renderText(rowsOrGroups, { fold? })` | Plain text, one line per row or group; `fold: false` shows every call on its own line |
-| `registerLabel(tool, label, fold?)` | The label of a host's own tool, in the past tense, for every later call; `fold` says how its calls fold into one line |
+| `registerLabel(tool, label, fold?, { name? })` | The label of a host's own tool, in the past tense, for every later call; `fold` says how its calls fold into one line; `name` is what the tool is called where calls are counted (a run's analytics), in plain words |
+| `nameOf(tool)` | That name: the registered one, else the name the tool was called by. The registry is the one source of a tool's display name |
+| `callFailed(tool, result)` | Whether a finished call failed: an error, or a result its tool's outcome reads as failed (a refused fetch). A result row's `tool_status` and `runMetricsOf`'s tool `errors` both read it |
 | `registerOutcome(tool, outcome)` | How a host's tool tells its outcome from a result it returned, not an error: `outcome(result)` gives `{ failed, text }`, and the result row reads `<label>: <text>`, with `tool_status` `failed` when `failed`, in place of `<label>: ok`. `web_fetch` and `fetch_page` have theirs: a page with `ok: false` reads `refused: …` or `failed: …` |
 | `registerTurnEnding(tool)` | A host's tool that ends its turn (pi's `terminate`, as an ask-the-person tool does). A message after a round whose tools all end the turn is the person's next message, never a `(steer)` |
 | `labelOf(tool, args, result?, extra?)` | The label of one call. An unknown tool gets `Using tool: <name>` |

@@ -2,9 +2,10 @@
 // an agent made and run to its answer, its file and its events; the Bearer token taken and nothing else (no cookie, no
 // credential, no foreign Origin, no GET); each tool answering as its /v2 routes do; and llms.txt, public.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { test } from "node:test";
-import { call, cookieOf, serve } from "./support.mjs";
+import { call, cookieOf, scratch, serve, withEnv } from "./support.mjs";
 
 const TOOLS = ["whoami", "agents_list", "agents_create", "agents_revise", "runs_start", "runs_get", "runs_events", "runs_files", "runs_respond", "runs_cancel"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -176,6 +177,31 @@ test("each tool checks and answers as its routes do: a refused definition, a bad
   assert.equal(notes[0], "shorter");
 });
 
+test("agents_create and agents_revise pass any other definition field through to the route's own checks: a place round-trips, a field named outright wins, and one the route refuses is its 422", async (t) => {
+  const server = await serve(t);
+  const mcp = mcpClient(server);
+  const made = (await mcp.tool("agents_create", { id: "placed", name: "Placed", instructions: "Answer.", definition: { place: { mode: "runner" }, instructions: "Not this." } })).structuredContent;
+  assert.deepEqual(made.definition.place, { mode: "runner" });
+  assert.equal(made.definition.instructions, "Answer.", "a field named outright wins over the same one in definition");
+  assert.deepEqual((await v2(server, "GET", "/agents/placed")).body.definition.place, { mode: "runner" });
+  const revised = (await mcp.tool("agents_revise", { agent_id: "placed", definition: { place: { mode: "sandbox", box: "bwrap" } }, note: "boxed" })).structuredContent;
+  assert.deepEqual([revised.revisions, revised.definition.place, revised.definition.instructions], [2, { mode: "sandbox", box: "bwrap" }, "Answer."], "the place changes, the rest stays");
+  // A field the route refuses is its own 422, by field; a definition that is no object is the tool's.
+  const refused = await mcp.tool("agents_create", { id: "bad", name: "Bad", instructions: "Answer.", definition: { input_schema: {} } }, { ok: false });
+  assert.deepEqual([refused.structuredContent.error.code, refused.structuredContent.error.fields.map((f) => f.field)], ["input_invalid", ["definition.input_schema"]]);
+  // A null the tool does not clear (only model and thinking) reaches the route, which refuses it by field.
+  const nulled = await mcp.tool("agents_revise", { agent_id: "placed", definition: { input_schema: null } }, { ok: false });
+  assert.deepEqual([nulled.structuredContent.error.code, nulled.structuredContent.error.fields.map((f) => f.field)], ["input_invalid", ["definition.input_schema"]]);
+  const unplaced = await mcp.tool("agents_revise", { agent_id: "placed", definition: { place: null } }, { ok: false });
+  assert.deepEqual([unplaced.structuredContent.error.code, unplaced.structuredContent.error.fields[0].field], ["input_invalid", "definition.place"]);
+  assert.deepEqual((await v2(server, "GET", "/agents/placed")).body.definition.place, { mode: "sandbox", box: "bwrap" }, "a refused revise changes nothing");
+  const wrong = await mcp.tool("agents_revise", { agent_id: "placed", definition: "sandbox" }, { ok: false });
+  assert.deepEqual([wrong.structuredContent.error.code, wrong.structuredContent.error.fields[0].field], ["input_invalid", "definition"]);
+  // The tools say so.
+  const { tools } = (await mcp.request("tools/list")).result;
+  for (const name of ["agents_create", "agents_revise"]) assert.equal(tools.find((tool) => tool.name === name).inputSchema.properties.definition.type, "object", name);
+});
+
 test("runs_get names the question a waiting run asked, runs_respond answers it, and runs_cancel ends another", async (t) => {
   const server = await serve(t);
   const mcp = mcpClient(server);
@@ -280,4 +306,31 @@ test("the MCP SDK's own client connects, lists the ten tools and calls one", asy
   assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), TOOLS);
   assert.equal((await client.callTool({ name: "whoami", arguments: {} })).structuredContent.authenticated, true);
   assert.deepEqual((await client.callTool({ name: "agents_list", arguments: {} })).structuredContent, { agents: [], next_cursor: null });
+});
+
+test("the timeline's limit, read while an answered run's end is carried back: its pages are the whole timeline, and the same rows once the run is final", async (t) => {
+  // The run's process cannot exit while the gate's file is missing: the reads below land between the answer and the
+  // carry back, the window "GET /v2/runs/{id}/timeline takes a limit" can land in on a loaded machine.
+  const gate = join(await scratch(t), "gate");
+  withEnv(t, { EXIT_GATE: gate });
+  const server = await serve(t, { faux: new URL("./fixtures/faux-answer-slow-exit.mjs", import.meta.url).pathname });
+  const mcp = mcpClient(server);
+  await mcp.tool("agents_create", { id: "calc", name: "Calc", instructions: "Answer." });
+  const { run_id } = (await mcp.tool("runs_start", { agent_id: "calc", input: { content: "What is six times seven?" } })).structuredContent;
+  await mcp.until(run_id, ["completed"]);
+  /** The whole timeline's ids, checked against the same timeline read one row, then the rest. */
+  const read = async () => {
+    const whole = (await v2(server, "GET", `/runs/${run_id}/timeline`)).body;
+    const first = (await v2(server, "GET", `/runs/${run_id}/timeline?limit=1`)).body;
+    const rest = (await v2(server, "GET", `/runs/${run_id}/timeline?after=${first.next_after}&limit=500`)).body;
+    assert.deepEqual([...first.rows, ...rest.rows].map((r) => r.id).sort(), whole.rows.map((r) => r.id).sort());
+    return { ids: whole.rows.map((r) => r.id), final: whole.final };
+  };
+  const answered = await read();
+  assert.equal(answered.final, false, "read before the run's end is carried back");
+  await writeFile(gate, "");
+  for (const end = Date.now() + 30_000; !(await v2(server, "GET", `/runs/${run_id}/timeline?wait_ms=1000`)).body.final; ) assert.ok(Date.now() < end, "the run's end is carried back");
+  const ended = await read();
+  assert.equal(ended.final, true);
+  assert.deepEqual(ended.ids, answered.ids, "no row a reader saw goes when the run's end is carried back");
 });
