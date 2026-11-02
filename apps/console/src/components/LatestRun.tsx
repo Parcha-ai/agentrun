@@ -17,9 +17,10 @@ const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** An agent's latest run as the run page shows it: its status, its timeline followed from the cursor while it goes, and
  *  a link to the whole run. When a timeline page names a status or state the run's record does not, the record is read
- *  again and handed to `onRun` (its result, error and cost move with it); only the newest of those reads lands. A read
- *  that fails is tried again (the last page may already have come, and none follows it); one that never lands says so,
- *  with a Retry, rather than leave the old status showing. */
+ *  again and handed to `onRun` (its result, error and cost move with it). Only the newest read lands: every page whose
+ *  status moves begins a new one, or, back at the status the record in hand was read for, cancels the one under way. A
+ *  read that fails is tried again (the last page may already have come, and none follows it); one that never lands says
+ *  so, with a Retry, rather than leave the old status showing. */
 export function LatestRun({ v2, run, onRun }: { v2: Client; run: Run; onRun: (run: Run) => void }) {
   const [rows, setRows] = useState<TimelineRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -30,7 +31,7 @@ export function LatestRun({ v2, run, onRun }: { v2: Client; run: Run; onRun: (ru
   const [retrying, setRetrying] = useState(false);
   const runReads = useRef(latest()).current;
   // `held`: the status/state the record in hand was read for (it moves only when a read lands). `asking`: the one a read
-  // is under way for. `want`: the newest one a page named, which Retry reads for.
+  // is under way for. `want`: the one the newest page named, which the next page is compared with and Retry reads for.
   const held = useRef(`${run.status}/${run.state}`);
   const asking = useRef<string | null>(null);
   const want = useRef(held.current);
@@ -58,8 +59,13 @@ export function LatestRun({ v2, run, onRun }: { v2: Client; run: Run; onRun: (ru
       onPage: (p) => {
         setPage({ status: p.status, state: p.state });
         const s = `${p.status}/${p.state}`;
+        const moved = s !== want.current;
         want.current = s;
-        if (s !== held.current && s !== asking.current) void reread(s);
+        // Back at the status the record in hand was read for: that record is right, and a read under way for another
+        // status (paused, resumed, paused again) is older than this page, so it never lands.
+        if (s === held.current) { runReads.cancel(); asking.current = null; setStale(null); return; }
+        // A new status reads the run again; so does the same one when no read of it is under way (its last one failed).
+        if (moved || asking.current === null) void reread(s);
       },
     }).catch((e) => { if (!ctl.signal.aborted) setError(problemOf(e)); });
     return () => { ctl.abort(); runReads.cancel(); asking.current = null; };

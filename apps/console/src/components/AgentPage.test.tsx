@@ -189,6 +189,30 @@ describe("AgentPage", () => {
     expect(page.followed).toEqual([`timeline ${id}`, `timeline ${id} after 3`, `run ${id}`, `run ${id}`]);
   });
 
+  it("a read begun for a status the run has since left never lands: paused, resumed, paused again stays Paused", async () => {
+    // A recorded workflow run, paused; its timeline pages say it resumed, then paused again, and the read of the run
+    // begun when it resumed answers only after that, with the record as it was while it worked.
+    const done = runFixture("run.completed.idle.1");
+    const at = (status: Run["status"], state: Run["state"]): Run => ({ ...done.run, status, state, ended_at: null, result: null, cost: null });
+    const paused = at("paused", "idle");
+    const pageOf = (r: Run, n: number): TimelinePage => ({ ...done.page, status: r.status, state: r.state, rows: done.page.rows.slice(0, n), final: false, next_after: n });
+    const pages = [pageOf(paused, 1), pageOf(at("working", "working"), 2), pageOf(paused, 3)];
+    let answer!: (r: Run) => void;
+    const late = new Promise<Run>((r) => { answer = r; });
+    const page = await open(agentFixture("lead-scorer"), { runs: [paused], timeline: async () => pages.shift() ?? new Promise<never>(() => {}), reread: () => late });
+    const latest = () => page.host.querySelector('section[aria-label="Latest run"]')!;
+    const row = () => page.host.querySelector('ul[aria-label="Runs"] a')!;
+    // The paused page again has been taken once the next read of the timeline is asked for.
+    await until(() => page.followed.filter((r) => r.startsWith("timeline")).length === 4);
+    await act(async () => { answer(at("working", "working")); await new Promise((r) => setTimeout(r, 50)); });
+    expect(latest().textContent).toContain("Paused");
+    expect(latest().textContent).not.toContain("Working");
+    expect(row().textContent).toContain("Paused");
+    expect(row().textContent).not.toContain("Working");
+    const id = done.run.run_id;
+    expect(page.followed).toEqual([`timeline ${id}`, `timeline ${id} after 1`, `run ${id}`, `timeline ${id} after 2`, `timeline ${id} after 3`]);
+  });
+
   it("says when an ended run cannot be read again, never showing it as still working, and Retry reads it again", async () => {
     let down = true;
     const { release, latest, row, id, ...page } = await splitRun(async (done) => { if (down) throw new TypeError("Failed to fetch"); return done; });
