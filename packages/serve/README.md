@@ -625,6 +625,8 @@ cookie to every server on the same host name, whatever its port, so another app 
      timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`. Once the run is idle and its
      newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
      (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)).
+     A stop sent while the run still reads `queued` (a message sent to it not yet in its timeline) waits, up to a
+     request's deadline, for that message to show, then stops the turn as it stops any working run.
      A stopped run can be continued: a follow-up starts a fresh turn on the whole history, and the turn the stop cut is
      not replayed. A cancelled run cannot: a message to it is `409 not_continuable`, and its `next_action` is to start a
      new run of the agent.
