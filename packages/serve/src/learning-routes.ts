@@ -8,10 +8,12 @@
 // - Per run: its learning whole, and its diff: what it proposed against its seed, or once merged, its merge commit against
 //   its parent.
 // Every read is plumbing at one commit of main, outside the queue: a commit never changes, so a read needs no lock, and
-// a page's cursor names the commit it was read at. A read reaches the folder through readFolder, a write through
-// agentFolder: the same link rule, so a link at the folder is an error on either, never followed. A text that leaves
-// holding one of the host's secrets as they are now (a value made secret after it was written) is cut of it, and a
-// diff's file holding one is withheld.
+// a page's cursor names the commit it was read at. What a commit's notes are, parsed and in order, is kept for the few
+// commits last read (Recent), so later pages and the view at the same commit read no note again; the log reads only
+// its page's commits (skip and max-count). A read reaches the folder through readFolder, a write through agentFolder:
+// the same link rule, so a link at the folder is an error on either, never followed. A text that leaves holding one of
+// the host's secrets as they are now (a value made secret after it was written) is cut of it, and a diff's file holding
+// one is withheld.
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -37,6 +39,7 @@ const utf8 = new TextDecoder("utf-8", { fatal: true });
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
 type NoteView = { file: string; name: string; description: string; type: string; status: string; superseded_by: string | null; text: string };
 type Change = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
+type Note = LearnedNote & { text: string };
 export type Counts = { merged: number; dropped: Record<string, number>; in_progress: number };
 /** What a text that leaves shows of the host's secrets now: none (secretsShown). */
 export type Shown = { text: (text: string) => string; holds: (text: string) => boolean };
@@ -48,6 +51,39 @@ export function secretsShown(values: readonly string[]): Shown {
   const holds = (text: string) => matches(text) || secretShapes(text).length > 0;
   return { holds, text: (text) => (holds(text) ? redactSecrets(text, values) : text) };
 }
+
+/** The few values last kept, by key, oldest dropped first: at most `entries` of them, `bytes` in all by their sizes. */
+class Recent<T> {
+  private readonly held = new Map<string, { value: T; size: number }>();
+  private size = 0;
+  constructor(private readonly entries: number, private readonly bytes = Infinity) {}
+  get(key: string): T | undefined {
+    const hit = this.held.get(key);
+    if (!hit) return undefined;
+    this.held.delete(key);
+    this.held.set(key, hit);
+    return hit.value;
+  }
+  set(key: string, value: T, size = 0): void {
+    this.drop(key);
+    if (size > this.bytes) return;
+    this.held.set(key, { value, size });
+    this.size += size;
+    while (this.held.size > this.entries || this.size > this.bytes) this.drop(this.held.keys().next().value!);
+  }
+  private drop(key: string): void {
+    const hit = this.held.get(key);
+    if (!hit) return;
+    this.held.delete(key);
+    this.size -= hit.size;
+  }
+}
+
+/** By the folder and the commit, which never changes: its index and notes in the view's order, for the 8 commits last
+ *  read and 16 MiB at most (a note is 4 KB at most), and how many changes its log holds. Raw: each answer cuts them of
+ *  the host's secrets as they are then. */
+const parsedAt = new Recent<{ index: string; notes: Note[] }>(8, 16 << 20);
+const changesAt = new Recent<number>(64);
 
 /** Where a read finds the agent's folder: through readFolder, so a link at its home, its `learning/` or its `.git` is
  *  an error, never followed, and a folder never made reads as empty. */
@@ -84,9 +120,9 @@ async function textsOf(home: string, repo: string, entries: Map<string, string>)
 }
 
 /** What commit `sha` holds: the index's text, and every note that parses, with its text, by file. */
-async function readAt(home: string, repo: string, sha: string): Promise<{ index: string; notes: Map<string, LearnedNote & { text: string }> }> {
+async function readAt(home: string, repo: string, sha: string): Promise<{ index: string; notes: Map<string, Note> }> {
   const texts = await textsOf(home, repo, await entriesAt(home, repo, sha));
-  const notes = new Map<string, LearnedNote & { text: string }>();
+  const notes = new Map<string, Note>();
   for (const [file, { text }] of texts) {
     const note = file === INDEX_FILE ? [] : parseNoteFile(file, text);
     if (!Array.isArray(note)) notes.set(file, { ...note, text });
@@ -97,39 +133,72 @@ async function readAt(home: string, repo: string, sha: string): Promise<{ index:
 /** One file at commit `sha`: its blob id and text, or undefined. */
 const fileAt = async (home: string, repo: string, sha: string, file: string) => (await textsOf(home, repo, await entriesAt(home, repo, sha, file))).get(file);
 
-/** Every change on main to `sha`, newest first, told by its trailers: a run's merge (`Run-Id`) or a person's commit
- *  (`Changed-By: user`); the folder's first commit, the host's, is neither and is left out. With it, each file's newest
- *  change, by its place in that walk. A merge's reason is the grader's, its own paragraph before the trailers; a person's
- *  commit has none, so its subject says what it did. */
-async function walk(home: string, repo: string, sha: string): Promise<{ log: Change[]; touched: Map<string, number> }> {
-  const format = "%x1e%H%x1f%cI%x1f%s%x1f%b%x1f%(trailers:key=Run-Id,valueonly,separator=%x2C)%x1f%(trailers:key=Changed-By,valueonly,separator=%x2C)";
-  const out = (await git(home, repo, ["log", "--first-parent", "-z", "--name-only", `--format=${format}`, sha])).toString("utf8");
+/** The commits on main that are changes: a run's merge (`Run-Id`) or a person's commit (`Changed-By: user`), by their
+ *  trailers' lines; the folder's first commit, the host's, is neither. Every commit on main is the host's, so a line
+ *  that matches is a trailer. */
+const CHANGES = ["--first-parent", "--extended-regexp", "--grep=^Run-Id: ", "--grep=^Changed-By: user$"];
+const CHANGE_FORMAT = "%x1e%H%x1f%cI%x1f%s%x1f%b%x1f%(trailers:key=Run-Id,valueonly,separator=%x2C)%x1f%(trailers:key=Changed-By,valueonly,separator=%x2C)";
+
+/** `git log -z --name-only`'s records, each its header (as the format wrote it) and the files it changed. */
+const recordsOf = (out: Buffer) => out.toString("utf8").split("\x1e").slice(1).map((record) => {
+  const end = record.indexOf("\0");
+  return { head: record.slice(0, end < 0 ? undefined : end), files: end < 0 ? [] : record.slice(end + 1).split("\0").map((file) => file.replace(/^\n/, "")).filter(Boolean) };
+});
+
+/** The changes on main to `sha`, newest first, from the `offset`th, at most `limit`: only those commits read, each told
+ *  by its trailers (a run's, or `{user: true}`). A merge's reason is the grader's, its own paragraph before the
+ *  trailers; a person's commit has none, so its subject says what it did. */
+async function changesFrom(home: string, repo: string, sha: string, offset: number, limit: number): Promise<Change[]> {
   const log: Change[] = [];
-  const touched = new Map<string, number>();
-  out.split("\x1e").slice(1).forEach((record, i) => {
-    const end = record.indexOf("\0");
-    const [commit = "", at = "", subject = "", body = "", run = "", by = ""] = record.slice(0, end < 0 ? undefined : end).split("\x1f");
-    const files = end < 0 ? [] : record.slice(end + 1).split("\0").map((file) => file.replace(/^\n/, "")).filter(Boolean);
-    for (const file of files) if (!touched.has(file)) touched.set(file, i);
+  for (const { head, files } of recordsOf(await git(home, repo, ["log", ...CHANGES, `--skip=${offset}`, `--max-count=${limit}`, "-z", "--name-only", `--format=${CHANGE_FORMAT}`, sha]))) {
+    const [commit = "", at = "", subject = "", body = "", run = "", by = ""] = head.split("\x1f");
     const runId = run.split(",")[0]!.trim();
     const who = runId ? { run: runId } : by.trim() === "user" ? { user: true as const } : undefined;
-    if (!who || !commit || !Date.parse(at)) return;
+    if (!who || !commit || !Date.parse(at)) continue;
     const paragraphs = body.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
     log.push({ by: who, commit, at: new Date(at).toISOString(), reason: paragraphs.slice(0, -1).join(" ") || subject.replace(/^learning: /, ""), files });
-  });
-  return { log, touched };
+  }
+  return log;
 }
 
-/** Commit `sha`'s notes as the view shows them: active first, then by their newest change, newest first, then by name. */
-function ordered(notes: Map<string, LearnedNote & { text: string }>, touched: Map<string, number>, shown: Shown): NoteView[] {
-  const rank = (note: LearnedNote) => (note.status === "active" ? 0 : 1);
-  return [...notes.values()]
-    .sort((a, b) => rank(a) - rank(b) || (touched.get(a.file) ?? Infinity) - (touched.get(b.file) ?? Infinity) || (a.file < b.file ? -1 : 1))
-    .map(({ file, name, description, type, status, superseded_by, text }) => ({ file, name: shown.text(name), description: shown.text(description), type, status, superseded_by, text: shown.text(text) }));
+/** How many changes main holds to `sha`, counted once a commit: git reads commits alone, never a tree. */
+async function changeCount(home: string, repo: string, sha: string): Promise<number> {
+  const key = `${repo}\0${sha}`;
+  const known = changesAt.get(key);
+  if (known !== undefined) return known;
+  const count = Number(line(await git(home, repo, ["rev-list", "--count", ...CHANGES, sha])));
+  changesAt.set(key, count);
+  return count;
 }
+
+/** A page of the changes on main to `sha`, cut of the host's secrets. */
+async function logPage(home: string, repo: string, sha: string, offset: number, limit: number, shown: Shown): Promise<Page<Change>> {
+  const [total, log] = await Promise.all([changeCount(home, repo, sha), changesFrom(home, repo, sha, offset, limit)]);
+  return { items: log.map((change) => ({ ...change, reason: shown.text(change.reason) })), total, next_cursor: offset + limit < total ? cursorOf(sha, offset + limit) : null };
+}
+
+/** Commit `sha`'s index and notes, its notes as the view shows them: active first, then by their newest change on main's
+ *  first-parent log (their place in the walk, so two changes in one second keep their order), newest first, then by name.
+ *  Read once a commit, then kept (parsedAt). */
+async function notesAt(home: string, repo: string, sha: string): Promise<{ index: string; notes: Note[] }> {
+  const key = `${repo}\0${sha}`;
+  const known = parsedAt.get(key);
+  if (known) return known;
+  const [{ index, notes }, walked] = await Promise.all([readAt(home, repo, sha), git(home, repo, ["log", "--first-parent", "-z", "--name-only", "--format=%x1e", sha])]);
+  const touched = new Map<string, number>();
+  recordsOf(walked).forEach(({ files }, i) => files.forEach((file) => touched.has(file) || touched.set(file, i)));
+  const rank = (note: LearnedNote) => (note.status === "active" ? 0 : 1);
+  const parsed = { index, notes: [...notes.values()].sort((a, b) => rank(a) - rank(b) || (touched.get(a.file) ?? Infinity) - (touched.get(b.file) ?? Infinity) || (a.file < b.file ? -1 : 1)) };
+  parsedAt.set(key, parsed, 2 * parsed.notes.reduce((size, note) => size + note.text.length + 256, index.length));
+  return parsed;
+}
+
+/** A note as the view shows it, cut of the host's secrets. */
+const noteView = ({ file, name, description, type, status, superseded_by, text }: Note, shown: Shown): NoteView => ({ file, name: shown.text(name), description: shown.text(description), type, status, superseded_by, text: shown.text(text) });
 
 const cursorOf = (sha: string, offset: number) => Buffer.from(`${sha}.${offset}`).toString("base64url");
-const pageOf = <T>(all: T[], sha: string, offset: number, limit: number): Page<T> => ({ items: all.slice(offset, offset + limit), total: all.length, next_cursor: offset + limit < all.length ? cursorOf(sha, offset + limit) : null });
+/** A page of `all`, from `offset`, at most `limit`, each item shown by `view` (so only the page's are cut of secrets). */
+const pageOf = <T, U>(all: readonly T[], sha: string, offset: number, limit: number, view: (item: T) => U): Page<U> => ({ items: all.slice(offset, offset + limit).map(view), total: all.length, next_cursor: offset + limit < all.length ? cursorOf(sha, offset + limit) : null });
 
 /** A page's request: its limit (1 to PAGE_MAX), and the commit and offset its cursor names, a commit of the folder's. */
 async function pageRequest(home: string, repo: string, query: URLSearchParams, fallback: number): Promise<{ limit: number; at?: { sha: string; offset: number } }> {
@@ -150,11 +219,12 @@ export async function agentLearning(data: string, agentId: string, shown: Shown,
   const { home, repo } = await placeOf(data, agentId);
   const sha = await mainOf(home, repo);
   if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, log: EMPTY, counts };
-  const [{ index, notes }, { log, touched }] = await Promise.all([readAt(home, repo, sha), walk(home, repo, sha)]);
-  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(ordered(notes, touched, shown), sha, 0, NOTES_PAGE), log: pageOf(log.map((change) => ({ ...change, reason: shown.text(change.reason) })), sha, 0, LOG_PAGE), counts };
+  const [{ index, notes }, log] = await Promise.all([notesAt(home, repo, sha), logPage(home, repo, sha, 0, LOG_PAGE, shown)]);
+  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => noteView(note, shown)), log, counts };
 }
 
-/** GET /agents/{id}/learning/notes?cursor=&limit=&status=: a page of the notes, ordered as the view's. */
+/** GET /agents/{id}/learning/notes?cursor=&limit=&status=: a page of the notes, ordered as the view's, from what the
+ *  commit's first read kept. */
 export async function learningNotes(data: string, agentId: string, query: URLSearchParams, shown: Shown): Promise<Page<NoteView>> {
   const status = query.get("status");
   if (status !== null && !(NOTE_STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${NOTE_STATUSES.join(", ")}`);
@@ -162,18 +232,17 @@ export async function learningNotes(data: string, agentId: string, query: URLSea
   const { limit, at } = await pageRequest(home, repo, query, NOTES_PAGE);
   const sha = at?.sha ?? (await mainOf(home, repo));
   if (!sha) return EMPTY;
-  const [{ notes }, { touched }] = await Promise.all([readAt(home, repo, sha), walk(home, repo, sha)]);
-  return pageOf(ordered(notes, touched, shown).filter((note) => status === null || note.status === status), sha, at?.offset ?? 0, limit);
+  const { notes } = await notesAt(home, repo, sha);
+  return pageOf(status === null ? notes : notes.filter((note) => note.status === status), sha, at?.offset ?? 0, limit, (note) => noteView(note, shown));
 }
 
-/** GET /agents/{id}/learning/log?cursor=&limit=: a page of the changes on main, newest first. */
+/** GET /agents/{id}/learning/log?cursor=&limit=: a page of the changes on main, newest first, reading only its own. */
 export async function learningLog(data: string, agentId: string, query: URLSearchParams, shown: Shown): Promise<Page<Change>> {
   const { home, repo } = await placeOf(data, agentId);
   const { limit, at } = await pageRequest(home, repo, query, LOG_PAGE);
   const sha = at?.sha ?? (await mainOf(home, repo));
   if (!sha) return EMPTY;
-  const { log } = await walk(home, repo, sha);
-  return pageOf(log.map((change) => ({ ...change, reason: shown.text(change.reason) })), sha, at?.offset ?? 0, limit);
+  return logPage(home, repo, sha, at?.offset ?? 0, limit, shown);
 }
 
 /** The file a route names, decoded: a note's name, or MEMORY.md for a read. Anything else is 400: the folder holds only
@@ -249,11 +318,11 @@ function conditionOf(ifMatch: string | undefined, ifNoneMatch: string | undefine
 }
 
 /** PUT /agents/{id}/learning/files/{file} (`body`, the note's whole text) or POST .../retire (no body), as a person:
- *  the precondition, then the checks (a retire's note must parse), then one commit on main in the agent's queue, on the
- *  folder agentFolder checked: the note, and MEMORY.md rebuilt from main's notes with it, its message
- *  `learning: <edited|created|retired> by a person: <file>` and a `Changed-By: user` trailer, main moved only from the
- *  commit it was made on (once more on a main that moved meanwhile), then the checked-out files. A note the checks
- *  refuse is never written to git. A retire of a note that is not active, and an edit that changes nothing, commit
+ *  the precondition, then the checks (a retire's note must parse), then one commit on main
+ *  in the agent's queue, on the folder agentFolder checked: the note, and MEMORY.md rebuilt from main's notes with it,
+ *  its message `learning: <edited|created|retired> by a person: <file>` and a `Changed-By: user` trailer, main moved
+ *  only from the commit it was made on (once more on a main that moved meanwhile), then the checked-out files. A note
+ *  the checks refuse is never written to git. A retire of a note that is not active, and an edit that changes nothing, commit
  *  nothing. `refuse`: the host's secrets. */
 export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[] }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
   const file = fileOf(raw, true);

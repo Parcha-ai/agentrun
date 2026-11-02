@@ -178,6 +178,7 @@ const gitEnv = (gitDir: string | undefined): NodeJS.ProcessEnv => ({
 /** One git call on `repo` (none for `init`), from `cwd`: its stdout, or a rejection naming the command and its stderr.
  *  `env` adds to the call's environment (a temporary index, a work tree named outright). */
 export function git(cwd: string, repo: string | undefined, args: readonly string[], input: string | Uint8Array = "", env: NodeJS.ProcessEnv = {}): Promise<Buffer> {
+  learningTestHooks.git?.(args);
   return new Promise((resolve, reject) => {
     const child = spawn("git", [...SAFE, ...args], { cwd, env: { ...gitEnv(repo && join(repo, ".git")), ...env }, stdio: ["pipe", "pipe", "pipe"], timeout: GIT_TIMEOUT_MS });
     const out: Buffer[] = [];
@@ -350,8 +351,10 @@ export const activeOf = (seed: Pick<Seed, "notes">): LearnedNote[] => Object.ent
 });
 
 /** Test seams, tests only: once a part of an agent's learning folder is made (before its check), before a run's
- *  learned files are written, once its pin is in place, and before what its end-of-run turn wrote is checked. */
+ *  learned files are written, once its pin is in place, before what its end-of-run turn wrote is checked, and as each
+ *  git call starts (its arguments). */
 export const learningTestHooks: {
+  git?: (args: readonly string[]) => void;
   afterMkdir?: (dir: string) => Promise<void> | void;
   beforePin?: (runDir: string) => Promise<void> | void;
   afterPin?: (runDir: string) => Promise<void> | void;

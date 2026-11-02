@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, git, LEARN, learner, made, objects, repoOf, savedOf, settled, started, turnCopyOf } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
+import { learningTestHooks } from "../dist/learning.js";
 import { agent, call, follow, scratch, serve } from "./support.mjs";
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
@@ -320,4 +321,40 @@ test("a restarted server counts an agent's runs that tried to learn from the lea
   } finally {
     chmodSync(runs, 0o700);
   }
+});
+
+test("a commit's notes are read once: a later page and the view at the same main read no note again, and a log page reads only its own commits", { timeout: 60_000 }, async (t) => {
+  const { api, port, token } = await serve(t);
+  await made(api, learner("paged"));
+  const files = "/v2/agents/paged/learning/files";
+  for (const [file, text] of [["a-one.md", note("One", "The first")], ["b-two.md", note("Two", "The second")], ["c-three.md", note("Three", "The third")]]) {
+    const res = await call(port, { method: "PUT", path: `${files}/${file}`, headers: { authorization: `Bearer ${token}`, "content-type": "text/markdown", "if-none-match": "*" }, body: text });
+    assert.equal(res.status, 201, file);
+  }
+  const calls = [];
+  learningTestHooks.git = (args) => calls.push(args);
+  t.after(() => void (learningTestHooks.git = undefined));
+  /** The git calls since the last look that read history, a tree or a note, each with its page bounds, if any. */
+  const reads = () => calls.splice(0).filter(([command, ...rest]) => ["log", "rev-list", "ls-tree"].includes(command) || (command === "cat-file" && rest.includes("--batch"))).map((args) => [args[0], ...args.filter((arg) => /^--(skip|max-count)=/.test(arg))]);
+
+  // The first page at main reads its notes; the next, at the same commit, reads none of them again.
+  const page1 = (await api("GET", "/agents/paged/learning/notes?limit=1")).body;
+  assert.deepEqual([page1.items.map((n) => n.file), page1.total], [["c-three.md"], 3]);
+  assert.ok(reads().some(([command]) => command === "cat-file"), "the first page reads the notes");
+  const page2 = (await api("GET", `/agents/paged/learning/notes?limit=1&cursor=${page1.next_cursor}`)).body;
+  assert.deepEqual(page2.items.map((n) => n.file), ["b-two.md"]);
+  assert.deepEqual(reads(), [], "a later page at the same commit reads no note, tree or history");
+
+  // The log reads its page's commits alone (skip and max-count), counting them once a commit.
+  const log1 = (await api("GET", "/agents/paged/learning/log?limit=1")).body;
+  assert.deepEqual([log1.items.map((c) => c.reason), log1.total], [["created by a person: c-three.md"], 3]);
+  assert.deepEqual(reads().sort(), [["log", "--skip=0", "--max-count=1"], ["rev-list"]]);
+  const log2 = (await api("GET", `/agents/paged/learning/log?limit=1&cursor=${log1.next_cursor}`)).body;
+  assert.deepEqual([log2.items.map((c) => c.reason), log2.total], [["created by a person: b-two.md"], 3]);
+  assert.deepEqual(reads(), [["log", "--skip=1", "--max-count=1"]]);
+
+  // The view at the same main: its notes as kept, its log's first page read.
+  const view = (await api("GET", "/agents/paged/learning")).body;
+  assert.deepEqual([view.notes.items.map((n) => n.file), view.log.items.length], [["c-three.md", "b-two.md", "a-one.md"], 3]);
+  assert.deepEqual(reads(), [["log", "--skip=0", "--max-count=20"]]);
 });
