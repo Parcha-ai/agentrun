@@ -261,27 +261,31 @@ function byRun(sessions: readonly Session[]): Session[][] {
   return [...runs.values()];
 }
 
-/** A session's files, read in order with the import's `seen`, as the one run the store keeps of it: their turns in order
- *  (each answer with its own file's model when it names none), from the first one's start to the last one's end. */
+/** A session's files, read in the import's order with its `seen` (which file keeps a copied record), as the one run the
+ *  store keeps of it: their turns in the order they ran (each file's by its start; each answer with its own file's model
+ *  when it names none), its state and model the file's that ended last. Its cost, when known: Claude Code writes the
+ *  session's running total (a moved session's copy goes on from the original's), so the highest total written; another
+ *  source's file prices its own requests, so their sum. */
 function merged(parts: readonly Session[]): Session {
-  const [first, last] = [parts[0]!, parts.at(-1)!];
-  if (parts.length === 1) return first;
-  const turns = parts.flatMap((part) => part.turns.map((turn): Turn => (turn.role === "assistant" && !turn.model && part.model ? { ...turn, model: part.model } : turn)));
+  if (parts.length === 1) return parts[0]!;
+  const ordered = [...parts].sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? "") || a.file.localeCompare(b.file));
+  const [first, last] = [ordered[0]!, ordered.reduce((one, other) => ((other.endedAt ?? "") >= (one.endedAt ?? "") ? other : one))];
+  const turns = ordered.flatMap((part) => part.turns.map((turn): Turn => (turn.role === "assistant" && !turn.model && part.model ? { ...turn, model: part.model } : turn)));
   const sum = (key: "users" | "activeMs" | "copies") => parts.reduce((n, part) => n + part[key], 0);
   const effort = mostEffortOf(turns);
-  const times = parts.flatMap((part) => (part.startedAt ? [part.startedAt] : [])).sort();
-  const ends = parts.flatMap((part) => (part.endedAt ? [part.endedAt] : [])).sort();
+  const starts = parts.flatMap((part) => (part.startedAt ? [part.startedAt] : [])).sort();
+  const priced = parts.flatMap((part) => (part.costUsd !== undefined ? [part.costUsd] : []));
+  const costUsd = first.source === "claude-code" ? (priced.length ? Math.max(...priced) : undefined) : priced.length === parts.length ? priced.reduce((n, cost) => n + cost, 0) : undefined;
   const { model: _model, startedAt: _start, endedAt: _end, costUsd: _cost, firstPrompt: _prompt, effort: _effort, ...rest } = first;
   const model = last.model ?? first.model;
-  const firstPrompt = parts.find((part) => part.firstPrompt !== undefined)?.firstPrompt;
+  const firstPrompt = ordered.find((part) => part.firstPrompt !== undefined)?.firstPrompt;
   return {
     ...rest,
     ...(model ? { model } : {}),
-    ...(times[0] ? { startedAt: times[0] } : {}),
-    ...(ends.length ? { endedAt: ends.at(-1)! } : {}),
+    ...(starts[0] ? { startedAt: starts[0] } : {}),
+    ...(last.endedAt ? { endedAt: last.endedAt } : {}),
     state: last.state,
-    // The session's cost, when each file's is known.
-    ...(parts.every((part) => part.costUsd !== undefined) ? { costUsd: parts.reduce((n, part) => n + part.costUsd!, 0) } : {}),
+    ...(costUsd !== undefined ? { costUsd } : {}),
     ...(firstPrompt !== undefined ? { firstPrompt } : {}),
     turns,
     users: sum("users"),
@@ -363,7 +367,8 @@ const subagentMarks = (children: readonly Session[]): EntryLike[] =>
     child.turns.flatMap((turn) => {
       if (turn.role !== "assistant") return [];
       const { input, output, cacheRead, cacheWrite } = turn.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-      return [{ kind: REQUEST_COST, data: { request: "subagent", usd: turn.costUsd ?? null, usage: { input, output, cacheRead, cacheWrite } } } as EntryLike];
+      // A failed request's counts are its own, zeros included, as its answer's are (entryOf).
+      return [{ kind: REQUEST_COST, data: { request: "subagent", usd: turn.costUsd ?? null, usage: { input, output, cacheRead, cacheWrite }, ...(turn.error !== undefined ? { failed: true } : {}) } } as EntryLike];
     }),
   );
 

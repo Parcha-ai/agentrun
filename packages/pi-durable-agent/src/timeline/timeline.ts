@@ -53,7 +53,8 @@ export const REQUEST_STARTED = "agentrun.request_started";
 /** An end with `unsent: true` withdraws its start: the request was refused after its mark, and never left. */
 export const REQUEST_ENDED = "agentrun.request_ended";
 /** What a request with no `pi.assistant` entry of its own cost (pi's compaction summary, marked with `request:
- *  "compaction"`): `usd`, or null when unknown. It closes that request, as an entry closes a generation's. */
+ *  "compaction"`): `usd`, or null when unknown. It closes that request, as an entry closes a generation's. `failed`: the
+ *  request failed, and its counts are taken as they are, as a failed answer's are. */
 export const REQUEST_COST = "agentrun.request_cost";
 /** A request the host refused before it left (the run was cancelled): pi answers it with an error entry, which is not a
  *  request and not a failure to show, so the timeline skips the error entry that answers each refusal. */
@@ -179,7 +180,7 @@ function createMeter() {
       compactions += 1;
       compactionOpen = false;
       addCost(data?.usd);
-      addTokens(tokensOf(data?.usage));
+      addTokens(tokensOf(data?.usage, data?.failed === true));
     } else if (entry.kind === REQUEST_COST_PENDING) {
       // The answer just before it was counted as a cost unknown: it is one still to come.
       if (unknown > 0) (unknown -= 1), pending.push(lastUnmetered);

@@ -1007,3 +1007,56 @@ test("a moved session's copy holding only copies adds no time, its copied system
     assert.equal(measured, imported, moved);
   }
 });
+
+test("a moved Claude Code session's cost is its running total, counted once: its copy goes on from the original's total, in either folder order", async (t) => {
+  for (const moved of ["-a-moved", "~z-moved"]) {
+    const { runs, measured, imported } = await measuredAndImported(t, (home, project) => {
+      const file = claudeSession(home, project, 198, { cost: 1 });
+      const base = { sessionId: sessionId(198), cwd: project, isSidechain: false, userType: "external", version: "2.1.0" };
+      writeSession(join(home, ".claude", "projects", moved, `${sessionId(198)}.jsonl`), [
+        ...readFileSync(file, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line)),
+        { ...base, type: "user", uuid: "cost-u", timestamp: minute(30), message: { role: "user", content: "Again, here." } },
+        { ...base, type: "assistant", uuid: "cost-a", timestamp: minute(31), message: { id: "msg_cost", role: "assistant", model: "claude-sonnet-5", content: [{ type: "text", text: "Done." }], usage: { input_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 6 } } },
+        { type: "cost-state", sessionId: sessionId(198), totalCostUSD: 1.5, hasUnknownModelCost: false, timestamp: minute(31) },
+      ]);
+    });
+    assert.deepEqual(runs.map(({ run }) => run.costUsd), [1.5], `${moved}: the session's total, not 1 + 1.5`);
+    assert.equal(measured, imported, moved);
+  }
+});
+
+test("a session's files merge in the order they ran: the transcript, final state and answer are the same whichever file is read first", async (t) => {
+  const seen = [];
+  for (const name of ["10-00-00", "08-00-00"]) {
+    const root = await scratch(t);
+    const h = { at: join(root, "home"), temp: join(root, "tmp") };
+    const project = join(h.at, "code", "order");
+    mkdirSync(project, { recursive: true });
+    codexSession(h.at, project, 199, { output: "2 passed" });
+    // The thread resumed an hour later and cut short, in a file whose name sorts before or after the original's.
+    shifted(codexSession(h.at, project, 200, { output: "3 passed", aborted: true }), `rollout-2026-10-20T${name}-${sessionId(200)}.jsonl`, 60, (r) => (r.type === "session_meta" ? { ...r, payload: { ...r.payload, id: sessionId(199) } } : r));
+    const store = openStore(join(root, "agents"));
+    t.after(() => store.close());
+    await runImport(store, await planImport(options(h)), options(h));
+    const [run] = store.listRuns();
+    const db = new DatabaseSync(store.runStorePath(run.id), { readOnly: true });
+    const said = db.prepare("SELECT json_extract(record, '$.model[0].timestamp') AS at FROM entries WHERE json_extract(record, '$.kind') = 'pi.user' ORDER BY id").all().map((r) => r.at);
+    db.close();
+    assert.deepEqual([...said].sort((a, b) => a - b), said, `${name}: the transcript in the order it ran`);
+    seen.push([run.state, run.summary, said]);
+  }
+  assert.deepEqual(seen[0], seen[1]);
+  assert.equal(seen[0][0], "stopped", "the state of the file that ended last");
+});
+
+test("a subagent's failed request with zero tokens is a request of known zero tokens in its session's run, not one of unknown tokens", async (t) => {
+  const { runs } = await measuredAndImported(t, (home, project) => {
+    claudeSession(home, project, 201);
+    const base = { sessionId: sessionId(201), cwd: project, isSidechain: true, userType: "external", version: "2.1.0", agentId: "af" };
+    writeSession(join(home, ".claude", "projects", project.replaceAll("/", "-"), sessionId(201), "subagents", "agent-af.jsonl"), [
+      { ...base, type: "user", uuid: "fail-u", timestamp: minute(1), message: { role: "user", content: "Find the config." } },
+      { ...base, type: "assistant", uuid: "fail-a", timestamp: minute(1), isApiErrorMessage: true, error: "rate_limit", message: { id: "msg_fail", role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "API Error: overloaded" }], usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 } } },
+    ]);
+  });
+  assert.deepEqual([runs[0].metrics.requests, runs[0].metrics.unmetered], [3, 0], "the session's 2 and the failed one, every count known");
+});
