@@ -2,6 +2,7 @@ import { workflowGraph } from "@dsl/graph";
 import { ArrowLeft, Bot, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
+import { LatestRun } from "@/components/LatestRun";
 import { RunBar } from "@/components/RunBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -112,8 +113,9 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   );
 }
 
-/** The agent's runs, newest first: each row its status, title, its effort when it was given one, when, how long once
- *  ended, and its cost once known. */
+/** The agent's latest run, followed as it goes (LatestRun), over its runs, newest first: each row its status, title, its
+ *  effort when it was given one, when, how long once ended, and its cost once known. A fresh read of the latest run
+ *  replaces its row too, so the two never disagree. */
 function RunsTab({ agent, v2 }: TabProps) {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -133,9 +135,15 @@ function RunsTab({ agent, v2 }: TabProps) {
   useEffect(() => { read(null); }, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
   if (error && !runs) return <p className="border p-4 font-mono text-[13px] text-destructive-text" role="alert">The runs could not be read: {error}</p>;
   if (!runs) return <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading runs...</p>;
-  if (!runs.length) return <div className="border px-4 py-12 text-center"><p className="font-mono text-[13px] text-muted-foreground">No runs of this agent yet.</p></div>;
+  if (!runs.length) return (
+    <div className="border px-4 py-12 text-center">
+      <p className="font-mono text-[13px] text-muted-foreground">No runs of this agent yet.</p>
+      {!agent.archived_at && <p className="mt-2 text-[13px] text-muted-foreground">Start one above: its timeline shows here as the agent works.</p>}
+    </div>
+  );
   return (
     <>
+      <LatestRun key={runs[0].run_id} v2={v2} run={runs[0]} onRun={(r) => setRuns((xs) => xs && xs.map((x) => (x.run_id === r.run_id ? r : x)))} />
       <p className="mb-3 font-mono text-[12px] text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</p>
       <ul className="border" aria-label="Runs">
         {runs.map((r) => (
