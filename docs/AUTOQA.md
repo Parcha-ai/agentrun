@@ -118,6 +118,80 @@ Each row: entry point, then what makes it pass.
     and the store page `/`. Capture console errors and HTTP ≥ 400 per page. The page CSP is
     `default-src 'self'`, so any violation is a finding.
 
+## Subsystems
+
+Each subsystem below names its seam: what it takes from the kernel and what it gives back, as types or routes, by name
+only. It gives an "alone" recipe that runs it end to end with the others faked, and 3 to 6 checks a QA pass runs when
+it changed. They are light and continuous: run a subsystem's checks when its code changed, not on every PR. Each lane
+edits only its own subsection.
+
+### Kernel (runs, journal, cap, harness adapters)
+
+_Written by the lane that owns this subsystem._
+
+### Tool plane
+
+_Written by the lane that owns this subsystem._
+
+### Places (boxes, home, files)
+
+_Written by the lane that owns this subsystem._
+
+### Console, import and analytics
+
+**Seam.** Takes the `/v2` routes the console reads: `/agents`, an agent's `/revisions` and `/runs`, `/runs` and a
+run's `/timeline`, `/graph` and `/files`, `/stats` with its `analytics` block, `/usage`, `/capabilities` and
+`/settings/tool-keys`. Also the agent store's `run_metrics` and `run_tool_metrics`, which `/stats` sums. Gives back
+`/v2` writes only: create, revise and archive an agent; start a run, message it, stop, cancel or archive it. `import`
+gives the store its runs through `AgentStore.importRun`, each with its `run_metrics`.
+
+**Alone.** Each runs with no model key and no network. From a checkout built as in [How to run](#how-to-run), with
+fresh directories:
+
+```sh
+export QA_HOME=$(mktemp -d) QA_DATA=$(mktemp -d)
+# A fixture home: synthetic Claude Code, Codex and pi sessions, the importer's own test fixtures.
+node --input-type=module -e '
+  import { mkdirSync } from "node:fs";
+  import { claudeSession, codexSession, piSession } from "./packages/serve/test/fixtures/import-sessions.mjs";
+  const home = process.env.QA_HOME, project = `${home}/code/site`;
+  mkdirSync(project, { recursive: true });
+  claudeSession(home, project, 1); codexSession(home, project, 2); piSession(home, project, 3);'
+```
+
+1. The console against a seeded store, on the faux model:
+
+   ```sh
+   HOME="$QA_HOME" node packages/serve/dist/cli.js import --all --data "$QA_DATA"
+   XDG_CONFIG_HOME="$QA_HOME/.config" packages/serve/launcher/agentrun-serve --data "$QA_DATA" --port 0 \
+     --faux packages/serve/test/fixtures/faux-model.mjs
+   ```
+
+   Open the console at `/console/` on the address the banner prints. The imported project is one agent with its three
+   runs.
+2. The console's own suite, on recorded fixtures: `(cd apps/console && npm ci && npm test)`.
+3. Import alone: `HOME="$QA_HOME" node packages/serve/dist/cli.js import --dry-run --all --data "$QA_DATA"` prints what
+   it would import (1 project, 3 sessions) and writes nothing.
+
+`--all` because the fixture's project is in a temp directory, which import skips otherwise.
+
+**Checks.**
+
+1. The console loads at `/console/` and signs in: setup, then the password. With `AGENTRUN_ACCOUNTS=0` the printed
+   link signs the browser in and the token leaves the address.
+2. An agent is created from New agent with its defaults, and a run is started from its page. Once the workflow
+   starter is on main (#1315), a workflow agent is created from it too.
+3. One run on a priced faux model (`packages/serve/test/fixtures/faux-priced.mjs`): its timeline's usage row, its
+   stored `cost.usd` and `/v2/stats` agree, with nothing counted twice.
+4. Mission Control shows the same totals as `/v2/stats` for a date range (`?from=&to=`). So does the agent page's
+   Analytics tab, once it is on main (#1354).
+5. An import's dry run counts what the import then stores, and a second import adds nothing.
+6. Settings → Tool keys never shows a value, once it is on main (#1311).
+
+### Learning loop
+
+_Written by the lane that owns this subsystem._
+
 ## Model and key caveats
 
 - Run smokes on the cheapest capable model your gateway offers, and a stronger one only when a case needs it. Send
