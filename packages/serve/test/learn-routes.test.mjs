@@ -3,13 +3,13 @@
 // commit by a person with no grader, the structural checks still applied, and the next run starting from the result.
 // A write that names no version is 428, a stale one 412; MEMORY.md is the server's and never written.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, renameSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, made, objects, repoOf, settled, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, follow, serve } from "./support.mjs";
+import { agent, call, follow, scratch, serve } from "./support.mjs";
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 const SOURCES = note("Quote sources", "Name the page each figure came from");
@@ -248,4 +248,42 @@ test("the console's page writes a note under its session as JSON {text} from its
   // The page's retire is JSON too.
   const retired = await page("POST", `${files}/from-page.md/retire`, {}, { "if-match": etag });
   assert.deepEqual([retired.status, git(repo, ["show", "main:MEMORY.md"])], [200, ""]);
+});
+
+test("a link planted at the agent's learning folder makes a person's edit, create and retire an error: the host never follows it, and nothing is written where it points", { timeout: 60_000 }, async (t) => {
+  const { api, data, port, token } = await serve(t);
+  await made(api, learner("linked"));
+  const repo = repoOf(data, "linked");
+  const files = "/v2/agents/linked/learning/files";
+  const headers = (more) => ({ authorization: `Bearer ${token}`, ...more });
+  const put = (file, text, more) => call(port, { method: "PUT", path: `${files}/${file}`, headers: headers({ "content-type": "text/markdown", ...more }), body: text });
+  const retire = (file, more) => call(port, { method: "POST", path: `${files}/${file}/retire`, headers: headers(more) });
+
+  // The folder, made by a person's create, moved out of the data directory with a link to it left in its place.
+  const created = await put("check-units.md", UNITS, { "if-none-match": "*" });
+  assert.equal(created.status, 201);
+  const outside = join(await scratch(t), "learning");
+  renameSync(repo, outside);
+  symlinkSync(outside, repo);
+  const state = () => ({
+    main: git(outside, ["rev-parse", "main"]),
+    objects: objects(outside),
+    files: Object.fromEntries(readdirSync(outside).filter((file) => file !== ".git").sort().map((file) => [file, readFileSync(join(outside, file), "utf8")])),
+    git: readdirSync(join(outside, ".git")).sort(),
+  });
+  const before = state();
+  assert.deepEqual(Object.keys(before.files), ["MEMORY.md", "check-units.md"]);
+
+  for (const [what, send] of [
+    ["an edit", () => put("check-units.md", EDITED, { "if-match": created.headers.etag })],
+    ["a create", () => put("ask-first.md", ASK, { "if-none-match": "*" })],
+    ["a retire", () => retire("check-units.md", { "if-match": created.headers.etag })],
+  ]) {
+    const res = await send();
+    assert.deepEqual([res.status, res.json?.error?.code], [500, "internal"], what);
+    assert.match(res.json.error.message, /symbolic link/, what);
+    assert.ok(!res.text.includes(outside), `${what}: the answer never names where the link points`);
+  }
+  assert.ok(lstatSync(repo).isSymbolicLink(), "the link is left where it was");
+  assert.deepEqual(state(), before, "nothing written where the link points: main, its objects, its files and its .git as they were");
 });
