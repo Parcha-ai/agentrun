@@ -7,7 +7,9 @@
 // goes to the direct fetch.
 // The key is the one the server hands the run's process on its decision descriptor (decisions.ts), read once and held
 // in this module's memory: never in an environment, a child or a file.
-import { defineTool } from "@earendil-works/pi-durable";
+import type { JsonValue } from "@earendil-works/chord";
+import type { TSchema } from "@earendil-works/pi-ai";
+import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
 import { clip, fetchOptions, fetchPage, LINKS_CAP, type Page, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, URL_PARAMETERS } from "./fetch-page.js";
@@ -104,7 +106,8 @@ export function parallelOf(env: NodeJS.ProcessEnv): Extract | null {
 }
 
 /** The agent's tool: the WebPage as JSON text. The run's key is read as the tool is made, when the run opens. */
-export function webFetchTool(env: NodeJS.ProcessEnv) {
+/** Typed here, so its declaration names the schema type by a package serve declares (pi-ai), whatever else the build loads. */
+export function webFetchTool(env: NodeJS.ProcessEnv): ToolRegistration<TSchema, JsonValue> {
   const extract = parallelOf(env);
   return defineTool({
     name: WEB_FETCH_TOOL,
