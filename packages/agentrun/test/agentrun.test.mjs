@@ -1,0 +1,99 @@
+// `npx @parcha/agentrun`: the bin starts AgentRun Server on a free loopback port with its data in ~/.agentrun, prints the
+// console's address on one line, and a subcommand goes to the server's own CLI. With no model key the server starts and
+// says it has no model, and the console asks for its first password. npm exec of the packed package runs this bin.
+import assert from "node:assert/strict";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { DEFAULT_PORT, freePort, KEY_MODELS, modelEnv, server, shouldOpen } from "../lib/start.mjs";
+
+const PACKAGE = new URL("..", import.meta.url).pathname;
+const BIN = join(PACKAGE, "bin", "agentrun.mjs");
+const MODEL_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENTRUN_TOKEN"];
+
+/** This environment with a fresh home, no model key, and no browser. */
+function bare(t) {
+  const home = mkdtempSync(join(tmpdir(), "agentrun-npx-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !MODEL_KEYS.includes(name)));
+  return { home, env: { ...env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), CI: "1" } };
+}
+
+test("demo: with no model key, the bin starts on a free loopback port, prints one line with the console's address; the server has no model and the console asks for its first password", { timeout: 120_000 }, async (t) => {
+  const { home, env } = bare(t);
+  const child = spawn(process.execPath, [BIN], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(async () => { child.kill("SIGTERM"); await exited; });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (let i = 0; !out.includes("\n"); i++) {
+    assert.ok(i < 1000, `the bin printed its line: ${out}${err}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const match = /^AgentRun is running at (http:\/\/127\.0\.0\.1:(\d+))\/console\/\n$/.exec(out);
+  assert.ok(match, `one line, the console's address on loopback: ${JSON.stringify(out)}`);
+  assert.ok(Number(match[2]) >= DEFAULT_PORT);
+  const base = match[1];
+  const health = await fetch(`${base}/v2/health`);
+  assert.deepEqual([health.status, (await health.json()).status], [200, "ok"]);
+  assert.equal((await (await fetch(`${base}/v2/capabilities`)).json()).models.default, null, "no model: none was given");
+  // Until a single-use sign-in link replaces the plain address, the console's first visit sets the owner's password.
+  assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { password_set: false, signed_in: false });
+  assert.ok(existsSync(join(home, ".agentrun", ".token")), "the data directory is ~/.agentrun");
+  child.kill("SIGTERM");
+  assert.equal(await exited, 0, err);
+  assert.equal(out.split("\n").filter(Boolean).length, 1, "nothing more on stdout");
+});
+
+test("a subcommand is the server's own, on ~/.agentrun: import --dry-run", { timeout: 60_000 }, async (t) => {
+  const { home, env } = bare(t);
+  const child = spawn(process.execPath, [BIN, "import", "--dry-run"], { env, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (out += chunk));
+  assert.equal(await new Promise((resolve) => child.on("exit", resolve)), 0, out);
+  assert.match(out, /0 projects, 0 sessions; nothing was written \(dry run\)/);
+  assert.equal(existsSync(join(home, ".agentrun", ".token")), false, "a dry run writes nothing");
+});
+
+test("npm exec of the packed package runs this package's own agentrun bin", { timeout: 120_000 }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-pack-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const npm = (args) => execFileSync("npm", args, { cwd: dir, encoding: "utf8", env: { ...process.env, npm_config_cache: join(dir, "cache"), npm_config_update_notifier: "false" } });
+  const tarball = npm(["pack", PACKAGE, "--pack-destination", dir, "--silent"]).trim().split("\n").at(-1);
+  const out = npm(["exec", "--offline", "--yes", `--package=file:${join(dir, tarball)}`, "--", "agentrun", "--help"]);
+  assert.match(out, /^Usage: npx @parcha\/agentrun /);
+});
+
+test("an installed server runs its own launcher; with none, npm exec fetches the server's latest release and runs it by its own bin name, never this package's", () => {
+  const missing = () => { throw new Error("not installed"); };
+  assert.deepEqual(server(["--port", "7340"], missing), { command: "npm", args: ["exec", "--yes", "@parcha/agentrun-serve@latest", "--", "agentrun-serve", "--port", "7340"], fetched: true });
+  const installed = () => join("/opt", "app", "node_modules", "@parcha", "agentrun-serve", "package.json");
+  assert.deepEqual(server(["import"], installed), { command: join("/opt", "app", "node_modules", "@parcha", "agentrun-serve", "launcher", "agentrun-serve"), args: ["import"], fetched: false });
+  assert.ok(existsSync(new URL("../../serve/launcher/agentrun-serve", import.meta.url)), "the server ships the launcher this runs");
+});
+
+test("a provider key picks the server's model when none is set, the first of Anthropic, OpenAI and OpenRouter; a model or a gateway already set wins; each is in pi-ai's catalog", () => {
+  assert.deepEqual(modelEnv({ OPENAI_API_KEY: "k", ANTHROPIC_API_KEY: "k" }), { AGENT_MODEL: "anthropic/claude-sonnet-5-5" });
+  assert.deepEqual(modelEnv({ OPENAI_API_KEY: "k" }), { AGENT_MODEL: "openai/gpt-6.1-sol" });
+  assert.deepEqual(modelEnv({ OPENROUTER_API_KEY: "k" }), { AGENT_MODEL: "openrouter/anthropic/claude-sonnet-5.5" });
+  assert.deepEqual(modelEnv({ ANTHROPIC_API_KEY: "k", AGENT_MODEL: "openai/gpt-5" }), {});
+  assert.deepEqual(modelEnv({ OPENAI_API_KEY: "k", AGENT_MODEL_BASE_URL: "https://gateway.example/v1" }), {});
+  const models = builtinModels({});
+  for (const [, ref] of KEY_MODELS) assert.ok(models.getModel(ref.slice(0, ref.indexOf("/")), ref.slice(ref.indexOf("/") + 1)), ref);
+});
+
+test("the first free loopback port from the default passes over one in use; the browser opens unless --no-open, CI or no display", async (t) => {
+  const first = await freePort();
+  const held = createServer();
+  await new Promise((resolve) => held.listen(first, "127.0.0.1", resolve));
+  t.after(() => held.close());
+  assert.ok((await freePort(first)) > first);
+  assert.deepEqual([shouldOpen([], {}, "darwin"), shouldOpen(["--no-open"], {}, "darwin"), shouldOpen([], { CI: "1" }, "darwin"), shouldOpen([], {}, "linux"), shouldOpen([], { DISPLAY: ":0" }, "linux")], [true, false, false, false, true]);
+});
