@@ -7,16 +7,18 @@
 //   and the checked-out files brought in line. MEMORY.md itself is never written here.
 // - Per run: its learning whole, and its diff: what it proposed against its seed, or once merged, its merge commit against
 //   its parent.
-// Every read is plumbing at one commit of main, outside the queue: a commit never changes, so a read needs no lock, and a
-// page's cursor names the commit it was read at. A text that leaves holding one of the host's secrets as they are now (a
-// value made secret after it was written) is cut of it, and a diff's file holding one is withheld.
+// Every read is plumbing at one commit of main, outside the queue: a commit never changes, so a read needs no lock, and
+// a page's cursor names the commit it was read at. A read reaches the folder through readFolder, a write through
+// agentFolder: the same link rule, so a link at the folder is an error on either, never followed. A text that leaves
+// holding one of the host's secrets as they are now (a value made secret after it was written) is cut of it, and a
+// diff's file holding one is withheld.
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { buildIndex, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, redactSecrets, retire, secretShapes, valueMatcher } from "@parcha/agentrun-learn";
 import { ApiError, invalid } from "./errors.js";
 import { readJson } from "./files.js";
-import { agentFolder, checkOut, git, homeDir, learningRepo, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readPin, withAgentRepo } from "./learning.js";
+import { agentFolder, checkOut, git, homeDir, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, withAgentRepo } from "./learning.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
 
@@ -47,7 +49,9 @@ export function secretsShown(values: readonly string[]): Shown {
   return { holds, text: (text) => (holds(text) ? redactSecrets(text, values) : text) };
 }
 
-const placeOf = (data: string, agentId: string) => ({ home: homeDir(data, agentId), repo: learningRepo(data, agentId) });
+/** Where a read finds the agent's folder: through readFolder, so a link at its home, its `learning/` or its `.git` is
+ *  an error, never followed, and a folder never made reads as empty. */
+const placeOf = async (data: string, agentId: string) => ({ home: homeDir(data, agentId), repo: await readFolder(data, agentId) });
 export const etagOf = (oid: string) => `"${oid}"`;
 const EMPTY: Page<never> = { items: [], total: 0, next_cursor: null };
 
@@ -143,7 +147,7 @@ async function pageRequest(home: string, repo: string, query: URLSearchParams, f
 /** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and the runs' counts; an
  *  agent with no folder (its learning never on) has an empty one. */
 export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts) {
-  const { home, repo } = placeOf(data, agentId);
+  const { home, repo } = await placeOf(data, agentId);
   const sha = await mainOf(home, repo);
   if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, log: EMPTY, counts };
   const [{ index, notes }, { log, touched }] = await Promise.all([readAt(home, repo, sha), walk(home, repo, sha)]);
@@ -154,7 +158,7 @@ export async function agentLearning(data: string, agentId: string, shown: Shown,
 export async function learningNotes(data: string, agentId: string, query: URLSearchParams, shown: Shown): Promise<Page<NoteView>> {
   const status = query.get("status");
   if (status !== null && !(NOTE_STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${NOTE_STATUSES.join(", ")}`);
-  const { home, repo } = placeOf(data, agentId);
+  const { home, repo } = await placeOf(data, agentId);
   const { limit, at } = await pageRequest(home, repo, query, NOTES_PAGE);
   const sha = at?.sha ?? (await mainOf(home, repo));
   if (!sha) return EMPTY;
@@ -164,7 +168,7 @@ export async function learningNotes(data: string, agentId: string, query: URLSea
 
 /** GET /agents/{id}/learning/log?cursor=&limit=: a page of the changes on main, newest first. */
 export async function learningLog(data: string, agentId: string, query: URLSearchParams, shown: Shown): Promise<Page<Change>> {
-  const { home, repo } = placeOf(data, agentId);
+  const { home, repo } = await placeOf(data, agentId);
   const { limit, at } = await pageRequest(home, repo, query, LOG_PAGE);
   const sha = at?.sha ?? (await mainOf(home, repo));
   if (!sha) return EMPTY;
@@ -189,7 +193,7 @@ function fileOf(raw: string, write: boolean): string {
 /** GET /agents/{id}/learning/files/{file}: the file on main as text, and its ETag. */
 export async function readNote(data: string, agentId: string, raw: string, shown: Shown): Promise<{ text: string; etag: string }> {
   const file = fileOf(raw, false);
-  const { home, repo } = placeOf(data, agentId);
+  const { home, repo } = await placeOf(data, agentId);
   const sha = await mainOf(home, repo);
   const found = sha ? await fileAt(home, repo, sha, file) : undefined;
   if (!found) throw new ApiError("not_found", "the agent's learning folder has no such file on main");
@@ -349,7 +353,7 @@ export async function runDiff(data: string, run: Run, shown: Shown) {
   const file = (path: string, status: string, patch: string) =>
     Buffer.byteLength(patch) > PATCH_CAP ? { path, status, withheld: "too_large" } : shown.holds(patch) ? { path, status, withheld: "secret" } : { path, status, patch };
   if (learning.merged) {
-    const { home, repo } = placeOf(data, run.agentId);
+    const { home, repo } = await placeOf(data, run.agentId);
     const head = learning.merged;
     const base = /^[0-9a-f]{40,64}$/.test(head) ? await git(home, repo, ["rev-parse", "--verify", "--quiet", `${head}^1`]).then(line, () => undefined) : undefined;
     if (!base) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");

@@ -250,7 +250,7 @@ test("the console's page writes a note under its session as JSON {text} from its
   assert.deepEqual([retired.status, git(repo, ["show", "main:MEMORY.md"])], [200, ""]);
 });
 
-test("a link planted at the agent's learning folder makes a person's edit, create and retire an error: the host never follows it, and nothing is written where it points", { timeout: 60_000 }, async (t) => {
+test("a link planted at the agent's learning folder makes a person's edit, create and retire an error, and its reads too: the host never follows it, writes nothing where it points and answers none of it", { timeout: 60_000 }, async (t) => {
   const { api, data, port, token } = await serve(t);
   await made(api, learner("linked"));
   const repo = repoOf(data, "linked");
@@ -283,6 +283,14 @@ test("a link planted at the agent's learning folder makes a person's edit, creat
     assert.deepEqual([res.status, res.json?.error?.code], [500, "internal"], what);
     assert.match(res.json.error.message, /symbolic link/, what);
     assert.ok(!res.text.includes(outside), `${what}: the answer never names where the link points`);
+  }
+  // The reads check the same levels, making nothing: the view, its pages and a file answer the same error, holding none
+  // of what the folder the link points at holds.
+  for (const path of ["/v2/agents/linked/learning", "/v2/agents/linked/learning/notes", "/v2/agents/linked/learning/log", `${files}/check-units.md`]) {
+    const res = await call(port, { path, headers: headers() });
+    assert.deepEqual([res.status, res.json?.error?.code], [500, "internal"], path);
+    assert.match(res.json.error.message, /symbolic link/, path);
+    for (const held of [outside, before.main, "Convert every amount"]) assert.ok(!res.text.includes(held), `${path}: the answer holds ${held}`);
   }
   assert.ok(lstatSync(repo).isSymbolicLink(), "the link is left where it was");
   assert.deepEqual(state(), before, "nothing written where the link points: main, its objects, its files and its .git as they were");

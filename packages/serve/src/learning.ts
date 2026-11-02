@@ -15,7 +15,8 @@
 // The host never follows a symbolic link into the folder (agentFolder): a link at the agent's home, at its `learning/`
 // or at `learning/.git`, or a `MEMORY.md` that is one when the host writes it, is refused, and the run starts with
 // nothing learned. The end-of-run turn's seed, its proposal's check, its grade and its merge reach the folder the same
-// way, and a link there drops what the run learned.
+// way, and a link there drops what the run learned. A person's reads and writes (learning-routes.ts) check it the same
+// way (readFolder, agentFolder), and a link there is an error.
 import { spawn } from "node:child_process";
 import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -115,26 +116,36 @@ async function refuseLink(data: string, path: string, absent = false): Promise<v
   if (!stats.isDirectory()) throw new Error(`${relative(data, path)} is not a directory`);
 }
 
-/** The agent's learning folder, its home and the folder made where absent, one level at a time, each checked after it
- *  is made: neither, nor the folder's `.git` once there, may be a symbolic link or anything but a directory, or the
- *  host's git, its writes and its commits would land where the link points. A link swapped in for a part just made is
- *  caught by the check after. `<data>/homes` is the operator's, as the data directory is. Every path into the folder
- *  goes through it, in the agent's queue: before anything reads or makes the repository, and again once `git init`
- *  has made `.git`; before a run's end-of-run turn reads its seed again (seedAt), before its proposal is checked against
- *  it (propose.ts), and before its grade reads main and its merge writes it (grade.ts). A refusal throws: a run about to
- *  start starts with nothing learned (seed_failed), and a run that ended drops what it learned (reflect_failed,
- *  propose_failed or grade_failed). */
-export async function agentFolder(data: string, agentId: string): Promise<string> {
+/** The agent's learning folder, each level checked by `lstat`: its home, its `learning/` and, once there, `.git`. None
+ *  may be a symbolic link or anything but a directory, or the host's git would read from, and write to, where the link
+ *  points. `make`: the home and the folder are made where absent first, one level at a time, each checked after it is
+ *  made (agentFolder); without it nothing is made and a missing level passes (readFolder). The one link rule. */
+async function checkedFolder(data: string, agentId: string, make: boolean): Promise<string> {
   const home = homeDir(data, agentId);
   const repo = learningRepo(data, agentId);
-  await makeDir(dirname(home));
+  if (make) await makeDir(dirname(home));
   for (const dir of [home, repo]) {
-    await makeDir(dir);
-    await refuseLink(data, dir);
+    if (make) await makeDir(dir);
+    await refuseLink(data, dir, !make);
   }
   await refuseLink(data, join(repo, ".git"), true);
   return repo;
 }
+
+/** The agent's learning folder, its home and the folder made where absent (checkedFolder). A link swapped in for a part
+ *  just made is caught by the check after. `<data>/homes` is the operator's, as the data directory is. Every write into
+ *  the folder goes through it, in the agent's queue: before anything reads or makes the repository, and again once
+ *  `git init` has made `.git`; before a run's end-of-run turn reads its seed again (seedAt), before its proposal is
+ *  checked against it (propose.ts), before its grade reads main and its merge writes it (grade.ts), and before a
+ *  person's edit, create or retire (learning-routes.ts). A refusal throws: a run about to start starts with nothing
+ *  learned (seed_failed), a run that ended drops what it learned (reflect_failed, propose_failed or grade_failed), and
+ *  a person's write is an error. */
+export const agentFolder = (data: string, agentId: string): Promise<string> => checkedFolder(data, agentId, true);
+
+/** The agent's learning folder for a person's read, outside the queue: the same check as agentFolder's, and nothing
+ *  made. A link or a non-directory throws as it does there; a missing level passes, so a folder never made reads as
+ *  empty (mainOf finds no main). */
+export const readFolder = (data: string, agentId: string): Promise<string> => checkedFolder(data, agentId, false);
 
 /** Before every command: a `-c` flag wins over the repository's own config. No hook or fsmonitor runs, no replace ref
  *  is read, a commit is never signed (which would run a program), and no transport runs, so nothing is fetched lazily.

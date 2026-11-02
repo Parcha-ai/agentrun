@@ -728,7 +728,8 @@ with the token, an archived agent's too:
   the first `@@`, or `withheld` (`too_large`, `secret`).
 
 Every read is git plumbing at one commit, with no optional lock, and every text it answers is cut of the server's
-secrets as they are then.
+secrets as they are then. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
+followed: a read or a write there answers `500`, and nothing is written.
 
 ## Spend cap
 
