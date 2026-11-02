@@ -2,7 +2,7 @@ import { Archive, ArrowUpRight } from "lucide-react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import type { RunsFilter } from "@/lib/client";
-import { cost, when } from "@/lib/format";
+import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
 import type { Run, RunStatus } from "@/lib/v2";
 
 /** The statuses GET /v2/runs filters by, in the order a run moves through them. */
@@ -53,12 +53,13 @@ function RunsTable({ runs, agentName, onOpen }: { runs: Run[]; agentName: (id: s
               <button type="button" className="flex items-start gap-1 text-left" onClick={(e) => { e.stopPropagation(); onOpen(r.run_id); }}>
                 <span className="line-clamp-2">{r.title}</span><ArrowUpRight className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden />
               </button>
+              {r.status === "completed" && r.review && <span className="mt-1 block text-[12px] text-warning-text">{r.review.reason}</span>}
               <span className="mt-1 block font-mono text-[11px] text-muted-foreground md:hidden">{agentName(r.agent_id)} · {when(r.created_at)}</span>
             </td>
             <td className="hidden px-3 py-2.5 align-top md:table-cell">{agentName(r.agent_id)}</td>
             <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{r.kind}</td>
             <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{when(r.created_at)}</td>
-            <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{cost(r.cost)}</td>
+            <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{cost(r.cost)}{bounded(r.cost) && <span className="block text-[11px]">{CUT_NOTE}</span>}</td>
           </tr>
         ))}
       </tbody>

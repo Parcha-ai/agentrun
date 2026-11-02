@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
+import { registerLabel } from "@parcha/pi-durable-agent/timeline";
 import { wireName } from "./catalog.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
@@ -150,6 +151,11 @@ export async function monidText(answer: MonidAnswer, work: string, label: string
 
 type Kind = "discover" | "inspect" | "run";
 const [DISCOVER, INSPECT, RUN] = (["discover", "inspect", "run"] as const).map((kind) => wireName(`monid.${kind}`));
+// What a person reads for each call, in a run's timeline, and what each tool is called where calls are counted.
+const endpointOf = (a: Record<string, unknown>) => (typeof a.provider === "string" && typeof a.endpoint === "string" ? ` ${a.provider} ${a.endpoint}` : "");
+registerLabel(DISCOVER, (a) => (typeof a.query === "string" ? `Searched monid's catalog for "${a.query.slice(0, 60)}"` : "Searched monid's catalog"), undefined, { name: "Search monid's catalog" });
+registerLabel(INSPECT, (a) => `Looked up the monid endpoint${endpointOf(a)}`, undefined, { name: "Look up a monid endpoint" });
+registerLabel(RUN, (a) => `Ran the monid endpoint${endpointOf(a)}`, undefined, { name: "Run a monid endpoint" });
 const named = { provider: { type: "string", minLength: 1, description: `The provider's slug, as ${DISCOVER} gave it.` }, endpoint: { type: "string", minLength: 1, description: `The endpoint's path, as ${DISCOVER} gave it.` } };
 const SPECS: Record<Kind, { summary: string; description: string; properties: Json; required: string[]; replay: "safe" | "unsafe" }> = {
   discover: {

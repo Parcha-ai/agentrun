@@ -1,25 +1,34 @@
 import { workflowGraph } from "@dsl/graph";
 import { ArrowLeft, Bot, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
+import { LatestRun } from "@/components/LatestRun";
+import { RunBar } from "@/components/RunBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
-import { cost, when } from "@/lib/format";
+import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
+import { harnessDefault, modelLabel } from "@/lib/models";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
+import { rangeFrom, type Stats } from "@/lib/mission";
 import type { Run } from "@/lib/v2";
 
-type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void };
+/** `stats`: the page's own read of the agent's stats over the Analytics tab's first range, which that tab starts from. */
+type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null };
+/** What the server gives beside the agent: `analytics`, once its stats are read (an older server has none). */
+type Server = { analytics: boolean };
 
 /** The page's tabs, in order, each at `#/agents/{id}/{tab}`. A tab shows only on an agent it has content for; a new one
  *  is one entry here. */
-const TABS: { id: string; label: string; shows: (a: Agent) => boolean; Body: (p: TabProps) => JSX.Element }[] = [
+const TABS: { id: string; label: string; shows: (a: Agent, server: Server) => boolean; Body: (p: TabProps) => JSX.Element }[] = [
   { id: "runs", label: "Runs", shows: () => true, Body: RunsTab },
   { id: "workflow", label: "Workflow", shows: (a) => a.kind === "workflow", Body: WorkflowTab },
+  { id: "analytics", label: "Analytics", shows: (_, server) => server.analytics, Body: AnalyticsTab },
 ];
 
 const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
@@ -28,28 +37,44 @@ const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.me
  *  agent whose id is "new" is given its Runs tab's address instead. */
 export const agentHash = (id: string, view?: string) => `#/agents/${encodeURIComponent(id)}${view ? `/${view}` : id === "new" ? "/runs" : ""}`;
 
-/** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, and a tab per thing it has. */
-export function AgentPage({ v2, agentId, defaultModel, go, tab }: { v2: Client; agentId: string; defaultModel?: string; go: (hash: string) => void; tab?: string }) {
+/** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a run bar (none for an archived
+ *  agent, which takes no runs), and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`). */
+export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = [], go, tab }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; efforts?: string[]; go: (hash: string) => void; tab?: string }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The agent's stats over the Analytics tab's first range: undefined until read, null when the read failed. Whether
+  // they carry analytics decides the tab (an older server's have none), and the tab opens on this answer, never a second
+  // read of it.
+  const [stats, setStats] = useState<Stats | null | undefined>(undefined);
   useEffect(() => {
     let live = true;
-    setAgent(null); setError(null);
+    setAgent(null); setError(null); setStats(undefined);
     v2.getAgent(agentId).then((r) => { if (live) setAgent(r.agent); }, (e) => { if (live) setError(problemOf(e)); });
+    v2.statsOver({ from: rangeFrom(FIRST_RANGE), agent: agentId }).then((r) => { if (live) setStats(r); }, () => { if (live) setStats(null); });
     return () => { live = false; };
   }, [v2, agentId]);
+  const analytics = stats === undefined ? undefined : stats?.analytics !== undefined;
   if (error) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">The agent could not be read: {error}</p>;
   if (!agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
   const d = agent.definition;
   const workflow = agent.kind === "workflow";
   const Icon = workflow ? Workflow : Bot;
   // A workflow revision has no harness, model or thinking of its own (the server refuses them beside a workflow).
-  const facts: [string, string][] = [
-    ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", d.model ?? (defaultModel ? `${defaultModel} (default)` : "default")], ["Thinking", d.thinking ?? "default"]] as [string, string][]),
+  // The model as a person reads it (the gateway's routing prefix off, the full id in a title): its own, else this
+  // harness's default, else none for a harness the server's default is not offered for.
+  const models = { source: modelSource, default: defaultModel };
+  const fallback = harnessDefault(d.harness ?? "pi", defaultModel);
+  const model = d.model ? modelLabel(d.model, models)
+    : fallback ? (({ text, title }) => ({ text: `${text} (default)`, title }))(modelLabel(fallback, models))
+    : { text: (d.harness ?? "pi") === "pi" ? "default" : "no default: choose a model" };
+  const facts: [string, string, string?][] = [
+    ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
   ];
-  const tabs = TABS.filter((t) => t.shows(agent));
+  const tabs = TABS.filter((t) => t.shows(agent, { analytics: analytics === true }));
   const at = tabs.find((t) => t.id === tab) ?? tabs[0];
+  // An address on a tab the server may still give: wait for its answer rather than open another tab meanwhile.
+  const waiting = tab === "analytics" && analytics === undefined;
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="border-b px-5 py-4 md:px-8">
@@ -66,11 +91,12 @@ export function AgentPage({ v2, agentId, defaultModel, go, tab }: { v2: Client; 
         </div>
         {d.description && <p className="mt-2 max-w-3xl text-[14px] text-muted-foreground">{d.description}</p>}
         <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2" aria-label="Current revision">
-          {facts.map(([k, v]) => (
-            <div key={k} className="flex items-baseline gap-2"><dt className="caps text-[10px] text-muted-foreground">{k}</dt><dd className="font-mono text-[12px]">{v}</dd></div>
+          {facts.map(([k, v, title]) => (
+            <div key={k} className="flex items-baseline gap-2"><dt className="caps text-[10px] text-muted-foreground">{k}</dt><dd className="font-mono text-[12px]" title={title}>{v}</dd></div>
           ))}
         </dl>
       </header>
+      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} />}
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map((t) => (
           <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}
@@ -79,12 +105,16 @@ export function AgentPage({ v2, agentId, defaultModel, go, tab }: { v2: Client; 
           </button>
         ))}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8"><at.Body agent={agent} v2={v2} go={go} /></div>
+      <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
+        {waiting ? <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading...</p> : <at.Body agent={agent} v2={v2} go={go} stats={stats} />}
+      </div>
     </div>
   );
 }
 
-/** The agent's runs, newest first: each row its status, title, when, how long once ended, and its cost once known. */
+/** The agent's latest run, followed as it goes (LatestRun), over its runs, newest first: each row its status, title, its
+ *  effort when it was given one, when, how long once ended, and its cost once known. A fresh read of the latest run
+ *  replaces its row too, so the two never disagree. */
 function RunsTab({ agent, v2 }: TabProps) {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -104,9 +134,15 @@ function RunsTab({ agent, v2 }: TabProps) {
   useEffect(() => { read(null); }, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
   if (error && !runs) return <p className="border p-4 font-mono text-[13px] text-destructive-text" role="alert">The runs could not be read: {error}</p>;
   if (!runs) return <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading runs...</p>;
-  if (!runs.length) return <div className="border px-4 py-12 text-center"><p className="font-mono text-[13px] text-muted-foreground">No runs of this agent yet.</p></div>;
+  if (!runs.length) return (
+    <div className="border px-4 py-12 text-center">
+      <p className="font-mono text-[13px] text-muted-foreground">No runs of this agent yet.</p>
+      {!agent.archived_at && <p className="mt-2 text-[13px] text-muted-foreground">Start one above: its timeline shows here as the agent works.</p>}
+    </div>
+  );
   return (
     <>
+      <LatestRun key={runs[0].run_id} v2={v2} run={runs[0]} onRun={(r) => setRuns((xs) => xs && xs.map((x) => (x.run_id === r.run_id ? r : x)))} />
       <p className="mb-3 font-mono text-[12px] text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</p>
       <ul className="border" aria-label="Runs">
         {runs.map((r) => (
@@ -114,9 +150,10 @@ function RunsTab({ agent, v2 }: TabProps) {
             <a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 hover:bg-accent">
               <StatusBadge run={r} />
               <span className="min-w-0 flex-1 truncate text-[14px]" title={r.title}>{r.title}</span>
+              {r.effort && <Chip>effort {r.effort}</Chip>}
               <span className="font-mono text-[12px] text-muted-foreground">{when(r.created_at)}</span>
               {r.ended_at && <span className="font-mono text-[12px] text-muted-foreground" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
-              {r.cost && r.cost.usd !== null && <span className="font-mono text-[12px] text-muted-foreground">{cost(r.cost)}</span>}
+              {r.cost && (r.cost.usd !== null || bounded(r.cost)) && <span className="font-mono text-[12px] text-muted-foreground">{cost(r.cost)}{bounded(r.cost) && ` · ${CUT_NOTE}`}</span>}
             </a>
           </li>
         ))}
