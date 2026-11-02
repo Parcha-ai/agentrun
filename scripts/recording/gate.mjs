@@ -12,6 +12,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FORBIDDEN, MEDIA_FILE, PAGE_EXTENSIONS, credentialInFile } from '../../packages/harness/src/scan.ts';
 import { artifactBlobNames, blobNameProblem, validateRecording } from './validate.mjs';
+import { isMain } from '../is-main.mjs';
 
 const MACHINE_PATH = FORBIDDEN.find(([name]) => name === 'machine path')[1];
 /** A blob's name: its SHA-256 and extension, and `.txt` after an artifact page's (the gallery publishes it as text). */
@@ -130,7 +131,7 @@ export function gateProblems(dist, lock = existsSync(LOCK) ? JSON.parse(readFile
   return problems;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const dist = process.argv[2];
   if (!dist) { console.error('usage: node scripts/recording/gate.mjs <dist-dir>'); process.exit(2); }
   const problems = gateProblems(dist);
