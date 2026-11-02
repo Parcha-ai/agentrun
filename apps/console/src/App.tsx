@@ -7,7 +7,7 @@ import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult } from "@/components/Playground";
-import { type Agent, toolOffers } from "@/lib/agentForm";
+import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
@@ -205,7 +205,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         : where.section === "agents"
         ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} go={go} />
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} defaultModel={editorCaps.defaultModel} go={go} />
-          : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={editorCaps} agentId={where.agent} go={go} />
+          // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
+          : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={{ ...editorCaps, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows) }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
