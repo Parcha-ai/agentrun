@@ -243,9 +243,10 @@ describe("App, the agents' names", () => {
   const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
   const made = recorded<Agent>("write.agent-create").body;
   const started: Run = { ...recorded<Run>("start.run").body, agent_id: made.agent_id };
-  /** A server over the recorded agents (`active`, `archived`) and `runs`: a create adds the recorded create's agent, and a
-   *  start of it answers `started` and lists it. */
-  function server({ active = agentsList(), archived = [] as Agent[], runs = [] as Run[] } = {}) {
+  /** A server over the recorded agents (`active`, a copy, so a create never changes the recording; `archived`) and `runs`:
+   *  a create adds the recorded create's agent, and a start of it answers `started` and lists it. `archivedFails`: its read
+   *  of the archived agents answers 503. */
+  function server({ active = [...agentsList()], archived = [] as Agent[], runs = [] as Run[], archivedFails = false } = {}) {
     const page = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const u = new URL(url, "http://serve.test");
@@ -255,6 +256,7 @@ describe("App, the agents' names", () => {
       if (what === "capabilities") return json(200, recorded("capabilities").body);
       if (what === "stats") return json(200, {});
       if (what === "agents" && !id && method === "POST") { active.push(made); return json(201, made); }
+      if (what === "agents" && !id && u.searchParams.get("archived") && archivedFails) return json(503, { error: { code: "store_busy", message: "the store is busy", retryable: true } });
       if (what === "agents" && !id) return json(200, { agents: u.searchParams.get("archived") ? archived : active, next_cursor: null });
       if (what === "agents" && !sub) return json(200, [...active, ...archived].find((a) => a.agent_id === id), { etag: `"${made.revision}"` });
       if (what === "agents" && sub === "runs" && method === "POST") { runs.unshift(started); return json(202, started); }
@@ -311,5 +313,17 @@ describe("App, the agents' names", () => {
     const { until, rows } = await open("#/runs");
     await until(() => rows().length === 2 && rows()[0].includes(kept.definition.name!));
     expect(rows()[1]).toContain(gone);
+  });
+
+  it("keeps the active agents' names when the read of the archived ones fails, and shows no id as gone meanwhile", async () => {
+    const [mine, ...rest] = agentsList();
+    const [kept] = rest;
+    const run = recorded<Run>("start.run").body;
+    server({ active: [mine], archived: [{ ...kept, archived_at: "2026-11-02T12:00:00Z" }], archivedFails: true, runs: [{ ...run, agent_id: mine.agent_id }, { ...run, run_id: `${run.run_id}-2`, agent_id: kept.agent_id }] });
+    const { until, rows } = await open("#/runs");
+    await until(() => rows().length === 2 && rows()[0].includes(mine.definition.name!));
+    // The archived agent's name could not be read: its run shows neither a name nor an id that would read as gone.
+    expect(rows()[1]).not.toContain(kept.agent_id);
+    expect(rows()[1]).not.toContain(kept.definition.name!);
   });
 });

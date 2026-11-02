@@ -106,7 +106,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
   const [names, setNames] = useState<Record<string, string>>({});
-  // Whether `names` is the newest read's answer: a name it lacks then is an agent gone, and shows as its id.
+  // Whether `names` is the whole answer of the newest read (both of its reads landed): a name it lacks then is an agent
+  // gone, and shows as its id.
   const [namesRead, setNamesRead] = useState(false);
   const namesAsked = useRef(0);
   const [error, setError] = useState<string | null>(null);
@@ -121,10 +122,16 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     if (namesAsked.current && where.section !== "runs") return;
     const n = ++namesAsked.current;
     setNamesRead(false);
-    Promise.all([false, true].map((archived) => allPages((cursor) => v2.listAgents({ archived, cursor }), (p) => p.agents)))
-      .then((lists) => { if (n === namesAsked.current) setNames(Object.fromEntries(lists.flat().map((x) => [x.agent_id, x.definition.name ?? x.agent_id]))); })
-      .catch(() => {})
-      .finally(() => { if (n === namesAsked.current) setNamesRead(true); });
+    void Promise.allSettled([false, true].map((archived) => allPages((cursor) => v2.listAgents({ archived, cursor }), (p) => p.agents))).then((reads) => {
+      if (n !== namesAsked.current) return;
+      const fresh = Object.fromEntries(reads.flatMap((r) => (r.status === "fulfilled" ? r.value : [])).map((x) => [x.agent_id, x.definition.name ?? x.agent_id]));
+      // Each read's answer is kept. Both landed: the names are theirs. One failed: what came back goes over the names
+      // held, and the lookup is not complete, so a name it lacks (an agent the failed read would have named) shows as
+      // nothing yet, never as an id read as gone; the next runs view reads again.
+      const whole = reads.every((r) => r.status === "fulfilled");
+      setNames((held) => (whole ? fresh : { ...held, ...fresh }));
+      setNamesRead(whole);
+    });
   }, [v2, where]);
   const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
   useEffect(() => {
