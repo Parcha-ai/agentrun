@@ -2,7 +2,7 @@
 // console's address on one line, and a subcommand goes to the server's own CLI. With no model key the server starts and
 // says it has no model, and the console asks for its first password. npm exec of the packed package runs this bin.
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -125,4 +125,14 @@ test("an Open line's URL is its first word, an http(s) URL on the server's loopb
 test("a server whose output ends with no \"Open \" line gives no address", async () => {
   const silent = stub(["agentrun-serve: --port takes a port number\n", "Opening is not the line\n"], { exit: true });
   assert.equal(await openUrl(silent.stdout), undefined);
+});
+
+// The repository's Node rule, at the top of the bin and not behind an import.meta.main guard (Node 20 has none, and a guarded
+// check there would pass by doing nothing): an older Node gets one line saying what to install, and exit 1.
+test("on Node 20 the bin says, in one line, which Node it needs, and exits 1 before it loads anything", () => {
+  for (const node of ["20.20.0", "22.18.0", "23.11.0", "24.1.0"]) {
+    const fake = `data:text/javascript,${encodeURIComponent(`Object.defineProperty(process, "versions", { value: { ...process.versions, node: "${node}" } });`)}`;
+    const run = spawnSync(process.execPath, ["--import", fake, BIN, "--help"], { encoding: "utf8" });
+    assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun needs Node.js 22.19 or newer on 22, or 24.2 or newer; you have v${node}.\n`], node);
+  }
 });
