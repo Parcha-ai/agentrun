@@ -9,7 +9,9 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
 
 /** One harness as capabilities lists it: whether this server runs it, and when not, why; and whether it takes a message
  *  mid-turn (`steer`), or queues it for the turn's end. */
-export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string };
+/** `default_model`: the model this server runs for the harness when a definition names none (`provider/model-id`), or
+ *  null when it runs none there; harnessOffers sets it. */
+export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string; default_model?: string | null };
 
 /** Whether a harness takes a message mid-turn: pi does; another harness's run queues it for the turn's end. */
 export const steersMidTurn = (id: string): boolean => id === DEFAULT_HARNESS;
@@ -32,12 +34,20 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessOffer[]> {
   let offers = offered.get(env);
   if (!offers) {
     offers = (async () => {
-      if (env[FAUX_HARNESS_ENV]) return harnessesOf(env);
-      const { harnessReason } = await import("./adapters.js");
-      return Promise.all(HARNESSES.map(async (id): Promise<HarnessOffer> => {
-        if (id === DEFAULT_HARNESS) return { id, available: true, steer: true };
-        const reason = await harnessReason(id, env, undefined);
-        return reason === undefined ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), reason };
+      const base = env[FAUX_HARNESS_ENV] ? harnessesOf(env) : await (async () => {
+        const { harnessReason } = await import("./adapters.js");
+        return Promise.all(HARNESSES.map(async (id): Promise<HarnessOffer> => {
+          if (id === DEFAULT_HARNESS) return { id, available: true, steer: true };
+          const reason = await harnessReason(id, env, undefined);
+          return reason === undefined ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), reason };
+        }));
+      })();
+      // Each harness's model when a definition names none, as a save and a run resolve it (runnable.ts): none for a
+      // harness that does not run here, or that no model here would run on.
+      const { harnessModel } = await import("./runnable.js");
+      return Promise.all(base.map(async (offer): Promise<HarnessOffer> => {
+        const resolved = offer.available ? await harnessModel(env, offer.id, undefined, true) : undefined;
+        return { ...offer, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null };
       }));
     })();
     offered.set(env, offers);

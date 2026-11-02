@@ -458,7 +458,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     harnesses: {
       type: "array",
       description: "Each harness a revision may name, and whether this server runs it; when not, why.",
-      items: { type: "object", additionalProperties: false, required: ["id", "available", "steer"], properties: { id: { enum: [...HARNESSES] }, available: { type: "boolean" }, steer: { type: "boolean", description: "Whether a message sent while the run works lands mid-turn (`steer`); when false, it waits for the turn's end and the answer's mode is `follow_up`." }, reason: { type: "string" } } },
+      items: { type: "object", additionalProperties: false, required: ["id", "available", "steer", "default_model"], properties: { id: { enum: [...HARNESSES] }, available: { type: "boolean" }, default_model: { type: ["string", "null"], description: "The model this server runs for the harness when a definition names none (provider/model-id), or null when it runs none: the harness does not run here, or no default model here runs on it." }, steer: { type: "boolean", description: "Whether a message sent while the run works lands mid-turn (`steer`); when false, it waits for the turn's end and the answer's mode is `follow_up`." }, reason: { type: "string" } } },
       "x-agentrun-serve": "harness/1",
     },
     tools: {

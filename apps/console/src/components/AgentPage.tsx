@@ -9,7 +9,7 @@ import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
-import { harnessDefault, modelLabel } from "@/lib/models";
+import { harnessDefault, type HarnessInfo, modelLabel } from "@/lib/models";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
@@ -30,7 +30,7 @@ const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.me
 export const agentHash = (id: string, view?: string) => `#/agents/${encodeURIComponent(id)}${view ? `/${view}` : id === "new" ? "/runs" : ""}`;
 
 /** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, and a tab per thing it has. */
-export function AgentPage({ v2, agentId, defaultModel, modelSource, go, tab }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; go: (hash: string) => void; tab?: string }) {
+export function AgentPage({ v2, agentId, defaultModel, modelSource, harnesses, go, tab }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; harnesses?: HarnessInfo[]; go: (hash: string) => void; tab?: string }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -48,10 +48,11 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, go, tab }: {
   // The model as a person reads it (the gateway's routing prefix off, the full id in a title): its own, else this
   // harness's default, else none for a harness the server's default is not offered for.
   const models = { source: modelSource, default: defaultModel };
-  const fallback = harnessDefault(d.harness ?? "pi", defaultModel);
+  const fallback = harnessDefault(d.harness ?? "pi", harnesses, defaultModel);
   const model = d.model ? modelLabel(d.model, models)
     : fallback ? (({ text, title }) => ({ text: `${text} (default)`, title }))(modelLabel(fallback, models))
-    : { text: (d.harness ?? "pi") === "pi" ? "default" : "no default: choose a model" };
+    // A server that names each harness's default and names none for this one: there is none, for pi too.
+    : { text: (d.harness ?? "pi") === "pi" && !harnesses?.some((h) => h.id === "pi" && "default_model" in h) ? "default" : "no default: choose a model" };
   const facts: [string, string, string?][] = [
     ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],

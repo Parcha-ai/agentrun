@@ -416,7 +416,10 @@ A definition names the harness that runs it: `pi` (the default, and what a defin
 `claude-agent` or `codex`; any other is `422 input_invalid` on `definition.harness`. Every answer names it. An edit
 (`PUT /agents/{id}/definition`) that names no harness keeps the agent's, as it keeps its skill files; name `pi` to move it
 back.
-`GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`. A definition naming a
+`GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`, and `default_model`: the
+model the harness runs when a definition names none (`provider/model-id`, as a save and a run resolve it), or null where
+it runs none (the harness does not run here, or no default model here runs on it: claude-agent never takes a gateway's
+model). A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. Today this server runs pi.
 

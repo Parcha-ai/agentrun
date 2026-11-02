@@ -13,8 +13,8 @@ const runsOf = (slug: string) => recorded<{ runs: Run[] }>(`agent.${slug}.runs`)
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; models?: { default: string; source: string } };
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, models }: Opts = {}) {
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; models?: { default: string; source: string }; harnesses?: { id: string; default_model?: string | null }[] };
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, models, harnesses }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const v2 = {
@@ -26,7 +26,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, go: (h: string) => went.push(h), tab })));
+  act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, harnesses, go: (h: string) => went.push(h), tab })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -161,6 +161,13 @@ describe("AgentPage, the model on a gateway server", () => {
     const page = await open(on("pi"), { models: gateway });
     expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
     expect(modelOf(page).title).toBe("agent-model/gpt-6-luna");
+  });
+  it("with each harness's default named by the server, a codex agent shows the gateway's default", async () => {
+    const harnesses = [{ id: "pi", default_model: "agent-model/gpt-6-luna" }, { id: "claude-agent", default_model: null }, { id: "codex", default_model: "agent-model/gpt-6-luna" }];
+    const page = await open(on("codex"), { models: gateway, harnesses });
+    expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
+    const claude = await open(on("claude-agent"), { models: gateway, harnesses });
+    expect(modelOf(claude).textContent).toBe("no default: choose a model");
   });
   it("a claude-agent agent naming no model has no default to show", async () => {
     const page = await open(on("claude-agent"), { models: gateway });

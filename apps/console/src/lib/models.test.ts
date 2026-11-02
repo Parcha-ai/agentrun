@@ -15,9 +15,15 @@ describe("model labels", () => {
     expect(modelLabel("anthropic/claude-sonnet-5", { source: "providers", default: "anthropic/claude-sonnet-5" })).toEqual({ text: "anthropic/claude-sonnet-5" });
     expect(gatewayPrefix({ source: "faux", default: "faux/faux-1" })).toBeUndefined();
   });
-  it("offers the server's default to pi only, until the server says which harness takes what", () => {
-    expect(harnessDefault("pi", "agent-model/gpt-6-luna")).toBe("agent-model/gpt-6-luna");
-    expect(harnessDefault("claude-agent", "agent-model/gpt-6-luna")).toBeUndefined();
-    expect(harnessDefault("codex", "agent-model/gpt-6-luna")).toBeUndefined();
+  it("takes each harness's default from the server (harnesses[].default_model), none where it says null", () => {
+    const harnesses = [{ id: "pi", default_model: "agent-model/gpt-6-luna" }, { id: "claude-agent", default_model: null }, { id: "codex", default_model: "agent-model/gpt-6-luna" }];
+    expect(harnessDefault("codex", harnesses, "agent-model/gpt-6-luna")).toBe("agent-model/gpt-6-luna");
+    expect(harnessDefault("claude-agent", harnesses, "agent-model/gpt-6-luna")).toBeUndefined();
+    expect(harnessDefault("pi", [{ id: "pi", default_model: null }], "agent-model/gpt-6-luna")).toBeUndefined();
+  });
+  it("from a server that does not say, offers its default to pi alone", () => {
+    const harnesses = [{ id: "pi" }, { id: "codex" }];
+    expect(harnessDefault("pi", harnesses, "agent-model/gpt-6-luna")).toBe("agent-model/gpt-6-luna");
+    expect(harnessDefault("codex", harnesses, "agent-model/gpt-6-luna")).toBeUndefined();
   });
 });
