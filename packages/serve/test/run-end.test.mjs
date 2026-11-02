@@ -66,8 +66,9 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`${harness}: a cancel once the run has answered, before any read says it ended, is refused and the run ends completed`, { timeout: 120_000 }, async (t) => {
     const { api, release } = await held(t);
     const runId = await started(api, harness);
-    // The answer's row, read from the timeline alone: the run's own view is not asked before the cancel.
-    for (let i = 0; !(await timeline(api, runId)).some((r) => r.kind === "final_answer" || r.kind === "text_block"); i++) {
+    // The answer's row, and the run idle (its turn over: the answer can land while it still works), read from the timeline
+    // alone: the run's own view is not asked before the cancel.
+    for (let i = 0; !((await timeline(api, runId)).some((r) => r.kind === "final_answer" || r.kind === "text_block") && (await api("GET", `/runs/${runId}/timeline`)).body.state === "idle"); i++) {
       assert.ok(i < 600, "the run answers");
       await sleep(50);
     }
