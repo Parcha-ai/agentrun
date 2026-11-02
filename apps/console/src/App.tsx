@@ -5,6 +5,7 @@ import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { KeysPage } from "@/components/KeysPage";
 import { Settings, type SettingsPage } from "@/components/Settings";
 import { ToolsPage } from "@/components/ToolsPage";
+import { ModelKeyCard } from "@/components/ModelKeyCard";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
@@ -294,8 +295,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
               : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} />}
           </Settings>
         : where.section === "mission"
-        ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
-            scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
+        // The first screen asks for a model key while the server says no agent that names no model runs here yet.
+        ? <div className="flex h-full flex-col">
+            {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} atRest={caps.features.tool_keys?.at_rest} onSaved={() => { v2.capabilities().then(setCaps).catch(() => {}); }} />}
+            <div className="min-h-0 flex-1">
+              <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
+                scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
+            </div>
+          </div>
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />

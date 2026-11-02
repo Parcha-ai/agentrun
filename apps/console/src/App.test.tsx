@@ -194,7 +194,7 @@ describe("App, Settings", () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
     expect(page.nav()).toContain("Settings");
     expect(page.host.querySelector('[aria-current="page"]')?.textContent?.trim()).toBe("Settings");
-    expect(page.host.querySelector("h1")?.textContent).toBe("Tool keys");
+    expect(page.host.querySelector("h1")?.textContent).toBe("Keys");
     expect(page.host.textContent).toContain("MONID_API_KEYnot set");
   });
 
@@ -210,6 +210,48 @@ describe("App, Settings", () => {
     await act(async () => { button(/^Save$/).click(); }); await settle();
     expect(page.asked).toContain("PUT /v2/settings/tool-keys/monid");
     expect(caps()).toBe(2);
+  });
+});
+
+// The first screen asks for a model key while the server says an agent that names no model can't run, and the card
+// goes once a key saved through its route makes the capabilities say ready.
+describe("App, the model key card on the first screen", () => {
+  it("shows while models.ready is false, saves the key, reads the capabilities again, and goes once they say ready", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const features = { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, tool_keys: { routes: true, at_rest: "sealed" } };
+    const keys = { keys: [{ id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null }], unlocks: [], harnesses: ["pi"] }], reenter: null };
+    const asked: string[] = [];
+    let ready = false;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      asked.push(`${init?.method ?? "GET"} ${path}`);
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features, models: { source: "providers", default: ready ? "anthropic/claude-sonnet-5-5" : null, ready, needs: ready ? null : "key" } });
+      if (path === "/v2/settings/tool-keys/anthropic") { ready = true; return new Response(null, { status: 204 }); }
+      if (path === "/v2/settings/tool-keys") return json(200, keys);
+      if (path === "/v2/stats") return json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const card = () => host.querySelector('section[aria-label="Model key"]');
+    const until = async (done: () => boolean) => { const end = Date.now() + 4000; while (!done() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); };
+    await until(() => !!card()?.querySelector("button"));
+    expect(card()?.textContent).toContain("Add a model key to run agents");
+    const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()))!;
+    await act(async () => { button(/^Anthropic$/).click(); });
+    await until(() => !!host.querySelector('input[name="ANTHROPIC_API_KEY"]'));
+    const input = host.querySelector('input[name="ANTHROPIC_API_KEY"]') as HTMLInputElement;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "not-a-real-key-0123"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => { button(/^Save$/).click(); });
+    await until(() => !card());
+    expect(asked).toContain("PUT /v2/settings/tool-keys/anthropic");
+    expect(asked.filter((a) => a === "GET /v2/capabilities").length).toBe(2);
+    expect(card()).toBeNull();
+    expect(host.innerHTML).not.toContain("not-a-real-key-0123");
   });
 });
 
