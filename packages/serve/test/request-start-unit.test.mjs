@@ -210,6 +210,6 @@ test("a tool's own request is marked under its label, and booked with its fee on
   sideRequests.set(context, { label: "web_search", extraInputTokens: 125_000, maxFeeUsd: 0.05, feeUsd: () => 0.02 });
   const result = await models.completeSimple({ api: "faux", provider: "faux", id: "m" }, context, {});
   assert.equal(result.usage.cost.total, 0.0225, "the answer carries its fee");
-  assert.deepEqual(entries.map((entry) => [entry.kind, entry.data]), [[REQUEST_STARTED, { request: "web_search" }], [REQUEST_COST, { request: "web_search", usd: 0.0225 }]]);
+  assert.deepEqual(entries.map((entry) => [entry.kind, entry.data]), [[REQUEST_STARTED, { request: "web_search" }], [REQUEST_COST, { request: "web_search", usd: 0.0225, usage: { input: 10, output: 1, cacheRead: 0, cacheWrite: 0 } }]], "its tokens with it, as a summary's");
   assert.deepEqual(timelineOf(entries).at(-1).usage, { usd: 0.0225, requests: 1 }, "the run's cost counts it once");
 });
