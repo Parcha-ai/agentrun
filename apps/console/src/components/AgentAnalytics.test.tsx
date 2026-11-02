@@ -84,6 +84,36 @@ describe("AnalyticsTab", () => {
     expect(tab.days("Runs per day").length).toBe(7);
   });
 
+  it("latest wins: 30 days, then 7, then 30 again before the 7-day answer comes: the late answer never replaces the 30-day one", async () => {
+    let release!: (s: unknown) => void;
+    const reads: (string | undefined)[] = [];
+    const v2 = {
+      statsOver: ({ from }: { from?: string }) => {
+        reads.push(from);
+        // The first 30-day read answers at once; the 7-day read waits until the test lets it answer.
+        if (reads.length === 1) return Promise.resolve(statsWith(ANALYTICS));
+        return new Promise((r) => (release = r));
+      },
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    act(() => root!.render(createElement(AnalyticsTab, { agent: agentFixture("invoice-checker"), v2: v2 as never, now: () => NOW })));
+    await settle();
+    const tokens = () => [...host.querySelectorAll("li")].find((li) => li.firstElementChild?.textContent === "Tokens")?.children[1]?.textContent;
+    expect(tokens()).toBe("1.3M");
+    const pick = async (range: string) => { await act(async () => { host.querySelector<HTMLInputElement>(`[aria-label="Range"] input[value="${range}"]`)!.click(); }); await settle(); };
+    await pick("7d");
+    await pick("30d");
+    // The 7-day answer comes last, with other figures: it is dropped.
+    await act(async () => { release(statsWith({ ...ANALYTICS, totals: { ...ANALYTICS.totals, tokens: 7_000 } })); });
+    await settle();
+    expect(tokens()).toBe("1.3M");
+    expect(host.querySelector<HTMLInputElement>('[aria-label="Range"] input:checked')?.value).toBe("30d");
+    expect(reads).toHaveLength(2);
+    expect(host.querySelector('[aria-busy="true"]')).toBeNull();
+  });
+
   it("says when the agent has no runs in the range, and when the analytics can't be read", async () => {
     const empty = await open(() => ({ ...ANALYTICS, totals: { ...ANALYTICS.totals, runs: 0, completed: 0, failed: 0, runs_with_metrics: 0 }, by_day: [], by_harness_effort: [], tools: [] }));
     expect(empty.host.textContent).toContain("No runs of this agent in this range.");

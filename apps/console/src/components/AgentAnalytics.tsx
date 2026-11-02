@@ -22,8 +22,10 @@ export function AnalyticsTab({ agent, v2, now = Date.now, stats: first }: { agen
   // effect run twice (React's StrictMode) reads nothing more.
   const shown = useRef<StatsRange | null>(first?.analytics ? FIRST_RANGE : null);
   useEffect(() => {
-    if (shown.current === range) { setError(null); setLoading(false); return; }
+    // Latest wins: each range picked makes every earlier read stale, the range already on screen included, so a late
+    // answer for a range left behind never replaces what the picker shows.
     const n = ++asked.current;
+    if (shown.current === range) { setError(null); setLoading(false); return; }
     setLoading(true); setError(null);
     v2.statsOver({ from: rangeFrom(range, now()), agent: agent.agent_id })
       .then((s) => { if (n === asked.current) { if (s.analytics) { setStats(s); shown.current = range; } else setError("this server gives no analytics"); } })
