@@ -80,8 +80,16 @@ function messages(request) {
   return out;
 }
 
-/** What the model is told about Codex's sandbox: every message that names it, or calls the files read-only. */
-const sandboxNotes = (request) => messages(request).filter(({ text }) => /sandbox|permissions instructions|only permits reading|(?:file ?system|files?) (?:is|are) read-only/i.test(text));
+/** A message that describes Codex's sandbox or calls the files read-only. Not the base instructions' passing mention of a
+ *  "Sandbox and approvals" section (a classic model's), nor luna's "read-only actions" (ones that need no permission). */
+const SANDBOX_NOTE = /<permissions instructions>|sandbox_mode|sandbox only permits|only permits reading|(?:file ?system|files) (?:is|are) read-only/i;
+/** The permissions message as autoqa F13's session got it, and the model's answer: the pattern catches both. */
+const F13 = ['<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The sandbox only permits reading files. Network access is restricted.\n</permissions instructions>', 'I can’t create the files in this session because the filesystem is read-only.'];
+const sandboxNotes = (request) => messages(request).filter(({ text }) => SANDBOX_NOTE.test(text));
+
+test("the sandbox pattern catches F13's message and the model's refusal", () => {
+  for (const text of F13) assert.match(text, SANDBOX_NOTE);
+});
 
 test('a code-mode model (luna) is told nothing about a read-only sandbox or sub-agents, and is offered the host\'s write tool through exec', { skip, timeout: 180_000 }, async () => {
   const { request, config, built } = await firstRequest('gpt-6-luna');
