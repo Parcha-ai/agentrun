@@ -36,4 +36,6 @@ archive and unarchive, an invalid harness (422 with its `fields`), and a run on 
 - signing out;
 - a wrong password (401), then the right one.
 
+`run.escalated.*` are one workflow run that escalated, recorded from a server with live decision models during a QA pass rather than from the dev kit: a judge found the evidence did not support the claim, and the run completed with `review` (`needs_evidence`, its node and its reason). They are its run (`GET /v2/runs/{id}`) and its graph (`GET /v2/runs/{id}/graph`), the bodies as the server answered.
+
 No password is recorded: a request that sent one lists only its field names (`body_fields`), and the session value is a placeholder.

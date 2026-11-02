@@ -8,7 +8,9 @@ export type ApiError = { code: string; message: string; retryable: boolean; requ
 
 /** `source` (a serve extension): "reported" when every part of the cost is a provider's own report, else "estimate".
  *  An older server leaves it out, and then `basis` says whether the number is an estimate. */
-export type Cost = { usd: number | null; basis: string; source?: "reported" | "estimate"; charge_state: string | null; cap_usd: number | null };
+/** `at_most_usd` (a newer server's): set only while `usd` is null because requests were cut, each with a recorded
+ *  figure; the most the run can have cost. Absent or null, the cost is unknown with no bound. */
+export type Cost = { usd: number | null; basis: string; source?: "reported" | "estimate"; charge_state: string | null; cap_usd: number | null; at_most_usd?: number | null };
 
 export type Run = {
   run_id: string;
@@ -27,7 +29,12 @@ export type Run = {
   cost: Cost | null;
   archived_at: string | null;
   poll_after_ms?: number;
+  /** A workflow run that escalated: it completed, and waits for a person to review it (`kind`, the node it stopped
+   *  at, and why). Null or absent on every other run. */
+  review?: RunReview | null;
 };
+
+export type RunReview = { kind: string | null; node: string | null; reason: string; at?: string };
 
 export type TimelineKind =
   | "user_message" | "thinking" | "tool_use" | "tool_result" | "waiting" | "usage" | "final_answer" | "phase" | "decision" | string;

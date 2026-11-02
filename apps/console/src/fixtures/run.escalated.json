@@ -1,0 +1,44 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a19b47-748c-789d-95da-4b37d5d95ceb"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a19b47-748c-789d-95da-4b37d5d95ceb",
+    "agent_id": "qa-decision-jev",
+    "agent_version": 1,
+    "revision": "5268e24e9265b0cca6f908f3b2f6c22950fd75f20fa50675c573a31bf5551923",
+    "kind": "workflow",
+    "sha": null,
+    "status": "completed",
+    "state": "idle",
+    "title": "QA decision jev: record",
+    "created_at": "2026-11-02T08:01:55.831Z",
+    "updated_at": "2026-11-02T08:02:00.021Z",
+    "ended_at": "2026-11-02T08:01:59.691Z",
+    "result": {
+      "output": null,
+      "final_answer": null
+    },
+    "error": null,
+    "review": {
+      "kind": "needs_evidence",
+      "node": "request-better-evidence",
+      "reason": "Evidence did not meet the required yes-probability threshold.",
+      "at": "2026-11-02T08:01:59.691Z"
+    },
+    "cost": {
+      "usd": 1.4364e-05,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "archived_at": null,
+    "imported_from": null,
+    "poll_after_ms": 0
+  }
+}
