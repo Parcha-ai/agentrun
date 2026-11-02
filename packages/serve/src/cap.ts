@@ -152,16 +152,26 @@ export function spentIn(storeFile: string): number | null {
   return entries.reduce((sum, entry) => sum + costOf(entry), 0);
 }
 
-/** What the paid tools of the run whose store is `storeFile` charged: each TOOL_COST's `usd`, null when one is unknown.
- *  A mark is never a charge here (the cap's alone): /usage's `tools` meter for a run that ended, whose cost the same
- *  entries made. */
-export function toolSpentIn(storeFile: string): number | null {
-  if (!existsSync(storeFile)) return 0;
+/** /usage's meters for a run that ended, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is,
+ *  or when a call was cut (marked, never settled: what it charged no one knows); and `tokens`, the rest of its root
+ *  conversation as its settled timeline prices it. A mark is never a charge here (the cap's alone). */
+export function metersIn(storeFile: string): { tools: number | null; tokens: number | null } {
+  if (!existsSync(storeFile)) return { tools: 0, tokens: null };
   const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
   try {
-    const charges = db.prepare("SELECT record FROM entries WHERE json_extract(record, '$.kind') = ? ORDER BY rowid").all(TOOL_COST).map((row) => (JSON.parse(String(row.record)) as EntryLike).data);
-    const usd = charges.map((data) => figureOf((data as { usd?: unknown } | undefined)?.usd));
-    return usd.every((figure) => figure !== undefined) ? (usd as number[]).reduce((sum, figure) => sum + figure, 0) : null;
+    const rows = db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }));
+    const root = rows.reduce((min, row) => Math.min(min, row.conversation), Infinity);
+    const marks = new Set<unknown>();
+    const charges: (number | undefined)[] = [];
+    for (const { entry } of rows) {
+      const data = (entry.data ?? {}) as Record<string, unknown>;
+      if (entry.kind === TOOL_STARTED) marks.add(data.call);
+      else if (entry.kind === TOOL_COST) marks.delete(data.call), charges.push(figureOf(data.usd));
+    }
+    const tools = marks.size || charges.some((usd) => usd === undefined) ? null : (charges as number[]).reduce((sum, usd) => sum + usd, 0);
+    const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
+    const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
+    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0 };
   } finally {
     db.close();
   }
@@ -187,6 +197,7 @@ export function capToolSpend(entries: readonly EntryLike[]): number | null {
  *  the guard held, `started` gives it the turn that request leaves as (admissions run one at a time), `ended` drops it. */
 export function holdsInFlight() {
   const holds = new Map<number, number>();
+  // One slot between admitted() and started(): the runner admits one model request at a time per session.
   let next: number | undefined;
   return {
     admitted: (usd: number | undefined) => void (next = usd),

@@ -25,7 +25,7 @@ import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, toolCostOf 
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { toolSpentIn } from "./cap.js";
+import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { readStored, SECRET_NAMES, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
@@ -653,18 +653,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
 
-  // What each ended run's paid tools charged, from its store: kept (its store no longer changes), keyed
-  // by its end, so a run opened again and ended again is read again. A store that cannot be read leaves it all tokens.
-  const toolCharges = new Map<string, number | null>();
-  const toolsOf = (row: { id: string; state: string; endedAt?: string | null }) => {
-    const kept = toolCharges.get(`${row.id} ${row.endedAt}`);
-    if (kept !== undefined) return kept;
-    let charged: number | null = 0;
-    try {
-      charged = toolSpentIn(join(data, "runs", row.id, "store", "run.sqlite"));
-    } catch {}
-    if (row.state !== "running") toolCharges.set(`${row.id} ${row.endedAt}`, charged);
-    return charged;
+  // Each ended run's meters, from its store (metersIn): kept, as its store no longer changes, keyed by its end, so a run
+  // opened again and ended again is read again. A store that cannot be read leaves it all tokens.
+  const endedMeters = new Map<string, { tools: number | null; tokens: number | null }>();
+  const metersOf = (row: { id: string; endedAt?: string | null }) => {
+    const key = `${row.id} ${row.endedAt}`;
+    let meters = endedMeters.get(key);
+    if (!meters) {
+      try {
+        meters = metersIn(join(data, "runs", row.id, "store", "run.sqlite"));
+      } catch {
+        meters = { tools: 0, tokens: null };
+      }
+      endedMeters.set(key, meters);
+    }
+    return meters;
   };
 
   async function usage(url: URL) {
@@ -684,11 +687,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const live = row.state === "running" ? await runs.get(row.id) : null;
       const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
-      // By meter, what a run's paid tools charged (monid's) is `tools`, the rest `tokens`; a run of unknown cost is
-      // unpriced on the meter that made it so.
-      // Both from the same records: a live run's rows (a call still marked is no charge), else its store as it ended.
-      const tools = group === "meter" && usd !== 0 ? (live ? toolCostOf(live.rows) : toolsOf(row)) : 0;
-      const parts: [string, number | null][] = usd === null ? [[tools === null ? "tools" : key, null]] : tools ? [[key, usd - tools], ["tools", tools]] : [[key, usd]];
+      // By meter, what a run's paid tools charged (monid's) is `tools`, the rest `tokens`, both from the same records: a
+      // live run's rows (a call still marked is no charge), else its store as it ended (a call a crash cut makes `tools`
+      // unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
+      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null } : metersOf(row);
+      const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
+      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(meters.tools !== 0 ? [["tools", meters.tools] as [string, number | null]] : [])];
       // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
       // never passes as $0.
       for (const [name, part] of parts) {
