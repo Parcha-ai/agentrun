@@ -286,6 +286,17 @@ test("pi's confinement holds for another harness's read: a link out of the works
   assert.doesNotMatch(read[0], /not for the agent/);
 });
 
+test("a turn that says something, then calls a tool, then answers: what it said first is a text_block, the run does not end on it, and its answer is the last one", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "comment", "Comment, then write.", "codex", ["write"]);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  // decide() ends a run on its newest answer row once its turn is over: the row said first, an answer until the turn
+  // went on, never ended it (the write ran after it), and the real answer did.
+  assert.equal(await readFile(join(data, "runs", runId, "work", "note.md"), "utf8"), "noted", "the write after the first row ran");
+  assert.deepEqual(rows.filter((r) => ["text_block", "final_answer", "tool_use"].includes(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "I'll write note.md."], ["tool_use", "Wrote note.md"], ["final_answer", "Wrote note.md."]]);
+  assert.equal(await answer(api, runId), "Wrote note.md.");
+});
+
 test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");
