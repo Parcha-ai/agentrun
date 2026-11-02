@@ -235,21 +235,23 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `write` | Write a file in the run's `work/` | nothing | yes, no |
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, truncated?, original_chars?, links, refused?, error?}` | nothing | yes, yes |
-| `web_fetch` | Read one web page from a public host, fetched as `fetch_page` fetches it, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)): `{url}` in, `fetch_page`'s Page plus `via`, `"parallel"` or `"direct"` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)): `{url}` in, a Page out, `{ok, url, status, title, text, truncated?, original_chars?, links, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else keyless through Exa, or through Parallel where it is picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/`, the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
 
-There is no `bash`: a run gets no shell (see [Safety](#safety)).
+There is no `bash`: a run gets no shell (see [Safety](#safety)). `fetch_page` is a legacy name for `web_fetch`: a
+revision, a model node or a call node that names it still saves and runs, and gets `web_fetch` under that name (the
+same Page with `via`, resolved as `web_fetch` is: the guarded fetch, Parallel only where picked). The table lists it no
+more.
 
 A call tool that fails on its own (an unreadable PDF, a model's refusal) fails its call node; inside a `map` with
 `onItemFailure: "collect"` it fails that item, and the other items go on. A cancel or the node's deadline still
 stops the run.
 
-`fetch_page` reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
+`web_fetch`'s direct fetch reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
 every address it resolves to is checked, and the connection is dialled at the address checked, so a loopback, private,
 link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`, `::ffff:127.0.0.1`
 and the like), a name such as `localhost`, a public name that resolves to one of them and a redirect to one are all
@@ -257,7 +259,7 @@ refused, as is any scheme but http(s). A URL on a port other than 80 or 443 is r
 body is at most 5 MiB, a fetch at most 30 s, the text is cut at 60,000 characters and the links at 200, absolute
 http(s) only. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
 reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via: "tool",
-tool: "fetch_page"` gets it as its output (`args: {url}`, `out` a schema of that shape). A call node naming a tool the
+tool: "web_fetch"` gets it as its output (`args: {url}`, `out` a schema of that shape). A call node naming a tool the
 table cannot run that way is refused before the run starts (`409`).
 
 ### Search and fetch
@@ -273,7 +275,7 @@ keyless fallback. A revision's `tools` (and a pack's grant) names the capability
 | `web_search`, `auto` (the default) | Claude's own WebSearch | keyless Exa, a host tool (Codex's own search is not bound yet) | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, keyless Exa |
 | `web_search`, `native` | the same | unavailable (`no native search for codex yet`) | the same, unavailable where there is none: never keyless Exa |
 | `web_search`, `exa-keyless` | Exa's public MCP search, a host tool | the same | the same |
-| `web_fetch`, `kernel` (the default) | `fetch_page`'s guarded fetch | the same | the same |
+| `web_fetch`, `kernel` (the default) | the guarded direct fetch | the same | the same |
 | either, `parallel` | Parallel's search and extract, host tools | the same | the same |
 
 `GET /settings/tools` answers the server's settings, `{web_search: {provider}, web_fetch: {provider}}`, the default
@@ -283,10 +285,13 @@ for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_searc
 unknown capability or provider is `422`, and so is a `permission` (`reason: not_yet`): permissions arrive with the tool
 gate, and capabilities say `features.tool_permissions: false` until then. The settings are kept in the data directory
 (`tool-settings.json`, 0600, written whole and durably), not a secret, and read by every run launched from then on.
-`GET /capabilities` gives each of the two tools a `resolves`, what it resolves to on each harness under the server's
-settings and default model (`native`, `kernel`, `exa-keyless`, `parallel`, or `unavailable: <reason>`), recomputed at
-each `PUT`. `GET /tool-catalog` gives the same per capability with the providers offered and the one in force, and with
-`?agent=<id>` the agent's own settings over the server's and `resolved`, on its harness and model. Parallel picked where
+`GET /capabilities` is the one tool catalog: each of the two tools there gives the providers offered (`providers`), the
+server's (`provider`, its default where it sets none), the built-in default (`default_provider`) and `resolves`, what it
+resolves to on each harness under the server's settings and default model (`native`, `kernel`, `exa-keyless`,
+`parallel`, or `unavailable: <reason>`), recomputed at each `PUT`. `GET /agents/{id}` projects it onto the agent:
+`tools`, each tool its current revision grants in the same order, and for one with a choice the provider in force,
+`provider_from` (`agent`, its own `tool_settings`; `server`; or `default`), `default_provider` (the server's) and
+`resolved`, on its harness and model. Parallel picked where
 the server holds no `PARALLEL_API_KEY` resolves `unavailable: parallel picked, no PARALLEL_API_KEY`, never to another
 provider: a revision naming the tool saves with a warning, and its run is `409` with `details.missing`.
 
@@ -324,15 +329,15 @@ Every provider answers one shape, `{provider, query, results: [{url, title, snip
 naming the one that served it (`native`, `exa-keyless`, `parallel`), each snippet cut at 3,000 characters; the answer
 the model reads ends with one line asking it to cite the URL of each result it relies on.
 
-`web_fetch` answers `fetch_page`'s Page with `via` added; a text cut at 60,000 characters says so, `truncated: true`
+`web_fetch` answers a Page with `via`; a text cut at 60,000 characters says so, `truncated: true`
 with `original_chars`, its whole length, where it is known (Parallel cuts a page itself and gives none; no paging). With Parallel picked the page is read through Parallel's
 extract (`POST https://api.parallel.ai/v1/extract`, its full content as the text, about $0.001 a URL) and `via` is
 `"parallel"`, with status 200 and the absolute links of its markdown; when Parallel lists the URL in its errors, answers
-with no content, a 5xx or not within 60 s, it is `fetch_page`'s fetch, `via: "direct"`, with `parallel` saying why
+with no content, a 5xx or not within 60 s, it is the guarded direct fetch, `via: "direct"`, with `parallel` saying why
 Parallel gave no page (`refused the key (401)`, `answered 503`, `timed out`, `listed the URL in errors`, `not tried:
 refused earlier in this run`), and the model reads a line saying so; a 401 or 403 stops Parallel for the rest of the
-run. A fetch Parallel was not picked for says nothing of it. A URL passes the guard's own check before anything is sent to Parallel: a URL `fetch_page`
-refuses is refused here too and never leaves the machine.
+run. A fetch Parallel was not picked for says nothing of it. A URL passes the guard's own check before anything is sent to Parallel: a URL the guard
+refuses is refused and never leaves the machine.
 
 `web_search` through Parallel uses its Search API (`POST https://api.parallel.ai/v1/search`, its `fast` mode, about
 $0.001 a search). On every provider the query is cut at 200 characters and `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers
@@ -378,7 +383,7 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -397,7 +402,6 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search` and `web_fetch` ([search and fetch](#search-and-fetch)). |
-| `GET /tool-catalog` | This server's own: each capability that has a provider choice, the providers offered, the one in force and what it resolves to on each harness; `?agent=<id>` for an agent's own. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
@@ -667,7 +671,7 @@ export default function reply(context, faux) {
 
 `startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
 the `browser` tool's `{ provider, driver }` in place of Browserbase's (pi-browser's fake backend,
-`test/fixtures/faux-browser.mjs`), and `fetch_page`'s `{ lookup, fetchImpl }` in place of the system's resolver and
+`test/fixtures/faux-browser.mjs`), and `web_fetch`'s direct fetch's `{ lookup, fetchImpl }` in place of the system's resolver and
 undici (a table of names and pages, `test/fixtures/faux-web.mjs`). Each is honored only with `faux`.
 
 `faux.message`, `faux.text`, `faux.thinking` and `faux.toolCall` are pi-ai's faux helpers; `faux.signal` is aborted when
@@ -681,7 +685,7 @@ carries no cost at all, as from a provider that does not price the model. The te
 
 - The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`) are never in a run's environment or files: a workflow run's
   process gets them on a pipe of their own, for its decision providers alone ([decision workflows](#decision-workflows)).
-- `fetch_page` dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this
+- `web_fetch`'s direct fetch dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this
   machine, its network or a cloud's metadata address through it.
 - A `browser` session runs at Browserbase, not on this machine: a page the model opens is reached from Browserbase's
   network, so what the model may reach there is the operator's choice of keys and project. Its downloads and uploads stay

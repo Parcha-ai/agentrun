@@ -1,4 +1,4 @@
-// web_fetch: fetch_page's Page plus `via`: the guarded direct fetch, or, where Parallel is picked and the run holds its
+// web_fetch: a Page plus `via`: the guarded direct fetch, or, where Parallel is picked and the run holds its
 // key, read through Parallel's extract (and the direct fetch when Parallel answers no page). Parallel is the tests' fake
 // (fixtures/faux-parallel.mjs) and the network a table (fixtures/fake-network.mjs): no socket, no real key.
 import assert from "node:assert/strict";

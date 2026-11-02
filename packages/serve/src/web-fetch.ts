@@ -137,12 +137,12 @@ export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: Gu
   return resolved === "parallel" && !extract ? { ...page, parallel: "not tried: this run holds no Parallel key" } : page;
 }
 
-/** The agent's tool: the WebPage as JSON text. A run whose web_fetch resolves to Parallel reads its key as the tool is
- *  made, when the run opens. */
-export function webFetchTool(env: NodeJS.ProcessEnv): ToolRegistration<TSchema, JsonValue> {
+/** The agent's tool: the WebPage as JSON text, named `name` (fetch_page, its legacy name, runs it too). A run whose
+ *  web_fetch resolves to Parallel reads its key as the tool is made, when the run opens. */
+export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): ToolRegistration<TSchema, JsonValue> {
   if (planeOf(env).web_fetch === "parallel") parallelOf(env);
   return defineTool({
-    name: WEB_FETCH_TOOL,
+    name,
     description: "Read one web page from a public host. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text as markdown (cut at 60,000 characters; then truncated is true and original_chars its whole length), the absolute links it holds, and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.",
     parameters: URL_PARAMETERS,
     replay: "safe",

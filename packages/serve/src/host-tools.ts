@@ -1,6 +1,6 @@
 // The host tools of a run on a harness other than pi: pi's own read, write and edit (ArchilCodingTools), called with
 // the run's environment, so their arguments, their confinement to the run's work/ and their refusals are pi's, word for
-// word, and pi's fetch_page and web_fetch, the public-host guard included, and web_search. pi's tools take only the
+// word, and pi's web_fetch (also under its legacy name, fetch_page), the public-host guard included, and web_search. pi's tools take only the
 // environment, their output and their diagnostics from a call's API, so that is all a call here gives them. read and the
 // web tools may run again after a crash; write and edit never: the kernel records each one's intent before it runs, and
 // a call a crash cut off is answered interrupted, not run again.
@@ -9,8 +9,7 @@ import { withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { HostTool } from "@parcha/agentrun-adapters";
 import { ArchilCodingTools, type DurableRun } from "@parcha/pi-durable-disk";
-import { FETCH_PAGE_TOOL, fetchOptions, fetchPageTool } from "./fetch-page.js";
-import { FAUX_ENV } from "./model.js";
+import { FETCH_PAGE_TOOL } from "./fetch-page.js";
 import { WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 
@@ -24,9 +23,8 @@ const textOf = (content: unknown): string =>
   Array.isArray(content) ? content.map((block) => (block && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : "")).join("") : "";
 
 export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults): HostTool[] {
-  const fetchPage = fetchPageTool(() => fetchOptions(process.env, FAUX_ENV)) as unknown as ToolRegistration;
-  const web = [webFetchTool(process.env), webSearchTool(process.env)] as unknown as ToolRegistration[];
-  const tools = new Map([...(ArchilCodingTools.tools ?? []), fetchPage, ...web].map((tool) => [tool.name, tool as ToolRegistration] as const));
+  const web = [webFetchTool(process.env), webFetchTool(process.env, FETCH_PAGE_TOOL), webSearchTool(process.env)] as unknown as ToolRegistration[];
+  const tools = new Map([...(ArchilCodingTools.tools ?? []), ...web].map((tool) => [tool.name, tool as ToolRegistration] as const));
   return names.flatMap((name) => {
     const tool = tools.get(name);
     const replay = REPLAY[name];

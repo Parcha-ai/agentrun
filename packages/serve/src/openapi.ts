@@ -183,22 +183,18 @@ const RESOLVES = {
 };
 /** GET and PUT /settings/tools's answer: each capability's provider, its default where none is set. */
 const TOOL_SETTINGS_ANSWER = closed(Object.fromEntries(PICKABLE.map((name) => [name, closed({ provider: { enum: [...PROVIDERS[name]] } })])));
-/** GET /tool-catalog's answer. */
-const TOOL_CATALOG = closed({
-  tools: {
-    type: "array",
-    items: {
-      type: "object", additionalProperties: false, required: ["name", "providers", "provider", "default_provider", "resolves"],
-      properties: {
-        name: { enum: [...PICKABLE] }, providers: { type: "array", items: { type: "string" }, description: "The providers offered for it, its default first." },
-        provider: { type: "string", description: "The one in force: with ?agent the agent's own, else the server's, else the default." },
-        default_provider: { type: "string", description: "The one that applies at the layer asked about when it sets none: with ?agent the server's (else the built-in default), without it the built-in default." },
-        resolves: RESOLVES,
-        resolved: { ...RESOLUTION, description: "With ?agent: what it resolves to on the agent's harness and model." },
-      },
-    },
+/** GET /agents/{agent_id}'s `tools`: each tool the agent's current revision grants, in capabilities.tools' order; one
+ *  with a provider choice with the provider in force, where it came from, the server's (its default), and what it
+ *  resolves to on the agent's harness and model. */
+const AGENT_TOOLS = {
+  type: "array",
+  description: "Each tool the agent's current revision grants, in capabilities.tools' order. A tool with a provider choice (web_search, web_fetch, and fetch_page, web_fetch's legacy name) carries the provider in force (provider), where it came from (provider_from: agent, its own tool_settings; server, the server's settings; default, the built-in default), the one that applies when the agent sets none (default_provider, the server's), and what it resolves to on the agent's harness and model (resolved). Only GET /agents/{agent_id} answers it.",
+  items: {
+    type: "object", additionalProperties: false, required: ["name"],
+    properties: { name: { type: "string" }, provider: { type: "string" }, provider_from: { enum: ["agent", "server", "default"] }, default_provider: { type: "string" }, resolved: RESOLUTION },
   },
-});
+  "x-agentrun-serve": "providers/1",
+};
 const PAUSED = { type: "object", additionalProperties: false, required: ["run_id", "paused", "status"], properties: { run_id: { type: "string" }, paused: { type: "boolean" }, status: ref("schemas/RunStatus") } };
 
 /** POST .../archive and .../unarchive: hide an agent and its runs, or one run, from the lists, and show them again. */
@@ -354,7 +350,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/tools": {
     get: {
       operationId: "getToolSettings", tags: ["capabilities"], summary: "The server's tool settings",
-      description: "Each capability that has a choice, and its provider: web_search auto (the harness's own search or the model provider's hosted one, else Exa's keyless search), native (that alone), exa-keyless or parallel; web_fetch kernel or parallel. An agent's definition.tool_settings is over these. GET /tool-catalog says what each resolves to.",
+      description: "Each capability that has a choice, and its provider: web_search auto (the harness's own search or the model provider's hosted one, else Exa's keyless search), native (that alone), exa-keyless or parallel; web_fetch kernel or parallel. An agent's definition.tool_settings is over these. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent.",
       responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "providers/1",
     },
@@ -363,14 +359,6 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: `Replaces the settings: a capability the body leaves out takes its default. Kept in the data directory, read by every run launched from then on, and capabilities say so at once. A pick of parallel without PARALLEL_API_KEY resolves unavailable, never to another provider. An unknown capability, a provider not offered for it, and a permission (422 not_yet, "${NOT_YET}") are refused.`,
       requestBody: { required: true, content: { "application/json": { schema: TOOL_SETTINGS } } },
       responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider now."), ...errors(400, 401, 415, 422, 429, 500) },
-      "x-agentrun-serve": "providers/1",
-    },
-  },
-  "/tool-catalog": {
-    get: {
-      operationId: "getToolCatalog", tags: ["capabilities"], summary: "The capabilities that have a provider choice, and what each resolves to",
-      parameters: [{ name: "agent", in: "query", required: false, description: "An agent's id: its own settings over the server's, and resolved on its harness and model.", schema: ref("schemas/Id") }],
-      responses: { "200": json(TOOL_CATALOG, "Each capability, its providers, the one in force and what it resolves to."), ...errors(401, 404, 429, 500) },
       "x-agentrun-serve": "providers/1",
     },
   },
@@ -446,6 +434,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
   },
   Agent: {
+    tools: AGENT_TOOLS,
     kind: { enum: ["agentic", "workflow", null], description: "The current revision's kind; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revision: { type: ["string", "null"], description: "The current revision's id; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revisions: { type: "integer", minimum: 0, description: "How many revisions the agent has.", "x-agentrun-serve": "serve/1" },
@@ -466,6 +455,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         properties: {
           name: { type: "string" }, summary: { type: "string" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, call_only: { type: "boolean", description: "Only a workflow's call node runs it (pdf_pages, llm): no agentic revision or model node names it." }, available: { type: "boolean" }, missing: { type: "array", items: { type: "string" } },
           harnesses: { type: "array", items: { enum: [...HARNESSES] }, description: "The harnesses that run the tool here; a revision naming it on another harness saves with a warning and its runs are 409 agent_not_runnable.", "x-agentrun-serve": "tool-harness/1" },
+          providers: { type: "array", items: { type: "string" }, description: "A tool with a provider choice: the providers offered for it, its default first.", "x-agentrun-serve": "providers/1" },
+          provider: { type: "string", description: "A tool with a provider choice: the server's, its default where it sets none.", "x-agentrun-serve": "providers/1" },
+          default_provider: { type: "string", description: "A tool with a provider choice: the built-in default.", "x-agentrun-serve": "providers/1" },
           resolves: { ...RESOLVES, "x-agentrun-serve": "providers/1" },
         },
       },

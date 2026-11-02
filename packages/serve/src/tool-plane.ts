@@ -33,6 +33,11 @@ export type Capability = (typeof CAPABILITIES)[number];
 export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel"], web_fetch: ["kernel", "parallel"] } as const);
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
+/** Older names a revision may still grant, and the capability each one is: `fetch_page` runs web_fetch, under its own
+ *  name, and resolves as web_fetch does. */
+export const LEGACY_NAMES: Readonly<Record<string, Pickable>> = Object.freeze({ fetch_page: "web_fetch" });
+/** The capability a granted name runs: its legacy target, else itself. */
+export const capabilityOf = (name: string): string => LEGACY_NAMES[name] ?? name;
 /** One capability's settings: its provider. `permission` is reserved for the tool gate, and refused until it lands. */
 export type ToolSetting = { provider?: string };
 /** The settings of each capability that has a choice: the server's (`/v2/settings/tools`) and an agent's own
@@ -106,8 +111,9 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   const harness = tooling.harness ?? DEFAULT_HARNESS;
   const model = tooling.model ?? env.AGENT_MODEL;
   const plane: Plane = {};
+  const granted = tooling.tools.map(capabilityOf);
   for (const name of PICKABLE) {
-    if (tooling.tools.includes(name)) plane[name] = resolveCapability(name, { ...served(env), harness, ...(model ? { model } : {}), ...picked(name, settings, tooling.overrides) });
+    if (granted.includes(name)) plane[name] = resolveCapability(name, { ...served(env), harness, ...(model ? { model } : {}), ...picked(name, settings, tooling.overrides) });
   }
   if (plane.web_search === "native" && harness === DEFAULT_HARNESS && model) plane.model = model;
   return plane;
@@ -190,21 +196,19 @@ export class ToolSettings {
   }
 }
 
-/** GET /v2/tool-catalog's answer: each capability that has a choice, the providers offered for it, the one in force (the
- *  agent's, over the server's, over its default), the one that applies at the layer asked about when it sets none
- *  (`default_provider`: for an agent the server's, else the built-in default), and what it resolves to on each harness;
- *  for an agent, `resolved` on its own harness and model. */
-export function toolCatalog(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, agent?: { harness?: string; model?: string; overrides?: ToolSettingsMap }) {
-  const model = agent?.model ?? env.AGENT_MODEL;
-  const resolves = resolvesView(env, settings, agent?.overrides, model);
-  return {
-    tools: PICKABLE.map((name) => ({
-      name,
-      providers: [...PROVIDERS[name]],
-      provider: agent?.overrides?.[name]?.provider ?? settings[name]?.provider ?? PROVIDERS[name][0],
-      default_provider: (agent ? settings[name]?.provider : undefined) ?? PROVIDERS[name][0],
-      resolves: resolves[name],
-      ...(agent ? { resolved: resolves[name][(agent.harness ?? DEFAULT_HARNESS) as HarnessId] } : {}),
-    })),
-  };
+/** GET /v2/agents/{id}'s `tools`: each tool its current revision grants, in `order` (capabilities.tools'), and for one
+ *  with a provider choice the provider in force and where it came from (the agent's own settings, the server's, or the
+ *  default), the one that applies when the agent sets none (the server's), and what it resolves to on the agent's
+ *  harness and model. A tool with no choice is its name alone. */
+export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, agent: Tooling, order: readonly string[]) {
+  const plane = planeFor(env, agent, settings);
+  const rank = (name: string) => order.indexOf(capabilityOf(name)) + (name in LEGACY_NAMES ? 0.5 : 0);
+  return [...new Set(agent.tools)].sort((a, b) => rank(a) - rank(b)).map((name) => {
+    const capability = capabilityOf(name);
+    if (!Object.hasOwn(PROVIDERS, capability)) return { name };
+    const pick = capability as Pickable;
+    const own = agent.overrides?.[pick]?.provider;
+    const server = settings[pick]?.provider;
+    return { name, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]! };
+  });
 }

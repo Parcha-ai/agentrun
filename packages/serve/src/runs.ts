@@ -20,7 +20,7 @@ import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from ".
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
-import { ASK_TOOL, FAUX_BROWSER_ENV, grantedTools } from "./tools.js";
+import { ASK_TOOL, FAUX_BROWSER_ENV, toolingOf } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
 import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, PARALLEL_KEY_ENV } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
@@ -104,11 +104,6 @@ type RunMeta = {
   tool_plane?: Plane;
 };
 
-/** What a stored revision's tools resolve from (tool-plane.ts): the tools it grants, its harness, model and settings. */
-async function toolingOf(revision: Revision): Promise<Tooling> {
-  const tools = await grantedTools(revision.kind === "agentic" ? { kind: "agentic", tools: revision.body.tools } : { kind: "workflow", tools: revision.body.tools, workflow: revision.body.workflow });
-  return { tools, ...(revision.body.harness ? { harness: revision.body.harness } : {}), ...(revision.kind === "agentic" && revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.toolSettings ? { overrides: revision.body.toolSettings as ToolSettingsMap } : {}) };
-}
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */

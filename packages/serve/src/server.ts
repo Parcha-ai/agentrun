@@ -10,7 +10,7 @@ import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
-import { NODE_TOOLS, toolsView } from "./tools.js";
+import { NODE_TOOLS, toolingOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from "./harness.js";
@@ -27,7 +27,7 @@ import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
-import { settingsIssues, toolCatalog, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
+import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
 import { type ServerLock, takeServerLock } from "./server-lock.js";
 
@@ -190,7 +190,6 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
   { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
-  { method: "GET", pattern: /^\/tool-catalog$/, name: "getToolCatalog" },
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
@@ -753,7 +752,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "getAgent": {
         const entry = await needAgent(id);
-        return send(res, 200, agentView(entry), { etag: etagOf(entry) });
+        // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
+        const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision), caps.tools.map((tool) => tool.name)) : [];
+        return send(res, 200, { ...agentView(entry), tools }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
         const entry = await needAgent(id);
@@ -909,13 +910,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         settings.put(body as ToolSettingsMap);
         caps = capabilities(env, maxRuns, offers, settings.get());
         return send(res, 200, withDefaults(settings.get()));
-      }
-      case "getToolCatalog": {
-        // With ?agent: its own settings over the server's, and what each resolves to on its harness and model.
-        const named = url.searchParams.get("agent");
-        const revision = named === null ? undefined : (await needAgent(named)).revision;
-        const agent = named === null ? undefined : { ...(revision?.body.harness ? { harness: revision.body.harness } : {}), ...(revision?.kind === "agentic" && revision.body.model ? { model: revision.body.model } : {}), ...(revision?.body.toolSettings ? { overrides: revision.body.toolSettings as ToolSettingsMap } : {}) };
-        return send(res, 200, toolCatalog(env, settings.get(), agent));
       }
     }
     throw new ApiError("not_found", `no route ${path}`);

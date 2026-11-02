@@ -239,7 +239,7 @@ test("a run on another harness gets pi's own file tools: a write then a read of 
 });
 
 for (const harness of ["claude-agent", "codex"]) {
-  test(`fetch_page runs on ${harness}: the definition saves with no warning, its run is not refused, and the tool reads the page`, { timeout: 60_000 }, async (t) => {
+  test(`fetch_page, web_fetch's legacy name, runs on ${harness}: the definition saves with no warning, its run is not refused, and web_fetch reads the page`, { timeout: 60_000 }, async (t) => {
     const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB });
     const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title.", tools: ["fetch_page"] }));
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
@@ -249,7 +249,7 @@ for (const harness of ["claude-agent", "codex"]) {
     const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
     const results = toolResults(rows);
     assert.equal(results.length, 1, JSON.stringify(results));
-    assert.match(results[0][0], /Public page/, "the page's title, read through the guarded fetch");
+    assert.match(results[0][0], /"title":"Public page".*"via":"direct"/s, "web_fetch's Page, read through the guarded fetch");
   });
 
   test(`web_fetch runs on ${harness} as a host tool: with Parallel picked the run is handed Parallel's key and reads the page through Parallel`, { timeout: 60_000 }, async (t) => {
@@ -287,11 +287,11 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-test("capabilities say which harnesses run each tool: the file tools, fetch_page and the web tools on every harness, the rest on pi", async (t) => {
+test("capabilities say which harnesses run each tool: the file tools and the web tools on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
   const every = ["pi", "claude-agent", "codex"];
-  const host = ["read", "write", "edit", "fetch_page", "web_fetch", "web_search"];
+  const host = ["read", "write", "edit", "web_fetch", "web_search"];
   for (const name of host) assert.deepEqual(tools[name], every, name);
   for (const [name, harnesses] of Object.entries(tools)) if (!host.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });

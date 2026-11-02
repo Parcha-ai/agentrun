@@ -1,18 +1,17 @@
-// fetch_page: one web page from a public host, as a Page: { ok, url, status, title, text, links, refused?, error? }.
-// The fetch is pi-browser's public-host guard (publicFetch): every redirect hop resolved, checked and dialled at the
+// The guarded direct fetch: one web page from a public host, as a Page: { ok, url, status, title, text, links, refused?,
+// error? }. web_fetch reads a page through it (web-fetch.ts); fetch_page, its legacy name, runs web_fetch. The fetch is
+// pi-browser's public-host guard (publicFetch): every redirect hop resolved, checked and dialled at the
 // address checked, http(s) only, a byte cap and a timeout. Before it, a URL on a port other than 80 or 443 is refused
 // here as well. A refusal or a failure is a Page with ok false, never a throw, so an agent reads why and a workflow can
 // branch on it.
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "@earendil-works/pi-ai";
-import type { JsonValue } from "@earendil-works/chord";
-import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
-import { forModel } from "./result.js";
 
 /** `truncated` and `original_chars` (its length in characters) when the text was cut at TEXT_CAP. */
 export type Page = { ok: boolean; url: string; status: number; title: string; text: string; truncated?: true; original_chars?: number; links: string[]; refused?: string; error?: string };
 
+/** web_fetch's legacy name: a revision or a call node naming it runs web_fetch under it (tools.ts). */
 export const FETCH_PAGE_TOOL = "fetch_page";
 /** Under `--faux` only: a module whose default export gives `{ lookup, fetchImpl }` for the fetch (the tests' fake
  *  network), in place of the system's resolver and undici. */
@@ -60,16 +59,3 @@ export const URL_PARAMETERS = {
   properties: { url: { type: "string", minLength: 1, description: "An absolute http(s) URL." } },
   required: ["url"],
 } as unknown as TSchema;
-
-/** The agent's tool: the Page as JSON text. */
-export const fetchPageTool = (options: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">>): ToolRegistration<TSchema, JsonValue> =>
-  defineTool({
-    name: FETCH_PAGE_TOOL,
-    description: "Fetch one web page from a public host and read it. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text (cut at 60,000 characters; then truncated is true and original_chars its whole length) and the absolute links it holds. A private or local address, a port other than 80 or 443, a scheme other than http(s), or a page that is not text is refused (ok false, with refused saying why).",
-    parameters: URL_PARAMETERS,
-    replay: "safe",
-    execute: async (args, _api, context) => {
-      const page = await fetchPage((args as { url?: unknown }).url, { ...(await options()), ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
-      return forModel(JSON.stringify(page), { details: page });
-    },
-  });

@@ -1,6 +1,7 @@
 // The tool plane: the capabilities a grant may name, the resolver (the user's pick, then the native tool, then the
 // kernel's keyless fallback), the server's tool settings (GET/PUT /v2/settings/tools, kept in the data directory), an
-// agent's own (definition.tool_settings), and GET /v2/tool-catalog, each answer as the served document says.
+// agent's own (definition.tool_settings), capabilities' tools (the one catalog) and an agent's projection of it (GET
+// /v2/agents/{id}'s tools), each answer as the served document says.
 import assert from "node:assert/strict";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -59,6 +60,7 @@ test("a run's plane: each web tool its revision names, resolved in the server's 
   assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"] }, {}), { web_search: "native" }, "no model to name: Claude's is its own");
   assert.deepEqual(planeFor(env, { tools: ["web_search"], overrides: { web_search: { provider: "exa-keyless" } } }, { web_search: { provider: "parallel" } }), { web_search: "exa-keyless" });
   assert.deepEqual(planeFor({}, { tools: ["read"] }, {}), {}, "no web tool, nothing to say");
+  assert.deepEqual(planeFor(env, { tools: ["fetch_page"] }, { web_fetch: { provider: "parallel" } }), { web_fetch: "parallel" }, "fetch_page resolves as web_fetch does");
 });
 
 test("settings are checked before anything is kept: an unknown capability, a provider not offered for it, and a permission, which waits for the tool gate", () => {
@@ -70,7 +72,7 @@ test("settings are checked before anything is kept: an unknown capability, a pro
   assert.deepEqual(settingsIssues([]).map((i) => [i.field, i.reason]), [["body", "wrong_type"]]);
 });
 
-test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, kept 0600 beside the store across a restart; refusals by field; capabilities and the tool catalog say what they resolve to at once", async (t) => {
+test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, kept 0600 beside the store across a restart; refusals by field; capabilities, the one catalog, and an agent's projection of it say what they resolve to at once", async (t) => {
   withEnv(t, { AGENT_MODEL: "anthropic/claude-sonnet-4-5" }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL"]);
   const first = await serve(t);
   const { api } = first;
@@ -79,11 +81,11 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   const got = await api("GET", "/settings/tools");
   assert.deepEqual([got.status, got.body], [200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } }]);
   meets("/settings/tools", "get", got.body);
-  const catalog = (await api("GET", "/tool-catalog")).body;
-  meets("/tool-catalog", "get", catalog);
-  assert.deepEqual(catalog.tools.map((tool) => [tool.name, tool.providers, tool.provider, tool.default_provider, tool.resolves]), [
-    ["web_search", ["auto", "native", "exa-keyless", "parallel"], "auto", "auto", { pi: "native", "claude-agent": "native", codex: "exa-keyless" }],
+  const catalog = (await api("GET", "/capabilities")).body;
+  meets("/capabilities", "get", catalog);
+  assert.deepEqual(catalog.tools.filter((tool) => tool.providers).map((tool) => [tool.name, tool.providers, tool.provider, tool.default_provider, tool.resolves]), [
     ["web_fetch", ["kernel", "parallel"], "kernel", "kernel", { pi: "kernel", "claude-agent": "kernel", codex: "kernel" }],
+    ["web_search", ["auto", "native", "exa-keyless", "parallel"], "auto", "auto", { pi: "native", "claude-agent": "native", codex: "exa-keyless" }],
   ]);
 
   for (const [body, fields] of [
@@ -101,21 +103,28 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   meets("/settings/tools", "put", put.body);
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.resolves]));
   assert.deepEqual(tools.web_search, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "exa-keyless" }, "recomputed with no restart");
-  assert.deepEqual((await api("GET", "/tool-catalog")).body.tools.map((tool) => [tool.provider, tool.default_provider]), [["exa-keyless", "auto"], ["kernel", "kernel"]], "with no agent, the built-in default under the server's pick");
+  assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.providers).map((tool) => [tool.provider, tool.default_provider]), [["kernel", "kernel"], ["exa-keyless", "auto"]], "the server's pick, and the built-in default");
   assert.equal(tools.read, undefined, "a tool with no provider choice resolves nothing");
+  assert.equal("fetch_page" in tools, false, "fetch_page, web_fetch's legacy name, is not in the table");
   assert.equal((await stat(join(first.data, "tool-settings.json"))).mode & 0o777, 0o600);
 
   // An agent's own settings: over the server's, kept in its revision and shown in its definition.
-  const made = await api("POST", "/agents", agent("searcher", { tools: ["web_search", "web_fetch"], tool_settings: { web_search: { provider: "native" } } }));
+  // Granted out of the table's order, fetch_page (web_fetch's legacy name) among them: listed in capabilities' order.
+  const made = await api("POST", "/agents", agent("searcher", { tools: ["web_fetch", "fetch_page", "web_search", "read"], tool_settings: { web_search: { provider: "native" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.definition.tool_settings, { web_search: { provider: "native" } });
-  const own = (await api("GET", "/tool-catalog?agent=searcher")).body;
-  meets("/tool-catalog", "get", own);
-  assert.deepEqual(own.tools.map((tool) => [tool.name, tool.provider, tool.default_provider, tool.resolved]), [["web_search", "native", "exa-keyless", "native"], ["web_fetch", "kernel", "kernel", "kernel"]], "for an agent, its own over the server's, which is its default");
+  const own = (await api("GET", "/agents/searcher")).body;
+  meets("/agents/{agent_id}", "get", own);
+  assert.deepEqual(own.tools, [
+    { name: "read" },
+    { name: "web_fetch", provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
+    { name: "fetch_page", provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
+    { name: "web_search", provider: "native", provider_from: "agent", default_provider: "exa-keyless", resolved: "native" },
+  ], "capabilities' order; its own pick over the server's, which is its default");
+  assert.equal((await api("GET", "/agents")).body.agents[0].tools, undefined, "the projection is the one agent's read alone");
   const coded = await api("POST", "/agents", agent("coder", { harness: "codex", tools: ["web_search"] }));
   assert.equal(coded.status, 201, JSON.stringify(coded.body));
-  assert.deepEqual((await api("GET", "/tool-catalog?agent=coder")).body.tools.map((tool) => [tool.name, tool.provider, tool.default_provider, tool.resolved]), [["web_search", "exa-keyless", "exa-keyless", "exa-keyless"], ["web_fetch", "kernel", "kernel", "kernel"]], "the server's pick where the agent has none, on its harness");
-  assert.equal((await api("GET", "/tool-catalog?agent=nobody")).status, 404);
+  assert.deepEqual((await api("GET", "/agents/coder")).body.tools, [{ name: "web_search", provider: "exa-keyless", provider_from: "server", default_provider: "exa-keyless", resolved: "exa-keyless" }], "the server's pick where the agent has none, on its harness");
   for (const [tool_settings, field, reason] of [[{ web_search: { permission: "deny" } }, "definition.tool_settings.web_search.permission", "not_yet"], [{ web_fetch: { provider: "exa-keyless" } }, "definition.tool_settings.web_fetch.provider", "not_an_option"], [{ ask_person: { provider: "native" } }, "definition.tool_settings.ask_person", "not_allowed"]]) {
     const refused = await api("POST", "/agents", agent("refused", { tools: ["web_search"], tool_settings }));
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [[field, reason]]], JSON.stringify(tool_settings));
