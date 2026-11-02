@@ -79,3 +79,18 @@ test("a live row that ended while the run's door was away goes with the next con
   connect({ entries: [user(5, "two")] });
   assert.deepEqual(log.rows().map((r) => r.kind), ["user_message", "user_message"], "the ended wait is gone; both messages stay");
 });
+
+test("the usage row is the timeline's last row: a row served after it, or its own change, moves it to the end", () => {
+  const log = new RowLog(new ChangeClock());
+  const usage = (summary) => row("1:usage", summary, "usage");
+  log.sync([row("u", "You: hi", "user_message"), usage("Cost so far: $0.0001 over 1 model request")]);
+  const first = log.page(0, 100);
+  log.sync([row("u", "You: hi", "user_message"), row("t", "Wrote a file", "tool_use"), usage("Cost so far: $0.0001 over 1 model request")]);
+  assert.deepEqual(log.rows().map((r) => r.id), ["u", "t", "1:usage"], "a row after it: it moves to the end, as it was");
+  assert.deepEqual(log.page(first.next_after, 100).rows.map((r) => r.id), ["t", "1:usage"], "its move is a change: a cursor sees its new seq");
+  log.sync([row("u", "You: hi", "user_message"), row("t", "Wrote a file", "tool_use"), row("r", "Wrote a file: ok", "tool_result"), usage("Cost so far: $0.0002 over 2 model requests")]);
+  assert.deepEqual(log.rows().map((r) => r.id), ["u", "t", "r", "1:usage"]);
+  const last = log.rows().at(-1).seq;
+  assert.equal(log.sync(log.rows()), false, "nothing new: nothing moves");
+  assert.equal(log.rows().at(-1).seq, last);
+});

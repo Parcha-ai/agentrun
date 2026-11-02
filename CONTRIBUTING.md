@@ -9,6 +9,8 @@ npm run check
 npm run verify:packages
 ```
 
+`npm run build` builds the console (`apps/console`, outside the workspaces, with its own lockfile) before the packages, so the server's build carries it. It installs the console's dependencies when npm's record of them differs from its lockfile, and skips the console's build when `apps/console/dist` was built from the same sources (a hash of them, written beside the build).
+
 Tests use scripted adapters and must not require model credentials. Package verification installs built tarballs into a separate application and needs network access to download dependencies. Live examples are opt-in.
 
 Keep provider configuration and application policy outside the interpreter. Integrate through `runNode`, `runJudge`, or `runEffect`. For a behavior change, add a test that reproduces the failure and checks the result a caller depends on. Keep expected outcomes independent of the implementation. Mock external services at adapter boundaries.

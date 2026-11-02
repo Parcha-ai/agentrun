@@ -3,7 +3,9 @@
 //
 // Rows come in whole (the reducer's rows of a live run, or a released store's rows) and are diffed against what was
 // served. A row keeps the seq it was first served with, so seq is the order rows first appeared; a row id that comes
-// back after a drop is served under a new id, so one id never names two seqs.
+// back after a drop is served under a new id, so one id never names two seqs. The usage row is the one exception: it is
+// the run's running total, its time the latest entry's, so it is always the last row, and moves to the end (a new seq,
+// as a change) when a row is served after it.
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 
 export type Row = TimelineEvent & { seq: number };
@@ -79,6 +81,15 @@ export class RowLog {
       if (slot.dropped || key !== slot.source || present.has(slot.source) || keep?.(slot.source)) continue;
       slot.dropped = true;
       slot.change = this.next();
+      changed = true;
+    }
+    // The usage row stays last: one served after it moves it to the end.
+    const shown = [...this.slots.values()].filter((s) => !s.dropped);
+    const usage = shown.find((s) => s.row.kind === "usage");
+    if (usage && shown.some((s) => s.seq > usage.seq)) {
+      usage.seq = this.seq++;
+      usage.row = { ...usage.row, seq: usage.seq };
+      usage.change = this.next();
       changed = true;
     }
     if (changed) this.touch();
