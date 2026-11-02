@@ -66,6 +66,8 @@ export const objects = (repo) => spawnSync("git", ["cat-file", "--batch-all-obje
 
 export const repoOf = (data, agentId) => join(data, "homes", agentId, "learning");
 export const copyOf = (data, runId) => join(data, "runs", runId, "work", ".learning");
+/** That copy once the run ended after its end-of-run turn: set aside in the run's directory, outside its work. */
+export const turnCopyOf = (data, runId) => join(data, "runs", runId, "learning-turn");
 /** The commits on main that name run `runId` in a Run-Id trailer. */
 export const mergesOf = (repo, runId) => git(repo, ["log", "--format=%H %(trailers:key=Run-Id,valueonly)", "main"]).split("\n").filter((entry) => entry.split(" ")[1] === runId);
 

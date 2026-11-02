@@ -6,7 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, rmSync } from "node:fs";
-import { open as openFile, readFile, rm, stat } from "node:fs/promises";
+import { lstat, open as openFile, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,7 @@ import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
-import { layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningMode, type LearningReason, type LearningState, learningView, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, withAgentGrade } from "./learning.js";
+import { layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningMode, type LearningReason, type LearningState, learningTestHooks, learningView, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, snapshotLearned, withAgentGrade } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
@@ -821,6 +821,7 @@ export class Runs {
 
   private async propose(run: Run): Promise<void> {
     try {
+      await learningTestHooks.beforePropose?.(run.dir);
       const pin = await readPin(run.dir);
       if (!pin) throw new Error("the run has no learning pin");
       const { proposeRun } = await import("./propose.js");
@@ -1373,6 +1374,14 @@ export class Runs {
    *  another writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
     this.closeLearning(run, outcome);
+    // What its end-of-run turn wrote, set aside before the run reads ended: a follow-up that opens it again never
+    // changes what is checked.
+    if (awaitsPropose(run.meta)) {
+      await snapshotLearned(run.dir).catch((error: Error) => {
+        warn(run.id, `what its end-of-run turn wrote could not be set aside: ${error.message}`);
+        this.setLearning(run, "dropped", "propose_failed", "What the end-of-run turn wrote could not be set aside to be checked.");
+      });
+    }
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
@@ -1658,6 +1667,7 @@ export class Runs {
       run.error = undefined;
       delete run.meta.error;
       run.relaunches = 0;
+      await this.layAgain(run);
       this.refresh(run);
       this.launch(run);
     } finally {
@@ -1667,6 +1677,19 @@ export class Runs {
     // An end-of-run turn its process went in would resume with the run: it is aborted before the follow-up is sent. One
     // that cannot be aborted runs out ahead of it, and its rows are never the follow-up's answer, which comes after them.
     if (run.meta.reflect && run.meta.learning?.reason === "crashed") await this.toDoor(run, "/abort", {}).catch(() => undefined);
+  }
+
+  /** A run that learns, opened again once its end-of-run turn's copy went to its snapshot: `work/.learning/` laid again
+   *  from its seed, so a follow-up finds the notes its instructions name where they say. A fault leaves it without. */
+  private async layAgain(run: Run): Promise<void> {
+    const dir = join(run.dir, "work", LEARNED_DIR);
+    if (!run.meta.reflect || (await lstat(dir).then(() => true, () => false))) return;
+    try {
+      const pin = await readPin(run.dir);
+      if (pin) await layLearned(dir, await seedAt(this.options.agents.dir, run.agentId, pin.seed));
+    } catch (error) {
+      warn(run.id, `opens again without its copy of what its agent learned: ${(error as Error).message}`);
+    }
   }
 
   /** Abort the turn that is running; the run stays open, `input_required` and idle. A workflow run has no turn to stop. */

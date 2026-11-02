@@ -668,9 +668,11 @@ server rebuilds `MEMORY.md`, how many index lines are left (200 less the active 
 and what not to keep. The turn runs under the run's own cap, with no reserve, and within 5 minutes; its rows are
 labelled `learning`, and the run's answer stays the job's.
 
-Once the run has ended, in the agent's queue, the server reads what the turn left in `work/.learning/`: the folder's
-top only, each entry with lstat and never a link followed, at most 4096 bytes of a note, and never past 64 changed
-paths. packages/learn's `checkProposal` refuses, before anything is written anywhere, an edited or deleted note, a path
+As the run settles, before it reads ended and before a follow-up can open it again, the server moves the turn's
+`work/.learning/` whole, with one rename, to `runs/<id>/learning-turn/`, outside the run's work; a follow-up finds
+`work/.learning/` laid again from the seed. Once the run has ended, in the agent's queue, the server reads what the turn
+left from that snapshot alone, never from the work: the folder's top only, each entry with lstat and never a link
+followed, at most 4096 bytes of a note, and never past 64 changed paths. packages/learn's `checkProposal` refuses, before anything is written anywhere, an edited or deleted note, a path
 that is not a `.md` file at the top, a bad name, a link or anything not a regular file, front matter out of shape or
 setting `status`, a `supersedes` naming a note that is not active, more than 8 notes superseded, more than 8 new notes
 or a note over 4096 bytes, an index past 200 lines, hidden characters, non-UTF-8, and text shaped like a secret or
