@@ -206,8 +206,10 @@ An agentic revision names its model as `provider/model-id` (`"model"` in its def
 this host's default, `AGENT_MODEL`. A workflow revision names no model: each model node names a tier (`fast`, `default`
 or `strong`), and the host maps it, `fast` to `AGENT_MODEL_FAST` and `strong` to `AGENT_MODEL_STRONG`, each falling back
 to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_prefix, fast, default, strong}`):
-`route_prefix` is the routing prefix this server puts before a gateway's model ids (`agent-model`), which a client takes
-off to show the gateway's own id, and null with any other source. Where the models come from:
+`source` is `gateway`, `providers` or `faux` (the published document marks these as `models/2`, beyond the contract's
+`managed`, `chatgpt`, `env` and `faux`), and `route_prefix` is the routing prefix this server puts before a gateway's
+model ids (`agent-model`), which a client takes off to show the gateway's own id, and null with any other source. Where
+the models come from:
 
 - `--faux MODULE`: every model is the module's (below), with no key and no network: `faux-1`, or for a tier the model
   id its variable names.

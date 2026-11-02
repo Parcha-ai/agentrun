@@ -512,7 +512,15 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "decisions/2",
     },
   },
+  // models/2: `source` took on the two values this server answers with besides faux, `gateway` and `providers`. A client that
+  // validates against the contract's enum (managed, chatgpt, env, faux) refuses them, so the widening is a mark of its own.
   "Capabilities/models": {
+    source: {
+      type: "string",
+      enum: ["managed", "chatgpt", "env", "faux", "gateway", "providers"],
+      description: "Where this server's models come from. `gateway`: every model through the OpenAI-compatible gateway at `AGENT_MODEL_BASE_URL`, its ids under `route_prefix`. `providers`: each model from its own provider, with that provider's key. `faux`: a scripted model, with no key and no network. `managed`, `chatgpt` and `env` are the hosted API's.",
+      "x-agentrun-serve": "models/2",
+    },
     fast: { type: ["string", "null"], description: "`provider/model` of the fast tier, when one is fixed.", "x-agentrun-serve": "serve/1" },
     strong: { type: ["string", "null"], description: "`provider/model` of the strong tier, when one is fixed.", "x-agentrun-serve": "serve/1" },
     route_prefix: { type: ["string", "null"], description: "With `source` `gateway`, the routing prefix this server puts before the gateway's model ids (`agent-model`): every tier's model and every harness's `default_model` here is the prefix, a slash and the gateway's own id. Null with any other source, where ids are shown whole.", "x-agentrun-serve": "model/2" },
