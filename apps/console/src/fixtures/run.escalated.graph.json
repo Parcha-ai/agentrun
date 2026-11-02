@@ -1,0 +1,300 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a19b47-748c-789d-95da-4b37d5d95ceb/graph"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "read_at": "2026-11-02T08:02:10.517Z",
+    "run": {
+      "id": "01a19b47-748c-789d-95da-4b37d5d95ceb",
+      "agent": "qa-decision-jev",
+      "revision": "5268e24e9265b0cca6f908f3b2f6c22950fd75f20fa50675c573a31bf5551923",
+      "status": "completed",
+      "paused": false,
+      "startedAt": "2026-11-02T08:01:55.831Z",
+      "endedAt": "2026-11-02T08:01:59.691Z"
+    },
+    "workflow": {
+      "v": 2,
+      "name": "fictional-evidence-gate",
+      "schemas": {
+        "Record": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "claim",
+            "evidence"
+          ],
+          "properties": {
+            "claim": {
+              "type": "string"
+            },
+            "evidence": {
+              "type": "string"
+            }
+          }
+        },
+        "Input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "record"
+          ],
+          "properties": {
+            "record": {
+              "$ref": "#/definitions/Record"
+            }
+          }
+        },
+        "Questions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "supported"
+          ],
+          "properties": {
+            "supported": {
+              "type": "boolean",
+              "description": "Does the supplied evidence explicitly support every factual detail in the claim, without adding assumptions or contradicting it?"
+            }
+          }
+        },
+        "Gate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "accepted"
+          ],
+          "properties": {
+            "accepted": {
+              "type": "boolean"
+            }
+          }
+        },
+        "Result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "record",
+            "accepted"
+          ],
+          "properties": {
+            "record": {
+              "$ref": "#/definitions/Record"
+            },
+            "accepted": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "input": {
+        "schemaId": "Input"
+      },
+      "output": {
+        "schemaId": "Result",
+        "path": "result"
+      },
+      "root": {
+        "node": "chain",
+        "steps": [
+          {
+            "node": "code",
+            "label": "retain-record",
+            "code": "(s) => ({ original: s.record })"
+          },
+          {
+            "node": "judge",
+            "label": "check-evidence",
+            "state": {
+              "record": "{original}"
+            },
+            "out": "Questions",
+            "as": "check"
+          },
+          {
+            "node": "code",
+            "label": "probability-gate",
+            "code": "(s) => { const p = s['check$answers']?.answers?.supported?.noul; return { accepted: typeof p === 'number' && Number.isFinite(p) && p >= 0.90 && p <= 1 }; }",
+            "as": "gate"
+          },
+          {
+            "node": "escalate",
+            "label": "request-better-evidence",
+            "when": {
+              "predicate": "field_equals",
+              "path": "gate.accepted",
+              "value": false
+            },
+            "kind": "needs_evidence",
+            "stage": "verification",
+            "summary": "Evidence did not meet the required yes-probability threshold."
+          },
+          {
+            "node": "code",
+            "label": "assemble-result",
+            "code": "(s) => ({ record: s.original, accepted: s.gate.accepted })",
+            "as": "result"
+          }
+        ]
+      }
+    },
+    "graph": {
+      "nodes": [
+        {
+          "path": "/root",
+          "kind": "chain",
+          "label": "chain",
+          "changeCheck": "b465cda2"
+        },
+        {
+          "path": "/root/steps/0",
+          "kind": "code",
+          "label": "retain-record",
+          "changeCheck": "d5fd23a5"
+        },
+        {
+          "path": "/root/steps/1",
+          "kind": "judge",
+          "label": "check-evidence",
+          "changeCheck": "50a47eda",
+          "questions": [
+            {
+              "id": "supported",
+              "type": "noul",
+              "instructions": "Does the supplied evidence explicitly support every factual detail in the claim, without adding assumptions or contradicting it?"
+            }
+          ]
+        },
+        {
+          "path": "/root/steps/2",
+          "kind": "code",
+          "label": "probability-gate",
+          "changeCheck": "6b37c38b"
+        },
+        {
+          "path": "/root/steps/3",
+          "kind": "escalate",
+          "label": "request-better-evidence",
+          "changeCheck": "f6594121"
+        },
+        {
+          "path": "/root/steps/4",
+          "kind": "code",
+          "label": "assemble-result",
+          "changeCheck": "dd15d085"
+        }
+      ],
+      "edges": [
+        {
+          "from": "/root",
+          "to": "/root/steps/0",
+          "kind": "next"
+        },
+        {
+          "from": "/root/steps/0",
+          "to": "/root/steps/1",
+          "kind": "next"
+        },
+        {
+          "from": "/root/steps/1",
+          "to": "/root/steps/2",
+          "kind": "next"
+        },
+        {
+          "from": "/root/steps/2",
+          "to": "/root/steps/3",
+          "kind": "next"
+        },
+        {
+          "from": "/root/steps/3",
+          "to": "/root/steps/4",
+          "kind": "next"
+        }
+      ]
+    },
+    "nodes": {
+      "/root": {
+        "status": "escalated",
+        "startedAt": "2026-11-02T08:01:58.094Z",
+        "endedAt": "2026-11-02T08:01:58.869Z"
+      },
+      "/root/steps/0": {
+        "status": "done",
+        "startedAt": "2026-11-02T08:01:58.094Z",
+        "endedAt": "2026-11-02T08:01:58.193Z"
+      },
+      "/root/steps/1": {
+        "status": "done",
+        "startedAt": "2026-11-02T08:01:58.194Z",
+        "endedAt": "2026-11-02T08:01:58.784Z"
+      },
+      "/root/steps/2": {
+        "status": "done",
+        "startedAt": "2026-11-02T08:01:58.785Z",
+        "endedAt": "2026-11-02T08:01:58.869Z"
+      },
+      "/root/steps/3": {
+        "status": "escalated"
+      },
+      "/root/steps/4": {
+        "status": "not_run"
+      }
+    },
+    "decisions": [
+      {
+        "id": "3f8e5b88a9706a870230dae1e355a6429879f1824927375467393ab037405834",
+        "node": "/root/steps/1",
+        "executionPath": "/root/steps/1",
+        "item": null,
+        "kind": "judge",
+        "provider": "jev",
+        "model": "jev-1.14.0",
+        "status": "answered",
+        "questions": {
+          "supported": {
+            "type": "noul",
+            "instructions": "Does the supplied evidence explicitly support every factual detail in the claim, without adding assumptions or contradicting it?"
+          }
+        },
+        "answers": {
+          "supported": {
+            "type": "noul",
+            "noul": 0.01
+          }
+        },
+        "evidence": [],
+        "rule": {
+          "kind": "judge"
+        },
+        "action": {
+          "supported": false
+        },
+        "cost_usd": 1.4364e-05,
+        "cost_basis": "estimate",
+        "latency_ms": 394,
+        "state": {
+          "record": {
+            "claim": "The fictional Willow Workshop registration fee is 40 credits and includes lunch.",
+            "evidence": "Fictional event notice: Willow Workshop opens on Monday in the east hall."
+          }
+        },
+        "state_truncated": false,
+        "error": null,
+        "images": []
+      }
+    ],
+    "effects": [],
+    "totals": {
+      "cost_usd": 1.436e-05,
+      "decisions": 1,
+      "effects": 0,
+      "elapsed_ms": 3860
+    },
+    "stale": false
+  }
+}

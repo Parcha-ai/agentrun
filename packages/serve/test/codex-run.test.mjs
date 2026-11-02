@@ -1,4 +1,4 @@
-// A run on codex through serve, on agentrun-codex's stand-in for Codex's app-server (no Codex binary, no network): its
+// A run on codex through serve, on agentrun-harness-codex's stand-in for Codex's app-server (no Codex binary, no network): its
 // model requests go through the adapter's proxy to serve's gateway (a loopback server here), priced from serve's own
 // catalog, and the stand-in, Codex's own process, runs under the run's confinement: setpriv's no_new_privs, as pi's
 // commands do, under the same user.
@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { processAlive } from "@parcha/agentrun-adapters/host";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fileURLToPath } from "node:url";
 import { agent, follow, scratch, serve } from "./support.mjs";
 

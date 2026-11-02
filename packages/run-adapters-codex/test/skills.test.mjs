@@ -9,9 +9,9 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { createHarnessRunner, READ_SKILL_FILE, skillProblems as sharedSkillProblems } from '@parcha/agentrun-adapters';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { codexAdapter, skillProblems } from '@parcha/agentrun-codex';
+import { createHarnessRunner, READ_SKILL_FILE, skillProblems as sharedSkillProblems } from '@parcha/agentrun-kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { codexAdapter, skillProblems } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 
@@ -96,12 +96,12 @@ test("read_skill_file gives the model a skill's SKILL.md and its reference file,
 });
 
 test("the skills are checked when the adapter is made, by the check the Claude adapter runs; read_skill_file is the adapter's own name when it has skills", () => {
-  assert.equal(skillProblems, sharedSkillProblems, "the Codex adapter's check is @parcha/agentrun-adapters' skillProblems");
+  assert.equal(skillProblems, sharedSkillProblems, "the Codex adapter's check is @parcha/agentrun-kernel' skillProblems");
   const provider = { origin: 'https://provider.invalid', credential: () => 'k' };
   // Thrown before the binary is looked for: a bad skill is the host's to fix, with or without Codex installed.
-  assert.throws(() => codexAdapter({ model: 'm', provider, skills: [{ name: 'a', files: {} }] }), /agentrun-codex: the skill a has no SKILL.md with front matter/);
-  assert.throws(() => codexAdapter({ model: 'm', provider, skills: [{ name: 'Bad Name', files: { 'SKILL.md': '---\nname: Bad Name\ndescription: d\n---\n' } }] }), /agentrun-codex: the skill name "Bad Name" is not lowercase letters, digits and dashes/);
-  assert.throws(() => codexAdapter({ model: 'm', provider, skills: [{ name: 'a', files: { 'SKILL.md': '---\nname: a\n---\n' } }] }), /agentrun-codex: the skill a's SKILL.md has no description/);
+  assert.throws(() => codexAdapter({ model: 'm', provider, skills: [{ name: 'a', files: {} }] }), /agentrun-harness-codex: the skill a has no SKILL.md with front matter/);
+  assert.throws(() => codexAdapter({ model: 'm', provider, skills: [{ name: 'Bad Name', files: { 'SKILL.md': '---\nname: Bad Name\ndescription: d\n---\n' } }] }), /agentrun-harness-codex: the skill name "Bad Name" is not lowercase letters, digits and dashes/);
+  assert.throws(() => codexAdapter({ model: 'm', provider, skills: [{ name: 'a', files: { 'SKILL.md': '---\nname: a\n---\n' } }] }), /agentrun-harness-codex: the skill a's SKILL.md has no description/);
   const host = { name: READ_SKILL_FILE, description: 'mine', inputSchema: { type: 'object', properties: {} }, replay: 'safe', call: async () => ({ text: '' }) };
   const spec = { key: 'k', label: 'l', system: [], tools: [host], context: 'fresh' };
   const stand = { command: process.execPath };

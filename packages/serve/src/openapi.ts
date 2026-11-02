@@ -11,6 +11,7 @@ import { EFFORTS, THINKING_LEVELS } from "./model.js";
 import { MAX_OUTPUT_FILE, MAX_PACK_OUTPUTS, MAX_PACK_SKILLS, OUTPUT_TYPE, PACK_NAME, PACK_SKILL } from "./packs.js";
 import { BOXES, PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
+import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 
 type Json = Record<string, unknown>;
@@ -26,7 +27,7 @@ export const UNSUPPORTED: Readonly<Record<string, string>> = {
 
 const ref = (name: string) => ({ $ref: `#/components/${name}` });
 const errors = (...codes: number[]) =>
-  Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 404: "NotFound", 409: "Conflict", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal" }[code]}`)]));
+  Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 403: "Forbidden", 404: "NotFound", 409: "Conflict", 413: "PayloadTooLarge", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal", 501: "Unsupported" }[code]}`)]));
 const json = (schema: unknown, description: string) => ({ description, content: { "application/json": { schema } } });
 /** GET /runs/{run_id}/output's answer: the output a run's profile pinned, by its type, and its file and that file's
  *  address, or null for both when the output is the run's final answer. */
@@ -52,7 +53,9 @@ const closed = (properties: Json, description?: string) => ({ type: "object", ad
 const USD = { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." };
 /** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
 const GROUP = {
-  runs: COUNT, completed: COUNT, failed: { ...COUNT, description: "Failed or escalated." },
+  runs: COUNT, completed: { ...COUNT, description: "Completed, escalated runs included: one completed and waits for a person's review." },
+  needs_review: { ...COUNT, description: "Of `completed`, the escalated runs, which wait for a person's review.", "x-agentrun-serve": "stats/3" },
+  failed: { ...COUNT, description: "Failed: never an escalated run." },
   runs_with_metrics: { ...COUNT, description: "Of `runs`, those that ended with metrics: a running run, and a run whose end wrote none, has none." },
   tokens: { ...COUNT, description: "Input, cache read, cache write and output tokens, summed over `runs_with_metrics`." },
   cost_usd: USD, unknown_cost_runs: { ...COUNT, description: "Runs with no known cost: running, or ended without one." },
@@ -68,14 +71,14 @@ const ANALYTICS = closed({
   by_harness_effort: { type: "array", description: "By the revision's harness (`pi` when it names none, `workflow` for a workflow revision), then the effort the run's metrics name (null: unset, or no metrics).", items: closed({ harness: { type: "string" }, effort: { type: ["string", "null"] }, ...GROUP }) },
   by_day: { type: "array", description: "By the UTC date the run started, oldest first.", items: closed({ day: { type: "string", format: "date" }, ...GROUP }) },
   by_source: { type: "array", description: "`live`, run here, first, then each source runs were imported from.", items: closed({ source: { enum: ["live", "claude-code", "codex", "pi"] }, ...GROUP }) },
-  tools: { type: "array", maxItems: 20, description: "The 20 tools with the most calls, by name on a tie; `errors` counts the calls that failed or never returned.", items: closed({ tool: { type: "string" }, calls: COUNT, errors: COUNT }) },
+  tools: { type: "array", maxItems: 20, description: "The 20 tools with the most calls, by name on a tie; `errors` counts the calls that failed (an error, a result the tool reads as failed such as a refused fetch, or no result at all).", items: closed({ tool: { type: "string", description: "The name the tool was called by." }, label: { type: "string", description: "What a person calls the tool, from the timeline's label registry; the name it was called by when it has none.", "x-agentrun-serve": "stats/3" }, calls: COUNT, errors: COUNT }) },
 }, "The runs' tokens, requests, time and tool calls from their metrics, over the runs not archived that the query picks; a run with no metrics counts in `runs` alone.");
 /** GET /stats's answer (stats.ts). */
 const STATS = closed({
   agents: { ...COUNT, description: "Agents not archived." },
   runs: closed(
-    { total: COUNT, active: COUNT, needs_input: COUNT, failed: COUNT, status_unknown: COUNT },
-    "Runs not archived. `total` counts them all; a completed or cancelled run is counted in `total` alone. `failed` includes escalated. Each running run is in exactly one of `active` (this server holds it, queued, working or paused), `needs_input` (it holds it, input_required) and `status_unknown` (it does not hold it, or holds it as ended before its end is written).",
+    { total: COUNT, active: COUNT, needs_input: COUNT, failed: COUNT, needs_review: { ...COUNT, "x-agentrun-serve": "stats/3" }, status_unknown: COUNT },
+    "Runs not archived. `total` counts them all; a completed or cancelled run is counted in `total` alone, but for an escalated one, which completed and waits for a person's review: it is in `needs_review`, never in `failed`. Each running run is in exactly one of `active` (this server holds it, queued, working or paused), `needs_input` (it holds it, input_required) and `status_unknown` (it does not hold it, or holds it as ended before its end is written).",
   ),
   per_agent: {
     type: "array", description: "Each agent not archived, by name then id, with how many of its runs are not archived; an agent with no runs is listed with 0.",
@@ -179,6 +182,26 @@ const TOOL_KEYS_VIEW = closed({
   },
 });
 const KEY_ID = { name: "key_id", in: "path", required: true, description: "The tool key: one of GET /settings/tool-keys' ids.", schema: { type: "string" } };
+const WEBHOOK_ID = { name: "webhook_id", in: "path", required: true, description: "The message, as its `webhook-id` names it.", schema: { type: "string" } };
+const WEBHOOK_SET_FIELDS = {
+  configured: { const: true }, url: { type: "string" },
+  signing: { enum: ["sealed", "seal_key_missing", "unreadable"], description: "Whether the secret signs here: `sealed`; `seal_key_missing` (the server was handed no seal key) or `unreadable` (sealed under another key, or damaged), when nothing is sent until the webhook is removed and set again. Never the secret." },
+  disabled: { oneOf: [closed({ at: { type: "string", format: "date-time" }, reason: { type: "string" } }), { type: "null" }], description: "Set when the receiver answered 410 Gone: nothing is sent until a PUT sets the webhook again." },
+  updated_at: { type: "string", format: "date-time" },
+};
+const WEBHOOK_SET = closed(WEBHOOK_SET_FIELDS);
+/** GET /settings/webhook (webhooks.ts): the webhook, or none; never its secret. */
+const WEBHOOK_VIEW = { oneOf: [closed({ configured: { const: false } }), WEBHOOK_SET] };
+const WEBHOOK_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "The signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Keep it where the receiver checks `webhook-signature`." };
+const WEBHOOK_ATTEMPT = closed({
+  webhook_id: { type: "string", description: "The message's `webhook-id`: the same on each of its tries, and on a redelivery." },
+  type: { enum: [...MESSAGE_TYPES] }, at: { type: "string", format: "date-time" },
+  status_code: { type: ["integer", "null"], description: "The receiver's answer; null when it was not reached." },
+  latency_ms: { type: "integer", minimum: 0 },
+  error: { type: ["string", "null"], description: "Why the try failed: an answer not 2xx (a redirect is not followed), no answer in 15 s, not reached, or the webhook removed or off." },
+  retry_at: { type: ["string", "null"], format: "date-time", description: "When the message is tried again after this one, if it is." },
+  redelivery: { type: "boolean", description: "Sent again by POST .../redeliver." },
+});
 const PAUSED = { type: "object", additionalProperties: false, required: ["run_id", "paused", "status"], properties: { run_id: { type: "string" }, paused: { type: "boolean" }, status: ref("schemas/RunStatus") } };
 
 /** POST .../archive and .../unarchive: hide an agent and its runs, or one run, from the lists, and show them again. */
@@ -195,6 +218,40 @@ const archiving = (collection: string, noun: string, id: Json, answer: string): 
       },
     ]),
   );
+
+/** A file of an agent's home, listed as a run's file is (RunFile). */
+const HOME_FILE = {
+  type: "object", additionalProperties: false, required: ["path", "size_bytes", "modified_at"],
+  properties: {
+    path: { type: "string", description: "Relative to the agent's home, `/` between segments." },
+    size_bytes: { type: "integer", minimum: 0 },
+    modified_at: ref("schemas/Timestamp"),
+    content_type: { type: ["string", "null"] },
+    unreadable: { type: "boolean", const: true, description: "Present when this server cannot read the file (another user made it private): reading it answers 403 `system_file_forbidden` with `details.reason` `unreadable`." },
+  },
+};
+/** A host-owned path of the home that is there: one entry by its name, with nothing of what is in it. */
+const HOME_HOST_ENTRY = {
+  type: "object", additionalProperties: false, required: ["path", "host_owned"],
+  properties: {
+    path: { type: "string", description: "Its name at the top of the home, as it is on disk (`learning`)." },
+    host_owned: { type: "boolean", const: true, description: "A path of `capabilities.home.host_owned`: only the server writes it, and what is in it is read through `/v2/agents/{agent_id}/learning`, never listed or served here." },
+  },
+};
+const HOME_FILES = {
+  type: "object", additionalProperties: false, required: ["agent_id", "files", "complete", "truncated"],
+  properties: { agent_id: ref("schemas/Id"), files: { type: "array", items: { oneOf: [HOME_FILE, HOME_HOST_ENTRY] } }, complete: { type: "boolean", description: "Always true here: the home is on this server's disk." }, truncated: { type: "boolean", description: "The list stopped at the server's cap: its count of files, or a directory more than 16 deep." } },
+};
+/** Where an agent's home's files are listed; each file's own path is below it. */
+const HOME_FILES_AT = "/agents/{agent_id}/home/files";
+const HOME_PATH = {
+  name: "path", in: "path", required: true,
+  description: "A path relative to the agent's home. It may hold `/` between segments, sent as is; each segment is percent-encoded. The server matches the rest of the URL after `/files/`.",
+  schema: { type: "string", minLength: 1, maxLength: 1024 },
+};
+const RAW = { "application/octet-stream": { schema: { type: "string", contentMediaType: "application/octet-stream" } }, "*/*": { schema: { type: "string" } } };
+const HOME_PATHS = "A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`.";
+const HOME_WRITES = "A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`), as normalized and in any case, so `./Learning/x` too, is `403 system_file_forbidden` with `details.reason` `host_owned`. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's. Where \`capabilities.home.writes\` is false (no /proc/self/fd, as on macOS), the write or delete is \`501 unsupported_here\`.";
 
 /** This server's own routes, outside the contract. */
 /** One JSON-RPC 2.0 message, and the answer to a request (POST /mcp). */
@@ -364,8 +421,91 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
   },
+  [HOME_FILES_AT]: {
+    get: {
+      operationId: "listHomeFiles", tags: ["agents"], summary: "Every file in the agent's home",
+      description: "The agent's home is a directory of its own on this server's disk, kept across its runs (runs do not see it yet). Every regular file in it, recursively, listed as a run's files are (`GET /runs/{run_id}/files`): reached through no link, a name that starts with `.` left out. A home never written to lists none. A path of `capabilities.home.host_owned` that is there (`learning`) is one entry, `{path, host_owned: true}`, with none of what is in it.",
+      parameters: [ref("parameters/AgentId")],
+      responses: { "200": json(HOME_FILES, "The files."), ...errors(401, 404, 429, 500) },
+      "x-agentrun-serve": "home/1",
+    },
+  },
+  [`${HOME_FILES_AT}/{path}`]: {
+    get: {
+      operationId: "readHomeFile", tags: ["agents"], summary: "One file of the agent's home, raw",
+      description: `Raw bytes with the file's content type, as a run's file is read (\`GET /runs/{run_id}/files/{path}\`): \`nosniff\`, a CSP on HTML, \`?download=1\` for an attachment. ${HOME_PATHS} A path at or under one of \`capabilities.home.host_owned\` (\`learning/\`), as normalized and in any case, is \`403 system_file_forbidden\` with \`details.reason\` \`host_owned\`: read it through \`/v2/agents/{agent_id}/learning\`. A link on the way is \`404 not_found\`.`,
+      parameters: [ref("parameters/AgentId"), HOME_PATH, { name: "download", in: "query", required: false, description: "`1` forces a download.", schema: { type: "integer", enum: [0, 1], default: 0 } }],
+      responses: {
+        "200": { description: "The whole file.", headers: { "Content-Disposition": ref("headers/ContentDisposition"), "X-Content-Type-Options": ref("headers/NoSniff") }, content: RAW },
+        ...errors(400, 401, 403, 404, 429, 500),
+      },
+      "x-agentrun-serve": "home/1",
+    },
+    put: {
+      operationId: "writeHomeFile", tags: ["agents"], summary: "Write one file of the agent's home",
+      description: `The raw body becomes the file, whole: written to a temporary file beside it and renamed over it (0600), the directories on the way made. Of two writes of one file at once, each lands whole and the last wins. A body over \`capabilities.home.max_file_bytes\` is \`413 payload_too_large\`. ${HOME_PATHS} ${HOME_WRITES}`,
+      parameters: [ref("parameters/AgentId"), HOME_PATH],
+      requestBody: { required: true, content: RAW },
+      responses: { "200": json(HOME_FILE, "The file, as the list shows it."), ...errors(400, 401, 403, 404, 413, 429, 500, 501) },
+      "x-agentrun-serve": "home/1",
+    },
+    delete: {
+      operationId: "deleteHomeFile", tags: ["agents"], summary: "Delete one file of the agent's home",
+      description: `Removes the file; a directory it leaves empty stays. A file that is not there is \`404 not_found\`. ${HOME_PATHS} ${HOME_WRITES}`,
+      parameters: [ref("parameters/AgentId"), HOME_PATH],
+      responses: { "204": { description: "The file is gone." }, ...errors(400, 401, 403, 404, 429, 500, 501) },
+      "x-agentrun-serve": "home/1",
+    },
+  },
   ...archiving("agents", "Agent", ref("parameters/AgentId"), "The agent, with archived_at."),
   ...archiving("runs", "Run", ref("parameters/RunId"), "The run, with archived_at."),
+  "/settings/webhook": {
+    get: {
+      operationId: "getWebhook", tags: ["local"], summary: "The webhook this server POSTs run notices to, if one is set; never its secret",
+      responses: { "200": json(WEBHOOK_VIEW, "The webhook, or `configured: false`."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+    put: {
+      operationId: "saveWebhook", tags: ["local"], summary: "Set the webhook's URL",
+      description: `Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to \`url\` as JSON \`{type, timestamp, data}\`: \`run.needs_input\` when a run comes to need its person (status input_required; \`data.pending.kind\` \`question\` for an ask_person question, \`stopped\` for a stopped turn) and \`run.ended\` when it ends (completed, failed or cancelled), with \`data: {run_id, agent_id, status, title, url}\`, \`url\` the run on the page; never a tool's arguments, an output or an input, which the API reads. Headers: \`webhook-id\` (the same on every try, the receiver's idempotency key), \`webhook-timestamp\` (Unix seconds) and \`webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">\` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT keeps it, turns the webhook on again and answers 200. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters; 409 no_sealing_key when the server was handed no seal key to keep the secret under.`,
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: { type: "string", format: "uri", maxLength: 2048 } } } } } },
+      responses: {
+        "201": json(closed({ ...WEBHOOK_SET_FIELDS, secret: WEBHOOK_SECRET }), "Set, with its secret, shown this once."),
+        "200": json(WEBHOOK_SET, "Changed; the secret is kept."),
+        ...errors(400, 401, 409, 415, 422, 429, 500),
+      },
+      "x-agentrun-serve": "webhook/1",
+    },
+    delete: {
+      operationId: "deleteWebhook", tags: ["local"], summary: "Remove the webhook; its pending messages are dropped, the log of attempts is kept",
+      responses: { "204": { description: "Removed." }, ...errors(401, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+  },
+  "/settings/webhook/test": {
+    post: {
+      operationId: "testWebhook", tags: ["local"], summary: "Send a `webhook.test` message now, once, and say how it went",
+      description: "The body is `{type: \"webhook.test\", timestamp, data: {}}`, signed as every message is. It is tried once, never again, and kept in the log. 409 webhook_off when a 410 turned the webhook off: nothing is sent until a PUT sets it again.",
+      responses: { "200": json(WEBHOOK_ATTEMPT, "Its attempt."), ...errors(401, 404, 409, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+  },
+  "/settings/webhook/deliveries": {
+    get: {
+      operationId: "listWebhookDeliveries", tags: ["local"], summary: `The last ${ATTEMPTS_KEPT} attempts, newest first`,
+      responses: { "200": json(closed({ attempts: { type: "array", items: WEBHOOK_ATTEMPT } }), "Each attempt."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+  },
+  "/settings/webhook/deliveries/{webhook_id}/redeliver": {
+    post: {
+      operationId: "redeliverWebhook", tags: ["local"], summary: "Send a message of the log again, once now, under the same webhook-id and body",
+      description: "Signed again at a new timestamp. A message still pending that this try delivers is settled; one this try fails keeps its own schedule. 409 webhook_off when a 410 turned the webhook off.",
+      parameters: [WEBHOOK_ID],
+      responses: { "200": json(WEBHOOK_ATTEMPT, "Its attempt."), ...errors(401, 404, 409, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+  },
 };
 
 let vendored: Json | undefined;
@@ -416,6 +556,13 @@ const PINNED_PROFILE: Json = {
   description: "The profile pack the run was made with (`profile`, `output` on its request), resolved then and pinned: the pack's name, the effort row it used, that row's thinking level when the pack sets one, every skill it loads in order, and its output type with the file the deliverable goes to and the writer skills; null when the run named none.",
   "x-agentrun-serve": "profile/1",
 };
+/** What this server's run answers carry beyond the contract's Run and RunSummary: added before they were marked, so
+ *  `serve/1`. */
+const RUN_FIELDS: Record<string, Json> = {
+  revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
+  kind: { enum: ["agentic", "workflow"], description: "The revision's kind: an agentic run, or a workflow run.", "x-agentrun-serve": "serve/1" },
+  archived_at: { type: ["string", "null"], description: "When the run, or its agent, was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
+};
 /** What a run waits on, one field for every kind, told apart by `kind`: here a question it asked a person. A later kind
  *  (a tool call waiting on approval) is one more variant of the same union. */
 const PENDING: Json = {
@@ -445,6 +592,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     output: { type: "string", description: "An output type of the run's profile: its writer skills join the run's, and its file is where the deliverable goes. One the pack does not name is 422.", "x-agentrun-serve": "profile/1" },
   },
   Run: {
+    ...RUN_FIELDS,
     profile: PINNED_PROFILE,
     review: REVIEW,
     pending: PENDING,
@@ -459,6 +607,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
   RunSummary: {
+    ...RUN_FIELDS,
+    effort: { $ref: "#/components/schemas/Effort", description: "The effort the run was started with, as the run shows it; absent when it was started with none.", "x-agentrun-serve": "effort/1" },
+    error: { oneOf: [{ $ref: "#/components/schemas/RunError" }, { type: "null" }], description: "Set when `failed`, as the run's own.", "x-agentrun-serve": "serve/1" },
     review: REVIEW,
     pending: PENDING,
     imported_from: {
@@ -550,6 +701,17 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "serve/1",
     },
     links: { type: "object", additionalProperties: false, required: ["openapi"], properties: { openapi: { type: "string" } }, description: "This document's address.", "x-agentrun-serve": "serve/1" },
+    home: {
+      type: "object", additionalProperties: false, required: ["disk", "host_owned", "max_file_bytes", "writes"],
+      properties: {
+        disk: { enum: ["local"], description: "Where the homes are: this server's disk, under its data directory." },
+        host_owned: { type: "array", items: { type: "string" }, description: "The paths in a home only the server writes, never served here: each that is there is one entry of the list (`host_owned: true`), and a GET, PUT or DELETE at or under one, in any case, is 403 `system_file_forbidden`." },
+        max_file_bytes: { type: "integer", minimum: 1, description: "The largest file a PUT takes: `limits.max_body_bytes`. Over it, 413 `payload_too_large` naming `max_body_bytes`." },
+        writes: { type: "boolean", description: "Whether PUT and DELETE write a home's files here. True only where this server reaches its held directory handles through /proc/self/fd (Linux), probed once at start, the probe its confinement walks by; false elsewhere (macOS), where both answer 501 `unsupported_here` and nothing is written or removed. The list and reads work either way." },
+      },
+      description: "Each agent's home: a directory of its own (its id in lower case and 16 hex digits of the id's SHA-256, so ids that differ only in case never share one), kept across its runs, its files listed, read, written and deleted at `/agents/{agent_id}/home/files`.",
+      "x-agentrun-serve": "home/1",
+    },
     secrets: {
       type: "object", additionalProperties: false, required: ["names", "handoff", "condition", "limit"],
       properties: { names: { type: "array", items: { type: "string" } }, handoff: { enum: ["pipe"] }, condition: { type: "string" }, limit: { type: "string" } },
@@ -587,6 +749,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept `sealed` under the seal key the server was handed; `unavailable` with none, when nothing is kept.",
       "x-agentrun-serve": "toolkeys/1",
     },
+    webhooks: {
+      type: "object", additionalProperties: false, required: ["routes", "events", "signing", "at_rest"],
+      properties: { routes: { type: "boolean" }, events: { type: "array", items: { enum: [...WEBHOOK_EVENTS] } }, signing: { const: "standard-webhooks/v1" }, at_rest: { enum: ["sealed", "unavailable"] } },
+      description: "/settings/webhook: one URL each of `events` is POSTed to, signed by the Standard Webhooks spec; its secret kept `sealed` under the seal key the server was handed, `unavailable` with none, when no webhook is set.",
+      "x-agentrun-serve": "webhook/1",
+    },
   },
   "Features/agents": { revisions: { type: "boolean", description: "`GET /agents/{agent_id}/revisions` and `POST /agents/{agent_id}/current`.", "x-agentrun-serve": "serve/1" } },
   "Features/runs": {
@@ -619,6 +787,11 @@ const ARCHIVED_DETAILS = {
   properties: { archived_at: { type: "string", format: "date-time", description: "When the agent was archived: unarchive it to run it." } },
 };
 const NOT_RUNNABLE_DETAILS = { oneOf: [BLOCKED_DETAILS, ARCHIVED_DETAILS] };
+/** What a file refused `403 system_file_forbidden` holds in `error.details` here, when it holds any (a dot-name holds none). */
+const FORBIDDEN_DETAILS = {
+  type: "object", additionalProperties: false, required: ["reason"],
+  properties: { reason: { enum: ["unreadable", "host_owned", "link"], description: "`unreadable`: another user made the file private. `host_owned`: a read, write or delete in an agent's home at or under a path only the server writes, in any case. `link`: a write or a delete in an agent's home through a link." } },
+};
 
 /** The contract as vendored, read once. */
 function contract(): Json {
@@ -691,7 +864,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     fields.push(...own.map((code) => `ErrorCode.${code}`));
   }
   const details = ((schemas.ErrorBody as Json).properties as Record<string, Json>).details!;
-  details["x-agentrun-serve-details"] = { agent_not_runnable: NOT_RUNNABLE_DETAILS };
+  details["x-agentrun-serve-details"] = { agent_not_runnable: NOT_RUNNABLE_DETAILS, system_file_forbidden: FORBIDDEN_DETAILS };
   const extensions: string[] = [];
   for (const [path, item] of Object.entries(EXTENSIONS)) {
     for (const [method, op] of Object.entries(item)) {

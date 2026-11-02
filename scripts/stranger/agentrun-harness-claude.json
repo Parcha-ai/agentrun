@@ -1,0 +1,14 @@
+{
+  "package": "@parcha/agentrun-harness-claude",
+  "install": [
+    "run-adapters-claude-agent",
+    "dsl",
+    "run-adapters"
+  ],
+  "companions": [
+    "@parcha/agentrun-dsl",
+    "@parcha/agentrun-kernel"
+  ],
+  "expect": "no-key path missing",
+  "reason": "@parcha/agentrun-harness-claude's README gives no command that runs with no key yet"
+}

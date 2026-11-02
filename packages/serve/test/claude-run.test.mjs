@@ -10,8 +10,8 @@ import { existsSync } from "node:fs";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { processAlive } from "@parcha/agentrun-adapters/host";
-import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
+import { processAlive } from "@parcha/agentrun-kernel/host";
+import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, follow, serve } from "./support.mjs";
 
 /** A key for the fake endpoint: no real one. */

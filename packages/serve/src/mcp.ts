@@ -47,7 +47,7 @@ const optionalText = (args: Json, name: string): string | undefined => (args[nam
 const id = encodeURIComponent;
 const pick = (args: Json, keys: string[]): Json => Object.fromEntries(keys.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
 const without = (args: Json, keys: string[]): Json => Object.fromEntries(Object.entries(args).filter(([k]) => !keys.includes(k)));
-const runLink = (origin: string, run: string) => `${origin}/console/#/runs/${id(run)}`;
+const runLink = (origin: string, run: string) => `${origin}/#/runs/${id(run)}`;
 
 /** A route's JSON answer as a tool's result: the body as structured content and, for a client without it, as text; a
  *  refusal (4xx, 5xx) as an error result holding the route's error envelope. `extra` is added to a body that is no
@@ -73,7 +73,16 @@ const DEFINITION = {
   model: { type: ["string", "null"], description: "provider/model-id. Absent, this server's default (whoami names it)." },
   thinking: { type: ["string", "null"], description: "How hard the model thinks: one of whoami's thinking levels. Absent, the model's own." },
   tools: { type: "array", items: { type: "string" }, description: "The tools it may use, by name (whoami lists them); [] for none. It writes files only with a tool like write." },
+  definition: { type: "object", description: "Optional: any other definition field, as POST /v2/agents takes it (place, say), which the route checks as it checks every field. A field named outright here wins over the same one inside definition." },
 };
+
+/** A tool's definition: `definition`'s fields, passed through as they are for the route's own checks (so a field the
+ *  server takes later needs no change here), then the fields named outright over them. `skip` are the tool's own. */
+function definitionOf(args: Json, skip: string[]): Json {
+  const extra = args.definition;
+  if (extra !== undefined && !isObject(extra)) throw new ArgumentError("definition", "wrong_type", "definition is an object of definition fields");
+  return { ...(extra ?? {}), ...without(args, ["definition", ...skip]) };
+}
 
 /** Each tool, by the /v2 routes it calls. Field names are the routes'. */
 export const TOOLS: Tool[] = [
@@ -87,7 +96,7 @@ export const TOOLS: Tool[] = [
       const caps = json(answer) as { harnesses?: { id: string; available: boolean }[]; tools?: { name: string; available: boolean }[]; models?: Json; features?: { efforts?: string[]; thinking?: string[] } };
       const me = {
         authenticated: true, credential: "token", server: "agentrun-serve", version: context.version,
-        base_url: `${context.origin}/v2`, console_url: `${context.origin}/console/`,
+        base_url: `${context.origin}/v2`, console_url: `${context.origin}/`,
         harnesses: (caps.harnesses ?? []).filter((h) => h.available).map((h) => h.id),
         tools: (caps.tools ?? []).filter((t) => t.available).map((t) => t.name),
         efforts: caps.features?.efforts ?? [], thinking: caps.features?.thinking ?? [], models: caps.models ?? {},
@@ -103,7 +112,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "agents_create", title: "Create an agent", annotations: WRITE,
-    description: "Creates an agent (POST /v2/agents with these fields as its definition), checked as that route checks it: a refusal names each field. Ask the person before you create one. warnings in the answer is what this server still lacks to run it.",
+    description: "Creates an agent (POST /v2/agents with these fields, and any other in definition, as its definition), checked as that route checks it: a refusal names each field. Ask the person before you create one. warnings in the answer is what this server still lacks to run it.",
     inputSchema: {
       type: "object", required: ["name", "instructions"],
       properties: {
@@ -113,22 +122,24 @@ export const TOOLS: Tool[] = [
         ...DEFINITION,
       },
     },
-    run: routed((args) => ({ method: "POST", path: "/agents", body: { definition: args } })),
+    run: routed((args) => ({ method: "POST", path: "/agents", body: { definition: definitionOf(args, []) } })),
   },
   {
     name: "agents_revise", title: "Revise an agent", annotations: WRITE,
-    description: "Makes the agent's next revision from its current definition with these fields changed (GET /v2/agents/{agent_id}, then PUT /v2/agents/{agent_id}/definition on that revision): fields you leave out stay; null clears model or thinking. Its next run runs the new revision. A revision saved in between is refused (precondition_failed), never overwritten. Its name and description stay as it was created.",
+    description: "Makes the agent's next revision from its current definition with these fields changed, and any other field in definition (GET /v2/agents/{agent_id}, then PUT /v2/agents/{agent_id}/definition on that revision): fields you leave out stay; null clears model or thinking. Its next run runs the new revision. A revision saved in between is refused (precondition_failed), never overwritten. Its name and description stay as it was created.",
     inputSchema: { type: "object", required: ["agent_id"], properties: { agent_id: AGENT_ID, ...DEFINITION, note: { type: "string", description: "Optional: what this revision changes." } } },
     run: async (args, context) => {
       const agent = text(args, "agent_id");
       const read = await context.call({ method: "GET", path: `/agents/${id(agent)}` });
       if (read.status >= 400) return resultOf(read);
-      const { agent_id: _agent, note, ...changes } = args;
+      const { note } = args;
+      const changes = definitionOf(args, ["agent_id", "note"]);
       const merged: Json = { ...(json(read).definition as Json), ...changes };
       // The revision's number is the server's to give, and new instructions make an agentic revision.
       delete merged.version;
       if ("instructions" in changes) delete merged.workflow;
-      for (const key of Object.keys(merged)) if (merged[key] === null) delete merged[key];
+      // null clears model or thinking (the server's default then); any other null goes to the route, which checks it.
+      for (const key of ["model", "thinking"]) if (merged[key] === null) delete merged[key];
       const etag = read.headers.etag;
       return resultOf(await context.call({ method: "PUT", path: `/agents/${id(agent)}/definition`, body: { definition: merged, ...(note === undefined ? {} : { note }) }, headers: etag ? { "if-match": etag } : {} }));
     },
@@ -193,13 +204,13 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "runs_respond", title: "Answer a run", annotations: { ...WRITE, openWorldHint: true },
-    description: "Sends an agentic run a message (POST /v2/runs/{run_id}/messages): the answer to the question it asked (its status is input_required; runs_get's pending holds the question), or a follow-up once it completed. mode in the answer says which. Then poll runs_get again.",
+    description: "Sends an agentic run a message (POST /v2/runs/{run_id}/messages): the answer to the question it asked (its status is input_required; runs_get's pending holds the question), or a follow-up once it completed or was stopped: a fresh turn with its history (a stopped turn is not replayed). mode in the answer says which. A cancelled run takes none: 409 not_continuable, start a new run. Then poll runs_get again.",
     inputSchema: { type: "object", required: ["run_id", "content"], properties: { run_id: RUN_ID, content: { type: "string", description: "The answer, or the message." } } },
     run: routed((args) => ({ method: "POST", path: `/runs/${id(text(args, "run_id"))}/messages`, body: without(args, ["run_id"]) })),
   },
   {
     name: "runs_cancel", title: "Cancel a run", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-    description: "Ends a run for good (POST /v2/runs/{run_id}/cancel): its status turns cancelled once its process has exited. It keeps what it did, and takes no more messages.",
+    description: "Ends a run for good (POST /v2/runs/{run_id}/cancel): its status turns cancelled once its process has exited. It keeps what it did, and takes no more messages: a message to it is 409 not_continuable, so go on in a new run (runs_start).",
     inputSchema: { type: "object", required: ["run_id"], properties: { run_id: RUN_ID } },
     run: routed((args) => ({ method: "POST", path: `/runs/${id(text(args, "run_id"))}/cancel` })),
   },

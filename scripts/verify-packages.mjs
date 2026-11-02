@@ -22,8 +22,8 @@ const exec = promisify(execFile);
 const piFlag = process.argv.indexOf('--pi');
 const legPi = piFlag === -1 ? undefined : process.argv[piFlag + 1];
 assert.ok(piFlag === -1 || /^\d+\.\d+\.\d+$/.test(legPi ?? ''), `--pi takes a plain x.y.z version, got ${legPi}`);
-// `--console`: the server's packed dist must carry the console (apps/console, built before the server's build, which copies
-// it in). Its files are scanned like every packed file either way.
+// `--console`: the server's packed dist must carry the console it answers at "/" (apps/console, built before the server's
+// build, which copies it in). Its files are scanned like every packed file either way.
 const requireConsole = process.argv.includes('--console');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const receiptDir = join(root, '.release');
@@ -190,9 +190,9 @@ try {
     }
     console.log(`Packed and inspected ${manifest.name}@${manifest.version} (${names.length} files)`);
   }
-  assert.ok(attributed.includes('@parcha/agentrun-adapters'), 'the harness seam is checked for its attribution');
-  assert.ok(attributed.includes('@parcha/agentrun-claude-agent'), 'the Claude Agent adapter is checked for its attribution');
-  assert.ok(attributed.includes('@parcha/agentrun-codex'), 'the Codex adapter is checked for its attribution');
+  assert.ok(attributed.includes('@parcha/agentrun-kernel'), 'the harness seam is checked for its attribution');
+  assert.ok(attributed.includes('@parcha/agentrun-harness-claude'), 'the Claude Agent adapter is checked for its attribution');
+  assert.ok(attributed.includes('@parcha/agentrun-harness-codex'), 'the Codex adapter is checked for its attribution');
   receipt.checks.push(`Boundary rules passed on every package; attribution rules for vercel-labs/durable-harness code passed: ${attributed.join(', ')}.`);
   receipt.checks.push('Archive paths, file allowlist, heuristic secret scan, and dependency boundary inspection passed.');
   const consumer = join(temporary, 'consumer');
@@ -332,10 +332,10 @@ import * as learnCheck from '@parcha/agentrun-learn';
 import * as decisions from '@parcha/agentrun-decisions';
 import { judgeFromProvider } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
-import * as adapters from '@parcha/agentrun-adapters';
-import * as adaptersTesting from '@parcha/agentrun-adapters/testing';
-import * as adaptersKernel from '@parcha/agentrun-adapters/kernel';
-import * as adaptersProcess from '@parcha/agentrun-adapters/process';
+import * as adapters from '@parcha/agentrun-kernel';
+import * as adaptersTesting from '@parcha/agentrun-kernel/testing';
+import * as adaptersKernel from '@parcha/agentrun-kernel/kernel';
+import * as adaptersProcess from '@parcha/agentrun-kernel/process';
 import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
@@ -393,7 +393,7 @@ assert.deepEqual(Object.keys(agentWorkflow).sort(),['checkWorkflowBody','readWor
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-workflows-')); try { const work=join(dir,'work'), checkout=join(dir,'checkout'); await mkdir(work); await mkdir(checkout); const saved=await new piWorkflows.WorkflowStore(work).save('consumer-add',workflow); const records={[saved.digest+'.json']:await readFile(join(work,'.pi/agentrun/workflows/consumer-add',saved.digest+'.json'),'utf8'),latest:saved.digest+'\\n'}; const main={main:'0'.repeat(40),read:async()=>undefined,list:async()=>[]}; const candidate={run:'r1',name:'consumer-add',description:'Add two numbers.',records,untrusted:false}; assert.equal((await agentLearn.workflowAdmitter({tmpRoot:dir})({...main,workflow:candidate})).status,'held'); const admitted=await agentLearn.workflowAdmitter({tmpRoot:dir,allowExecutableCode:true})({...main,workflow:candidate}); assert.equal(admitted.status,'admitted'); assert.equal(agentLearn.parseTrial(admitted.files['.agents/skills/consumer-add/trial.json'],'consumer-add').status,'trial'); for (const [file,text] of Object.entries(admitted.files)) if (file.startsWith('.pi/')) { await mkdir(join(checkout,file,'..'),{recursive:true}); await writeFile(join(checkout,file),text); } assert.equal((await new piWorkflows.WorkflowStore(checkout).load('consumer-add')).digest,saved.digest); assert.equal(agentLearn.matches([{pointer:'/left',op:'gte',value:1}],{left:2}),true); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-{ assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); for (const file of ['index.html','locked.html','serve.css','serve.js']) assert.ok((await readFile(join(servePkg,'dist','page',file),'utf8')).length>0,'the install has dist/page/'+file); { const packDir=join(servePkg,'dist','packs','default'); const pack=JSON.parse(await readFile(join(packDir,'pack.json'),'utf8')); assert.equal(pack.name,'default'); const named=[...new Set([...Object.values(pack.effort),...Object.values(pack.outputs)].flatMap(row=>row.skills))]; assert.ok(named.length>0); for (const name of named) assert.match(await readFile(join(packDir,'skills',name,'SKILL.md'),'utf8'),new RegExp('^---\\nname: '+name+'\\n'),'the install has the skill '+name+' of the default pack'); } const caps=serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',fast:null,default:null,strong:null}); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
+{ assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); assert.ok(JSON.parse(await readFile(join(servePkg,'dist','openapi','agentrun-v2.openapi.json'),'utf8')).openapi,'the install has the contract its build copies, dist/openapi/agentrun-v2.openapi.json'); { const packDir=join(servePkg,'dist','packs','default'); const pack=JSON.parse(await readFile(join(packDir,'pack.json'),'utf8')); assert.equal(pack.name,'default'); const named=[...new Set([...Object.values(pack.effort),...Object.values(pack.outputs)].flatMap(row=>row.skills))]; assert.ok(named.length>0); for (const name of named) assert.match(await readFile(join(packDir,'skills',name,'SKILL.md'),'utf8'),new RegExp('^---\\nname: '+name+'\\n'),'the install has the skill '+name+' of the default pack'); } const caps=serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',fast:null,default:null,strong:null}); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
 for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) assert.equal(typeof reference[name],'function',name); assert.equal(typeof referenceScan.credentialIn,'function'); assert.equal(typeof referencePlace.localPlace,'function'); assert.ok(existsSync(fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'))),'the child app resolves to a file');
 { const draft={v:2,name:'w',schemas:{S:{type:'object'}},output:{schemaId:'S'},root:{node:'agent',label:'a',instructions:'Do it.',out:'S',as:'a',tools:['bash']}}; const changes=[{path:'workflows/w/workflow.json',status:'added',bytes:Buffer.from(JSON.stringify(draft))},{path:'AGENTS.md',status:'modified',bytes:Buffer.from('x')}]; assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes}).problems.map(p=>p.rule),['no_tool_list','locked','memo_missing']); assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes,tools:['fetch_page']}).problems.map(p=>p.rule),['workflow','locked','memo_missing']); }
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
@@ -500,8 +500,8 @@ const keep = async (store: WorkflowStore, workflow: Workflow): Promise<[StoredWo
 void keep;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'workflows-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'adapters-consumer.ts'), `import { openDrive, Restart, type Drive, type EffectRecord } from '@parcha/agentrun-adapters/kernel';
-import { NativeJournal, placeSubmissions } from '@parcha/agentrun-adapters/process';
+  await writeFile(join(consumer, 'adapters-consumer.ts'), `import { openDrive, Restart, type Drive, type EffectRecord } from '@parcha/agentrun-kernel/kernel';
+import { NativeJournal, placeSubmissions } from '@parcha/agentrun-kernel/process';
 const place = async (drive: Drive): Promise<[EffectRecord | undefined, NativeJournal]> => { await placeSubmissions(drive, drive.pending()); return [drive.state().effects.get('k'), new NativeJournal(drive)]; };
 const kernel: [typeof openDrive, typeof Restart] = [openDrive, Restart];
 void [place, kernel];
@@ -638,7 +638,7 @@ void [demo, localHost, placeAt, options, boxes, useTool];
   await mkdir(claudeConsumer);
   await writeFile(join(claudeConsumer, 'package.json'), JSON.stringify({ name: 'agentrun-claude-agent-consumer', version: '1.0.0', private: true, type: 'module' }));
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...['dsl', 'run-adapters', 'run-adapters-claude-agent'].map(directory => tarballs[packageDirectories.indexOf(directory)])], claudeConsumer);
-  const claudeChecks = async () => JSON.parse((await run(process.execPath, ['--input-type=module', '-e', `import { verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
+  const claudeChecks = async () => JSON.parse((await run(process.execPath, ['--input-type=module', '-e', `import { verifyClaudeAgent } from '@parcha/agentrun-harness-claude';
 try { console.log(JSON.stringify({ cliPath: verifyClaudeAgent({}).cliPath })); } catch (e) { console.log(JSON.stringify({ name: e.name, message: e.message, install: e.install })); }`], claudeConsumer)).stdout.trim());
   const missing = await claudeChecks();
   assert.equal(missing.name, 'ClaudeAgentNotInstalled', `the adapter without its SDK: ${JSON.stringify(missing)}`);
@@ -648,7 +648,7 @@ try { console.log(JSON.stringify({ cliPath: verifyClaudeAgent({}).cliPath })); }
   await run(installCommand, installArgs, claudeConsumer);
   const installed = await claudeChecks();
   assert.ok(installed.cliPath, `after "${missing.install}", the adapter's checks still fail: ${JSON.stringify(installed)}`);
-  receipt.checks.push(`@parcha/agentrun-claude-agent without its SDK prints one install line ("${missing.install}"); run as printed in a clean consumer, it makes the adapter's pins pass.`);
+  receipt.checks.push(`@parcha/agentrun-harness-claude without its SDK prints one install line ("${missing.install}"); run as printed in a clean consumer, it makes the adapter's pins pass.`);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });

@@ -25,7 +25,9 @@ archive and unarchive, an invalid harness (422 with its `fields`), and a run on 
 - a run pinned to an earlier revision;
 - a workflow run with its typed input;
 - a workflow input its schema refuses (422);
-- a start with no key.
+- a start with no key;
+- a sandbox agent's run on a box the server does not have (409 `agent_not_runnable` with `details.box`), recorded from a
+  server started on the faux model with no box enabled.
 
 `auth.*` are the owner's sign-in routes, recorded on a fresh server with accounts (the CLI's default) as the page meets them (same origin, the session cookie):
 - no password yet;
@@ -35,5 +37,7 @@ archive and unarchive, an invalid harness (422 with its `fields`), and a run on 
 - setting it again (403);
 - signing out;
 - a wrong password (401), then the right one.
+
+`run.escalated.*` are one workflow run that escalated, recorded from a server with live decision models during a QA pass rather than from the dev kit: a judge found the evidence did not support the claim, and the run completed with `review` (`needs_evidence`, its node and its reason). They are its run (`GET /v2/runs/{id}`) and its graph (`GET /v2/runs/{id}/graph`), the bodies as the server answered.
 
 No password is recorded: a request that sent one lists only its field names (`body_fields`), and the session value is a placeholder.

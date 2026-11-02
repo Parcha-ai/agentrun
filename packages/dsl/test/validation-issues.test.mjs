@@ -184,7 +184,7 @@ test('a dry run says whether every check ran: passed, not_run or failed, with ok
   assert.deepEqual([invalid.ok, invalid.status], [false, 'failed']);
 });
 
-test('agentrun dry-run keeps its exit codes; --strict exits 3 when a check did not run', async (t) => {
+test('agentrun-dsl dry-run keeps its exit codes; --strict exits 3 when a check did not run', async (t) => {
   const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
   const dir = await mkdtemp(join(tmpdir(), 'agentrun-strict-'));
   t.after(() => rm(dir, { recursive: true, force: true }));

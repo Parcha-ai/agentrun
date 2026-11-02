@@ -11,7 +11,7 @@ import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { processAlive } from "@parcha/agentrun-adapters/host";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsOf, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
@@ -51,6 +51,8 @@ const DRAIN = "30s";
 const PROCESS_LOG = "process.log";
 /** How long a request waits for a run's door: its process coming up, or a settle in progress. */
 const READY_TIMEOUT_MS = 45_000;
+/** The reducer's live "Run started" and "Run finished" rows: a turn's edges, which no store entry makes on any harness,
+ *  so a run's settled timeline never has them. Never served, live or settled, so no row a reader saw goes at the end. */
 const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
@@ -192,10 +194,14 @@ export type Run = {
   /** Settles of this run not yet done: while any is, nothing starts its process again. */
   settles: number;
   updatedAt: string;
+  /** Where its status stood for its notices (`notify`): input_required, an end once carried back, or `other`. Unset
+   *  until this server has first read the run, so a run it adopts notices nothing of where it already stood; UNREAD for
+   *  an agentic run adopted live, whose rows come with its first snapshot. */
+  moment?: string;
 };
 
 const ASKED = "Asked you: ";
-registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`);
+registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`, undefined, { name: "Ask you a question" });
 // ask_person ends its turn (tools.ts): the person's reply is their next message, never a steer.
 registerTurnEnding(ASK_TOOL);
 
@@ -282,6 +288,23 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
   return (id) => !live.has(id) && !isLive(id);
 }
 
+/** A live run adopted with no rows yet: where it stands is read from its first snapshot, notifying nothing. */
+const UNREAD = "unread";
+/** What a run's `moment` becomes (`keep`) as its status is recorded, and whether that is a notice. A run not yet read
+ *  (undefined) keeps none. A live run adopted with no rows (UNREAD) takes where its first snapshot stands, silently; an
+ *  end it comes to is always new, and noticed. */
+export function nextMoment(seen: string | undefined, moment: string, rows: number): { keep: string | undefined; notify: boolean } {
+  if (seen === undefined) return { keep: undefined, notify: false };
+  if (seen === UNREAD && (moment === "other" || moment === "input_required")) return { keep: rows ? moment : UNREAD, notify: false };
+  return { keep: moment, notify: moment !== seen && moment !== "other" };
+}
+
+/** Where a run's status stands for its notices: input_required, an end once carried back, else other. */
+const momentOf = (run: Run): string => {
+  const { status } = statusOf(run);
+  return status === "input_required" || (TERMINAL.has(status) && run.settled) ? status : "other";
+};
+
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {
   if (run.outcome) return { status: run.outcome, state: "idle" };
@@ -307,7 +330,10 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify };
+/** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
+ *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
+export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => void;
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
@@ -479,6 +505,7 @@ export class Runs {
       this.adoptProcess(run, record);
     }
     this.refresh(run);
+    run.moment = run.kind === "agentic" && run.orphan !== undefined && !run.rows.length ? UNREAD : momentOf(run);
     return run;
   }
 
@@ -549,7 +576,7 @@ export class Runs {
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
   /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
   private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
-    run.rows = withAsks(rows);
+    run.rows = withAsks(rows.filter((r) => !QUIET.test(r.id)));
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
@@ -694,6 +721,20 @@ export class Runs {
   private mark(run: Run): void {
     const { status, state } = statusOf(run);
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
+    const moment = momentOf(run);
+    const { keep, notify } = nextMoment(run.moment, moment, run.rows.length);
+    run.moment = keep;
+    if (!notify || !this.options.notify) return;
+    const waits = moment === "input_required";
+    try {
+      // A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on).
+      const at = waits ? ((stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "") : (run.endedAt ?? "");
+      // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
+      const pending = waits ? { pending: { kind: state === "waiting" ? ("question" as const) : ("stopped" as const) } } : {};
+      this.options.notify(waits ? "run.needs_input" : "run.ended", { run_id: run.id, agent_id: run.agentId, status, title: run.meta.title, ...pending }, at);
+    } catch (error) {
+      warn(run.id, `its notice was not queued: ${(error as Error).message}`);
+    }
   }
 
   // ---- the door -------------------------------------------------------------------------------------------------------
@@ -1192,6 +1233,7 @@ export class Runs {
     };
     await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
+    run.moment = "other";
     this.runs.set(run.id, run);
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;
@@ -1317,7 +1359,9 @@ export class Runs {
   async cancel(run: Run): Promise<boolean> {
     // As stop: already terminal, and no cancel mark is written.
     if (run.imported) return false;
-    if (run.outcome) return false;
+    // Finishing is already ending with its outcome (an answer, a failure, the cap): a cancel now would turn a run that
+    // answered into a cancelled one, since the settle reads the cancel first.
+    if (run.outcome || run.finishing) return false;
     run.cancel = true;
     // First, so no request leaves after the cancel landed, whether or not the process can be reached yet.
     await writeWhole(join(run.dir, RUN_CANCELLED), "").catch((error: Error) => warn(run.id, `its cancel mark is not written: ${error.message}`));
@@ -1441,8 +1485,8 @@ export class Runs {
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, pending, cost, archived_at, imported_from } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, pending, cost, archived_at, imported_from };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -1461,6 +1505,7 @@ export class Runs {
     return {
       run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, revision: row.revision, kind: row.kind, sha: null,
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
+      ...(typeof meta?.effort === "string" ? { effort: meta.effort } : {}),
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
       review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),

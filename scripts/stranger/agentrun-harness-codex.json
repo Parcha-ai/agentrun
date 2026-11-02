@@ -1,0 +1,14 @@
+{
+  "package": "@parcha/agentrun-harness-codex",
+  "install": [
+    "run-adapters-codex",
+    "dsl",
+    "run-adapters"
+  ],
+  "companions": [
+    "@parcha/agentrun-dsl",
+    "@parcha/agentrun-kernel"
+  ],
+  "expect": "no-key path missing",
+  "reason": "@parcha/agentrun-harness-codex's README gives no command that runs with no key yet"
+}

@@ -3,9 +3,9 @@
 // own text. No Codex binary: the log and the function that reads it.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { INTERRUPTED_TEXT, openDrive } from '@parcha/agentrun-adapters/kernel';
-import { placeSubmissions, recoveryNote, toolBridge } from '@parcha/agentrun-adapters/process';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { INTERRUPTED_TEXT, openDrive } from '@parcha/agentrun-kernel/kernel';
+import { placeSubmissions, recoveryNote, toolBridge } from '@parcha/agentrun-kernel/process';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { repairOutput } from '../dist/harness.js';
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

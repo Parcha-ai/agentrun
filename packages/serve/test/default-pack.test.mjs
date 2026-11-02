@@ -11,9 +11,9 @@ import { test } from "node:test";
 import { EFFORTS } from "../dist/model.js";
 import { defaultPack, packIssues, resolvePack } from "../dist/packs.js";
 
-// The shared skill check: @parcha/agentrun-adapters' own once it holds it; the Claude adapter's export is the same check.
-const adapters = await import("@parcha/agentrun-adapters");
-const { skillProblems } = typeof adapters.skillProblems === "function" ? adapters : await import("@parcha/agentrun-claude-agent");
+// The shared skill check: @parcha/agentrun-kernel's own once it holds it; the Claude adapter's export is the same check.
+const adapters = await import("@parcha/agentrun-kernel");
+const { skillProblems } = typeof adapters.skillProblems === "function" ? adapters : await import("@parcha/agentrun-harness-claude");
 
 /** What each output type loads after the effort skill, and the file it writes. */
 const OUTPUTS = {

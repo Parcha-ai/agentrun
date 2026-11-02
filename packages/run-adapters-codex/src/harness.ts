@@ -273,15 +273,15 @@ type Begun = BuiltinStart | typeof LAGGING;
 /** The rollout tail failed (the file shrank, was replaced, or is not the session user's): what the drive halts with. */
 export class RolloutTailError extends Error {
   constructor(cause: unknown) {
-    super(`agentrun-codex: the rollout can no longer be mirrored (${String((cause as Error)?.message ?? cause).slice(0, 200)}): the drive stops, and the next one rebuilds CODEX_HOME from the log`, { cause });
+    super(`agentrun-harness-codex: the rollout can no longer be mirrored (${String((cause as Error)?.message ?? cause).slice(0, 200)}): the drive stops, and the next one rebuilds CODEX_HOME from the log`, { cause });
     this.name = 'RolloutTailError';
   }
 }
 
 function testGuard(): void {
-  if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
-  if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-codex: a stand-in app-server runs only under a test runner');
-  if (process.env.NODE_ENV === 'production') throw new TypeError('agentrun-codex: a stand-in app-server refuses to run in production');
+  if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-harness-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
+  if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-harness-codex: a stand-in app-server runs only under a test runner');
+  if (process.env.NODE_ENV === 'production') throw new TypeError('agentrun-harness-codex: a stand-in app-server refuses to run in production');
 }
 
 /** When this invocation ends: the World's runtime deadline if it reports one, at most the kernel's default bound away. */
@@ -295,7 +295,7 @@ async function invocationDeadline(ctx: DriveContext): Promise<number> {
 function sandboxRequired(why: string): Unavailable {
   return new Unavailable(`Codex runs only on a session machine its adapter made: ${why}`, {
     code: 'sandbox_required',
-    hint: "Run Codex through @parcha/agentrun-codex's codexAdapter(), which makes the session machine.",
+    hint: "Run Codex through @parcha/agentrun-harness-codex's codexAdapter(), which makes the session machine.",
   });
 }
 
@@ -360,12 +360,12 @@ interface Invocation {
 
 export function codexHarness(options: CodexHarnessOptions = {}): Harness {
   for (const [key, why] of Object.entries(REMOVED)) {
-    if ((options as Record<string, unknown>)[key] !== undefined) throw new TypeError(`agentrun-codex: the ${key} option is gone: ${why}`);
+    if ((options as Record<string, unknown>)[key] !== undefined) throw new TypeError(`agentrun-harness-codex: the ${key} option is gone: ${why}`);
   }
   const builtinsOn = options.builtins ?? false;
   if (options.sandboxMode !== undefined) {
-    if (!SANDBOX_MODES.has(options.sandboxMode)) throw new TypeError(`agentrun-codex: sandboxMode must be 'read-only', 'workspace-write' or 'danger-full-access'`);
-    if (!builtinsOn) throw new TypeError('agentrun-codex: sandboxMode needs builtins: true (with the built-ins off, Codex runs no command)');
+    if (!SANDBOX_MODES.has(options.sandboxMode)) throw new TypeError(`agentrun-harness-codex: sandboxMode must be 'read-only', 'workspace-write' or 'danger-full-access'`);
+    if (!builtinsOn) throw new TypeError('agentrun-harness-codex: sandboxMode needs builtins: true (with the built-ins off, Codex runs no command)');
   }
   checkConfig(options.config);
   if (options.test) testGuard();
@@ -549,12 +549,12 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
 
       // Everything the drive waits on also ends when the child dies, the link is lost or the drive stops.
       const stopped = new Promise<never>((_, reject) => {
-        const fail = () => reject(ctx.signal.reason ?? new Error('agentrun-codex: the drive stopped'));
+        const fail = () => reject(ctx.signal.reason ?? new Error('agentrun-harness-codex: the drive stopped'));
         if (ctx.signal.aborted) fail();
         else ctx.signal.addEventListener('abort', fail, { once: true });
       });
       const lost = new Promise<never>((_, reject) => {
-        const fail = () => reject(new Error("agentrun-codex: the link to the session's sandbox was lost"));
+        const fail = () => reject(new Error("agentrun-harness-codex: the link to the session's sandbox was lost"));
         if (machine.signal.aborted) fail();
         else machine.signal.addEventListener('abort', fail, { once: true });
       });
