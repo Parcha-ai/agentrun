@@ -239,6 +239,15 @@ const AGENT_LEARNING = closed({
   counts: LEARNING_COUNTS,
 });
 const PROBLEM = { type: "object", additionalProperties: false, required: ["rule", "detail"], properties: { rule: { type: "string" }, path: { type: "string" }, detail: { type: "string" } } };
+const VERDICT_ITEM = {
+  type: "object", additionalProperties: false, required: ["file", "keep", "why"],
+  properties: {
+    file: { type: "string", description: "The new note's file name; `[redacted]` when it holds one of the host's secrets as they are now." },
+    keep: { type: "boolean", description: "Whether the rubric keeps the note." },
+    question: { type: "string", description: "The rubric's question the note failed (General, From content, Duplicate or Contradicts), when it is not kept." },
+    why: { type: "string", description: "One sentence, the grader's, cut of the host's secrets." },
+  },
+};
 const RUN_LEARNING = {
   oneOf: [
     closed({
@@ -246,7 +255,7 @@ const RUN_LEARNING = {
       detail: { ...NULL_STRING, description: "One plain sentence: never a secret or a value from the input." }, at: { type: "string", format: "date-time" },
       seed: { ...NULL_STRING, description: "The commit of main the run started from; null when its seed failed." },
       merged: { ...NULL_STRING, description: "Its merge commit on main, once merged." },
-      verdict: { oneOf: [closed({ merge: { type: "boolean" }, reason: { type: "string" } }), { type: "null" }], description: "The grader's, once it judged." },
+      verdict: { oneOf: [closed({ merge: { type: "boolean" }, reason: { type: "string" }, items: { type: "array", items: VERDICT_ITEM, description: "One for each new note the run proposed." } }), { type: "null" }], description: "The grader's, once it judged; null when no grade ran." },
       problems: { type: "array", items: PROBLEM, description: "The checker's, when the reason is `checker`." },
       cost_usd: closed({ grade: { type: ["number", "null"], description: "The grade's, outside the run (GET /usage's `learning` meter); null before a grade ran, or when its cost is unknown. The end-of-run turn's cost is in the run's own totals." } }),
       tokens: closed({ grade: { oneOf: [closed({ input: COUNT, cache_read: COUNT, cache_write: COUNT, output: COUNT }), { type: "null" }], description: "The grade's tokens; `input` excludes cached input." } }),

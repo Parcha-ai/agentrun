@@ -409,7 +409,9 @@ export async function runLearning(run: Run, shown: Shown, secrets: readonly stri
     run: run.id, state, reason, detail, at,
     seed: pin?.seed ?? null,
     merged: merged ?? null,
-    verdict: verdict ? { merge: verdict.merge, reason: shown.text(verdict.reason) } : null,
+    // The grader's, with its item for each new note: a name holding one of the host's secrets reads [redacted], and
+    // each text is cut of them.
+    verdict: verdict ? { merge: verdict.merge, reason: shown.text(verdict.reason), items: (verdict.items ?? []).map(({ file, keep, question, why }) => ({ file: shown.name(file), keep, ...(question ? { question: shown.text(question) } : {}), why: shown.text(why) })) } : null,
     problems: (problems ?? []).map((problem) => printable(problem, secrets)),
     // The grade's alone: the end-of-run turn's cost is in the run's own totals.
     cost_usd: { grade: cost_usd?.grade ?? null },

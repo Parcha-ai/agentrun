@@ -8,10 +8,11 @@
 // answers after a minute, or when it is aborted). A later message `Write: <JSON>` ([file, text] pairs) writes each file
 // into `.learning/`, one write a request, then says "Written.": a follow-up that changes the run's copy.
 // The server's grader is answered here too, on the agent's own model, by what the instructions say: "Grade: drop." keeps
-// no note, "Grade: sly." says merge and keeps none, "Grade: garbage." is no JSON, "Grade: fail." fails the call;
-// anything else keeps every note. With AGENTRUN_TEST_FAUX_GRADE_HOLD set (in the server's environment), the grader
-// answers only once it is aborted; set to `never`, it never answers at all, aborted or not. Each grader call is filed
-// as a line in the file AGENTRUN_TEST_FAUX_CALLS names.
+// no note, "Grade: drop <file>." keeps every note but that one and merges none, "Grade: sly." says merge and keeps
+// none, "Grade: garbage." is no JSON, "Grade: fail." fails the call; anything else keeps every note. With
+// AGENTRUN_TEST_FAUX_GRADE_HOLD set (in the server's environment), the grader answers only once it is aborted; set to
+// `never`, it never answers at all, aborted or not. Each grader call is filed as a line in the file
+// AGENTRUN_TEST_FAUX_CALLS names.
 import { access } from "node:fs/promises";
 import { appendFileSync } from "node:fs";
 
@@ -53,10 +54,12 @@ function grade(prompt, faux) {
   if (rules.includes("Grade: fail.")) return faux.message("", { stopReason: "error", errorMessage: "the faux grader failed on purpose" });
   if (rules.includes("Grade: garbage.")) return faux.message("Looks fine to me.");
   const keep = !rules.includes("Grade: drop.") && !rules.includes("Grade: sly.");
+  const dropped = /Grade: drop (\S+\.md)\./.exec(rules)?.[1];
+  const kept = (file) => keep && file !== dropped;
   return faux.message(JSON.stringify({
-    merge: keep || rules.includes("Grade: sly."),
-    reason: keep ? "Each note is general and new." : "A note is about the one case it came from.",
-    items: files.map((file) => ({ file, keep, ...(keep ? {} : { question: "General" }), why: keep ? "It holds as a general rule." : "It is about one case." })),
+    merge: (keep && !dropped) || rules.includes("Grade: sly."),
+    reason: keep && !dropped ? "Each note is general and new." : "A note is about the one case it came from.",
+    items: files.map((file) => ({ file, keep: kept(file), ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : "It is about one case." })),
   }));
 }
 

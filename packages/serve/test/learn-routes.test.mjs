@@ -92,7 +92,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   // Run 2: its learning whole shows the drop, and its diff its proposal against its seed.
   const learned2 = (await api("GET", `/runs/${two}/learning`)).body;
   meets("/runs/{run_id}/learning", learned2);
-  assert.deepEqual({ ...learned2, at: undefined, detail: undefined, cost_usd: undefined, tokens: undefined }, { run: two, state: "dropped", reason: "grader", detail: undefined, at: undefined, seed: main1, merged: null, verdict: { merge: false, reason: "A note is about the one case it came from." }, problems: [], cost_usd: undefined, tokens: undefined });
+  assert.deepEqual({ ...learned2, at: undefined, detail: undefined, cost_usd: undefined, tokens: undefined }, { run: two, state: "dropped", reason: "grader", detail: undefined, at: undefined, seed: main1, merged: null, verdict: { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "prefers-tables.md", keep: false, question: "General", why: "It is about one case." }] }, problems: [], cost_usd: undefined, tokens: undefined });
   assert.ok(Object.keys(learned2.cost_usd).join() === "grade" && learned2.cost_usd.grade > 0 && learned2.tokens.grade.input > 0, JSON.stringify(learned2));
   assert.deepEqual((await api("GET", `/runs/${two}/learning/diff`)).body, { base: main1, head: null, files: [{ path: "prefers-tables.md", status: "added", patch: added(TABLES) }] });
   const learned1 = (await api("GET", `/runs/${one}/learning`)).body;
@@ -307,6 +307,7 @@ test("a restarted server counts an agent's runs that tried to learn from the lea
   // The second run's index names the note: it plans nothing, and its learning is dropped as empty.
   const empty = await ended(first.api, await started(first.api, "counted"));
   settled(empty.view, empty.rows, "dropped", "empty");
+  assert.equal((await first.api("GET", `/runs/${empty.view.run_id}/learning`)).body.verdict, null, "no grade ran, so no verdict");
   for (const { view } of [merged, empty]) await savedOf(data, view.run_id);
   const want = { merged: 1, dropped: { empty: 1 }, in_progress: 0 };
   assert.deepEqual((await first.api("GET", "/agents/counted/learning")).body.counts, want);
@@ -403,7 +404,9 @@ test("a note's name that holds a value made secret after it was written is never
   const after = (await api("GET", "/agents/namer/learning")).body;
   assert.deepEqual([after.index, after.log.items[0].by, after.log.items[0].reason, after.log.items[0].files], ["", { user: true }, "retired by a person: [redacted].md", ["MEMORY.md", "[redacted]"]]);
   assert.deepEqual(after.notes.items.map((n) => [n.file, n.status]), [["[redacted]", "retired"], ["old-plan.md", "superseded"]]);
-  const shown = JSON.stringify([view, page1, page2, log, diff, (await api("GET", `/runs/${two.view.run_id}/learning`)).body, old.body, [...old.headers], [...own.headers], retire.body, [...retire.headers], after]);
+  const learned = (await api("GET", `/runs/${two.view.run_id}/learning`)).body;
+  assert.deepEqual(learned.verdict.items, [{ file: "[redacted]", keep: true, why: "It holds as a general rule." }], "the grader's item names the note [redacted]");
+  const shown = JSON.stringify([view, page1, page2, log, diff, learned, old.body, [...old.headers], [...own.headers], retire.body, [...retire.headers], after]);
   assert.ok(!shown.includes(value), "the value is nowhere a person reads");
 });
 
@@ -451,4 +454,21 @@ test("a retire is always the way out: a note at the 4 KB cap retires, and so doe
   const bare = await api("POST", `${files}/bare.md/retire`, undefined, { "if-match": await etag("bare.md") });
   assert.deepEqual([bare.status, bare.body?.error?.problems?.map((p) => p.rule)], [400, ["note"]]);
   assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing committed");
+});
+
+test("a run's learning shows the grader's item for each new note: a drop of two notes names the one that failed, with its question and why", { timeout: 120_000 }, async (t) => {
+  const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const ONE_CASE = note("One case", "The answer for this one input was 42");
+  await made(api, learner("judged", { instructions: "Answer the question.\nGrade: drop one-case.md.", plan: [["check-units.md", UNITS], ["one-case.md", ONE_CASE]] }));
+  const run = await ended(api, await started(api, "judged"));
+  settled(run.view, run.rows, "dropped", "grader");
+  const learned = (await api("GET", `/runs/${run.view.run_id}/learning`)).body;
+  assert.deepEqual(schemaProblems(doc, doc.paths["/runs/{run_id}/learning"].get.responses["200"].content["application/json"].schema, learned), []);
+  const { items, ...verdict } = learned.verdict;
+  assert.deepEqual(verdict, { merge: false, reason: "A note is about the one case it came from." });
+  assert.deepEqual([...items].sort((a, b) => a.file.localeCompare(b.file)), [
+    { file: "check-units.md", keep: true, why: "It holds as a general rule." },
+    { file: "one-case.md", keep: false, question: "General", why: "It is about one case." },
+  ]);
 });

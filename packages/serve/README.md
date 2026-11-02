@@ -735,10 +735,11 @@ with the token, an archived agent's too:
   `learning: <edited, created or retired> by a person: <file>` with a `Changed-By: user` trailer, with `MEMORY.md`
   rebuilt, `main` moved only from the commit it was made on, and the folder's files brought in line; it answers the
   note as it now is, with its new `ETag`. `MEMORY.md` itself is never written (400).
-- `GET /runs/{run_id}/learning`: the run's learning whole (its seed, its merge, the grader's verdict, the checker's
-  problems, what the grade cost), `null` for a run that does not learn. `GET /runs/{run_id}/learning/diff`: a merged
-  run's merge commit against its parent, else its proposal against its seed, each file's patch as git writes it from
-  the first `@@`, or `withheld` (`too_large`, `secret`).
+- `GET /runs/{run_id}/learning`: the run's learning whole (its seed, its merge, the grader's verdict with its item for
+  each new note, `{file, keep, question, why}`, `question` the rubric's question a dropped note failed, the checker's
+  problems, what the grade cost), `null` for a run that does not learn; `verdict` is `null` until a grade ran.
+  `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, else its proposal against its
+  seed, each file's patch as git writes it from the first `@@`, or `withheld` (`too_large`, `secret`).
 
 Every read is git plumbing at one commit, with no optional lock, and every text it answers is cut of the server's
 secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
