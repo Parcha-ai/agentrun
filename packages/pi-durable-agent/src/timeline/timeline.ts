@@ -296,6 +296,10 @@ function createProjector(options: TimelineOptions) {
   const meter = createMeter();
   // Each conversation's latest answer, by entry id: a continuation's calls show under it.
   const answers = new Map<number, number | undefined>();
+  // Per conversation, the text answer that ended its request, until its turn shows whether it was the last thing said: a
+  // later answer, or a continuation, with text or a call makes it a text_block (a harness's commentary before a tool of
+  // its own, which its host never sees as a call); a person's message settles it.
+  const provisional = new Map<number, TimelineEvent>();
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -372,12 +376,22 @@ function createProjector(options: TimelineOptions) {
         add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
       } else if (message.stopReason !== "aborted") {
         const blocks = blocksOf(message);
+        const settled = provisional.get(conv);
+        if (settled && (textOf(message) || blocks.some((block) => block.type === "toolCall"))) {
+          settled.kind = "text_block";
+          touch(settled);
+          provisional.delete(conv);
+        }
         const first = (type: string) => blocks.findIndex((block) => block.type === type);
         const thinking = scrubUrls(textOf(message, "thinking", "thinking"));
         if (thinking) add(make("thinking", conv, `${base}:${first("thinking")}`, { summary: `Thinking: ${cut(firstSentence(thinking), caps.thinking)}`, text: thinking }));
         const text = textOf(message);
         const final = message.stopReason === "stop" && !blocks.some((block) => block.type === "toolCall");
-        if (text) add(make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text }));
+        if (text) {
+          const row = make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text });
+          add(row);
+          if (final) provisional.set(conv, row);
+        }
         blocks.forEach((block, index) => {
           const [id, name] = [str(block.id), str(block.name)];
           if (block.type !== "toolCall" || !id || !name) return;
@@ -447,6 +461,7 @@ function createProjector(options: TimelineOptions) {
       const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv) && !cutTurns.has(conv);
       const text = textOf(message);
       add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text }));
+      provisional.delete(conv);
     }
     if (["pi.user", "pi.assistant", "pi.tool-result"].includes(entry.kind)) previous.set(conv, entry.kind);
     // A model request an abort cut after the round: its end mark is written only for an aborted request (not a withdrawn
