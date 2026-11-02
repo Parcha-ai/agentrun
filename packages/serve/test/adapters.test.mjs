@@ -174,7 +174,7 @@ test("demo: run from npx, a missing Claude Agent SDK says the npx line that runs
 });
 
 test("npx is told by where serve's files are: under npm's _npx cache, not a project's node_modules, and not this checkout", () => {
-  assert.equal(startedByNpx("/home/someone/.npm/_npx/6f2c0a1b9d3e/node_modules/@parcha/agentrun-serve/dist/adapters.js"), true);
+  assert.equal(startedByNpx("/var/cache/npm/_npx/one-run/node_modules/@parcha/agentrun-serve/dist/adapters.js"), true);
   assert.equal(startedByNpx("/work/app/node_modules/@parcha/agentrun-serve/dist/adapters.js"), false, "a project's install");
   assert.equal(startedByNpx("/work/_npx-notes/node_modules/@parcha/agentrun-serve/dist/adapters.js"), false, "a directory merely named like it");
   assert.equal(startedByNpx(), false, "this checkout's build");
