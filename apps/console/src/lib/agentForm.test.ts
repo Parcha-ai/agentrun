@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBody, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers } from "./agentForm";
+import { createBody, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers, toolsFor } from "./agentForm";
 import { ClientError } from "./client";
 import agent from "../fixtures/agent.invoice-checker.json";
 import workflow from "../fixtures/agent.support-triage.json";
@@ -151,5 +151,19 @@ describe("toolOffers, a tool object that doesn't say whether it's available", ()
   it("reads it as available: only an explicit false makes a tool unavailable", () => {
     expect(toolOffers([{ name: "read" }])).toEqual([{ name: "read", available: true }]);
     expect(toolOffers([{ name: "read", available: false }])).toEqual([{ name: "read", available: false }]);
+  });
+});
+
+describe("call-only tools", () => {
+  const offers = toolOffers([
+    { name: "read", nodes: true, available: true, harnesses: ["pi", "codex"] },
+    { name: "pdf_pages", nodes: false, call_only: true, available: true, harnesses: ["pi"] },
+  ]);
+  it("keeps what capabilities say of a tool: call_only and nodes", () => {
+    expect(offers[1]).toEqual({ name: "pdf_pages", available: true, harnesses: ["pi"], call_only: true, nodes: false });
+  });
+  it("no harness runs one, so no agent starts with one ticked", () => {
+    expect(toolsFor("pi", offers).map((t) => t.name)).toEqual(["read"]);
+    expect(defaultTools("pi", offers)).toEqual(["read"]);
   });
 });

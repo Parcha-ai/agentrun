@@ -1,0 +1,8 @@
+---
+packages: @parcha/pi-transport
+kind: fix
+---
+**A store a box made is opened on the host only as a read-only copy of its main file, and never written: no trigger, view or schema of its own, no extension**
+- `verifyStore` opened a checkpoint's store, a file the box made, with SQLite's default settings, and `replayCommits` opened it to write through pi-durable, so a trigger in it ran on the host's commits. Now both read such a file one way only, following SQLite's guidance for a database file another security domain could have written: a regular file of at most `DEFAULT_MAX_STORE_BYTES` (1 GiB, or `{ maxBytes }`) has its main file copied, without following a link, into a directory the host makes (no journal or write-ahead log of the box's is ever beside what SQLite opens), and the copy is opened `immutable` and read-only, with no extension loading, `trusted_schema` off, `cell_size_check` on and `mmap_size` 0.
+- The schema must be the one pi-durable makes, object for object, before the quick check runs: a trigger, a view, a virtual table or a table of the file's own is refused with the new `StoreErrorCode` `refused`, as is one that is not a regular file. Two stores that verified before are refused now: a store of another pi-durable schema version, and a store over 1 GiB.
+- `replayCommits` never opens the file to write: the rows of pi-durable's tables are read into a store pi-durable makes on the host, which takes the file's place, and the commits go into that one. A file it refuses is `failed` with nothing applied, and a restore then uses the checkpoint as it is. `verifyStore` and `replayCommits` take an optional `{ maxBytes }`.
