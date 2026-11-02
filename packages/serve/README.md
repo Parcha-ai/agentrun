@@ -328,8 +328,10 @@ the model reads ends with one line asking it to cite the URL of each result it r
 with `original_chars`, its whole length, where it is known (Parallel cuts a page itself and gives none; no paging). With Parallel picked the page is read through Parallel's
 extract (`POST https://api.parallel.ai/v1/extract`, its full content as the text, about $0.001 a URL) and `via` is
 `"parallel"`, with status 200 and the absolute links of its markdown; when Parallel lists the URL in its errors, answers
-with no content, a 5xx or not within 60 s, it is `fetch_page`'s fetch, `via: "direct"`; a 401 or 403 stops Parallel
-for the rest of the run. A URL passes the guard's own check before anything is sent to Parallel: a URL `fetch_page`
+with no content, a 5xx or not within 60 s, it is `fetch_page`'s fetch, `via: "direct"`, with `parallel` saying why
+Parallel gave no page (`refused the key (401)`, `answered 503`, `timed out`, `listed the URL in errors`, `not tried:
+refused earlier in this run`), and the model reads a line saying so; a 401 or 403 stops Parallel for the rest of the
+run. A fetch Parallel was not picked for says nothing of it. A URL passes the guard's own check before anything is sent to Parallel: a URL `fetch_page`
 refuses is refused here too and never leaves the machine.
 
 `web_search` through Parallel uses its Search API (`POST https://api.parallel.ai/v1/search`, its `fast` mode, about

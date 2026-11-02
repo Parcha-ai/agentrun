@@ -64,15 +64,16 @@ test("a guard check whose lookup never answers does not pass within its bound: n
   assert.equal(lookups, 2);
 });
 
-test("the URL in Parallel's errors, a 5xx, or a request that fails falls back to the guarded direct fetch: via direct, Parallel still tried next time", async (t) => {
+test("the URL in Parallel's errors, a 5xx, or a request that fails falls back to the guarded direct fetch: via direct, saying why, Parallel still tried next time", async (t) => {
   withEnv(t, {}, [MODE]);
+  const why = { errors: "listed the URL in errors", 500: "answered 500", 503: "answered 503", throws: "timed out" };
   for (const mode of ["errors", "500", "503", "throws"]) {
     const { sent, send } = parallel(mode === "throws" ? "" : mode);
     const failing = mode === "throws" ? async () => { throw new DOMException("The operation timed out.", "TimeoutError"); } : send;
     const extract = parallelExtract(CANARY, failing);
     const net = network();
     const page = await webFetch(PUBLIC, { ...net, parallel: extract });
-    assert.deepEqual([page.ok, page.title, page.via], [true, "Public page", "direct"], `${mode}: ${JSON.stringify(withoutText(page))}`);
+    assert.deepEqual([page.ok, page.title, page.via, page.parallel], [true, "Public page", "direct", why[mode]], `${mode}: ${JSON.stringify(withoutText(page))}`);
     assert.deepEqual(net.dialled, [PUBLIC], mode);
     assert.equal(sent.length, mode === "throws" ? 0 : 1, mode);
     assert.equal(extract.live(), true, `${mode} is not the key refused`);
@@ -92,7 +93,7 @@ test("a URL the guard refuses is never sent to Parallel: refused as fetch_page r
   for (const url of hostile) {
     const net = network();
     const page = await webFetch(url, { ...net, parallel: extract });
-    assert.deepEqual([page.ok, page.via], [false, "direct"], url);
+    assert.deepEqual([page.ok, page.via, page.parallel], [false, "direct", "not tried: the URL did not pass the public-host guard"], url);
     assert.match(page.refused ?? "", /^refused: /, `${url}: ${JSON.stringify(page)}`);
     assert.deepEqual(net.dialled, [], url);
   }
@@ -106,7 +107,7 @@ test("a 401 or 403 stops Parallel for the rest of the run: the next read goes st
     const { sent, send } = parallel(mode);
     const extract = parallelExtract(key, send);
     const pages = [await webFetch(PUBLIC, { ...network(), parallel: extract }), await webFetch(PUBLIC, { ...network(), parallel: extract })];
-    assert.deepEqual(pages.map((page) => [page.ok, page.via]), [[true, "direct"], [true, "direct"]], mode || "401");
+    assert.deepEqual(pages.map((page) => [page.ok, page.via, page.parallel]), [[true, "direct", `refused the key (${mode || "401"})`], [true, "direct", "not tried: refused earlier in this run"]], mode || "401");
     assert.equal(sent.length, 1, `${mode || "401"}: Parallel was asked once`);
     assert.equal(extract.live(), false);
   }
@@ -122,10 +123,11 @@ async function calls(t, key) {
   return async () => ({ parallel: (await lines(files.parallel)).map((line) => JSON.parse(line)), dialled: await lines(files.web) });
 }
 
-for (const [key, picked] of [[true, true], [true, false], [false, false]]) {
-  const what = picked ? "with Parallel picked reads through Parallel on the server's key" : key ? "with the server's Parallel key but Parallel not picked fetches directly, and no request reaches Parallel" : "with no Parallel key fetches directly, and no request reaches Parallel";
+for (const [key, picked, mode] of [[true, true, ""], [true, true, "errors"], [true, false, ""], [false, false, ""]]) {
+  const what = picked && mode ? "with Parallel picked, when Parallel lists the URL in its errors, fetches directly and says so to the model" : picked ? "with Parallel picked reads through Parallel on the server's key" : key ? "with the server's Parallel key but Parallel not picked fetches directly, and no request reaches Parallel" : "with no Parallel key fetches directly, and no request reaches Parallel";
   test(`an agentic run naming web_fetch ${what}`, { timeout: 60_000 }, async (t) => {
     const seen = await calls(t, key);
+    process.env[MODE] = mode;
     const { api } = await serve(t, { fauxWeb: FAUX_WEB, fauxParallel: FAUX_PARALLEL });
     const tool_settings = picked ? { tool_settings: { web_fetch: { provider: "parallel" } } } : {};
     assert.equal((await api("POST", "/agents", { definition: { id: "reader", name: "reader", instructions: "Read.", tools: ["web_fetch"], ...tool_settings } })).status, 201);
@@ -134,10 +136,11 @@ for (const [key, picked] of [[true, true], [true, false], [false, false]]) {
     const { rows } = await follow(api, started.body.run_id, ["completed"]);
     const results = rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_result_preview);
     assert.equal(results.length, 1, JSON.stringify(results));
-    assert.match(results[0], picked ? /"title":"Read by Parallel".*"via":"parallel"/s : /"title":"Public page".*"via":"direct"/s);
+    if (picked && mode) assert.match(results[0], /"title":"Public page".*"via":"direct","parallel":"listed the URL in errors"\}\nParallel was picked for web_fetch and gave no page \(listed the URL in errors\); this one was fetched directly\.$/s);
+    else assert.match(results[0], picked ? /"title":"Read by Parallel".*"via":"parallel"\}$/s : /"title":"Public page".*"via":"direct"\}$/s, "no word of Parallel where it read the page or was never picked");
     const { parallel: sent, dialled } = await seen();
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.urls]), picked ? [["/v1/extract", true, [PUBLIC]]] : []);
-    assert.deepEqual(dialled, picked ? [] : [PUBLIC]);
+    assert.deepEqual(dialled, picked && !mode ? [] : [PUBLIC]);
   });
 }
 
@@ -159,7 +162,8 @@ test("web_fetch takes its provider from the run's plane: none or kernel is the d
   const plane = (web_fetch) => ({ AGENTRUN_SERVE_TOOL_PLANE: JSON.stringify({ web_fetch }) });
   for (const env of [{}, plane("kernel")]) {
     const net = network();
-    assert.deepEqual([(await fetchFor(env, PUBLIC, net)).via, net.dialled], ["direct", [PUBLIC]]);
+    const page = await fetchFor(env, PUBLIC, net);
+    assert.deepEqual([page.via, "parallel" in page, net.dialled], ["direct", false, [PUBLIC]], "a kernel fetch says nothing of Parallel");
   }
   const net = network();
   assert.deepEqual(await fetchFor(plane("unavailable: parallel picked, no PARALLEL_API_KEY"), PUBLIC, net), { ok: false, url: PUBLIC, status: 0, title: "", text: "", links: [], error: "web_fetch does not run here: parallel picked, no PARALLEL_API_KEY" }, "no via: nothing was read");

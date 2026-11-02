@@ -24,12 +24,13 @@ export const PARALLEL_EXTRACT_URL = "https://api.parallel.ai/v1/extract";
 const PARALLEL_TIMEOUT_MS = 60_000;
 const PORTS = new Set(["", "80", "443"]);
 
-export type WebPage = Page & { via: "parallel" | "direct" };
+/** `parallel`, on a page fetched directly where Parallel was asked for one: why Parallel gave none. */
+export type WebPage = Page & { via: "parallel" | "direct"; parallel?: string };
 type GuardOptions = Omit<PublicFetchOptions, "maxBytes">;
-/** Parallel for one run, on one key: `read`, its extract, a page it read or undefined for any failure; `post`, one request
- *  to another of its endpoints (web_search's, web-search.ts). Neither retries, and each stops at 60 s. `live` is false
- *  once a 401 or 403 to either said the key is not served. */
-export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal): Promise<Page | undefined>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response> };
+/** Parallel for one run, on one key: `read`, its extract, a page it read or, for any failure, why it read none; `post`,
+ *  one request to another of its endpoints (web_search's, web-search.ts). Neither retries, and each stops at 60 s. `live`
+ *  is false once a 401 or 403 to either said the key is not served. */
+export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal): Promise<Page | string>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response> };
 
 /** The absolute http(s) URLs a markdown text links to (`[text](url)`), each once and without its fragment, in order. A
  *  URL ends at whitespace or at the ")" that closes the link, so parentheses it holds in pairs (a wiki title's) stay. */
@@ -71,14 +72,18 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
       try {
         // One character past the cap, so a page Parallel cut shows as cut (its whole length Parallel does not give).
         const response = await post(PARALLEL_EXTRACT_URL, { urls: [url], advanced_settings: { full_content: { max_chars_per_result: TEXT_CAP + 1 } } }, signal);
-        if (!response.ok) return void (await response.body?.cancel().catch(() => undefined));
-        const { results } = (await response.json()) as { results?: Array<{ url?: unknown; title?: unknown; full_content?: unknown } | null> };
+        if (!response.ok) {
+          await response.body?.cancel().catch(() => undefined);
+          return response.status === 401 || response.status === 403 ? `refused the key (${response.status})` : `answered ${response.status}`;
+        }
+        const { results, errors } = (await response.json()) as { results?: Array<{ url?: unknown; title?: unknown; full_content?: unknown } | null>; errors?: unknown[] };
         const row = results?.find((r) => typeof r?.url === "string" && typeof r.full_content === "string" && r.full_content.trim() !== "");
-        if (!row) return undefined;
+        if (!row) return errors?.length ? "listed the URL in errors" : "answered no content";
         const text = row.full_content as string;
         return { ok: true, url: row.url as string, status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...pageText(text, text.length > TEXT_CAP + 1), links: linksOf(text) };
-      } catch {
-        return undefined;
+      } catch (error) {
+        const name = (error as Error)?.name;
+        return name === "TimeoutError" ? "timed out" : name === "AbortError" ? "was stopped" : `failed: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
       }
     },
   };
@@ -97,13 +102,19 @@ async function passes(url: string, options: GuardOptions, ms: number): Promise<b
 }
 
 /** The page at `url` as a WebPage: through `parallel` when it is given and live and the guard passes the URL within
- *  `checkMs` (default fetch_page's 30 s), else (or when it answers no page) through fetch_page's guarded fetch. */
+ *  `checkMs` (default fetch_page's 30 s), else (or when it answers no page) through fetch_page's guarded fetch. A page
+ *  fetched directly where `parallel` was given says why Parallel gave none (`parallel`): a picked provider that fails is
+ *  never a silent fallback. */
 export async function webFetch(url: unknown, { parallel, checkMs = TIMEOUT_MS, ...options }: GuardOptions & { parallel?: Extract | null; checkMs?: number } = {}): Promise<WebPage> {
-  if (parallel?.live() && typeof url === "string" && (await passes(url, options, checkMs))) {
-    const page = await parallel.read(url, options.signal);
-    if (page) return { ...page, via: "parallel" };
+  let why: string | undefined;
+  if (parallel && !parallel.live()) why = "not tried: refused earlier in this run";
+  else if (parallel && !(typeof url === "string" && (await passes(url, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
+  else if (parallel) {
+    const read = await parallel.read(url as string, options.signal);
+    if (typeof read !== "string") return { ...read, via: "parallel" };
+    why = read;
   }
-  return { ...(await fetchPage(url, options)), via: "direct" };
+  return { ...(await fetchPage(url, options)), via: "direct", ...(why ? { parallel: why } : {}) };
 }
 
 let parallel: Extract | null | undefined;
@@ -121,7 +132,9 @@ export function parallelOf(env: NodeJS.ProcessEnv): Extract | null {
 export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: GuardOptions = {}): Promise<WebPage | Page> {
   const resolved = planeOf(env).web_fetch;
   if (isUnavailable(resolved)) return { ok: false, url: typeof url === "string" ? url : "", status: 0, title: "", text: "", links: [], error: `web_fetch does not run here: ${resolved.slice("unavailable: ".length)}` };
-  return webFetch(url, { ...options, parallel: resolved === "parallel" ? parallelOf(env) : null });
+  const extract = resolved === "parallel" ? parallelOf(env) : null;
+  const page = await webFetch(url, { ...options, parallel: extract });
+  return resolved === "parallel" && !extract ? { ...page, parallel: "not tried: this run holds no Parallel key" } : page;
 }
 
 /** The agent's tool: the WebPage as JSON text. A run whose web_fetch resolves to Parallel reads its key as the tool is
@@ -130,12 +143,13 @@ export function webFetchTool(env: NodeJS.ProcessEnv): ToolRegistration<TSchema, 
   if (planeOf(env).web_fetch === "parallel") parallelOf(env);
   return defineTool({
     name: WEB_FETCH_TOOL,
-    description: "Read one web page from a public host. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text as markdown (cut at 60,000 characters; then truncated is true and original_chars its whole length), the absolute links it holds, and via: parallel when Parallel's extract read it, direct when it was fetched from the host. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.",
+    description: "Read one web page from a public host. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text as markdown (cut at 60,000 characters; then truncated is true and original_chars its whole length), the absolute links it holds, and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.",
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {
       const page = await fetchFor(env, (args as { url?: unknown }).url, { ...(await fetchOptions(env, FAUX_ENV)), ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
-      return forModel(JSON.stringify(page), { details: page });
+      const skipped = "parallel" in page && page.parallel ? `\nParallel was picked for web_fetch and gave no page (${page.parallel}); this one was fetched directly.` : "";
+      return forModel(`${JSON.stringify(page)}${skipped}`, { details: page });
     },
   });
 }
