@@ -398,8 +398,9 @@ _Written by the lane that owns this subsystem._
 
 - Fixed by #1363, re-check with kernel check 6: claude-agent and codex runs hung in `working` when the model made two
   or more tool calls in one turn (4/4 reproductions). pi was unaffected.
-- The console's New agent with default tools is refused with 422, because `pdf_pages` and `llm` (call-only tools) are
-  ticked by default.
-- Tool keys list `web_search` and the `monid.*` tools as unlocked, but no such tool is bound.
+- Fixed by #1357, re-check with console check 2: the console's New agent with default tools was refused with 422,
+  because `pdf_pages` and `llm` (call-only tools) were ticked by default.
+- Fixed by #1356, re-check with tool plane check 1: tool keys listed `web_search` and the `monid.*` tools as unlocked,
+  but no such tool was bound.
 - Not in the server yet: effort packs and output types, native web search, places and boxes, the kernel learning loop,
   and `output`/`place` on the run request.
