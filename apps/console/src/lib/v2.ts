@@ -4,11 +4,14 @@
 export type RunStatus = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled" | "paused";
 export type RunState = "working" | "waiting" | "idle";
 
-export type ApiError = { code: string; message: string; retryable: boolean; request_id?: string };
+/** `details`: what the server says beyond the message, by code (a 409 `agent_not_runnable` names the harness or box it lacks). */
+export type ApiError = { code: string; message: string; retryable: boolean; request_id?: string; details?: Record<string, unknown> };
 
 /** `source` (a serve extension): "reported" when every part of the cost is a provider's own report, else "estimate".
  *  An older server leaves it out, and then `basis` says whether the number is an estimate. */
-export type Cost = { usd: number | null; basis: string; source?: "reported" | "estimate"; charge_state: string | null; cap_usd: number | null };
+/** `at_most_usd` (a newer server's): set only while `usd` is null because requests were cut, each with a recorded
+ *  figure; the most the run can have cost. Absent or null, the cost is unknown with no bound. */
+export type Cost = { usd: number | null; basis: string; source?: "reported" | "estimate"; charge_state: string | null; cap_usd: number | null; at_most_usd?: number | null };
 
 export type Run = {
   run_id: string;
@@ -19,6 +22,8 @@ export type Run = {
   status: RunStatus;
   state: RunState;
   title: string;
+  /** The effort the run was started with; absent when it was started with none. */
+  effort?: string;
   created_at: string;
   updated_at?: string;
   ended_at: string | null;
@@ -27,7 +32,12 @@ export type Run = {
   cost: Cost | null;
   archived_at: string | null;
   poll_after_ms?: number;
+  /** A workflow run that escalated: it completed, and waits for a person to review it (`kind`, the node it stopped
+   *  at, and why). Null or absent on every other run. */
+  review?: RunReview | null;
 };
+
+export type RunReview = { kind: string | null; node: string | null; reason: string; at?: string };
 
 export type TimelineKind =
   | "user_message" | "thinking" | "tool_use" | "tool_result" | "waiting" | "usage" | "final_answer" | "phase" | "decision" | string;
@@ -64,6 +74,16 @@ export type TimelinePage = {
 
 export type RunFile = { path: string; size_bytes: number; modified_at: string; content_type: string | null };
 export type RunFiles = { run_id: string; files: RunFile[]; complete: boolean; truncated: boolean };
+
+/** Tool keys (GET /v2/settings/tool-keys, a serve extension): each key a person may save, what it unlocks and the
+ *  harnesses that run that, and each field by name with where it is set. The server never sends a value. */
+export type ToolKeyField = { name: string; set: boolean; source: "server" | "stored" | null; stored_unreadable?: true };
+export type ToolKey = { id: string; label: string; fields: ToolKeyField[]; unlocks: string[]; harnesses: string[] };
+/** Saved values that do not open on this server, and why. `fields` is empty when the whole file does not read. */
+export type ToolKeysReenter = { reason: "seal_key_missing" | "seal_key_changed" | "file_unreadable"; fields: string[] };
+export type ToolKeys = { keys: ToolKey[]; reenter: ToolKeysReenter | null };
+/** `capabilities.features.tool_keys`: the routes, and whether a saved key is kept (`sealed`) or cannot be (`unavailable`). */
+export type ToolKeysFeature = { routes: boolean; at_rest: "sealed" | "unavailable" };
 
 /** A recorded response: what the server answered, exactly. */
 export type Recorded<T> = { request: { method: string; path: string }; status: number; headers?: Record<string, string>; body: T };

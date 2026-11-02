@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { type Analytics, type AnalyticsGroup, cachedShare, compact, coverage, duration, groupCost, type MissionView, percent, RANGES, type StatsRange, successRate, trendDays } from "@/lib/mission";
+import { type Analytics, type AnalyticsGroup, cachedShare, compact, coverage, duration, groupCost, type MissionView, outcomes, percent, RANGES, type StatsRange, successRate, trendDays } from "@/lib/mission";
 
 /** The range and agent picker over the analytics, one row above them. */
 export function AnalyticsFilter({ range, onRange, agent, agents, onAgent }: { range: StatsRange; onRange: (range: StatsRange) => void; agent: string | null; agents: MissionView["perAgent"]; onAgent?: (agent: string | null) => void }) {
@@ -35,8 +35,8 @@ export function MissionAnalytics({ a, basis, now = Date.now(), refreshing = fals
   const tiles: { label: string; value: string; notes: (string | undefined)[] }[] = [
     { label: "Tokens", value: compact(t.tokens), notes: [`${cached === null ? "" : `${percent(cached)} of input cached · `}${compact(t.output)} output`, coverage(t), t.unmetered ? `${plural(t.unmetered, "request")} unmetered: in no token sum` : undefined] },
     { label: "Run time", value: duration(a.time.wall_ms), notes: [`wall time of ${plural(a.time.ended_runs, "ended run")}`, a.time.active_runs ? `${duration(a.time.active_ms)} active, over ${plural(a.time.active_runs, "run")}` : undefined] },
-    { label: "Success rate", value: percent(rate), notes: [t.completed + t.failed ? `${t.completed} completed · ${t.failed} failed or escalated` : "No run completed or failed yet"] },
-    { label: "Cost", value: spent.total, notes: [spent.note] },
+    { label: "Success rate", value: percent(rate), notes: [t.completed + t.failed ? outcomes(t) : "No run completed or failed yet"] },
+    { label: "Cost", value: spent.total, notes: [spent.note, spent.bound] },
   ];
   return (
     <div className={cn("space-y-6 transition-opacity", refreshing && "opacity-60")} aria-busy={refreshing}>
@@ -102,7 +102,7 @@ function ToolsTable({ tools }: { tools: Analytics["tools"] }) {
           <tbody>
             {tools.map((x) => (
               <tr key={x.tool} className="border-b font-mono last:border-b-0">
-                <td className={td}>{x.tool}</td><td className={td}>{compact(x.calls)}</td>
+                <td className={td} title={x.tool}>{x.label ?? x.tool}</td><td className={td}>{compact(x.calls)}</td>
                 <td className={cn(td, x.errors > 0 && "text-destructive-text")}>{compact(x.errors)}</td>
                 <td className={td}>{percent(x.calls ? x.errors / x.calls : null)}</td>
               </tr>

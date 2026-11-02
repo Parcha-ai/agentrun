@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createBody, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers } from "./agentForm";
+import { createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
+import { DECISION_STARTER } from "./decisionStarter";
+import { WORKFLOW_STARTER } from "./workflowStarter";
 import { ClientError } from "./client";
 import agent from "../fixtures/agent.invoice-checker.json";
 import workflow from "../fixtures/agent.support-triage.json";
@@ -97,6 +99,109 @@ describe("harnessOptions", () => {
   });
 });
 
+describe("a decision agent", () => {
+  it("is offered on create after the harnesses, as a choice and never a harness id: available when the server runs decision workflows, else disabled with why", () => {
+    expect(DECISION).toBe("decision");
+    expect(harnessOptions(caps.body.harnesses, { available: true }).map((h) => h.id)).toEqual(["pi", "claude-agent", "codex", "decision", "workflow"]);
+    expect(harnessOptions(caps.body.harnesses, { available: true }).find((h) => h.id === "decision")).toEqual({ id: "decision", label: "Decision", available: true, reason: undefined });
+    const off = harnessOptions([{ id: "pi", available: true }], { available: false }).find((h) => h.id === "decision")!;
+    expect([off.id, off.available]).toEqual(["decision", false]);
+    expect(off.reason).toMatch(/decision workflows/);
+    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain("decision");
+  });
+
+  it("is created as a workflow revision from the starter decision workflow: no instructions, harness, thinking or model, and no tools", () => {
+    const body = createBody({ name: "Gambling check", description: "Is a payment for gambling?", instructions: "Typed before the choice.", harness: DECISION, tools: ["read"], thinking: "high", model: "faux/faux-1" });
+    expect(body).toEqual({ definition: { version: 1, name: "Gambling check", description: "Is a payment for gambling?", workflow: DECISION_STARTER, skills: [], tools: [] } });
+    expect(body.definition.workflow).not.toBe(DECISION_STARTER);
+    expect(createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [] }).definition).not.toHaveProperty("description");
+  });
+
+  // Capabilities' workflows as serve lists them (server.ts: adapters, and decisions.providers from decisions.ts).
+  const workflows = (available: Record<string, boolean>) => ({
+    adapters: ["runNode", "runEffect", ...(Object.values(available).some(Boolean) ? ["runJudge"] : [])],
+    decisions: { providers: ["jev", "parallel", "openrouter"].map((id) => (available[id] ? { id, available: true } : { id, available: false, reason: `no key for ${id}` })) },
+  });
+
+  it("names the server's decision provider: Jev first, then Parallel; none when the server runs no decision workflows a starter can use", () => {
+    expect(decisionProvider(workflows({ jev: true, parallel: true, openrouter: true }))).toBe("jev");
+    expect(decisionProvider(workflows({ parallel: true }))).toBe("parallel");
+    expect(decisionProvider(workflows({}))).toBeUndefined();
+    // OpenRouter needs a model on every node, and where its key is set Jev runs too: alone, it is no starter's provider.
+    expect(decisionProvider(workflows({ openrouter: true }))).toBeUndefined();
+    expect(decisionProvider({ adapters: ["runNode", "runEffect"] })).toBeUndefined();
+    expect(decisionProvider({ adapters: ["runNode", "runJudge"] })).toBe("jev");
+    expect(decisionProvider(undefined)).toBeUndefined();
+  });
+
+  it("on a server whose only decision provider is Parallel, the starter's judge names parallel, with the decision demos' longer timeout", () => {
+    const provider = decisionProvider(workflows({ parallel: true }));
+    const made = createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [], decisionProvider: provider }).definition.workflow as typeof DECISION_STARTER;
+    expect(made.root.steps[0]).toMatchObject({ node: "judge", provider: "parallel", timeoutMs: 120000 });
+    expect({ ...made, root: { ...made.root, steps: [DECISION_STARTER.root.steps[0], ...made.root.steps.slice(1)] } }).toEqual(DECISION_STARTER);
+    expect(createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [], decisionProvider: "jev" }).definition.workflow).toEqual(DECISION_STARTER);
+    expect(DECISION_STARTER.root.steps[0]).not.toHaveProperty("provider");
+  });
+
+  it("starts from a decision workflow with an example input: a typed question, then a person for an unclear or low-confidence answer", () => {
+    const steps = DECISION_STARTER.root.steps.map((s) => s.node);
+    expect(steps).toEqual(["judge", "escalate", "escalate", "escalate"]);
+    expect(DECISION_STARTER.root.steps.slice(1).map((s) => (s as { when: { predicate: string } }).when.predicate)).toEqual(["field_equals", "not", "lt"]);
+    expect(DECISION_STARTER.schemas.Input.examples).toHaveLength(1);
+    expect(DECISION_STARTER.root.steps[0]).not.toHaveProperty("provider");
+  });
+
+  // A server runs a code node only when its operator allows them (--allow-code-nodes), and refuses the run of a
+  // workflow that holds one otherwise: a starter with one would make agents whose every run a default server refuses.
+  it("has no code node anywhere, on any provider, so a default server runs it", () => {
+    const kinds = (node: unknown): string[] => {
+      if (Array.isArray(node)) return node.flatMap(kinds);
+      if (!node || typeof node !== "object") return [];
+      const own = typeof (node as { node?: unknown }).node === "string" ? [(node as { node: string }).node] : [];
+      return [...own, ...Object.values(node).flatMap(kinds)];
+    };
+    for (const provider of [undefined, "parallel"]) {
+      const workflow = createBody({ name: "D", description: "", instructions: "", harness: DECISION, tools: [], decisionProvider: provider }).definition.workflow;
+      const nodes = kinds((workflow as { root: unknown }).root);
+      expect(nodes).toContain("judge");
+      expect(nodes).not.toContain("code");
+      expect(JSON.stringify(workflow)).not.toMatch(/"via":"(?:executor|shell)"/);
+    }
+  });
+});
+
+describe("a general workflow agent", () => {
+  it("is offered on create after Decision, available on every server, a server with no decision provider included; never when editing", () => {
+    expect(WORKFLOW).toBe("workflow");
+    for (const available of [true, false]) {
+      expect(harnessOptions(caps.body.harnesses, { available }).at(-1)).toEqual({ id: "workflow", label: "Workflow", available: true, reason: undefined });
+    }
+    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain("workflow");
+  });
+
+  it("is created as a workflow revision from the general starter: no instructions, harness, thinking, model or tools, and no decision provider", () => {
+    const body = createBody({ name: "Next steps", description: "Says what to do next.", instructions: "Typed before the choice.", harness: WORKFLOW, tools: ["read"], thinking: "high", model: "faux/faux-1" });
+    expect(body).toEqual({ definition: { version: 1, name: "Next steps", description: "Says what to do next.", workflow: WORKFLOW_STARTER, skills: [], tools: [] } });
+    expect(body.definition.workflow).not.toBe(WORKFLOW_STARTER);
+    expect(createBody({ name: "W", description: "", instructions: "", harness: WORKFLOW, tools: [], decisionProvider: "parallel" }).definition.workflow).toEqual(WORKFLOW_STARTER);
+  });
+
+  // A default server refuses the run of a workflow with a code node (no --allow-code-nodes), and a decision node needs a
+  // decision provider: the general starter has neither, so any server runs it.
+  it("has no code node and no decision node: one agent step in a chain, with an example input", () => {
+    const kinds = (node: unknown): string[] => {
+      if (Array.isArray(node)) return node.flatMap(kinds);
+      if (!node || typeof node !== "object") return [];
+      const own = typeof (node as { node?: unknown }).node === "string" ? [(node as { node: string }).node] : [];
+      return [...own, ...Object.values(node).flatMap(kinds)];
+    };
+    const workflow = createBody({ name: "W", description: "", instructions: "", harness: WORKFLOW, tools: [] }).definition.workflow as typeof WORKFLOW_STARTER;
+    expect(kinds(workflow.root)).toEqual(["chain", "agent"]);
+    expect(JSON.stringify(workflow)).not.toMatch(/"node":"(?:code|judge|escalate)"|"via":"(?:executor|shell)"|"provider"/);
+    expect(workflow.schemas.Input.examples).toHaveLength(1);
+  });
+});
+
 describe("saveError", () => {
   const err = (rec: { status: number; body: { error: { code: string; message: string; fields?: unknown } } }) =>
     Object.assign(new ClientError(rec.status, rec.body.error.code, rec.body.error.message), { fields: rec.body.error.fields });
@@ -151,5 +256,19 @@ describe("toolOffers, a tool object that doesn't say whether it's available", ()
   it("reads it as available: only an explicit false makes a tool unavailable", () => {
     expect(toolOffers([{ name: "read" }])).toEqual([{ name: "read", available: true }]);
     expect(toolOffers([{ name: "read", available: false }])).toEqual([{ name: "read", available: false }]);
+  });
+});
+
+describe("call-only tools", () => {
+  const offers = toolOffers([
+    { name: "read", nodes: true, available: true, harnesses: ["pi", "codex"] },
+    { name: "pdf_pages", nodes: false, call_only: true, available: true, harnesses: ["pi"] },
+  ]);
+  it("keeps what capabilities say of a tool: call_only and nodes", () => {
+    expect(offers[1]).toEqual({ name: "pdf_pages", available: true, harnesses: ["pi"], call_only: true, nodes: false });
+  });
+  it("no harness runs one, so no agent starts with one ticked", () => {
+    expect(toolsFor("pi", offers).map((t) => t.name)).toEqual(["read"]);
+    expect(defaultTools("pi", offers)).toEqual(["read"]);
   });
 });

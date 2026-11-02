@@ -8,6 +8,9 @@
 // happens. pi's timeline counts a request per pi.assistant entry and sums their cost, and serve's costOf reads that row,
 // as for a pi run. A request's cost and its content arrive in either order (a harness may stream before its usage is
 // reported), so an entry is written at the next boundary that has both: the next request, a tool's end, the turn's end.
+// A harness reports each call as it runs it, so an answer that asks for several tools is written at its first call's end;
+// a later call of that answer is written then as its continuation (REQUEST_CONTINUED), before its result, never as part
+// of the next request's entry.
 // A request the session booked but the root has no entry for (the process died before the boundary) gets one at the
 // next open, with its cost and no content.
 //
@@ -24,12 +27,12 @@ import { hostTools, type ToolResults } from "./host-tools.js";
 import type { CapGuard } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
-import { REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
 export const BOOKED = "adapter.request";
-/** The cost of a request whose answer was written at unknown cost, written once it came in: the timeline adds it to the
- *  run's cost without counting a request, and a later open reads it as that request's cost being in. */
+/** The cost of a request whose answer was written at unknown cost, and its tokens, written once it came in: the timeline
+ *  adds it to the run's cost without counting a request, and a later open reads it as that request's cost being in. */
 export const PRICED_LATE = REQUEST_COST_LATE;
 /** How long a turn's end waits for its requests' costs, booked once the proxy has answered the harness. */
 export const BOOKING_WAIT_MS = 2_000;
@@ -46,26 +49,37 @@ const now = () => Date.now();
 const textOf = (content: unknown): string =>
   typeof content === "string" ? content : Array.isArray(content) ? content.map((part) => (part && typeof part === "object" && "text" in part && typeof part.text === "string" ? part.text : "")).join("") : "";
 
-/** One request as pi's own assistant message: its content, and its usage with the cost when it is known. `error`: a
- *  turn that ended on an error, as pi's own reads (the cap's refusal is spend_cap_reached), at $0. */
-function assistantMessage(harness: string, request: Pending | undefined, text: string, calls: ToolCall[], error?: string) {
+/** A request's tokens as pi counts them (`input` excludes cached tokens), the `usage` a cost entry carries; undefined
+ *  when it has no input or output count, or no token at all (a usage that was not read is zeros, never a count). */
+function tokensOf(usage: unknown): { input: number; output: number; cacheRead: number; cacheWrite: number } | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const u = usage as Record<string, unknown>;
+  const count = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
+  const [input, output] = [count(u.input), count(u.output)];
+  if (input === undefined || output === undefined) return undefined;
+  const tokens = { input, output, cacheRead: count(u.cacheRead) ?? 0, cacheWrite: count(u.cacheWrite) ?? 0 };
+  return tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite > 0 ? tokens : undefined;
+}
+
+/** One request as pi's own assistant message: its content, the model it asked for (the harness's id when that is not
+ *  known), and its usage with the cost when it is known. Tokens not known are 0, which pi's timeline reads as unknown.
+ *  `error`: a turn that ended on an error, as pi's own reads (the cap's refusal is spend_cap_reached), at $0. */
+function assistantMessage(harness: string, model: string | undefined, request: Pending | undefined, text: string, calls: ToolCall[], error?: string) {
   if (error !== undefined) {
     return { role: "assistant", content: [], api: "agentrun-adapter", provider: harness, model: harness, stopReason: "error", errorMessage: error, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   }
   const usage = request?.usage;
   const known = usage !== undefined && usage.usd !== null && usage.usd !== undefined;
+  const tokens = { input: usage?.input ?? 0, output: usage?.output ?? 0, cacheRead: usage?.cacheRead ?? 0, cacheWrite: usage?.cacheWrite ?? 0 };
   return {
     role: "assistant",
     content: [...(text ? [{ type: "text", text }] : []), ...calls],
     api: "agentrun-adapter",
     provider: harness,
-    model: harness,
+    model: model ?? harness,
     usage: {
-      input: usage?.input ?? 0,
-      output: usage?.output ?? 0,
-      cacheRead: usage?.cacheRead ?? 0,
-      cacheWrite: usage?.cacheWrite ?? 0,
-      totalTokens: (usage?.input ?? 0) + (usage?.output ?? 0),
+      ...tokens,
+      totalTokens: tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite,
       // No total when the price is unknown: the timeline's sum is then unknown, never this request at 0.
       cost: known ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: usage!.usd as number } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     },
@@ -135,12 +149,17 @@ export function adapterRun(
   let calls: ToolCall[] = [];
   const costed: Pending[] = [];
   const written = new Set<number>();
+  // The request the harness asked last, and the requests whose answer has an entry (taken as its write begins).
+  let current: number | undefined;
+  const answered = new Set<number>();
   // Requests written at unknown cost (their cost not in when their turn ended), and those whose cost is written.
   const unpriced = new Set<number>();
   const priced = new Set<number>();
   // Requests admitted and not yet booked, by turn: the proxy answers the harness before it books a response, so a turn
   // can end with its last request's cost still on its way.
   const open = new Set<number>();
+  // The model each request asked for, by number: its entry names it.
+  const models = new Map<number, string>();
   let booked: () => void = () => {};
   /** Until every admitted request is booked, or `ms` pass. */
   const bookings = async (ms: number) => {
@@ -166,8 +185,9 @@ export function adapterRun(
       while (costed.length && written.has(costed[0]!.request)) {
         const late = costed.shift()!;
         if (!unpriced.has(late.request) || priced.has(late.request)) continue;
+        const tokens = tokensOf(late.usage);
         await commit(async (tx) => {
-          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request, usd: late.usage.usd ?? null } });
+          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request, usd: late.usage.usd ?? null, ...(tokens ? { usage: tokens } : {}) } });
         });
         priced.add(late.request);
       }
@@ -182,8 +202,9 @@ export function adapterRun(
       const unbooked = !request && final && open.size ? Math.min(...open) : undefined;
       if (unbooked !== undefined) open.delete(unbooked);
       const marked = request?.request ?? unbooked;
+      if (marked !== undefined) answered.add(marked);
       await commit(async (tx) => {
-        await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, request, content.text, content.calls) as never] });
+        await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls) as never] });
         // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
         if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
         if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
@@ -195,8 +216,9 @@ export function adapterRun(
       while (costed.length) {
         const next = costed.shift()!;
         if (written.has(next.request)) continue;
+        answered.add(next.request);
         await commit(async (tx) => {
-          await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, next, "", []) as never] });
+          await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(next.request), next, "", []) as never] });
           await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: next.request } });
         });
         written.add(next.request);
@@ -206,7 +228,9 @@ export function adapterRun(
 
   const onModel = (event: ModelPortEvent) => {
     if (event.type === "request_start") {
+      current = event.turn;
       open.add(event.turn);
+      models.set(event.turn, event.model);
       void flush();
       // Marked on the root as it leaves, as a pi run's request is (request-start.ts): one never answered, a run that ends
       // without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
@@ -224,7 +248,21 @@ export function adapterRun(
 
   const onEvent = (event: AdapterEvent) => {
     if (event.type === "text") text += event.delta;
-    else if (event.type === "tool_start") calls.push({ type: "toolCall", id: event.callId, name: event.name, arguments: (event.args ?? {}) as Record<string, unknown> });
+    else if (event.type === "tool_start") {
+      const call: ToolCall = { type: "toolCall", id: event.callId, name: event.name, arguments: (event.args ?? {}) as Record<string, unknown> };
+      // A call of the current request's answer after that answer's entry was written (at its first call's end): written
+      // now as the answer's continuation, so its result never comes before it and the next answer never holds it.
+      const request = current;
+      if (text || calls.length || request === undefined || !answered.has(request)) calls.push(call);
+      else {
+        later(() =>
+          commit(async (tx) => {
+            await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_CONTINUED, data: { key: spec.key, request } });
+            await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(request), undefined, "", [call]) as never] });
+          }).then(() => undefined),
+        );
+      }
+    }
     else if (event.type === "tool_end") {
       void flush();
       later(() =>
@@ -238,20 +276,25 @@ export function adapterRun(
     }
   };
 
-  /** The requests the session booked, from its runner records, by number. */
-  const bookedInSession = async (records: readonly { kind: string; data: unknown }[]) => {
-    const out = new Map<number, ModelUsage>();
+  /** The session's requests, from its runner records, by number: the model each asked for, and the usage of each it
+   *  booked. A booking written before runner.turn kept tokens has none: its entry's zeros read as unknown. */
+  const inSession = (records: readonly { kind: string; data: unknown }[]) => {
+    const asked = new Map<number, string>();
+    const booked = new Map<number, ModelUsage>();
     let admitted = 0;
     for (const record of records) {
-      const data = (record.data ?? {}) as { turn?: number; usd?: number | null; cut?: boolean; unsent?: boolean };
-      if (record.kind === RUNNER_RECORDS.request) admitted = typeof data.turn === "number" ? data.turn : admitted + 1;
+      const data = (record.data ?? {}) as { turn?: number; model?: unknown; usd?: number | null; cut?: boolean; unsent?: boolean; usage?: unknown };
+      if (record.kind === RUNNER_RECORDS.request) {
+        admitted = typeof data.turn === "number" ? data.turn : admitted + 1;
+        if (typeof data.model === "string") asked.set(admitted, data.model);
+      }
       // A request withdrawn as its record was written (a stop came then) never left: it is no request of the run's.
       else if (record.kind === RUNNER_RECORDS.turn && data.unsent !== true) {
         const request = typeof data.turn === "number" ? data.turn : admitted;
-        out.set(request, { input: 0, output: 0, usd: typeof data.usd === "number" ? data.usd : null, estimated: data.usd === null || data.cut === true });
+        booked.set(request, { ...(tokensOf(data.usage) ?? { input: 0, output: 0 }), usd: typeof data.usd === "number" ? data.usd : null, estimated: data.usd === null || data.cut === true });
       }
     }
-    return out;
+    return { asked, booked };
   };
 
   /** The person's message: the session's new turn, then its entry and its end on the root. */
@@ -289,7 +332,7 @@ export function adapterRun(
           // not write, or the harness's own failure.
           const why = refused ?? halted?.message ?? (failed === undefined ? undefined : `${harness}: ${failed}`);
           refused = undefined;
-          if (why !== undefined) await commit(async (tx) => void (await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, "", [], why) as never] })));
+          if (why !== undefined) await commit(async (tx) => void (await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] })));
         }
         const next = queue.shift();
         start = next === undefined ? undefined : sendOf(next);
@@ -360,7 +403,11 @@ export function adapterRun(
       if (typeof env.confinePrefix !== "function") throw new Error("the run's environment gives no confinement for the harness's process");
       const adapter = await make(confineOf(env.confinePrefix()));
       const writer = await sessions.open(spec.key);
+      const records = await writer.read();
+      // Before the cut requests are booked, which may write their entries.
+      for (const [request, model] of inSession(records).asked) models.set(request, model);
       const booking = await modelPortFor(writer, {
+        records,
         key: spec.key,
         ...(budgetUsd !== undefined ? { budgetUsd } : {}),
         beforeRequest: guard as never,
@@ -379,7 +426,7 @@ export function adapterRun(
       await booking.bookCut();
       // Each request the session booked and the root has no entry for: its cost, with no content.
       // Each request the session booked and the root does not have, or has at unknown cost only: written now, once.
-      for (const [request, usage] of await bookedInSession(await writer.read())) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
+      for (const [request, usage] of inSession(await writer.read()).booked) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
       session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}) });
       queue.push(...accepted.values());

@@ -1,0 +1,74 @@
+Patch: 003-comments
+Reason: comments name Vercel's sandbox and AI Gateway, which ship in dist and break the boundary rule (only the copied header may name Vercel)
+Upstream: ours
+Pins: every package in this tree keeps the boundary rules as it ships, and only the carrier holds copied code
+---
+diff --git a/packages/harness-claude-code/src/binary.ts b/packages/harness-claude-code/src/binary.ts
+--- a/packages/harness-claude-code/src/binary.ts
++++ b/packages/harness-claude-code/src/binary.ts
+@@ -4,7 +4,7 @@ import { CLAUDE_AGENT_SDK_VERSION } from './versions.ts';
+ 
+ /**
+  * Where the pinned `claude` binary is on **this** machine. The harness never
+- * runs it here (Claude Code runs only in the session's Vercel Sandbox, from
++ * runs it here (Claude Code runs only in the session's sandbox VM, from
+  * the image's copy, `CLAUDE_VM_EXECUTABLE`); this finds the host build for the
+  * private stand-in VM (`localMachine()` in harness-world-sandbox's tests),
+  * which runs the CLI on the test machine. It is `harness-world-claude-code/binary`,
+diff --git a/packages/harness-claude-code/src/harness.ts b/packages/harness-claude-code/src/harness.ts
+--- a/packages/harness-claude-code/src/harness.ts
++++ b/packages/harness-claude-code/src/harness.ts
+@@ -40,7 +40,7 @@ import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.ts';
+ /**
+  * Claude Code on harness-world: a kernel `Harness` that drives the Claude
+  * Agent SDK's `query()` in the drive (in the Function), with the `claude` CLI
+- * as its child **in the session's Vercel Sandbox VM** (docs/workspaces.md
++ * as its child **in the session's sandbox VM** (docs/workspaces.md
+  * §5.6 "Claude Code"), never on the machine that drives the session.
+  *
+  * Every drive (one queue delivery):
+@@ -159,7 +159,7 @@ export type ClaudeBuiltins = boolean | readonly string[] | { readonly type: 'pre
+ export interface ClaudeCodeHarnessOptions {
+   /**
+    * The session's sandbox (required: Claude Code runs only in the session's
+-   * Vercel Sandbox VM). Without one, or when it hands back a machine the
++   * sandbox VM). Without one, or when it hands back a machine the
+    * session factory didn't make, a drive fails the turn with
+    * `Unavailable('sandbox_required')` (docs/workspaces.md §6 rule 1).
+    */
+@@ -201,7 +201,7 @@ export interface ClaudeCodeHarnessOptions {
+   smallModel?: string;
+   /** Appended to Claude Code's own system prompt (the `claude_code` preset). */
+   instructions?: string;
+-  /** The AI Gateway credential, read per model request, in the Function. Default `gatewayCredential`. */
++  /** The provider credential, read per model request, in the Function. Default `gatewayCredential`. */
+   credential?: () => Promise<string>;
+   /** The Gateway's base URL. Default `gatewayUrl()`. */
+   gatewayUrl?: string;
+@@ -307,7 +307,7 @@ export const claudeBuiltinReplay = replayBy(CLAUDE_SAFE_BUILTINS);
+ const BASH_MARGIN_MS = 20_000;
+ /** The shortest clamped Bash timeout worth running: past it, the call is refused before it runs. */
+ const BASH_MIN_MS = 1_000;
+-/** The invocation assumed when the kernel gives no deadline (a hand-written context): a Vercel Function's default maximum duration, the shortest likely one. */
++/** The invocation assumed when the kernel gives no deadline (a hand-written context): a serverless function's default maximum duration, the shortest likely one. */
+ const ASSUMED_INVOCATION_MS = 300_000;
+ /** How often one delivery rebuilds a drive whose CLI exited mid-turn (the kernel fails the session at 8). */
+ const CLI_RESTARTS = 3;
+@@ -400,7 +400,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+ 
+   return {
+     name: options.name ?? 'claude-agent',
+-    // Each model request reaches Agent Runs from the Gateway proxy (`ModelSteps.request`).
++    // Each model request reaches the provider through the session's proxy (`ModelSteps.request`).
+     modelCalls: 'self',
+     async drive(ctx: DriveContext) {
+       // Nothing to do (an idle wake, a chaos arming): no VM. A model step a
+@@ -416,7 +416,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+       const records = await journal.read();
+       const store = new JournalSessionStore(journal, { records, coalesceMs: options.coalesceMs ?? 150 });
+       // The handler reads the credential per request, in the drive's async
+-      // context: on a Vercel Function the OIDC token comes from the request
++      // context: on a serverless function the OIDC token comes from the request
+       // that started the drive.
+       const inDrive = AsyncLocalStorage.snapshot();
+       const credential = options.credential ?? gatewayCredential;

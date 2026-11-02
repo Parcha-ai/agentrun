@@ -2,7 +2,7 @@ import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow } from "./v2";
+import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -12,11 +12,13 @@ export class ClientError extends Error {
   fields?: FieldIssue[];
   /** A retryable refusal's wait before asking again, when the server named one (a busy store). */
   retryAfterMs?: number;
+  /** What the server says beyond the message (`error.details`): a 409 `agent_not_runnable` names the box it lacks. */
+  details?: Record<string, unknown>;
   constructor(readonly status: number, readonly code: string, message: string, readonly retryable = false, readonly requestId?: string) {
     super(message);
     this.name = "ClientError";
   }
-  toApiError(): ApiError { return { code: this.code, message: this.message, retryable: this.retryable, request_id: this.requestId }; }
+  toApiError(): ApiError { return { code: this.code, message: this.message, retryable: this.retryable, request_id: this.requestId, ...(this.details ? { details: this.details } : {}) }; }
 }
 
 /** POST /v2/workflows/validate's answer: issues refuse a save, warnings only advise. Paths are JSON Pointers into the
@@ -35,7 +37,7 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
   return `?${q}`;
 };
 
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean } } };
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
@@ -47,11 +49,13 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   /** A request and its response's ETag (an agent's current revision, for the next If-Match). `text`: the body as text
    *  whatever its type (a run's file is its bytes, never parsed). */
   async function callTagged<T>(method: string, path: string, { body, headers = {}, signal, text = false }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<{ body: T; etag: string | null; status: number }> {
+    // Every write is JSON, a bodiless DELETE too: the server takes the cookie on a write only with this type.
+    const json = body !== undefined || (method !== "GET" && method !== "HEAD");
     const res = await f(`${base}${path}`, {
       method,
       signal,
       credentials: "same-origin",
-      headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
+      headers: { accept: "application/json", ...(json ? { "content-type": "application/json" } : {}), ...headers },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
@@ -59,6 +63,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
       if (e?.fields) err.fields = e.fields;
       if (typeof e?.retry_after_ms === "number") err.retryAfterMs = e.retry_after_ms;
+      if (e?.details && typeof e.details === "object" && !Array.isArray(e.details)) err.details = e.details;
       throw err;
     }
     const out = !text && (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
@@ -133,7 +138,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** One send, one key: a retry of the same send reuses its key, so the server keeps the first request's identity. */
     sendMessage: (id: string, content: string, idempotencyKey: string) =>
       call<{ mode: string; message_id: string }>("POST", `${run(id)}/messages`, { body: { content }, headers: { "idempotency-key": idempotencyKey } }),
-    /** A workflow run's graph, live: each node's state, its decisions and tool calls, and the totals (contract C4). */
+    /** A workflow run's graph, live: each node's state, its decisions and tool calls, and the totals. */
     getRunGraph: (id: string, signal?: AbortSignal) => call<RunGraph>("GET", `${run(id)}/graph`, { signal }),
     /** Pauses a workflow run: calls in flight finish, and no new node starts until it resumes. */
     pauseRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/pause`, { body: {} }),
@@ -150,6 +155,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     },
     /** A run file's URL on this origin (a rendered page's image), for an <img>: the session cookie goes with it. */
     fileUrl: (id: string, path: string) => `${base}${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
+    /** The tool keys and where each field is set, never a value (a serve extension; 404 on a server without it). */
+    listToolKeys: () => call<ToolKeys>("GET", "/settings/tool-keys"),
+    /** Saves the given fields of one key (204); its other fields stay. No Idempotency-Key: the same PUT twice is the same
+     *  state, and the server keeps no record of a body that holds the values. */
+    saveToolKey: (id: string, values: Record<string, string>) => call<unknown>("PUT", `/settings/tool-keys/${encodeURIComponent(id)}`, { body: { values } }),
+    removeToolKey: (id: string) => call<unknown>("DELETE", `/settings/tool-keys/${encodeURIComponent(id)}`),
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };

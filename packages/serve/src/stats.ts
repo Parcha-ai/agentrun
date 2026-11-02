@@ -2,6 +2,7 @@
 // aggregates over store.sqlite), with what only the runs this server holds can say. Nothing under runs/ is opened: a
 // running run this server does not hold has no status here, and is counted as unknown, never as active or not waiting.
 import type { AnalyticsFilter, AnalyticsGroup, StoreAnalytics, StoreStats } from "@parcha/pi-durable-agent";
+import { nameOf } from "@parcha/pi-durable-agent/timeline";
 import { ApiError } from "./errors.js";
 import { type Runs, type Status, statusOf } from "./runs.js";
 import { ID } from "./validate.js";
@@ -79,6 +80,7 @@ export function analyticsView(a: StoreAnalytics, filter: AnalyticsFilter) {
     by_harness_effort: a.byHarnessEffort.map((g) => ({ harness: g.harness, effort: g.effort, ...group(g) })),
     by_day: a.byDay.map((g) => ({ day: g.day, ...group(g) })),
     by_source: a.bySource.map((g) => ({ source: g.source, ...group(g) })),
-    tools: a.tools,
+    // Each tool by the name it was called (`tool`) and what a person calls it (`label`, the timeline's registry).
+    tools: a.tools.map((t) => ({ tool: t.tool, label: nameOf(t.tool), calls: t.calls, errors: t.errors })),
   };
 }
