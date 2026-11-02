@@ -347,8 +347,9 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 ## Webhooks
 
 One URL hears of your runs without anyone watching the page. `PUT /v2/settings/webhook` with `{url}` sets it: an `http`
-or `https` address, with no user or password in it. Two kinds of message are POSTed to it: `run.needs_input` when a run
-comes to need its person (`input_required`: an `ask_person` question, or a stopped turn) and `run.ended` when it ends
+or `https` address, with no user or password in it. Loopback and private-network addresses are allowed, so a receiver
+on your own machine or network works. Two kinds of message are POSTed to it: `run.needs_input` when a run comes to
+need its person (`input_required`: an `ask_person` question, or a stopped turn) and `run.ended` when it ends
 (completed, failed or cancelled, once carried back).
 
 ```json
@@ -587,8 +588,8 @@ closes. Without it, the console says to open the link. Either cookie takes the p
 `/api/*` and `/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
 and its body is `application/json`. A request that sends an `Authorization` header is checked on that header alone.
 
-The server's build copies the console's build (`npm ci && npm run build` in `apps/console`, run first) into
-`dist/console`; the image always carries it. A server built without it answers `/` with a 404 that says so. `/console/`
+The repository's `npm ci && npm run build` builds the console (`apps/console`) first, and the server's build copies it
+into `dist/console`; the image always carries it. A server built without it answers `/` with a 404 that says so. `/console/`
 (the console's address before) and `/setup` and `/sign-in` (the old page's, which the printed setup link still names)
 send the browser to `/`, which keeps a link's `#code`.
 
