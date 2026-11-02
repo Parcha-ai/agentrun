@@ -231,6 +231,51 @@ test("a failed call of a turn-ending tool does not end the turn: the agent goes 
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: Pick a region", "You (steer): Use EU"]);
 });
 
+test("a message after a turn a stop cut is the person's next message, not a steer, in the stored view and the live one alike", () => {
+  const userMessages = (rows) => rows.filter((r) => r.kind === "user_message").map((r) => r.summary);
+  const live = (entries) => {
+    const reducer = timelineReducer();
+    reducer.apply(entries.map((entry) => ({ type: "entry_appended", entry })));
+    return reducer.rows();
+  };
+  // The request after the round had left when the stop came: its end mark, and no answer.
+  const request = [
+    user("Write three files", 0),
+    custom(REQUEST_STARTED, {}),
+    assistant([call("a", "write", { path: "planet1.md" })], 1),
+    result("a", "write", "ok", 2),
+    custom(REQUEST_STARTED, {}),
+    custom(REQUEST_ENDED, {}),
+    user("Continue where you left off.", 3),
+    custom(REQUEST_STARTED, {}),
+    assistant([call("b", "write", { path: "planet2.md" })], 4),
+    result("b", "write", "ok", 5),
+    user("Use shorter paragraphs", 6),
+  ];
+  // The stop came while a call ran: its result is the abort's.
+  const tool = [
+    user("Build it", 0),
+    assistant([call("c", "bash", { command: "make" }), call("d", "bash", { command: "sleep 60" })], 1),
+    result("c", "bash", "ok", 2),
+    { ...result("d", "bash", "", 3, { isError: true }), data: { diagnostics: [{ severity: "error", code: "aborted", message: "Tool bash was aborted" }] } },
+    user("Go on", 4),
+  ];
+  // A request withdrawn before it left (unsent) cut no turn: a message then still steers.
+  const withdrawn = [
+    user("Check the build", 0),
+    assistant([call("e", "bash", { command: "make" })], 1),
+    result("e", "bash", "ok", 2),
+    custom(REQUEST_STARTED, {}),
+    custom(REQUEST_ENDED, { unsent: true }),
+    user("Use pnpm", 3),
+  ];
+  for (const view of [timelineOf, live]) {
+    assert.deepEqual(userMessages(view(request)), ["You: Write three files", "You: Continue where you left off.", "You (steer): Use shorter paragraphs"], "a later round's message steers again");
+    assert.deepEqual(userMessages(view(tool)), ["You: Build it", "You: Go on"]);
+    assert.deepEqual(userMessages(view(withdrawn)), ["You: Check the build", "You (steer): Use pnpm"]);
+  }
+});
+
 test("a failed model request is an error row; an aborted partial is nothing", () => {
   const rows = timelineOf([
     assistant([], 0, { stopReason: "error", errorMessage: "529 overloaded\nretry later" }),

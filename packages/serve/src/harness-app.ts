@@ -8,6 +8,9 @@
 // happens. pi's timeline counts a request per pi.assistant entry and sums their cost, and serve's costOf reads that row,
 // as for a pi run. A request's cost and its content arrive in either order (a harness may stream before its usage is
 // reported), so an entry is written at the next boundary that has both: the next request, a tool's end, the turn's end.
+// A harness reports each call as it runs it, so an answer that asks for several tools is written at its first call's end;
+// a later call of that answer is written then as its continuation (REQUEST_CONTINUED), before its result, never as part
+// of the next request's entry.
 // A request the session booked but the root has no entry for (the process died before the boundary) gets one at the
 // next open, with its cost and no content.
 //
@@ -26,7 +29,7 @@ import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
-import { REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
 export const BOOKED = "adapter.request";
@@ -153,6 +156,9 @@ export function adapterRun(
   let calls: ToolCall[] = [];
   const costed: Pending[] = [];
   const written = new Set<number>();
+  // The request the harness asked last, and the requests whose answer has an entry (taken as its write begins).
+  let current: number | undefined;
+  const answered = new Set<number>();
   // Requests written at unknown cost (their cost not in when their turn ended), and those whose cost is written.
   const unpriced = new Set<number>();
   const priced = new Set<number>();
@@ -203,6 +209,7 @@ export function adapterRun(
       const unbooked = !request && final && open.size ? Math.min(...open) : undefined;
       if (unbooked !== undefined) open.delete(unbooked);
       const marked = request?.request ?? unbooked;
+      if (marked !== undefined) answered.add(marked);
       await commit(async (tx) => {
         await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls) as never] });
         // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
@@ -216,6 +223,7 @@ export function adapterRun(
       while (costed.length) {
         const next = costed.shift()!;
         if (written.has(next.request)) continue;
+        answered.add(next.request);
         await commit(async (tx) => {
           await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(next.request), next, "", []) as never] });
           await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: next.request } });
@@ -227,6 +235,7 @@ export function adapterRun(
 
   const onModel = (event: ModelPortEvent) => {
     if (event.type === "request_start") {
+      current = event.turn;
       open.add(event.turn);
       models.set(event.turn, event.model);
       void flush();
@@ -246,7 +255,21 @@ export function adapterRun(
 
   const onEvent = (event: AdapterEvent) => {
     if (event.type === "text") text += event.delta;
-    else if (event.type === "tool_start") calls.push({ type: "toolCall", id: event.callId, name: event.name, arguments: (event.args ?? {}) as Record<string, unknown> });
+    else if (event.type === "tool_start") {
+      const call: ToolCall = { type: "toolCall", id: event.callId, name: event.name, arguments: (event.args ?? {}) as Record<string, unknown> };
+      // A call of the current request's answer after that answer's entry was written (at its first call's end): written
+      // now as the answer's continuation, so its result never comes before it and the next answer never holds it.
+      const request = current;
+      if (text || calls.length || request === undefined || !answered.has(request)) calls.push(call);
+      else {
+        later(() =>
+          commit(async (tx) => {
+            await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_CONTINUED, data: { key: spec.key, request } });
+            await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(request), undefined, "", [call]) as never] });
+          }).then(() => undefined),
+        );
+      }
+    }
     else if (event.type === "tool_end") {
       void flush();
       later(() =>

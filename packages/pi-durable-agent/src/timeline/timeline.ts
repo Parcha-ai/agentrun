@@ -65,9 +65,19 @@ export const REQUEST_COST_PENDING = "agentrun.request_cost_pending";
 /** The cost (`usd`, or null when unknown) of an answer written earlier with its cost pending: it closes one pending cost
  *  and adds to the run's cost. It is not a request of its own: the answer already counted that. */
 export const REQUEST_COST_LATE = "agentrun.request_cost_late";
+/** Written right before a `pi.assistant` that continues the answer before it: a call that answer asked for, written once
+ *  the answer's own entry was already in (a harness reports each call as it runs it, and its host writes an answer at its
+ *  first call's end). It shows as that answer's, and is no request: no count, no cost, no tokens. */
+export const REQUEST_CONTINUED = "agentrun.request_continued";
 /** A side request's mark: its `request` is a label (a generation's, a harness's request number, is not). */
 const isSide = (entry: EntryLike) => typeof obj(entry.data)?.request === "string";
 const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
+/** A tool result an abort wrote (pi-durable's `aborted` diagnostic): the call was cut by a stop or a cancel, which ended
+ *  its turn, not failed on its own. */
+const abortedCall = (entry: EntryLike) => {
+  const diagnostics = obj(entry.data)?.diagnostics;
+  return Array.isArray(diagnostics) && diagnostics.some((diagnostic) => obj(diagnostic)?.code === "aborted");
+};
 
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
@@ -133,7 +143,8 @@ function tokensOf(usage: unknown, failed = false): Tokens | undefined {
 
 /** A run's model requests as its entries mark them: how many, what they cost and the tokens they used. The usage row
  *  and runMetricsOf count through it. `push` says what an entry was: an answer (a `pi.assistant` that is a request), a
- *  mark (a request's mark or cost, or pi's answer to a request that never left: nothing to show), or neither. */
+ *  continuation of the answer before it (shown with it, not a request), a mark (a request's mark or cost, or pi's answer
+ *  to a request that never left: nothing to show), or neither. */
 function createMeter() {
   let requests = 0;
   // The run's cost: the known sum, the costs no one knows, and the costs written as pending, still to come (each with
@@ -145,6 +156,8 @@ function createMeter() {
   let marked = 0;
   let inFlight = false;
   let refused = 0;
+  // Continuations of an answer still to come (REQUEST_CONTINUED): each next pi.assistant shows and is not counted.
+  let continued = 0;
   // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
   // answer). Earlier answers are a run's from before requests were marked.
   let answered = 0;
@@ -164,7 +177,7 @@ function createMeter() {
   };
   const models = new Map<string, number>();
 
-  function push(entry: EntryLike): "answer" | "mark" | undefined {
+  function push(entry: EntryLike): "answer" | "continued" | "mark" | undefined {
     const message = entry.model?.[0];
     const data = obj(entry.data);
     if (entry.kind === REQUEST_REFUSED) {
@@ -172,6 +185,12 @@ function createMeter() {
     } else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") {
       // pi's answer to a request that never left: nothing to count or show.
       refused -= 1;
+    } else if (entry.kind === REQUEST_CONTINUED) {
+      continued += 1;
+    } else if (entry.kind === "pi.assistant" && continued > 0 && message) {
+      // The answer before it, continued: shown, never counted again.
+      continued -= 1;
+      return "continued";
     } else if (entry.kind === REQUEST_STARTED && isSide(entry)) {
       compacting += 1;
       sidesOpen += 1;
@@ -266,6 +285,9 @@ function createProjector(options: TimelineOptions) {
   // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
   // the person's next message, not a steer.
   const ended = new Map<number, boolean>();
+  // Conversations whose turn an abort cut since their latest tool round (a stop, a cancel): an aborted tool, or a model
+  // request that had left and was aborted. That turn is over too, so the next message comes in a new turn, never a steer.
+  const cutTurns = new Set<number>();
   const systems = new Set<number>();
   const browsers = new Set<number>();
   const children = new Map<number, string>();
@@ -275,6 +297,8 @@ function createProjector(options: TimelineOptions) {
   let root: number | undefined;
   let current = options.conversationId ?? 0;
   const meter = createMeter();
+  // Each conversation's latest answer, by entry id: a continuation's calls show under it.
+  const answers = new Map<number, number | undefined>();
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -343,7 +367,9 @@ function createProjector(options: TimelineOptions) {
     const metered = meter.push(entry);
     if (metered === "mark") {
       // A request's mark or cost, or pi's answer to a request that never left: counted, nothing to show.
-    } else if (metered === "answer" && message) {
+    } else if ((metered === "answer" || metered === "continued") && message) {
+      const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
+      if (metered === "answer") answers.set(conv, entry.id);
       if (message.stopReason === "error") {
         const why = str(message.errorMessage) ?? "unknown error";
         add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
@@ -363,8 +389,8 @@ function createProjector(options: TimelineOptions) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "Opened a live browser session" }));
           }
-          const use = useRow(conv, `${base}:${index}`, id, name, args, { round: entry.id });
-          calls.set(`${conv}:${id}`, { conv, name, args, round: entry.id, use, done: false });
+          const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
+          calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: false });
           add(use);
         });
       }
@@ -375,6 +401,10 @@ function createProjector(options: TimelineOptions) {
       const view = viewOf(message);
       // A call that failed ended nothing: the agent goes on after it, so a message then is still a steer.
       ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name) && !view.isError);
+      // One an abort cut did end the turn. A round's results come in as its calls end, so one that ended before the abort
+      // comes first and never clears it.
+      if (abortedCall(entry)) cutTurns.add(conv);
+      else cutTurns.delete(conv);
       const args = call?.args ?? {};
       const named = label(name, args, view);
       if (call) {
@@ -417,11 +447,14 @@ function createProjector(options: TimelineOptions) {
       else if (state === "declined") add(make("user_message", conv, base, { summary: "You declined to sign in", session }));
     } else if (message?.role === "user" && (entry.kind === "pi.user" || !entry.kind.startsWith("pi."))) {
       const author = str(obj(entry.data)?.author);
-      const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv);
+      const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv) && !cutTurns.has(conv);
       const text = textOf(message);
       add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text }));
     }
     if (["pi.user", "pi.assistant", "pi.tool-result"].includes(entry.kind)) previous.set(conv, entry.kind);
+    // A model request an abort cut after the round: its end mark is written only for an aborted request (not a withdrawn
+    // one, nor a side request's: a compaction's or a tool's own). The turn it would have gone on with is over.
+    else if (entry.kind === REQUEST_ENDED && !unsent(entry) && !isSide(entry)) cutTurns.add(conv);
     return out;
   }
 
@@ -523,7 +556,8 @@ export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
       seen.add(`${conv}:${entry.id}`);
     }
     const message = entry.model?.[0];
-    if (meter.push(entry) === "answer" && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
+    const metered = meter.push(entry);
+    if ((metered === "answer" || metered === "continued") && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
       for (const block of blocksOf(message)) {
         const [id, name] = [str(block.id), str(block.name)];
         if (block.type !== "toolCall" || !id || !name) continue;
