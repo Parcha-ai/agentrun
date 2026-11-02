@@ -3,10 +3,10 @@
 // instructions plan, one write a request, then says "Reflected.". The instructions plan with one line:
 // - `Learn: <JSON>`: an array of [file, text] pairs, each written into the run's copy of the folder;
 // - `Learn once: <JSON>`: the same, less the files the run's index names already (a later run of the agent adds none).
-// On pi the instructions can also say "Reflect once <file> exists." (the turn holds until the test makes that file) or
-// "Reflect slowly." (the turn answers after a minute, or when it is aborted). A later message `Write: <JSON>` ([file,
-// text] pairs) writes each file into `.learning/`, one write a request, then says "Written.": a follow-up that changes
-// the run's copy.
+// On pi the instructions can also say "Answer once <file> exists." (the job's answer holds until the test makes that
+// file), "Reflect once <file> exists." (the turn holds until the test makes that file) or "Reflect slowly." (the turn
+// answers after a minute, or when it is aborted). A later message `Write: <JSON>` ([file, text] pairs) writes each file
+// into `.learning/`, one write a request, then says "Written.": a follow-up that changes the run's copy.
 // The server's grader is answered here too, on the agent's own model, by what the instructions say: "Grade: drop." keeps
 // no note, "Grade: sly." says merge and keeps none, "Grade: garbage." is no JSON, "Grade: fail." fails the call;
 // anything else keeps every note. With AGENTRUN_TEST_FAUX_GRADE_HOLD set (in the server's environment), the grader
@@ -74,6 +74,13 @@ export default function reply(context, faux) {
     const files = JSON.parse(writes);
     if (done >= files.length) return faux.message("Written.");
     return faux.message(faux.toolCall("write", { path: `.learning/${files[done][0]}`, content: files[done][1] }), { stopReason: "toolUse" });
+  }
+  const held = /Answer once (\S+) exists\./.exec(system)?.[1];
+  if (!asked && held) {
+    return (async () => {
+      while (!(await access(held).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
+      return faux.message(answerOf(system));
+    })();
   }
   if (!asked) return faux.message(answerOf(system));
   const plan = planned(system);
