@@ -320,14 +320,16 @@ model request a crash cut does, and its cap counts it at its held figure, never 
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
 never $0: the run's cost reads `null`, and under a cap every later request is refused, as for any spend no one knows;
 one monid says it did not charge (refused as sent, `BLOCKED`, `STOPPED`, the provider's error) books nothing. Under a
-cap, each `monid.run` is checked before it is sent: once what the run has spent has reached its `max_cost_usd`, or is
-unknown, the call is refused with a `spend_cap_reached` error the model reads, naming the cap, and monid is never
-called. A run's price is not known before it is sent, so the call that crosses the cap is the last, and runs go one at a
-time to keep it one. `discover` and `inspect` cost nothing and are never refused. They run on every harness: pi binds
-them, and claude-agent and codex call them as host tools in the run's process, where a `monid.run` call a crash cut off
-is answered interrupted, never sent again (`discover` and `inspect` may run again). On each, the model, the call's
-journal and the run's timeline name them `monid_discover`, `monid_inspect` and `monid_run`: a model API takes no dot in
-a tool's name. The key is a secret like the model keys: a run's process gets it over its pipe, never in its environment.
+cap, each `monid.run` is held as a model request is: unless what the run has spent plus what the run is held at (the
+price an inspect quoted, else the $1 allowance) fits its `max_cost_usd`, or when the spend is unknown, the call is
+refused with a `spend_cap_reached` error the model reads, naming its price and the cap (and, when the allowance was
+used, that `monid.inspect` gives a quote), and monid is never called. Runs go one at a time under a cap, and on
+claude-agent and codex the check holds each model request still in flight at its worst case. `discover` and `inspect`
+cost nothing and are never refused. They run on every harness: pi binds them, and claude-agent and codex call them as
+host tools in the run's process, where a `monid.run` call a crash cut off is answered interrupted, never sent again
+(`discover` and `inspect` may run again). On each, the model, the call's journal and the run's timeline name them
+`monid_discover`, `monid_inspect` and `monid_run`: a model API takes no dot in a tool's name. The key is a secret like
+the model keys: a run's process gets it over its pipe, never in its environment.
 
 ## Tool keys
 

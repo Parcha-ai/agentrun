@@ -1,8 +1,9 @@
 // A person saves a monid key and an agent uses monid's catalog, end to end on faux monid and the faux harness: the key
 // saved through the settings API reaches a claude-agent run that names monid with no restart, and monid's charge is in
-// that run's cost on a line of its own; a run naming only `read` holds no monid key (what its process was handed over its
-// pipe, as secret-custody.test.mjs reads it); a capped run whose spend has reached its cap is refused before monid is
-// called; and once the key is deleted, a run naming monid is refused for it. No network, no real key.
+// that run's cost on a line of its own; a run naming only `read` holds no monid key (what its process was handed over
+// its pipe, as secret-custody.test.mjs reads it); a capped run whose spend plus the call's held figure would pass its
+// cap is refused before monid is called; and once the key is deleted, a run naming monid is refused for it. No network,
+// no real key.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -76,14 +77,14 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
   assert.deepEqual([reader.handed.MONID_API_KEY, reader.inEnv, reader.pipe], ["none", [], { fd: 3, closed: true }]);
   assert.equal((await handed("holder", ["monid.run"])).handed.MONID_API_KEY, digest(saved));
 
-  // A capped run whose first request ($0.001) reaches its cap: monid_run is refused before monid is called.
+  // A capped run whose first request ($0.001) leaves no room for the $1 allowance: monid_run is refused, monid not called.
   const before = sent().length;
   const capped = await api("POST", "/agents/enrich/runs", { input: { content: "hi" }, max_cost_usd: 0.001 });
   assert.equal(capped.status, 202, JSON.stringify(capped.body));
   const ended = await follow(api, capped.body.run_id, ["completed", "failed"], { deadlineMs: 55_000 });
   const result = ended.rows.find((row) => row.kind === "tool_result" && row.tool_name === "monid_run");
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
-  assert.match(result.tool_result_preview, /spend_cap_reached: monid_run was not sent\. The run has spent \$0\.001000, which has reached its cap of \$0\.001/);
+  assert.match(result.tool_result_preview, /spend_cap_reached: monid_run was not sent\. It could cost up to \$1 \(no monid_inspect in this run quoted its price, so it is held at the \$1 allowance; monid_inspect gives its quote\), and with \$0\.001000 spent the run would pass its cap of \$0\.001/);
   assert.equal(sent().length, before, "monid saw no request");
   assert.deepEqual([...entries(data, capped.body.run_id, "agentrun.tool_started"), ...entries(data, capped.body.run_id, "agentrun.tool_cost")], [], "nothing marked or charged");
 

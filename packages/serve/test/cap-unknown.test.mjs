@@ -56,7 +56,7 @@ test("the spend read from a run's store is each known cost summed, a compaction'
   assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), charged(null)])), null, "an unknown charge leaves the spend unknown");
 });
 
-test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the cap's spend, and leaves the run's reported cost and /usage's tools unknown; settled, its charge alone", (t) => {
+test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the cap's spend, leaves the run's reported cost unknown, and is no reported tool charge; settled, its charge alone", async (t) => {
   const marked = (heldUsd) => ({ kind: TOOL_STARTED, data: { tool: "monid.run", charged_by: "monid", call: "c1", heldUsd } });
   const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", call: "c1", usd } });
   const round = (usd) => Math.round(usd * 1e6) / 1e6;
@@ -65,12 +65,17 @@ test("a paid tool call a crash cut (marked, never settled) counts at its held fi
   assert.equal(round(spentIn(storeOf(t, cut))), 1.002, "the cap counts the held figure");
   assert.equal(capToolSpend(cut), 1, "and so does another harness's, read at its open");
   assert.equal(timelineOf(cut, { settled: true }).at(-1).usage.usd, null, "the run's cost is unknown, never 1.002");
-  assert.equal(toolSpentIn(storeOf(t, cut)), null);
+  assert.equal(toolSpentIn(storeOf(t, cut)), 0, "a mark is no reported charge: the cap's alone");
   const settled = [...cut, charged(0.003)];
   assert.equal(round(spentIn(storeOf(t, settled))), 0.005, "its charge, not both");
   assert.equal(capToolSpend(settled), 0.003);
   assert.equal(timelineOf(settled, { settled: true }).at(-1).usage.usd, 0.005);
   assert.equal(toolSpentIn(storeOf(t, settled)), 0.003);
+  assert.equal(toolSpentIn(storeOf(t, [...settled, { kind: TOOL_COST, data: { call: "c2", usd: null } }])), null, "an unknown charge is unknown");
+  // A live run's tools, from the same rows as its cost: the charge's line, never a mark.
+  const { toolCostOf } = await import("../dist/runs.js");
+  assert.equal(toolCostOf(timelineOf(cut)), 0);
+  assert.equal(toolCostOf(timelineOf(settled)), 0.003);
   assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), marked(undefined)])), null, "cut with no figure: unknown, never $0");
 });
 

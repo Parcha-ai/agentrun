@@ -12,7 +12,7 @@
 // What a run charged is the run's spend (cap.ts): marked before it is sent at the price an inspect quoted (else an
 // allowance), then booked once in the run's records as a TOOL_COST (`monid.run`, charged by monid), its cost if monid
 // reports one, else unknown unless monid says it charged nothing; and under a cap a run is refused before it is sent
-// once the run's spend has reached it. discover and inspect cost nothing, and are never refused.
+// unless the run's spend plus what it is held at fits. discover and inspect cost nothing, and are never refused.
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -223,19 +223,24 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
       const client = monidClient({ key: env[MONID_KEY_ENV] ?? "", ...(faux ? { fetch: faux } : {}) });
       const call = () => client[kind](args as never, context?.abortSignal);
       const label = { tool: "monid.run", charged_by: "monid", call: api.callId };
+      // What the run is held at, under the cap and on its mark: the price an inspect quoted, else the allowance.
+      const quote = quoted.get(endpointOf(args));
+      const held = quote ?? MONID_RUN_ALLOWANCE_USD;
+      const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no ${INSPECT} in this run quoted its price, so it is held at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its quote`;
       const send = async (): Promise<MonidAnswer> => {
         try {
-          await record(api, TOOL_STARTED, { ...label, heldUsd: quoted.get(endpointOf(args)) ?? MONID_RUN_ALLOWANCE_USD }, context);
+          await record(api, TOOL_STARTED, { ...label, heldUsd: held }, context);
         } catch (error) {
           return uncharged({ error: `${RUN} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})` });
         }
         const answer = await call();
-        // Settled at what it charged ($0 for nothing). Paid for, it answers even when this cannot be written, never a
-        // failure the model would retry.
-        await record(api, TOOL_COST, { ...label, usd: chargeOf(answer) ?? 0 }, context).catch(() => undefined);
+        // Settled at what it charged: $0 only when monid charged nothing, null (unknown) when it may have and did not say.
+        // Paid for, it answers even when this cannot be written, never a failure the model would retry.
+        const usd = chargeOf(answer);
+        await record(api, TOOL_COST, { ...label, usd: usd === undefined ? 0 : usd }, context).catch(() => undefined);
         return answer;
       };
-      const paid = kind === "run" ? await paidCall(RUN, send, chargeOf) : { result: await call() };
+      const paid = kind === "run" ? await paidCall(RUN, send, chargeOf, { usd: held, basis }) : { result: await call() };
       if ("refused" in paid) return forModel(JSON.stringify({ error: paid.refused }), { isError: true });
       const answer = paid.result;
       const price = kind === "inspect" && isObject(answer.price) && answer.price.type === "PER_CALL" ? money(answer.price.amount) : undefined;

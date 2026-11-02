@@ -366,7 +366,9 @@ function createProjector(options: TimelineOptions) {
       const data = obj(entry.data);
       const [tool, by, usd] = [str(data?.tool) ?? "a tool", str(data?.charged_by) ?? "its provider", data?.usd];
       const amount = typeof usd === "number" && Number.isFinite(usd) ? dollars(usd) : "an unknown amount";
-      add(make("phase", conv, base, { summary: `Tool cost: ${by} charged ${amount} for ${tool}`, tool_name: tool, tool_use_id: str(data?.call) ?? null }));
+      // Its `usage` is the charge alone (no request): a host sums a run's paid tools from the same rows as its cost.
+      const charge = typeof usd === "number" && Number.isFinite(usd) ? usd : null;
+      add(make("phase", conv, base, { summary: `Tool cost: ${by} charged ${amount} for ${tool}`, tool_name: tool, tool_use_id: str(data?.call) ?? null, usage: { usd: charge, requests: 0 } }));
     } else if (metered === "answer" && message) {
       if (message.stopReason === "error") {
         const why = str(message.errorMessage) ?? "unknown error";

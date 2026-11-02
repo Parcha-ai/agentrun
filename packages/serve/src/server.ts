@@ -21,7 +21,7 @@ import { placesOf } from "./place.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
+import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
@@ -653,7 +653,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
 
-  // What each run's paid tools charged, from its store: kept for a run that ended (its store no longer changes), keyed
+  // What each ended run's paid tools charged, from its store: kept (its store no longer changes), keyed
   // by its end, so a run opened again and ended again is read again. A store that cannot be read leaves it all tokens.
   const toolCharges = new Map<string, number | null>();
   const toolsOf = (row: { id: string; state: string; endedAt?: string | null }) => {
@@ -686,7 +686,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
       // By meter, what a run's paid tools charged (monid's) is `tools`, the rest `tokens`; a run of unknown cost is
       // unpriced on the meter that made it so.
-      const tools = group === "meter" && usd !== 0 ? toolsOf(row) : 0;
+      // Both from the same records: a live run's rows (a call still marked is no charge), else its store as it ended.
+      const tools = group === "meter" && usd !== 0 ? (live ? toolCostOf(live.rows) : toolsOf(row)) : 0;
       const parts: [string, number | null][] = usd === null ? [[tools === null ? "tools" : key, null]] : tools ? [[key, usd - tools], ["tools", tools]] : [[key, usd]];
       // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
       // never passes as $0.

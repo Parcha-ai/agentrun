@@ -89,6 +89,8 @@ export default function reply(context, faux) {
     const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
     return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
   }
+  // Runs monid's /slow, which holds until it is stopped; then says so.
+  if (first.includes("Run monid's /slow.")) return results === 0 ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/slow" }), { stopReason: "toolUse" }) : faux.message("Ran.");
   // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
   if (first.includes("Enrich with monid")) {
     const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];

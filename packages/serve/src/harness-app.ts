@@ -25,7 +25,7 @@ import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPo
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
-import { type CapGuard, capToolSpend, useSpend } from "./cap.js";
+import { type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
 import { REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
@@ -115,6 +115,8 @@ export function adapterRun(
   const CANCELLED = "the run was cancelled: the model request was not sent";
   // What the run's paid tools charged, in earlier processes (read at the open) and this one: null once one is unknown.
   let charged: number | null = 0;
+  // Each admitted request's worst case until its cost is booked: the booking's spend counts it only then.
+  const inFlight = holdsInFlight();
   const plus = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const answer = cancelled() ? { refuse: CANCELLED } : cap?.beforeRequest({ ...request, spentUsd: plus(request.spentUsd, charged) });
@@ -125,6 +127,7 @@ export function adapterRun(
     // Admitted: the worst case the cap holds for it, which the runner records, and counts it at if its cost never
     // comes in.
     const hold = cap?.worstOf?.(request);
+    inFlight.admitted(hold);
     return hold === undefined ? undefined : { holdUsd: hold };
   };
   /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
@@ -227,6 +230,7 @@ export function adapterRun(
 
   const onModel = (event: ModelPortEvent) => {
     if (event.type === "request_start") {
+      inFlight.started(event.turn);
       open.add(event.turn);
       models.set(event.turn, event.model);
       void flush();
@@ -236,6 +240,7 @@ export function adapterRun(
       later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn } })))).catch(() => undefined);
     } else {
       open.delete(event.turn);
+      inFlight.ended(event.turn);
       costed.push({ request: event.turn, usage: event.usage });
       booked();
       // A cost that came in after its answer was written goes in now, not at some later flush. If that write fails, the
@@ -413,11 +418,12 @@ export function adapterRun(
       // A request a crash cut off is booked once, unknown, before anything is sent.
       await booking.bookCut();
       // A paid tool's check before it spends: the session's requests, each booked once the proxy has answered (waited
-      // for, as at a turn's end), with the run's charges; its charge joins them.
+      // for, as at a turn's end), one still in flight at the worst case the cap held for it (as pi's spend counts it),
+      // with the run's charges; its charge joins them.
       if (budgetUsd !== undefined) {
         useSpend({
           cap: budgetUsd,
-          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(booking.spentUsd(), charged)),
+          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(plus(booking.spentUsd(), charged), inFlight.total())),
           add: (usd) => void (charged = plus(charged, usd)),
         });
       }

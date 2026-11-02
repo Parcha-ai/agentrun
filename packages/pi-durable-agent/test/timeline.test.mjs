@@ -309,7 +309,9 @@ test("cost: a paid tool's charge is summed with the requests and shown on a line
     ["usage", "Cost so far: $0.0130 over 1 model request and 1 paid tool call", null, null],
   ]);
   assert.deepEqual(rows.at(-1).usage, { usd: 0.013, requests: 1 });
+  assert.deepEqual(rows[1].usage, { usd: 0.003, requests: 0 }, "its line carries the charge alone, no request");
   const unknown = timelineOf([a, charged(null)]);
+  assert.deepEqual(unknown.find((r) => r.kind === "phase").usage, { usd: null, requests: 0 });
   assert.equal(unknown.find((r) => r.kind === "phase").summary, "Tool cost: monid charged an unknown amount for monid.run");
   assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 1 }, "never $0");
   assert.deepEqual(timelineOf([charged(0.003)]).at(-1).usage, { usd: 0.003, requests: 0 }, "a charge alone makes the row");

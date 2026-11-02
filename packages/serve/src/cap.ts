@@ -13,9 +13,9 @@
 //
 // A paid tool's charge (monid.run's, monid.ts) is the run's spend too: booked in the run's store as a TOOL_COST, which
 // the run's cost and spentIn both count (an unknown one makes the spend unknown), and added to what the run's process
-// counts as spent (useSpend), so the next request's check sees it. Before each paid call, paidCall refuses it once the
-// spend has reached the cap or is unknown, and runs paid calls one at a time: a call passes the cap by its own charge
-// at most.
+// counts as spent (useSpend), so the next request's check sees it. Before each paid call, paidCall holds it as a request
+// is held: refused unless what the run has spent plus what the call is held at (its quote, else an allowance) fits the
+// cap, and whenever the spend is unknown; paid calls go one at a time, so each check sees the charge before it.
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-adapters/host";
@@ -152,15 +152,16 @@ export function spentIn(storeFile: string): number | null {
   return entries.reduce((sum, entry) => sum + costOf(entry), 0);
 }
 
-/** What the paid tools of the run whose store is `storeFile` charged, as its settled timeline reports them: /usage's
- *  `tools` meter. Null when a charge is unknown, a call a crash cut among them. */
+/** What the paid tools of the run whose store is `storeFile` charged: each TOOL_COST's `usd`, null when one is unknown.
+ *  A mark is never a charge here (the cap's alone): /usage's `tools` meter for a run that ended, whose cost the same
+ *  entries made. */
 export function toolSpentIn(storeFile: string): number | null {
   if (!existsSync(storeFile)) return 0;
   const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
   try {
-    const paid = db.prepare("SELECT record FROM entries WHERE json_extract(record, '$.kind') IN (?, ?) ORDER BY rowid").all(TOOL_STARTED, TOOL_COST);
-    const usage = timelineOf(paid.map((row) => JSON.parse(String(row.record)) as EntryLike), { settled: true }).find((row) => row.kind === "usage");
-    return usage ? (usage.usage?.usd ?? null) : 0;
+    const charges = db.prepare("SELECT record FROM entries WHERE json_extract(record, '$.kind') = ? ORDER BY rowid").all(TOOL_COST).map((row) => (JSON.parse(String(row.record)) as EntryLike).data);
+    const usd = charges.map((data) => figureOf((data as { usd?: unknown } | undefined)?.usd));
+    return usd.every((figure) => figure !== undefined) ? (usd as number[]).reduce((sum, figure) => sum + figure, 0) : null;
   } finally {
     db.close();
   }
@@ -181,6 +182,20 @@ export function capToolSpend(entries: readonly EntryLike[]): number | null {
   return all.every((figure) => figure !== undefined) ? (all as number[]).reduce((sum, figure) => sum + figure, 0) : null;
 }
 
+/** The worst case of each model request a cap admitted and whose cost is not booked yet, by its turn, for a paid tool's
+ *  check on a harness whose booking counts a request only once its cost is in (harness-app.ts): `admitted` takes what
+ *  the guard held, `started` gives it the turn that request leaves as (admissions run one at a time), `ended` drops it. */
+export function holdsInFlight() {
+  const holds = new Map<number, number>();
+  let next: number | undefined;
+  return {
+    admitted: (usd: number | undefined) => void (next = usd),
+    started: (turn: number) => void (next !== undefined && holds.set(turn, next), (next = undefined)),
+    ended: (turn: number) => void holds.delete(turn),
+    total: () => [...holds.values()].reduce((sum, usd) => sum + usd, 0),
+  };
+}
+
 /** The run's spend as its process counts it, for a paid tool: what it has spent (`spent`, model requests in flight held
  *  at their worst case; null when unknown) and the charge a call adds (`add`). Set by the run's cap, on pi (capModels)
  *  and on another harness (harness-app.ts); none without a cap. A run is one process, so one is set per process. */
@@ -189,17 +204,19 @@ let runSpend: RunSpend | undefined;
 let paying: Promise<unknown> = Promise.resolve();
 export const useSpend = (spend: RunSpend | undefined): void => void (runSpend = spend);
 
-/** `call`, a paid tool's (`name`), under the run's cap: refused, in words that name the cap and never calling it, once
- *  what the run has spent has reached the cap or is unknown; else run, one paid call at a time, so each check sees the
- *  charge before it, and the charge it reports (`charge` of its result, undefined for none) joins the spend. With no
- *  cap it just runs. */
-export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined): Promise<{ refused: string } | { result: T }> {
+/** `call`, a paid tool's (`name`), under the run's cap, by the rule a model request keeps: refused, in words that name
+ *  its price and the cap and never calling it, unless what the run has spent plus what the call is held at (`hold`: its
+ *  quote, else an allowance, `basis` saying which) fits the cap, and whenever the spend is unknown; else run, one paid
+ *  call at a time, so each check sees the charge before it, and the charge it reports (`charge` of its result,
+ *  undefined for none) joins the spend. With no cap it just runs. */
+export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined, hold: { usd: number; basis: string }): Promise<{ refused: string } | { result: T }> {
   const spend = runSpend;
   if (!spend) return { result: await call() };
   const turn = paying.then(async () => {
     const spent = await spend.spent();
     if (spent === null) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of $${spend.cap} cannot be kept: the run is out of budget.` };
-    if (spent >= spend.cap) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. The run has spent $${spent.toFixed(6)}, which has reached its cap of $${spend.cap}: the run is out of budget.` };
+    // Written so that a figure that is not a number refuses.
+    if (!(spent + hold.usd <= spend.cap)) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. It could cost up to $${hold.usd} (${hold.basis}), and with $${spent.toFixed(6)} spent the run would pass its cap of $${spend.cap}: the run is out of budget.` };
     const result = await call();
     const usd = charge(result);
     if (usd !== undefined) spend.add(usd);
