@@ -10,7 +10,7 @@ import { sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
 import { FAUX_HARNESS_ENV } from "./harness.js";
-import type { ModelRef } from "./model.js";
+import { hostModel, type ModelRef } from "./model.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
 import { NATIVE_SEARCH_ALLOWANCE_TOKENS } from "./cap.js";
@@ -167,8 +167,8 @@ export function claudeModelId(model: ModelRef): string {
  *  catalog. Never the gateway's model or price, which serve the other harnesses. Whether it is an Anthropic model is
  *  claudeProvider's to say. */
 export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { model: ModelRef } | { why: string; host: boolean } {
-  const named = ref ?? env.AGENT_MODEL;
-  if (!named) return { why: "The revision names no model, and this host has no default: name an anthropic/<model-id> in the definition.", host: true };
+  const named = ref ?? hostModel(env, "default", "claude-agent");
+  if (!named) return { why: "The revision names no model, and this host has no default: save an Anthropic key, or name an anthropic/<model-id> in the definition.", host: true };
   const slash = named.indexOf("/");
   if (slash < 1) return { why: `claude-agent runs a model named anthropic/<model-id>; the run's model is ${named}.`, host: ref === undefined };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];

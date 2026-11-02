@@ -13,7 +13,7 @@ import { checkDefinitionBody } from "../dist/validate.js";
 import { agent, answerFlow, client, scratch, serve, withEnv } from "./support.mjs";
 
 /** No gateway, no default model, no OpenAI key: pi-ai's providers serve the models, and none has a key. */
-const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "OPENAI_API_KEY"];
+const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
 async function keyless(t) {
   withEnv(t, {}, MODEL_VARS);
   return serve(t, { faux: undefined });
