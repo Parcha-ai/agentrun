@@ -4,9 +4,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
-import { capabilities, ROUTES } from "../dist/server.js";
+import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
 import { schemaProblems } from "./schema-support.mjs";
+import { capabilities } from "../dist/index.js";
 import { agent, FAUX, flowAgent, serve } from "./support.mjs";
 
 const VENDORED = JSON.parse(await readFile(new URL("../src/openapi/agentrun-v2.openapi.json", import.meta.url), "utf8"));
@@ -250,14 +251,6 @@ test("live answers meet the served document: capabilities, and an agent made, re
   assert.notDeepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, { ...(await api("GET", "/capabilities")).body, unheard_of: 1 }), []);
 });
 
-test("the decision providers' widening to parallel is its own addition, decisions/2, and info lists it", async (t) => {
-  const { doc } = await served(t);
-  const decisions = doc.components.schemas.Capabilities.properties.workflows.properties.decisions;
-  assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
-  assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
-  assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
-});
-
 // The exported helper is what the route serves: every harness's offer resolved, its default_model included, so a direct
 // caller's document holds the schema the server publishes (the field is required), on a server with a gateway, with
 // providers, and with the faux harness.
@@ -282,4 +275,12 @@ test("capabilities(), the exported helper, gives a document that passes the publ
   assert.notDeepEqual(schemaProblems(doc, shape, { ...plain, models: { ...plain.models, source: "elsewhere" } }), []);
   const caps = await capabilities({});
   assert.notDeepEqual(schemaProblems(doc, shape, { ...caps, harnesses: caps.harnesses.map(({ default_model, ...offer }) => offer) }), []);
+});
+
+test("the decision providers' widening to parallel is its own addition, decisions/2, and info lists it", async (t) => {
+  const { doc } = await served(t);
+  const decisions = doc.components.schemas.Capabilities.properties.workflows.properties.decisions;
+  assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
+  assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
+  assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
 });
