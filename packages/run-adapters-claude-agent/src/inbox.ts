@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/inbox.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: the message prefix names the Claude Agent adapter.
+// Changed by Parcha, patches: 002-names
 /**
  * The streaming input `query()` reads: an async iterable the drive pushes
  * user messages into. `end()` closes it, which closes the CLI's stdin, and
