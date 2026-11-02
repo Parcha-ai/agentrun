@@ -61,9 +61,11 @@ test("an output with a file: its path and its address, the same before it is wri
   await follow(api, wrote, ["completed"], { deadlineMs: 55_000 });
   const text = await readFile(join(data, "runs", wrote, "work", "note.txt"), "utf8");
   const answer = await output(wrote);
+  // Not HTML, so its url reads it in place, no download asked (an HTML output's url is one: pack-job.test.mjs).
   assert.deepEqual(answer.body, { run_id: wrote, type: "note", path: "note.txt", url: `/v2/runs/${wrote}/files/note.txt` });
   const file = await api("GET", answer.body.url.replace(/^\/v2/, ""));
   assert.equal(file.status, 200);
+  assert.equal(file.headers.get("content-disposition"), null, "read in place");
   assert.equal(file.body, text, "the url reads the file");
   // Archived, it is still named.
   assert.equal((await api("POST", `/runs/${wrote}/archive`)).status, 200);

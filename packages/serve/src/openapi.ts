@@ -35,7 +35,7 @@ const RUN_OUTPUT = {
   properties: {
     run_id: { type: "string" }, type: { type: "string", description: "The output type the run was made with." },
     path: { type: ["string", "null"], description: "The output's file in the run's workspace, as the profile names it; null when the output is the run's final answer (`result.final_answer`)." },
-    url: { type: ["string", "null"], description: "The file's address, GET /v2/runs/{run_id}/files/{path}, which reads it, or 404 while it is not there; GET /v2/runs/{run_id}/files lists it with its size. Null with no file." },
+    url: { type: ["string", "null"], description: "The file's address, GET /v2/runs/{run_id}/files/{path}, which reads it, or 404 while it is not there; GET /v2/runs/{run_id}/files lists it with its size. An HTML output (a deck, a dashboard, a website) is a download (`?download=1`) to open locally: the server never runs a run's scripts on its own origin. Null with no file." },
   },
 };
 /** GET /health's answer (host.ts Health). */
@@ -311,7 +311,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/output": {
     get: {
       operationId: "getRunOutput", tags: ["runs"], summary: "Where a run's output is",
-      description: "The output the run's profile pinned when it was made (`profile`, `output` on its request): its type, and its file in the run's workspace with that file's address under /files, or null for both when the output is the run's final answer. It reads nothing on disk: the files routes say whether the file is there, and its size. 404 for a run made with no profile, or whose profile gave it no output.",
+      description: "The output the run's profile pinned when it was made (`profile`, `output` on its request): its type, and its file in the run's workspace with that file's address under /files, or null for both when the output is the run's final answer. An HTML output's address is a download (`?download=1`), to open locally, since the server never runs a run's scripts on its own origin. It reads nothing on disk: the files routes say whether the file is there, and its size. 404 for a run made with no profile, or whose profile gave it no output.",
       parameters: [ref("parameters/RunId")],
       responses: { "200": json(RUN_OUTPUT, "The run's output: its type, and its file and address."), ...errors(401, 404, 429, 500) },
       "x-agentrun-serve": "output/1",

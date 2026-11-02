@@ -42,13 +42,15 @@ test("a job at high effort for slides, with no pack named, gets the default pack
     assert.equal(given, `Native: ${native}`, `${harness}: the skills its adapter loads itself`);
     assert.ok(said.includes(`Make the slides, then say your system.\n\n${MANDATE}`), `${harness}: the mandate right after the instructions: ${said.slice(0, 2000)}`);
     for (const line of BODIES) assert.equal(said.includes(line), harness === "pi", `${harness}: ${line} written out only where the harness loads no skill itself`);
-    // The deck the model wrote with the write tool: named by the output route, served and listed by the files routes.
+    // The deck the model wrote with the write tool: named by the output route, served and listed by the files routes. An
+    // HTML output's url is a download, to open locally: the server never runs a run's scripts on its own origin.
     const output = await api("GET", `/runs/${runId}/output`);
     assert.equal(output.status, 200, JSON.stringify(output.body));
-    assert.deepEqual(output.body, { run_id: runId, type: "slides", path: "slides.html", url: `/v2/runs/${runId}/files/slides.html` }, harness);
+    assert.deepEqual(output.body, { run_id: runId, type: "slides", path: "slides.html", url: `/v2/runs/${runId}/files/slides.html?download=1` }, harness);
     const file = await api("GET", output.body.url.replace(/^\/v2/, ""));
     assert.equal(file.status, 200, harness);
     assert.equal(file.headers.get("content-type"), "text/html; charset=utf-8", harness);
+    assert.equal(file.headers.get("content-disposition"), 'attachment; filename="slides.html"', `${harness}: a download`);
     assert.equal(file.body, SLIDES, `${harness}: the url serves the deck`);
     const listed = (await api("GET", `/runs/${runId}/files`)).body.files.find((entry) => entry.path === "slides.html");
     assert.deepEqual([listed?.size_bytes, listed?.content_type], [Buffer.byteLength(SLIDES), "text/html; charset=utf-8"], `${harness}: listed with its size and type`);

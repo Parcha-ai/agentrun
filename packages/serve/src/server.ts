@@ -604,14 +604,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   /**
    * The run's output, as its profile pinned it (run-profile.ts): its type, and its file and that file's address, or null
    * for both when the output is the run's final answer. Nothing on disk is read: the files routes say whether the file
-   * is there, and its size. A run with no profile, or a profile with no output, names none: 404.
+   * is there, and its size. An HTML file's address asks for a download (`?download=1`), to open locally: the files route
+   * serves HTML under a CSP that runs none of its scripts, since the server never runs a run's scripts on its own origin.
+   * A run with no profile, or a profile with no output, names none: 404.
    */
   function outputOf(run: Run) {
     const profile = run.meta.profile;
     if (!profile) throw new ApiError("not_found", "This run was made with no profile, so it names no output: a run names one with profile and output.");
     if (!profile.output) throw new ApiError("not_found", `This run's profile (${profile.name}) gave it no output: a run names one with output.`);
     const { type, file } = profile.output;
-    return { run_id: run.id, type, path: file ?? null, url: file === undefined ? null : `/v2/runs/${run.id}/files/${file.split("/").map(encodeURIComponent).join("/")}` };
+    if (file === undefined) return { run_id: run.id, type, path: null, url: null };
+    const html = TYPES[extname(file).slice(1).toLowerCase()]?.startsWith("text/html");
+    return { run_id: run.id, type, path: file, url: `/v2/runs/${run.id}/files/${file.split("/").map(encodeURIComponent).join("/")}${html ? "?download=1" : ""}` };
   }
 
   async function readFileRoute(req: IncomingMessage, res: ServerResponse, url: URL, run: Run, raw: string): Promise<void> {
