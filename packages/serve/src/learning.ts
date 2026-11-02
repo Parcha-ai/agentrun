@@ -10,7 +10,7 @@
 // index and active notes into the run's `work/.learning/` and pins the commit in the run's directory (`learning.json`),
 // with what the run reads of the index. The run's process reads that pin (withLearned, for app.ts) and never runs git, so
 // it may run anywhere its directory is. When the run ends the server asks it one more turn, in which it may add notes to
-// that copy (runs.ts). As the run settles, before anything can open it again, the copy is moved whole out of its work
+// that copy (learning-run.ts). As the run settles, before anything can open it again, the copy is moved whole out of its work
 // (snapshotLearned); what the turn added is checked from there (propose.ts), graded and merged into main (grade.ts).
 //
 // The host never follows a symbolic link into the folder (agentFolder): a link at the agent's home, at its `learning/`
@@ -59,6 +59,8 @@ export type Learning = {
 };
 /** A run's learning as its view shows it: the state, why and when. */
 export const learningView = ({ state, reason, detail, at }: Learning) => ({ state, reason, detail, at });
+/** A run's learning as a list shows it: its state and reason. */
+export const shortLearning = (learning: Learning | null) => (learning ? { state: learning.state, reason: learning.reason } : null);
 /** The label of the end-of-run turn's timeline rows, and the kind and label of a run's learning row. */
 export const LEARNING_LABEL = "learning";
 

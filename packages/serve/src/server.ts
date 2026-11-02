@@ -30,7 +30,7 @@ import { boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
-import { analyticsFilter, analyticsView, learningStats, statsView } from "./stats.js";
+import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
@@ -1062,8 +1062,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const filter = analyticsFilter(url);
         const [stats, analytics, rows] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter), agents.store.listRuns()] as const);
         // How the runs that tried to learn fared: a held run's learning from memory, any other's end from the ledger.
-        const ledger = await outcomes(data);
-        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: learningStats(rows, filter, (row) => runs.heldLearning(row.id) ?? ledger.get(row.id) ?? null) });
+        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
       }
       case "listToolKeys":
         return send(res, 200, toolKeys.view());
