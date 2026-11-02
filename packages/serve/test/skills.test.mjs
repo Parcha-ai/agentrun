@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { skillProblems } from "@parcha/agentrun-claude-agent";
+import { skillProblems } from "@parcha/agentrun-harness-claude";
 import { promptOf as appPromptOf } from "../dist/app.js";
 import { promptOf, READS_AT_ONCE, skillsOf, splitSkills, systemOf } from "../dist/skills.js";
 import { workspaceTestHooks } from "../dist/workspace.js";

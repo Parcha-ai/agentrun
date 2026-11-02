@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-adapters, @parcha/agentrun-claude-agent, @parcha/agentrun-codex, @parcha/agentrun-serve
+packages: @parcha/agentrun-kernel, @parcha/agentrun-harness-claude, @parcha/agentrun-harness-codex, @parcha/agentrun-serve
 kind: fix
 ---
 A claude-agent or codex run works in the run's workspace, the directory its file tools write to. Before, the CLI's working directory was an empty one beside it (`runs/<id>/harness/work`): Claude told its model that path, so a file written at its absolute path was refused as "outside the workspace", and the answer quoted the server's data directory. In QA this happened in 3 of 4 Claude runs that wrote a file.

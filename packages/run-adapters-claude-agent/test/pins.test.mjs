@@ -7,8 +7,8 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_PACKAGE, CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli } from '@parcha/agentrun-claude-agent';
-import { fakeSdk } from '@parcha/agentrun-claude-agent/testing';
+import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_PACKAGE, CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli } from '@parcha/agentrun-harness-claude';
+import { fakeSdk } from '@parcha/agentrun-harness-claude/testing';
 import { sandboxSpawn } from '../dist/spawn.js';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-claude-pins-'));
@@ -66,7 +66,7 @@ test('an injected SDK that is not the pinned release is refused, typed, before a
 test('no SDK, no MCP library or no CLI is "Claude Agent SDK not installed", typed, in one line that ends with the exact install line', () => {
   const LINE = 'npm install --save-exact @anthropic-ai/claude-agent-sdk@0.3.286';
   assert.equal(CLAUDE_AGENT_SDK_INSTALL, LINE);
-  assert.equal(CLAUDE_AGENT_PACKAGE, '@parcha/agentrun-claude-agent');
+  assert.equal(CLAUDE_AGENT_PACKAGE, '@parcha/agentrun-harness-claude');
   const withLine = (e) => e instanceof ClaudeAgentNotInstalled && e.code === 'CLAUDE_AGENT_NOT_INSTALLED' && e.install === LINE
     && e.message.startsWith('Claude Agent SDK not installed: ') && e.message.endsWith(`; install it with: ${LINE}`) && !/\n/.test(e.message);
   // No SDK beside the adapter.

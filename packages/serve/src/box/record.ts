@@ -4,8 +4,8 @@
 // pid, start time and pid namespace) before that process is let go (`started`). The box's start names the writer, the
 // run process: a record nothing could count is cleared only once that writer is gone, so a record without one is refused.
 import { join } from "node:path";
-import type { BoxRecord, BoxRecorder } from "@parcha/agentrun-adapters/host";
-import { BoxError } from "@parcha/agentrun-adapters/host";
+import type { BoxRecord, BoxRecorder } from "@parcha/agentrun-kernel/host";
+import { BoxError } from "@parcha/agentrun-kernel/host";
 import { writeDurable, writeDurableSync } from "../files.js";
 
 /** The run directory's box record. */

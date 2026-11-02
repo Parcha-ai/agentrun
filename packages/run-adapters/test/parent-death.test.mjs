@@ -8,7 +8,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { PARENT_WATCH_SHIM, parentWatched, parentWatchHere, SETPRIV } from '@parcha/agentrun-adapters/host';
+import { PARENT_WATCH_SHIM, parentWatched, parentWatchHere, SETPRIV } from '@parcha/agentrun-kernel/host';
 
 const HOST = fileURLToPath(new URL('./fixtures/parent-host.mjs', import.meta.url));
 const linux = process.platform === 'linux' && existsSync('/proc/self/stat');

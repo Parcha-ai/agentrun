@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
-import { processAlive } from "@parcha/agentrun-adapters/host";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { startServe } from "../dist/index.js";
 import { nextMoment } from "../dist/runs.js";
 import { signatureOf, Webhooks } from "../dist/webhooks.js";
