@@ -423,8 +423,21 @@ nothing of sessions beyond "a SQLite file and a directory". Node only.
 - **A store.** `sealStore(path)` returns a `Seal` (head, SHA-256, size) of a store its owner has closed; a store with a
   write-ahead log that holds content is refused with `not_sealed`. `checkpointStore(path, to)` takes a consistent copy
   of a store that is still open, with `VACUUM INTO` through a second read-only connection; the copy appears whole or
-  not at all. `verifyStore(path, seal)` checks size, hash, SQLite's quick check and the head, in that order. The head is
-  one read of `durable_metadata.next_seq`, the only knowledge of pi's schema here.
+  not at all. `verifyStore(path, seal)` checks size, hash, the schema, SQLite's quick check and the head, in that order.
+  The head is one read of `durable_metadata.next_seq`; the schema is compared with the one pi-durable makes, read from
+  pi-durable itself, never a copy kept here.
+- **A store from a box.** A store a host verifies or replays into is a file a box made, and a box is not trusted, so this
+  package opens one only one way (`verifyStore`, `replayCommits`), following SQLite's guidance for a database file another
+  security domain could have written. A regular file of at most `DEFAULT_MAX_STORE_BYTES` (1 GiB; `{ maxBytes }` sets
+  another) has its main file copied, without following a link, into a directory the host makes, so no journal or
+  write-ahead log the box left beside it is read; the size and hash checked are the copy's. The copy is opened
+  `immutable` and read-only, with no extension loading, `trusted_schema` off, `cell_size_check` on and `mmap_size` 0,
+  all of which Node 22's `node:sqlite` accepts. The schema must be pi-durable's, object for object and text for text,
+  before the quick check runs: a trigger, a view, a virtual table or a table of the file's own is `refused`, so nothing
+  the file defines is ever compiled, and a store of another pi-durable schema version is refused too. No SQL comes from
+  the box, only the file: the statements are this package's own. `replayCommits` never opens the file to write: the rows
+  of pi-durable's tables are read into a store pi-durable makes on the host, which takes the file's place, and the
+  commits go into that one.
 - **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
   hash on the way and on the target; it appears at its path whole or not at all.
 - **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,
@@ -738,8 +751,9 @@ The commits between two checkpoints are kept too, on the record stream: a host t
 has it. `recordSink(vault, session, context)` is that sink for the vault: `held` is where the vault's log is (`vault.through`),
 `append` keeps a commit on disk in order (`vault.appendLog`: ignores a repeat, refuses a gap with `through`, keeps nothing the
 latest checkpoint covers), and a checkpoint's `prune` cuts the log below the oldest generation kept. A restore takes the
-checkpoint's store, applies the unbroken run of commits from its head (`replayCommits`, through the store's own `Storage`,
-on a copy on the host and before any Harness opens it), seals the result, and gives the lease and the resume order that
+checkpoint's store, applies the unbroken run of commits from its head (`replayCommits`: the checkpoint's rows read into a
+store pi-durable makes on the host, then the commits through that store's own `Storage`, before any Harness opens it),
+seals the result, and gives the lease and the resume order that
 seal. The order's `move` says `replayed: { from, to }` and `head: to + 1`; the notice says the history was brought up to
 date. So a call the lost box admitted after the checkpoint is in the history the new box opens, and is settled by pi's
 recovery, not run again. A log that does not start where the checkpoint ends is not used: the restore is the checkpoint, as
