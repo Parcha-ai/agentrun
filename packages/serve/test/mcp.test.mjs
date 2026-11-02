@@ -176,6 +176,25 @@ test("each tool checks and answers as its routes do: a refused definition, a bad
   assert.equal(notes[0], "shorter");
 });
 
+test("agents_create and agents_revise pass any other definition field through to the route's own checks: a place round-trips, a field named outright wins, and one the route refuses is its 422", async (t) => {
+  const server = await serve(t);
+  const mcp = mcpClient(server);
+  const made = (await mcp.tool("agents_create", { id: "placed", name: "Placed", instructions: "Answer.", definition: { place: { mode: "runner" }, instructions: "Not this." } })).structuredContent;
+  assert.deepEqual(made.definition.place, { mode: "runner" });
+  assert.equal(made.definition.instructions, "Answer.", "a field named outright wins over the same one in definition");
+  assert.deepEqual((await v2(server, "GET", "/agents/placed")).body.definition.place, { mode: "runner" });
+  const revised = (await mcp.tool("agents_revise", { agent_id: "placed", definition: { place: { mode: "sandbox", box: "bwrap" } }, note: "boxed" })).structuredContent;
+  assert.deepEqual([revised.revisions, revised.definition.place, revised.definition.instructions], [2, { mode: "sandbox", box: "bwrap" }, "Answer."], "the place changes, the rest stays");
+  // A field the route refuses is its own 422, by field; a definition that is no object is the tool's.
+  const refused = await mcp.tool("agents_create", { id: "bad", name: "Bad", instructions: "Answer.", definition: { input_schema: {} } }, { ok: false });
+  assert.deepEqual([refused.structuredContent.error.code, refused.structuredContent.error.fields.map((f) => f.field)], ["input_invalid", ["definition.input_schema"]]);
+  const wrong = await mcp.tool("agents_revise", { agent_id: "placed", definition: "sandbox" }, { ok: false });
+  assert.deepEqual([wrong.structuredContent.error.code, wrong.structuredContent.error.fields[0].field], ["input_invalid", "definition"]);
+  // The tools say so.
+  const { tools } = (await mcp.request("tools/list")).result;
+  for (const name of ["agents_create", "agents_revise"]) assert.equal(tools.find((tool) => tool.name === name).inputSchema.properties.definition.type, "object", name);
+});
+
 test("runs_get names the question a waiting run asked, runs_respond answers it, and runs_cancel ends another", async (t) => {
   const server = await serve(t);
   const mcp = mcpClient(server);
