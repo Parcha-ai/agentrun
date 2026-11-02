@@ -30,7 +30,7 @@ export function MissionControl({ view, error, onRetry, scope }: { view: MissionV
     ["Needs input", String(view.runs.needsInput), view.runs.needsInput ? "text-warning-text" : undefined],
     // A newer server counts escalated runs waiting for review apart from the failed: said under Failed, never in it.
     ["Failed", String(view.runs.failed), view.runs.failed ? "text-destructive-text" : undefined, view.runs.needsReview ? `${view.runs.needsReview} ${view.runs.needsReview === 1 ? "needs" : "need"} review` : undefined],
-    ["Total cost", spent.total, undefined, spent.note],
+    ["Total cost", spent.total, undefined, [spent.note, spent.bound].filter(Boolean).join(" · ") || undefined],
   ];
   return (
     <div className="h-full overflow-auto">

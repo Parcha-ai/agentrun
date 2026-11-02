@@ -3,7 +3,7 @@ import { useState } from "react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
-import { cost, isEstimate, when } from "@/lib/format";
+import { bounded, cost, CUT_NOTE, isEstimate, when } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { Run } from "@/lib/v2";
 
@@ -35,7 +35,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. */}
             {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>
-              : <span className="font-mono" title={run.cost && run.cost.usd !== null && isEstimate(run.cost) ? "A local estimate, not a bill" : undefined}>{cost(run.cost)}</span>}
+              : <span className="font-mono" title={run.cost && run.cost.usd !== null && isEstimate(run.cost) ? "A local estimate, not a bill" : undefined}>{cost(run.cost)}{bounded(run.cost) && <span className="text-muted-foreground"> · {CUT_NOTE}</span>}</span>}
           </div>
           {run.status === "completed" && run.review && <p className="mt-2 text-[13px] text-warning-text">Needs review: {run.review.reason}</p>}
         </div>
