@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 /** The console's build inputs, below the repository's root. */
 const INPUTS = ['apps/console/src', 'apps/console/index.html', 'apps/console/package.json', 'apps/console/package-lock.json', 'apps/console/tsconfig.json', 'apps/console/vite.config.ts', 'apps/console/tailwind.config.ts', 'apps/console/postcss.config.js', 'packages/dsl/src'];
@@ -69,7 +70,7 @@ export function buildConsole(root, { run = npm, log = (line) => console.log(line
   return 'built';
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   if (process.argv.includes('--stamp')) stampConsole(root);
   else buildConsole(root);
