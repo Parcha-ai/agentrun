@@ -1,9 +1,9 @@
 // A turn a crash cut off with one tool call in each status, and the system note the shared process layer makes of it
 // (`recoverySystemNote`). Other packages' tests import this fixture and compare their own note with `EXPECTED_SYSTEM_NOTE`,
 // so every harness says the same thing about the same log.
-import { openDrive } from '@parcha/agentrun-adapters/kernel';
-import { placeSubmissions, toolBridge } from '@parcha/agentrun-adapters/process';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { openDrive } from '@parcha/agentrun-kernel/kernel';
+import { placeSubmissions, toolBridge } from '@parcha/agentrun-kernel/process';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const tool = (name, replay, execute) => ({ name, description: name, inputSchema: { type: 'object' }, replay, execute });

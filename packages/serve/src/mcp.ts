@@ -204,13 +204,13 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "runs_respond", title: "Answer a run", annotations: { ...WRITE, openWorldHint: true },
-    description: "Sends an agentic run a message (POST /v2/runs/{run_id}/messages): the answer to the question it asked (its status is input_required; runs_get's pending holds the question), or a follow-up once it completed. mode in the answer says which. Then poll runs_get again.",
+    description: "Sends an agentic run a message (POST /v2/runs/{run_id}/messages): the answer to the question it asked (its status is input_required; runs_get's pending holds the question), or a follow-up once it completed or was stopped: a fresh turn with its history (a stopped turn is not replayed). mode in the answer says which. A cancelled run takes none: 409 not_continuable, start a new run. Then poll runs_get again.",
     inputSchema: { type: "object", required: ["run_id", "content"], properties: { run_id: RUN_ID, content: { type: "string", description: "The answer, or the message." } } },
     run: routed((args) => ({ method: "POST", path: `/runs/${id(text(args, "run_id"))}/messages`, body: without(args, ["run_id"]) })),
   },
   {
     name: "runs_cancel", title: "Cancel a run", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-    description: "Ends a run for good (POST /v2/runs/{run_id}/cancel): its status turns cancelled once its process has exited. It keeps what it did, and takes no more messages.",
+    description: "Ends a run for good (POST /v2/runs/{run_id}/cancel): its status turns cancelled once its process has exited. It keeps what it did, and takes no more messages: a message to it is 409 not_continuable, so go on in a new run (runs_start).",
     inputSchema: { type: "object", required: ["run_id"], properties: { run_id: RUN_ID } },
     run: routed((args) => ({ method: "POST", path: `/runs/${id(text(args, "run_id"))}/cancel` })),
   },

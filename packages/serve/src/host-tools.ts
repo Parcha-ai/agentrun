@@ -9,7 +9,7 @@
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
-import type { HostTool } from "@parcha/agentrun-adapters";
+import type { HostTool } from "@parcha/agentrun-kernel";
 import { ArchilCodingTools, type DurableRun } from "@parcha/pi-durable-disk";
 import { wireName } from "./catalog.js";
 import { FETCH_PAGE_TOOL, fetchOptions, fetchPageTool } from "./fetch-page.js";

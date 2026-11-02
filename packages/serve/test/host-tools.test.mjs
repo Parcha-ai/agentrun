@@ -4,8 +4,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { claudeAgentAdapter } from "@parcha/agentrun-claude-agent";
-import { codexAdapter } from "@parcha/agentrun-codex";
+import { claudeAgentAdapter } from "@parcha/agentrun-harness-claude";
+import { codexAdapter } from "@parcha/agentrun-harness-codex";
 import { hostTools } from "../dist/host-tools.js";
 import { withEnv } from "./support.mjs";
 

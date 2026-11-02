@@ -4,7 +4,7 @@
 // openDrive on the writer the runner lends (`io.writer`), on a local machine (host/machine.ts). The CLI's built-in tools
 // are off, so the host's tools, exactly those `spec.tools` names, are its only tools: each runs through the shared tool
 // bridge as a kernel effect, and a PreToolUse hook denies every other call. Its model is the session's loopback proxy
-// (@parcha/agentrun-adapters/host, with the Anthropic policy in host/policy.ts): every paid request passes the runner's
+// (@parcha/agentrun-kernel/host, with the Anthropic policy in host/policy.ts): every paid request passes the runner's
 // `beforeRequest` first, and its usage comes back through `afterRequest`. The runner alone accounts model spend.
 //
 // The Agent SDK is the host's: an exact optional peer dependency (`CLAUDE_AGENT_SDK_VERSION`), never shipped here.
@@ -12,11 +12,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-adapters";
-import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
-import { toolSchemaProblems } from "@parcha/agentrun-adapters";
-import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
-import { hostHeaderProblems, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
+import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
+import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
+import { toolSchemaProblems } from "@parcha/agentrun-kernel";
+import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { hostHeaderProblems, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
@@ -33,11 +33,11 @@ export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", 
 export const CLAUDE_AGENT_SKILLS_PLUGIN = "agentrun";
 
 /** A skill the model may load (the Skill tool): its name, and its files by path, `SKILL.md` among them. The shape every
- *  adapter takes a host's skills in (`HostSkill`, from @parcha/agentrun-adapters). */
+ *  adapter takes a host's skills in (`HostSkill`, from @parcha/agentrun-kernel). */
 export interface ClaudeAgentSkill extends HostSkill {}
 
 /** The skills, checked: each a name, a `SKILL.md` whose front matter has that name and a description, and files at plain
- *  relative paths, 1 MiB in all; or the problems. @parcha/agentrun-adapters' own check, which the Codex adapter runs too. */
+ *  relative paths, 1 MiB in all; or the problems. @parcha/agentrun-kernel' own check, which the Codex adapter runs too. */
 export { skillProblems };
 
 /** Writes the skills as the local plugin at `dir` (replacing what was there), and returns their plugin-qualified names. */
@@ -293,18 +293,18 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   const thinking = options.thinking ?? "medium";
   if (!THINKING.has(thinking)) throw new ClaudeAgentThinkingOff(thinking);
   const maxImageBytes = options.maxImageBytes ?? CLAUDE_AGENT_MAX_IMAGE_BYTES;
-  if (!Number.isSafeInteger(maxImageBytes) || maxImageBytes < 1 || maxImageBytes > MAX_IMAGE_BYTES_CEILING) throw new Error(`agentrun-claude-agent: maxImageBytes must be a whole number of bytes from 1 to ${MAX_IMAGE_BYTES_CEILING}`);
+  if (!Number.isSafeInteger(maxImageBytes) || maxImageBytes < 1 || maxImageBytes > MAX_IMAGE_BYTES_CEILING) throw new Error(`agentrun-harness-claude: maxImageBytes must be a whole number of bytes from 1 to ${MAX_IMAGE_BYTES_CEILING}`);
   const skills = options.skills ?? [];
   const webSearch = options.webSearch === true;
   const skillsWrong = skillProblems(skills);
-  if (skillsWrong.length) throw new Error(`agentrun-claude-agent: ${skillsWrong.join("; ")}`);
+  if (skillsWrong.length) throw new Error(`agentrun-harness-claude: ${skillsWrong.join("; ")}`);
   const headersWrong = hostHeaderProblems(options.provider.headers);
-  if (headersWrong.length) throw new Error(`agentrun-claude-agent: provider.headers: ${headersWrong.join("; ")}`);
+  if (headersWrong.length) throw new Error(`agentrun-harness-claude: provider.headers: ${headersWrong.join("; ")}`);
   // The SDK and its CLI are checked once, here: a mismatch is the host's to report, before any run starts.
   let executable: string;
   if (options.standIn) {
-    if (!standInAllowed()) throw new Error("agentrun-claude-agent: a stand-in CLI is for tests only (AGENTRUN_CLAUDE_AGENT_STANDIN=1 under a test runner)");
-    if (!options.sdk) throw new Error("agentrun-claude-agent: a stand-in CLI needs a scripted SDK (sdk)");
+    if (!standInAllowed()) throw new Error("agentrun-harness-claude: a stand-in CLI is for tests only (AGENTRUN_CLAUDE_AGENT_STANDIN=1 under a test runner)");
+    if (!options.sdk) throw new Error("agentrun-harness-claude: a stand-in CLI needs a scripted SDK (sdk)");
     executable = options.standIn.command;
   } else {
     executable = verifyClaudeAgent(options).cliPath;
@@ -335,9 +335,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
     },
     async open(spec, io) {
       const problems = this.check(spec);
-      if (problems.length) throw new Error(`agentrun-claude-agent: ${problems.join("; ")}`);
+      if (problems.length) throw new Error(`agentrun-harness-claude: ${problems.join("; ")}`);
       const dir = io.dir ?? (options.sessionsDir ? join(options.sessionsDir, createHash("sha256").update(spec.key).digest("hex").slice(0, 32)) : undefined);
-      if (!dir) throw new Error("agentrun-claude-agent: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
+      if (!dir) throw new Error("agentrun-harness-claude: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
       // With skills, the model also reads their files (read_skill_file), from the session's own copy of them.
       const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
 
@@ -446,7 +446,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       // A drive that was halted (an interrupt) holds the session no more: the next turn opens a fresh one, on the same
       // writer (the adapter never opens the session itself).
       const ready = async () => {
-        if (closed) throw new Error("agentrun-claude-agent: the session is closed");
+        if (closed) throw new Error("agentrun-harness-claude: the session is closed");
         if (running) await running;
         if (drive.signal.aborted && !io.signal.aborted) drive = await open();
       };
@@ -454,23 +454,23 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       return {
         get state() { return state; },
         async send(text) {
-          if (calls.draining) throw new Error("agentrun-claude-agent: the session is pausing; no new turn");
+          if (calls.draining) throw new Error("agentrun-harness-claude: the session is pausing; no new turn");
           await ready();
           await drive.submit({ id: randomUUID(), kind: "prompt", text });
           void run();
         },
         async recover() {
-          if (state !== "open_turn") throw new Error("agentrun-claude-agent: there is no turn to recover");
+          if (state !== "open_turn") throw new Error("agentrun-harness-claude: there is no turn to recover");
           await ready();
           void run();
         },
         async turnEnd() {
-          if (!running) throw new Error("agentrun-claude-agent: no turn is in flight");
+          if (!running) throw new Error("agentrun-harness-claude: no turn is in flight");
           return running;
         },
         async interrupt(interruptOptions = {}) {
           const drainMs = interruptOptions.drainMs ?? 0;
-          if (!Number.isFinite(drainMs) || drainMs < 0) throw new Error("agentrun-claude-agent: drainMs must be a non-negative number of milliseconds");
+          if (!Number.isFinite(drainMs) || drainMs < 0) throw new Error("agentrun-harness-claude: drainMs must be a non-negative number of milliseconds");
           // A pause: no new turn here (the host refuses new calls and requests); the calls in flight run on until their
           // outcomes are recorded.
           calls.draining = true;
