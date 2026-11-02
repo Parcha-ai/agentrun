@@ -1,9 +1,10 @@
 // pi's compaction summary is a paid request: a run that compacts counts it in its requests and its cost, and /usage
-// agrees with the run's cost.
+// agrees with the run's cost. Its cost entry carries its tokens.
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { openStoreReader } from "@parcha/pi-durable-agent";
 import { agent, follow, serve } from "./support.mjs";
 
 const COMPACT = new URL("./fixtures/faux-compact.mjs", import.meta.url).pathname;
@@ -37,6 +38,10 @@ test("a run that compacts counts the summary as a paid request: its cost is in t
   assert.equal(summaries.length, compactions.length, "each summary's cost is written");
   const summarized = summaries.reduce((sum, entry) => sum + entry.data.usd, 0);
   assert.ok(summarized > 0, "a summary is paid");
+  for (const { data } of summaries) {
+    assert.deepEqual(Object.keys(data.usage ?? {}).sort(), ["cacheRead", "cacheWrite", "input", "output"], "each summary's cost entry carries its tokens, in pi's shape");
+    assert.ok(Object.values(data.usage).every(Number.isSafeInteger) && data.usage.input > 0 && data.usage.output > 0, `a summary's tokens are counts: ${JSON.stringify(data.usage)}`);
+  }
   const { rows } = await follow(api, run.run_id, ["completed"]);
   const usage = usageOf(rows);
   assert.equal(usage.requests, answers.length + summaries.length, "every request counts: the answers and the summaries");
@@ -45,4 +50,12 @@ test("a run that compacts counts the summary as a paid request: its cost is in t
   assert.equal(view.cost.usd, usage.usd);
   const total = (await api("GET", "/usage?group_by=agent")).body.total_usd;
   assert.ok(Math.abs(total - usage.usd) < 1e-9, `/usage agrees with the run's cost: ${total} vs ${usage.usd}`);
+  // Each summary's tokens are on its cost entry, and counted there once: pi books no entry of its own for them.
+  assert.ok(summaries.every((entry) => entry.data.usage?.input > 0), "each summary's cost entry carries its tokens");
+  const sum = (key) => answers.reduce((n, entry) => n + (entry.model[0].usage[key] ?? 0), 0) + summaries.reduce((n, entry) => n + entry.data.usage[key], 0);
+  const reader = openStoreReader(data);
+  const metrics = reader.runMetrics(run.run_id);
+  reader.close();
+  assert.deepEqual([metrics.input, metrics.cacheRead, metrics.cacheWrite, metrics.output], [sum("input"), sum("cacheRead"), sum("cacheWrite"), sum("output")], "the answers' tokens and the summaries', once each");
+  assert.deepEqual([metrics.requests, metrics.unmetered], [answers.length + summaries.length, 0]);
 });

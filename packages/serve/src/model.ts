@@ -263,10 +263,10 @@ function unpricedApi<A extends ProviderStreams>(api: A, unpriced: ReadonlySet<st
   return { ...api, stream: unpricedOf(api.stream.bind(api)), streamSimple: unpricedOf(api.streamSimple.bind(api)) };
 }
 
-type Listed = { provider: string; cost: ModelCost };
+export type Listed = { provider: string; cost: ModelCost };
 
 /** pi-ai's catalog list prices by model id: every provider's entry for it, in the catalog's order. */
-async function catalogPrices(): Promise<Map<string, Listed[]>> {
+export async function catalogPrices(): Promise<Map<string, Listed[]>> {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   const out = new Map<string, Listed[]>();
   for (const model of builtinModels().getModels()) {

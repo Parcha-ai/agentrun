@@ -6,6 +6,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
+import { BOX_IDS } from "../dist/boxes.js";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, scratch, withEnv } from "./support.mjs";
 
@@ -109,7 +110,7 @@ test("the stored token is printed on the boot that made it, and on no later one"
   assert.equal(second.seen.out.includes(token) || second.seen.out.includes(token.slice(0, 12)), false, "the second boot prints no token value");
 });
 
-const LINE = /^at=\S+ event=(request|auth_failed|run_started|run_ended)( [a-z_]+=("[^"]*"|\S+))*$/;
+const LINE = /^at=\S+ event=(boxes|request|auth_failed|run_started|run_ended)( [a-z_]+=("[^"]*"|\S+))*$/;
 const fields = (line) => Object.fromEntries([...line.matchAll(/([a-z_]+)=("[^"]*"|\S+)/g)].map(([, k, v]) => [k, v.replace(/^"|"$/g, "")]));
 
 test("one log line per request (method, path without its query, status, ms), per run start and end, and per refused credential; never a token", async (t) => {
@@ -137,9 +138,11 @@ test("one log line per request (method, path without its query, status, ms), per
   assert.deepEqual(of("auth_failed").map((a) => [a.route, a.reason]), [["/v2/agents", "wrong_token"], ["/v2/runs", "no_credential"], ["/", "wrong_link_token"]]);
   assert.deepEqual(of("run_started").map((r) => [r.run, r.agent, r.kind]), [[run.run_id, "calc", "agentic"]]);
   assert.deepEqual(of("run_ended").map((r) => [r.run, r.agent, r.status, r.cost_usd]), [[run.run_id, "calc", "completed", "0"]]);
+  // One line at start says which boxes this server has (boxes.ts): with AGENTRUN_BOXES unset, none.
+  assert.deepEqual(of("boxes").map((b) => [b.available, b.unavailable]), [["none", BOX_IDS.join(",")]]);
 });
 
-test("AGENTRUN_LOG=quiet turns the request lines off; run and refused-credential lines stay", async (t) => {
+test("AGENTRUN_LOG=quiet turns the request lines off; the boxes, run and refused-credential lines stay", async (t) => {
   withEnv(t, { AGENTRUN_LOG: "quiet" });
   const lines = [];
   const server = await startServe({ data: join(await scratch(t), "agents"), port: 0, faux: FAUX, log: (line) => lines.push(line) });
@@ -149,7 +152,7 @@ test("AGENTRUN_LOG=quiet turns the request lines off; run and refused-credential
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
   await follow(api, run.run_id, ["completed"]);
   await client(server.baseUrl)("GET", "/runs");
-  assert.deepEqual(lines.map((line) => fields(line).event), ["run_started", "run_ended", "auth_failed"]);
+  assert.deepEqual(lines.map((line) => fields(line).event), ["boxes", "run_started", "run_ended", "auth_failed"]);
 });
 
 test("the bin writes the log lines to stdout", { timeout: 60_000 }, async (t) => {

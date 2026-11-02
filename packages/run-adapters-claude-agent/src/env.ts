@@ -1,7 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/env.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: the client app is agentrun-claude-agent; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own.
-// Changed by Parcha, 2026-10-28: `toolDescriptionMax`, so no tool's description is cut short.
+// Changed by Parcha, patches: 002-names, 008-tool-description-max
 /**
  * The durable environment of the `claude` CLI in the session's VM
  * (docs/workspaces.md §5.6 "Env"). It replaces the parent's environment

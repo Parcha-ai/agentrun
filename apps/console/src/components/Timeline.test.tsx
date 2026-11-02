@@ -43,3 +43,12 @@ describe("Timeline, a decision", () => {
     expect(el.querySelector("pre")?.textContent).toBe(text);
   });
 });
+
+describe("Timeline, a text block", () => {
+  it("is labelled Text, with its own icon, never its kind's name", () => {
+    const h = html(row({ id: "t1", kind: "text_block", summary: "Let me check the invoice first.", text: "Let me check the invoice first." }));
+    expect(h).toMatch(/>Text</);
+    expect(h).not.toContain("text_block");
+    expect(h).toContain("lucide-message-square-text");
+  });
+});
