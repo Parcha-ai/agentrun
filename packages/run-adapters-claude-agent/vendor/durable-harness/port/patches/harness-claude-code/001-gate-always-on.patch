@@ -1,0 +1,25 @@
+Patch: 001-gate-always-on
+Reason: with the built-ins off, upstream installs no PreToolUse hook, so nothing denies a call outside the session's own tools (the gate is always installed, and denies every call but the session's own)
+Upstream: ours
+Pins: a call to anything but the session's own tools is denied by the gate and never runs, whatever its name; the PreToolUse gate leaves the session's own tools to the tool, and a failure inside it is a deny, while the turn runs
+---
+diff --git a/packages/harness-claude-code/src/harness.ts b/packages/harness-claude-code/src/harness.ts
+--- a/packages/harness-claude-code/src/harness.ts
++++ b/packages/harness-claude-code/src/harness.ts
+@@ -551,6 +551,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+                 async (hook) => {
+                   try {
+                     if (hook.hook_event_name !== 'PreToolUse' || bridged(hook.tool_name)) return {};
++                    if (!builtinsOn) return deny("Not run: this session's only tools are its own.");
+                     if (ctx.signal.aborted) return deny('the session stopped');
+                     let updated: Record<string, unknown> | undefined;
+                     const field = FILE_TOOLS[hook.tool_name];
+@@ -645,7 +646,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+           // way nothing is asked of a user, and nothing else is permitted.
+           ...(allowed !== undefined ? { tools: allowed } : {}),
+           disallowedTools: disallowed,
+-          ...(builtinsOn ? { hooks } : {}),
++          hooks,
+           ...(ownSandbox ? { sandbox: claudeSandboxSettings(machine, sandbox.network) } : {}),
+           ...(bridge.tools.length ? { mcpServers: { [MCP_SERVER]: server } } : {}),
+           allowedTools: bridge.tools.map((t) => `mcp__${MCP_SERVER}__${t.name}`),

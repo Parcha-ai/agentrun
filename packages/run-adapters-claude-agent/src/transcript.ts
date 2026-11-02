@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/transcript.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; 2026-10-28: a call the CLI refuses itself (a tool the session doesn't have) is a `tool_refused` live event, never one that reached the session's tool server.
+// Changed by Parcha, imports rewritten for AgentRun; patches: 009-tool-result-barrier-and-refusals
 import type { TranscriptEntry } from './host/process.js';
 
 /**
