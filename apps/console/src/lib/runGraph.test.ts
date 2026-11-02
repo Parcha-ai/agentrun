@@ -55,7 +55,7 @@ describe("runMarks", () => {
     expect(m.taken).toEqual(["/root/steps/3/branches/review/body"]);
     expect(m.status!["/root/steps/3/branches/approve/body"]).toBe("not-run");
     expect(m.verdict!["/root/steps/3"]).toBe("review (unsure)");
-    expect(m.verdict!["/root/steps/2"]).toBe("dates_consistent 0.38");
+    expect(m.verdict!["/root/steps/2"]).toBe("dates_consistent no 0.62");
     expect(m.meta!["/root/steps/1/branches/0"]).toMatchObject({ provider: "parallel", web: true });
   });
   it("draws each map item in its state, and the body in one item's states when it is picked", () => {
@@ -65,7 +65,7 @@ describe("runMarks", () => {
     expect(m.verdict![`${MAP}/body/steps/1`]).toBeUndefined();
     const picked = runMarks(g, { path: MAP, item: 5 });
     expect(picked.status![`${MAP}/body/steps/1`]).toBe("done");
-    expect(picked.verdict![`${MAP}/body/steps/1`]).toBe("altered 0.86");
+    expect(picked.verdict![`${MAP}/body/steps/1`]).toBe("altered yes 0.86");
   });
 });
 
