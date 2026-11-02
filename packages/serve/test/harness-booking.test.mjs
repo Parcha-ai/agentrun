@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { RUNNER_RECORDS } from "@parcha/agentrun-adapters";
+import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";

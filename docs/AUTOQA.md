@@ -161,7 +161,7 @@ lines. Then:
   `On <message>: done.`.
 - claude-agent and codex run alone only inside the tests. `startServe({ fauxHarness })` puts every harness but pi on
   run-adapters' `fauxAdapter`; the CLI has no flag for it, and no environment variable turns it on. `claude-run` drives
-  the pinned Claude CLI against `fakeAnthropic`, and `codex-run` drives agentrun-codex's app-server stand-in. From
+  the pinned Claude CLI against `fakeAnthropic`, and `codex-run` drives agentrun-harness-codex's app-server stand-in. From
   `packages/serve`:
 
   ```sh

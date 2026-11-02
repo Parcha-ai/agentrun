@@ -1,7 +1,7 @@
-# @parcha/agentrun-adapters
+# @parcha/agentrun-kernel
 
-Agent harnesses other than Pi behind one seam, starting with Codex, so a DSL `agent` node and an AgentRun run can run on a
-harness adapter the way they run on Pi, durable in AgentRun's own store. It is held: not on npm yet.
+Agent harnesses other than Pi (Claude Agent and Codex) behind one seam, so a DSL `agent` node and an AgentRun run can run on a
+harness adapter the way they run on Pi, durable in AgentRun's own store.
 
 - `createHarnessRunner(adapter, options)` is exactly the interpreter's `runNode`. A node's record arrives through an
   injected `submit` tool whose input is the node's schema under `value` (`submitParameters` from
