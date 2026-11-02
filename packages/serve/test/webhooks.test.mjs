@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { startServe } from "../dist/index.js";
 import { nextMoment } from "../dist/runs.js";
-import { signatureOf } from "../dist/webhooks.js";
+import { signatureOf, Webhooks } from "../dist/webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
 
@@ -206,6 +206,70 @@ test("a 410 turns the webhook off, says so and sends nothing more until a PUT se
   const third = await startRun(api, "back", "hi");
   await follow(api, third.run_id, ["completed"]);
   await until(() => hook.got.length === 2, "sent again");
+});
+
+/** Every unhandled rejection while `t` runs: one would stop a server. */
+function rejections(t) {
+  const seen = [];
+  const on = (reason) => seen.push(reason);
+  process.on("unhandledRejection", on);
+  t.after(() => process.off("unhandledRejection", on));
+  return seen;
+}
+
+test("a 410 while the webhook's file cannot be written leaves the server up and the webhook off here, said in the log; the next PUT writes it", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const rejected = rejections(t);
+  let answer = 410;
+  const hook = await receiver(t, () => answer);
+  const lines = [];
+  const { api, data } = await serve(t, { webhookRetryMs: [100, 100], log: (line) => lines.push(line) });
+  const set = (await api("PUT", "/settings/webhook", { url: hook.url })).body;
+  // The webhook's temporary file is a directory: its write fails, as on a full disk.
+  const blocked = join(data, "webhook.json.tmp");
+  mkdirSync(blocked);
+  const first = await startRun(api, "gone", "hi");
+  await follow(api, first.run_id, ["completed"]);
+  const off = await until(async () => (await api("GET", "/settings/webhook")).body.disabled, "off here");
+  assert.equal(off.reason, "the receiver answered 410 Gone");
+  assert.ok(lines.some((line) => line.includes("condition=webhook_unwritable")), "the log says the write failed");
+  assert.ok(lines.some((line) => line.includes("condition=webhook_disabled")));
+  assert.equal(JSON.parse(readFileSync(join(data, "webhook.json"), "utf8")).disabled, undefined, "not on disk");
+  const second = await startRun(api, "quiet", "hi");
+  await follow(api, second.run_id, ["completed"]);
+  await sleep(300);
+  assert.equal(hook.got.length, 1, "off: nothing more is sent");
+  rmdirSync(blocked);
+  answer = 200;
+  const again = (await api("PUT", "/settings/webhook", { url: hook.url })).body;
+  assert.equal(again.disabled, null, "a PUT sets it on again");
+  const written = JSON.parse(readFileSync(join(data, "webhook.json"), "utf8"));
+  assert.deepEqual([written.url, written.updated_at, written.disabled], [set.url, again.updated_at, undefined], "and writes it");
+  const third = await startRun(api, "back", "hi");
+  await follow(api, third.run_id, ["completed"]);
+  await until(() => hook.got.length === 2, "sent again");
+  assert.deepEqual(rejected, [], "no unhandled rejection");
+});
+
+test("a scheduled try that throws is said in the log, never an unhandled rejection", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const rejected = rejections(t);
+  const hook = await receiver(t, () => 500);
+  const said = [];
+  // A log that throws on the line a failed try ends with: the try throws after its POST.
+  const say = (fields) => {
+    if (fields.condition === "delivery_failed") throw new Error("the log is gone");
+    said.push(fields);
+  };
+  const webhooks = new Webhooks(await scratch(t), { AGENTRUN_SEAL_KEY: sealKey() }, say, []);
+  t.after(() => webhooks.close());
+  webhooks.save({ url: hook.url });
+  webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, "m1");
+  await until(() => said.some((fields) => fields.condition === "attempt_failed"), "the throw said");
+  assert.equal(hook.got.length, 1);
+  assert.deepEqual(said.filter((fields) => fields.condition === "attempt_failed").map(({ error }) => error), ["the log is gone"]);
+  await sleep(100);
+  assert.deepEqual(rejected, [], "no unhandled rejection");
 });
 
 test("a 410 that comes back after the webhook was set to another URL turns nothing off: the message goes on to the new URL", async (t) => {

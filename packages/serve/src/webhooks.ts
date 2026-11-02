@@ -61,6 +61,9 @@ export class Webhooks {
   /** The outbox as held here is not on disk: its last write failed. Written again soon, and at the close. */
   private unsaved = false;
   private saving?: NodeJS.Timeout;
+  /** The webhook as held here when its write failed (a 410 that turned it off, on a full disk): read in place of the
+   *  file until a write lands, as the next PUT's does. */
+  private held?: Config;
 
   /** `env` is the server's own (withSecrets); `say` takes a log line's fields; `retryMs` the waits between tries. */
   constructor(data: string, env: NodeJS.ProcessEnv, private readonly say: (fields: Record<string, string | number>) => void, private readonly retryMs: readonly number[] = RETRY_MS) {
@@ -108,6 +111,7 @@ export class Webhooks {
   remove(): void {
     if (!this.config()) return;
     rmSync(this.file, { force: true });
+    this.held = undefined;
     this.drop("the webhook was removed");
   }
 
@@ -155,6 +159,7 @@ export class Webhooks {
   }
 
   private config(): Config | undefined {
+    if (this.held) return this.held;
     try {
       const doc = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
       return isObject(doc) && doc.v === 1 && typeof doc.url === "string" && typeof doc.secret === "string" ? (doc as unknown as Config) : undefined;
@@ -163,8 +168,10 @@ export class Webhooks {
     }
   }
 
+  /** Throws when the write fails: what was held stays held. */
   private write(config: Config): void {
     writeDurableSync(this.file, `${JSON.stringify({ v: 1, ...config }, null, 2)}\n`);
+    this.held = undefined;
   }
 
   private readOutbox(): { messages: Message[]; attempts: Attempt[] } {
@@ -226,7 +233,12 @@ export class Webhooks {
     if (this.closed) return;
     const timer = setTimeout(() => {
       this.timers.delete(timer);
-      void this.attempt(message, { retry: true, redelivery: false });
+      // No try rejects unhandled, which would stop the server: one that throws is said, and its message stays as it was.
+      this.attempt(message, { retry: true, redelivery: false }).catch((error: unknown) => {
+        try {
+          this.say({ condition: "attempt_failed", webhook_id: message.id, error: error instanceof Error ? error.message : String(error) });
+        } catch {}
+      });
     }, delayMs);
     timer.unref();
     this.timers.add(timer);
@@ -297,7 +309,14 @@ export class Webhooks {
     if (gone) {
       // Gone: the receiver says this endpoint is no more. Off, its pending messages dropped, until a PUT sets it again.
       const disabled = { at: attempt.at, reason: "the receiver answered 410 Gone" };
-      this.write({ ...standing!, disabled });
+      const off = { ...standing!, disabled };
+      try {
+        this.write(off);
+      } catch (error) {
+        // Off here all the same: held, and the next PUT writes the webhook whole.
+        this.held = off;
+        this.say({ condition: "webhook_unwritable", file: this.file, error: (error as NodeJS.ErrnoException).code ?? "unknown" });
+      }
       this.say({ condition: "webhook_disabled", url: standing!.url, reason: disabled.reason });
       this.drop("the webhook is off: its receiver answered 410");
       return attempt;
