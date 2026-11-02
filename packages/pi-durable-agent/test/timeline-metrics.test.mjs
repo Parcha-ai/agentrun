@@ -3,7 +3,7 @@
 // of every token sum; each tool's calls pair with their results by conversation and call id, as the timeline's do.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { METRIC_NAMES, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf } from "../dist/timeline/index.js";
+import { METRIC_NAMES, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, runMetricsWithDecisions, timelineOf } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const usage = (input, output, cacheRead = 0, cacheWrite = 0, total = 0.01) => ({ input, output, cacheRead, cacheWrite, totalTokens: input + output, cost: { total } });
@@ -253,11 +253,17 @@ test("a workflow's decision requests count with its model requests: each receipt
     // An answer that reports no input was not measured, as a model request's zeros are.
     { provider: "jev", model: "jev-1.14.0", usage: { input_tokens: 0, output_tokens: 0 }, status: "answered" },
   ];
-  const m = runMetricsOf(entries, decisions);
+  const m = runMetricsWithDecisions(entries, decisions);
   assert.deepEqual(tokensOf(m), { input: 100 + 120 + 300 + 40, cacheRead: 0, cacheWrite: 0, output: 20 + 12 });
   assert.deepEqual([m.requests, m.unmetered], [1 + 7, 4]);
   assert.deepEqual(m.models, { "anthropic/claude-opus-5-5": 1, "jev/jev-1.14.0": 6, "parallel/decide-1": 1 });
   assert.equal(m.model, "jev/jev-1.14.0");
-  assert.deepEqual(runMetricsOf(entries, []), runMetricsOf(entries), "no decisions: the entries' count alone");
-  assert.deepEqual([runMetricsOf([], [{ model: "jev-1.14.0" }]).requests, runMetricsOf([], [{ model: "jev-1.14.0" }]).unmetered], [1, 1], "a receipt with no usage at all");
+  assert.deepEqual(runMetricsWithDecisions(entries, []), runMetricsOf(entries), "no decisions: the entries' count alone");
+  assert.deepEqual([runMetricsWithDecisions([], [{ model: "jev-1.14.0" }]).requests, runMetricsWithDecisions([], [{ model: "jev-1.14.0" }]).unmetered], [1, 1], "a receipt with no usage at all");
+});
+
+test("runMetricsOf takes one parameter, so mapping it over runs' entries is safe: map's index is never read as receipts", () => {
+  const entries = [answer([{ type: "text", text: "a" }], usage(10, 2)), answer([{ type: "text", text: "b" }], usage(5, 1))];
+  assert.equal(runMetricsOf.length, 1);
+  assert.deepEqual([entries, entries].map(runMetricsOf), [runMetricsOf(entries), runMetricsOf(entries)]);
 });

@@ -531,10 +531,14 @@ export type DecisionLike = { usage?: unknown; model?: unknown; provider?: unknow
 
 /** What a run that ended used, from the entries of every conversation of its store, in log order (`SELECT record FROM
  *  entries ORDER BY id`): its model requests and their tokens, counted as its usage row counts them (a cut request's
- *  tokens are unknown), and its tool calls. `decisions`, a workflow run's decision receipts: each a request, its
- *  `usage` (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, unmetered. Pure, like
- *  timelineOf. */
-export function runMetricsOf(records: readonly EntryLike[], decisions: readonly DecisionLike[] = []): RunMetrics {
+ *  tokens are unknown), and its tool calls. One parameter, so `.map(runMetricsOf)` is safe. Pure, like timelineOf. */
+export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
+  return runMetricsWithDecisions(records, []);
+}
+
+/** runMetricsOf, with a workflow run's decision receipts beside its entries: each a request, its `usage`
+ *  (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, unmetered. */
+export function runMetricsWithDecisions(records: readonly EntryLike[], decisions: readonly DecisionLike[]): RunMetrics {
   const meter = createMeter();
   const seen = new Set<string>();
   // Each call by `conversation:id`, its tool's name as kept and as called, and whether a result closed it, as the timeline

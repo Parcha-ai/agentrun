@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsOf, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
@@ -534,7 +534,7 @@ export class Runs {
       run.llmRead = (await readNodeLog(run.dir)).filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done").length;
     }
     // Its decision requests count with its model requests: each receipt's tokens, or unmetered without them.
-    if (atEnd) run.metrics = runMetricsOf(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
+    if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteAnswer(run, entries);
     this.take(run, timelineOf(entries as never, { settled: true }));
