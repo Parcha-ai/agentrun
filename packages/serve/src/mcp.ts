@@ -149,14 +149,13 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "runs_get", title: "Get a run", annotations: READ,
-    description: "A run's status and outcome (GET /v2/runs/{run_id}), with pending (the question it asked, while its status is input_required) and console_url (the run's page). status is queued, working, input_required, completed, failed, cancelled or paused. A completed run's answer is result.final_answer (agentic) or result.output (workflow); a failed run's reason is error; cost.usd is null while unknown, never $0.",
+    description: "A run's status and outcome (GET /v2/runs/{run_id}), and console_url (added here), the run's page. pending is what it waits on, by kind: {kind: \"question\", question} while its status is input_required, else null. status is queued, working, input_required, completed, failed, cancelled or paused. A completed run's answer is result.final_answer (agentic) or result.output (workflow); a failed run's reason is error; cost.usd is null while unknown, never $0.",
     inputSchema: { type: "object", required: ["run_id"], properties: { run_id: RUN_ID } },
     run: async (args, context) => {
       const run = text(args, "run_id");
       const answer = await context.call({ method: "GET", path: `/runs/${id(run)}` });
       if (answer.status >= 400) return resultOf(answer);
-      const view = json(answer);
-      return resultOf(answer, { pending: view.status === "input_required" && view.state === "waiting" ? await question(context, run) : null, console_url: runLink(context.origin, run) });
+      return resultOf(answer, { console_url: runLink(context.origin, run) });
     },
   },
   {
@@ -206,22 +205,8 @@ export const TOOLS: Tool[] = [
   },
 ];
 
-/** The question a waiting run asked: its timeline's last `waiting` row, read through the timeline route. */
-async function question(context: Context, run: string): Promise<Json | null> {
-  let asked: Json | null = null;
-  for (let after = 0, pages = 0; pages < 50; pages++) {
-    const answer = await context.call({ method: "GET", path: `/runs/${id(run)}/timeline`, query: { after } });
-    if (answer.status >= 400) return null;
-    const page = json(answer) as { rows: Json[]; has_more: boolean; next_after: number };
-    for (const row of page.rows) if (row.kind === "waiting" && (asked === null || (row.seq as number) > (asked.seq as number))) asked = row;
-    if (!page.has_more) break;
-    after = page.next_after;
-  }
-  return asked && { question: asked.text ?? asked.summary, asked_at: asked.timestamp };
-}
-
 const INSTRUCTIONS =
-  "Tools over this AgentRun server's agents and runs. Call whoami first. To run an agent: agents_list (or agents_create, after asking the person), then runs_start, then runs_get every few seconds until its status is completed, failed or cancelled. input_required means it asked a question (runs_get's pending): answer it with runs_respond, or leave it for the person in the console (console_url). Read its steps with runs_events and what it wrote with runs_files.";
+  "Tools over this AgentRun server's agents and runs. Call whoami first. To run an agent: agents_list (or agents_create, after asking the person), then runs_start, then runs_get every few seconds until its status is completed, failed or cancelled. input_required means it asked a question (runs_get's pending, kind question): answer it with runs_respond, or leave it for the person in the console (console_url). Read its steps with runs_events and what it wrote with runs_files.";
 
 /** A route's answer, captured: its status, headers and bytes up to `limit`. A route that writes past it is cut off
  *  there (`tooBig`): a file stream stops. */

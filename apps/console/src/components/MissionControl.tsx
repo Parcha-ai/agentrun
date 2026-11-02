@@ -29,7 +29,7 @@ export function MissionControl({ view, error, onRetry, scope }: { view: MissionV
     ["Active", String(view.runs.active), undefined, view.runs.statusUnknown ? `${view.runs.statusUnknown} unknown` : undefined],
     ["Needs input", String(view.runs.needsInput), view.runs.needsInput ? "text-warning-text" : undefined],
     ["Failed", String(view.runs.failed), view.runs.failed ? "text-destructive-text" : undefined],
-    ["Total cost", spent.total, undefined, spent.note],
+    ["Total cost", spent.total, undefined, [spent.note, spent.bound].filter(Boolean).join(" · ") || undefined],
   ];
   return (
     <div className="h-full overflow-auto">
