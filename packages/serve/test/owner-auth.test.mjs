@@ -153,7 +153,7 @@ test("reset-password clears the password and ends every session; the next visit 
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/reset-password", headers: page(server), body: {} })).status, 404, "never an HTTP route");
 });
 
-test("every route, called with no credential, is a 401 but capabilities, the contract and health; the owner's session and the token are let into every one", async (t) => {
+test("every route, called with no credential, is a 401 but capabilities, the contract and health; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only", async (t) => {
   const server = await owned(t);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
@@ -166,7 +166,8 @@ test("every route, called with no credential, is a 401 but capabilities, the con
     else assert.equal(anonymous.status, 401, `${route.method} ${path} with no credential: ${anonymous.text}`);
     for (const headers of [{ ...(writes ? page(server) : {}), cookie: server.cookie }, { ...(body ? json : {}), authorization: `Bearer ${server.token}` }]) {
       const res = await call(server.port, { method: route.method, path, headers, body });
-      assert.ok(![401, 403].includes(res.status), `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
+      if (route.name === "callMcp" && headers.cookie) assert.equal(res.status, 401, `${route.method} ${path} with the session alone: ${res.status} ${res.text}`);
+      else assert.ok(![401, 403].includes(res.status), `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
     }
   }
 });

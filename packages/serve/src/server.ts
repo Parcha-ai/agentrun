@@ -15,6 +15,7 @@ import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
+import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
@@ -184,6 +185,8 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
+  // Answered before routing (mcp.ts), with the token only: listed here for the document.
+  { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
@@ -520,8 +523,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, run: Run): Promise<void> {
     const after = integerParam(url.searchParams.get("after"), "after", Number.MAX_SAFE_INTEGER);
     const waitMs = integerParam(url.searchParams.get("wait_ms"), "wait_ms", MAX_WAIT_MS);
+    // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's).
+    const asked = url.searchParams.get("limit");
+    if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= PAGE_ROWS)) throw new ApiError("bad_request", `limit is an integer from 1 to ${PAGE_ROWS}`);
+    const limit = asked === null ? PAGE_ROWS : Number(asked);
     const pageOf = async (from: number, wait: number) => {
-      const page = await runs.page(run, from, wait, PAGE_ROWS);
+      const page = await runs.page(run, from, wait, limit);
       return { run_id: run.id, status: page.status, state: page.state, reset: page.reset, rows: page.rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final: page.final, cost: runs.cost(run) };
     };
     if (!String(req.headers.accept ?? "").includes("text/event-stream")) {
@@ -888,6 +895,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     throw new ApiError("not_found", `no route ${path}`);
   }
 
+  // The MCP endpoint's tools are the routes above, called in process with the caller's token (mcp.ts).
+  const mcp = mcpEndpoint({ route, authorized: (header) => timingSafeEqual(digest(header), expected), authFailed, version: VERSION });
+
   function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
     const text = JSON.stringify(body);
     res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", ...headers });
@@ -921,8 +931,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (names && !names.has(String(req.headers.host ?? "").toLowerCase())) return fail(new ApiError("forbidden", "unexpected Host header"));
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
-    // Before the page: its cookie must not stand in for the token on the owner's own routes.
+    // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
     if (owner && (raw === "/v2/setup" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
+    if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
+    if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, ...(owner ? { owner } : {}) })) return;
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     route(req, res, url, raw.slice(3)).catch(fail);
