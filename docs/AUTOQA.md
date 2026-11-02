@@ -54,10 +54,9 @@ Stop the server with SIGTERM to its exact PID. A busy run gets the drain timeout
 - API: `Authorization: Bearer $(cat DIR/.token)`. `GET /v2/health`, `GET /v2/capabilities` and `GET /v2/openapi.json`
   need no credential. Anything else without a token is `401 unauthenticated`. A non-loopback `Host` on a loopback
   bind is `403`.
-- Console: `/console/` (`/console` redirects with 303). On the first visit, set the owner password (12 characters or
-  more; labels `New password` and `Password again`). After that, sign in with the `Password` field. The session is a
-  cookie, and the `?token=` link sets none while accounts are on.
-- The store page is `/`. On a fresh server `/` redirects to `/setup`.
+- Console: `/` (`/console/`, `/setup` and `/sign-in` redirect there with 303). On the first visit, set the owner
+  password (12 characters or more; labels `New password` and `Password again`). After that, sign in with the
+  `Password` field. The session is a cookie, and the `?token=` link sets none while accounts are on.
 - Forgotten password: `agentrun-serve reset-password --data DIR`.
 
 ## Core check catalog
@@ -114,8 +113,8 @@ Each row: entry point, then what makes it pass.
     Mission Control (`#/mission`), Agents (`#/agents`), agent page (`#/agents/<id>`), editor
     (`#/agents/<id>/edit`, every step through History), New agent (`#/agents/new`, **create with the defaults**),
     Playground (`#/playground`: send a run, then "Open this run" to follow it live), Runs plus a state filter
-    (`#/runs?status=cancelled`), run detail tabs Report/Timeline/Files and the file viewer, a workflow run's Graph,
-    and the store page `/`. Capture console errors and HTTP ≥ 400 per page. The page CSP is
+    (`#/runs?status=cancelled`), run detail tabs Report/Timeline/Files and the file viewer, and a workflow run's
+    Graph. Capture console errors and HTTP ≥ 400 per page. The page CSP is
     `default-src 'self'`, so any violation is a finding.
 
 ## Subsystems
@@ -350,8 +349,7 @@ node --input-type=module -e '
      --faux packages/serve/test/fixtures/faux-model.mjs
    ```
 
-   Open the console at `/console/` on the address the banner prints. The imported project is one agent with its three
-   runs.
+   Open the console at `/` on the address the banner prints. The imported project is one agent with its three runs.
 2. The console's own suite, on recorded fixtures: `(cd apps/console && npm ci && npm test)`.
 3. Import alone: `HOME="$QA_HOME" node packages/serve/dist/cli.js import --dry-run --all --data "$QA_DATA"` prints what
    it would import (1 project, 3 sessions) and writes nothing.
@@ -360,7 +358,7 @@ node --input-type=module -e '
 
 **Checks.**
 
-1. The console loads at `/console/` and signs in: setup, then the password. With `AGENTRUN_ACCOUNTS=0` the printed
+1. The console loads at `/` and signs in: setup, then the password. With `AGENTRUN_ACCOUNTS=0` the printed
    link signs the browser in and the token leaves the address.
 2. An agent is created from New agent with its defaults, and a run is started from its page. Once the workflow
    starter is on main (#1315), a workflow agent is created from it too.
