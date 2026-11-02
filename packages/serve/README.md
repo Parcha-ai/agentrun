@@ -467,7 +467,9 @@ With `AGENTRUN_BOXES=docker` and a Docker daemon this server's user may use, a r
 its model calls and every key.
 
 - The container binds the run's `work/` alone, read-write, at `/run/agentrun/run/work`, where the tools start. Nothing
-  else of the data directory enters it. A mount source that is, or passes through, a link below the data directory is
+  else of the data directory enters it. `read`, `write` and `edit` take a path in that directory, relative or absolute;
+  any other (a path of this machine, `..` out of it, `~`) is refused as outside the workspace, and their errors name the
+  box's paths, never this machine's. A mount source that is, or passes through, a link below the data directory is
   refused: the tool call fails, and no container is made. The data directory is resolved to its real path once, at start.
 - It has no network (`--network none`); no setting opens it. Its environment is `LANG=C.UTF-8` and `HOME=/tmp` and the
   image's own: never this server's, so no key or token is in it. It runs as this server's uid:gid, so what it writes in

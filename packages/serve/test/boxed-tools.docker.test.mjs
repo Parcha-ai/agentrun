@@ -81,6 +81,7 @@ test("live Docker (pi): bash, write, read and edit run in the box; no key or tok
     { tool: "bash", args: { command: `ls -A /run/agentrun; ls -A /run/agentrun/run; ls ${canonical} 2>&1; cat ${join(canonical, ".token")} 2>&1; true` } },
     { tool: "read", args: { path: join(canonical, ".token") } },
     { tool: "bash", args: { command: "grep -h '^ID=' /etc/os-release; id -u; id -g; pwd" } },
+    { tool: "read", args: { path: "missing.md" } },
     // Holds the box while the test reads Docker's record of it.
     { tool: "bash", args: { command: "sleep 20" } },
   ];
@@ -118,6 +119,9 @@ test("live Docker (pi): bash, write, read and edit run in the box; no key or tok
   assert.equal(said[9].error, true, "the data root is not in the box");
   const [id, uid, gid, cwd] = at(10).trim().split("\n");
   assert.deepEqual([id, uid, gid, cwd], ["ID=debian", String(process.getuid()), String(process.getgid()), "/run/agentrun/run/work"]);
+  assert.match(at(11), /\/run\/agentrun\/run\/work\/missing\.md/, "an error names the box's path");
+  assert.ok(!at(11).includes(canonical), "never the data root");
+  assert.match(at(9), /: outside the workspace \/run\/agentrun\/run\/work/, "a host path is refused, never mapped");
   await until(() => docker("ps", "--all", "--quiet", "--filter", `label=agentrun.run=${runId}`).trim() === "", "the box's destroy at the run's end");
 });
 

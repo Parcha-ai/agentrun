@@ -60,3 +60,17 @@ test("in a box the source is pi's read, write, edit and bash, each call made on 
   assert.deepEqual(calls, [context]);
   assert.throws(() => codingSource({ mode: "sandbox", box: "docker" }), /needs its box/);
 });
+
+test("in a box a file tool's path stays in the box's work dir: a host path, a way out, ~ or a file: URL is refused in the confined tools' words, before the box is asked", async () => {
+  const asked = [];
+  const source = codingSource({ mode: "sandbox", box: "docker" }, { env: async () => (asked.push("env"), { cwd: "/run/agentrun/run/work" }) });
+  const read = source.tools.find((tool) => tool.name === "read");
+  for (const path of ["/var/lib/agentrun/runs/r1/work/x.md", "../x.md", "/run/agentrun/run/workx/y", "~/x", "file:///etc/passwd", "/etc/passwd"]) {
+    await assert.rejects(read.execute({ path }, {}, {}), new Error(`${path}: outside the workspace /run/agentrun/run/work`), path);
+  }
+  assert.deepEqual(asked, [], "no box was asked for a refused path");
+  for (const path of ["x.md", "sub/../x.md", "/run/agentrun/run/work/x.md"]) {
+    await read.execute({ path }, { output() {}, diagnostic() {} }, {}).catch(() => undefined);
+  }
+  assert.equal(asked.length, 3, "each path in the work dir reaches the box");
+});

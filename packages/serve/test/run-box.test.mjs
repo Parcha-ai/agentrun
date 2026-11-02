@@ -112,15 +112,18 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
     { tool: "bash", args: { command: "printf hi > out.txt" } },
     { tool: "read", args: { path: "out.txt" } },
     { tool: "bash", args: { command: "env" } },
+    { tool: "read", args: { path: "missing.md" } },
   ]);
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   const said = answers(data, runId);
-  assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["read", false], ["bash", false]], JSON.stringify(said));
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["read", false], ["bash", false], ["read", true]], JSON.stringify(said));
+  assert.match(said[3].text, /\/run\/agentrun\/run\/work\/missing\.md/, "an error names the box's path");
+  assert.ok(!said[3].text.includes(realpathSync(data)), "never the data root");
   assert.equal(said[1].text, "hi");
   assert.ok(!said[2].text.includes("planted-key-value"), "the run's environment is not the box's");
   assert.equal(readFileSync(join(data, "runs", runId, "work", "out.txt"), "utf8"), "hi");
   const runs = docker.runs();
-  assert.equal(runs.length, 1, "one box for the run's three calls");
+  assert.equal(runs.length, 1, "one box for the run's calls");
   const [args] = runs;
   assert.deepEqual(flag(args, "--network"), ["none"]);
   assert.deepEqual(flag(args, "--user"), [`${process.getuid()}:${process.getgid()}`]);

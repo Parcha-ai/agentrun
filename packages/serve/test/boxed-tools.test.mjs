@@ -4,7 +4,7 @@
 // shares this machine, so /proc and the network are checked on real Docker only (boxed-tools.docker.test.mjs).
 // run-box.test.mjs checks what Docker itself is asked, with a fake `docker` first on PATH.
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { mkdir, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -94,23 +94,27 @@ test("demo (pi): in a Docker place read, write, edit and bash run in the run's b
     { tool: "write", args: { path: "note.txt", content: "written in the box" } },
     { tool: "read", args: { path: "note.txt" } },
     { tool: "edit", args: { path: "note.txt", edits: [{ oldText: "written", newText: "edited" }] } },
-    { tool: "bash", args: { command: "cat note.txt; echo; pwd" } },
-    // The box is the boundary, not pi-durable-disk's confinement: a path outside work/ is the box's to give (on the
-    // runner the same write is refused as outside the workspace).
+    { tool: "bash", args: { command: "cat note.txt" } },
+    // A file tool's path stays in the box's work dir: a host path is refused in the confined tools' words, never mapped.
     { tool: "write", args: { path: outside, content: "box" } },
     { tool: "bash", args: { command: ENV_PROBE } },
     { tool: "bash", args: { command: "exit 3" } },
+    { tool: "read", args: { path: "missing.md" } },
+    { tool: "read", args: { path: join(data, "runs", "x", "work", "note.txt") } },
   ];
   const run = await probe(api, "boxed", plan);
   await follow(api, run.run_id, ["completed"], { deadlineMs: 60_000 });
   const said = answers(data, run.run_id);
-  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step, i) => [step.tool, i === plan.length - 1]));
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step, i) => [step.tool, i >= 5 && i !== 6]));
   assert.equal(said[2].text, "written in the box");
-  const [cat, pwd] = said[4].text.trim().split("\n");
-  assert.equal(cat, "edited in the box");
-  assert.equal(pwd, join(data, "runs", run.run_id, "work"), "a faux box's workspace is work/ itself, as Docker's bind makes it");
-  assert.equal(await readFile(outside, "utf8"), "box");
+  assert.equal(said[4].text, "edited in the box");
+  assert.match(said[5].text, new RegExp(`${outside}: outside the workspace /run/agentrun/run/work`));
+  assert.equal(existsSync(outside), false);
   assert.match(said[7].text, /Command exited with code 3/);
+  // Errors name the box's paths, never the data root, which only the server knows; a host path given is refused.
+  assert.match(said[8].text, /\/run\/agentrun\/run\/work\/missing\.md/);
+  assert.ok(!said[8].text.includes(realpathSync(data)), said[8].text);
+  assert.match(said[9].text, /: outside the workspace \/run\/agentrun\/run\/work/);
   // The files: bash's out.txt and the edited note, in GET /runs/{id}/files.
   const files = (await api("GET", `/runs/${run.run_id}/files`)).body.files.map((f) => f.path);
   assert.ok(files.includes("out.txt") && files.includes("note.txt"), JSON.stringify(files));
@@ -144,6 +148,8 @@ test("demo (claude-agent, codex): the faux harness's bash, write and read run in
       { call: "write", args: { path: "w.txt", content: "from the host tool" } },
       { call: "read", args: { path: "w.txt" } },
       { call: "bash", args: { command: ENV_PROBE } },
+      // The harness's own cwd on this machine is no box path.
+      { call: "read", args: { path: join(data, "runs", "any", "harness", "work", "out.txt") } },
     ];
     const id = `boxed-${harness}`;
     assert.equal((await api("POST", "/agents", { definition: { id, name: id, harness, instructions: `Box calls: ${JSON.stringify(calls)}`, place: SANDBOX, tools: ["read", "write", "bash"] } })).status, 201);
@@ -151,7 +157,8 @@ test("demo (claude-agent, codex): the faux harness's bash, write and read run in
     assert.equal(run.status, 202, JSON.stringify(run.body));
     await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
     const said = answers(data, run.body.run_id);
-    assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["write", false], ["read", false], ["bash", false]], `${harness}: ${JSON.stringify(said)}`);
+    assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["write", false], ["read", false], ["bash", false], ["read", true]], `${harness}: ${JSON.stringify(said)}`);
+    assert.match(said[4].text, /: outside the workspace \/run\/agentrun\/run\/work$/);
     assert.equal(said[2].text, "from the host tool");
     assert.equal(await readFile(join(data, "runs", run.body.run_id, "work", "out.txt"), "utf8"), "hi");
     assert.ok((await api("GET", `/runs/${run.body.run_id}/files`)).body.files.some((f) => f.path === "out.txt"), harness);
