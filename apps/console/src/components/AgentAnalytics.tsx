@@ -6,15 +6,21 @@ import { rangeFrom, type Stats, type StatsRange } from "@/lib/mission";
 
 const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
 
+/** The range the tab opens on, which the agent page reads first. */
+export const FIRST_RANGE: StatsRange = "30d";
+
 /** One agent's analytics (`GET /v2/stats?agent=`), drawn as Mission Control draws the whole server's: its tokens, time,
- *  success and cost, by harness and effort, per day and its top tools, over the range picked above them. */
-export function AnalyticsTab({ agent, v2, now = Date.now }: { agent: Agent; v2: Client; now?: () => number }) {
-  const [range, setRange] = useState<StatsRange>("30d");
-  const [stats, setStats] = useState<Stats | null>(null);
+ *  success and cost, by harness and effort, per day and its top tools, over the range picked above them. `stats`: the
+ *  page's answer for the first range, shown as it is; only another range is read again. */
+export function AnalyticsTab({ agent, v2, now = Date.now, stats: first }: { agent: Agent; v2: Client; now?: () => number; stats?: Stats | null }) {
+  const [range, setRange] = useState<StatsRange>(FIRST_RANGE);
+  const [stats, setStats] = useState<Stats | null>(first?.analytics ? first : null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!first?.analytics);
   const asked = useRef(0);
+  const given = useRef(!!first?.analytics);
   useEffect(() => {
+    if (given.current) return void (given.current = false);
     const n = ++asked.current;
     setLoading(true); setError(null);
     v2.statsOver({ from: rangeFrom(range, now()), agent: agent.agent_id })

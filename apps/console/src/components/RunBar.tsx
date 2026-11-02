@@ -1,5 +1,5 @@
 import { Play } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
@@ -30,10 +30,14 @@ export function RunBar({ agent, efforts, v2, go }: { agent: Agent; efforts: stri
       return { status: 0, problem: { message: e instanceof Error ? e.message : String(e) } };
     }
   };
+  // A start that answers after the bar is gone (the person went elsewhere) still runs, and moves nobody's page.
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
   const start = async () => {
     if (!built.ok || sending) return;
     setSending(true); setProblem(null);
     const r = await submitStart(keys, agent.agent_id, built.body, send);
+    if (!mounted.current) return;
     setSending(false);
     if (r.runId) go(`#/runs/${encodeURIComponent(r.runId)}`);
     else setProblem(r.problem ?? { message: `The server answered ${r.status}.` });

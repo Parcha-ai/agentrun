@@ -18,9 +18,9 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const efforts = recorded<{ features: { efforts: string[] } }>("capabilities").body.features.efforts;
 /** A start's answer: the run (202), or a recorded refusal thrown as the client throws it. */
 type Answer = { run: Run } | { refused: string };
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string } };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string }; hold?: Promise<unknown> };
 /** By default the server's stats carry no analytics, as an older server's. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}), models }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}), models, hold }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const statsAsked: string[] = [];
@@ -29,6 +29,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
     statsOver: async ({ from, agent: of }: { from?: string; agent?: string }) => { statsAsked.push(`stats ${of}${from ? ` from ${from}` : ""}`); return stats(); },
     startRun: async (id: string, body: Record<string, unknown>, key: string) => {
       starts.push({ id, body, key });
+      await hold;
       if ("run" in answer) return { run: answer.run, status: 202 };
       const r = recorded<{ error: { code: string; message: string; fields?: FieldIssue[] } }>(answer.refused);
       throw Object.assign(new ClientError(r.status, r.body.error.code, r.body.error.message), r.body.error.fields ? { fields: r.body.error.fields } : {});
@@ -168,7 +169,9 @@ describe("AgentPage", () => {
   it("shows an Analytics tab only when the server's stats for this agent carry analytics", async () => {
     const page = await open(agentFixture("invoice-checker"), { stats: async () => statsWith(ANALYTICS) });
     expect(page.tabs()).toEqual(["Runs", "Analytics"]);
-    expect(page.statsAsked).toEqual(["stats invoice-checker"]);
+    // One read, bounded: this agent's, over the Analytics tab's first range (from a UTC day 29 days back).
+    expect(page.statsAsked).toHaveLength(1);
+    expect(page.statsAsked[0]).toMatch(/^stats invoice-checker from \d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
     await page.click(/^Analytics$/);
     expect(page.went).toEqual(["#/agents/invoice-checker/analytics"]);
     act(() => root?.unmount());
@@ -183,9 +186,8 @@ describe("AgentPage", () => {
 
   it("opens the address's Analytics tab once the stats say it is there, and Runs on a server without it", async () => {
     let answer!: (v: unknown) => void;
-    let calls = 0;
-    // The page's read waits; the tab's own read, once it opens, answers at once.
-    const page = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: () => (++calls === 1 ? new Promise((r) => (answer = r)) : Promise.resolve(statsWith(ANALYTICS))) });
+    // The page's read waits; the tab opens on its answer, with no read of its own.
+    const page = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: () => new Promise((r) => (answer = r)) });
     // Waiting for the stats: no other tab's content is read meanwhile.
     expect(page.host.querySelector('ul[aria-label="Runs"]')).toBeNull();
     expect(page.asked).toEqual(["agent invoice-checker"]);
@@ -194,6 +196,7 @@ describe("AgentPage", () => {
     expect(page.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Analytics");
     expect(page.host.querySelector('[role="radiogroup"][aria-label="Range"]')).toBeTruthy();
     expect(page.host.textContent).toContain("Success by harness and effort");
+    expect(page.statsAsked).toHaveLength(1);
     act(() => root?.unmount());
     const older = await open(agentFixture("invoice-checker"), { tab: "analytics" });
     expect(older.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
@@ -290,10 +293,32 @@ describe("AgentPage", () => {
     act(() => root?.unmount());
     const analytics = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: async () => statsWith(ANALYTICS) });
     expect(analytics.host.querySelector('[role="tabpanel"]')?.getAttribute("aria-label")).toBe("Analytics");
-    // The page's read, then the tab's: this agent's, from the start of a UTC day 29 days back.
-    expect(analytics.statsAsked[0]).toBe("stats invoice-checker");
-    expect(analytics.statsAsked[1]).toMatch(/^stats invoice-checker from \d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
+    // One read: the page's, over the tab's first range, which the tab opens on.
+    expect(analytics.statsAsked).toHaveLength(1);
+    expect(analytics.statsAsked[0]).toMatch(/^stats invoice-checker from \d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
     expect(analytics.host.textContent).toContain("Success by harness and effort");
+  });
+  it("a start that answers after the page is gone leaves the person where they went: no navigation", async () => {
+    let release!: () => void;
+    const page = await open(agentFixture("invoice-checker"), { hold: new Promise<void>((r) => (release = r)) });
+    await page.set(page.input(), "Check invoice INV-1050.");
+    await act(async () => { page.button(/^Run$/)!.click(); });
+    expect(page.starts).toHaveLength(1);
+    act(() => root?.unmount());
+    await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
+    expect(page.went).toEqual([]);
+  });
+
+  it("opening the page, then its Analytics tab, reads the agent's stats once", async () => {
+    let reads = 0;
+    const page = await open(agentFixture("invoice-checker"), { stats: async () => { reads++; return statsWith(ANALYTICS); } });
+    expect(page.tabs()).toEqual(["Runs", "Analytics"]);
+    act(() => root?.unmount());
+    // The tab's address, as the click goes there: the page reads once, and the tab shows that answer.
+    const tab = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: async () => { reads++; return statsWith(ANALYTICS); } });
+    expect(tab.host.textContent).toContain("Success by harness and effort");
+    expect(tab.statsAsked).toHaveLength(1);
+    expect(reads).toBe(2);
   });
 });
 

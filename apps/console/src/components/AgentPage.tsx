@@ -1,7 +1,7 @@
 import { workflowGraph } from "@dsl/graph";
 import { ArrowLeft, Bot, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AnalyticsTab } from "@/components/AgentAnalytics";
+import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
 import { RunBar } from "@/components/RunBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -14,9 +14,11 @@ import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, modelLabel } from "@/lib/models";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
+import { rangeFrom, type Stats } from "@/lib/mission";
 import type { Run } from "@/lib/v2";
 
-type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void };
+/** `stats`: the page's own read of the agent's stats over the Analytics tab's first range, which that tab starts from. */
+type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null };
 /** What the server gives beside the agent: `analytics`, once its stats are read (an older server has none). */
 type Server = { analytics: boolean };
 
@@ -39,15 +41,18 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
 export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = [], go, tab }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; efforts?: string[]; go: (hash: string) => void; tab?: string }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Whether the server's stats carry analytics: undefined until read; a server that answers none, or fails, has none.
-  const [analytics, setAnalytics] = useState<boolean | undefined>(undefined);
+  // The agent's stats over the Analytics tab's first range: undefined until read, null when the read failed. Whether
+  // they carry analytics decides the tab (an older server's have none), and the tab opens on this answer, never a second
+  // read of it.
+  const [stats, setStats] = useState<Stats | null | undefined>(undefined);
   useEffect(() => {
     let live = true;
-    setAgent(null); setError(null); setAnalytics(undefined);
+    setAgent(null); setError(null); setStats(undefined);
     v2.getAgent(agentId).then((r) => { if (live) setAgent(r.agent); }, (e) => { if (live) setError(problemOf(e)); });
-    v2.statsOver({ agent: agentId }).then((r) => { if (live) setAnalytics(r.analytics !== undefined); }, () => { if (live) setAnalytics(false); });
+    v2.statsOver({ from: rangeFrom(FIRST_RANGE), agent: agentId }).then((r) => { if (live) setStats(r); }, () => { if (live) setStats(null); });
     return () => { live = false; };
   }, [v2, agentId]);
+  const analytics = stats === undefined ? undefined : stats?.analytics !== undefined;
   if (error) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">The agent could not be read: {error}</p>;
   if (!agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
   const d = agent.definition;
@@ -100,7 +105,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = []
         ))}
       </div>
       <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
-        {waiting ? <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading...</p> : <at.Body agent={agent} v2={v2} go={go} />}
+        {waiting ? <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading...</p> : <at.Body agent={agent} v2={v2} go={go} stats={stats} />}
       </div>
     </div>
   );
