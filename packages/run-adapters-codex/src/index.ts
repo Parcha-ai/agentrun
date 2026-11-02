@@ -6,4 +6,4 @@ export type { CodexAdapterOptions, CodexProvider, CodexWebSearch } from "./adapt
 export type { ChildCommand, ConfineChild } from "./host/machine.js";
 export { CODEX_VERSION, codexBinary } from "./binary.js";
 export { verifyCodex, verifyCodexBinary } from "./verify.js";
-export { CODEX_BINARY_SHA256, CODEX_NPM_INTEGRITY, CodexNotInstalled, CodexPinMismatch } from "./versions.js";
+export { CODEX_BINARY_SHA256, CODEX_INSTALL, CODEX_NPM_INTEGRITY, CodexNotInstalled, CodexPinMismatch } from "./versions.js";

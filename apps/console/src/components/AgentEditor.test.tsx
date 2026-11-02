@@ -19,6 +19,28 @@ describe("AgentEditor, a new agent's tools", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: noWeb, step: "tools" }));
     expect(html).toContain("can&#x27;t reach the web");
   });
+  const webFetch = { name: "web_fetch", available: true, summary: "Read one public web page through Parallel's extract." };
+  const withWebFetch = { ...caps, tools: [...tools.filter((t) => t.name !== "fetch_page"), webFetch] };
+  it("an agent whose only tool is web_fetch reaches the web: no notice", () => {
+    const reader = { agent_id: "reader", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["web_fetch"] } };
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: reader, caps: withWebFetch, step: "tools" }));
+    expect((html.match(/checked=""/g) ?? []).length).toBe(1);
+    expect(html.match(/<input[^>]*value="web_fetch"[^>]*>/)?.[0]).toContain('checked=""');
+    expect(html).not.toContain("can&#x27;t reach the web");
+  });
+  it("an agent with no web tool is told which to tick, or that its harness runs none here", () => {
+    const reader = { agent_id: "reader", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["read"] } };
+    const both = { ...caps, tools: [...tools, webFetch] };
+    expect(renderToStaticMarkup(createElement(AgentEditor, { agent: reader, caps: both, step: "tools" }))).toContain("tick fetch_page or web_fetch in Tools.");
+    const piOnly = { ...both, tools: both.tools.map((t) => ({ ...t, harnesses: t.name === "read" ? ["pi", "codex"] : ["pi"] })) };
+    const onCodex = { ...reader, definition: { ...reader.definition, harness: "codex" } };
+    expect(renderToStaticMarkup(createElement(AgentEditor, { agent: onCodex, caps: piOnly, step: "tools" }))).toContain("codex runs no web tool on this server.");
+  });
+  it("the tools step shows web_fetch from the server's capabilities, with what it does", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: withWebFetch, step: "tools" }));
+    expect(html).toContain('value="web_fetch"');
+    expect(html).toContain("Read one public web page through Parallel&#x27;s extract.");
+  });
 });
 
 describe("AgentEditor, a new agent whose server capabilities arrive after it opens", () => {
@@ -73,6 +95,82 @@ describe("AgentEditor, tools a person chose by hand", () => {
     const { act } = await import("react");
     await act(async () => { [...host.querySelectorAll("button")].find((b) => /Save revision/i.test(b.textContent ?? ""))!.click(); });
     expect(saved?.tools ?? []).toEqual([]);
+    done();
+  });
+});
+
+describe("AgentEditor, a new decision agent", () => {
+  const mount = async (props: Record<string, unknown>) => {
+    const { act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    act(() => root.render(createElement(AgentEditor, props as never)));
+    const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
+    const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test(b.textContent ?? ""));
+    const type = (el: Element | null, value: string) => act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, value);
+      el!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    return { host, click, button, type, act, done: () => act(() => root.unmount()) };
+  };
+
+  it("picks Decision in the harness picker on create: no instructions, tools or thinking to fill, and Create sends the choice", async () => {
+    let saved: { harness?: string; name?: string } | undefined;
+    const { host, click, button, type, act, done } = await mount({ agent: null, caps: { ...caps, decisionProvider: "jev" }, step: "settings", onSave: async (fields: { harness?: string; name?: string }) => { saved = fields; return null; } });
+    const decision = host.querySelector<HTMLInputElement>('input[type=radio][value="decision"]');
+    expect(decision?.disabled).toBe(false);
+    click(decision);
+    expect(host.querySelector('[role=radiogroup][aria-label="Thinking"]')).toBeNull();
+    expect(button(/Tools/)).toBeUndefined();
+    click(button(/Context/));
+    expect(host.querySelector("textarea")).toBeNull();
+    expect(host.textContent).toContain("Workflow step");
+    type(host.querySelector('input[placeholder="e.g., Invoice checker"]'), "Gambling check");
+    await act(async () => { button(/^Create$/)!.click(); });
+    expect(saved).toMatchObject({ harness: "decision", name: "Gambling check" });
+    done();
+  });
+
+  it("shows Decision disabled, with why, when the server runs no decision workflows", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps, step: "settings" }));
+    const radio = html.match(/<input type="radio" name="harness"[^>]*value="decision"[^>]*>/)?.[0];
+    expect(radio).toContain('disabled=""');
+    expect(html).toContain("decision workflows");
+  });
+
+  it("lays the picker out one column per choice on a wide screen: five with Decision and Workflow, three without", () => {
+    const three = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: true }] };
+    const group = (html: string) => html.match(/<div class="([^"]*)" role="radiogroup" aria-label="Harness"/)?.[1] ?? "";
+    expect(group(renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...three, decisionProvider: "jev" }, step: "settings" })))).toContain("sm:grid-cols-5");
+    const agent = { agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
+    expect(group(renderToStaticMarkup(createElement(AgentEditor, { agent: agent as never, caps: three, step: "settings" })))).toContain("sm:grid-cols-3");
+  });
+
+  it("offers no Decision and no Workflow when editing an agent", () => {
+    const agent = { agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: agent as never, caps: { ...caps, decisionProvider: "jev" }, step: "settings" }));
+    expect(html).not.toContain('value="decision"');
+    expect(html).not.toContain('value="workflow"');
+  });
+
+  it("picks Workflow on a server with no decision provider: enabled where Decision is not, no instructions, tools, thinking or model to fill, and Create sends the choice", async () => {
+    let saved: { harness?: string; name?: string } | undefined;
+    const { host, click, button, type, act, done } = await mount({ agent: null, caps, step: "settings", onSave: async (fields: { harness?: string; name?: string }) => { saved = fields; return null; } });
+    expect(host.querySelector<HTMLInputElement>('input[type=radio][value="decision"]')?.disabled).toBe(true);
+    const general = host.querySelector<HTMLInputElement>('input[type=radio][value="workflow"]');
+    expect(general?.disabled).toBe(false);
+    click(general);
+    expect(host.querySelector('[role=radiogroup][aria-label="Thinking"]')).toBeNull();
+    expect(host.querySelector('input[placeholder="provider/model"]')).toBeNull();
+    expect(button(/Tools/)).toBeUndefined();
+    click(button(/Context/));
+    expect(host.querySelector("textarea")).toBeNull();
+    expect(host.textContent).toContain("paste a workflow's JSON over it, in the Workflow step");
+    type(host.querySelector('input[placeholder="e.g., Invoice checker"]'), "Next steps");
+    await act(async () => { button(/^Create$/)!.click(); });
+    expect(saved).toMatchObject({ harness: "workflow", name: "Next steps" });
     done();
   });
 });

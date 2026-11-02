@@ -1,3 +1,4 @@
+import { agentHash } from "@/components/AgentPage";
 import { StatusBadge } from "@/components/StatusBadge";
 import { when } from "@/lib/format";
 import { costParts, type MissionView } from "@/lib/mission";
@@ -27,8 +28,9 @@ export function MissionControl({ view, error, onRetry, scope }: { view: MissionV
     // Running runs the server can't tell the state of are in no other count: said under Active, never dropped.
     ["Active", String(view.runs.active), undefined, view.runs.statusUnknown ? `${view.runs.statusUnknown} unknown` : undefined],
     ["Needs input", String(view.runs.needsInput), view.runs.needsInput ? "text-warning-text" : undefined],
-    ["Failed", String(view.runs.failed), view.runs.failed ? "text-destructive-text" : undefined],
-    ["Total cost", spent.total, undefined, spent.note],
+    // A newer server counts escalated runs waiting for review apart from the failed: said under Failed, never in it.
+    ["Failed", String(view.runs.failed), view.runs.failed ? "text-destructive-text" : undefined, view.runs.needsReview ? `${view.runs.needsReview} ${view.runs.needsReview === 1 ? "needs" : "need"} review` : undefined],
+    ["Total cost", spent.total, undefined, [spent.note, spent.bound].filter(Boolean).join(" · ") || undefined],
   ];
   return (
     <div className="h-full overflow-auto">
@@ -53,7 +55,7 @@ export function MissionControl({ view, error, onRetry, scope }: { view: MissionV
             <h2 className="caps border-b px-4 py-3 text-[12px] font-semibold">Runs per agent</h2>
             {view.perAgent.length ? (
               <ul>{view.perAgent.map((a) => (
-                <li key={a.agentId} className="border-b last:border-b-0"><a href={`#/runs?agent=${encodeURIComponent(a.agentId)}`} className="flex items-center justify-between gap-3 px-4 py-3 text-[14px] hover:bg-accent"><span className="min-w-0 truncate">{a.name}</span><span className="font-mono text-[13px] text-muted-foreground">{a.runs}</span></a></li>
+                <li key={a.agentId} className="border-b last:border-b-0"><a href={agentHash(a.agentId, "runs")} className="flex items-center justify-between gap-3 px-4 py-3 text-[14px] hover:bg-accent"><span className="min-w-0 truncate">{a.name}</span><span className="font-mono text-[13px] text-muted-foreground">{a.runs}</span></a></li>
               ))}</ul>
             ) : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No agents yet.</p>}
           </section>

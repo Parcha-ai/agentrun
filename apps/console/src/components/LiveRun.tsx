@@ -23,7 +23,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   const [rows, setRows] = useState<TimelineRow[]>([]);
   const [files, setFiles] = useState<RunFile[]>([]);
   const [error, setError] = useState<ApiError | null>(null);
-  const [busy, setBusy] = useState<"stop" | "cancel" | null>(null);
+  const [busy, setBusy] = useState<"stop" | "cancel" | "archive" | null>(null);
   const [follows, setFollows] = useState(0);
 
   const status = useRef<string>("");
@@ -65,6 +65,17 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     try { await v2[what](runId); setError(null); } catch (e) { setError(asApiError(e)); }
     setBusy(null); await refresh(); setFollows((n) => n + 1);
   };
+  // Only the archive's own effect is taken from its answer, at once: the run may have moved on since it was read (a final
+  // timeline page's read can land first). The run and its files are read again after it, and that read is the newest.
+  const archive = async () => {
+    if (!run) return;
+    setBusy("archive");
+    try {
+      const r = await (run.archived_at ? v2.unarchiveRun(runId) : v2.archiveRun(runId));
+      setRun((cur) => (cur ? { ...cur, archived_at: r.archived_at } : r)); setError(null);
+    } catch (e) { setError(asApiError(e)); }
+    setBusy(null); void refresh();
+  };
   const message = async (text: string) => {
     let ok = true;
     // The same text sent again after a lost or refused answer goes under the same key: the server never takes it twice.
@@ -85,7 +96,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
         rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} onMessage={message}
-        actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), busy }} />
+        actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), busy }} />
     </div>
   );
 }

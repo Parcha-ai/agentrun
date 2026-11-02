@@ -3,14 +3,18 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
-import { type Agent, type AgentFields, defaultTools, harnessOptions, reachesWeb, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, DECISION, defaultTools, harnessOptions, isStarter, reachesWeb, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
+import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
 export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string; definition?: Agent["definition"] };
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string };
+/** `decisionProvider`: the decision provider a new decision agent's judge names (agentForm's decisionProvider); none when
+ *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. `modelSource`:
+ *  capabilities' `models.source`, to read a gateway's routing prefix off its model ids. */
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; decisionProvider?: string };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -80,9 +84,12 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const fieldWarning = (field: string) => warningsFor(warnings, field).map((w) => w.message).join(" ") || undefined;
   const set = (patch: AgentFields) => { setF((x) => ({ ...x, ...patch })); setSaved(false); };
   const workflow = agent?.kind === "workflow";
+  // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
+  const starting = creating && isStarter(f.harness);
+  const choices = harnessOptions(caps.harnesses, creating ? { available: !!caps.decisionProvider } : undefined);
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
-  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow));
+  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools"));
   const at = steps.findIndex((s) => s.id === step);
   const save = async () => {
     if (!onSave) return;
@@ -96,6 +103,12 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     const p = await onSave(fields, note);
     setSaving(false); setProblem(p); setSaved(!p); if (!p) setNote("");
   };
+  // The tools that reach the web which this agent's harness runs here, for the notice when it has none of them.
+  // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
+  // off, the full id in a title.
+  const fallback = harnessDefault(f.harness ?? "pi", caps.defaultModel);
+  const modelDefault = fallback ? modelLabel(fallback, { source: caps.modelSource, default: caps.defaultModel }) : undefined;
+  const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -122,8 +135,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           </ul>
         </div>
       )}
-      {!workflow && !reachesWeb(f.tools ?? []) && (
-        <p className="border-b bg-card px-5 py-2.5 font-mono text-[12px] text-muted-foreground md:px-8">This agent can't reach the web: fetch_page isn't among its tools{toolsFor(f.harness ?? "pi", caps.tools).some((t) => t.name === "fetch_page") ? "." : ` (${f.harness ?? "pi"} doesn't run it on this server).`}</p>
+      {!workflow && !starting && !reachesWeb(f.tools ?? []) && (
+        <p className="border-b bg-card px-5 py-2.5 font-mono text-[12px] text-muted-foreground md:px-8">This agent can't reach the web: {webHere.length ? `tick ${webHere.join(" or ")} in Tools.` : `${f.harness ?? "pi"} runs no web tool on this server.`}</p>
       )}
       {problem?.kind === "invalid" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">The server refused the save: {problem.message}</p>}
       {problem?.kind === "other" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">{problem.message}</p>}
@@ -157,7 +170,13 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               <Field label="Description" optional note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("description")} warning={fieldWarning("description")}>
                 <input value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} className={cn(input, !creating && "text-muted-foreground")} />
               </Field>
-              {workflow ? (
+              {starting ? (
+                <Field label="Workflow">
+                  <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">{f.harness === DECISION
+                    ? "A decision agent is a workflow. It starts from a starter decision workflow: one typed question, and a person when the answer is unclear or not confident enough. Create it, then edit its nodes in the Workflow step."
+                    : "A workflow agent starts from a one-step workflow: an agent node that does what its input's task asks. Create it, then edit its nodes, or paste a workflow's JSON over it, in the Workflow step."}</p>
+                </Field>
+              ) : workflow ? (
                 <Field label="Workflow" note="This agent is a workflow. Edit its nodes in the Workflow step: the graph redraws as you type and the server checks it." warning={fieldWarning("workflow")}>
                   <Button size="sm" onClick={() => setStep("workflow")}><Workflow aria-hidden /> Open the workflow</Button>
                 </Field>
@@ -181,14 +200,18 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             <div className="max-w-3xl space-y-6">
               <Field label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
                 <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {caps.tools.map((t) => {
-                    const runs = toolsFor(f.harness ?? "pi", caps.tools).some((x) => x.name === t.name);
+                  {caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name)).map((t) => {
+                    // A call-only tool runs only in a workflow's call node, which needs it in its revision's tools: a
+                    // workflow agent picks it like any other. An agentic agent is never offered one, and one it already
+                    // names shows as such, to untick.
+                    const runs = (workflow && t.call_only) || toolsFor(f.harness ?? "pi", caps.tools).some((x) => x.name === t.name);
                     const on = f.tools?.includes(t.name) ?? false;
-                    const why = !runs ? `Not on ${f.harness ?? "pi"} on this server` : !t.available ? `Needs ${(t.missing ?? []).join(", ")}` : undefined;
+                    const why = t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : !t.available ? `Needs ${(t.missing ?? []).join(", ")}` : undefined;
                     return (
                       <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
                         <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-[hsl(var(--primary))]" />
-                        <span>{t.name}{why && <span className="ml-2 text-[11px] text-muted-foreground">{why}</span>}</span>
+                        <span className="min-w-0">{t.name}{why && <span className="ml-2 text-[11px] text-muted-foreground">{why}</span>}
+                          {t.summary && <span className="mt-0.5 line-clamp-2 block font-sans text-[11px] text-muted-foreground" title={t.summary}>{t.summary}</span>}</span>
                       </label></li>
                     );
                   })}
@@ -205,8 +228,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             <div className="max-w-3xl space-y-8">
               {!workflow && (
                 <Field label="Harness" note="What runtime runs this agent." error={fieldError("harness")} warning={fieldWarning("harness")}>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3" role="radiogroup" aria-label="Harness">
-                    {harnessOptions(caps.harnesses).map((h) => (
+                  <div className={cn("grid grid-cols-1 gap-3", COLUMNS[choices.length] ?? "sm:grid-cols-3")} role="radiogroup" aria-label="Harness">
+                    {choices.map((h) => (
                       <label key={h.id} title={h.reason} className={cn("flex items-start gap-3 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border", h.available ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
                         <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
                         <span><span className="block font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : h.reason}</span></span>
@@ -215,7 +238,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   </div>
                 </Field>
               )}
-              {!workflow && (
+              {!workflow && !starting && (
                 <Field label="Thinking" note="How hard the model thinks before it answers." error={fieldError("thinking")} warning={fieldWarning("thinking")}>
                   <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Thinking">
                     {caps.thinking.map((t) => (
@@ -226,9 +249,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   </div>
                 </Field>
               )}
-              <Field label="Model" optional note={caps.defaultModel ? `Empty uses the server's default (${caps.defaultModel}).` : undefined} error={fieldError("model")} warning={fieldWarning("model")}>
-                <input value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder={caps.defaultModel ?? "provider/model"} className={input} />
-              </Field>
+              {!starting && (
+                <Field label="Model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
+                  <input value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
+                </Field>
+              )}
             </div>
           )}
 
@@ -266,15 +291,18 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         {step === "history" && <span className="flex-1" />}
         {saved && <span className="caps text-[11px] text-success-text">Saved</span>}
         {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
-        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>}
+        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>}
       </footer>
     </div>
   );
 }
 
+/** The harness picker's columns on a wide screen, one per choice: literal class names, so Tailwind keeps them. */
+const COLUMNS: Record<number, string> = { 1: "sm:grid-cols-1", 2: "sm:grid-cols-2", 3: "sm:grid-cols-3", 4: "sm:grid-cols-4", 5: "sm:grid-cols-5" };
+
 const input = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
-function Field({ label, required, optional, note, error, warning, aside, children }: { label: string; required?: boolean; optional?: boolean; note?: string; error?: string; warning?: string; aside?: React.ReactNode; children: React.ReactNode }) {
+function Field({ label, required, optional, note, error, warning, aside, children }: { label: string; required?: boolean; optional?: boolean; note?: React.ReactNode; error?: string; warning?: string; aside?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">

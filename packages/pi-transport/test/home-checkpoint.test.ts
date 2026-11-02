@@ -1,6 +1,6 @@
+import { createHash } from "node:crypto";
 import {
 	appendFileSync,
-	chmodSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -20,7 +20,15 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { afterAll, describe, expect, it } from "vitest";
 import { type Box, BoxError } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
-import { checkpointStats, localVault, pullCheckpoint, recordSink, restoreNotice } from "../src/home/checkpoint.ts";
+import {
+	type Checkpoint,
+	type CheckpointVault,
+	checkpointStats,
+	localVault,
+	pullCheckpoint,
+	recordSink,
+	restoreNotice,
+} from "../src/home/checkpoint.ts";
 import type { LogEntry } from "../src/home/commit-log.ts";
 import { crossingCounter } from "../src/home/crossing.ts";
 import { dirStore } from "../src/home/dir-store.ts";
@@ -30,6 +38,7 @@ import { MoveError, type Place, recoverHome, type StartRunner } from "../src/hom
 import { leaseIn } from "../src/home/ownership.ts";
 import type { CheckpointTaken } from "../src/home/run.ts";
 import { checkpointStore, sealStore } from "../src/home/store.ts";
+import { encodePath } from "../src/home/workspace.ts";
 import { tapStorage } from "./commit-tap.ts";
 import { walk } from "./home-support.ts";
 
@@ -126,6 +135,48 @@ async function source(commits = 5): Promise<Fixture> {
 
 const noContext = context;
 
+/** The bytes of a content the vault holds. */
+async function contentOf(vault: CheckpointVault, session: string, sha256: string): Promise<Buffer> {
+	const content = vault.content(session, sha256);
+	if (content === undefined) throw new Error(`the vault holds no content ${sha256}`);
+	const chunks: Uint8Array[] = [];
+	for await (const chunk of content) chunks.push(chunk);
+	return Buffer.concat(chunks);
+}
+
+/** The text of a file of a checkpoint: its record names the content, the vault holds it. */
+async function textOf(vault: CheckpointVault, checkpoint: Checkpoint, path: string): Promise<string> {
+	const entry = checkpoint.manifest.entries.find((one) => one.path === path);
+	if (entry?.sha256 === undefined) throw new Error(`${path} is not a file of checkpoint ${checkpoint.n}`);
+	return (await contentOf(vault, checkpoint.session, entry.sha256)).toString("utf8");
+}
+
+/** A checkpoint as `walk` sees a tree: the record's entries, with each file's content read back from the vault. */
+async function walkCheckpoint(vault: CheckpointVault, checkpoint: Checkpoint) {
+	const seen = new Map<string, { kind: string; mode: number; detail: string }>();
+	for (const entry of checkpoint.manifest.entries) {
+		const key = Buffer.from(encodePath(entry.path)).toString("hex");
+		if (entry.kind === "symlink") {
+			seen.set(key, {
+				kind: "symlink",
+				mode: 0,
+				detail: Buffer.from(encodePath(entry.target ?? "")).toString("hex"),
+			});
+		} else if (entry.kind === "directory") {
+			seen.set(key, { kind: "directory", mode: entry.mode, detail: "" });
+		} else {
+			const bytes = await contentOf(vault, checkpoint.session, entry.sha256 ?? "");
+			const sha = createHash("sha256").update(bytes).digest("hex");
+			seen.set(key, { kind: "file", mode: entry.mode, detail: `${entry.mtime.split(".")[0]} ${sha}` });
+		}
+	}
+	return seen;
+}
+
+/** Where a vault in `directory` keeps a session's content with this SHA-256. */
+const contentFile = (directory: string, session: string, sha256: string) =>
+	join(directory, session, "contents", sha256);
+
 describe("pulling a checkpoint", () => {
 	it("takes the store and the workspace of one moment, holds the session until both are on the host, and lets it go", async () => {
 		const fx = await source();
@@ -155,7 +206,7 @@ describe("pulling a checkpoint", () => {
 		);
 		expect(taken.n).toBe(1);
 		expect(taken.epoch).toBe(1);
-		expect(walk(taken.filesRoot)).toEqual(walk(fx.place.workspace));
+		expect(await walkCheckpoint(vault, taken)).toEqual(walk(fx.place.workspace));
 		const sealed = getOrThrow(await sealStore(taken.storeFile, context));
 		expect(sealed).toEqual(taken.seal);
 		// Every program the pull ran in the box ran while the session was held, and the session is let go after.
@@ -187,8 +238,8 @@ describe("pulling a checkpoint", () => {
 		const secondBytes = stats.last?.bytes ?? 0;
 		// The big file was not sent again; the store copy and the one small file were.
 		expect(secondBytes).toBeLessThan(firstBytes - 150_000);
-		expect(readFileSync(join(second.filesRoot, "a.txt"), "utf8")).toBe("alpha edited");
-		expect(readFileSync(join(first.filesRoot, "a.txt"), "utf8")).toBe("alpha");
+		expect(await textOf(vault, second, "a.txt")).toBe("alpha edited");
+		expect(await textOf(vault, first, "a.txt")).toBe("alpha");
 		writeFileSync(join(fx.place.workspace, "c.txt"), "third");
 		const third = await pull();
 		expect(third.n).toBe(3);
@@ -244,7 +295,8 @@ describe("pulling a checkpoint", () => {
 			status: (ctx) => fx.place.box.status(ctx),
 			destroy: (ctx) => fx.place.box.destroy(ctx),
 			exec: (command, options, ctx) => {
-				if (command.some((part) => part.includes("tar -c")) && first_exec) {
+				// The program that sends the files' content: the box's view of a file it was asked for.
+				if (command.some((part) => part.includes("xargs -0 -r cat")) && first_exec) {
 					first_exec = false;
 					writeFileSync(join(fx.place.workspace, "a.txt"), "gamma");
 				}
@@ -258,14 +310,14 @@ describe("pulling a checkpoint", () => {
 		expect(skipped.ok ? "" : skipped.error.reason).toBe("changed");
 		expect(skipped.ok ? "" : skipped.error.message).toMatch(/a\.txt/);
 		expect(getOrThrow(await vault.latest("s", context))?.n).toBe(first.n);
-		expect(readFileSync(join(first.filesRoot, "a.txt"), "utf8")).toBe("alpha");
+		expect(await textOf(vault, first, "a.txt")).toBe("alpha");
 		// The generation that was begun is gone, and its number is not reused for a record.
 		expect(fx.state().held).toBe(false);
 		const again = getOrThrow(
 			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats }, noContext),
 		);
 		expect(again.n).toBeGreaterThan(first.n);
-		expect(readFileSync(join(again.filesRoot, "a.txt"), "utf8")).toBe("gamma");
+		expect(await textOf(vault, again, "a.txt")).toBe("gamma");
 	});
 
 	it("is skipped as too_large over maxBytes, and as failed for a store copy that does not match its seal", async () => {
@@ -332,19 +384,23 @@ describe("pulling a checkpoint", () => {
 		writeFileSync(join(fx.place.workspace, "notes.txt"), "keep me");
 		const pulled = async (workspace: { exclude?: string[] }) => {
 			const stats = checkpointStats();
-			const vault = localVault(fresh("vault"));
+			const directory = fresh("vault");
+			const vault = localVault(directory);
 			const taken = getOrThrow(
 				await pullCheckpoint(
 					{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats, workspace },
 					noContext,
 				),
 			);
-			return { taken, stats, vault };
+			return { taken, stats, vault, directory };
 		};
 		const control = await pulled({});
 		expect(control.stats.last?.bytes).toBeGreaterThan(50_000_000);
 		const left = await pulled({ exclude: ["media"] });
-		expect(readdirSync(left.taken.filesRoot).sort()).toEqual(["dir", "notes.txt"]);
+		// The vault holds the one file's content and nothing of the excluded one.
+		expect(readdirSync(join(left.directory, "s", "contents"))).toEqual([
+			createHash("sha256").update("keep me").digest("hex"),
+		]);
 		expect(left.taken.manifest.entries.map((entry) => entry.path).sort()).toEqual(["dir", "notes.txt"]);
 		expect(left.stats.last?.bytes).toBeLessThan(1_000_000);
 		expect(left.stats.last?.heldMs).toBeLessThan(5_000);
@@ -648,7 +704,8 @@ describe("recovering a session whose box is gone", () => {
 	async function lost(withCheckpoint = true) {
 		const fx = await source();
 		writeFileSync(join(fx.place.workspace, "a.txt"), "alpha");
-		const vault = localVault(fresh("vault"));
+		const vaultDirectory = fresh("vault");
+		const vault = localVault(vaultDirectory);
 		if (withCheckpoint) {
 			getOrThrow(await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault }, noContext));
 		}
@@ -680,7 +737,7 @@ describe("recovering a session whose box is gone", () => {
 			replaced += 1;
 			return ok(target);
 		};
-		return { fx, vault, lease, target, orders, start, replace, replaced: () => replaced };
+		return { fx, vault, vaultDirectory, lease, target, orders, start, replace, replaced: () => replaced };
 	}
 
 	it("rebuilds it in the box the caller makes: store and files copied and checked, the lease taken one epoch on with the checkpoint's seal", async () => {
@@ -807,7 +864,9 @@ describe("recovering a session whose box is gone", () => {
 			),
 		);
 		// The newest generation's file is damaged on the host's disk.
-		writeFileSync(join(second.filesRoot, "a.txt"), "dama!");
+		const secondSha = createHash("sha256").update("second").digest("hex");
+		expect(second.manifest.entries.find((entry) => entry.path === "a.txt")?.sha256).toBe(secondSha);
+		writeFileSync(contentFile(r.vaultDirectory, "s", secondSha), "dama!!");
 		getOrThrow(await r.fx.place.box.destroy(context));
 		const recovered = getOrThrow(
 			await recoverHome(
@@ -892,34 +951,44 @@ describe("recovering a session whose box is gone", () => {
 		expect(recovered.restored?.n).toBe(checkpoint?.n);
 	});
 
+	// A link, a mode or a time is the record itself: there is no copy of it on the host to drift. What can be damaged is a
+	// content (changed or gone) and the record.
+	const beta = createHash("sha256").update("beta").digest("hex");
 	for (const [what, damage] of [
 		[
-			"a link whose target changed",
-			(files: string) => {
-				rmSync(join(files, "link"));
-				symlinkSync("elsewhere.txt", join(files, "link"));
-			},
+			"a content that changed on the host's disk",
+			(directory: string) => writeFileSync(contentFile(directory, "s", beta), "bet!"),
 		],
+		["a content that is gone", (directory: string) => rmSync(contentFile(directory, "s", beta))],
 		[
-			"a file whose permissions changed",
-			(files: string) => {
-				// Replaced, not changed in place: the generations share their unchanged files' inodes.
-				rmSync(join(files, "a.txt"));
-				writeFileSync(join(files, "a.txt"), "alpha");
-				chmodSync(join(files, "a.txt"), 0o755);
+			"a record whose tree names a path outside it",
+			(directory: string) => {
+				const file = join(directory, "s", "gen-00000002.json");
+				const record = JSON.parse(readFileSync(file, "utf8"));
+				record.manifest.entries.push({
+					path: "../escape",
+					kind: "file",
+					bytes: 4,
+					sha256: beta,
+					mode: 420,
+					mtime: "1",
+				});
+				writeFileSync(file, JSON.stringify(record));
 			},
 		],
 	] as const) {
 		it(`falls back to the previous generation when the latest has ${what}`, async () => {
 			const r = await lost();
 			symlinkSync("a.txt", join(r.fx.place.workspace, "link"));
+			writeFileSync(join(r.fx.place.workspace, "b.txt"), "beta");
 			const second = getOrThrow(
 				await pullCheckpoint(
 					{ session: "s", place: r.fx.place, home: r.fx.home, epoch: 1, vault: r.vault },
 					noContext,
 				),
 			);
-			damage(second.filesRoot);
+			expect(second.n).toBe(2);
+			damage(r.vaultDirectory);
 			getOrThrow(await r.fx.place.box.destroy(context));
 			const recovered = getOrThrow(
 				await recoverHome(
@@ -1198,7 +1267,7 @@ describe("recovering a session whose box is gone", () => {
 	it("says no_checkpoint when none checks out, makes no box and leaves the lease", async () => {
 		const r = await lost();
 		const only = getOrThrow(await r.vault.latest("s", context));
-		writeFileSync(join(only?.filesRoot ?? "", "a.txt"), "dama!");
+		writeFileSync(contentFile(r.vaultDirectory, "s", only?.manifest.entries[0]?.sha256 ?? ""), "dama!");
 		getOrThrow(await r.fx.place.box.destroy(context));
 		const recovered = await recoverHome(
 			{

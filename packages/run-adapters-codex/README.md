@@ -18,8 +18,10 @@ const runNode = createHarnessRunner(
 ```
 
 - **The host's tools only.** Codex's app-server runs with its built-in tools off: no shell, no file edits, no web, no
-  images, no sub-agents. A classic model is offered exactly the host's tools (and the runner's `submit`); a code-mode
-  model is offered code mode's `exec` and `wait`, whose runtime has no Node modules, no process and no network, and
+  images, no sub-agents. Codex's sandbox stays read-only for those built-ins, and its message describing that sandbox
+  is not sent, so the model is never told its files are read-only while the host's tools write them
+  (`test/developer-messages.test.mjs`). A classic model is offered exactly the host's tools (and the runner's
+  `submit`); a code-mode model is offered code mode's `exec` and `wait`, whose runtime has no Node modules, no process and no network, and
   reaches the host's tools by their own names, as nested calls of the script it writes. The proxy passes `exec` and
   `wait` and drops the sub-agent and user-input tools Codex lists beside them; it keeps parallel tool calls off for a
   code-mode request, and offers no `exec` while a script that yielded still runs, so one script is live at a time. A

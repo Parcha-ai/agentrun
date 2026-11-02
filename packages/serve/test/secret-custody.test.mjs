@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
+import { BOX_KEYS } from "../dist/boxes.js";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
 import { agent, client, FAUX, flowAgent, follow, scratch } from "./support.mjs";
@@ -24,13 +25,14 @@ const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const CONFINED = existsSync("/usr/bin/setpriv");
-/** The server's own: its token, and the seal key its tool keys are kept under. */
-const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY"];
+/** The server's own: its token, the seal key its tool keys are kept under, and the boxes' keys, which only its box
+ *  providers read (boxes.ts). */
+const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", ...BOX_KEYS];
 /** Every secret serve and a run's process read: each must be on the launcher's list. */
 /** The decision keys: held by the server like the rest, and handed to a workflow run's process only on its decision
  *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
 const DECISION_KEYS = ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"];
-const READ = [...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY", "OPENROUTER_API_KEY", ...DECISION_KEYS];
+const READ = [...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY", "OPENROUTER_API_KEY", "MONID_API_KEY", ...DECISION_KEYS];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const digest = (value) => createHash("sha256").update(value).digest("hex").slice(0, 16);
 const read = (path) => {
@@ -301,7 +303,8 @@ test("the launcher run through a link, as a package manager installs a bin, find
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (out += chunk));
-  const code = await new Promise((resolve) => child.once("exit", resolve));
+  // "close", not "exit": it comes once the child's stdout and stderr are read to their end, so what it said is in.
+  const code = await new Promise((resolve) => child.once("close", resolve));
   assert.equal(code, 0, out);
   assert.match(out, /^usage: agentrun-serve /m);
 });
@@ -374,7 +377,8 @@ test("secrets past what a pipe is sure to hold are refused before the server sta
   const child = spawn(LAUNCHER, ["--help"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: tmp, XDG_CONFIG_HOME: tmp, AGENT_MODEL_API_KEY: `not-a-secret-${"x".repeat(5_000)}` } });
   let out = "";
   child.stderr.on("data", (chunk) => (out += chunk));
-  const code = await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(10_000).then(() => "hung")]);
+  // "close", not "exit": "exit" can come before the stderr pipe is read, and the refusal would read as "".
+  const code = await Promise.race([new Promise((resolve) => child.once("close", resolve)), sleep(10_000).then(() => "hung")]);
   assert.equal(code, 1, out);
   assert.match(out, /more than the 4096 a pipe is sure to hold/);
 });

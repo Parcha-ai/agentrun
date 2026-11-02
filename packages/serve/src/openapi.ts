@@ -8,6 +8,7 @@ import { ERROR_STATUS } from "./errors.js";
 import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
+import { BOXES, PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 
@@ -37,6 +38,27 @@ const HEALTH = {
 
 const COUNT = { type: "integer", minimum: 0 };
 const closed = (properties: Json, description?: string) => ({ type: "object", additionalProperties: false, required: Object.keys(properties), properties, ...(description ? { description } : {}) });
+const USD = { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." };
+/** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
+const GROUP = {
+  runs: COUNT, completed: COUNT, failed: { ...COUNT, description: "Failed or escalated." },
+  runs_with_metrics: { ...COUNT, description: "Of `runs`, those that ended with metrics: a running run, and a run whose end wrote none, has none." },
+  tokens: { ...COUNT, description: "Input, cache read, cache write and output tokens, summed over `runs_with_metrics`." },
+  cost_usd: USD, unknown_cost_runs: { ...COUNT, description: "Runs with no known cost: running, or ended without one." },
+};
+/** GET /stats's `analytics` (stats.ts analyticsView). */
+const ANALYTICS = closed({
+  filter: closed({ from: { type: ["string", "null"], format: "date-time" }, to: { type: ["string", "null"], format: "date-time" }, agent: { type: ["string", "null"] } }, "The query's bounds, each null when not given: runs started at or after `from` and before `to`, of `agent`."),
+  totals: closed({
+    ...GROUP, input: COUNT, cache_read: COUNT, cache_write: COUNT, output: COUNT,
+    requests: { ...COUNT, description: "Model requests." }, unmetered: { ...COUNT, description: "Of `requests`, those whose tokens are unknown: in no token sum." },
+  }, "Over every run the filter picks. `input` excludes cached input: the whole input is `input + cache_read + cache_write`."),
+  time: closed({ ended_runs: COUNT, wall_ms: { ...COUNT, description: "Ended minus started, summed over `ended_runs`." }, active_runs: COUNT, active_ms: { ...COUNT, description: "How long the runs were at work, summed over the `active_runs` whose metrics say." } }),
+  by_harness_effort: { type: "array", description: "By the revision's harness (`pi` when it names none, `workflow` for a workflow revision), then the effort the run's metrics name (null: unset, or no metrics).", items: closed({ harness: { type: "string" }, effort: { type: ["string", "null"] }, ...GROUP }) },
+  by_day: { type: "array", description: "By the UTC date the run started, oldest first.", items: closed({ day: { type: "string", format: "date" }, ...GROUP }) },
+  by_source: { type: "array", description: "`live`, run here, first, then each source runs were imported from.", items: closed({ source: { enum: ["live", "claude-code", "codex", "pi"] }, ...GROUP }) },
+  tools: { type: "array", maxItems: 20, description: "The 20 tools with the most calls, by name on a tie; `errors` counts the calls that failed (an error, a result the tool reads as failed such as a refused fetch, or no result at all).", items: closed({ tool: { type: "string", description: "The name the tool was called by." }, label: { type: "string", description: "What a person calls the tool, from the timeline's label registry; the name it was called by when it has none.", "x-agentrun-serve": "stats/3" }, calls: COUNT, errors: COUNT }) },
+}, "The runs' tokens, requests, time and tool calls from their metrics, over the runs not archived that the query picks; a run with no metrics counts in `runs` alone.");
 /** GET /stats's answer (stats.ts). */
 const STATS = closed({
   agents: { ...COUNT, description: "Agents not archived." },
@@ -57,6 +79,7 @@ const STATS = closed({
     "Over the runs not archived: `usd` sums the cost of each run that ended with one; every other run (running, or ended with no cost) is in `unknown_runs`.",
   ),
   archived: closed({ agents: COUNT, runs: COUNT }, "Agents archived, and runs archived or of an archived agent: counted here and in nothing else."),
+  analytics: { ...ANALYTICS, "x-agentrun-serve": "stats/2" },
 });
 const NODE_STATUS = { enum: ["pending", "working", "done", "failed", "stopped", "escalated", "not_run", "needs_review"] };
 const nullable = (type: string) => ({ type: [type, "null"] });
@@ -123,7 +146,9 @@ const TOOL_KEYS_VIEW = closed({
   keys: {
     type: "array",
     items: closed({
-      id: { enum: TOOL_KEYS.map((row) => row.id) }, label: { type: "string" }, unlocks: { type: "array", items: { type: "string" } }, harnesses: { type: "array", items: { enum: [...HARNESSES] } },
+      id: { enum: TOOL_KEYS.map((row) => row.id) }, label: { type: "string" },
+      unlocks: { type: "array", items: { type: "string" }, description: "What the key unlocks on this server: tools capabilities' `tools` lists, and `decisions.<id>` for a provider its `workflows.decisions.providers` lists. Empty when the key unlocks nothing this server binds." },
+      harnesses: { type: "array", items: { enum: [...HARNESSES] }, description: "The harnesses that run the tools in `unlocks`: the union of their `harnesses` in capabilities' `tools`." },
       fields: {
         type: "array",
         items: {
@@ -161,7 +186,31 @@ const archiving = (collection: string, noun: string, id: Json, answer: string): 
   );
 
 /** This server's own routes, outside the contract. */
+/** One JSON-RPC 2.0 message, and the answer to a request (POST /mcp). */
+const RPC_MESSAGE = { type: "object", required: ["jsonrpc"], properties: { jsonrpc: { const: "2.0" }, id: { type: ["string", "number"] }, method: { type: "string" }, params: { type: "object" } } };
+const RPC_ANSWER = {
+  type: "object", required: ["jsonrpc", "id"],
+  properties: { jsonrpc: { const: "2.0" }, id: { type: ["string", "number", "null"] }, result: {}, error: { type: "object", required: ["code", "message"], properties: { code: { type: "integer" }, message: { type: "string" } } } },
+};
 const EXTENSIONS: Record<string, Record<string, Json>> = {
+  "/mcp": {
+    post: {
+      operationId: "callMcp", tags: ["local"], summary: "The MCP endpoint: this API's tools, for a coding agent",
+      description:
+        "The Model Context Protocol over Streamable HTTP: one JSON-RPC 2.0 message per POST (initialize, ping, tools/list, tools/call), answered as JSON, stateless: no stream (any other method is 405) and no session. Ten tools: whoami, agents_list, agents_create, agents_revise, runs_start, runs_get, runs_events, runs_files, runs_respond and runs_cancel. Each calls this API's routes in process, with the caller's token, and answers as they do: the route's JSON as structured content, a refusal as a result with isError and the route's error. A run is started, then polled; no call is held open for one. The token only: the page's session cookie is never taken here, and a browser Origin other than this server's own is 403. A refusal of the request itself carries a JSON-RPC error.",
+      requestBody: { required: true, content: { "application/json": { schema: RPC_MESSAGE } } },
+      responses: {
+        "200": json(RPC_ANSWER, "The request's answer: its result, or its JSON-RPC error."),
+        "202": { description: "A notification, or a response, taken. No body." },
+        "400": json(RPC_ANSWER, "Not one JSON-RPC 2.0 request (a batch is not taken), or an MCP-Protocol-Version this server does not speak."),
+        "401": json(RPC_ANSWER, "No token, or not this server's."),
+        "403": json(RPC_ANSWER, "An Origin other than this server's own."),
+        "413": json(RPC_ANSWER, "The body is over 1 MiB."),
+        "415": json(RPC_ANSWER, "The body is not application/json."),
+      },
+      "x-agentrun-serve": "mcp/1",
+    },
+  },
   "/openapi.json": {
     get: {
       operationId: "getOpenapi", tags: ["capabilities"], summary: "This document", security: [{}],
@@ -230,8 +279,13 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/stats": {
     get: {
       operationId: "getStats", tags: ["runs"], summary: "Counts and cost over every agent and run",
-      description: "Read from the agent store's aggregates alone: no run's files are opened. Archived agents and runs are left out of every number but their own counts.",
-      responses: { "200": json(STATS, "The counts and the cost."), ...errors(401, 429, 500) },
+      description: "Read from the agent store's aggregates alone: no run's files are opened. Archived agents and runs are left out of every number but their own counts. `from`, `to` and `agent` bound `analytics` only; every other number is the whole store's.",
+      parameters: [
+        { name: "from", in: "query", required: false, description: "Runs started at or after this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.", schema: { type: "string", format: "date-time" }, "x-agentrun-serve": "stats/2" },
+        { name: "to", in: "query", required: false, description: "Runs started before this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.", schema: { type: "string", format: "date-time" }, "x-agentrun-serve": "stats/2" },
+        { name: "agent", in: "query", required: false, description: "One agent's runs.", schema: ref("schemas/Id"), "x-agentrun-serve": "stats/2" },
+      ],
+      responses: { "200": json(STATS, "The counts and the cost."), ...errors(400, 401, 429, 500) },
       "x-agentrun-serve": "stats/1",
     },
   },
@@ -313,13 +367,36 @@ const REVIEW: Json = {
   description: "Set when a workflow run escalated: it completed, and waits for a person to review it. Like every workflow run, it takes no messages (501 unsupported_here).",
   "x-agentrun-serve": "review/1",
 };
+/** What this server's run answers carry beyond the contract's Run and RunSummary: added before they were marked, so
+ *  `serve/1`. */
+const RUN_FIELDS: Record<string, Json> = {
+  revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
+  kind: { enum: ["agentic", "workflow"], description: "The revision's kind: an agentic run, or a workflow run.", "x-agentrun-serve": "serve/1" },
+  archived_at: { type: ["string", "null"], description: "When the run, or its agent, was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
+};
+/** What a run waits on, one field for every kind, told apart by `kind`: here a question it asked a person. A later kind
+ *  (a tool call waiting on approval) is one more variant of the same union. */
+const PENDING: Json = {
+  oneOf: [
+    {
+      type: "object", additionalProperties: false, required: ["kind", "question", "asked_at"],
+      properties: { kind: { const: "question" }, question: { type: "string", description: "What it asked, at most 2000 characters." }, asked_at: { type: "string", format: "date-time" } },
+      description: "A question the run asked a person (status input_required, state waiting): a message answers it.",
+    },
+    { type: "null" },
+  ],
+  description: "What the run waits on, told apart by kind; null when it waits on nothing. A run read from its stored row alone has ended, so null.",
+  "x-agentrun-serve": "pending/1",
+};
 /** This server's own properties on the contract's objects, outside the contract, by where they go (a schema of
  *  components.schemas, then property names down to the object that takes them). Each is marked x-agentrun-serve with
- *  the addition that made it: `harness/1` is the one a later contract version would take on; `model/1` and `serve/1`
- *  are what this server added before it marked them. */
+ *  the addition that made it: `harness/1` and `place/1` are ones a later contract version would take on; `model/1` and
+ *  `serve/1` are what this server added before it marked them. */
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Run: {
+    ...RUN_FIELDS,
     review: REVIEW,
+    pending: PENDING,
     imported_from: {
       type: ["object", "null"],
       additionalProperties: false,
@@ -331,7 +408,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
   RunSummary: {
+    ...RUN_FIELDS,
+    effort: { $ref: "#/components/schemas/Effort", description: "The effort the run was started with, as the run shows it; absent when it was started with none.", "x-agentrun-serve": "effort/1" },
+    error: { oneOf: [{ $ref: "#/components/schemas/RunError" }, { type: "null" }], description: "Set when `failed`, as the run's own.", "x-agentrun-serve": "serve/1" },
     review: REVIEW,
+    pending: PENDING,
     imported_from: {
       type: ["object", "null"],
       additionalProperties: false,
@@ -356,6 +437,14 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     model: { type: "string", description: "`provider/model-id`, the model an agentic revision runs on; absent, this host's default. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     thinking: { enum: [...THINKING_LEVELS], description: "An agentic revision's thinking level; absent, the model's. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     harness: { enum: [...HARNESSES], description: "The harness that runs the revision. Absent on a request, pi; every answer names it. One this server does not run saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.harnesses).", "x-agentrun-serve": "harness/1" },
+    place: {
+      oneOf: [
+        { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
+        { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOXES] } } },
+      ],
+      description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent, this host's default (capabilities.places.default), and an answer shows none; a revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes).",
+      "x-agentrun-serve": "place/1",
+    },
   },
   AgentCreate: {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
@@ -367,6 +456,16 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     archived_at: { type: ["string", "null"], description: "When the agent was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
   },
   Capabilities: {
+    places: {
+      type: "object", additionalProperties: false, required: ["modes", "default", "boxes"],
+      properties: {
+        modes: { type: "array", items: { enum: [...PLACE_MODES] } },
+        default: { enum: [...PLACE_MODES], description: "The mode a revision that names no place runs in here." },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: [...BOXES] }, available: { type: "boolean" }, reason: { type: "string" } } } },
+      },
+      description: "The places a revision may name, this host's default, and each box: whether this server has it, and when not, why.",
+      "x-agentrun-serve": "place/1",
+    },
     harnesses: {
       type: "array",
       description: "Each harness a revision may name, and whether this server runs it; when not, why.",
@@ -450,6 +549,7 @@ const BLOCKED_DETAILS = {
     unbound: { type: "array", items: { type: "string" }, description: "The tools the revision names that this server does not bind, or does not bind on its harness." },
     missing: { type: "object", additionalProperties: { type: "array", items: { type: "string" } }, description: "Each bound tool this host cannot run yet, with the variables it is missing." },
     harness: { enum: [...HARNESSES], description: "The revision's harness, when this server does not run it (capabilities.harnesses)." },
+    box: { enum: [...BOXES], description: "The box of the revision's place, when this server does not have it (capabilities.places.boxes)." },
     adapters: { type: "array", items: { type: "string" }, description: "A workflow revision: the adapters it needs that this server does not bind." },
     code: { type: "boolean", description: "A workflow revision: whether it needs code this server does not run." },
     tier: { type: "string", description: "A workflow revision: the model tier this host has no model for." },
@@ -512,6 +612,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // What this server changes in a contract operation, by the addition that made it.
   update["x-agentrun-serve-changed"] = { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" };
   const changed = ["PUT /agents/{agent_id}/definition"];
+  // A timeline page of at most `limit` rows: the contract's pages hold up to 500, more than a small client reads at once.
+  const timeline = (doc.paths["/runs/{run_id}/timeline"] as Json).get as Json;
+  timeline.parameters = [...(timeline.parameters as Json[]), { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } }];
+  timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1" };
+  changed.push("GET /runs/{run_id}/timeline");
   // A workflow run pauses here (POST /runs/{run_id}/pause): its status reads `paused` until it is resumed.
   const runStatus = schemas.RunStatus as Json & { enum?: string[] };
   if (Array.isArray(runStatus.enum) && !runStatus.enum.includes("paused")) {

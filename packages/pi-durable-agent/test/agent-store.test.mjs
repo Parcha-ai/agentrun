@@ -51,6 +51,24 @@ test("a revision keeps the harness it names, in its body and so its id; one that
   store.close();
 });
 
+test("a revision keeps the place it names, {mode, box?}, in its body and so its id; one that names none keeps none and its id is unchanged; a place that is not {mode, box?} of ids is refused before a write", async () => {
+  const store = openStore(await scratch());
+  const agent = store.createAgent({ name: "P" });
+  const plain = await store.commitRevision(agent.id, A);
+  assert.equal("place" in plain.body, false, "no place named, none kept");
+  assert.equal((await store.commitRevision(agent.id, { ...A, place: undefined })).id, plain.id, "an absent place is the same body, so the same revision");
+  const runner = await store.commitRevision(agent.id, { ...A, place: { mode: "runner" } });
+  assert.deepEqual(runner.body.place, { mode: "runner" }, "a place with no box keeps none");
+  assert.notEqual(runner.id, plain.id, "the place is part of the body, so of the id");
+  const boxed = await store.commitRevision(agent.id, { ...A, place: { box: "docker", mode: "sandbox" } });
+  assert.deepEqual(store.readRevision(boxed.id).body.place, { mode: "sandbox", box: "docker" }, "read back as written");
+  const flow = await store.commitRevision(agent.id, { ...WF, place: { mode: "sandbox", box: "bwrap" } });
+  assert.deepEqual(flow.body.place, { mode: "sandbox", box: "bwrap" });
+  for (const place of ["runner", null, {}, { mode: "Runner" }, { mode: "sandbox", box: "" }, { mode: "sandbox", box: 3 }, { mode: "runner", home: "x" }]) await assert.rejects(store.commitRevision(agent.id, { ...A, place }), refused("invalid", /place/), JSON.stringify(place));
+  assert.equal(store.listRevisions(agent.id).length, 4);
+  store.close();
+});
+
 test("a revision is written once: the database refuses an UPDATE, and a row whose content was changed does not pass the id check", async () => {
   const dir = await scratch();
   const store = openStore(dir);
