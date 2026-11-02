@@ -246,26 +246,17 @@ export class Uploads {
   /** Copies `files` into `work/inputs/`, each at its `path` with its folders, in order, before the run's process exists:
    *  a name taken already (the same path twice, or a file where another's folder goes) gets the next free suffix
    *  (`notes-2.txt`, `docs-2/`), the same for the same files in the same order. Each copy is a new file, made as the
-   *  agent store makes a run's skill files (its mode from the umask): never a link to the upload. Answers each copy's path
-   *  under `work`. */
-  async copyInto(work: string, files: readonly UploadedFile[]): Promise<string[]> {
+   *  agent store makes a run's skill files (its mode from the umask): never a link to the upload. */
+  async copyInto(work: string, files: readonly UploadedFile[]): Promise<void> {
     await uploadTestHooks.beforeCopy?.(work);
     const base = join(work, INPUTS_DIR);
     await mkdir(base, { recursive: true });
-    const placed: string[] = [];
     for (const file of files) {
       const segments = file.path.split("/");
       let dir = base;
-      let rel = INPUTS_DIR;
-      for (const segment of segments.slice(0, -1)) {
-        const name = await folderIn(dir, segment);
-        dir = join(dir, name);
-        rel = `${rel}/${name}`;
-      }
-      const name = await copyIn(dir, segments.at(-1)!, join(this.root, file.file_id, BYTES));
-      placed.push(`${rel}/${name}`);
+      for (const segment of segments.slice(0, -1)) dir = join(dir, await folderIn(dir, segment));
+      await copyIn(dir, segments.at(-1)!, join(this.root, file.file_id, BYTES));
     }
-    return placed;
   }
 }
 
