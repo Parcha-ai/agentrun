@@ -83,11 +83,16 @@ export function activeNotes(notes: Iterable<LearnedNote>): LearnedNote[] {
   return [...notes].filter((note) => note.status === "active").sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
 }
 
-/** `MEMORY.md` as the host writes it: one line per active note, by file name, `- [name](file.md) — description`; empty
- *  when none is active. The one builder of the index. */
-export function buildIndex(notes: Iterable<LearnedNote>): string {
+/** A note's line in the index, `- [name](file.md) — description`, each run of whitespace one space. */
+export function indexLine(note: Pick<LearnedNote, "file" | "name" | "description">): string {
   const one = (text: string) => text.replace(/\s+/g, " ").trim();
-  return activeNotes(notes).map((note) => `- [${one(note.name)}](${note.file}) — ${one(note.description)}\n`).join("");
+  return `- [${one(note.name)}](${note.file}) — ${one(note.description)}`;
+}
+
+/** `MEMORY.md` as the host writes it: one line per active note, by file name (indexLine); empty when none is active.
+ *  The one builder of the index. */
+export function buildIndex(notes: Iterable<LearnedNote>): string {
+  return activeNotes(notes).map((note) => `${indexLine(note)}\n`).join("");
 }
 
 /** What a run reads of `index`: its first INDEX_LINES lines, cut to whole lines within INDEX_BYTES. */

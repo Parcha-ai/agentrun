@@ -1,14 +1,16 @@
 // One grader decides whether a run's checked notes join main: a bounded call on the agent's own model, read fail-closed.
-// The injection screen runs only with an independent judge (Jev). What the grade spends is booked on /v2/usage's
-// `learning` meter and kept on the run's learning; a server that goes mid-grade grades the run once at its next start,
-// and a run is merged once, never twice. GET /v2/stats counts how the runs that tried to learn fared.
+// The injection screen runs only with an independent judge (Jev). What the grade spends is kept on the run's learning
+// and, with how its learning ended, in the learning ledger, which /v2/usage's `learning` meter reads; a call cut off at
+// its bound costs what nobody knows, never $0. A server that goes mid-grade grades the run once at its next start, and a
+// run is merged once, never twice. GET /v2/stats counts how the runs that tried to learn fared, from the ledger and the
+// runs the server holds, never a run's files.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, git, LEARN, learner, made, mergesOf, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { ended, git, LEARN, learner, ledgerOf, made, mergesOf, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { agent, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
@@ -111,7 +113,23 @@ test("a server that goes mid-grade grades the run once at its next start; a run 
   assert.equal(callsIn(calls).length, 2, "the kept verdict was not asked again");
 });
 
-test("GET /v2/usage books each grade under the meter learning, by agent and by day; GET /v2/stats counts the runs that tried to learn, over its filters, and a restarted server counts the same", { timeout: 180_000 }, async (t) => {
+test("a grader that never answers is cut off at its bound: the run's learning is grade_failed, and what the grade spent is unknown (null), never $0, on the run, in the ledger and on /v2/usage", { timeout: 120_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_GRADE_HOLD: "never", AGENTRUN_TEST_FAUX_CALLS: calls }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, gradeTimeoutMs: 1_500 });
+  await made(api, learner("stuck", { plan: PLAN }));
+  const runId = await started(api, "stuck");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "dropped", "grade_failed");
+  assert.equal(callsIn(calls).length, 1, "the grader was asked, and never answered");
+  const { learning } = await savedOf(data, runId);
+  assert.deepEqual([learning.cost_usd, learning.tokens], [{ grade: null }, { grade: null }]);
+  assert.deepEqual(ledgerOf(data).map(({ run, state, reason, cost, tokens }) => [run, state, reason, cost, tokens]), [[runId, "dropped", "grade_failed", null, null]]);
+  const line = (await api("GET", "/usage?group_by=meter")).body.lines.find((entry) => entry.meter === "learning");
+  assert.deepEqual([line.usd, line.unpriced_runs], [0, 1], "unpriced, never $0");
+});
+
+test("GET /v2/usage books each grade under the meter learning, by agent and by day; GET /v2/stats counts the runs that tried to learn, over its filters, from the ledger, and a restarted server counts the same with runs/ unreadable", { timeout: 180_000 }, async (t) => {
   withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS"]);
   const first = await serve(t, { learning: "on", faux: LEARN });
   const { api, data } = first;
@@ -125,6 +143,7 @@ test("GET /v2/usage books each grade under the meter learning, by agent and by d
   assert.deepEqual([merged.view.learning.state, empty.view.learning.reason, mute.view.learning.reason], ["merged", "empty", "no_write_tool"]);
   const grade = (await savedOf(data, merged.view.run_id)).learning.cost_usd.grade;
   assert.ok(grade > 0);
+  for (const { view } of [empty, mute]) await savedOf(data, view.run_id);
   const byMeter = (await api("GET", "/usage?group_by=meter")).body;
   const line = byMeter.lines.find((entry) => entry.meter === "learning");
   assert.equal(line.usd, Math.round(grade * 1e6) / 1e6);
@@ -135,8 +154,27 @@ test("GET /v2/usage books each grade under the meter learning, by agent and by d
   assert.deepEqual((await api("GET", "/stats")).body.learning, want);
   assert.deepEqual((await api("GET", "/stats?agent=mute")).body.learning, { runs: 1, merged: 0, dropped: { no_write_tool: 1 }, in_progress: 0 });
   assert.deepEqual((await api("GET", `/stats?from=${new Date(Date.now() + 60_000).toISOString()}`)).body.learning, { runs: 0, merged: 0, dropped: {}, in_progress: 0 });
+  // One ledger line per run that tried to learn, once its end was saved: the grade's spend on the merged one, none on the
+  // others, which were never graded.
+  const lines = ledgerOf(data).map(({ run, agent, state, reason, at, cost, tokens }) => ({ run, agent, state, reason, at: typeof at, cost, tokens }));
+  const zero = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
+  const saved = await savedOf(data, merged.view.run_id);
+  assert.deepEqual(lines.sort((a, b) => a.run.localeCompare(b.run)), [
+    { run: merged.view.run_id, agent: "counted", state: "merged", reason: null, at: "string", cost: grade, tokens: saved.learning.tokens.grade },
+    { run: empty.view.run_id, agent: "counted", state: "dropped", reason: "empty", at: "string", cost: 0, tokens: zero },
+    { run: mute.view.run_id, agent: "mute", state: "dropped", reason: "no_write_tool", at: "string", cost: 0, tokens: zero },
+  ].sort((a, b) => a.run.localeCompare(b.run)));
   await first.close();
   const again = await serve(t, { learning: "on", faux: LEARN, data });
-  assert.deepEqual((await again.api("GET", "/stats")).body.learning, want, "read back from the runs' records");
-  assert.equal((await again.api("GET", "/usage?group_by=meter")).body.lines.find((entry) => entry.meter === "learning").usd, line.usd, "booked once");
+  // The restarted server holds none of these runs: it counts them from the ledger alone, and never opens runs/.
+  const runs = join(data, "runs");
+  chmodSync(runs, 0o000);
+  try {
+    assert.deepEqual((await again.api("GET", "/stats")).body.learning, want, "read back from the ledger");
+    assert.deepEqual((await again.api("GET", "/stats?agent=mute")).body.learning, { runs: 1, merged: 0, dropped: { no_write_tool: 1 }, in_progress: 0 });
+  } finally {
+    chmodSync(runs, 0o700);
+  }
+  assert.equal((await again.api("GET", "/usage?group_by=meter")).body.lines.find((entry) => entry.meter === "learning").usd, line.usd, "counted once");
+  assert.equal(ledgerOf(data).length, 3, "the restart wrote no line again");
 });

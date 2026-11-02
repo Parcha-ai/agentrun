@@ -63,13 +63,17 @@ each problem is `{ rule, path?, detail }`, printable as it is. [SPEC.md](SPEC.md
 ```js
 import { gradePrompt, parseVerdict } from "@parcha/agentrun-learn";
 
-const prompt = gradePrompt({ run: run.id, instructions: agent.instructions, index: mainIndex, notes: mainActiveNotes, proposed: notes });
+const prompt = gradePrompt({ run: run.id, instructions: agent.instructions, active: mainActiveNotes, superseded, proposed: notes });
 const verdict = parseVerdict(await grader(prompt), notes); // { merge, reason, items: [{ file, keep, question?, why }] }
 ```
 
-`notes` and `proposed` are `{ file, text }`. The prompt holds `GRADE_RUBRIC`, the rubric's one statement, and fences
-each note, the index and the instructions as data to judge, never to follow: the fence's token is one no fenced text
-holds, so no text can close its fence. It asks for one JSON verdict with one item per new note.
+`active` is every active note on `main` as the index lists it (`{ file, name, description }`, so a parsed note will
+do); `superseded` and `proposed` are `{ file, text }`: the whole text of each active note the new notes supersede, and
+of no other, and the new notes. The prompt holds `GRADE_RUBRIC`, the rubric's one statement, and fences the
+instructions, the index lines and each note as data to judge, never to follow: the fence's token is one no fenced text
+holds, so no text can close its fence. It asks for one JSON verdict with one item per new note. Its size is bounded by
+construction (`GRADE_CAPS`): the instructions cut to 16,000 characters, each index line to 300, at most 8 superseded
+and 8 new notes of at most 4096 bytes each, so it stays under 200,000 characters whatever the folder holds.
 
 `parseVerdict` fails closed. It reads one JSON object, alone, in prose or in one fenced block. Two objects, a key
 repeated in one object, a missing item, an item named twice or for a file the grader was not asked about, and `merge`

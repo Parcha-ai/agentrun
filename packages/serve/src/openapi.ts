@@ -87,7 +87,7 @@ const STATS = closed({
       runs: { ...COUNT, description: "Runs that tried to learn: each with a `learning` block. A run with learning off, a workflow's or an imported one has none." },
       merged: COUNT,
       dropped: { type: "object", additionalProperties: COUNT, propertyNames: { enum: [...LEARNING_REASONS] }, description: "The dropped runs, by reason (Run.learning.reason): only reasons with one run or more." },
-      in_progress: { ...COUNT, description: "Seeded, reflecting or proposed." },
+      in_progress: { ...COUNT, description: "Seeded, reflecting or proposed: runs this server holds." },
     }, "How the runs that tried to learn fared, over the runs not archived that `from`, `to` and `agent` pick, as `analytics` counts them."),
     "x-agentrun-serve": "learning/1",
   },
@@ -445,7 +445,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/stats": {
     get: {
       operationId: "getStats", tags: ["runs"], summary: "Counts and cost over every agent and run",
-      description: "Read from the agent store's aggregates, and `learning` from each run's own record (an ended run's read once per server start). Archived agents and runs are left out of every number but their own counts. `from`, `to` and `agent` bound `analytics` and `learning` only; every other number is the whole store's.",
+      description: "Read from the agent store's aggregates, and `learning` from the runs this server holds and its learning ledger, where each run's learning end is written: no run's files are opened. Archived agents and runs are left out of every number but their own counts. `from`, `to` and `agent` bound `analytics` and `learning` only; every other number is the whole store's.",
       parameters: [
         { name: "from", in: "query", required: false, description: "Runs started at or after this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.", schema: { type: "string", format: "date-time" }, "x-agentrun-serve": "stats/2" },
         { name: "to", in: "query", required: false, description: "Runs started before this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.", schema: { type: "string", format: "date-time" }, "x-agentrun-serve": "stats/2" },

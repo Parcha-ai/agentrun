@@ -10,7 +10,8 @@
 // index and active notes into the run's `work/.learning/` and pins the commit in the run's directory (`learning.json`),
 // with what the run reads of the index. The run's process reads that pin (withLearned, for app.ts) and never runs git, so
 // it may run anywhere its directory is. When the run ends the server asks it one more turn, in which it may add notes to
-// that copy (runs.ts); what it added is checked (propose.ts), graded and merged into main (grade.ts).
+// that copy (runs.ts). As the run settles, before anything can open it again, the copy is moved whole out of its work
+// (snapshotLearned); what the turn added is checked from there (propose.ts), graded and merged into main (grade.ts).
 //
 // The host never follows a symbolic link into the folder (agentFolder): a link at the agent's home, at its `learning/`
 // or at `learning/.git`, or a `MEMORY.md` that is one when the host writes it, is refused, and the run starts with
@@ -19,7 +20,7 @@
 // way (readFolder, agentFolder), and a link there is an error.
 import { spawn } from "node:child_process";
 import { constants, existsSync } from "node:fs";
-import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, type Verdict } from "@parcha/agentrun-learn";
 import { writeDurable } from "./files.js";
@@ -70,6 +71,9 @@ export type Proposal = { seed: string; notes: { file: string; text: string }[] }
 export const LEARNING_PIN = "learning.json";
 /** Where a run finds its agent's notes: in its work, a copy the run may read and nothing reads back. */
 export const LEARNED_DIR = ".learning";
+/** Where that copy goes once the run's end-of-run turn ended and the run settles: in the run's directory, outside its
+ *  work, where the host alone reads it (snapshotLearned). */
+export const LEARNED_SNAPSHOT = "learning-turn";
 /** What a run's pin holds: the commit of main it was seeded from, and what it reads of the index, when that holds a line. */
 export type Pin = { seed: string; learned?: string };
 /** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
@@ -346,12 +350,31 @@ export const activeOf = (seed: Pick<Seed, "notes">): LearnedNote[] => Object.ent
 });
 
 /** Test seams, tests only: once a part of an agent's learning folder is made (before its check), before a run's
- *  learned files are written, and once its pin is in place. */
+ *  learned files are written, once its pin is in place, and before what its end-of-run turn wrote is checked. */
 export const learningTestHooks: {
   afterMkdir?: (dir: string) => Promise<void> | void;
   beforePin?: (runDir: string) => Promise<void> | void;
   afterPin?: (runDir: string) => Promise<void> | void;
+  beforePropose?: (runDir: string) => Promise<void> | void;
 } = {};
+
+/** As the run in `runDir` settles after its end-of-run turn ended, before it reads ended and before a follow-up can
+ *  open it again: its copy, `work/.learning/` as the turn left it, moved whole to `<run dir>/learning-turn/` with one
+ *  rename on the run's own filesystem, so nothing the run does after its end reaches what is checked. The move takes
+ *  whatever is there, a link or a file included, never following one; harvest refuses those. A snapshot already there
+ *  stays (a server that went after the move); a copy the turn removed is an empty snapshot. `work` itself must be a
+ *  folder, never a link the move would reach through. Throws when the move fails. */
+export async function snapshotLearned(runDir: string): Promise<void> {
+  const snapshot = join(runDir, LEARNED_SNAPSHOT);
+  if (await lstat(snapshot).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? false : Promise.reject(error)))) return;
+  await refuseLink(runDir, join(runDir, "work"));
+  try {
+    await rename(join(runDir, "work", LEARNED_DIR), snapshot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await mkdir(snapshot, { mode: 0o700 });
+  }
+}
 
 /** Lays `seed`'s index and active notes in `dir`, made fresh: whatever was there goes. */
 export async function layLearned(dir: string, seed: Seed): Promise<void> {

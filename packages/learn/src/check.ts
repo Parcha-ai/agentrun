@@ -13,6 +13,8 @@ export const CAPS = Object.freeze({
   note: 4096,
   /** New notes in one run. */
   newNotes: 8,
+  /** Notes one run's new notes supersede, together. */
+  supersedes: 8,
   /** Changed paths in one run; over it nothing else is read. */
   changes: 64,
 });
@@ -140,8 +142,9 @@ export function checkProposal(input: CheckInput): ProposalCheck {
 }
 
 /** What stops `notes` from joining `base` as they are: a name `base` holds (`exists`), a `supersedes` that names no
- *  active note of `base` or one another new note supersedes too, and an index past INDEX_LINES. The checker asks it of
- *  the run's seed; the host asks it again of main at merge time, since other runs may have merged meanwhile. */
+ *  active note of `base` or one another new note supersedes too, or more than CAPS.supersedes notes superseded, and an
+ *  index past INDEX_LINES. The checker asks it of the run's seed; the host asks it again of main at merge time, since
+ *  other runs may have merged meanwhile. */
 export function mergeProblems(base: Base, notes: readonly LearnedNote[], refuseValues: readonly string[] = []): Problem[] {
   const files = new Set(base.files);
   const active = new Set(base.active.map((note) => note.file));
@@ -155,6 +158,8 @@ export function mergeProblems(base: Base, notes: readonly LearnedNote[], refuseV
       replaced.add(old);
     }
   }
+  // The grader reads each note superseded in full (grade.ts): their count is capped, as the new notes' is.
+  if (replaced.size > CAPS.supersedes) out.push({ rule: "supersedes", detail: `the new notes supersede ${replaced.size} notes; the cap is ${CAPS.supersedes} a run` });
   const lines = active.size - [...replaced].filter((file) => active.has(file)).length + notes.length;
   if (lines > INDEX_LINES) out.push({ rule: "index_full", detail: `the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so supersede a note rather than add one` });
   return out.map((problem) => printable(problem, refuseValues));

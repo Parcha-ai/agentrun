@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learner, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started, turnCopyOf } from "./learn-support.mjs";
 import { scratch, serve } from "./support.mjs";
 
 const FILE = "check-units.md";
@@ -68,7 +68,9 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const two = await started(api, id);
     const second = await ended(api, two);
     assert.equal(learnedIn(second.view.result.final_answer), LINE, second.view.result.final_answer);
-    assert.equal(readFileSync(join(copyOf(data, two), FILE), "utf8"), NOTE, "the note is in run 2's .learning/");
+    // Its .learning/, as its end-of-run turn left it, was set aside out of its work as it ended.
+    assert.equal(readFileSync(join(turnCopyOf(data, two), FILE), "utf8"), NOTE, "the note was in run 2's .learning/");
+    assert.equal(existsSync(copyOf(data, two)), false, "and is no longer in its work");
     assert.equal(JSON.parse(readFileSync(join(data, "runs", two, "learning.json"), "utf8")).seed, main);
     // It learned nothing new: its turn added nothing, and main did not move.
     settled(second.view, second.rows, "dropped", "empty");

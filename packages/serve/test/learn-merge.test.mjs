@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, reflectRows, repoOf, savedOf, settled, sleep, started, turnCopyOf } from "./learn-support.mjs";
 import { client, scratch, serve } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
@@ -53,8 +53,8 @@ test("a note that supersedes one: the old note is marked superseded by the new o
   await plans(api, "replacer", undefined);
   const next = await started(api, "replacer");
   await ended(api, next);
-  assert.deepEqual(existsSync(join(copyOf(data, next), "refunds.md")), false);
-  assert.ok(existsSync(join(copyOf(data, next), "refunds-v2.md")));
+  assert.deepEqual(existsSync(join(turnCopyOf(data, next), "refunds.md")), false);
+  assert.ok(existsSync(join(turnCopyOf(data, next), "refunds-v2.md")));
 });
 
 test("two runs at once that add different notes both merge, and the index has both; the same name added by two runs at once merges once, and the second is refused as exists at the merge", { timeout: 150_000 }, async (t) => {

@@ -6,7 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, rmSync } from "node:fs";
-import { open as openFile, readFile, rm, stat } from "node:fs/promises";
+import { lstat, open as openFile, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,7 @@ import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
-import { layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningMode, type LearningReason, type LearningState, learningView, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, withAgentGrade } from "./learning.js";
+import { layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningMode, type LearningReason, type LearningState, learningTestHooks, learningView, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, snapshotLearned, withAgentGrade } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
@@ -36,7 +36,7 @@ import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
 import { DECISION_KEYS, handover, hostSecrets, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
-import { book, bookings } from "./usage.js";
+import { ended, outcomeOf, outcomes, record } from "./usage.js";
 
 export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -363,7 +363,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; learning?: LearningMode; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; learning?: LearningMode; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
@@ -465,9 +465,8 @@ export class Runs {
   private learningOff?: string;
   /** Aborted as the server closes: a grade's screen and grader stop, and leave the run's learning `proposed`. */
   private readonly stopping = new AbortController();
-  /** The learning of each ended run this server does not hold, which never moves again (learningOfRow): read by the
-   *  start's pass over every ended run, or once by a count. */
-  private readonly endedLearning = new Map<string, { state: LearningState; reason: LearningReason | null } | null>();
+  /** The runs whose learning's end is in the learning ledger (usage.ts): read at the start, and each one written since. */
+  private readonly recorded = new Set<string>();
   constructor(private readonly options: RunsOptions) {}
 
   private get store() {
@@ -564,10 +563,26 @@ export class Runs {
     };
   }
 
-  /** Writes the run's serve.json as it is when its turn comes. */
+  /** Writes the run's serve.json as it is when its turn comes; then, once it holds where the run's learning ended, that
+   *  end's line in the learning ledger. */
   private saveMeta(run: Run): Promise<void> {
-    run.saving = (run.saving ?? Promise.resolve()).catch(() => undefined).then(() => writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`));
+    run.saving = (run.saving ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      const { learning } = run.meta;
+      await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`);
+      await this.recordLearning(run, learning);
+    });
     return run.saving;
+  }
+
+  /** The learning ledger's line for the run (usage.ts), once, when `learning`, as its serve.json now holds it, has ended.
+   *  Never rejects: a line not written is written by the next save, or by the next start's pass. */
+  private recordLearning(run: Pick<Run, "id" | "agentId">, learning: Learning | null | undefined): Promise<void> {
+    if (!ended(learning) || this.recorded.has(run.id)) return Promise.resolve();
+    this.recorded.add(run.id);
+    return record(this.options.agents.dir, outcomeOf(run.id, run.agentId, learning)).catch((error: Error) => {
+      this.recorded.delete(run.id);
+      warn(run.id, `its learning's end is not in the ledger yet: ${error.message}`);
+    });
   }
 
   private record(run: Run): Promise<Json | null> {
@@ -806,6 +821,7 @@ export class Runs {
 
   private async propose(run: Run): Promise<void> {
     try {
+      await learningTestHooks.beforePropose?.(run.dir);
       const pin = await readPin(run.dir);
       if (!pin) throw new Error("the run has no learning pin");
       const { proposeRun } = await import("./propose.js");
@@ -823,8 +839,8 @@ export class Runs {
   }
 
   /** The run's proposal merged into main or dropped (grade.ts), one grade at a time per agent, after the checks and
-   *  never in a run's way. The verdict and what the grade spent are kept in serve.json and booked on /usage before the
-   *  merge, so a restart neither asks the grader again nor books it twice. A server that closes mid-grade leaves the
+   *  never in a run's way. The verdict and what the grade spent are kept in serve.json before the merge, so a restart
+   *  never asks the grader again; what it spent is in the ledger with the run's end. A server that closes mid-grade leaves the
    *  learning `proposed`, and its next start grades it. */
   private gradeOnce(run: Run): Promise<void> {
     if (run.meta.learning?.state !== "proposed") return Promise.resolve();
@@ -836,18 +852,10 @@ export class Runs {
     if (before?.state !== "proposed" || this.closing) return;
     const data = this.options.agents.dir;
     let kept: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = before.verdict ? { verdict: before.verdict, cost_usd: before.cost_usd, tokens: before.tokens } : {};
-    // A grade whose cost was kept was booked then, or by the restart pass.
-    let booked = before.cost_usd !== undefined;
-    const save = async () => {
-      await this.saveMeta(run);
-      if (booked || !run.meta.learning?.cost_usd) return;
-      booked = true;
-      const { at, cost_usd, tokens } = run.meta.learning;
-      await book(data, { run: run.id, agent: run.agentId, at, usd: cost_usd.grade, tokens: tokens?.grade ?? null }).catch((error: Error) => warn(run.id, `its grade's cost is not booked: ${error.message}`));
-    };
+    // Its end saved, and with it its line in the ledger, which carries what the grade spent (saveMeta).
     const end = (state: LearningState, reason: LearningReason | null, detail: string, more: typeof kept = {}) => {
       this.setLearning(run, state, reason, detail, { ...kept, ...more });
-      return save().catch((error: Error) => warn(run.id, `its learning is not saved: ${error.message}`));
+      return this.saveMeta(run).catch((error: Error) => warn(run.id, `its learning is not saved: ${error.message}`));
     };
     try {
       const proposal = JSON.parse(await readFile(join(run.dir, PROPOSAL), "utf8")) as Proposal;
@@ -860,7 +868,7 @@ export class Runs {
       if (main && "problems" in main) return await end("dropped", "checker", `Main no longer takes what the run proposed: ${[...new Set(main.problems.map((problem) => problem.rule))].join(", ")}.`, { problems: main.problems });
       if (main && !("merged" in main)) {
         const { instructions, harness, model, thinking } = known.revision.body;
-        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, env: this.hostEnv(), signal: this.stopping.signal });
+        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, env: this.hostEnv(), signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
         kept = { cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
         if ("file" in judged) return await end("dropped", judged.reason, judged.reason === "screen" ? "The injection screen refused a new note." : "The injection screen could not judge a new note.");
         if ("error" in judged) {
@@ -869,9 +877,9 @@ export class Runs {
         }
         kept.verdict = judged.verdict;
         if (!judged.verdict.merge) return await end("dropped", "grader", "The grader's verdict was to keep none of the new notes.");
-        // Kept and booked before the merge: a restart merges on this verdict, and never asks or books the grader again.
+        // Kept before the merge: a restart merges on this verdict, and never asks the grader again.
         this.setLearning(run, "proposed", null, before.detail, kept);
-        await save();
+        await this.saveMeta(run);
       }
       const merge = await mergeProposal(data, run.agentId, run.id, proposal, kept.verdict?.reason || "The grader kept every new note.");
       if ("problems" in merge) return await end("dropped", "checker", `Main no longer takes what the run proposed: ${[...new Set(merge.problems.map((problem) => problem.rule))].join(", ")}.`, { problems: merge.problems });
@@ -993,6 +1001,8 @@ export class Runs {
   }
 
   async recover(): Promise<void> {
+    // Read beside the running runs' pass, never before it: a line written twice meanwhile is read once.
+    const inLedger = outcomes(this.options.agents.dir).catch(() => new Map<string, unknown>());
     await this.sweepOnce();
     const rows = await this.options.agents.request(() => this.store.listRuns());
     for (const row of rows) {
@@ -1001,16 +1011,15 @@ export class Runs {
       if (run && !this.live(run) && !run.outcome) await this.settle(run, null, false);
     }
     // Then each ended run whose learning a server left between steps: what its end-of-run turn wrote not checked yet, or
-    // its proposal not graded or merged. It is checked or graded now, once. A grade whose cost was kept and not booked
-    // is booked.
-    const booked = new Set((await bookings(this.options.agents.dir).catch(() => [])).map((entry) => entry.run));
+    // its proposal not graded or merged. It is checked or graded now, once. A learning end saved and not in the ledger
+    // (a server that went between the two) is written there.
+    for (const run of (await inLedger).keys()) this.recorded.add(run);
     for (const row of rows) {
       if (this.closing) return;
       if (row.state === "running" || row.importedFrom || row.kind !== "agentic") continue;
       const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<RunMeta> | null;
-      const learning = meta?.learning;
-      this.endedLearning.set(row.id, shortLearning(isObject(learning) ? learning : null));
-      if (learning?.cost_usd && !booked.has(row.id)) await book(this.options.agents.dir, { run: row.id, agent: row.agent, at: learning.at, usd: learning.cost_usd.grade, tokens: learning.tokens?.grade ?? null }).catch((error: Error) => warn(row.id, `its grade's cost is not booked: ${error.message}`));
+      const learning = isObject(meta?.learning) ? meta.learning : undefined;
+      await this.recordLearning({ id: row.id, agentId: row.agent }, learning);
       if (!awaitsPropose(meta) && learning?.state !== "proposed") continue;
       const run = await this.get(row.id).catch((error: Error) => (warn(row.id, `not read: ${error.message}; the next start tries again`), null));
       if (run && awaitsPropose(run.meta)) await this.proposeOnce(run);
@@ -1365,6 +1374,14 @@ export class Runs {
    *  another writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
     this.closeLearning(run, outcome);
+    // What its end-of-run turn wrote, set aside before the run reads ended: a follow-up that opens it again never
+    // changes what is checked.
+    if (awaitsPropose(run.meta)) {
+      await snapshotLearned(run.dir).catch((error: Error) => {
+        warn(run.id, `what its end-of-run turn wrote could not be set aside: ${error.message}`);
+        this.setLearning(run, "dropped", "propose_failed", "What the end-of-run turn wrote could not be set aside to be checked.");
+      });
+    }
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
@@ -1560,8 +1577,9 @@ export class Runs {
     }
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
     this.runs.set(run.id, run);
-    // A seed that failed is a learning row from the start.
+    // A seed that failed is a learning row from the start, and its learning's end is in the ledger.
     this.show(run);
+    void this.recordLearning(run, meta.learning);
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;
     this.refresh(run);
@@ -1649,6 +1667,7 @@ export class Runs {
       run.error = undefined;
       delete run.meta.error;
       run.relaunches = 0;
+      await this.layAgain(run);
       this.refresh(run);
       this.launch(run);
     } finally {
@@ -1658,6 +1677,19 @@ export class Runs {
     // An end-of-run turn its process went in would resume with the run: it is aborted before the follow-up is sent. One
     // that cannot be aborted runs out ahead of it, and its rows are never the follow-up's answer, which comes after them.
     if (run.meta.reflect && run.meta.learning?.reason === "crashed") await this.toDoor(run, "/abort", {}).catch(() => undefined);
+  }
+
+  /** A run that learns, opened again once its end-of-run turn's copy went to its snapshot: `work/.learning/` laid again
+   *  from its seed, so a follow-up finds the notes its instructions name where they say. A fault leaves it without. */
+  private async layAgain(run: Run): Promise<void> {
+    const dir = join(run.dir, "work", LEARNED_DIR);
+    if (!run.meta.reflect || (await lstat(dir).then(() => true, () => false))) return;
+    try {
+      const pin = await readPin(run.dir);
+      if (pin) await layLearned(dir, await seedAt(this.options.agents.dir, run.agentId, pin.seed));
+    } catch (error) {
+      warn(run.id, `opens again without its copy of what its agent learned: ${(error as Error).message}`);
+    }
   }
 
   /** Abort the turn that is running; the run stays open, `input_required` and idle. A workflow run has no turn to stop. */
@@ -1845,17 +1877,11 @@ export class Runs {
     };
   }
 
-  /** A run's learning, in short, for a count: a held run's, else an ended run's as the start's pass read it, else its
-   *  serve.json's, kept once its learning ended (merged or dropped never moves again). */
-  async learningOfRow(row: RunRow): Promise<{ state: LearningState; reason: LearningReason | null } | null> {
-    const held = this.runs.get(row.id);
-    if (held) return shortLearning(held.meta.learning ?? null);
-    const known = this.endedLearning.get(row.id);
-    if (known !== undefined) return known;
-    const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<RunMeta> | null;
-    const learning = shortLearning(isObject(meta?.learning) ? (meta.learning as Learning) : null);
-    if (learning?.state === "merged" || learning?.state === "dropped") this.endedLearning.set(row.id, learning);
-    return learning;
+  /** A held run's learning, in short, from memory (null when it does not learn); undefined for a run this server does not
+   *  hold. For a count, which reads the rest from the learning ledger and never a run's files. */
+  heldLearning(runId: string): { state: LearningState; reason: LearningReason | null } | null | undefined {
+    const held = this.runs.get(runId);
+    return held ? shortLearning(held.meta.learning ?? null) : undefined;
   }
 
   /** The timeline from change `after`, held up to `waitMs` for a change when there is none. */

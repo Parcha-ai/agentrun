@@ -3,14 +3,15 @@
 // run's learning and in one timeline row of kind `learning`, a seed that failed included.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { startServe } from "../dist/index.js";
+import { learningTestHooks } from "../dist/learning.js";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, LEARN, learner, learningRows, made, reflectRows, settled, sleep, started } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learner, learningRows, made, reflectRows, repoOf, settled, sleep, started, turnCopyOf } from "./learn-support.mjs";
 import { agent, client, follow, scratch, serve, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -113,4 +114,44 @@ test("a seed that failed is a learning row from the run's start, and a run that 
   const plain = await follow(api, plainId, ["completed"]);
   assert.deepEqual([learningRows(plain.rows).length, reflectRows(plain.rows).length], [0, 0]);
   assert.equal((await api("GET", `/runs/${plainId}`)).body.learning, null);
+});
+
+test("a follow-up sent as the run settles changes nothing that is checked: the turn's .learning/ was set aside before the run read completed, the proposal holds exactly the turn's note, and the follow-up finds .learning/ laid again from the seed", { timeout: 150_000 }, async (t) => {
+  // What the turn wrote is checked only once the test lets it: the follow-up runs first, as fast as a person could.
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  learningTestHooks.beforePropose = () => held;
+  t.after(() => {
+    learningTestHooks.beforePropose = undefined;
+    release();
+  });
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("follower", { plan: PLAN }));
+  const runId = await started(api, "follower");
+  await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.learning.state, "reflecting", "its check waits");
+  // As it read completed, the turn's copy was already out of its work, in the run's directory.
+  assert.deepEqual(readdirSync(turnCopyOf(data, runId)).sort(), ["MEMORY.md", "check-units.md"]);
+  assert.equal(readFileSync(join(turnCopyOf(data, runId), "check-units.md"), "utf8"), PLAN[0][1]);
+  assert.equal(existsSync(copyOf(data, runId)), false);
+
+  // The follow-up edits the note the turn wrote and adds another, in .learning/, with the agent's own write tool.
+  const EDITED = note("Check units", "Convert nothing", "Units never matter.\n");
+  const EXTRA = note("Extra", "A note the follow-up wrote");
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: `Write: ${JSON.stringify([["check-units.md", EDITED], ["extra.md", EXTRA]])}` });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  const after = await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  assert.ok(after.rows.some((row) => row.kind === "final_answer" && row.text === "Written."), "the follow-up answered");
+  // It found its copy laid again from the seed (an empty MEMORY.md), and its writes landed there.
+  assert.deepEqual(readdirSync(copyOf(data, runId)).sort(), ["MEMORY.md", "check-units.md", "extra.md"]);
+  assert.equal(readFileSync(join(copyOf(data, runId), "MEMORY.md"), "utf8"), "");
+  assert.equal(readFileSync(join(copyOf(data, runId), "check-units.md"), "utf8"), EDITED);
+
+  release();
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "merged");
+  assert.deepEqual(JSON.parse(readFileSync(join(data, "runs", runId, "learning-proposal.json"), "utf8")).notes, [{ file: "check-units.md", text: PLAN[0][1] }], "exactly the turn's note");
+  const repo = repoOf(data, "follower");
+  assert.equal(`${git(repo, ["show", "main:check-units.md"])}\n`, PLAN[0][1]);
+  assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md", "check-units.md"], "nothing of the follow-up's");
 });

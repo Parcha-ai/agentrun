@@ -73,6 +73,7 @@ Over a cap is refused, never cut.
 | --- | --- |
 | One note | 4096 bytes |
 | New notes in one run | 8 |
+| Notes one run's new notes supersede, together | 8 |
 | Active notes after the merge | 200, the index's lines |
 | Changed paths in one run | 64; over it nothing else is read |
 
@@ -97,7 +98,7 @@ Over a cap is refused, never cut.
 | `secret_value` | a value the host holds as secret, in a note or its name |
 | `note` | front matter missing or out of shape |
 | `status` | a note that sets `status` or `superseded_by` |
-| `supersedes` | `supersedes` naming a note that is not active, or one another new note supersedes too |
+| `supersedes` | `supersedes` naming a note that is not active, or one another new note supersedes too, or more than 8 notes superseded |
 | `index_full` | the index would pass 200 lines |
 
 - A character a reader does not see: format and default-ignorable characters (zero-width, bidi controls, tag
@@ -114,9 +115,12 @@ Whether a note holds one case's data is the grader's judgment, not the checker's
 ## The grade
 
 One grader judges the whole proposal against the agent's active notes and standing instructions, with `GRADE_RUBRIC`
-(`src/grade.ts`, the rubric's one statement), on the agent's own model. `gradePrompt` fences every note, the index and
-the instructions as data; `parseVerdict` reads one verdict with one item per new note and fails closed: an answer it
-cannot read, a missing or extra item, or a merge with a note not kept is no merge. Every note merges, or none does.
+(`src/grade.ts`, the rubric's one statement), on the agent's own model. `gradePrompt` fences, as data, the
+instructions (their first 16,000 characters), the index line of each active note (cut to 300 characters), the whole
+text of only the notes the proposal supersedes, and the new notes. So the prompt is bounded by the caps above, never by
+how many notes the folder holds: `GRADE_CAPS.prompt`, 200,000 characters, half what a completion takes.
+`parseVerdict` reads one verdict with one item per new note and fails closed: an answer it cannot read, a missing or
+extra item, or a merge with a note not kept is no merge. Every note merges, or none does.
 
 A separate injection screen is the host's option, only with a judge independent of the agent's model.
 

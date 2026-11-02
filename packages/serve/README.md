@@ -365,7 +365,7 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
-| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`; `failed` includes escalated. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, failed, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. The query bounds `analytics` alone. |
+| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`; `failed` includes escalated. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, failed, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the learning ledger and the runs this server holds ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; a poll never answers `home_busy` (`stale: true` marks a last whole view). An agentic run has none (`404`). |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
@@ -668,20 +668,25 @@ server rebuilds `MEMORY.md`, how many index lines are left (200 less the active 
 and what not to keep. The turn runs under the run's own cap, with no reserve, and within 5 minutes; its rows are
 labelled `learning`, and the run's answer stays the job's.
 
-Once the run has ended, in the agent's queue, the server reads what the turn left in `work/.learning/`: the folder's
-top only, each entry with lstat and never a link followed, at most 4096 bytes of a note, and never past 64 changed
-paths. packages/learn's `checkProposal` refuses, before anything is written anywhere, an edited or deleted note, a path
+As the run settles, before it reads ended and before a follow-up can open it again, the server moves the turn's
+`work/.learning/` whole, with one rename, to `runs/<id>/learning-turn/`, outside the run's work; a follow-up finds
+`work/.learning/` laid again from the seed. Once the run has ended, in the agent's queue, the server reads what the turn
+left from that snapshot alone, never from the work: the folder's top only, each entry with lstat and never a link
+followed, at most 4096 bytes of a note, and never past 64 changed paths. packages/learn's `checkProposal` refuses, before anything is written anywhere, an edited or deleted note, a path
 that is not a `.md` file at the top, a bad name, a link or anything not a regular file, front matter out of shape or
-setting `status`, a `supersedes` naming a note that is not active, more than 8 new notes or a note over 4096 bytes, an
-index past 200 lines, hidden characters, non-UTF-8, and text shaped like a secret or holding one of the server's own
-secrets (the launcher's, the keys and tokens in its environment, its API and door tokens), in a note or its name.
+setting `status`, a `supersedes` naming a note that is not active, more than 8 notes superseded, more than 8 new notes
+or a note over 4096 bytes, an index past 200 lines, hidden characters, non-UTF-8, and text shaped like a secret or
+holding one of the server's own secrets (the launcher's, the keys and tokens in its environment, its API and door
+tokens), in a note or its name.
 `MEMORY.md` as the turn left it is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`.
 
 Then one grader decides, one grade at a time per agent: packages/learn's `gradePrompt` asked of the agent's own model,
-bounded (3 minutes), against `main`'s index and active notes as they are then, and read by `parseVerdict`, which fails
-closed. Only with Jev's key here does an injection screen run first, on Jev: a note it scores at
-`INJECTION_THRESHOLD` (0.75) or over, or cannot score, drops the run. What the grade spends is in no run's totals: it is
-booked once on `GET /usage` under the meter `learning`, by agent and by day, and kept on the run's learning.
+bounded (3 minutes), against `main` as it is then, and read by `parseVerdict`, which fails closed. The grader reads each
+active note's index line, the whole text only of the notes the proposal supersedes, and the new notes, so its prompt
+stays under 200,000 characters however many notes the folder holds. Only with Jev's key here does an injection screen
+run first, on Jev: a note it scores at `INJECTION_THRESHOLD` (0.75) or over, or cannot score, drops the run. What the
+grade spends is in no run's totals: it is kept on the run's learning, and counted once on `GET /usage` under the meter
+`learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.
 
 A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each note they supersede marked
 `status: superseded` with `superseded_by`, `MEMORY.md` rebuilt from the active notes, and the checked-out files brought
@@ -697,8 +702,12 @@ The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run list
 `grader`, `grade_failed`; `tool_denied` is reserved for a tool gate this server does not have yet). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
 workflow's or an imported run). Once it is proposed, merged or dropped (`seed_failed` included), the run's timeline has
-one row of kind `learning` that says so, and `GET /stats` counts the runs that tried to learn under `learning`, over its
-`from`, `to` and `agent`.
+one row of kind `learning` that says so. Each run's learning end is written once to the learning ledger,
+`DATA/learning-usage.jsonl`, one line `{run, agent, state, reason, at, cost, tokens}` (`cost` and `tokens` the grade's,
+null when unknown, 0 when nothing was graded), after its `serve.json` holds it; a server that went between the two writes
+it at its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
+`agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
+`learning` meter on `GET /usage` reads the same lines.
 
 ### What a person sees and controls
 

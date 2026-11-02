@@ -2,7 +2,7 @@
 // hands to read the agent's folder.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { agent, follow } from "./support.mjs";
 
@@ -38,15 +38,22 @@ export async function ended(api, runId, until = ["completed"]) {
   return { view: (await api("GET", `/runs/${runId}`)).body, rows: (await follow(api, runId, until)).rows };
 }
 
-/** The run's serve.json once it holds where its learning ended: the view shows that first, and the file follows. */
+/** The run's serve.json once it holds where its learning ended, and that end's line in the learning ledger: the view
+ *  shows the end first, the file follows, and the line after it. */
 export async function savedOf(data, runId) {
   for (let i = 0; ; i++) {
     const meta = JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8"));
-    if (["merged", "dropped"].includes(meta.learning?.state)) return meta;
+    if (["merged", "dropped"].includes(meta.learning?.state) && ledgerOf(data).some((line) => line.run === runId)) return meta;
     assert.ok(i < 200, `the run's learning end is saved: ${JSON.stringify(meta.learning)}`);
     await sleep(50);
   }
 }
+
+/** The learning ledger's lines, in order. */
+export const ledgerOf = (data) => {
+  const file = join(data, "learning-usage.jsonl");
+  return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+};
 
 /** git in the test's own hands: no hook, and no system or global config. */
 export function git(cwd, args) {
@@ -59,6 +66,8 @@ export const objects = (repo) => spawnSync("git", ["cat-file", "--batch-all-obje
 
 export const repoOf = (data, agentId) => join(data, "homes", agentId, "learning");
 export const copyOf = (data, runId) => join(data, "runs", runId, "work", ".learning");
+/** That copy once the run ended after its end-of-run turn: set aside in the run's directory, outside its work. */
+export const turnCopyOf = (data, runId) => join(data, "runs", runId, "learning-turn");
 /** The commits on main that name run `runId` in a Run-Id trailer. */
 export const mergesOf = (repo, runId) => git(repo, ["log", "--format=%H %(trailers:key=Run-Id,valueonly)", "main"]).split("\n").filter((entry) => entry.split(" ")[1] === runId);
 

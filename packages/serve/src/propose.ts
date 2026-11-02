@@ -1,15 +1,17 @@
-// Learning, after a run: what its end-of-run turn added to the run's copy of its agent's folder (`work/.learning/`) is
-// read by the host, checked against the commit the run started from (packages/learn checkProposal), and kept in the
-// run's own directory as its proposal (`learning-proposal.json`), or dropped. The host reads the copy itself, in the
-// agent's queue: the folder's top only, each entry looked at without following a link, never more of one file than the
-// note cap, and never past the cap on changed paths. Nothing is written to git here, and nothing is written at all
-// before the checks pass: a note they refuse (one holding a secret among them) is never kept anywhere.
+// Learning, after a run: what its end-of-run turn added to the run's copy of its agent's folder is read by the host,
+// checked against the commit the run started from (packages/learn checkProposal), and kept in the run's own directory
+// as its proposal (`learning-proposal.json`), or dropped. The copy is read from its snapshot, `<run dir>/learning-turn/`,
+// where it was moved from `work/.learning/` as the run settled (learning.ts snapshotLearned): never from the run's work,
+// which a follow-up may change. The host reads it itself, in the agent's queue: the folder's top only, each entry looked
+// at without following a link, never more of one file than the note cap, and never past the cap on changed paths.
+// Nothing is written to git here, and nothing is written at all before the checks pass: a note they refuse (one
+// holding a secret among them) is never kept anywhere.
 import { constants } from "node:fs";
 import { lstat, open, opendir } from "node:fs/promises";
 import { join } from "node:path";
 import { CAPS, type Change, checkProposal, INDEX_FILE, type Problem, printable } from "@parcha/agentrun-learn";
 import { writeDurable } from "./files.js";
-import { activeOf, agentFolder, homeDir, LEARNED_DIR, type Proposal, PROPOSAL, readSeed, withAgentRepo } from "./learning.js";
+import { activeOf, agentFolder, homeDir, LEARNED_SNAPSHOT, type Proposal, PROPOSAL, readSeed, withAgentRepo } from "./learning.js";
 
 export type Proposed = { state: "proposed"; notes: number } | { state: "dropped"; reason: "empty" } | { state: "dropped"; reason: "checker"; problems: Problem[] };
 
@@ -45,47 +47,46 @@ async function harvest(dir: string, laid: ReadonlyMap<string, string>): Promise<
   const changes: Change[] = [];
   const own: Problem[] = [];
   const found = new Set<string>();
-  // The copy itself is never followed either: one that is a link, or not a folder, is refused.
-  const root = await lstat(dir).catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? undefined : error));
-  if (root instanceof Error || (root && !root.isDirectory())) return { changes, own: [{ rule: "file_mode", detail: "the run's copy of the folder is not a folder: never followed" }] };
-  if (root) {
-    let looks = laid.size + CAPS.changes + 1;
-    // Names as their bytes: one that is not UTF-8 is seen as it is, never read as another name. (Node takes "buffer"
-    // here; its types list only the text encodings.)
-    for await (const entry of await opendir(dir, { encoding: "buffer" as BufferEncoding })) {
-      if (--looks < 0) return { changes: [], own: [{ rule: "too_many_files", detail: `more than ${CAPS.changes} changed paths; the cap is ${CAPS.changes} a run, and nothing else was read` }] };
-      const raw = entry.name as unknown as Buffer;
-      let name: string;
-      try {
-        name = utf8.decode(raw);
-      } catch {
-        own.push({ rule: "encoding", path: escaped(raw), detail: "its name is not UTF-8: never read" });
-        continue;
-      }
-      found.add(name);
-      if (name === INDEX_FILE) continue;
-      const status = laid.has(name) ? "modified" : "added";
-      const info = await lstat(join(dir, name)).catch(() => undefined);
-      if (!info) {
-        own.push({ rule: "file_mode", path: name, detail: "it could not be looked at: never read" });
-        continue;
-      }
-      const file = info.isFile() ? await readRegular(join(dir, name)) : undefined;
-      if (!file) changes.push({ path: name, status, mode: info.isFile() ? "000000" : modeOf(info) });
-      else if ("size" in file) changes.push({ path: name, status, mode: "100644", size: file.size });
-      else if (status === "added" || !file.bytes.equals(Buffer.from(laid.get(name)!))) changes.push({ path: name, status, mode: "100644", bytes: file.bytes });
+  // The copy itself is never followed either: one that is a link, or not a folder, is refused. One that is not there at
+  // all was never set aside, which is a fault, not what the run proposed.
+  const root = await lstat(dir).catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? Promise.reject(error) : error));
+  if (root instanceof Error || !root.isDirectory()) return { changes, own: [{ rule: "file_mode", detail: "the run's copy of the folder is not a folder: never followed" }] };
+  let looks = laid.size + CAPS.changes + 1;
+  // Names as their bytes: one that is not UTF-8 is seen as it is, never read as another name. (Node takes "buffer"
+  // here; its types list only the text encodings.)
+  for await (const entry of await opendir(dir, { encoding: "buffer" as BufferEncoding })) {
+    if (--looks < 0) return { changes: [], own: [{ rule: "too_many_files", detail: `more than ${CAPS.changes} changed paths; the cap is ${CAPS.changes} a run, and nothing else was read` }] };
+    const raw = entry.name as unknown as Buffer;
+    let name: string;
+    try {
+      name = utf8.decode(raw);
+    } catch {
+      own.push({ rule: "encoding", path: escaped(raw), detail: "its name is not UTF-8: never read" });
+      continue;
     }
+    found.add(name);
+    if (name === INDEX_FILE) continue;
+    const status = laid.has(name) ? "modified" : "added";
+    const info = await lstat(join(dir, name)).catch(() => undefined);
+    if (!info) {
+      own.push({ rule: "file_mode", path: name, detail: "it could not be looked at: never read" });
+      continue;
+    }
+    const file = info.isFile() ? await readRegular(join(dir, name)) : undefined;
+    if (!file) changes.push({ path: name, status, mode: info.isFile() ? "000000" : modeOf(info) });
+    else if ("size" in file) changes.push({ path: name, status, mode: "100644", size: file.size });
+    else if (status === "added" || !file.bytes.equals(Buffer.from(laid.get(name)!))) changes.push({ path: name, status, mode: "100644", bytes: file.bytes });
   }
   for (const name of laid.keys()) if (!found.has(name)) changes.push({ path: name, status: "deleted" });
   return { changes, own };
 }
 
-/** What run `runId`'s end-of-run turn added, checked against its seed `seed` (its pin) and kept in `runDir` as its
- *  proposal; or `empty` when it added nothing, or `checker` with the problems, printable. `refuse`: this host's
- *  secrets. In the agent's queue. */
+/** What run `runId`'s end-of-run turn added, read from its snapshot, checked against its seed `seed` (its pin) and kept
+ *  in `runDir` as its proposal; or `empty` when it added nothing, or `checker` with the problems, printable. `refuse`:
+ *  this host's secrets. In the agent's queue. A snapshot that is not there throws. */
 export const proposeRun = (input: { data: string; agentId: string; runDir: string; seed: string; refuse: readonly string[] }): Promise<Proposed> => withAgentRepo(input.data, input.agentId, async () => {
   const seed = await readSeed(homeDir(input.data, input.agentId), await agentFolder(input.data, input.agentId), input.seed);
-  const { changes, own } = await harvest(join(input.runDir, "work", LEARNED_DIR), new Map(Object.entries(seed.notes))).catch((error: NodeJS.ErrnoException) => {
+  const { changes, own } = await harvest(join(input.runDir, LEARNED_SNAPSHOT), new Map(Object.entries(seed.notes))).catch((error: NodeJS.ErrnoException) => {
     // Never the error's own text, which names a path of the run's: it may hold anything.
     throw new Error(`the run's copy of the folder could not be read (${error.code ?? "error"})`);
   });
