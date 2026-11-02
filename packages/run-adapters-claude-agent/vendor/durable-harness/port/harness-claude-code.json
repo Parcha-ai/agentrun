@@ -1,0 +1,48 @@
+{
+  "package": "harness-claude-code",
+  "upstream": "packages/harness-claude-code",
+  "out": "",
+  "table": "../../../../run-adapters/vendor/durable-harness/port/imports.json",
+  "files": [
+    {
+      "from": "src/binary.ts",
+      "to": "src/binary.ts"
+    },
+    {
+      "from": "src/env.ts",
+      "to": "src/env.ts"
+    },
+    {
+      "from": "src/harness.ts",
+      "to": "src/harness.ts"
+    },
+    {
+      "from": "src/ids.ts",
+      "to": "src/ids.ts"
+    },
+    {
+      "from": "src/inbox.ts",
+      "to": "src/inbox.ts"
+    },
+    {
+      "from": "src/store.ts",
+      "to": "src/store.ts"
+    },
+    {
+      "from": "src/transcript.ts",
+      "to": "src/transcript.ts"
+    },
+    {
+      "from": "src/versions.ts",
+      "to": "src/versions.ts"
+    },
+    {
+      "from": "test/fake-sdk.ts",
+      "to": "src/testing/fake-sdk.ts"
+    },
+    {
+      "from": "test/fake-anthropic.ts",
+      "to": "src/testing/fake-anthropic.ts"
+    }
+  ]
+}
