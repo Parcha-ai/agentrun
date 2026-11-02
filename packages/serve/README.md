@@ -238,7 +238,9 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
 | `web_fetch` | Read one web page from a public host through Parallel's extract, else fetched as `fetch_page` fetches it: `{url}` in, `fetch_page`'s Page plus `via`, `"parallel"` or `"direct"` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
-
+| `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
+| `monid.inspect` | One monid endpoint before it runs: `{provider, endpoint}` in, the JSON Schemas of its input (`pathParams`, `queryParams`, `body`), its price, notes and documentation out | `MONID_API_KEY` | no, no |
+| `monid.run` | Run one monid endpoint, paid per call from the monid wallet: `{provider, endpoint, input}` in, the run's `output`, `price` and `cost` out | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/`, the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
 
@@ -274,6 +276,18 @@ doing) is kept in the run's own store, so a run opened again on its directory re
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
 reads at once included. There is no recording and no live view. When the run is let go (its work done, or a SIGTERM)
 the sessions it still holds are released at Browserbase.
+
+`monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
+endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs
+it. Each run is paid per call from the monid workspace's wallet, and is sent once, never retried. An async provider's
+run is read until it ends, about two minutes at most, and asked to stop at monid when the run stops or it outlasts
+that. A refusal comes back as `{error, status?}` in words: the wallet too low (402), a workspace control such as its
+budget (`BLOCKED`), `FAILED`, `TIMED_OUT`, the provider's own error (not charged). The model reads each answer as JSON
+cut at 60,000 characters, the whole of it then filed under the run's `work/evidence/monid/`. An answer carries what
+monid charged (`cost`, in dollars); the run's own cost and its spend cap do not count it yet. They run on pi only for
+now (another harness saves a revision naming one with a warning, and refuses its runs), where the model and the run's
+timeline see them as `monid_discover`, `monid_inspect` and `monid_run`: a model API takes no dot in a tool's name. The
+key is a secret like the model keys: a run's process gets it over its pipe, never in its environment.
 
 ## Tool keys
 
@@ -316,7 +330,7 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
-| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). |
+| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (`429` when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
@@ -327,6 +341,7 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
+| `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
@@ -348,6 +363,39 @@ never followed: a read is `404`, a write or a delete
 `403 system_file_forbidden`. `learning/` is written by the server alone: listed with `host_owned: true` and read, but a
 `PUT` or `DELETE` at or under it, however the path is spelled (`./learning/x`), is `403`. An archived agent's home is
 read and written as its definition is. `GET` and `PUT /agents/{id}/home`, the contract's packed home, stay `501`.
+
+## For coding agents
+
+A coding agent (Claude Code, Codex) sets the server up and drives it with
+[`skills/agentrun-serve/SKILL.md`](skills/agentrun-serve/SKILL.md), shipped in this package. `GET /llms.txt`, at the
+server's root and without a credential, is the API in brief ([`src/llms.txt`](src/llms.txt)), with no data of the
+server's.
+
+`POST /v2/mcp` is the MCP endpoint: Streamable HTTP in its simplest form, one JSON-RPC message per POST answered as JSON,
+with no stream and no session. Its ten tools:
+
+| Tool | Routes |
+| --- | --- |
+| `whoami` | `GET /capabilities`: the token checked, and what this server runs. |
+| `agents_list`, `agents_create` | `GET /agents`, `POST /agents` (the arguments are the definition). |
+| `agents_revise` | `GET /agents/{id}`, then `PUT /agents/{id}/definition` with the fields given changed, on that revision (`If-Match`). |
+| `runs_start` | `POST /agents/{id}/runs`, answered at once. |
+| `runs_get` | `GET /runs/{id}`, with `pending` (a waiting run's question, from its timeline) and `console_url`. |
+| `runs_events` | `GET /runs/{id}/timeline` with `limit` (100 by default). |
+| `runs_files` | `GET /runs/{id}/files`, or one file's text up to 64 KiB. |
+| `runs_respond`, `runs_cancel` | `POST /runs/{id}/messages`, `POST /runs/{id}/cancel`. |
+
+Each tool calls its routes in process, with the caller's token, so it checks and answers as they do: the route's JSON is
+the result's structured content (and its text), and a refusal is a result with `isError` holding the route's `error`. A
+run is started, then polled with `runs_get`; no call is held open for one, and a question a run asks waits as its
+`input_required` state, for `runs_respond` or a person in the console. The endpoint takes the Bearer token only (the
+page's session cookie is never taken there), refuses a browser `Origin` other than this server's own, and on loopback
+refuses a `Host` that is not a loopback name, as every route does.
+
+```sh
+claude mcp add --transport http agentrun "$AGENTRUN_BASE_URL/mcp" --header "Authorization: Bearer $AGENTRUN_API_KEY"
+codex mcp add agentrun --url "$AGENTRUN_BASE_URL/mcp" --bearer-token-env-var AGENTRUN_API_KEY
+```
 
 ## Harnesses
 
@@ -603,8 +651,9 @@ export default function reply(context, faux) {
 
 `startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
 the `browser` tool's `{ provider, driver }` in place of Browserbase's (pi-browser's fake backend,
-`test/fixtures/faux-browser.mjs`), and `fetch_page`'s `{ lookup, fetchImpl }` in place of the system's resolver and
-undici (a table of names and pages, `test/fixtures/faux-web.mjs`). Each is honored only with `faux`.
+`test/fixtures/faux-browser.mjs`), `fetch_page`'s `{ lookup, fetchImpl }` in place of the system's resolver and
+undici (a table of names and pages, `test/fixtures/faux-web.mjs`), and, as `fauxMonid`, the fetch the monid tools send
+through in place of monid's API (`test/fixtures/faux-monid.mjs`). Each is honored only with `faux`.
 
 `faux.message`, `faux.text`, `faux.thinking` and `faux.toolCall` are pi-ai's faux helpers; `faux.signal` is aborted when
 the turn is stopped. A workflow's model node offers the `submit` tool (in its system message's `toolsAdded`), and
