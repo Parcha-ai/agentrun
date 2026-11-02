@@ -89,6 +89,11 @@ export default function reply(context, faux) {
     const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
     return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
   }
+  // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
+  if (first.includes("Enrich with monid")) {
+    const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];
+    return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+  }
   // Fetches each URL its first message lists with fetch_page (or the tool it names), one per turn, then says so.
   const fetches = /^Fetch these pages(?: with (\w+))?: (.*)$/s.exec(first);
   if (fetches) {
