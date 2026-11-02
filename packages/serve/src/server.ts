@@ -31,7 +31,7 @@ import { boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, withSecrets } from "./secrets.js";
-import { analyticsFilter, analyticsView, learningStats, statsView } from "./stats.js";
+import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
@@ -408,7 +408,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  /** The host's secrets as a run's notes are checked against (runs.ts): a person's note, and every learning text read. */
+  /** The host's secrets as a run's notes are checked against (learning-run.ts): a person's note, and every learning
+   *  text read. */
   const learningSecrets = () => [...hostSecrets(process.env), token, doorToken];
   const env = withSecrets({ ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
   const caps = await capabilities(env, maxRuns, learning);
@@ -425,12 +426,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
   const runs = new Runs({ agents, token, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
-  /** How the runs `rows` holds that tried to learn fared, over `filter`: a held run's learning from memory, any other's
-   *  end from the learning ledger, never a run's files. GET /stats and an agent's learning view count the same way. */
-  const learningCounts = async (rows: Parameters<typeof learningStats>[0], filter: Parameters<typeof learningStats>[1]) => {
-    const ledger = await outcomes(data);
-    return learningStats(rows, filter, (row) => runs.heldLearning(row.id) ?? ledger.get(row.id) ?? null);
-  };
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -1095,7 +1090,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "getAgentLearning": {
         await needAgent(id);
         const rows = await agents.request(() => agents.store.listRuns({ agent: id }));
-        const { runs: _, ...counts } = await learningCounts(rows, { agent: id });
+        // Counted as GET /stats counts (learning-run.ts counts): a held run from memory, any other's end from the ledger.
+        const { runs: _, ...counts } = await runs.learning.counts(rows, { agent: id });
         return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts));
       }
       case "listLearningNotes":

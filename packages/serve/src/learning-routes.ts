@@ -20,8 +20,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, redactSecrets, retire, secretShapes, valueMatcher } from "@parcha/agentrun-learn";
 import { ApiError, invalid } from "./errors.js";
-import { readJson } from "./files.js";
-import { agentFolder, checkOut, git, homeDir, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, withAgentRepo } from "./learning.js";
+import { homeOf, readJson } from "./files.js";
+import { agentFolder, checkOut, git, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, withAgentRepo } from "./learning.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
 
@@ -93,7 +93,7 @@ const changesAt = new Recent<number>(64);
 
 /** Where a read finds the agent's folder: through readFolder, so a link at its home, its `learning/` or its `.git` is
  *  an error, never followed, and a folder never made reads as empty. */
-const placeOf = async (data: string, agentId: string) => ({ home: homeDir(data, agentId), repo: await readFolder(data, agentId) });
+const placeOf = async (data: string, agentId: string) => ({ home: homeOf(data, agentId), repo: await readFolder(data, agentId) });
 export const etagOf = (oid: string) => `"${oid}"`;
 const EMPTY: Page<never> = { items: [], total: 0, next_cursor: null };
 
@@ -339,7 +339,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
     if (!note) throw refused(problems);
     given = note.text;
   }
-  const home = homeDir(data, agentId);
+  const home = homeOf(data, agentId);
   return withAgentRepo(data, agentId, async () => {
     // The folder through agentFolder, as a run's merge reaches it: a link at the agent's home, its learning/ or its
     // .git is refused (an error, nothing written), never followed. `check` checks again once a create has made .git.
