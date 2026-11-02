@@ -47,8 +47,8 @@ test("without a default model a revision that names none is refused before it st
   delete process.env.AGENT_MODEL;
   delete process.env.OPENAI_API_KEY;
   t.after(() => Object.assign(process.env, saved.url ? { AGENT_MODEL_BASE_URL: saved.url } : {}, saved.model ? { AGENT_MODEL: saved.model } : {}, saved.key ? { OPENAI_API_KEY: saved.key } : {}));
-  assert.deepEqual(capabilities({}).models, { source: "providers", route_prefix: null, fast: null, default: null, strong: null });
-  assert.deepEqual(capabilities({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "m-1", AGENT_MODEL_FAST: "m-fast" }).models, { source: "gateway", route_prefix: "agent-model", fast: "agent-model/m-fast", default: "agent-model/m-1", strong: "agent-model/m-1" }, "a tier with no model of its own takes the default");
+  assert.deepEqual((await capabilities({})).models, { source: "providers", route_prefix: null, fast: null, default: null, strong: null });
+  assert.deepEqual((await capabilities({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "m-1", AGENT_MODEL_FAST: "m-fast" })).models, { source: "gateway", route_prefix: "agent-model", fast: "agent-model/m-fast", default: "agent-model/m-1", strong: "agent-model/m-1" }, "a tier with no model of its own takes the default");
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   const refused = await api("POST", "/agents/plain/runs", { input: { content: "hi" } });

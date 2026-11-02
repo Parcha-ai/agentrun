@@ -266,7 +266,7 @@ test("AGENTRUN_MAX_RUNS and --max-runs set the cap; a value that is not a positi
   const { data } = await serve(t);
   const zero = await startServe({ data: join(data, "..", "other"), port: 0, faux: FAUX, maxRuns: 0 }).then((server) => (t.after(() => server.close()), "started"), (error) => error.message);
   assert.match(zero, /max runs/i, "0 is refused");
-  const caps = (await import("../dist/index.js")).capabilities({ AGENTRUN_MAX_RUNS: "7" });
+  const caps = await (await import("../dist/index.js")).capabilities({ AGENTRUN_MAX_RUNS: "7" });
   assert.equal(caps.limits.max_concurrent_runs, 7);
 });
 

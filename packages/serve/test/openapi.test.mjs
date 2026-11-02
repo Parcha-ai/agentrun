@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
-import { ROUTES } from "../dist/server.js";
+import { capabilities, ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, flowAgent, serve } from "./support.mjs";
@@ -245,4 +245,21 @@ test("the decision providers' widening to parallel is its own addition, decision
   assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
   assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
+});
+
+// The exported helper is what the route serves: every harness's offer resolved, its default_model included, so a direct
+// caller's document holds the schema the server publishes (the field is required), on a server with a gateway, with
+// providers, and with the faux harness.
+const NOT_A_KEY = "fake";
+test("capabilities(), the exported helper, gives a document that passes the published Capabilities schema whole", async (t) => {
+  const { doc } = await served(t);
+  const shape = { $ref: "#/components/schemas/Capabilities" };
+  for (const env of [{}, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENT_MODEL: "m-1" }, { AGENT_MODEL: "anthropic/claude-sonnet-5", ANTHROPIC_API_KEY: NOT_A_KEY }]) {
+    const caps = await capabilities(env);
+    assert.deepEqual(schemaProblems(doc, shape, caps), [], JSON.stringify(env));
+    for (const harness of caps.harnesses) assert.ok("default_model" in harness, `${harness.id} names its default_model`);
+  }
+  // The positive control: a harness without its default_model is refused by the same schema.
+  const caps = await capabilities({});
+  assert.notDeepEqual(schemaProblems(doc, shape, { ...caps, harnesses: caps.harnesses.map(({ default_model, ...offer }) => offer) }), []);
 });
