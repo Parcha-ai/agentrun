@@ -43,11 +43,14 @@ export { promptOf };
 /** A run's process that opens to go on with a run its last process left unfinished writes that on the root
  *  (RUN_RESUMED), so the run's timeline shows it from the store, which the settle's read keeps: after a crash (that
  *  process died holding the run, and left it `running`) or after the server stopped (it drained, `sleeping`). A first
- *  open, a follow-up's and a wake from a park get none. */
+ *  open, a follow-up's and a wake from a park get none. A run whose root conversation was never made writes nothing
+ *  and opens as before: the root comes with a workflow run's task (its start) and with an agentic run's first message,
+ *  so a process that died or drained before then left none. */
 async function markResumed({ harness, context, generation, previous }: BeforeResume): Promise<void> {
   const drained = previous?.status === "sleeping" && isObject(previous.detail) && previous.detail.reason === "drained";
   const after = previous?.status === "running" ? "crash" : drained ? "server_stop" : undefined;
-  if (after) await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: RUN_RESUMED, data: { after, generation, at: Date.now() } })), context);
+  if (!after || !(await harness.conversation(ROOT_CONVERSATION_ID, context))) return;
+  await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: RUN_RESUMED, data: { after, generation, at: Date.now() } })), context);
 }
 
 /** claude-agent's model and pi-ai's catalog that prices it: its own settings, never the gateway's (adapters.ts). */
