@@ -2,7 +2,8 @@
 // other provider, a missing key, or a gateway under a path the proxy cannot reach is a reason capabilities shows.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { claudeModel, claudeModelId, claudeOf, claudeProvider, codexProvider, HarnessUnavailable, priceOf } from "../dist/adapters.js";
+import { readFileSync } from "node:fs";
+import { claudeModel, claudeModelId, claudeOf, claudeProvider, codexProvider, HarnessUnavailable, installHint, priceOf, startedByNpx } from "../dist/adapters.js";
 
 const openai = { provider: "openai", modelId: "gpt-5.4-mini" };
 const refused = (pattern) => (error) => error instanceof HarnessUnavailable && pattern.test(error.message);
@@ -152,4 +153,29 @@ test("claude-agent's check of skills is the installed adapter's own skillProblem
   assert.equal(await claudeSkillCheck(), real.skillProblems, "by default, the package installed beside serve");
   assert.equal(await claudeSkillCheck(() => Promise.reject(new Error("Cannot find package"))), undefined, "not installed: no check, so every skill stays inlined");
   assert.equal(await claudeSkillCheck(async () => ({ ...real, skillProblems: undefined })), undefined, "an adapter with no check of its own: none");
+});
+
+const SERVE = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+
+test("demo: run from npx, a missing Claude Agent SDK says the npx line that runs this server with it; installed in a project, the npm line", async () => {
+  const claude = await import("@parcha/agentrun-claude-agent");
+  const sdk = `@anthropic-ai/claude-agent-sdk@${claude.CLAUDE_AGENT_SDK_VERSION}`;
+  const missingSdk = new claude.ClaudeAgentNotInstalled("its CLI is not here", claude.CLAUDE_AGENT_SDK_INSTALL).message;
+  assert.equal(installHint(missingSdk, claude.CLAUDE_AGENT_SDK_INSTALL, sdk, true), `Claude Agent SDK not installed: its CLI is not here; install it with: npx -p @parcha/agentrun-serve@${SERVE} -p @anthropic-ai/claude-agent-sdk@0.3.286 agentrun-serve`);
+  assert.equal(installHint(missingSdk, claude.CLAUDE_AGENT_SDK_INSTALL, sdk, false), missingSdk, "in a project: npm install --save-exact, as the adapter says");
+  assert.match(missingSdk, /install it with: npm install --save-exact @anthropic-ai\/claude-agent-sdk@0\.3\.286$/);
+  // A message with no such line is left as it is.
+  assert.equal(installHint("claude-agent needs ANTHROPIC_API_KEY", claude.CLAUDE_AGENT_SDK_INSTALL, sdk, true), "claude-agent needs ANTHROPIC_API_KEY");
+  // Through serve's own check of the harness: the reason a person reads.
+  const real = claude;
+  const noSdk = async () => ({ ...real, claudeAgentAdapter: () => real.verifyClaudeAgent({}, () => undefined) });
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
+  await assert.rejects(claudeOf({}, needs, noSdk, true), (error) => error instanceof HarnessUnavailable && error.message.includes(`install it with: npx -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun-serve`) && !error.message.includes("npm install"));
+});
+
+test("npx is told by where serve's files are: under npm's _npx cache, not a project's node_modules, and not this checkout", () => {
+  assert.equal(startedByNpx("/var/cache/npm/_npx/one-run/node_modules/@parcha/agentrun-serve/dist/adapters.js"), true);
+  assert.equal(startedByNpx("/work/app/node_modules/@parcha/agentrun-serve/dist/adapters.js"), false, "a project's install");
+  assert.equal(startedByNpx("/work/_npx-notes/node_modules/@parcha/agentrun-serve/dist/adapters.js"), false, "a directory merely named like it");
+  assert.equal(startedByNpx(), false, "this checkout's build");
 });
