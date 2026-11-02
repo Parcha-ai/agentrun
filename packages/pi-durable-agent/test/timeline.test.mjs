@@ -315,16 +315,15 @@ test("cost: a paid tool's charge is summed with the requests and shown on a line
   assert.deepEqual(timelineOf([charged(0.003)]).at(-1).usage, { usd: 0.003, requests: 0 }, "a charge alone makes the row");
 });
 
-test("cost: a paid tool call marked before it is sent is in flight while the run is; settled unsettled, a crash cut it, at its held figure; its charge settles it, never both", () => {
+test("cost: a paid tool call marked before it is sent is in flight while the run is; settled unsettled, a crash cut it and the cost is unknown, never its held figure; its charge settles it", () => {
   const a = assistant([{ type: "text", text: "a" }], 0);
   const marked = (heldUsd, call = "c1") => custom(TOOL_STARTED, { tool: "monid.run", charged_by: "monid", call, heldUsd });
   const charged = (usd, call = "c1") => custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", call, usd });
   assert.deepEqual(timelineOf([a, marked(0.05)]).at(-1).usage, { usd: 0.01, requests: 1 }, "in flight: the sum so far");
-  const cut = timelineOf([a, marked(0.05)], { settled: true }).at(-1);
-  assert.deepEqual([cut.usage, cut.summary], [{ usd: 0.06, requests: 1 }, "Cost so far: $0.0600 over 1 model request and 1 paid tool call"]);
-  assert.deepEqual(timelineOf([a, marked(0.05), charged(0.003)], { settled: true }).at(-1).usage, { usd: 0.013, requests: 1 }, "settled by its charge");
-  assert.equal(timelineOf([a, marked(undefined)], { settled: true }).at(-1).usage.usd, null, "cut with no figure: unknown");
-  assert.deepEqual(timelineOf([marked(0.05)], { settled: true }).at(-1).usage, { usd: 0.05, requests: 0 });
+  const cut = timelineOf([a, marked(1)], { settled: true }).at(-1);
+  assert.deepEqual([cut.usage, cut.summary], [{ usd: null, requests: 1 }, "Cost so far: unknown over 1 model request and 1 paid tool call"], "never 1.01: the allowance is no charge");
+  assert.deepEqual(timelineOf([a, marked(1), charged(0.003)], { settled: true }).at(-1).usage, { usd: 0.013, requests: 1 }, "settled by its charge");
+  assert.deepEqual(timelineOf([marked(0.05)], { settled: true }).at(-1).usage, { usd: null, requests: 0 });
 });
 
 test("a request the host refused before it left (a cancelled run) is not a request: its error entry is neither counted nor shown", () => {

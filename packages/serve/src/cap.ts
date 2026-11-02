@@ -152,8 +152,8 @@ export function spentIn(storeFile: string): number | null {
   return entries.reduce((sum, entry) => sum + costOf(entry), 0);
 }
 
-/** What the paid tools of the run whose store is `storeFile` charged, as its settled timeline counts them (a call a crash
- *  cut at its held figure): /usage's `tools` meter. Null when a charge is unknown. */
+/** What the paid tools of the run whose store is `storeFile` charged, as its settled timeline reports them: /usage's
+ *  `tools` meter. Null when a charge is unknown, a call a crash cut among them. */
 export function toolSpentIn(storeFile: string): number | null {
   if (!existsSync(storeFile)) return 0;
   const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
@@ -164,6 +164,21 @@ export function toolSpentIn(storeFile: string): number | null {
   } finally {
     db.close();
   }
+}
+
+/** What the paid tools of `entries` (TOOL_STARTED and TOOL_COST) spent, as the cap counts it: each charge, and a call a
+ *  crash cut (marked, never settled) at its held figure, as spentIn counts it; null when one is unknown. The run's
+ *  reported cost reads such a call unknown instead (the timeline). */
+export function capToolSpend(entries: readonly EntryLike[]): number | null {
+  const open = new Map<unknown, unknown>();
+  const figures: unknown[] = [];
+  for (const { kind, data } of entries) {
+    const at = (data ?? {}) as Record<string, unknown>;
+    if (kind === TOOL_STARTED) open.set(at.call, at[HELD_FIELD]);
+    else if (kind === TOOL_COST) open.delete(at.call), figures.push(at.usd);
+  }
+  const all = [...figures, ...open.values()].map(figureOf);
+  return all.every((figure) => figure !== undefined) ? (all as number[]).reduce((sum, figure) => sum + figure, 0) : null;
 }
 
 /** The run's spend as its process counts it, for a paid tool: what it has spent (`spent`, model requests in flight held

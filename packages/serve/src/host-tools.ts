@@ -30,9 +30,10 @@ const textOf = (content: unknown): string =>
 export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults): HostTool[] {
   const fetchPage = fetchPageTool(() => fetchOptions(process.env, FAUX_ENV)) as unknown as ToolRegistration;
   const webFetch = webFetchTool(process.env) as unknown as ToolRegistration;
-  // monid's key is the one this process was handed over its pipe (secrets.ts), never in its environment; its long
-  // answers go in the run's work/.
-  const monid = monidTools(withSecrets(process.env), run.claim.work);
+  // monid's, only for a run that names one: its key is the one this process was handed over its pipe (secrets.ts),
+  // never in its environment, and its long answers go in the run's work/, the claim's as pi's (`where.work`), read at
+  // the call.
+  const monid = names.some((name) => name.startsWith("monid.")) ? monidTools(withSecrets(process.env), () => run.claim.work) : [];
   const tools = new Map([...(ArchilCodingTools.tools ?? []), fetchPage, webFetch, ...monid].map((tool) => [tool.name, tool as ToolRegistration] as const));
   return names.flatMap((name) => {
     // The registrations are keyed by their wire names: the same name for every tool here but monid's.

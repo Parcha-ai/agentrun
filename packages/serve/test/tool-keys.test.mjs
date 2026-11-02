@@ -18,7 +18,7 @@ import { agent, call, client, cookieOf, FAUX, follow, scratch, serve, withEnv } 
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
-const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "AGENTRUN_SEAL_KEY"];
+const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "AGENTRUN_SEAL_KEY"];
 const sealKey = () => randomBytes(32).toString("base64");
 /** A throwaway value: none is a real key. */
 const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
@@ -47,11 +47,12 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: values.BROWSERBASE_PROJECT_ID } })).status, 204, "one field of two, the other kept");
   const listed = await api("GET", "/settings/tool-keys");
   assert.equal(listed.status, 200);
-  assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED });
+  assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED, TYPESAFE_API_KEY: UNSET });
   assert.deepEqual(listed.body.keys.map((k) => [k.id, k.unlocks, k.harnesses]), [
     ["parallel", ["web_fetch", "decisions.parallel"], ["pi", "claude-agent", "codex"]],
     ["monid", ["monid.discover", "monid.inspect", "monid.run"], ["pi", "claude-agent", "codex"]],
     ["browserbase", ["browser"], ["pi"]],
+    ["typesafe", ["decisions.jev"], []],
   ], "only what this server binds: no web_search; the monid tools on every harness, as capabilities run them");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
@@ -69,7 +70,7 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   assert.throws(() => unseal(Buffer.from(key, "base64"), sealed, "tool-keys/1|MONID_API_KEY"));
   holdsNone(readFileSync(file), keyForms(key), "tool-keys.json");
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204);
-  assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: UNSET, BROWSERBASE_PROJECT_ID: UNSET });
+  assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: UNSET, BROWSERBASE_PROJECT_ID: UNSET, TYPESAFE_API_KEY: UNSET });
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).fields), ["PARALLEL_API_KEY"]);
 });
 
@@ -149,7 +150,7 @@ test("a field the server is started with is the server's: GET says so, PUT and D
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_API_KEY: made() } })).status, 409);
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: made() } })).status, 204);
   const view = (await api("GET", "/settings/tool-keys")).body;
-  assert.deepEqual(fieldsOf(view), { PARALLEL_API_KEY: { set: true, source: "server" }, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: { set: true, source: "server" }, BROWSERBASE_PROJECT_ID: STORED });
+  assert.deepEqual(fieldsOf(view), { PARALLEL_API_KEY: { set: true, source: "server" }, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: { set: true, source: "server" }, BROWSERBASE_PROJECT_ID: STORED, TYPESAFE_API_KEY: UNSET });
   for (const value of Object.values(server)) holdsNone(JSON.stringify(view) + JSON.stringify(refused.body), formsOf(value), "an answer");
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204, "its stored field goes; the server's stays");
   assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body).BROWSERBASE_PROJECT_ID, UNSET);
@@ -345,4 +346,18 @@ test("a key saved later makes a harness available with no restart: each key writ
   assert.deepEqual(await claude(), { id: "claude-agent", available: true, steer: false }, "saved: offered");
   saved = undefined;
   assert.equal((await claude()).available, false, "deleted: not offered");
+});
+
+test("TypeSafe's key unlocks Jev's decisions: saved, the jev provider is available with no restart and the key reads as stored; deleted, it is missing again", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, [...KEYS, "OPENROUTER_API_KEY"]);
+  const { api } = await serve(t);
+  const jev = async () => (await api("GET", "/capabilities")).body.workflows.decisions.providers.find((provider) => provider.id === "jev").available;
+  const row = async () => (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "typesafe");
+  assert.deepEqual(await row(), { id: "typesafe", label: "TypeSafe (Jev)", unlocks: ["decisions.jev"], harnesses: [], fields: [{ name: "TYPESAFE_API_KEY", ...UNSET }] });
+  assert.equal(await jev(), false);
+  assert.equal((await api("PUT", "/settings/tool-keys/typesafe", { values: { TYPESAFE_API_KEY: made() } })).status, 204);
+  assert.deepEqual([await jev(), (await row()).fields], [true, [{ name: "TYPESAFE_API_KEY", ...STORED }]], "no restart");
+  assert.equal((await api("DELETE", "/settings/tool-keys/typesafe")).status, 204);
+  assert.equal(await jev(), false);
+  await meetsDocument(api, (await api("GET", "/settings/tool-keys")).body);
 });

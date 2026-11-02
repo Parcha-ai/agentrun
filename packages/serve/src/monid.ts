@@ -198,7 +198,7 @@ const SPECS: Record<Kind, { summary: string; description: string; properties: Js
 };
 
 /** What a run is held at when no inspect in this run's process quoted its price: an allowance, not a price, set high on
- *  purpose. A crash between sending a run and recording its charge leaves the run charged at it, so a cap errs toward
+ *  purpose. A crash between sending a run and recording its charge leaves the cap counting it, so a cap errs toward
  *  refusing sooner, never toward passing unseen. */
 export const MONID_RUN_ALLOWANCE_USD = 1;
 /** Each endpoint's per-call price in USD, as an inspect in this run's process quoted it. */
@@ -208,11 +208,12 @@ const endpointOf = (args: unknown) => JSON.stringify([(args as Json).provider, (
 const record = (api: ToolExecutionApi, kind: string, data: Record<string, string | number | null>, context: Context) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context);
 
 /** monid's tool `kind` for a run, under its wire name: the key and the faux hook read from `env` (the run's process's,
- *  with its secrets) at each call, an answer too long for the model filed under `work`. A run goes through the run's
- *  cap (paidCall), is marked before it is sent (TOOL_STARTED, held at its quoted price or the allowance) and settled by
- *  its charge (TOOL_COST), so a crash between the two counts the held figure, never $0. pi binds it (monidTool);
- *  another harness runs it as a host tool (host-tools.ts), whose `api` commits to the run's store as pi's does. */
-export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: string): ToolRegistration {
+ *  with its secrets) at each call, an answer too long for the model filed under `work()`, read at the call. A run goes
+ *  through the run's cap (paidCall), is marked before it is sent (TOOL_STARTED, held at its quoted price or the
+ *  allowance) and settled by its charge (TOOL_COST): a crash between the two leaves the cap counting the held figure
+ *  and the run's cost unknown, never $0. pi binds it (monidTool); another harness runs it as a host tool
+ *  (host-tools.ts), whose `api` commits to the run's store as pi's does. */
+export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () => string): ToolRegistration {
   const { description, properties, required, replay } = SPECS[kind];
   return defineTool({
     name: wireName(`monid.${kind}`), description, replay,
@@ -240,13 +241,13 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: stri
       const price = kind === "inspect" && isObject(answer.price) && answer.price.type === "PER_CALL" ? money(answer.price.amount) : undefined;
       if (price?.currency === "USD") quoted.set(endpointOf(args), price.value);
       const cost = money(answer.cost);
-      return forModel(await monidText(answer, work, kind), { isError: answer.error !== undefined, ...(cost ? { details: { cost } } : {}) });
+      return forModel(await monidText(answer, work(), kind), { isError: answer.error !== undefined, ...(cost ? { details: { cost } } : {}) });
     },
   }) as unknown as ToolRegistration;
 }
 
 /** The three, as another harness's host tools. */
-export const monidTools = (env: NodeJS.ProcessEnv, work: string): ToolRegistration[] => KINDS.map((kind) => monidRegistration(kind, env, work));
+export const monidTools = (env: NodeJS.ProcessEnv, work: () => string): ToolRegistration[] => KINDS.map((kind) => monidRegistration(kind, env, work));
 
 /** The table's entry for `monid.<kind>`: it needs MONID_API_KEY, and no workflow node names it yet. */
 export const monidTool = (kind: Kind): ToolEntry => ({
@@ -254,7 +255,7 @@ export const monidTool = (kind: Kind): ToolEntry => ({
   needs: [MONID_KEY_ENV],
   nodes: false,
   bind: async (host) => {
-    const tool = monidRegistration(kind, host.env, host.where.work);
+    const tool = monidRegistration(kind, host.env, () => host.where.work);
     const extension = defineExtension({ name: `monid-${kind}`, tools: [tool] });
     host.install(extension);
     return { tools: [tool], extensions: [extension] };

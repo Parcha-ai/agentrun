@@ -34,6 +34,8 @@ export const TOOL_KEYS = [
   { id: "parallel", kind: "tool", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "web_search", "decisions.parallel"] },
   { id: "monid", kind: "tool", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid.discover", "monid.inspect", "monid.run"] },
   { id: "browserbase", kind: "tool", label: "Browserbase", fields: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], unlocks: ["browser"] },
+  // Jev's decision provider (decisions.ts' `jev`), on TypeSafe's key: a workflow's judges, as Parallel's key unlocks its.
+  { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: ["TYPESAFE_API_KEY"], unlocks: ["decisions.jev"] },
 ] as const;
 const FIELDS: readonly string[] = TOOL_KEYS.flatMap((row) => row.fields);
 

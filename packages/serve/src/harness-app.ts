@@ -25,10 +25,10 @@ import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPo
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
-import { type CapGuard, useSpend } from "./cap.js";
+import { type CapGuard, capToolSpend, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
-import { REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
 export const BOOKED = "adapter.request";
@@ -384,10 +384,8 @@ export function adapterRun(
         if (page.next === undefined) break;
         cursor = page.next;
       }
-      // What the paid tools charged in earlier processes, as the settled timeline counts it: a call a crash cut at its
-      // held figure.
-      const usage = timelineOf(paid, { settled: true }).find((row) => row.kind === "usage");
-      charged = usage ? (usage.usage?.usd ?? null) : 0;
+      // What the paid tools charged in earlier processes, as the cap counts it: a call a crash cut at its held figure.
+      charged = capToolSpend(paid);
       // The prefix pi's commands start under in this run, from pi-durable-disk's own builder: the harness's process too.
       const env = (await durable.env({ conversationId: ROOT_CONVERSATION_ID, read: undefined as never }, context)) as unknown as { confinePrefix?(): string[] };
       if (typeof env.confinePrefix !== "function") throw new Error("the run's environment gives no confinement for the harness's process");

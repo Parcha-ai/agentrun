@@ -19,6 +19,10 @@ test("read, fetch_page and web_fetch are replay-safe; write and edit never repla
   for (const tool of tools) assert.equal(tool.inputSchema.type, "object", `${tool.name} keeps pi's parameters`);
 });
 
+test("a run naming no monid tool never reads its claim: the other tools are built from a run with none", () => {
+  assert.deepEqual(hostTools({}, ["read", "fetch_page", "web_fetch"], ctx, new Map()).map((tool) => tool.name), ["read", "fetch_page", "web_fetch"]);
+});
+
 test("monid's three go under their wire names: discover and inspect replay-safe, run never; a wire name is not a catalog name", () => {
   const tools = hostTools(RUN, MONID, ctx, new Map());
   assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["monid_discover", "safe"], ["monid_inspect", "safe"], ["monid_run", "never"]]);

@@ -315,33 +315,33 @@ charged (`cost`, in dollars), and that charge is the run's spend: booked once in
 (`Tool cost: monid charged $0.0030 for monid.run`) and summed into its cost, the total its [spend cap](#spend-cap)
 reads, and `/usage` grouped by meter shows it as its own meter, `tools`, apart from `tokens`. Each run is marked in the
 run's records before it is sent, held at the price an earlier `monid.inspect` of the run quoted for that endpoint, else
-at an allowance of $1; its charge settles the mark, and a mark a crash left unsettled counts at its held figure, never
-$0, as a model request a crash cut does. A run that may have charged and says no cost (`FAILED`, `TIMED_OUT`, one
-stopped by the run or the wait, one whose sending failed) books an unknown charge, never $0: the run's cost reads
-`null`, and under a cap every later request is refused, as for any spend no one knows; one monid says it did not charge
-(refused as sent, `BLOCKED`, `STOPPED`, the provider's error) books nothing. Under a cap, each `monid.run` is checked
-before it is sent: once what the run has spent has reached its `max_cost_usd`, or is unknown, the call is refused with a
-`spend_cap_reached` error the model reads, naming the cap, and monid is never called. A run's price is not known before
-it is sent, so the call that crosses the cap is the last, and runs go one at a time to keep it one. `discover` and
-`inspect` cost nothing and are never refused. They run on every harness: pi binds them, and claude-agent and codex call
-them as host tools in the run's process, where a `monid.run` call a crash cut off is answered interrupted, never sent
-again (`discover` and `inspect` may run again). On each, the model, the call's journal and the run's timeline name them
-`monid_discover`, `monid_inspect` and `monid_run`: a model API takes no dot in a tool's name. The key is a secret like
-the model keys: a run's process gets it over its pipe, never in its environment.
+at an allowance of $1; its charge settles the mark. A mark a crash left unsettled leaves the run's cost unknown, as a
+model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
+no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
+never $0: the run's cost reads `null`, and under a cap every later request is refused, as for any spend no one knows;
+one monid says it did not charge (refused as sent, `BLOCKED`, `STOPPED`, the provider's error) books nothing. Under a
+cap, each `monid.run` is checked before it is sent: once what the run has spent has reached its `max_cost_usd`, or is
+unknown, the call is refused with a `spend_cap_reached` error the model reads, naming the cap, and monid is never
+called. A run's price is not known before it is sent, so the call that crosses the cap is the last, and runs go one at a
+time to keep it one. `discover` and `inspect` cost nothing and are never refused. They run on every harness: pi binds
+them, and claude-agent and codex call them as host tools in the run's process, where a `monid.run` call a crash cut off
+is answered interrupted, never sent again (`discover` and `inspect` may run again). On each, the model, the call's
+journal and the run's timeline name them `monid_discover`, `monid_inspect` and `monid_run`: a model API takes no dot in
+a tool's name. The key is a secret like the model keys: a run's process gets it over its pipe, never in its environment.
 
 ## Tool keys
 
 A tool's key comes from one of two places. The server's own environment, through its launcher: `PARALLEL_API_KEY`,
-`MONID_API_KEY` and `BROWSERBASE_API_KEY` are among the secrets it hands the server over its pipe. Or the page, by
-name: `PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one, field by field (`parallel` takes
-`PARALLEL_API_KEY`, `monid` `MONID_API_KEY`, `browserbase` `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`), and
-`DELETE` forgets it. `GET /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and
-each field's `set` and `source` (`server`, `stored` or null): never a value, nor any part of one. `unlocks` holds only
-what capabilities show this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): the
-Parallel key does not list `web_search`, which this server does not bind, and a key whose tools it binds none of
-still lists, with nothing in `unlocks`. A field the server is
-started with is the server's, and wins: saving it is `409 key_set_by_server`. A value is text of at most 1024 bytes
-with no control character (`422` otherwise).
+`MONID_API_KEY` and `BROWSERBASE_API_KEY` are among the secrets it hands the server over its pipe. Or the page, by name:
+`PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one, field by field (`parallel` takes
+`PARALLEL_API_KEY`, `monid` `MONID_API_KEY`, `browserbase` `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`,
+`typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. `GET
+/v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and each field's `set` and
+`source` (`server`, `stored` or null): never a value, nor any part of one. `unlocks` holds only what capabilities show
+this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): the Parallel key does not list
+`web_search`, which this server does not bind, and a key whose tools it binds none of still lists, with nothing in
+`unlocks`. A field the server is started with is the server's, and wins: saving it is `409 key_set_by_server`. A value
+is text of at most 1024 bytes with no control character (`422` otherwise).
 
 A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
 name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal

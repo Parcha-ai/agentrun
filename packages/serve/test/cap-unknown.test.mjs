@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
-import { CAP_REFUSED_FIELD, capBefore, capModels, HELD_FIELD, HELD_USD, spentIn, toolSpentIn } from "../dist/cap.js";
+import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, spentIn, toolSpentIn } from "../dist/cap.js";
 import { agent, follow, serve } from "./support.mjs";
 
 const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
@@ -56,17 +56,20 @@ test("the spend read from a run's store is each known cost summed, a compaction'
   assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), charged(null)])), null, "an unknown charge leaves the spend unknown");
 });
 
-test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the spend, the run's cost and /usage's tools; settled, at its charge alone", (t) => {
+test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the cap's spend, and leaves the run's reported cost and /usage's tools unknown; settled, its charge alone", (t) => {
   const marked = (heldUsd) => ({ kind: TOOL_STARTED, data: { tool: "monid.run", charged_by: "monid", call: "c1", heldUsd } });
   const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", call: "c1", usd } });
   const round = (usd) => Math.round(usd * 1e6) / 1e6;
-  const cut = [started, answer({ total: 0.001 }), marked(0.05)];
-  assert.equal(round(spentIn(storeOf(t, cut))), 0.051);
-  assert.equal(timelineOf(cut, { settled: true }).at(-1).usage.usd, 0.051, "the run's cost once it is settled");
-  assert.equal(toolSpentIn(storeOf(t, cut)), 0.05);
+  // A monid call held at the $1 allowance, cut, beside a model request of $0.002.
+  const cut = [started, answer({ total: 0.002 }), marked(1)];
+  assert.equal(round(spentIn(storeOf(t, cut))), 1.002, "the cap counts the held figure");
+  assert.equal(capToolSpend(cut), 1, "and so does another harness's, read at its open");
+  assert.equal(timelineOf(cut, { settled: true }).at(-1).usage.usd, null, "the run's cost is unknown, never 1.002");
+  assert.equal(toolSpentIn(storeOf(t, cut)), null);
   const settled = [...cut, charged(0.003)];
-  assert.equal(round(spentIn(storeOf(t, settled))), 0.004, "its charge, not both");
-  assert.equal(timelineOf(settled, { settled: true }).at(-1).usage.usd, 0.004);
+  assert.equal(round(spentIn(storeOf(t, settled))), 0.005, "its charge, not both");
+  assert.equal(capToolSpend(settled), 0.003);
+  assert.equal(timelineOf(settled, { settled: true }).at(-1).usage.usd, 0.005);
   assert.equal(toolSpentIn(storeOf(t, settled)), 0.003);
   assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), marked(undefined)])), null, "cut with no figure: unknown, never $0");
 });

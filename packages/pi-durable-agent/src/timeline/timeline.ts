@@ -70,7 +70,8 @@ export const REQUEST_COST_LATE = "agentrun.request_cost_late";
 export const TOOL_COST = "agentrun.tool_cost";
 /** A paid tool's call marked before it is sent (`call`, and `heldUsd`, the most it is held to charge): the TOOL_COST of
  *  the same `call` settles it. Unsettled, it is in flight while the run is; once the run is settled it was cut (a crash),
- *  and counts at its held figure, unknown without one, as the cap counts a cut model request. */
+ *  and the cost is unknown, as for a cut model request: what it charged no one knows, and its held figure is the cap's
+ *  bound (serve's cap.ts), never a charge. */
 export const TOOL_STARTED = "agentrun.tool_started";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
@@ -149,7 +150,7 @@ function createMeter() {
   let unknown = 0;
   // Paid tool calls whose charge is in the cost (TOOL_COST).
   let charges = 0;
-  // Paid tool calls marked and not yet settled, by call: their held figures.
+  // Paid tool calls marked and not yet settled, by call.
   const held = new Map<string, unknown>();
   const pending: boolean[] = [];
   const addCost = (cost: unknown) => (typeof cost === "number" && Number.isFinite(cost) ? (known += cost) : (unknown += 1));
@@ -241,11 +242,11 @@ function createMeter() {
     // process that ended.
     const open = (flying: boolean) => (flying && !settled ? 1 : 0);
     const cut = marked - open(inFlight) > answered || compacting - open(compactionOpen) > compactions;
-    const cutCalls = settled ? [...held.values()] : [];
-    if (!requests && !compactions && !cut && !charges && !cutCalls.length) return undefined;
-    const sum = cutCalls.reduce<number>((total, figure) => total + (typeof figure === "number" && Number.isFinite(figure) ? figure : NaN), known);
+    // A paid tool call cut by a crash: its charge is unknown, so the cost is.
+    const cutCalls = settled ? held.size : 0;
+    if (!requests && !compactions && !cut && !charges && !cutCalls) return undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
-    return { usd: unknown > 0 || pending.length > 0 || cut || Number.isNaN(sum) ? null : Math.round(sum * 1e6) / 1e6, requests: count, charges: charges + cutCalls.length };
+    return { usd: unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6, requests: count, charges: charges + cutCalls };
   }
 
   /** The counts of a run that ended: a request it cut has unknown tokens. */
