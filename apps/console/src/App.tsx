@@ -6,7 +6,7 @@ import { KeysPage } from "@/components/KeysPage";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
-import { Playground, type StartResult } from "@/components/Playground";
+import { Playground, type StartResult, startFailure } from "@/components/Playground";
 import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
@@ -181,8 +181,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       const r = await v2.startRun(agentId, body, key);
       return { status: r.status, ms: Math.round(performance.now() - t0), body: r.run, runId: r.run.run_id };
     } catch (e) {
-      const ms = Math.round(performance.now() - t0);
-      return e instanceof ClientError ? { status: e.status, ms, body: { error: { ...e.toApiError(), ...(e.fields ? { fields: e.fields } : {}) } } } : { status: 0, ms, body: { error: { code: "network", message: String(e) } } };
+      return startFailure(e, Math.round(performance.now() - t0));
     }
   };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
