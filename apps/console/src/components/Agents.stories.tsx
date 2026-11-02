@@ -3,7 +3,7 @@ import { AgentEditor } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";
 import { Shell } from "@/components/Shell";
-import { agentFixture, agentsList, archivedAgents, editorCaps, recorded, revisionsOf } from "@/fixtures";
+import { agentFixture, agentsList, archivedAgents, editorCaps, recorded, revisionsOf, runFixture, runNames } from "@/fixtures";
 import { saveError } from "@/lib/agentForm";
 import { ANALYTICS, statsWith } from "@/components/AgentAnalytics.sample";
 import { ClientError } from "@/lib/client";
@@ -21,6 +21,10 @@ const page = (node: React.ReactNode) => <Shell active="agents">{node}</Shell>;
 const editor = (slug: string, extra: Partial<React.ComponentProps<typeof AgentEditor>> = {}) =>
   page(<AgentEditor agent={agentFixture(slug)} revisions={revisionsOf(slug)} caps={editorCaps} onSave={async () => null} onMakeCurrent={noop} onArchive={noop} onReload={noop} onBack={noop} {...extra} />);
 
+// A recorded run by its id: every recorded agent's latest run is one, so its page's latest-run panel follows the run's
+// recorded timeline and reads its recorded record.
+const recordedRun = (id: string) => runNames.map(runFixture).find((f) => f.run.run_id === id)!;
+
 // An agent's page over its recorded agent and runs, with the server's efforts; with `analytics`, a server whose stats
 // carry the sample analytics.
 const agentPage = (slug: string, { runs = true, tab, analytics = false }: { runs?: boolean; tab?: "workflow" | "analytics"; analytics?: boolean } = {}) => {
@@ -28,6 +32,8 @@ const agentPage = (slug: string, { runs = true, tab, analytics = false }: { runs
     getAgent: async () => ({ agent: agentFixture(slug), etag: null }),
     listAgentRuns: async () => (runs ? recorded<unknown>(`agent.${slug}.runs`).body : { runs: [], next_cursor: null }),
     statsOver: async () => statsWith(analytics ? ANALYTICS : undefined),
+    getTimeline: async (id: string) => recordedRun(id).page,
+    getRun: async (id: string) => recordedRun(id).run,
   };
   const efforts = recorded<{ features: { efforts: string[] } }>("capabilities").body.features.efforts;
   return page(<AgentPage v2={v2 as never} agentId={slug} defaultModel={editorCaps.defaultModel} efforts={efforts} go={noop} tab={tab} />);
