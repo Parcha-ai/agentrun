@@ -135,7 +135,74 @@ _Written by the lane that owns this subsystem._
 
 ### Places (boxes, home, files)
 
-_Written by the lane that owns this subsystem._
+**Seam.** It takes a run's `BoxSpec` from the kernel (`workspace`, `env`, `network`, `mounts`) and the run directory
+the run's files go to. It gives back:
+
+- `Box` and `BoxProvider` from `@parcha/pi-transport`. Only a provider whose `BoxProvider.mounts` is true binds
+  `mounts` (Docker, as bind mounts); every other provider refuses a spec with any as `unsupported`.
+- `@parcha/pi-transport/sync`: the safe extractor (`extractTar`, `openExtractor`, `removeEntries`) and the sync layer
+  (`seedDir`/`pullDir`, `seedAgentHome`/`pullAgentHome`, `HOST_OWNED_HOME`), each answering with a receipt.
+- `@parcha/pi-transport/home`: the checkpoint vault (`CheckpointVault`, `localVault`, `pullCheckpoint`), which keeps a
+  box's tree as data and never unpacks it on the host; and `checkpointStore`/`verifyStore` with `UntrustedStoreOptions`,
+  which read a box-made SQLite store through `withUntrustedStore` (internal to the package).
+- Internal to pi-transport: `bwrapArgs`, `bwrapFiles` and `probeBwrap` (`src/box/bwrap-args.ts`).
+- `@parcha/pi-transport/testing`: `registerBoxConformance`, and fake providers for each box (`fakeBoxes` and the
+  provider-shaped fakes).
+- Serve: `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/{path}`, and the sweep before any run starts
+  (`sweepBoxes`, `settleBox`, `Quarantine` in `packages/serve/src/box/sweep.ts`).
+- Serve, an agent's place (`packages/serve/src/place.ts`): `definition.place` is `{mode: "runner"}` or
+  `{mode: "sandbox", box}`, checked by `placeIssues`; `GET /v2/capabilities` answers `places` (`placesOf`). A sandbox
+  place saves with a warning at `definition.place`, and its run is 409 `agent_not_runnable` with `details.box`.
+- Serve, the box registry (`packages/serve/src/boxes.ts`): `AGENTRUN_BOXES` lists the boxes to probe once at start
+  (`boxRegistry`), and the start log's `event=boxes` line says which are available and why the others aren't. Box
+  keys (`BOX_KEYS`) stay with the server.
+
+Not on main yet: the registry feeding `places` (capabilities and run refusals still say no box is set up), runs in a
+box, a files API for the agent's home, and uploads. Each one extends this section when it lands.
+
+**Alone.** Everything else is faked: boxes by fake providers, the model by the faux model. Put a `docker` that exits
+1 first on `PATH`, even where Docker is installed, so nothing reaches a daemon by accident:
+
+```sh
+mkdir -p "$TMPDIR/qa-bin" && printf '#!/bin/sh\nexit 1\n' > "$TMPDIR/qa-bin/docker" && chmod +x "$TMPDIR/qa-bin/docker"
+export PATH="$TMPDIR/qa-bin:$PATH"
+npm ci --ignore-scripts
+
+# pi-transport: vitest on source, no build
+npm test -w @parcha/pi-transport -- box- fake-boxes   # every box on fakes, Docker's argv without a daemon, bwrap
+npm test -w @parcha/pi-transport -- sync-extract sync-run-files home-vault     # hostile archives and boxes
+npm test -w @parcha/pi-transport -- home-untrusted-store                       # once on Node 22, once on Node 24
+
+# serve: node:test over dist, on the faux model
+npm run build
+(cd packages/serve && node --test test/place.test.mjs test/boxes.test.mjs test/files.test.mjs \
+  test/box-sweep.test.mjs test/box-record.test.mjs)
+```
+
+The Docker variant runs only where Docker exists, as CI's `transport-docker` job does:
+`docker pull debian:bookworm-slim && npm run test:live:docker -w @parcha/pi-transport`. Each `.live` file the `box-`
+filter picks up skips itself without its `PI_TRANSPORT_LIVE_*` variable, so the commands above start no real box.
+`boxes.test.mjs` puts its own fake `docker` first on `PATH` and answers Daytona from a loopback fake; never set a box key
+or a real `docker` on `PATH` for a server under test.
+
+**Checks when it changed.**
+
+1. **Places**: `place.test.mjs` passes. Each wrong shape is a 422 at `definition.place` and nothing is saved; a sandbox
+   place saves with a warning naming its box, and its run is 409 `agent_not_runnable` with that box; an edit with no
+   place keeps the agent's.
+2. **Box registry and keys**: `boxes.test.mjs` passes. A name in `AGENTRUN_BOXES` that is no box refuses the start;
+   each probe is bounded; no key's value is in an offer, a reason or the log; a box key set in the server's environment
+   reaches no run's process.
+3. **Hostile archives and home pulls**: `sync-extract`, `home-vault` and `sync-run-files` pass. Nothing is written
+   outside the destination, no link, device or fifo is created, a setuid mode is capped, a pull never reverts a file the
+   host changed (`host_changed`), and `learning/` is never written back.
+4. **Box-made stores**: `home-untrusted-store` passes on Node 22 and on Node 24. A store with a trigger, a view, an
+   `ATTACH` or a hot journal is refused, and nothing in it runs.
+5. **Box arguments and mounts**: `box-bwrap-args` matches its golden vectors and refuses a workspace with a link in it;
+   `box-bwrap-probe` refuses a setuid or too-old `bwrap`; `box-docker.test` refuses a missing source, a relative path,
+   a `..` segment, a target of `/` and a repeated target before `docker run`; `box-local` refuses any mount.
+6. **Run files and the sweep**: `files.test.mjs` never lists or serves a dotfile or a symlink, and refuses `..` with the
+   contract's codes; `box-sweep.test.mjs` reaps a box whose writer is gone and quarantines one it cannot empty.
 
 ### Console, import and analytics
 
