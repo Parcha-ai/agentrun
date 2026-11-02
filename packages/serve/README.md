@@ -263,6 +263,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
 | `web_fetch` | Read one web page from a public host through Parallel's extract, else fetched as `fetch_page` fetches it: `{url}` in, `fetch_page`'s Page plus `via`, `"parallel"` or `"direct"` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_search` | Search the web through Exa's keyless endpoint, on pi: `{query, n?}` in, `{provider: "exa-keyless", query, results: [{url, title, snippet, published?}]}` out, or `{error}` | nothing (no key; `AGENTRUN_WEB_SEARCH_KEYLESS=off` turns it off) | yes, no |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 | `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
 | `monid.inspect` | One monid endpoint before it runs: `{provider, endpoint}` in, the JSON Schemas of its input (`pathParams`, `queryParams`, `body`), its price, notes and documentation out | `MONID_API_KEY` | no, no |
@@ -296,6 +297,17 @@ anything is sent to Parallel: a URL `fetch_page` refuses is refused here too and
 reaches an agentic run only when its revision names `web_fetch`, on the run's decision descriptor (see
 [Decision workflows](#decision-workflows)), read once into the run process's memory: never into its environment, a child or a file.
 
+`web_search` searches the web with no key, on pi, through Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its
+`web_search_exa` tool). This server has no keyed search, so it is the only search there is. What leaves the server is
+the search query (cut at 200 characters) and the number of results asked for (1 to 8, 5 by default), nothing else
+from the run, and no key. It goes to Exa over IPv4, straight from the run's process. Exa is a third party: its free,
+keyless use has a rate limit it does not publish, and its own terms. Past that limit Exa answers 429, and the search is a
+tool error that says so, with Exa's Retry-After: the model reads why and answers without it. Nothing is retried, and a
+search ends at 60 s, so a call never hangs. A server that sets `AGENTRUN_WEB_SEARCH_KEYLESS=off` sends no search
+anywhere: `web_search` then answers that it is off. The answer is the query and its results, each a URL, a title, a
+snippet of at most 3,000 characters and its date when Exa knows it, then a line asking the model to cite the URLs it
+relies on. claude-agent and codex do not bind `web_search` yet.
+
 The `browser` tool runs Browserbase sessions, never a Chrome on this machine. The keys come from the server's
 environment and reach the run's process as the rest of it does. A session's custody (its lease, its tag, what it was
 doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
@@ -324,7 +336,7 @@ name: `PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one
 `DELETE` forgets it. `GET /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and
 each field's `set` and `source` (`server`, `stored` or null): never a value, nor any part of one. `unlocks` holds only
 what capabilities show this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): the
-Parallel key does not list `web_search`, which this server does not bind, and a key whose tools it binds none of
+Parallel key does not list `web_search`, which needs no key, and a key whose tools it binds none of
 still lists, with nothing in `unlocks`. A field the server is
 started with is the server's, and wins: saving it is `409 key_set_by_server`. A value is text of at most 1024 bytes
 with no control character (`422` otherwise).
