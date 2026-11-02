@@ -2,9 +2,10 @@
 // an agent made and run to its answer, its file and its events; the Bearer token taken and nothing else (no cookie, no
 // credential, no foreign Origin, no GET); each tool answering as its /v2 routes do; and llms.txt, public.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { test } from "node:test";
-import { call, cookieOf, serve } from "./support.mjs";
+import { call, cookieOf, scratch, serve, withEnv } from "./support.mjs";
 
 const TOOLS = ["whoami", "agents_list", "agents_create", "agents_revise", "runs_start", "runs_get", "runs_events", "runs_files", "runs_respond", "runs_cancel"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -182,10 +183,13 @@ test("runs_get names the question a waiting run asked, runs_respond answers it, 
   await mcp.tool("agents_create", { id: "asker", name: "Asker", instructions: "Answer.", tools: ["ask_person"] });
   const { run_id } = (await mcp.tool("runs_start", { agent_id: "asker", input: { content: "Pick a region." } })).structuredContent;
   const waiting = await mcp.until(run_id, ["input_required"]);
-  assert.equal(waiting.pending.question, "Which region should I use?");
-  assert.equal(typeof waiting.pending.asked_at, "string");
+  assert.deepEqual([waiting.pending.kind, waiting.pending.question, typeof waiting.pending.asked_at], ["question", "Which region should I use?", "string"]);
+  // The run's own field, as GET /v2/runs/{id} gives it: no scan of its timeline.
+  assert.deepEqual((await v2(server, "GET", `/runs/${run_id}`)).body.pending, waiting.pending);
   assert.equal((await mcp.tool("runs_respond", { run_id, content: "eu" })).structuredContent.mode, "answer");
-  assert.deepEqual(JSON.parse((await mcp.until(run_id, ["completed"])).result.final_answer), { region: "eu" });
+  const answered = await mcp.until(run_id, ["completed"]);
+  assert.deepEqual(JSON.parse(answered.result.final_answer), { region: "eu" });
+  assert.equal(answered.pending, null, "answered, it waits on nothing");
 
   const slow = (await mcp.tool("runs_start", { agent_id: "asker", input: { content: "Take your time." } })).structuredContent;
   await mcp.until(slow.run_id, ["working"]);
@@ -277,4 +281,31 @@ test("the MCP SDK's own client connects, lists the ten tools and calls one", asy
   assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), TOOLS);
   assert.equal((await client.callTool({ name: "whoami", arguments: {} })).structuredContent.authenticated, true);
   assert.deepEqual((await client.callTool({ name: "agents_list", arguments: {} })).structuredContent, { agents: [], next_cursor: null });
+});
+
+test("the timeline's limit, read while an answered run's end is carried back: its pages are the whole timeline, and the same rows once the run is final", async (t) => {
+  // The run's process cannot exit while the gate's file is missing: the reads below land between the answer and the
+  // carry back, the window "GET /v2/runs/{id}/timeline takes a limit" can land in on a loaded machine.
+  const gate = join(await scratch(t), "gate");
+  withEnv(t, { EXIT_GATE: gate });
+  const server = await serve(t, { faux: new URL("./fixtures/faux-answer-slow-exit.mjs", import.meta.url).pathname });
+  const mcp = mcpClient(server);
+  await mcp.tool("agents_create", { id: "calc", name: "Calc", instructions: "Answer." });
+  const { run_id } = (await mcp.tool("runs_start", { agent_id: "calc", input: { content: "What is six times seven?" } })).structuredContent;
+  await mcp.until(run_id, ["completed"]);
+  /** The whole timeline's ids, checked against the same timeline read one row, then the rest. */
+  const read = async () => {
+    const whole = (await v2(server, "GET", `/runs/${run_id}/timeline`)).body;
+    const first = (await v2(server, "GET", `/runs/${run_id}/timeline?limit=1`)).body;
+    const rest = (await v2(server, "GET", `/runs/${run_id}/timeline?after=${first.next_after}&limit=500`)).body;
+    assert.deepEqual([...first.rows, ...rest.rows].map((r) => r.id).sort(), whole.rows.map((r) => r.id).sort());
+    return { ids: whole.rows.map((r) => r.id), final: whole.final };
+  };
+  const answered = await read();
+  assert.equal(answered.final, false, "read before the run's end is carried back");
+  await writeFile(gate, "");
+  for (const end = Date.now() + 30_000; !(await v2(server, "GET", `/runs/${run_id}/timeline?wait_ms=1000`)).body.final; ) assert.ok(Date.now() < end, "the run's end is carried back");
+  const ended = await read();
+  assert.equal(ended.final, true);
+  assert.deepEqual(ended.ids, answered.ids, "no row a reader saw goes when the run's end is carried back");
 });
