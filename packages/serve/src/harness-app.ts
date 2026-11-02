@@ -258,7 +258,7 @@ export function adapterRun(
         later(() =>
           commit(async (tx) => {
             await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_CONTINUED, data: { key: spec.key, request } });
-            await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, "", [call]) as never] });
+            await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(request), undefined, "", [call]) as never] });
           }).then(() => undefined),
         );
       }
