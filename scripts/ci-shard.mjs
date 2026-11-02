@@ -93,20 +93,27 @@ const signalGroup = (pid, signal) => { try { process.kill(-pid, signal); return 
 
 // The command runs in a process group of its own, so a kill reaches every process it started (npm, its shell, node --test
 // and each test file's process), not npm alone, which would leave the suite running. Its exit status, or 'killed' when it
-// was still running after `ms`: the group then gets SIGTERM (node --test prints its summary), and SIGKILL 10 s on.
+// was still running after `ms`.
 async function run(command, ms) {
   const child = spawn(command[0], command.slice(1), { stdio: 'inherit', detached: true });
-  // A Ctrl-C or a cancel that reaches this process reaches the command too, which no longer shares its process group.
-  const forward = (signal) => { signalGroup(child.pid, signal); process.exit(128 + constants.signals[signal]); };
+  // The one way a command is stopped, by the limit or by a cancel: `signal` to its group (on SIGTERM node --test prints its
+  // summary), SIGKILL to what is left 10 s on. Begun once; a second caller waits on the first.
+  let stopping;
+  const stop = (signal) => (stopping ??= (async () => {
+    signalGroup(child.pid, signal);
+    for (const until = Date.now() + 10_000; Date.now() < until && signalGroup(child.pid, 0);) await sleep(100);
+    signalGroup(child.pid, 'SIGKILL');
+  })());
+  // A Ctrl-C or a cancel that reaches this process stops the command, which no longer shares its process group, then ends
+  // this process with the signal's status; nothing after it runs.
+  let cancelled;
+  const forward = (signal) => { cancelled ??= stop(signal).then(() => process.exit(128 + constants.signals[signal])); };
   process.on('SIGINT', forward).on('SIGTERM', forward);
   let timer;
   const status = await Promise.race([once(child, 'exit').then(([code]) => code), new Promise((resolve) => { timer = setTimeout(resolve, ms, 'killed'); })]);
   clearTimeout(timer);
-  if (status === 'killed') {
-    signalGroup(child.pid, 'SIGTERM');
-    for (const until = Date.now() + 10_000; Date.now() < until && signalGroup(child.pid, 0);) await sleep(100);
-    signalGroup(child.pid, 'SIGKILL');
-  }
+  if (status === 'killed') await stop('SIGTERM');
+  if (cancelled) await cancelled;
   process.off('SIGINT', forward).off('SIGTERM', forward);
   return status;
 }

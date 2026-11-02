@@ -1,9 +1,10 @@
 // ci-shard's time limits, on a made-up repository: a test that never settles fails by its --test-timeout, named, and a suite
 // that never exits is killed at the shard's limit with everything it started, the shard failing with a line that names it.
-// A script of a shape ci-shard does not know fails the shard before anything runs.
+// A script of a shape ci-shard does not know fails the shard before anything runs. A cancel that reaches ci-shard stops its
+// suite the same way the limit does.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
@@ -13,6 +14,8 @@ const script = fileURLToPath(new URL('./ci-shard.mjs', import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), 'ci-shard-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 const write = (path, value) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value)); };
+// Unref'd: a wait that loses a race does not hold this file's process.
+const sleep = (ms, value) => new Promise((resolve) => { setTimeout(resolve, ms, value).unref(); });
 
 // A repository ci-shard can read: the workspaces its shards name, each with a test that passes, and one more, stall, whose
 // test runs packages/stall/test/*.test.mjs (or `stallScript`). The rest shard runs stall's test, then test:release, which passes.
@@ -28,20 +31,34 @@ const repo = (name, files, stallScript = "node --test 'test/*.test.mjs'") => {
   return root;
 };
 
-// The shard's run, in a process group of its own: what a shard with no limit leaves running is ended with it.
-const shard = async (t, root, name, env) => {
+// ci-shard started in a process group of its own. `closed` settles with its exit status once it and every process holding its
+// output have ended. At the test's end a run still going gets SIGTERM, which ci-shard passes on to its suite's own group
+// (SIGKILL to what is left after its grace); then SIGKILL to ci-shard's group, and this file lets go of the pipes, so a suite
+// that outlived all that cannot hold this file's process.
+const start = (t, root, name, env) => {
   // A run of its own, not one nested in this file's (node --test skips a run it finds inside another).
   const { NODE_TEST_CONTEXT: _nested, ...outer } = process.env;
-  const started = Date.now();
   const run = spawn(process.execPath, [script, name], { cwd: root, env: { ...outer, npm_config_update_notifier: 'false', ...env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
-  t.after(() => { try { process.kill(-run.pid, 'SIGKILL'); } catch { /* gone */ } });
   let output = '';
   run.stdout.on('data', (chunk) => { output += chunk; });
   run.stderr.on('data', (chunk) => { output += chunk; });
-  let timer;
-  const status = await Promise.race([new Promise((resolve) => run.on('close', resolve)), new Promise((resolve) => { timer = setTimeout(resolve, 60_000, 'still running'); })]);
-  clearTimeout(timer);
-  return { status, output, seconds: (Date.now() - started) / 1000 };
+  const closed = new Promise((resolve) => run.on('close', resolve));
+  t.after(async () => {
+    try { process.kill(run.pid, 'SIGTERM'); } catch { /* gone */ }
+    await Promise.race([closed, sleep(20_000)]);
+    try { process.kill(-run.pid, 'SIGKILL'); } catch { /* gone */ }
+    run.stdout.destroy();
+    run.stderr.destroy();
+  });
+  return { pid: run.pid, closed, output: () => output };
+};
+
+// The shard's run to its end, or to 60 s.
+const shard = async (t, root, name, env) => {
+  const started = Date.now();
+  const run = start(t, root, name, env);
+  const status = await Promise.race([run.closed, sleep(60_000, 'still running')]);
+  return { status, output: run.output(), seconds: (Date.now() - started) / 1000 };
 };
 
 const major = Number(process.versions.node.split('.')[0]);
@@ -99,4 +116,31 @@ test('a script of a shape ci-shard does not know fails the shard, naming it, bef
   assert.equal(listed.status, 0, listed.output);
   assert.match(listed.output, /npm exec -w @parcha\/agentrun-serve -c "node --test --test-timeout=600000 [^"]*"/, listed.output);
   assert.match(listed.output, /npm run test -w @parcha\/pi-durable-disk/, listed.output);
+});
+
+test('a cancel that reaches ci-shard stops its suite as the limit does: SIGTERM to its group, SIGKILL 10 s on to what ignores it, and ci-shard exits with the signal\'s status', { timeout: 90_000 }, async (t) => {
+  const pidFile = join(scratch, 'stubborn.pid');
+  // The suite's test starts a process that ignores SIGTERM, in the suite's group, and never settles. That process writes its pid
+  // once its handler is in place.
+  const root = repo('stubborn', {
+    'test/stubborn.test.mjs': `
+      import { spawn } from 'node:child_process';
+      import test from 'node:test';
+      test('starts a process that ignores SIGTERM, and waits', () => new Promise(() => {
+        spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.env.CI_SHARD_TEST_PID_FILE, String(process.pid)); setInterval(() => {}, 1000)"], { stdio: 'ignore' });
+      }));
+    `,
+  });
+  const run = start(t, root, 'rest', { CI_SHARD_TEST_PID_FILE: pidFile });
+  while (!existsSync(pidFile)) await sleep(50);
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } });
+  const sent = Date.now();
+  process.kill(run.pid, 'SIGTERM');
+  const status = await Promise.race([run.closed, sleep(30_000, 'still running')]);
+  const seconds = (Date.now() - sent) / 1000;
+  assert.equal(status, 143, run.output());
+  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, `the suite's process ${pid}, which ignores SIGTERM, was killed`);
+  assert.ok(seconds >= 9 && seconds < 25, `${seconds} s: SIGTERM, the 10 s grace, then SIGKILL`);
+  assert.doesNotMatch(run.output(), /::group::npm exec -c/, 'the suites after it were not started');
 });
