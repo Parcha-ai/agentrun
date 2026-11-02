@@ -2,7 +2,8 @@
 // session's proxy: the host's instructions and the host's tools, and nothing about Codex's own sandbox. Codex's
 // `<permissions instructions>` message says "`sandbox_mode` is `read-only`: The sandbox only permits reading files". That
 // binds only Codex's built-in tools, which are off here, while the host's `write` tool writes. A model that believed it
-// refused to write at all (autoqa F13: "I can't create the files … the filesystem is read-only", no tool call). No network.
+// refused to write at all (autoqa F13: "I can't create the files … the filesystem is read-only", no tool call). Nor is a
+// model Codex's catalog marks multi-agent V2 (luna) told it can spawn sub-agents: a session has none. No network.
 //
 // Without the binary this skips; with AGENTRUN_CODEX_REQUIRE_BINARY=1 (CI) a missing one fails (tool-off.test).
 import assert from 'node:assert/strict';
@@ -43,7 +44,7 @@ const WRITE = {
 const files = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : [join(dir, e.name)]));
 
 /** One turn of a session with the host's write tool on `model`, whose model only answers "done": the first request Codex
- *  sent it, and the session's config.toml. */
+ *  sent it, the session's config.toml, and the tools Codex built for the model, from its rollout (the proxy drops some). */
 async function firstRequest(model) {
   const dir = mkdtempSync(join(ROOT, 'run-'));
   const seen = [];
@@ -60,8 +61,12 @@ async function firstRequest(model) {
   assert.equal((await session.turnEnd()).status, 'completed');
   await session.close();
   assert.ok(seen.length >= 1, 'Codex asked the model');
-  const config = readFileSync(files(sessionsDir).find((f) => f.endsWith(join('codex-home', 'config.toml'))), 'utf8');
-  return { request: seen[0], config };
+  const all = files(sessionsDir);
+  const config = readFileSync(all.find((f) => f.endsWith(join('codex-home', 'config.toml'))), 'utf8');
+  const rollout = all.filter((f) => /rollout-[^/]*\.jsonl$/.test(f)).flatMap((f) => readFileSync(f, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)));
+  assert.ok(rollout.length, 'the session has a rollout');
+  const built = rollout.filter((line) => line.type === 'response_item' && line.payload?.type === 'additional_tools').flatMap((line) => line.payload.tools.map((t) => t.name));
+  return { request: seen[0], config, built };
 }
 
 /** The text of every message the request carries, by role, with the request's own instructions as `instructions`. */
@@ -78,9 +83,14 @@ function messages(request) {
 /** What the model is told about Codex's sandbox: every message that names it, or calls the files read-only. */
 const sandboxNotes = (request) => messages(request).filter(({ text }) => /sandbox|permissions instructions|only permits reading|(?:file ?system|files?) (?:is|are) read-only/i.test(text));
 
-test('a code-mode model (luna) is told nothing about a read-only sandbox, and is offered the host\'s write tool through exec', { skip, timeout: 180_000 }, async () => {
-  const { request, config } = await firstRequest('gpt-6-luna');
+test('a code-mode model (luna) is told nothing about a read-only sandbox or sub-agents, and is offered the host\'s write tool through exec', { skip, timeout: 180_000 }, async () => {
+  const { request, config, built } = await firstRequest('gpt-6-luna');
   assert.deepEqual(sandboxNotes(request), [], 'no message describes Codex\'s sandbox');
+  // Luna is multi-agent V2 in Codex's catalog: before agents.enabled = false, Codex built its collaboration tools (the proxy
+  // dropped them) and sent `<multi_agent_role>` ("You can spawn sub-agents") and `<multi_agent_mode>` to the model.
+  assert.deepEqual(messages(request).filter(({ text }) => /<multi_agent_role>|<multi_agent_mode>|spawn_agent/.test(text)), [], 'no message offers sub-agents');
+  assert.deepEqual([...new Set(built)], ['functions'], 'Codex built no collaboration tools');
+  assert.match(config, /^\[agents\]\nenabled = false$/m);
   assert.ok(messages(request).some(({ role, text }) => role === 'developer' && text.includes(SYSTEM)), 'the host\'s instructions reach the model');
   const carrier = (request.input ?? []).find((item) => item.type === 'additional_tools');
   const exec = carrier?.tools.find((ns) => ns.name === 'functions')?.tools.find((t) => t.name === 'exec');
