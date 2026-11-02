@@ -557,9 +557,9 @@ only when the request's `Origin` is the page's own origin and its body is `appli
 
 The console (`apps/console` in the repository) is at `/console/` on the same origin, with the page's CSP and security
 headers. Its files are public, like the page's; it shows its own setup and sign-in screens, and its `/v2` calls take the
-owner's session cookie under the same rules. The server's build copies the console's build (`npm ci && npm run build` in
-`apps/console`, run first) into `dist/console`; the image always carries it. A server built without it answers
-`/console/` with a 404 that says so.
+owner's session cookie under the same rules. The repository's `npm run build` builds the console first (`apps/console`,
+skipped when its `dist` was built from the same sources), and the server's build copies it into `dist/console`; the
+image always carries it. A server built without it answers `/console/` with a 404 that says so.
 
 ## Your password
 

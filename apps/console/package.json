@@ -5,7 +5,7 @@
   "description": "The AgentRun Server console: agents, runs and the playground over agentrun.v2/0, built to static files.",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc -p tsconfig.json && vite build",
+    "build": "tsc -p tsconfig.json && vite build && node ../../scripts/build-console.mjs --stamp",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
     "storybook": "storybook dev --host 127.0.0.1 -p 6006 --no-open",
