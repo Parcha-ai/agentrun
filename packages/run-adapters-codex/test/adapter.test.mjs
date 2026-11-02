@@ -11,7 +11,7 @@ import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
 import { foldSession, openDrive } from '@parcha/agentrun-adapters/kernel';
 import { NativeJournal, toolBridge, transcriptOf } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-codex';
+import { CODEX_INSTALL, CODEX_VERSION, CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-codex';
 import { findCodex } from '../dist/binary.js';
 import { codeMode, waitStoppedText, withOutputKind } from '../dist/code-mode.js';
 import { verifyCodexBinary } from '../dist/verify.js';
@@ -288,7 +288,9 @@ test('making the adapter checks the binary against the pins: one that is not the
     process.env.CODEX_BIN = impostor;
     assert.throws(() => codexAdapter(options), (error) => error instanceof CodexPinMismatch && /^(binary_sha256|version)$/.test(error.pin), 'a binary that is not the pinned build');
     process.env.CODEX_BIN = join(dir, 'no-such-codex');
-    assert.throws(() => codexAdapter(options), (error) => error instanceof CodexNotInstalled, 'no binary at the path');
+    // The error names the install line the package exports (CODEX_INSTALL), so a host can print it without copying its format.
+    assert.throws(() => codexAdapter(options), (error) => error instanceof CodexNotInstalled && error.message.endsWith(`; ${CODEX_INSTALL}`), 'no binary at the path');
+    assert.ok(CODEX_INSTALL.endsWith(`@openai/codex@${CODEX_VERSION}`), CODEX_INSTALL);
   } finally {
     if (before === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = before;
   }

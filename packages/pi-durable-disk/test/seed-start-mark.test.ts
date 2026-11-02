@@ -172,7 +172,7 @@ describe("a seed and the supervisor's start grace", () => {
     }
   });
 
-  it("collections while the seed waits on a promise nothing else holds close nothing: the claim directory stays open and the mark fresh (GRE-3853)", { timeout: 60_000 }, async () => {
+  it("collections while the seed waits on a promise nothing else holds close nothing: the claim directory stays open and the mark fresh", { timeout: 60_000 }, async () => {
     const dir = scratchRoot("seed-mark-gc");
     const root = join(dir.root, "run");
     const marker = join(dir.root, "seeding");

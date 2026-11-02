@@ -1,4 +1,4 @@
-// Workflow runs as GET /v2/runs/{id}/graph gives them (contract C4), written for the console's stories and tests before
+// Workflow runs as GET /v2/runs/{id}/graph gives them, written for the console's stories and tests before
 // serve's route existed: a 20-document batch at any moment of its run, a KYB check with Parallel's citations, and a jury
 // of four decision models that disagree. Synthetic: the companies, documents, sources, costs and latencies are invented.
 import { workflowGraph } from "@dsl/graph";
