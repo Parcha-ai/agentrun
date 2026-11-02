@@ -11,6 +11,7 @@ import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { cost, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
+import { harnessDefault, modelLabel } from "@/lib/models";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
@@ -35,7 +36,7 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
 
 /** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a run bar (none for an archived
  *  agent, which takes no runs), and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`). */
-export function AgentPage({ v2, agentId, defaultModel, efforts = [], go, tab }: { v2: Client; agentId: string; defaultModel?: string; efforts?: string[]; go: (hash: string) => void; tab?: string }) {
+export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = [], go, tab }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; efforts?: string[]; go: (hash: string) => void; tab?: string }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Whether the server's stats carry analytics: undefined until read; a server that answers none, or fails, has none.
@@ -53,8 +54,15 @@ export function AgentPage({ v2, agentId, defaultModel, efforts = [], go, tab }: 
   const workflow = agent.kind === "workflow";
   const Icon = workflow ? Workflow : Bot;
   // A workflow revision has no harness, model or thinking of its own (the server refuses them beside a workflow).
-  const facts: [string, string][] = [
-    ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", d.model ?? (defaultModel ? `${defaultModel} (default)` : "default")], ["Thinking", d.thinking ?? "default"]] as [string, string][]),
+  // The model as a person reads it (the gateway's routing prefix off, the full id in a title): its own, else this
+  // harness's default, else none for a harness the server's default is not offered for.
+  const models = { source: modelSource, default: defaultModel };
+  const fallback = harnessDefault(d.harness ?? "pi", defaultModel);
+  const model = d.model ? modelLabel(d.model, models)
+    : fallback ? (({ text, title }) => ({ text: `${text} (default)`, title }))(modelLabel(fallback, models))
+    : { text: (d.harness ?? "pi") === "pi" ? "default" : "no default: choose a model" };
+  const facts: [string, string, string?][] = [
+    ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
   ];
   const tabs = TABS.filter((t) => t.shows(agent, { analytics: analytics === true }));
@@ -77,8 +85,8 @@ export function AgentPage({ v2, agentId, defaultModel, efforts = [], go, tab }: 
         </div>
         {d.description && <p className="mt-2 max-w-3xl text-[14px] text-muted-foreground">{d.description}</p>}
         <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2" aria-label="Current revision">
-          {facts.map(([k, v]) => (
-            <div key={k} className="flex items-baseline gap-2"><dt className="caps text-[10px] text-muted-foreground">{k}</dt><dd className="font-mono text-[12px]">{v}</dd></div>
+          {facts.map(([k, v, title]) => (
+            <div key={k} className="flex items-baseline gap-2"><dt className="caps text-[10px] text-muted-foreground">{k}</dt><dd className="font-mono text-[12px]" title={title}>{v}</dd></div>
           ))}
         </dl>
       </header>

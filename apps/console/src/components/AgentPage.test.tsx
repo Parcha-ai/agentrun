@@ -18,9 +18,9 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const efforts = recorded<{ features: { efforts: string[] } }>("capabilities").body.features.efforts;
 /** A start's answer: the run (202), or a recorded refusal thrown as the client throws it. */
 type Answer = { run: Run } | { refused: string };
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown> };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string } };
 /** By default the server's stats carry no analytics, as an older server's. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}) }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}), models }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const statsAsked: string[] = [];
@@ -41,7 +41,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: editorCaps.defaultModel, efforts, go: (h: string) => went.push(h), tab })));
+  act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, efforts, go: (h: string) => went.push(h), tab })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -294,5 +294,25 @@ describe("AgentPage", () => {
     expect(analytics.statsAsked[0]).toBe("stats invoice-checker");
     expect(analytics.statsAsked[1]).toMatch(/^stats invoice-checker from \d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
     expect(analytics.host.textContent).toContain("Success by harness and effort");
+  });
+});
+
+describe("AgentPage, the model on a gateway server", () => {
+  const gateway = { default: "agent-model/gpt-6-luna", source: "gateway" };
+  const on = (harness: string, model?: string): Agent => {
+    const a = agentFixture("invoice-checker");
+    const { model: _m, ...definition } = a.definition;
+    return { ...a, definition: { ...definition, harness, ...(model ? { model } : {}) } };
+  };
+  const modelOf = (page: Awaited<ReturnType<typeof open>>) => [...page.host.querySelectorAll("dt")].find((t) => t.textContent === "Model")!.nextElementSibling as HTMLElement;
+  it("shows the default without the gateway's routing prefix, the full id in its title", async () => {
+    const page = await open(on("pi"), { models: gateway });
+    expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
+    expect(modelOf(page).title).toBe("agent-model/gpt-6-luna");
+  });
+  it("a claude-agent agent naming no model has no default to show", async () => {
+    const page = await open(on("claude-agent"), { models: gateway });
+    expect(modelOf(page).textContent).toBe("no default: choose a model");
+    expect(page.host.textContent).not.toContain("gpt-6-luna");
   });
 });
