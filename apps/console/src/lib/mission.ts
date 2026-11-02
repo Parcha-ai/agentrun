@@ -62,7 +62,8 @@ export type Analytics = {
   by_harness_effort: (AnalyticsGroup & { harness: string; effort: string | null })[];
   by_day: (AnalyticsGroup & { day: string })[];
   by_source: (AnalyticsGroup & { source: string })[];
-  tools: { tool: string; calls: number; errors: number }[];
+  /** `label`: what a person calls the tool (the server's label registry); an older server sends the name it was called by alone. */
+  tools: { tool: string; label?: string; calls: number; errors: number }[];
 };
 
 /** The range Mission Control's analytics cover: the last 7 or 30 UTC days, today included, or every run. */
