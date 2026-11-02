@@ -60,8 +60,8 @@ levels, default model and console address. The other tools:
 | Tool | What it does |
 | --- | --- |
 | `agents_list` | The agents, 20 at a time (`cursor` for the next page). |
-| `agents_create` | Makes an agent: `name`, `instructions`, `tools`, and optionally `id`, `harness`, `model`, `thinking`. |
-| `agents_revise` | Makes an agent's next revision with the fields you change; the rest stay. |
+| `agents_create` | Makes an agent: `name`, `instructions`, `tools`, and optionally `id`, `harness`, `model`, `thinking`, and `definition` for any other field (`place`, say). |
+| `agents_revise` | Makes an agent's next revision with the fields you change, and any other in `definition`; the rest stay. |
 | `runs_start` | Starts a run: `agent_id`, `input` (`{content: "..."}` for an agentic agent), optional `effort`. Answers at once. |
 | `runs_get` | A run's status, result or error, `pending` (its question, when it asked one) and `console_url`. |
 | `runs_events` | The run's steps, a page at a time (`after`, `limit`). |
