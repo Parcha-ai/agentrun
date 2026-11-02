@@ -89,12 +89,15 @@ const fail = (why) => { console.error(`not ok: ${why}`); stop(1); };
 setTimeout(() => fail("the server did not start within 5 minutes"), 300_000).unref();
 let out = "";
 let checked = false;
-server.stdout.on("data", async (chunk) => {
+server.stdout.on("data", (chunk) => {
   out += chunk;
   const started = / on (http:\/\/\S+?)\/v2 /.exec(out);
   if (!started || checked) return;
   checked = true;
-  const base = started[1];
+  // A failed request or an unreadable answer is a failed check: it stops the server and removes its data like any other.
+  check(started[1]).catch((error) => fail(`the check could not finish: ${error.message}`));
+});
+async function check(base) {
   const headers = { authorization: `Bearer ${readFileSync(join(data, ".token"), "utf8").trim()}` };
   const caps = await (await fetch(`${base}/v2/capabilities`, { headers })).json();
   const harness = (id) => caps.harnesses.find((offer) => offer.id === id) ?? fail(`capabilities list no ${id}`);
@@ -109,7 +112,7 @@ server.stdout.on("data", async (chunk) => {
   if (page.status !== 200 || !/src="\.\/assets\/[^"]+\.js"/.test(html)) fail(`the console is not served (${page.status})`);
   console.log(`ok: pi runs; claude-agent and codex say how to install them; the console is served`);
   stop(0);
-});
+}
 server.on("exit", (code) => fail(`the server exited (${code}) before the check`));
 ```
 

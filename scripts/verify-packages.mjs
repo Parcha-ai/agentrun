@@ -415,7 +415,7 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
     assert.match(notices, /^Third-party software in the AgentRun console\n/, 'the installed agentrun-serve has the console\'s notices, dist/console/THIRD-PARTY-NOTICES.txt');
     for (const name of ['react', 'react-dom']) assert.match(notices, new RegExp(`^${name} \\d+\\.\\d+\\.\\d+ \\(MIT\\)\\n\\n\\S`, 'm'), `the console's notices list ${name} with its license text`);
     // Its fonts reach the bundle as assets a stylesheet imports, not as modules: their license is listed too.
-    assert.match(notices, /^@fontsource\/[a-z-]+ \d+\.\d+\.\d+ \(OFL-1\.1\)\n\n\S/m, "the console's notices list its fonts with their license text");
+    for (const font of ['jetbrains-mono', 'schibsted-grotesk']) assert.match(notices, new RegExp(`^@fontsource/${font} \\d+\\.\\d+\\.\\d+ \\(OFL-1\\.1\\)\\n\\n\\S`, 'm'), `the console's notices list its font @fontsource/${font} with its license text`);
     const serveNotice = await readFile(join(consumer, 'node_modules/@parcha/agentrun-serve/NOTICE'), 'utf8');
     assert.match(serveNotice, /dist\/console\/THIRD-PARTY-NOTICES\.txt/, "agentrun-serve's NOTICE points to the console's notices");
     receipt.checks.push('The installed agentrun-serve carries the console (dist/console/index.html) and its third-party notices (dist/console/THIRD-PARTY-NOTICES.txt, which NOTICE names); its files passed the same scans.');
