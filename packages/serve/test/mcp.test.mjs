@@ -72,7 +72,7 @@ test("demo: an MCP client sets up and drives an agent: initialize, the ten tools
   }
 
   const me = (await mcp.tool("whoami", {})).structuredContent;
-  assert.deepEqual([me.authenticated, me.credential, me.base_url, me.console_url], [true, "token", server.baseUrl, `${server.url}/console/`]);
+  assert.deepEqual([me.authenticated, me.credential, me.base_url, me.console_url], [true, "token", server.baseUrl, `${server.url}/`]);
   assert.ok(me.harnesses.includes("pi") && me.efforts.includes("high") && me.tools.includes("write"), JSON.stringify(me));
 
   const made = await mcp.tool("agents_create", { id: "writer", name: "Writer", instructions: "Write what you are asked to.", tools: ["write"] });
@@ -85,7 +85,7 @@ test("demo: an MCP client sets up and drives an agent: initialize, the ten tools
   assert.equal(run.status, "completed", JSON.stringify(run));
   assert.equal(run.result.final_answer, "I wrote report.md.");
   assert.equal(run.pending, null);
-  assert.equal(run.console_url, `${server.url}/console/#/runs/${started.run_id}`);
+  assert.equal(run.console_url, `${server.url}/#/runs/${started.run_id}`);
   // The tool's answer is the route's, with its two additions.
   const direct = (await v2(server, "GET", `/runs/${started.run_id}`)).body;
   assert.deepEqual([run.status, run.result, run.revision, run.effort, run.cost], [direct.status, direct.result, direct.revision, direct.effort, direct.cost]);
