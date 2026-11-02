@@ -431,7 +431,9 @@ never followed: a read is `404`, a write or a delete
 `{"path": "learning", "host_owned": true}`, with none of its notes, and a `GET`, `PUT` or `DELETE` at or under it, in
 any case and however the path is spelled (`./Learning/x`), is `403 system_file_forbidden` (`details.reason`
 `host_owned`); its notes are read through `/v2/agents/{id}/learning`. An archived agent's home is read and written as
-its definition is. `GET` and `PUT /agents/{id}/home`, the contract's packed home, stay `501`.
+its definition is. A write is held to its directory through `/proc/self/fd`; where there is none (macOS),
+`capabilities.home.writes` is `false` and `PUT` and `DELETE` are `501 unsupported_here`, as Node has no `openat` to
+write safely by path, while the list and reads still work. `GET` and `PUT /agents/{id}/home`, the contract's packed home, stay `501`.
 
 ## For coding agents
 

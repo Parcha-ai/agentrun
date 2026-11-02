@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { confineTestHooks as confineHooks } from "@parcha/pi-durable-disk/internals";
 import { homeKey, homeOf } from "../dist/files.js";
+import { workspaceTestHooks } from "../dist/workspace.js";
 import { agent, serve } from "./support.mjs";
 
 /** A server with the agent `keeper`, and where its home is on disk. */
@@ -245,6 +246,23 @@ test("a write that makes directories syncs each into its parent before it is ans
   assert.deepEqual(synced.filter((path) => !path.endsWith(".tmp")), [join(home, "a", "b")], "a write in a directory already there syncs that one alone");
 });
 
+test("where the confinement walks by path (no /proc/self/fd, as on macOS) PUT and DELETE are 501 and write or remove nothing; capabilities say writes: false, and the list and reads still answer", async (t) => {
+  workspaceTestHooks.byPath = true;
+  t.after(() => void (workspaceTestHooks.byPath = undefined));
+  const server = await served(t);
+  assert.equal((await server.api("GET", "/capabilities")).body.home.writes, false);
+  await mkdir(join(server.home, "notes"), { recursive: true });
+  await writeFile(join(server.home, "notes", "planted.md"), "planted");
+  for (const answer of [await put(server, "new.md", "x"), await put(server, "notes/planted.md", "over"), await del(server, "notes/planted.md")]) {
+    assert.deepEqual(refused(answer), [501, "unsupported_here"]);
+    assert.equal(answer.body.error.message, "This server can't write a home's files safely here: a write needs /proc/self/fd, as on Linux, which this platform lacks. Reads and the list still work.");
+  }
+  assert.deepEqual(await readdir(server.home), ["notes"], "nothing was written");
+  assert.equal(await readFile(join(server.home, "notes", "planted.md"), "utf8"), "planted", "nothing was overwritten or removed");
+  assert.deepEqual((await files(server)).body.files.map((f) => f.path), ["notes/planted.md"], "the list walks by path and answers");
+  assert.equal((await get(server, "notes/planted.md")).body, "planted", "a read walks by path and answers");
+});
+
 test("a body over the cap is 413 and writes nothing; one at the cap is taken", async (t) => {
   const server = await served(t);
   const caps = (await server.api("GET", "/capabilities")).body;
@@ -285,6 +303,6 @@ test("GET and PUT /agents/{id}/home stay the contract's 501, the new routes take
   assert.deepEqual(refused(await files({ ...server, token: "wrong-token" })), [401, "unauthenticated"]);
 
   const caps = (await server.api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.home, { disk: "local", host_owned: ["learning"], max_file_bytes: caps.limits.max_body_bytes });
+  assert.deepEqual(caps.home, { disk: "local", host_owned: ["learning"], max_file_bytes: caps.limits.max_body_bytes, writes: process.platform === "linux" });
   assert.deepEqual(caps.features.home, { export: false, import: false, check: false }, "the contract's packed home is still off");
 });

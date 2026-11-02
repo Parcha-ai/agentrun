@@ -5,7 +5,7 @@
 // anywhere on the way, even one pointing inside the root, is refused), only regular files and directories are read, and a
 // file with a second hard link is refused, since it could be one of this server's own files linked in.
 import { randomBytes } from "node:crypto";
-import { constants, readFileSync, realpathSync, type Stats } from "node:fs";
+import { closeSync, constants, openSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
 import { access, type FileHandle, lstat, readdir, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Confinement } from "@parcha/pi-durable-disk/internals";
@@ -14,7 +14,7 @@ import { syncDir, writeDurable } from "./files.js";
 /** Why a path under work/ is not read: it is missing, a link is on the way (or is the entry), it is not a regular file,
  *  it has another hard link, it is larger than the reader takes, or it is unreadable to this server (a tool in the box
  *  created it owner-only, so its access mask gives this server nothing). */
-export type RefusedReason = "missing" | "link" | "not_regular" | "hard_link" | "over_cap" | "unreadable";
+export type RefusedReason = "missing" | "link" | "not_regular" | "hard_link" | "over_cap" | "unreadable" | "unheld";
 
 /** A path under work/ this server does not read, and why. */
 export class WorkRefused extends Error {
@@ -30,8 +30,10 @@ const reasonOf = (error: unknown): RefusedReason => {
 
 /** Test seams, tests only: before the walk enters a directory it listed (after its lstat, before its pin); after a
  *  directory is pinned and before it is read; after a directory is listed and before its entries are looked at; after a
- *  file is opened and checked, before the caller reads it; after a capped read's size check, before the bytes are read. */
+ *  file is opened and checked, before the caller reads it; after a capped read's size check, before the bytes are read.
+ *  `byPath` walks as the confinement does where there is no /proc/self/fd (macOS), on any platform. */
 export const workspaceTestHooks: {
+  byPath?: boolean;
   beforeEnter?: (path: string) => Promise<void> | void;
   afterPin?: (path: string) => Promise<void> | void;
   afterList?: (path: string) => Promise<void> | void;
@@ -42,9 +44,30 @@ export const workspaceTestHooks: {
 /** How many directories deep `walkWork` goes by default. */
 export const WALK_DEPTH = 16;
 
+let held: boolean | undefined;
+/** Whether this process reaches a held directory handle by path through /proc/self/fd, probed once. The confinement
+ *  walks on such handles when it does and by path when not (macOS); by path, a directory swapped for a link after the
+ *  walk could take a write's temporary file and rename, or a removal, outside the root, and Node has no openat, so a
+ *  write or a removal is made only where this holds. */
+export function writesHeld(): boolean {
+  if (workspaceTestHooks.byPath !== undefined) return !workspaceTestHooks.byPath;
+  if (held === undefined) {
+    let dir: number | undefined;
+    try {
+      dir = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY);
+      held = statSync(`/proc/self/fd/${dir}/.`).isDirectory();
+    } catch {
+      held = false;
+    } finally {
+      if (dir !== undefined) closeSync(dir);
+    }
+  }
+  return held;
+}
+
 const confinementOf = (work: string) => {
   const real = realpathSync(work);
-  return { real, confinement: new Confinement(real, []) };
+  return { real, confinement: new Confinement(real, [], { byPath: !writesHeld() }) };
 };
 
 /** Opens `rel` under `work` for reading, held: a regular file with one link, reached through no link. Close the handle. */
@@ -185,6 +208,7 @@ const refusing = (rel: string) => (error: unknown): never => {
 /** Pins the directory holding `rel` under `work` for writing, every directory on the way reached through no link (and,
  *  with `parents`, made when missing). Close the pin. */
 async function pinForWrite(work: string, rel: string, parents: boolean) {
+  if (!writesHeld()) throw new WorkRefused(rel, "unheld");
   const { real, confinement } = confinementOf(work);
   const abs = join(real, rel);
   const refuse = refusing(rel);

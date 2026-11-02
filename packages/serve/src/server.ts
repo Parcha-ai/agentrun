@@ -32,7 +32,7 @@ import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
-import { openWorkFile, removeWorkFile, WALK_DEPTH, walkWork, WorkRefused, writeWorkFile } from "./workspace.js";
+import { openWorkFile, removeWorkFile, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
 import { type ServerLock, takeServerLock } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -47,6 +47,8 @@ const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
 const IDEMPOTENCY_TTL_S = 86_400;
 const FILE_LIST_CAP = 2_000;
+/** Why a home's PUT or DELETE is 501 where `capabilities.home.writes` is false (workspace.ts writesHeld). */
+const HOME_WRITES_OFF = "This server can't write a home's files safely here: a write needs /proc/self/fd, as on Linux, which this platform lacks. Reads and the list still work.";
 const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
 const TYPES: Record<string, string> = {
   txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8", csv: "text/csv; charset=utf-8", json: "application/json", jsonl: "application/x-ndjson",
@@ -246,7 +248,7 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
     workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS, ...(decisionsOf(env).some((offer) => offer.available) ? [DECISION_ADAPTER] : [])], decisions: { providers: decisionsOf(env) } },
     /** Each agent's home (its files under `/agents/{id}/home/files`): on this server's disk, the paths in it only the host
      *  writes, and the largest file a PUT takes (`limits.max_body_bytes`). */
-    home: { disk: "local", host_owned: [...HOME_HOST_OWNED], max_file_bytes: MAX_BODY },
+    home: { disk: "local", host_owned: [...HOME_HOST_OWNED], max_file_bytes: MAX_BODY, writes: writesHeld() },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
       /** This server's own routes, outside the contract: an archived agent or run is hidden from the lists (`?archived=true`
@@ -365,6 +367,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   const env = withSecrets({ ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
   const caps = capabilities(env, maxRuns, await harnessOffers(env));
+  // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
+  const homeWrites = caps.home.writes;
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts). No run uses one yet: the log says which this server has.
   const boxes = await boxRegistry(env);
   log?.(logLine("boxes", boxesLog(boxes.offers(), enabledBoxes(env))));
@@ -723,6 +727,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (error.reason === "link") throw new ApiError("system_file_forbidden", "A link is on the way to this path, or is the file: this server follows none.", { details: { reason: "link" } });
     if (error.reason === "unreadable") throw new ApiError("system_file_forbidden", "This server may not enter a directory on the way to this path.", { details: { reason: "unreadable" } });
     if (error.reason === "not_regular") throw new ApiError("invalid_file_path", "the path names a directory, or runs through a file");
+    if (error.reason === "unheld") throw new ApiError("unsupported_here", HOME_WRITES_OFF);
     throw new ApiError("not_found", "no such file");
   }
 
@@ -983,6 +988,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "writeHomeFile": {
         await needAgent(id);
+        if (!homeWrites) throw new ApiError("unsupported_here", HOME_WRITES_OFF);
         const rel = homePath(second!, id, true);
         const bytes = await bytesOf(req);
         // Each write lands whole (a temporary file renamed over the old one); of two at once, the last rename wins.
@@ -991,6 +997,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "deleteHomeFile": {
         await needAgent(id);
+        if (!homeWrites) throw new ApiError("unsupported_here", HOME_WRITES_OFF);
         const rel = homePath(second!, id, true);
         const home = await homeDir(id, false);
         if (!home) throw new ApiError("not_found", "no such file");
