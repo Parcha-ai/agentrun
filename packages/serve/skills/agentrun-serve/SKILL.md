@@ -7,7 +7,7 @@ description: Connect to AgentRun Server (start it when it is not running), then 
 
 The open platform's server for agents. One process on this machine's loopback address, port 7340 by default, keeps
 agents (a prompt with tools, or a typed workflow) and every run of them: its timeline, its files and its cost. A coding
-agent drives it over MCP (`/v2/mcp`) or HTTP (`/v2`); a person follows the same runs in its console (`/console/`).
+agent drives it over MCP (`/v2/mcp`) or HTTP (`/v2`); a person follows the same runs in its console (`/`).
 
 ## 1. Check the server
 
@@ -105,7 +105,7 @@ curl -s "$AGENTRUN_BASE_URL/runs/$run/messages" -H "$H" -H 'content-type: applic
 ```
 
 The whole API is in `GET $AGENTRUN_BASE_URL/openapi.json`, and in brief at `/llms.txt` on the server's root
-(`curl -s "${AGENTRUN_BASE_URL%/v2}/llms.txt"`). The run's page for a person is `${AGENTRUN_BASE_URL%/v2}/console/#/runs/$run`.
+(`curl -s "${AGENTRUN_BASE_URL%/v2}/llms.txt"`). The run's page for a person is `${AGENTRUN_BASE_URL%/v2}/#/runs/$run`.
 
 ## Troubleshooting
 
