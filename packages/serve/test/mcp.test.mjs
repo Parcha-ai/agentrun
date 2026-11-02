@@ -159,8 +159,9 @@ test("each tool checks and answers as its routes do: a refused definition, a bad
   assert.equal((await mcp.tool("runs_get", { run_id: "no-such-run" }, { ok: false })).structuredContent.error.code, "not_found");
   assert.equal((await mcp.tool("agents_revise", { agent_id: "nobody", instructions: "x" }, { ok: false })).structuredContent.error.code, "not_found");
   await mcp.tool("agents_create", { id: "calc", name: "Calc", instructions: "Answer.", tools: ["read"], model: "faux/faux-1" });
-  const extra = await mcp.tool("runs_start", { agent_id: "calc", input: { content: "What is six times seven?" }, output: "slides" }, { ok: false });
-  assert.deepEqual(extra.structuredContent.error.fields.map((f) => f.field), ["output"]);
+  // A field no run takes.
+  const extra = await mcp.tool("runs_start", { agent_id: "calc", input: { content: "What is six times seven?" }, priority: "high" }, { ok: false });
+  assert.deepEqual(extra.structuredContent.error.fields.map((f) => f.field), ["priority"]);
   assert.equal((await mcp.tool("runs_start", { agent_id: "calc", input: { content: "hi" }, effort: "max" }, { ok: false })).structuredContent.error.fields[0].field, "effort");
   const one = (await mcp.tool("runs_start", { agent_id: "calc", input: { content: "What is six times seven?" } })).structuredContent;
   // A path the files route refuses is refused here too, never read.
