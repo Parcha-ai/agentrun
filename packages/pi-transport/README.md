@@ -515,6 +515,48 @@ under a directory by the same walk: a file or a link is unlinked (never what a l
 empty. A failure of the host's own file system is `transfer_failed`; everything the archive does wrong is in the
 receipt.
 
+## A run's files between this machine and a box (`./sync`)
+
+A run whose box shares no disk with the host keeps its files on the host and moves them: in when the box starts, back
+after each turn. `@parcha/pi-transport/sync` does both through any `Box`, with the transport of the movers above (one
+`tar`, streamed or as files by `facts().bulk`, the same stall limit, deadline and clean-up).
+
+```ts
+import { pullAgentHome, pullDir, seedAgentHome, seedDir } from "@parcha/pi-transport/sync";
+
+await seedAgentHome(box, { from: "/data/homes/a1", to: "/run/agentrun/home" }, ctx); // learning/ goes read-only
+const seeded = await seedDir(box, { from: "/data/runs/r1/work", to: "/run/agentrun/run/work" }, ctx);
+let mark = seeded.ok ? seeded.value.mark : undefined; // the box's listing, with the SHA-256 of each file sent
+const pulled = await pullDir(box, { from: "/run/agentrun/run/work", to: "/data/runs/r1/work", since: mark, mirrorDeletes: true }, ctx);
+if (pulled.ok) mark = pulled.value.mark; // kept for the next pull
+```
+
+- **Seed.** Regular files and directories go. A link on the host is never followed (it could carry a file from outside
+  the directory into the box): it is skipped and counted with pipes, sockets and devices. `exclude` leaves paths out,
+  `readOnly` sends them without a write bit. Modes are capped at 0755.
+- **Pull.** Incremental by listing: the box lists the directory (kind, size, mode, time to the nanosecond, every path
+  NUL-separated) and a path comes back when it is new or listed differently from the `mark` of the seed or the last
+  pull. The box's clock is never compared with the host's: a listing sees a file restored with an old time, and
+  deletions. Dotfiles come back like any file. `exclude` is applied to the listing, to deletions and to every member of
+  the archive. `mirrorDeletes` removes what the box no longer has: files and links unlinked, a directory only when
+  empty. `pullAgentHome` never brings back `learning/` and never removes it. The host reads at most `maxListingBytes`
+  of the listing (default `MAX_LISTING_BYTES`, 64 MiB): past it the box's program is stopped and the pull is
+  `too_large`. A copy that fails after something was written still returns the mark, with
+  `stopped.reason: "copy_failed"` and the copy's error; a file asked for and not written keeps its old entry.
+- **A home file another run wrote stays.** `overwrite: "if_unchanged"` (always on in `pullAgentHome`) lets a pulled file
+  replace, or a mirrored deletion remove, the host's copy only while that copy is still the bytes the mark records: the
+  SHA-256 of what was seeded into the box, or of what the last pull wrote. A host copy that changed since (another run's
+  pull, a host edit) wins; the box's file is not fetched, and the skip is counted and named as `host_changed`. The
+  mark keeps the hashes: `seedDir` returns the first one (what it sent; what the box already held comes on the first
+  pull), each pull the next. Pulls into one directory run one at a time in a process, from the first check to the mark,
+  so two runs' pulls into one home never both pass the check against the same bytes.
+- **The archive is not trusted.** Every pulled member goes through `extractTar` (above), never `tar`. Two names of one
+  inode in the box both come back as files: the box packs with `--hard-dereference`, and a hard link member is still
+  refused.
+
+The box needs `sh`, GNU `tar` and `find`, and `split`, `sha256sum`, `cut`, `wc` and `cat` when it moves files, as the
+movers do. No name is ever put in a shell string: the box reads the list on its standard input.
+
 ## A home: the session runs somewhere, and can stop without a cut
 
 A session can live in a box too: it moves between boxes, and comes back from a killed process or a lost box.

@@ -11,15 +11,29 @@ import { TAR_END, tarHeaders, tarPadding } from "./tar.ts";
 const LIST_SCRIPT =
 	"cd -- \"$1\" || exit 3; exec find . -mindepth 1 -printf '%y\\0%s\\0%m\\0%T@\\0%P\\0%l\\0%n\\0%D:%i\\0'";
 const HASH_SCRIPT = 'cd -- "$1" || exit 3; exec xargs -0 -r sha256sum -z --';
-const PACK_SCRIPT = 'cd -- "$1" || exit 3; exec tar -c -f - --null --no-recursion --numeric-owner -T -';
-const UNPACK_SCRIPT = 'mkdir -p -- "$1" && cd -- "$1" || exit 3; exec tar -x -p -f - --no-same-owner';
+const TAR_CREATE = "tar -c -f - --null --no-recursion --numeric-owner -T -";
+// For a pull out of a box whose programs may still write: a listed file that is gone by the time it is packed is a
+// warning (`--ignore-failed-read`), and so is one that changed while it was read (tar's exit 1). The archive is whole
+// either way, and the next listing sees the change. Two names of one inode both go as files (`--hard-dereference`):
+// the host refuses a hard link member, so the second name would never arrive.
+const TAR_CREATE_TOLERANT = `{ ${TAR_CREATE.replace(" -T -", " --hard-dereference --ignore-failed-read -T -")} || [ $? -eq 1 ]; }`;
+const PACK_SCRIPT = `cd -- "$1" || exit 3; exec ${TAR_CREATE}`;
+/** @internal `PACK_SCRIPT` for a pull: see `TAR_CREATE_TOLERANT`. */
+export const PULL_PACK_SCRIPT = `cd -- "$1" || exit 3; ${TAR_CREATE_TOLERANT}`;
+/** @internal */
+export const UNPACK_SCRIPT = 'mkdir -p -- "$1" && cd -- "$1" || exit 3; exec tar -x -p -f - --no-same-owner';
 // What a part is in the box: its name, SHA-256 and size, one line each, from the box's own view of the file.
 const PART_LIST = `for f in "$2"/c-*; do if [ -e "$f" ]; then printf '%s %s %s\\n' "\${f##*/}" "$(sha256sum < "$f" | cut -c1-64)" "$(wc -c < "$f" | tr -d ' ')"; fi; done`;
-const PACK_FILES_SCRIPT = `umask 077; cd -- "$1" || exit 3; mkdir -p -- "$2" || exit 4; echo $$ > "$2/pid"; ( tar -c -f - --null --no-recursion --numeric-owner -T -; echo $? > "$2/status" ) | split -b "$3" -d -a 6 - "$2/c-"; [ "$(cat "$2/status")" = 0 ] || exit 5; rm -f -- "$2/status"; ${PART_LIST}`;
+const packFilesScript = (create: string) =>
+	`umask 077; cd -- "$1" || exit 3; mkdir -p -- "$2" || exit 4; echo $$ > "$2/pid"; ( ${create}; echo $? > "$2/status" ) | split -b "$3" -d -a 6 - "$2/c-"; [ "$(cat "$2/status")" = 0 ] || exit 5; rm -f -- "$2/status"; ${PART_LIST}`;
+const PACK_FILES_SCRIPT = packFilesScript(TAR_CREATE);
+/** @internal `PACK_FILES_SCRIPT` for a pull: see `TAR_CREATE_TOLERANT`. */
+export const PULL_PACK_FILES_SCRIPT = packFilesScript(TAR_CREATE_TOLERANT);
 const SPLIT_FILE_SCRIPT = `umask 077; mkdir -p -- "$2" || exit 4; echo $$ > "$2/pid"; split -b "$3" -d -a 6 -- "$1" "$2/c-" || exit 5; ${PART_LIST}`;
 // The parts that arrived are checked against the list the host sent, before anything is unpacked or joined.
 const CHECK_PARTS = `if [ -s "$2/manifest" ]; then ( cd -- "$2" && sha256sum -c --quiet manifest > /dev/null 2>&1 ) || { rm -rf -- "$2"; exit 66; }; fi`;
-const UNPACK_FILES_SCRIPT = `u=$(umask); umask 077; mkdir -p -- "$2" && echo $$ > "$2/pid" && cat > "$2/manifest" || exit 7; umask "$u"; ${CHECK_PARTS}; mkdir -p -- "$1" && cd -- "$1" || exit 3; { for f in "$2"/c-*; do if [ -e "$f" ]; then cat -- "$f"; fi; done; } | tar -x -p -f - --no-same-owner; s=$?; rm -rf -- "$2"; exit $s`;
+/** @internal */
+export const UNPACK_FILES_SCRIPT = `u=$(umask); umask 077; mkdir -p -- "$2" && echo $$ > "$2/pid" && cat > "$2/manifest" || exit 7; umask "$u"; ${CHECK_PARTS}; mkdir -p -- "$1" && cd -- "$1" || exit 3; { for f in "$2"/c-*; do if [ -e "$f" ]; then cat -- "$f"; fi; done; } | tar -x -p -f - --no-same-owner; s=$?; rm -rf -- "$2"; exit $s`;
 const JOIN_FILE_SCRIPT = `u=$(umask); umask 077; mkdir -p -- "$2" && echo $$ > "$2/pid" && cat > "$2/manifest" || exit 7; umask "$u"; ${CHECK_PARTS}; : > "$1" || exit 3; for f in "$2"/c-*; do if [ -e "$f" ]; then cat -- "$f" >> "$1" || exit 6; fi; done; rm -rf -- "$2"`;
 // The programs of a move run as a group of their own (they start under `setsid`) and write their id here; stopping the group
 // before the parts go ends a program that a cancelled call left running in the box.
@@ -43,10 +57,14 @@ const REMOVE_SCRIPT = 'rm -f -- "$1"';
 const FIELDS_PER_ENTRY = 8;
 const HEX_DIGITS_SHA256 = 64;
 const TAIL_BYTES = 2_000;
-const DEFAULT_CALL_TIMEOUT_MS = 120_000;
-const DEFAULT_STALL_MS = 60_000;
-const BASE_DEADLINE_MS = 120_000;
-const ASSUMED_FLOOR_BYTES_PER_SECOND = 2 * 1024 * 1024;
+/** @internal */
+export const DEFAULT_CALL_TIMEOUT_MS = 120_000;
+/** @internal */
+export const DEFAULT_STALL_MS = 60_000;
+/** @internal */
+export const BASE_DEADLINE_MS = 120_000;
+/** @internal */
+export const ASSUMED_FLOOR_BYTES_PER_SECOND = 2 * 1024 * 1024;
 const HASH_BYTES_PER_SECOND = 20 * 1024 * 1024;
 const MEGABYTE = 1024 * 1024;
 
@@ -110,13 +128,19 @@ export type Manifest = { readonly entries: readonly ManifestEntry[]; readonly by
 export type WorkspaceOptions = {
 	/**
 	 * Patterns for what is left out, matched against paths relative to the root. A pattern without `/` matches an
-	 * entry of that name at any depth; one with `/` is anchored at the root. `*` matches within one path segment, `**`
-	 * across segments, `?` one character. An excluded directory excludes everything in it.
+	 * entry of that name at any depth; one with `/` is anchored at the root, and so is one that starts with `/`
+	 * (`/learning` is the top-level `learning` only). `*` matches within one path segment, `**` across segments, `?`
+	 * one character. An excluded directory excludes everything in it.
 	 */
 	readonly exclude?: readonly string[];
 	/** Deadline of each call to a box. Default 2 minutes. */
 	readonly callTimeoutMs?: number;
+	/** The most bytes a box's listing may print; past it the listing is stopped, `too_large`. Default `MAX_LISTING_BYTES`. */
+	readonly maxListingBytes?: number;
 };
+
+/** The most bytes the host reads of a box's listing (its output and its errors) before it stops the box's program: 64 MiB. */
+export const MAX_LISTING_BYTES = 64 * 1024 * 1024;
 
 /**
  * How one side of a copy moves bytes. `stream` is the program's own output (source) or input (target). `files` cuts
@@ -238,11 +262,13 @@ function patternToRegExp(pattern: string): RegExp {
 	return new RegExp(`^${source}$`, "s");
 }
 
-function excluder(patterns: readonly string[] | undefined): (path: string) => boolean {
+/** @internal Whether a path is left out by `WorkspaceOptions.exclude` patterns. */
+export function excluder(patterns: readonly string[] | undefined): (path: string) => boolean {
 	const compiled = (patterns ?? [])
 		.map((pattern) => pattern.replace(/^\.\//, "").replace(/\/+$/, ""))
-		.filter((pattern) => pattern !== "")
-		.map((pattern) => ({ anchored: pattern.includes("/"), expression: patternToRegExp(pattern) }));
+		.map((pattern) => ({ rooted: pattern.startsWith("/"), body: pattern.replace(/^\/+/, "") }))
+		.filter(({ body }) => body !== "")
+		.map(({ rooted, body }) => ({ anchored: rooted || body.includes("/"), expression: patternToRegExp(body) }));
 	return (path) => {
 		const segments = path.split("/");
 		for (let end = 1; end <= segments.length; end++) {
@@ -256,7 +282,8 @@ function excluder(patterns: readonly string[] | undefined): (path: string) => bo
 	};
 }
 
-function boxFailure(what: string, error: BoxError): WorkspaceError {
+/** @internal */
+export function boxFailure(what: string, error: BoxError): WorkspaceError {
 	if (error.code === "aborted") return new WorkspaceError("aborted", `${what}: the call was aborted`, error);
 	if (error.code === "timeout") return new WorkspaceError("timeout", `${what}: ${error.message}`, error);
 	return new WorkspaceError("box_failed", `${what}: ${error.message}`, error);
@@ -288,26 +315,68 @@ const REFUSED: Record<string, string> = {
 	D: "door",
 };
 
-type Listed = Omit<ManifestEntry, "sha256">;
+/** @internal */
+export type Listed = Omit<ManifestEntry, "sha256">;
 
 /**
- * The entries under `root` in the box, in path order. A socket, device or pipe fails the listing with
- * `unsupported_entry`. With `tree` (a checkpoint's listing) a named pipe is an entry, and each further name of a file
- * with more than one is a `link` to the first in path order.
+ * Run a program that takes no input and keep at most `maxBytes` of its output and errors together. Past that the
+ * program is stopped (its call is cancelled, which a provider ends) and the rest is never read: a box cannot make the
+ * host hold more of a listing than it allows.
  */
-async function list(
+async function runBounded(
+	box: Box,
+	command: readonly string[],
+	timeoutMs: number,
+	maxBytes: number,
+	context: Context,
+): Promise<Result<Run, WorkspaceError>> {
+	const { context: inner, cancel } = withCancel(context);
+	const started = await box.exec(command, { timeoutMs }, inner);
+	if (!started.ok) return err(boxFailure(`could not start ${command[0] ?? "a program"}`, started.error));
+	const program = started.value;
+	void program.stdin.close().catch(() => {});
+	let held = 0;
+	let over = false;
+	const keep = async (stream: AsyncIterable<Uint8Array>) => {
+		const parts: Uint8Array[] = [];
+		for await (const part of stream) {
+			held += part.length;
+			if (held > maxBytes) {
+				over = true;
+				cancel();
+				break;
+			}
+			parts.push(part);
+		}
+		return concat(parts);
+	};
+	const [stdout, stderr, exit] = await Promise.all([keep(program.stdout), keep(program.stderr), program.wait()]);
+	if (over)
+		return err(new WorkspaceError("too_large", `${command[0] ?? "a program"} printed more than ${maxBytes} bytes`));
+	if (!exit.ok) return err(boxFailure(`${command[0] ?? "a program"} did not finish`, exit.error));
+	return ok({ exitCode: exit.value, stdout, stderr: decoder.decode(stderr) });
+}
+
+/**
+ * @internal The entries under `root` in the box, in path order. A socket, device or pipe fails the listing with
+ * `unsupported_entry`, unless `refused` is given: then it is put there (its `find` type letter) and left out. With
+ * `tree` (a checkpoint's listing) a named pipe is an entry, and each further name of a file with more than one is a
+ * `link` to the first in path order.
+ */
+export async function list(
 	box: Box,
 	root: string,
 	options: WorkspaceOptions | undefined,
 	context: Context,
 	skipped?: { path: string; kind: string; bytes: number }[],
 	tree = false,
+	refused?: { path: string; type: string }[],
 ): Promise<Result<Listed[], WorkspaceError>> {
-	const ran = await run(
+	const ran = await runBounded(
 		box,
 		["sh", "-c", LIST_SCRIPT, "sh", root],
-		undefined,
 		options?.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+		options?.maxListingBytes ?? MAX_LISTING_BYTES,
 		context,
 	);
 	if (!ran.ok) return ran;
@@ -333,6 +402,10 @@ async function list(
 		}
 		const kind = tree && type === "p" ? "fifo" : KINDS[type];
 		if (tree && kind === "file" && Number(links) > 1) inodes.set(path, inode);
+		if (kind === undefined && refused !== undefined) {
+			refused.push({ path, type });
+			continue;
+		}
 		if (kind === undefined) {
 			return err(
 				new WorkspaceError(
@@ -380,7 +453,8 @@ function splitNul(bytes: Uint8Array): Uint8Array[] {
 	return parts;
 }
 
-function nulList(paths: readonly string[]): Uint8Array {
+/** @internal The paths as `./<path>` names, each ended by a NUL: what `tar -T - --null` reads. */
+export function nulList(paths: readonly string[]): Uint8Array {
 	const parts = paths.map((path) => encodePath(`./${path}`));
 	const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.length + 1, 0));
 	let at = 0;
@@ -580,16 +654,18 @@ async function relay(
 	return { sourceWaitMs, targetWaitMs };
 }
 
-/** What a copy collects while its two sides start: how to clean up after them, and what they found wrong. */
-type MoveState = {
+/** @internal What a copy collects while its two sides start: how to clean up after them, and what they found wrong. */
+export type MoveState = {
 	readonly cleanups: (() => Promise<void>)[];
 	readonly problems: (() => WorkspaceError | undefined)[];
 	/** Holds the stall timer off while `work` runs: a phase that moves no byte (packing, joining) is not a stall. */
 	working<T>(work: Promise<T>): Promise<T>;
 };
-type Starter = (context: Context, state: MoveState) => Promise<Result<BoxProcess, BoxError>>;
+/** @internal How one side of a transfer is started: a program in a box, or something that looks like one. */
+export type Starter = (context: Context, state: MoveState) => Promise<Result<BoxProcess, BoxError>>;
 
-const streamStarter =
+/** @internal */
+export const streamStarter =
 	(box: Box, command: readonly string[]): Starter =>
 	(context) =>
 		box.exec(command, undefined, context);
@@ -604,10 +680,11 @@ function concat(parts: readonly Uint8Array[]): Uint8Array {
 	return bytes;
 }
 
-const NO_BYTES: AsyncIterable<Uint8Array> = (async function* () {})();
+/** @internal */
+export const NO_BYTES: AsyncIterable<Uint8Array> = (async function* () {})();
 
-/** A deferred exit that settles once. */
-function exitOnce(): {
+/** @internal A deferred exit that settles once. */
+export function exitOnce(): {
 	readonly exit: Promise<Result<number, BoxError>>;
 	settle(result: Result<number, BoxError>): void;
 } {
@@ -651,11 +728,11 @@ function remover(box: Box, dir: string, context: Context): () => Promise<void> {
 }
 
 /**
- * A source that packs into parts in a directory in the box with one program, then reads them one by one with the box's
+ * @internal A source that packs into parts in a directory in the box with one program, then reads them one by one with the box's
  * `download` and checks each against the size and SHA-256 the box gave it. The result looks like a process: the parts
  * are its output, and its exit is 0 only when every part arrived as it is in the box.
  */
-function filesSource(
+export function filesSource(
 	box: Box,
 	script: string,
 	args: readonly string[],
@@ -737,12 +814,12 @@ function filesSource(
 }
 
 /**
- * A target that collects what it is written into parts of `chunkBytes`, sends each with the box's `upload` into a
+ * @internal A target that collects what it is written into parts of `chunkBytes`, sends each with the box's `upload` into a
  * directory in the box, and on close runs one program that checks the parts against the SHA-256 the host made of each
  * and then joins them. The result looks like a process: its exit is the joining program's, or 1 when a part could not be
  * sent.
  */
-function filesSink(box: Box, script: string, args: readonly string[], chunkBytes: number): Starter {
+export function filesSink(box: Box, script: string, args: readonly string[], chunkBytes: number): Starter {
 	return async (context, state) => {
 		const made = await partsDirectory(box, context);
 		if (!made.ok) return made;
@@ -826,10 +903,10 @@ function filesSink(box: Box, script: string, args: readonly string[], chunkBytes
 type Transfer = Piped & { readonly sha256: string; readonly bytes: number };
 
 /**
- * Start a program in each box and relay the first one's output into the second one's input, under a stall limit and
+ * @internal Start a program in each box and relay the first one's output into the second one's input, under a stall limit and
  * an overall deadline. Returns what moved, or why not.
  */
-async function transfer(
+export async function transfer(
 	startSource: Starter,
 	fromInput: Uint8Array | undefined,
 	startTarget: Starter,
@@ -964,8 +1041,8 @@ async function transfer(
 	}
 }
 
-/** What a side does: the host's override, else what the box says is fastest, else files of the default size. */
-function pipeOf(
+/** @internal What a side does: the host's override, else what the box says is fastest, else files of the default size. */
+export function pipeOf(
 	box: Box,
 	override: Pipe | undefined,
 	chunkBytes: number | undefined,
