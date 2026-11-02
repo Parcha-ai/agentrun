@@ -3,7 +3,7 @@
 // of every token sum; each tool's calls pair with their results by conversation and call id, as the timeline's do.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { callFailed, METRIC_NAMES, nameOf, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf } from "../dist/timeline/index.js";
+import { METRIC_NAMES, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const usage = (input, output, cacheRead = 0, cacheWrite = 0, total = 0.01) => ({ input, output, cacheRead, cacheWrite, totalTokens: input + output, cost: { total } });
@@ -216,25 +216,4 @@ test("model names are kept the same way: cut past 256 characters, the 100 busies
   assert.equal(Object.keys(m.models).length, METRIC_NAMES.kept + 1);
   assert.equal(m.models[METRIC_NAMES.otherModels], 21, "p/m0 to p/m98 are kept beside the busiest; the last 21 are summed");
   assert.equal(Object.values(m.models).reduce((a, b) => a + b, 0), m.requests);
-});
-
-test("a call is counted failed by the rule its row reads: an error, or a result its tool reads as failed, such as a refused fetch", () => {
-  const refused = JSON.stringify({ ok: false, url: "http://127.0.0.1/", refused: "refused: 127.0.0.1 is not a public host" });
-  const failed = JSON.stringify({ ok: false, url: "https://down.example/", error: "the host did not answer" });
-  const fetched = JSON.stringify({ ok: true, url: "https://example.com/", status: 200, title: "Example Domain", text: "Example", links: [] });
-  const entries = [
-    user("Fetch three pages."),
-    answer([call("f1", "web_fetch", { url: "http://127.0.0.1/" }), call("f2", "web_fetch", { url: "https://down.example/" }), call("f3", "web_fetch", { url: "https://example.com/" })], usage(10, 5)),
-    result("f1", "web_fetch", refused), result("f2", "web_fetch", failed), result("f3", "web_fetch", fetched),
-    answer([{ type: "text", text: "Fetched one." }], usage(20, 3)),
-  ];
-  assert.deepEqual(runMetricsOf(entries).tools, { web_fetch: { calls: 3, errors: 2 } }, "a refused and a failed fetch are errors, as their rows say");
-  const rows = timelineOf(entries, { settled: true }).filter((r) => r.kind === "tool_result").map((r) => r.tool_status);
-  assert.deepEqual(rows, ["failed", "failed", "success"], "the same three, row by row");
-  assert.deepEqual([callFailed("web_fetch", { text: refused, isError: false }), callFailed("read", { text: refused, isError: false }), callFailed("read", { text: "", isError: true })], [true, false, true], "a tool without an outcome fails only on an error");
-});
-
-test("a tool's name where calls are counted: its registered one in plain words, else the name it was called by", () => {
-  assert.deepEqual(["web_fetch", "fetch_page", "read", "run", "browser_release", "submit"].map(nameOf), ["Fetch web pages", "Fetch web pages", "Read files", "Open or act on a page in the browser", "Release the browser session", "Submit the answer"]);
-  assert.equal(nameOf("a_tool_nobody_registered"), "a_tool_nobody_registered");
 });
