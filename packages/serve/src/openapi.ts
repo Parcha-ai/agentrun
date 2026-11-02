@@ -8,6 +8,7 @@ import { ERROR_STATUS } from "./errors.js";
 import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
+import { BOXES, PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 
@@ -366,8 +367,8 @@ const REVIEW: Json = {
 };
 /** This server's own properties on the contract's objects, outside the contract, by where they go (a schema of
  *  components.schemas, then property names down to the object that takes them). Each is marked x-agentrun-serve with
- *  the addition that made it: `harness/1` is the one a later contract version would take on; `model/1` and `serve/1`
- *  are what this server added before it marked them. */
+ *  the addition that made it: `harness/1` and `place/1` are ones a later contract version would take on; `model/1` and
+ *  `serve/1` are what this server added before it marked them. */
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Run: {
     review: REVIEW,
@@ -407,6 +408,14 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     model: { type: "string", description: "`provider/model-id`, the model an agentic revision runs on; absent, this host's default. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     thinking: { enum: [...THINKING_LEVELS], description: "An agentic revision's thinking level; absent, the model's. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     harness: { enum: [...HARNESSES], description: "The harness that runs the revision. Absent on a request, pi; every answer names it. One this server does not run saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.harnesses).", "x-agentrun-serve": "harness/1" },
+    place: {
+      oneOf: [
+        { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
+        { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOXES] } } },
+      ],
+      description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent, this host's default (capabilities.places.default), and an answer shows none; a revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes).",
+      "x-agentrun-serve": "place/1",
+    },
   },
   AgentCreate: {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
@@ -418,6 +427,16 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     archived_at: { type: ["string", "null"], description: "When the agent was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
   },
   Capabilities: {
+    places: {
+      type: "object", additionalProperties: false, required: ["modes", "default", "boxes"],
+      properties: {
+        modes: { type: "array", items: { enum: [...PLACE_MODES] } },
+        default: { enum: [...PLACE_MODES], description: "The mode a revision that names no place runs in here." },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: [...BOXES] }, available: { type: "boolean" }, reason: { type: "string" } } } },
+      },
+      description: "The places a revision may name, this host's default, and each box: whether this server has it, and when not, why.",
+      "x-agentrun-serve": "place/1",
+    },
     harnesses: {
       type: "array",
       description: "Each harness a revision may name, and whether this server runs it; when not, why.",
@@ -501,6 +520,7 @@ const BLOCKED_DETAILS = {
     unbound: { type: "array", items: { type: "string" }, description: "The tools the revision names that this server does not bind, or does not bind on its harness." },
     missing: { type: "object", additionalProperties: { type: "array", items: { type: "string" } }, description: "Each bound tool this host cannot run yet, with the variables it is missing." },
     harness: { enum: [...HARNESSES], description: "The revision's harness, when this server does not run it (capabilities.harnesses)." },
+    box: { enum: [...BOXES], description: "The box of the revision's place, when this server does not have it (capabilities.places.boxes)." },
     adapters: { type: "array", items: { type: "string" }, description: "A workflow revision: the adapters it needs that this server does not bind." },
     code: { type: "boolean", description: "A workflow revision: whether it needs code this server does not run." },
     tier: { type: "string", description: "A workflow revision: the model tier this host has no model for." },
