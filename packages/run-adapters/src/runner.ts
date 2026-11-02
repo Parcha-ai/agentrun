@@ -251,7 +251,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       try {
         // A runner.turn with the ids holds what a carried response record of this turn would: that one is dropped.
         const covers = (r: SessionRecord) => usage.providerIds !== undefined && (r.data as { turn?: number }).turn === turn;
-        await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}) } }], covers);
+        await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}) } }], covers);
       } catch (error) {
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
         if (!options.stopped?.()) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
@@ -296,6 +296,13 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       return cutting;
     },
   };
+}
+
+/** A booking's tokens as its runner.turn keeps them (`usage`, in pi's shape: `input` excludes cached tokens), or nothing
+ *  when it reports none: a request whose usage was not read is booked with zeros, which are no count. */
+function tokensOf(usage: ModelUsage): { usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } } {
+  const tokens = { input: usage.input, output: usage.output, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0 };
+  return tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite > 0 ? { usage: tokens } : {};
 }
 
 const NUDGE = "You finished without an accepted submission. Call submit with the complete result; plain text does not deliver it.";

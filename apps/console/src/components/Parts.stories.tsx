@@ -3,6 +3,7 @@ import { Composer } from "@/components/Composer";
 import { NeedsYou } from "@/components/NeedsYou";
 import { RunError } from "@/components/RunError";
 import { RunHeader } from "@/components/RunHeader";
+import { RunsList } from "@/components/RunsList";
 import { Shell } from "@/components/Shell";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timeline } from "@/components/Timeline";
@@ -29,6 +30,9 @@ export const TimelineCompleted: Story = { render: () => { const f = runFixture("
 export const TimelineInputRequired: Story = { render: () => { const f = runFixture("run.input_required.waiting.1"); return pad(<Timeline rows={f.page.rows} live={false} />); } };
 export const TimelineEmpty: Story = { render: () => pad(<Timeline rows={[]} live />) };
 export const HeaderWorking: Story = { render: () => { const f = runFixture("run.working.working.1"); return <RunHeader run={f.run} agentName={f.agentName} actions={{ onStop: noop, onCancel: noop }} />; } };
+export const HeaderArchived: Story = { render: () => { const f = runFixture("run.completed.idle.1"); return <RunHeader run={{ ...f.run, archived_at: "2026-11-01T07:00:00Z" }} agentName={f.agentName} actions={{ onArchive: noop }} />; } };
+export const RunsFiltered: Story = { render: () => <Shell active="runs"><RunsList runs={recorded<{ runs: Run[] }>("runs.list").body.runs.filter((r) => r.status === "completed")} agentName={(id) => id} onOpen={noop} filter={{ status: "completed" }} onFilter={noop} /></Shell> };
+export const RunsArchivedEmpty: Story = { render: () => <Shell active="runs"><RunsList runs={[]} agentName={(id) => id} onOpen={noop} filter={{ archived: true }} onFilter={noop} /></Shell> };
 export const HeaderStopping: Story = { render: () => { const f = runFixture("run.working.working.1"); return <RunHeader run={f.run} agentName={f.agentName} actions={{ onStop: noop, onCancel: noop, busy: "stop" }} />; } };
 export const InputRequiredQuestion: Story = { render: () => { const f = runFixture("run.input_required.waiting.1"); return pad(<NeedsYou waiting={f.page.rows.findLast((r) => r.kind === "waiting") ?? null} />); } };
 export const StoppedNote: Story = { render: () => pad(<NeedsYou waiting={null} />) };

@@ -139,7 +139,7 @@ test("a request that left and was booked at $0 (a free model) is still the run's
   const booking = await modelPortFor(writer, { key: "run:1" });
   const ticket = await booking.models.beforeRequest({ model: "m" });
   await booking.models.afterRequest({ input: 10, output: 5, cacheRead: 0, usd: 0 }, ticket);
-  assert.deepEqual((await writer.read()).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data), [{ turn: 1, usd: 0 }]);
+  assert.deepEqual((await writer.read()).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data), [{ turn: 1, usd: 0, usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } }]);
   const harness = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
   const app = adapterRun(async () => fauxAdapter({ script: () => [] }), "codex", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx);
   app.door.attach(() => {});
