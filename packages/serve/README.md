@@ -376,7 +376,8 @@ why) until a `PUT` sets it again. Pending messages are kept in `DIR/webhook-outb
 them after a restart; a message can then come twice, under the same `webhook-id`. `GET /v2/settings/webhook/deliveries`
 lists the last 50 attempts (`webhook_id`, type, status code, latency, error, when, and the next try's time), and
 `POST /v2/settings/webhook/deliveries/{webhook_id}/redeliver` sends one of those messages again, once, under the same
-`webhook-id`. `POST /v2/settings/webhook/test` sends a `webhook.test` message once and answers how it went.
+`webhook-id`. `POST /v2/settings/webhook/test` sends a `webhook.test` message once and answers how it went. A webhook a
+410 turned off sends nothing, a test or a redelivery included (`409 webhook_off`), until a `PUT` sets it again.
 `DELETE /v2/settings/webhook` removes the webhook and drops its pending messages.
 
 ## What it serves

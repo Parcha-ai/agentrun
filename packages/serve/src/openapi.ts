@@ -393,8 +393,8 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/webhook/test": {
     post: {
       operationId: "testWebhook", tags: ["local"], summary: "Send a `webhook.test` message now, once, and say how it went",
-      description: "The body is `{type: \"webhook.test\", timestamp, data: {}}`, signed as every message is. It is tried once, never again, and kept in the log.",
-      responses: { "200": json(WEBHOOK_ATTEMPT, "Its attempt."), ...errors(401, 404, 429, 500) },
+      description: "The body is `{type: \"webhook.test\", timestamp, data: {}}`, signed as every message is. It is tried once, never again, and kept in the log. 409 webhook_off when a 410 turned the webhook off: nothing is sent until a PUT sets it again.",
+      responses: { "200": json(WEBHOOK_ATTEMPT, "Its attempt."), ...errors(401, 404, 409, 429, 500) },
       "x-agentrun-serve": "webhook/1",
     },
   },
@@ -408,9 +408,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/webhook/deliveries/{webhook_id}/redeliver": {
     post: {
       operationId: "redeliverWebhook", tags: ["local"], summary: "Send a message of the log again, once now, under the same webhook-id and body",
-      description: "Signed again at a new timestamp. A message still pending that this try delivers is settled; one this try fails keeps its own schedule.",
+      description: "Signed again at a new timestamp. A message still pending that this try delivers is settled; one this try fails keeps its own schedule. 409 webhook_off when a 410 turned the webhook off.",
       parameters: [WEBHOOK_ID],
-      responses: { "200": json(WEBHOOK_ATTEMPT, "Its attempt."), ...errors(401, 404, 429, 500) },
+      responses: { "200": json(WEBHOOK_ATTEMPT, "Its attempt."), ...errors(401, 404, 409, 429, 500) },
       "x-agentrun-serve": "webhook/1",
     },
   },

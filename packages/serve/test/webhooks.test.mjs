@@ -208,6 +208,48 @@ test("a 410 turns the webhook off, says so and sends nothing more until a PUT se
   await until(() => hook.got.length === 2, "sent again");
 });
 
+test("a webhook a 410 turned off refuses a test send and a redelivery, 409 webhook_off, and sends nothing until a PUT", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  let answer = 410;
+  const hook = await receiver(t, () => answer);
+  const { api } = await serve(t);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 410);
+  assert.equal((await api("GET", "/settings/webhook")).body.disabled.reason, "the receiver answered 410 Gone");
+  const id = hook.got[0].headers["webhook-id"];
+  for (const [method, path] of [["POST", "/settings/webhook/test"], ["POST", `/settings/webhook/deliveries/${id}/redeliver`]]) {
+    const refused = await api(method, path);
+    assert.deepEqual([refused.status, refused.body.error.code], [409, "webhook_off"], path);
+    assert.match(refused.body.error.message, /set it again with PUT/);
+  }
+  assert.equal(hook.got.length, 1, "nothing sent while off");
+  answer = 200;
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 200);
+  assert.equal((await api("POST", `/settings/webhook/deliveries/${id}/redeliver`)).body.status_code, 200, "on again, it sends");
+  assert.equal(hook.got.length, 2);
+});
+
+test("a message whose redelivery is in flight stays in the outbox while other attempts push its own out of the log: it can be redelivered again", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  // The second request, the redelivery, is answered only when released.
+  const hook = await receiver(t, (n) => (n === 2 ? held.then(() => 200) : 200));
+  const { api } = await serve(t);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
+  const id = hook.got[0].headers["webhook-id"];
+  const again = api("POST", `/settings/webhook/deliveries/${id}/redeliver`);
+  await until(() => hook.got.length === 2, "the redelivery in flight");
+  for (let i = 0; i < 50; i++) assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
+  assert.ok(!(await api("GET", "/settings/webhook/deliveries")).body.attempts.some((a) => a.webhook_id === id), "its first attempt has left the log");
+  release();
+  assert.equal((await again).body.status_code, 200);
+  const third = await api("POST", `/settings/webhook/deliveries/${id}/redeliver`);
+  assert.equal(third.status, 200, `still redeliverable: ${JSON.stringify(third.body)}`);
+  assert.equal(hook.got.at(-1).headers["webhook-id"], id);
+});
+
 /** Every unhandled rejection while `t` runs: one would stop a server. */
 function rejections(t) {
   const seen = [];

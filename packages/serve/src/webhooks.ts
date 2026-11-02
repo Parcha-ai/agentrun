@@ -64,6 +64,9 @@ export class Webhooks {
   /** The webhook as held here when its write failed (a 410 that turned it off, on a full disk): read in place of the
    *  file until a write lands, as the next PUT's does. */
   private held?: Config;
+  /** The messages with a try in flight, by id, and how many: kept in the outbox until each lands, so one whose earlier
+   *  attempts left the log meanwhile can still be redelivered. */
+  private readonly sending = new Map<string, number>();
 
   /** `env` is the server's own (withSecrets); `say` takes a log line's fields; `retryMs` the waits between tries. */
   constructor(data: string, env: NodeJS.ProcessEnv, private readonly say: (fields: Record<string, string | number>) => void, private readonly retryMs: readonly number[] = RETRY_MS) {
@@ -199,7 +202,7 @@ export class Webhooks {
   private store(): boolean {
     this.attempts = this.attempts.slice(-ATTEMPTS_KEPT);
     const tried = new Set(this.attempts.map((a) => a.webhook_id));
-    this.messages = this.messages.filter((m) => m.status === "pending" || tried.has(m.id));
+    this.messages = this.messages.filter((m) => m.status === "pending" || tried.has(m.id) || this.sending.has(m.id));
     try {
       writeDurableSync(this.outbox, `${JSON.stringify({ v: 2, messages: this.messages, attempts: this.attempts })}\n`);
       this.unsaved = false;
@@ -245,7 +248,13 @@ export class Webhooks {
   }
 
   private attempt(message: Message, how: { retry: boolean; redelivery: boolean }): Promise<Attempt> {
-    const trying = this.tryOnce(message, how).finally(() => this.trying.delete(trying));
+    this.sending.set(message.id, (this.sending.get(message.id) ?? 0) + 1);
+    const trying = this.tryOnce(message, how).finally(() => {
+      this.trying.delete(trying);
+      const left = this.sending.get(message.id)! - 1;
+      if (left) this.sending.set(message.id, left);
+      else this.sending.delete(message.id);
+    });
     this.trying.add(trying);
     return trying;
   }
@@ -260,7 +269,7 @@ export class Webhooks {
     const config = this.config();
     let failure: string | undefined;
     if (!config) failure = "the webhook was removed";
-    else if (config.disabled && how.retry) failure = "the webhook is off";
+    else if (config.disabled) failure = "the webhook is off";
     else {
       const opened = this.secret(config);
       if (!("secret" in opened)) failure = `the secret does not open here (${opened.signing}): set the webhook again`;
@@ -333,9 +342,11 @@ export class Webhooks {
     this.writeOutbox();
   }
 
+  /** The webhook, set and on: a test or a redelivery sends nothing to one a 410 turned off, as no try does. */
   private need(): Config {
     const config = this.config();
     if (!config) throw new ApiError("not_found", "no webhook is set: PUT /v2/settings/webhook sets one");
+    if (config.disabled) throw new ApiError("webhook_off", `the webhook is off (${config.disabled.reason}): set it again with PUT /v2/settings/webhook`);
     return config;
   }
 }
