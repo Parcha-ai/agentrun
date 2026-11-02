@@ -8,7 +8,8 @@
 // The server's grader is answered here too, on the agent's own model, by what the instructions say: "Grade: drop." keeps
 // no note, "Grade: sly." says merge and keeps none, "Grade: garbage." is no JSON, "Grade: fail." fails the call;
 // anything else keeps every note. With AGENTRUN_TEST_FAUX_GRADE_HOLD set (in the server's environment), the grader
-// answers only once it is aborted. Each grader call is filed as a line in the file AGENTRUN_TEST_FAUX_CALLS names.
+// answers only once it is aborted; set to `never`, it never answers at all, aborted or not. Each grader call is filed
+// as a line in the file AGENTRUN_TEST_FAUX_CALLS names.
 import { access } from "node:fs/promises";
 import { appendFileSync } from "node:fs";
 
@@ -45,6 +46,7 @@ function grade(prompt, faux) {
   if (process.env.AGENTRUN_TEST_FAUX_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_CALLS, `${JSON.stringify({ kind: "grade" })}\n`);
   const rules = /----- begin (\w+): the agent's standing instructions -----\n([\s\S]*?)----- end \1 -----/.exec(prompt)?.[2] ?? "";
   const files = /^Give one item for each of these files, each once, and for no other: (.*)\.$/m.exec(prompt)?.[1].split(", ") ?? [];
+  if (process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD === "never") return new Promise(() => {});
   if (process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD) return slow(faux, 600_000, "");
   if (rules.includes("Grade: fail.")) return faux.message("", { stopReason: "error", errorMessage: "the faux grader failed on purpose" });
   if (rules.includes("Grade: garbage.")) return faux.message("Looks fine to me.");

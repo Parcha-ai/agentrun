@@ -672,16 +672,19 @@ Once the run has ended, in the agent's queue, the server reads what the turn lef
 top only, each entry with lstat and never a link followed, at most 4096 bytes of a note, and never past 64 changed
 paths. packages/learn's `checkProposal` refuses, before anything is written anywhere, an edited or deleted note, a path
 that is not a `.md` file at the top, a bad name, a link or anything not a regular file, front matter out of shape or
-setting `status`, a `supersedes` naming a note that is not active, more than 8 new notes or a note over 4096 bytes, an
-index past 200 lines, hidden characters, non-UTF-8, and text shaped like a secret or holding one of the server's own
-secrets (the launcher's, the keys and tokens in its environment, its API and door tokens), in a note or its name.
+setting `status`, a `supersedes` naming a note that is not active, more than 8 notes superseded, more than 8 new notes
+or a note over 4096 bytes, an index past 200 lines, hidden characters, non-UTF-8, and text shaped like a secret or
+holding one of the server's own secrets (the launcher's, the keys and tokens in its environment, its API and door
+tokens), in a note or its name.
 `MEMORY.md` as the turn left it is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`.
 
 Then one grader decides, one grade at a time per agent: packages/learn's `gradePrompt` asked of the agent's own model,
-bounded (3 minutes), against `main`'s index and active notes as they are then, and read by `parseVerdict`, which fails
-closed. Only with Jev's key here does an injection screen run first, on Jev: a note it scores at
-`INJECTION_THRESHOLD` (0.75) or over, or cannot score, drops the run. What the grade spends is in no run's totals: it is
-kept on the run's learning, and counted once on `GET /usage` under the meter `learning`, by agent and by day.
+bounded (3 minutes), against `main` as it is then, and read by `parseVerdict`, which fails closed. The grader reads each
+active note's index line, the whole text only of the notes the proposal supersedes, and the new notes, so its prompt
+stays under 200,000 characters however many notes the folder holds. Only with Jev's key here does an injection screen
+run first, on Jev: a note it scores at `INJECTION_THRESHOLD` (0.75) or over, or cannot score, drops the run. What the
+grade spends is in no run's totals: it is kept on the run's learning, and counted once on `GET /usage` under the meter
+`learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.
 
 A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each note they supersede marked
 `status: superseded` with `superseded_by`, `MEMORY.md` rebuilt from the active notes, and the checked-out files brought

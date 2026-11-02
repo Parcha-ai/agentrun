@@ -1,8 +1,9 @@
 // One grader decides whether a run's checked notes join main: a bounded call on the agent's own model, read fail-closed.
 // The injection screen runs only with an independent judge (Jev). What the grade spends is kept on the run's learning
-// and, with how its learning ended, in the learning ledger, which /v2/usage's `learning` meter reads. A server that goes
-// mid-grade grades the run once at its next start, and a run is merged once, never twice. GET /v2/stats counts how the
-// runs that tried to learn fared, from the ledger and the runs the server holds, never a run's files.
+// and, with how its learning ended, in the learning ledger, which /v2/usage's `learning` meter reads; a call cut off at
+// its bound costs what nobody knows, never $0. A server that goes mid-grade grades the run once at its next start, and a
+// run is merged once, never twice. GET /v2/stats counts how the runs that tried to learn fared, from the ledger and the
+// runs the server holds, never a run's files.
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -110,6 +111,22 @@ test("a server that goes mid-grade grades the run once at its next start; a run 
   assert.equal(git(repo, ["rev-parse", "main"]), main, "main did not move");
   assert.equal(mergesOf(repo, runId).length, 1, "merged once");
   assert.equal(callsIn(calls).length, 2, "the kept verdict was not asked again");
+});
+
+test("a grader that never answers is cut off at its bound: the run's learning is grade_failed, and what the grade spent is unknown (null), never $0, on the run, in the ledger and on /v2/usage", { timeout: 120_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_GRADE_HOLD: "never", AGENTRUN_TEST_FAUX_CALLS: calls }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, gradeTimeoutMs: 1_500 });
+  await made(api, learner("stuck", { plan: PLAN }));
+  const runId = await started(api, "stuck");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "dropped", "grade_failed");
+  assert.equal(callsIn(calls).length, 1, "the grader was asked, and never answered");
+  const { learning } = await savedOf(data, runId);
+  assert.deepEqual([learning.cost_usd, learning.tokens], [{ grade: null }, { grade: null }]);
+  assert.deepEqual(ledgerOf(data).map(({ run, state, reason, cost, tokens }) => [run, state, reason, cost, tokens]), [[runId, "dropped", "grade_failed", null, null]]);
+  const line = (await api("GET", "/usage?group_by=meter")).body.lines.find((entry) => entry.meter === "learning");
+  assert.deepEqual([line.usd, line.unpriced_runs], [0, 1], "unpriced, never $0");
 });
 
 test("GET /v2/usage books each grade under the meter learning, by agent and by day; GET /v2/stats counts the runs that tried to learn, over its filters, from the ledger, and a restarted server counts the same with runs/ unreadable", { timeout: 180_000 }, async (t) => {

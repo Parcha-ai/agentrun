@@ -363,7 +363,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; learning?: LearningMode; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; learning?: LearningMode; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
@@ -867,7 +867,7 @@ export class Runs {
       if (main && "problems" in main) return await end("dropped", "checker", `Main no longer takes what the run proposed: ${[...new Set(main.problems.map((problem) => problem.rule))].join(", ")}.`, { problems: main.problems });
       if (main && !("merged" in main)) {
         const { instructions, harness, model, thinking } = known.revision.body;
-        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, env: this.hostEnv(), signal: this.stopping.signal });
+        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, env: this.hostEnv(), signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
         kept = { cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
         if ("file" in judged) return await end("dropped", judged.reason, judged.reason === "screen" ? "The injection screen refused a new note." : "The injection screen could not judge a new note.");
         if ("error" in judged) {

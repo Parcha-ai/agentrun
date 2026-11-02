@@ -63,6 +63,17 @@ test("supersedes must name a note active on the seed, once among the new notes",
   assert.deepEqual(twice.problems, [{ rule: "supersedes", path: "b.md", detail: "shipping-path.md is superseded by another new note too" }]);
 });
 
+test("the new notes supersede at most eight notes together: eight pass, and a ninth is refused as supersedes", () => {
+  const files = { ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`n${i}.md`, note({ name: `N${i}` })])), "MEMORY.md": "" };
+  const olds = (n) => Array.from({ length: n }, (_, i) => `n${i}.md`).join(", ");
+  const at = (n) => checkProposal({ base: baseOf(files), changes: [added("a.md", note({ extra: `supersedes: [${olds(n - 1)}]\n` })), added("b.md", note({ extra: `supersedes: [n${n - 1}.md]\n` }))] });
+  assert.equal(at(CAPS.supersedes).ok, true);
+  assert.deepEqual(at(CAPS.supersedes + 1).problems, [{ rule: "supersedes", detail: `the new notes supersede ${CAPS.supersedes + 1} notes; the cap is ${CAPS.supersedes} a run` }]);
+  // At merge time too: main is asked the same.
+  const proposed = [parseNoteFile("a.md", note({ extra: `supersedes: [${olds(CAPS.supersedes + 1)}]\n` }))];
+  assert.deepEqual(mergeProblems(baseOf(files), proposed).map((p) => p.rule), ["supersedes"]);
+});
+
 test("eight new notes pass and a ninth is refused; a note over 4096 bytes is refused and one at 4096 passes", () => {
   const notes = (n) => Array.from({ length: n }, (_, i) => added(`n${i}.md`, note({ name: `N${i}` })));
   assert.equal(check(notes(CAPS.newNotes)).ok, true);

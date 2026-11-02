@@ -1,7 +1,9 @@
 // Learning, its grade and its merge: once a run's proposal passed the checks (propose.ts), one grader decides whether its
 // new notes join the agent's main, and the host merges them.
-// - The grader is packages/learn's gradePrompt, asked as one bounded completion on the agent's own model, against main's
-//   index and active notes as they are now, and its answer read by parseVerdict, which fails closed. Before it, and only
+// - The grader is packages/learn's gradePrompt, asked as one bounded completion on the agent's own model, against main as
+//   it is now: each active note's index line, and the whole text only of the notes the proposal supersedes, so the
+//   prompt is bounded whatever the folder holds (GRADE_CAPS). Its answer is read by parseVerdict, which fails closed. A
+//   call cut off at its bound spent what nobody knows: the grade's cost is then unknown, never $0. Before it, and only
 //   when this server has an independent judge (Jev), each new note goes through the injection screen: pi-browser's page
 //   classifier with its own INJECTION_THRESHOLD. A score at or over it refuses the proposal, and no score refuses it too.
 // - The merge is one host commit on main, made with plumbing on a temporary index: the new notes added, each note one of
@@ -12,7 +14,7 @@
 // The merge runs in the agent's queue; the screen and the grader never do, so no run's seed waits on a model.
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { buildIndex, INDEX_FILE, type LearnedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, type Verdict } from "@parcha/agentrun-learn";
+import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, type Verdict } from "@parcha/agentrun-learn";
 import type { PageJudge } from "@parcha/pi-browser";
 import { claudeModel } from "./adapters.js";
 import { FAUX_JEV_ENV, fauxFetch, jevKey } from "./decisions.js";
@@ -22,7 +24,8 @@ import { type Complete, completer } from "./llm.js";
 import { runModels, thinkingOf } from "./model.js";
 import { authContextOf } from "./secrets.js";
 
-/** How long one note's screen and the grader may take, and the most the grader may write. */
+/** How long one note's screen and the grader may take (the grader's unless the server names another), and the most the
+ *  grader may write. */
 const SCREEN_TIMEOUT_MS = 60_000;
 const GRADE_TIMEOUT_MS = 180_000;
 const GRADE_MAX_TOKENS = 16_000;
@@ -77,9 +80,13 @@ const proposedOf = (proposal: Proposal): LearnedNote[] => proposal.notes.map(({ 
 /** What stops the proposal joining `main` as it is now (packages/learn mergeProblems). */
 const problemsOf = (main: Main, notes: readonly LearnedNote[]) => mergeProblems({ files: main.files, active: notesOf(main).filter((note) => note.status === "active") }, notes);
 
+/** What a grade reads of main: each active note as the index lists it, and the whole text of the ones the proposal
+ *  supersedes. */
+export type GradeMain = { active: IndexEntry[]; superseded: NoteText[] };
+
 /** Main now, for run `runId`'s grade, in the agent's queue: merged already (a commit names the run), what stops its
- *  proposal joining main as it is now, or main's index and active notes in full. */
-export function readForGrade(data: string, agentId: string, runId: string, proposal: Proposal): Promise<{ merged: string } | { problems: Problem[] } | { index: string; active: NoteText[] }> {
+ *  proposal joining main as it is now, or its active notes' index lines and the notes the proposal supersedes in full. */
+export function readForGrade(data: string, agentId: string, runId: string, proposal: Proposal): Promise<{ merged: string } | { problems: Problem[] } | GradeMain> {
   const home = homeDir(data, agentId);
   return withAgentRepo(data, agentId, async () => {
     const repo = await agentFolder(data, agentId);
@@ -87,20 +94,14 @@ export function readForGrade(data: string, agentId: string, runId: string, propo
     const merged = await mergeOf(home, repo, sha, runId);
     if (merged) return { merged };
     const main = await readMain(home, repo, sha);
-    const problems = problemsOf(main, proposedOf(proposal));
+    const added = proposedOf(proposal);
+    const problems = problemsOf(main, added);
     if (problems.length) return { problems };
-    const active = notesOf(main).filter((note) => note.status === "active").map((note) => ({ file: note.file, text: main.texts.get(note.file)! }));
-    return { index: main.texts.get(INDEX_FILE) ?? "", active };
+    const active = notesOf(main).filter((note) => note.status === "active").map(({ file, name, description }) => ({ file, name, description }));
+    // mergeProblems passed: each note superseded is active on main, and named once.
+    const superseded = added.flatMap((note) => note.supersedes).map((file) => ({ file, text: main.texts.get(file)! }));
+    return { active, superseded };
   });
-}
-
-/** `work`, given a signal that aborts at `ms` or with `outer`, and rejected then whether or not it listens. */
-function bounded<T>(ms: number, outer: AbortSignal, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  if (outer.aborted) return Promise.reject(outer.reason);
-  const signal = AbortSignal.any([outer, AbortSignal.timeout(ms)]);
-  const doing = work(signal);
-  doing.catch(() => undefined);
-  return Promise.race([doing, new Promise<never>((_, reject) => (signal.aborted ? reject(signal.reason) : signal.addEventListener("abort", () => reject(signal.reason), { once: true })))]);
 }
 
 /** Counts one call in `cost`: its dollars and tokens, each null when unknown (a call that failed, or reported none). */
@@ -108,6 +109,27 @@ const counter = (cost: GradeCost) => (usd: number | null, tokens: Tokens | null)
   cost.usd = usd !== null && Number.isFinite(usd) && cost.usd !== null ? cost.usd + usd : null;
   cost.tokens = tokens && cost.tokens ? { input: cost.tokens.input + tokens.input, cache_read: cost.tokens.cache_read + tokens.cache_read, cache_write: cost.tokens.cache_write + tokens.cache_write, output: cost.tokens.output + tokens.output } : null;
 };
+
+/** `work`, given a signal that aborts at `ms` or with `outer`, and rejected then whether or not it listens. A call cut
+ *  off so, before it settled, spent what nobody knows: `cost` turns unknown (null dollars and tokens), never the zeros
+ *  it started from, and a late answer leaves it unknown. */
+function bounded<T>(ms: number, outer: AbortSignal, cost: GradeCost, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  if (outer.aborted) return Promise.reject(outer.reason);
+  const signal = AbortSignal.any([outer, AbortSignal.timeout(ms)]);
+  let settled = false;
+  const doing = work(signal).finally(() => (settled = true));
+  doing.catch(() => undefined);
+  const cut = new Promise<never>((_, reject) => {
+    const stop = () => {
+      if (settled) return;
+      counter(cost)(null, null);
+      reject(signal.reason);
+    };
+    if (signal.aborted) stop();
+    else signal.addEventListener("abort", stop, { once: true });
+  });
+  return Promise.race([doing, cut]);
+}
 
 /** pi-ai's usage of one completion, as it reports it: `input` apart from what was read from or written to the cache. */
 type PiUsage = { input: number; output: number; cacheRead?: number; cacheWrite?: number };
@@ -168,7 +190,7 @@ async function independentJudge(env: NodeJS.ProcessEnv, cost: GradeCost): Promis
 /** The screen (only with an independent judge), then the grader: the first note the screen refuses or cannot judge, the
  *  grader's verdict, or why the grader gave none; with what it spent. Rejects only when `signal` (the server closing)
  *  aborts it: nothing is decided then. */
-export async function judgeProposal(input: { runId: string; agent: Agent; main: { index: string; active: NoteText[] }; proposed: NoteText[]; env: NodeJS.ProcessEnv; signal: AbortSignal }): Promise<Judged> {
+export async function judgeProposal(input: { runId: string; agent: Agent; main: GradeMain; proposed: NoteText[]; env: NodeJS.ProcessEnv; signal: AbortSignal; gradeTimeoutMs?: number }): Promise<Judged> {
   const { runId, agent, main, proposed, env, signal } = input;
   const cost: GradeCost = { usd: 0, tokens: { ...NO_TOKENS } };
   const judge = await independentJudge(env, cost);
@@ -176,7 +198,7 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
     const { createPageClassifier, INJECTION_THRESHOLD } = await import("@parcha/pi-browser");
     const classify = createPageClassifier({ judge: () => judge, maxPages: proposed.length });
     for (const { file, text } of proposed) {
-      const verdict = await bounded(SCREEN_TIMEOUT_MS, signal, (screen) => classify({ url: file, status: null, contentType: null, text }, screen)).catch(() => undefined);
+      const verdict = await bounded(SCREEN_TIMEOUT_MS, signal, cost, (screen) => classify({ url: file, status: null, contentType: null, text }, screen)).catch(() => undefined);
       signal.throwIfAborted();
       // The injection score alone decides: the classifier's wall question is about pages, not notes.
       const score = verdict?.injection;
@@ -186,9 +208,9 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
   }
   try {
     const { gradePrompt, parseVerdict } = await import("@parcha/agentrun-learn");
-    const prompt = gradePrompt({ run: runId, instructions: agent.instructions, index: main.index, notes: main.active, proposed });
+    const prompt = gradePrompt({ run: runId, instructions: agent.instructions, active: main.active, superseded: main.superseded, proposed });
     const grader = await agentModel(env, agent, cost);
-    const answer = await bounded(GRADE_TIMEOUT_MS, signal, (grade) => grader({ prompt, maxTokens: GRADE_MAX_TOKENS }, grade));
+    const answer = await bounded(input.gradeTimeoutMs ?? GRADE_TIMEOUT_MS, signal, cost, (grade) => grader({ prompt, maxTokens: GRADE_MAX_TOKENS }, grade));
     return { verdict: parseVerdict(answer.text, proposed), cost };
   } catch (error) {
     signal.throwIfAborted();
