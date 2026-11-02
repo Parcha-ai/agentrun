@@ -14,8 +14,22 @@ import type { Run, TimelinePage } from "@/lib/v2";
 const runsOf = (slug: string) => recorded<{ runs: Run[] }>(`agent.${slug}.runs`).body.runs;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
-/** Waits (up to two seconds) for what a timer-paced read brings, e.g. the next timeline page. */
-const until = async (ok: () => boolean) => { for (let i = 0; i < 100 && !ok(); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); }); expect(ok()).toBe(true); };
+/** Waits (up to three seconds) for what a timer-paced read brings, e.g. the next timeline page or a read tried again. */
+const until = async (ok: () => boolean) => { for (let i = 0; i < 150 && !ok(); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); }); expect(ok()).toBe(true); };
+/** A recorded completed run cut in two, as its agent's latest run: its first three steps while it works, then the rest as
+ *  it completes, which come once `release` is called. `reread` answers the run's record read again. */
+async function splitRun(reread: (done: Run) => Promise<Run> = async (done) => done) {
+  const done = runFixture("run.completed.idle.1");
+  const running: Run = { ...done.run, status: "working", state: "working", ended_at: null, result: null, cost: null };
+  const first: TimelinePage = { ...done.page, status: "working", state: "working", rows: done.page.rows.slice(0, 3), final: false, next_after: 3 };
+  const rest: TimelinePage = { ...done.page, reset: false, rows: done.page.rows.slice(3) };
+  let release!: () => void;
+  const ends = new Promise<void>((r) => { release = r; });
+  const page = await open(agentFixture("lead-scorer"), { runs: [running], timeline: async (_id, o) => (o.after === undefined ? first : ends.then(() => rest)), reread: () => reread(done.run) });
+  const latest = () => page.host.querySelector('section[aria-label="Latest run"]')!;
+  const row = () => page.host.querySelector('ul[aria-label="Runs"] a')!;
+  return { ...page, done, release, latest, row, id: done.run.run_id };
+}
 
 const efforts = recorded<{ features: { efforts: string[] } }>("capabilities").body.features.efforts;
 /** A start's answer: the run (202), or a recorded refusal thrown as the client throws it. */
@@ -150,16 +164,7 @@ describe("AgentPage", () => {
   });
 
   it("follows a running latest run: its timeline grows as the agent works, and its status and row move when it ends", async () => {
-    // A recorded run cut in two: its first steps while it works, then the rest as it completes.
-    const done = runFixture("run.completed.idle.1");
-    const running: Run = { ...done.run, status: "working", state: "working", ended_at: null, result: null, cost: null };
-    const first: TimelinePage = { ...done.page, status: "working", state: "working", rows: done.page.rows.slice(0, 3), final: false, next_after: 3 };
-    const rest: TimelinePage = { ...done.page, reset: false, rows: done.page.rows.slice(3) };
-    let release!: () => void;
-    const ends = new Promise<void>((r) => { release = r; });
-    const page = await open(agentFixture("lead-scorer"), { runs: [running], timeline: async (_id, o) => (o.after === undefined ? first : ends.then(() => rest)), reread: async () => done.run });
-    const latest = () => page.host.querySelector('section[aria-label="Latest run"]')!;
-    const row = () => page.host.querySelector('ul[aria-label="Runs"] a')!;
+    const { done, release, latest, row, id, ...page } = await splitRun();
     expect(latest().querySelectorAll("ol > li")).toHaveLength(3);
     expect(latest().textContent).toContain("Working");
     expect(latest().textContent).toContain("Steps appear as the agent takes them.");
@@ -171,8 +176,35 @@ describe("AgentPage", () => {
     expect(latest().textContent).toContain(done.page.rows[6].summary);
     expect(latest().textContent).not.toContain("Steps appear as the agent takes them.");
     expect(row().textContent).toContain("Completed");
-    const id = done.run.run_id;
     expect(page.followed).toEqual([`timeline ${id}`, `timeline ${id} after 3`, `run ${id}`]);
+  });
+
+  it("reads an ended run again when the first read fails, though no page follows the last: the badge and row end Completed", async () => {
+    let tries = 0;
+    const { release, latest, row, id, ...page } = await splitRun(async (done) => { if (++tries === 1) throw new TypeError("Failed to fetch"); return done; });
+    release();
+    await until(() => latest().textContent!.includes("Completed"));
+    expect(row().textContent).toContain("Completed");
+    expect(latest().textContent).not.toContain("could not be refreshed");
+    expect(page.followed).toEqual([`timeline ${id}`, `timeline ${id} after 3`, `run ${id}`, `run ${id}`]);
+  });
+
+  it("says when an ended run cannot be read again, never showing it as still working, and Retry reads it again", async () => {
+    let down = true;
+    const { release, latest, row, id, ...page } = await splitRun(async (done) => { if (down) throw new TypeError("Failed to fetch"); return done; });
+    release();
+    await until(() => latest().textContent!.includes("This run could not be refreshed: Failed to fetch"));
+    // Three tries, then the note; the timeline's last page says the run ended, so nothing in the panel says it works.
+    expect(page.followed).toEqual([`timeline ${id}`, `timeline ${id} after 3`, `run ${id}`, `run ${id}`, `run ${id}`]);
+    expect(latest().textContent).toContain("Not refreshed");
+    expect(latest().textContent).not.toContain("Working");
+    expect(latest().textContent).not.toContain("Steps appear as the agent takes them.");
+    down = false;
+    await page.click(/^Retry$/);
+    await until(() => latest().textContent!.includes("Completed"));
+    expect(latest().textContent).not.toMatch(/could not be refreshed|Not refreshed/);
+    expect(row().textContent).toContain("Completed");
+    expect(page.followed.filter((r) => r === `run ${id}`)).toHaveLength(4);
   });
 
   it("reads the next page with Load more, and a failed one keeps the runs already read", async () => {
