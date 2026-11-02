@@ -30,6 +30,7 @@
       "default": "./dist/box/*.js"
     },
     "./box/box": null,
+    "./box/bwrap-args": null,
     "./box/child": null,
     "./box/files": null,
     "./box/network": null,

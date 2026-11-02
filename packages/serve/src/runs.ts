@@ -25,6 +25,7 @@ import { withDecisions } from "./decision-rows.js";
 import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, PARALLEL_KEY_ENV } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
+import { FAUX_MONID_ENV } from "./monid.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV, FAUX_UPSTREAM_ENV, thinkingOf, withoutFaux } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
@@ -34,6 +35,7 @@ import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
+import { BOX_KEYS } from "./boxes.js";
 
 export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -48,6 +50,8 @@ const DRAIN = "30s";
 const PROCESS_LOG = "process.log";
 /** How long a request waits for a run's door: its process coming up, or a settle in progress. */
 const READY_TIMEOUT_MS = 45_000;
+/** The reducer's live "Run started" and "Run finished" rows: a turn's edges, which no store entry makes on any harness,
+ *  so a run's settled timeline never has them. Never served, live or settled, so no row a reader saw goes at the end. */
 const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
@@ -172,6 +176,9 @@ export type Run = {
   decisionCost?: number | null;
   /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). */
   decisions?: Record<string, unknown>[];
+  /** How many of a workflow run's llm calls' answers its node log held when its rows were last read: their cost is in its
+   *  rows (each a REQUEST_COST entry, committed before its answer is logged), so its graph counts only the later ones. */
+  llmRead?: number;
   /** What every conversation of its store says it used, as the settle that ends it read them. */
   metrics?: RunMetrics;
   relaunches: number;
@@ -187,7 +194,7 @@ export type Run = {
 };
 
 const ASKED = "Asked you: ";
-registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`);
+registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`, undefined, { name: "Ask you a question" });
 // ask_person ends its turn (tools.ts): the person's reply is their next message, never a steer.
 registerTurnEnding(ASK_TOOL);
 
@@ -230,6 +237,14 @@ function noteAnswer(run: Run, entries: readonly unknown[]): void {
 }
 
 const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id));
+/** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
+ *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
+ *  status reads, never from a scan of its timeline. */
+export type Pending = { kind: "question"; question: string; asked_at: string } | null;
+const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
+  const last = meaningful(rows);
+  return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
+};
 const answerOf = (rows: readonly TimelineEvent[]) => {
   const last = meaningful(rows);
   return last?.kind === "final_answer" || last?.kind === "text_block" ? last : undefined;
@@ -303,11 +318,11 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxUpstream?: string; fauxExa?: string; fauxHarness?: string; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxUpstream?: string; fauxExa?: string; fauxHarness?: string; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
-/** The server's own secrets, which a run's process never gets: the API token, by name or by value, and the seal key
- *  the tool keys are kept under (tool-keys.ts). */
-const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY"]);
+/** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
+ *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
+const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", ...BOX_KEYS]);
 /** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own and the decision
  *  keys, which go on their own descriptor. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
@@ -534,6 +549,7 @@ export class Runs {
       const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
       // Decisions it cannot read add no rows: the run's cost read says unknown (readDecisionCost).
       try { run.decisions = durableDecisions(file); } catch { run.decisions = undefined; }
+      run.llmRead = (await readNodeLog(run.dir)).filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done").length;
     }
     run.working = false;
     noteAnswer(run, entries);
@@ -543,7 +559,7 @@ export class Runs {
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
   /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
   private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
-    run.rows = withOverCap(withAsks(rows), run.meta.max_cost_usd);
+    run.rows = withOverCap(withAsks(rows.filter((r) => !QUIET.test(r.id))), run.meta.max_cost_usd);
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
@@ -842,6 +858,7 @@ export class Runs {
       [SECRETS_LEN_ENV]: String(secrets.length),
       ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}), ...(this.options.fauxParallel ? { [FAUX_PARALLEL_ENV]: this.options.fauxParallel } : {}), ...(this.options.fauxOpenrouter ? { [FAUX_OPENROUTER_ENV]: this.options.fauxOpenrouter } : {}), ...(this.options.fauxUpstream ? { [FAUX_UPSTREAM_ENV]: this.options.fauxUpstream } : {}), ...(this.options.fauxExa ? { [FAUX_EXA_ENV]: this.options.fauxExa } : {}) } : {}),
       ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
+      ...(this.options.faux && this.options.fauxMonid ? { [FAUX_MONID_ENV]: this.options.fauxMonid } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
       ...(this.options.documents ? { [DOCUMENTS_ENV]: this.options.documents } : {}),
     };
@@ -1033,10 +1050,9 @@ export class Runs {
    *  the run's unknown, never $0. Read at its end and again when a restarted server adopts it as ended. */
   private async readDecisionCost(run: Run): Promise<void> {
     const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
-    const receipts = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
-    // Its `llm` calls' completions are paid as its decisions are, outside its model nodes' rows: from the node log.
-    const completions = (await readNodeLog(run.dir)).flatMap((line) => (line.t === "effect.end" && line.tool === "llm" && line.status === "done" ? [isObject(line.output) && typeof line.output.cost_usd === "number" ? line.output.cost_usd : null] : []));
-    const paid = [...receipts, ...completions];
+    // Not its `llm` calls: each completes on the run's marked models, so its cost is a REQUEST_COST entry its usage row
+    // already sums (request-start.ts).
+    const paid = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
     if (paid.length) run.decisionCost = paid.every((cost) => typeof cost === "number") ? (paid as number[]).reduce((a, b) => a + b, 0) : null;
   }
 
@@ -1319,7 +1335,9 @@ export class Runs {
   async cancel(run: Run): Promise<boolean> {
     // As stop: already terminal, and no cancel mark is written.
     if (run.imported) return false;
-    if (run.outcome) return false;
+    // Finishing is already ending with its outcome (an answer, a failure, the cap): a cancel now would turn a run that
+    // answered into a cancelled one, since the settle reads the cancel first.
+    if (run.outcome || run.finishing) return false;
     run.cancel = true;
     // First, so no request leaves after the cancel landed, whether or not the process can be reached yet.
     await writeWhole(join(run.dir, RUN_CANCELLED), "").catch((error: Error) => warn(run.id, `its cancel mark is not written: ${error.message}`));
@@ -1358,7 +1376,7 @@ export class Runs {
     const { runGraph } = await import("./graph-view.js");
     const given = {
       run: { id: run.id, agent: run.agentId, revision: run.revision, status, paused: status === "paused", startedAt: run.meta.created_at, endedAt: ended ? (run.endedAt ?? run.updatedAt) : null },
-      ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows),
+      ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows), llmRead: run.llmRead ?? 0,
     };
     // A poll never answers home_busy: a store still held answers the live view, or the last whole one, marked stale.
     try {
@@ -1433,6 +1451,7 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
+      pending: status === "input_required" && state === "waiting" ? pendingOf(run.rows) : null,
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
@@ -1441,8 +1460,8 @@ export class Runs {
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -1461,11 +1480,14 @@ export class Runs {
     return {
       run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, revision: row.revision, kind: row.kind, sha: null,
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
+      ...(typeof meta?.effort === "string" ? { effort: meta.effort } : {}),
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
       review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
       archived_at: row.archivedAt ?? null,
+      // A run read from its row alone has ended: it waits on nothing.
+      pending: null,
       imported_from: row.importedFrom ?? null,
     };
   }

@@ -8,20 +8,21 @@ import { REPLAY } from "./host-tools.js";
 import type { InputIssue } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
 import { chooseModel, llmTiers, nodeTiers, workflowNodes } from "./model.js";
+import { boxAvailability } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
 import { capabilityOf, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 /** A revision's body as it is saved or stored. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; toolSettings?: ToolSettingsMap }
-  | { kind: "workflow"; workflow: unknown; tools?: readonly string[]; harness?: string; toolSettings?: ToolSettingsMap };
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; toolSettings?: ToolSettingsMap }
+  | { kind: "workflow"; workflow: unknown; tools?: readonly string[]; harness?: string; place?: { mode: string; box?: string }; toolSettings?: ToolSettingsMap };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool` (one it does
  *  not bind), `missing` (a bound tool's unset variables), `adapter`, `decision` (a decision provider's unset key), `codeNodes`
- *  (code nodes this server does not run), `shell` (a shell or executor call), `tier` and `harness` name it for a run's 409
- *  details. */
-export type Blocker = InputIssue & { host: boolean; tool?: string; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string };
+ *  (code nodes this server does not run), `shell` (a shell or executor call), `tier`, `harness` and `box` (the place's,
+ *  which this server does not have) name it for a run's 409 details. */
+export type Blocker = InputIssue & { host: boolean; tool?: string; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string };
 
 /** The reason a warning gives: the revision runs once this host has what it names. */
 export const NOT_SET_UP = "not_set_up_here";
@@ -47,6 +48,11 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   const harness = revision.harness ?? DEFAULT_HARNESS;
   const offer = (await harnessOffers(env)).find((h) => h.id === harness);
   if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? `This server does not run ${harness}.`, host: true, harness });
+  const { place } = revision;
+  if (place && place.mode !== "runner") {
+    const box = boxAvailability(env).find((b) => b.id === place.box);
+    if (!box?.available) out.push({ field: "definition.place", reason: NOT_SET_UP, message: `This agent's place is ${place.mode} on ${place.box ?? "no box"}, and ${box?.reason ?? "that is not a box this server has."}`, host: true, ...(place.box ? { box: place.box } : {}) });
+  }
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {

@@ -92,7 +92,7 @@ describe("the claim directory", () => {
     }
   });
 
-  it("its descriptor is closed by close() only, never by a collection: a run that waits reaches it only through a pending open (GRE-3853)", { skip: process.platform === "darwin" ? "by path on macOS: no descriptor path" : false }, async () => {
+  it("its descriptor is closed by close() only, never by a collection: a run that waits reaches it only through a pending open", { skip: process.platform === "darwin" ? "by path on macOS: no descriptor path" : false }, async () => {
     const dir = scratchRoot("claimdir-held");
     try {
       setFlagsFromString("--expose-gc");

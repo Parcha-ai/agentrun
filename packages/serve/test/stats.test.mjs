@@ -146,7 +146,8 @@ test("GET /v2/stats's analytics sums the runs' metrics by harness and effort, da
       { source: "live", ...row(2, 1, 1, 2, 1180, 0.25, 1) },
       { source: "claude-code", ...row(1, 1, 0, 1, 10, 0.5, 0) },
     ],
-    tools: [{ tool: "read", calls: 2, errors: 0 }, { tool: "shell", calls: 1, errors: 1 }],
+    // Each tool by what a person calls it, else the name it was called by.
+    tools: [{ tool: "read", label: "Read files", calls: 2, errors: 0 }, { tool: "shell", label: "shell", calls: 1, errors: 1 }],
   });
   const { doc, op, schema } = await statsSchema(baseUrl);
   assert.deepEqual(schemaProblems(doc, schema, body), []);
@@ -255,4 +256,18 @@ test("a held run still queued (launched, its work not started) counts as active;
     running: ["q", "w", "elsewhere"],
   };
   assert.deepEqual(statsView(store, runs).runs, { total: 3, active: 2, needs_input: 0, failed: 0, status_unknown: 1 });
+});
+
+test("a refused fetch is a failed call in a run's metrics and in GET /v2/stats, whose tool rows carry the name a person reads", { timeout: 60_000 }, async (t) => {
+  const { api, baseUrl } = await serve(t);
+  assert.equal((await api("POST", "/agents", { definition: { id: "reader", name: "reader", instructions: "Read.", tools: ["web_fetch"] } })).status, 201);
+  // A loopback address: the fetch is refused before anything is dialled, and the call still returns, refused.
+  const started = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify(["http://127.0.0.1/"])}` } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const { rows } = await follow(api, started.body.run_id, ["completed"]);
+  assert.deepEqual(rows.filter((r) => r.kind === "tool_result").map((r) => [r.tool_name, r.tool_status]), [["web_fetch", "failed"]], "the timeline reads it failed");
+  const { body } = await api("GET", "/stats?agent=reader");
+  assert.deepEqual(body.analytics.tools, [{ tool: "web_fetch", label: "Fetch web pages", calls: 1, errors: 1 }], "and so do the run's metrics, under the tool's own name");
+  const { doc, schema } = await statsSchema(baseUrl);
+  assert.deepEqual(schemaProblems(doc, schema, body), []);
 });

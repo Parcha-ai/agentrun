@@ -73,6 +73,9 @@ export default function reply(context, faux) {
     if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
     const submit = faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
+    // "Answer once <file> exists.": the node submits when the test has made that file.
+    const gate = /Answer once (\S+?) exists\./.exec(first)?.[1];
+    if (gate) return untilExists(gate).then(() => submit);
     const ms = first.includes("Take your time") ? 60_000 : first.includes("Answer soon") ? 1_500 : 0;
     return ms ? slow(faux, ms, "").then((m) => (m.stopReason === "aborted" ? m : submit)) : submit;
   }
@@ -90,6 +93,11 @@ export default function reply(context, faux) {
   if (users.length > 1 && last === "Fetch again.") {
     const since = context.messages.length - 1 - context.messages.findLastIndex((m) => m.role === "user");
     return since === 0 ? faux.message(faux.toolCall("web_fetch", { url: "http://public.example/" }), { stopReason: "toolUse" }) : faux.message("Fetched again.");
+  }
+  // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
+  if (first.includes("Enrich with monid")) {
+    const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];
+    return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
   // Fetches each URL its first message lists with fetch_page (or the tool it names), one per turn, then says so.
   const fetches = /^Fetch these pages(?: with (\w+))?: (.*)$/s.exec(first);

@@ -15,6 +15,6 @@ export {
   type CapturedState, type HostKey, localHostKey, MAX_SESSION_COOKIE_AGE_MS, seal, sessionVault, type SessionVault, type SessionVaultPort, VAULT_KEYS_FILE, type VaultCookie, type VaultEntry, unseal,
 } from "./vault.js";
 export {
-  type Agent, type AgenticBody, type AgentRow, type ArchiveKind, type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, type RevisionKind, type RevisionRow, type RunRow,
+  type Agent, type AgenticBody, type AgentRow, type ArchiveKind, type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, type RevisionKind, type RevisionPlace, type RevisionRow, type RunRow,
   type ImportedFrom, type ImportedRun, type ImportSource, type RunState, type StartedRun, STORE_FILE, type StoredMetrics, type StoreStats, type StoreAnalytics, type AnalyticsGroup, type AnalyticsFilter, type WorkflowBody,
 } from "./agent-store.js";

@@ -139,6 +139,7 @@ export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: Gu
 
 /** The agent's tool: the WebPage as JSON text, named `name` (fetch_page, its legacy name, runs it too). A run whose
  *  web_fetch resolves to Parallel reads its key as the tool is made, when the run opens. */
+/** Typed here, so its declaration names the schema type by a package serve declares (pi-ai), whatever else the build loads. */
 export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): ToolRegistration<TSchema, JsonValue> {
   if (planeOf(env).web_fetch === "parallel") parallelOf(env);
   return defineTool({

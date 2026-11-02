@@ -141,7 +141,10 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       // A side request's fee is its cost too, on the answer as well: the cap counts the answer's total (cap.ts).
       const usd = typeof total === "number" ? total + (side?.feeUsd() ?? 0) : null;
       if (side && usd !== null) result.usage.cost.total = usd;
-      await mark(REQUEST_COST, { ...COMPACTION, usd }).catch(() => undefined);
+      // Its tokens, in pi's shape, when pi counted any: zeros are no count.
+      const u = result.usage;
+      const usage = u && u.input + u.output + u.cacheRead + u.cacheWrite > 0 ? { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite } : undefined;
+      await mark(REQUEST_COST, usage ? { ...COMPACTION, usd, usage: usage as never } : { ...COMPACTION, usd }).catch(() => undefined);
     }
     return result;
   };
