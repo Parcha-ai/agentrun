@@ -16,7 +16,6 @@ import { fakes, job } from './job.ts';
 import { cost } from '@parcha/agentrun-harness';
 import { codeOf, finishRecording, openRecorder, openSupervisor } from '@parcha/agentrun-harness';
 import { packageCommitRecorder } from '@parcha/agentrun-harness';
-import { isMain } from '../../scripts/is-main.mjs';
 
 /** The run as one value: what the workflow returned, what each package did, what was spent, every fake call. */
 export function summary(place: RunPlace, result: RunResult, local: LocalHost) {
@@ -102,7 +101,7 @@ export function referenceOutput(view: ReturnType<typeof summary>, result: RunRes
   return lines.flatMap((line) => line.split('\n')).map((line) => processText(line));
 }
 
-if (isMain(import.meta)) {
+if (import.meta.main) {
   const { values } = parseArgs({ options: { json: { type: 'boolean' }, dir: { type: 'string' }, chrome: { type: 'boolean' }, box: { type: 'string' }, record: { type: 'string' } } });
   const place = await placeAt(values.dir);
   const chrome = values.chrome ? await localChrome(place, fakes.pages) : undefined;

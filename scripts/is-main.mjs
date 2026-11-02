@@ -2,8 +2,9 @@
 // on 22, 24.2 and later) the answer is that value. Where it does not (Node 20, 23, 24.0-24.1) `if (import.meta.main)` is
 // false for the command too, and the script exits 0 having done nothing: a `--check` that checked nothing. There this
 // refuses the command, with one line on stderr and exit code 1, and leaves a module that is only imported alone, so a test
-// importing a script's functions runs on. `node script.mjs` reads no `engines`, hence the check at run time. Plain
-// JavaScript and builtins only, to load on any Node; scripts/is-main.d.mts types it for the TypeScript examples and tests.
+// importing a script's functions runs on. `node script.mjs` reads no `engines`, hence the check at run time. For the
+// scripts here, which run from their place in the repository: examples and package fixtures, copied elsewhere, keep
+// import.meta.main (entry-points.test.mjs lists them). Plain JavaScript and builtins only, to load on any Node.
 import { readFileSync, realpathSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

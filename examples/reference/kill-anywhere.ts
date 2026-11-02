@@ -28,7 +28,6 @@ import { summary } from './run.ts';
 import { cost } from '@parcha/agentrun-harness';
 import { codeOf, finishRecording, openRecorder, openSupervisor } from '@parcha/agentrun-harness';
 import { packageCommitRecorder } from '@parcha/agentrun-harness';
-import { isMain } from '../../scripts/is-main.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 
@@ -520,7 +519,7 @@ export function render(ledger: Ledger): string[] {
   ];
 }
 
-if (isMain(import.meta)) {
+if (import.meta.main) {
   if (process.argv[2] === '--child') await child();
   else {
     const { values } = parseArgs({ options: { seed: { type: 'string' }, kills: { type: 'string' }, json: { type: 'boolean' }, keep: { type: 'boolean' }, record: { type: 'string' } } });

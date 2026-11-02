@@ -9,7 +9,6 @@ import spec from './demo.json' with { type: 'json' };
 import { fakes } from './fakes.ts';
 import { liveParts, preflight } from './live.ts';
 import { result } from './result.ts';
-import { isMain } from '../../scripts/is-main.mjs';
 
 export const options: DemoOptions = {
   self: import.meta.url, spec, job, fakes, live: liveParts, result, keepRun: true,
@@ -59,7 +58,7 @@ const inlineObject = (text: string | undefined): Record<string, unknown> | undef
   } catch { return undefined; }
 };
 
-if (isMain(import.meta)) {
+if (import.meta.main) {
   let argv: string[] = [];
   let refused: string | undefined;
   // A folder that cannot be placed, a thinking level that is not low, medium or high, a file the input names that the run does not have, or

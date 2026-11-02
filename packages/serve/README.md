@@ -390,7 +390,7 @@ with no stream and no session. Its ten tools:
 | Tool | Routes |
 | --- | --- |
 | `whoami` | `GET /capabilities`: the token checked, and what this server runs. |
-| `agents_list`, `agents_create` | `GET /agents`, `POST /agents` (the arguments are the definition). |
+| `agents_list`, `agents_create` | `GET /agents`, `POST /agents` (the arguments are the definition; `definition` carries any other field, checked by the route). |
 | `agents_revise` | `GET /agents/{id}`, then `PUT /agents/{id}/definition` with the fields given changed, on that revision (`If-Match`). |
 | `runs_start` | `POST /agents/{id}/runs`, answered at once. |
 | `runs_get` | `GET /runs/{id}` (its `pending` is a waiting run's question), with `console_url`. |

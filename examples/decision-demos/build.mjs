@@ -2,7 +2,6 @@
 // question wording, thresholds and schemas stay the same across use cases. Run: node examples/decision-demos/build.mjs
 // The JSON files are what the runner and the console load; edit here and rebuild, or edit the JSON in the console.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { isMain } from "../../scripts/is-main.mjs";
 
 const here = new URL(".", import.meta.url).pathname;
 const labels = JSON.parse(readFileSync(`${here}documents/labels.json`, "utf8"));
@@ -671,7 +670,7 @@ export const WORKFLOWS = { "doc-valid": docValid, "batch-20": batch20, kyb, "mer
 for (const { workflow, inputs: names } of Object.values(USE_CASES)) WORKFLOWS[workflow].schemas.Input.examples = [inputs[names[0]]];
 export const INPUTS = inputs;
 
-if (isMain(import.meta)) {
+if (import.meta.main) {
   mkdirSync(`${here}workflows`, { recursive: true });
   mkdirSync(`${here}inputs`, { recursive: true });
   for (const [name, wf] of Object.entries(WORKFLOWS)) writeFileSync(`${here}workflows/${name}.json`, `${JSON.stringify(wf, null, 2)}\n`);

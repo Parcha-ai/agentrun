@@ -12,7 +12,6 @@ import { Ajv } from 'ajv';
 import { RUN_KEY, type Job, type RunResult } from '@parcha/agentrun-harness';
 import type { Fakes, LedgerRow } from '@parcha/agentrun-harness';
 import { job as reference } from './job.ts';
-import { isMain } from '../../scripts/is-main.mjs';
 
 /** A job, the fakes it runs on, and what its run must show: its status, the gates that fail, the tools whose receipts
  *  are filed `failed`, and for a refused run its code and a phrase its message keeps. */
@@ -119,7 +118,7 @@ export function gates(runDir: string, job: Job): Gate[] {
   ];
 }
 
-if (isMain(import.meta)) {
+if (import.meta.main) {
   const [runDir] = process.argv.slice(2);
   if (!runDir) throw new Error('Usage: node examples/reference/gates.ts <run directory>');
   const report = gates(runDir, reference);

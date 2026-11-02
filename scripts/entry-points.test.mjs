@@ -70,11 +70,35 @@ test('every reviewed site still mentions process.argv[1]', () => {
 });
 
 // A file that names import.meta.main is red unless it is here, with the reason it is safe: everything else asks isMain.
+const copiedOut = 'an example: examples are copied standalone into consumer and scratch projects (the package check, test:examples), so none imports scripts/; a demo, not a check that could pass silently';
+const ownPackage = "a package's test fixture or live script: it keeps to its own package, so it imports nothing from scripts/; driven by that package's tests, not a check that could pass silently";
 const bare = new Map([
   ['scripts/is-main.mjs', 'reads it, and where Node has none refuses the command'],
   ['scripts/is-main.test.mjs', 'names it in comments and checks that this runtime sets it'],
   ['scripts/check-node.mjs', 'names it in a comment, on why it refuses Node 23 and 24.0-24.1'],
   ['apps/viewer/build.mjs', 'deploys from apps/viewer alone (vercel.json, wrangler.json), so imports nothing outside it; its .ts imports already fail loudly on Node 20'],
+  ['examples/agent-learn/demo.mjs', copiedOut],
+  ['examples/decision-demos/build.mjs', copiedOut],
+  ['examples/hero/run.ts', copiedOut],
+  ['examples/issue-triage/session.ts', copiedOut],
+  ['examples/reference/gates.ts', copiedOut],
+  ['examples/reference/kill-anywhere.ts', copiedOut],
+  ['examples/reference/run.ts', copiedOut],
+  ['examples/research-eval.mjs', copiedOut],
+  ['examples/research-live.mjs', copiedOut],
+  ['examples/run-rank-candidates.mjs', copiedOut],
+  ['examples/run-support-answer.mjs', copiedOut],
+  ['examples/vision-agent/run.ts', copiedOut],
+  ['examples/web/agents/company-research/config-page.mjs', copiedOut],
+  ['examples/web/agents/company-research/edit-prompts.mjs', copiedOut],
+  ['examples/web/pack-page.mjs', copiedOut],
+  ['examples/web/server.mjs', copiedOut],
+  ['packages/dsl/test/fixtures/graph/generate.mjs', ownPackage],
+  ['packages/dsl/test/fixtures/graph/record.mjs', ownPackage],
+  ['packages/pi-durable-agent/test/fixtures/serve-sample.mjs', ownPackage],
+  ['packages/pi-durable-agent/test/fixtures/store-sample.mjs', ownPackage],
+  ['packages/pi-durable-disk/test/fixtures/paid-api.ts', ownPackage],
+  ['packages/pi-durable-disk/test/live/ci.ts', ownPackage],
 ]);
 const readsMain = (source) => source.includes('import.meta.main');
 const unasked = (sources) => sources.filter(([file, source]) => readsMain(source) && !bare.has(file)).map(([file]) => file);
