@@ -22,6 +22,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMain } from "../../../../scripts/is-main.mjs";
 
 export const DEFAULT_REGION = "aws-us-east-1";
 /** The host suites the default check runs, in order. */
@@ -523,7 +524,7 @@ export function holdLock(lock: string): Promise<boolean> {
   });
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const [verb, ...rest] = process.argv.slice(2);
   const env = process.env as Env;
   if (verb === "all") {

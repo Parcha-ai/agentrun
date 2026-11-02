@@ -27,6 +27,7 @@ import { finishHandOff, handOffMemory, readMemory } from "./agent/memory.ts";
 import { judgeOf, lookups, PROMPT_FILE, promptForRun, searchLookup, wikipediaLookup } from "./agent/select.ts";
 import { costOf, lastRow, RUN_ID, stateOf } from "./page/source.js";
 import { readRunEntries } from "./replay.mjs";
+import { isMain } from "../../scripts/is-main.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** The page imports the timeline from /timeline/: the package's own built modules, found where Node resolves them. */
@@ -786,4 +787,4 @@ async function main() {
   process.once("SIGTERM", stop);
 }
 
-if (import.meta.main) await main();
+if (isMain(import.meta)) await main();

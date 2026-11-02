@@ -17,6 +17,7 @@ import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim,
 import { codeOf, cost, finishRecording, localHost, openRecorder, openSupervisor, packageCommitRecorder, placeAt, type RunPlace } from '@parcha/agentrun-harness';
 import { githubTools } from './github.ts';
 import { live } from './live.ts';
+import { isMain } from '../../scripts/is-main.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 /** How long the author may take to reach `run`: a take whose author is still drafting after this is not a take, and is stopped (the node conversations are unaffected: this is the draft, inspect and dry-run). */
@@ -303,4 +304,4 @@ async function main() {
   await session({ dir: resolve(values.dir), input, ...(maxUsd === undefined ? {} : { maxUsd }), ...(record ? { record } : {}), plain: values.plain === true, ...(values.transcript ? { transcript: resolve(values.transcript) } : {}) });
 }
 
-if (import.meta.main) await main();
+if (isMain(import.meta)) await main();

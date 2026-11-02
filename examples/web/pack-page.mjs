@@ -8,6 +8,7 @@ import { copyFile, mkdir, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { isMain } from "../../scripts/is-main.mjs";
 
 const HERE = import.meta.dirname;
 const TIMELINE = dirname(fileURLToPath(import.meta.resolve("@parcha/pi-durable-agent/timeline")));
@@ -47,7 +48,7 @@ export async function packPage(outDir, { data = "./data/" } = {}) {
   return out;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const { positionals, values } = parseArgs({ allowPositionals: true, options: { data: { type: "string", default: "./data/" } } });
   if (positionals.length !== 1) {
     console.error("usage: pack-page.mjs <outDir> [--data ./data/]");

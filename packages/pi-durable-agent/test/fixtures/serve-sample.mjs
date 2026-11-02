@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { carryBack, createAgentHome, setPrompts, startRun } from "../../dist/index.js";
+import { isMain } from "../../../../scripts/is-main.mjs";
 
 export const at = (minute, second = 0) => Date.UTC(2026, 9, 22, 14, minute, second);
 export const user = (text, t) => ({ kind: "pi.user", model: [{ role: "user", content: text, timestamp: t }] });
@@ -62,7 +63,7 @@ export async function buildSampleHome(dir) {
   return home;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const dir = path.resolve(process.argv[2] ?? "");
   if (!process.argv[2]) throw new Error("usage: node test/fixtures/serve-sample.mjs <dir>");
   mkdirSync(dir, { recursive: true });

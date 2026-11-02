@@ -5,6 +5,7 @@
 // committed before it died, so two recordings of the same run can differ by the one commit that was in flight at the kill.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { isMain } from '../../../../../scripts/is-main.mjs';
 
 const CLOCK = 1792000000000;
 const ISO = '2026-10-15T00:00:00.000Z';
@@ -27,7 +28,7 @@ export function cut(text) {
   }).join('\n') + '\n';
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const [dir] = process.argv.slice(2);
   if (!dir) throw new Error('usage: node record.mjs <recording directory>');
   const out = fileURLToPath(new URL('./nested.recording.jsonl', import.meta.url));

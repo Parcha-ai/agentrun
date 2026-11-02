@@ -13,6 +13,7 @@ import { appendFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { parseArgs } from "node:util";
+import { isMain } from "../../../../scripts/is-main.mjs";
 
 export type RequestState = "answered" | "held" | "cut";
 
@@ -287,7 +288,7 @@ export async function dispatch(url: string, route: string, key: string, body: un
   return answer;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const { values } = parseArgs({ options: { port: { type: "string" }, host: { type: "string" }, log: { type: "string" } } });
   const api = await startPaidApi({ port: values.port ? Number(values.port) : 0, ...(values.host ? { host: values.host } : {}), ...(values.log ? { log: values.log } : {}) });
   process.stdout.write(`${JSON.stringify({ url: api.url })}\n`);

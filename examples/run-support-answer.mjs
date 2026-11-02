@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isMain } from '../scripts/is-main.mjs';
 
 export const help = `Run the support-answer AgentRun workflow.
 
@@ -91,4 +92,4 @@ export async function main(args = process.argv.slice(2)) {
     return 1;
   } finally { process.off('SIGINT', stop); process.off('SIGTERM', stop); }
 }
-if (import.meta.main) process.exitCode = await main();
+if (isMain(import.meta)) process.exitCode = await main();

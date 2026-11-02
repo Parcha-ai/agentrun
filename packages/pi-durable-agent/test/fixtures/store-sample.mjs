@@ -13,6 +13,7 @@ import { createWorkflowExtension } from "@parcha/agentrun-pi/durable";
 import { openStore } from "../../dist/index.js";
 import { runWorkflowRevision } from "../../dist/workflow.js";
 import { append, assistant, call, research, user } from "./serve-sample.mjs";
+import { isMain } from "../../../../scripts/is-main.mjs";
 
 export const PROMPT_A = [
   "You research one company and write a short brief about it.",
@@ -143,7 +144,7 @@ export async function buildSampleStore(dir) {
   }
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   if (!process.argv[2]) throw new Error("usage: node test/fixtures/store-sample.mjs <dir>");
   const dir = path.resolve(process.argv[2]);
   mkdirSync(dir, { recursive: true });

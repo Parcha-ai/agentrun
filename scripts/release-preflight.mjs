@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
 import { hasVersionSection, loadFragments, unreleasedSection } from './changes.mjs';
+import { isMain } from './is-main.mjs';
 
 const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
@@ -175,7 +176,7 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   return { status: 'passed', tag, commit, license: workspace.license, registry: 'https://registry.npmjs.org/', distTag: 'beta', packages };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   assert.equal(process.argv.length, 4, 'Usage: node scripts/release-preflight.mjs --tag v0.1.0-beta.1');
   assert.equal(process.argv[2], '--tag');

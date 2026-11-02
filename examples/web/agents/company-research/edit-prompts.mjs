@@ -11,6 +11,7 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { checkPrompts, homeRefusal, normalizePrompts, readPromptsFile, readQuestion, ruleText, withQuestion } from "./prompts-lib.mjs";
+import { isMain } from "../../../../scripts/is-main.mjs";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const USAGE = "usage: edit-prompts.mjs --home DIR [--file prompts.json] [--init] | --home DIR --show [--json] | --check [--file prompts.json]";
@@ -123,4 +124,4 @@ export async function main(argv, { api, out = (line) => console.log(line), err =
   }
 }
 
-if (import.meta.main) process.exitCode = await main(process.argv.slice(2));
+if (isMain(import.meta)) process.exitCode = await main(process.argv.slice(2));

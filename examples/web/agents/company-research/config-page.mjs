@@ -16,6 +16,7 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { normalizePrompts, questionOf, ruleText } from "./prompts-lib.mjs";
+import { isMain } from "../../../../scripts/is-main.mjs";
 
 const USAGE = "usage: config-page.mjs --home DIR [--home DIR ...] --out FILE";
 
@@ -230,4 +231,4 @@ export async function main(argv, { api, out = (line) => console.log(line), err =
   }
 }
 
-if (import.meta.main) process.exitCode = await main(process.argv.slice(2));
+if (isMain(import.meta)) process.exitCode = await main(process.argv.slice(2));

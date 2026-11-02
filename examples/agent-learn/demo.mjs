@@ -21,6 +21,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { agentHomeFor, curateNow, finishRun, learnExtension, prepareRun } from './host.mjs';
+import { isMain } from '../../scripts/is-main.mjs';
 
 const AGENT_DIR = join(import.meta.dirname, 'agent');
 const HOST = 'agent-learn-demo';
@@ -537,7 +538,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   return out;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const args = process.argv.slice(2);
   const at = args.indexOf('--dir');
   const dir = at >= 0 ? args[at + 1] : undefined;

@@ -10,6 +10,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, withRecovery, openJournal } from '@parcha/agentrun-dsl/recovery';
+import { isMain } from '../../../../../scripts/is-main.mjs';
 
 const code = (label, body = '({})') => ({ node: 'code', label, code: `s => (${body})` });
 const lookup = (label, id = 'x') => ({ node: 'call', label, via: 'tool', tool: 'lookup', args: { id }, out: 'Found', as: label, deadline_s: 30 });
@@ -116,7 +117,7 @@ export async function generate(directory) {
   return Object.fromEntries(Object.entries(files).map(([file, value]) => [file, text(value)]));
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const out = fileURLToPath(new URL('./', import.meta.url));
   const written = await generate(out);
   console.log(`wrote ${Object.keys(written).length} files under ${out}`);
