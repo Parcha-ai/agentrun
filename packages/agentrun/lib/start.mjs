@@ -17,10 +17,19 @@ export const HOST = "127.0.0.1"; // key-gate: loopback-rule the server this star
 export const KEY_MODELS = [["ANTHROPIC_API_KEY", "anthropic/claude-sonnet-5-5"], ["OPENAI_API_KEY", "openai/gpt-6.1-sol"], ["OPENROUTER_API_KEY", "openrouter/anthropic/claude-sonnet-5.5"]];
 export const modelEnv = (env) => (env.AGENT_MODEL || env.AGENT_MODEL_BASE_URL ? {} : Object.fromEntries(KEY_MODELS.filter(([key]) => env[key]).slice(0, 1).map(([, model]) => ["AGENT_MODEL", model])));
 export const shouldOpen = (args, env, platform = process.platform) => !args.includes("--no-open") && !env.CI && (!["linux", "freebsd"].includes(platform) || Boolean(env.DISPLAY || env.WAYLAND_DISPLAY));
-/** The address a person opens first, as the server says it: the URL of the first line of its output that starts with
- *  "Open ". That line is the server's interface for it (the plain address today, a single-use sign-in link once the server
- *  prints one), so this command never builds the address itself. Resolves undefined when the output ends without one;
- *  the rest of the output is read and dropped, so the server never blocks on a full pipe. */
+/** The URL an "Open " line names: its first word after "Open ", when that is an http(s) URL on `HOST`, where the server
+ *  this command starts listens; any text after it (what the link does) is not part of it. Undefined for any other line. */
+export function openLineUrl(line) {
+  const word = /^Open (\S+)/.exec(line)?.[1];
+  if (word === undefined || !URL.canParse(word)) return undefined;
+  const url = new URL(word);
+  return (url.protocol === "http:" || url.protocol === "https:") && url.hostname === HOST ? word : undefined;
+}
+
+/** The address a person opens first, as the server says it: the URL of the first "Open " line of its output that names
+ *  one (openLineUrl). That line is the server's interface for it (the plain address today, a single-use sign-in link
+ *  once the server prints one), so this command never builds the address itself. Resolves undefined when the output ends
+ *  without one; the rest of the output is read and dropped, so the server never blocks on a full pipe. */
 export function openUrl(stdout) {
   return new Promise((resolve) => {
     let pending = "";
@@ -32,8 +41,8 @@ export function openUrl(stdout) {
       for (let end = pending.indexOf("\n"); end >= 0 && found === undefined; end = pending.indexOf("\n")) {
         const line = pending.slice(0, end).replace(/\r$/, "");
         pending = pending.slice(end + 1);
-        const match = /^Open (\S+)/.exec(line);
-        if (match) resolve((found = match[1]));
+        const url = openLineUrl(line);
+        if (url !== undefined) resolve((found = url));
       }
     });
     stdout.on("end", () => resolve(found));

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { DEFAULT_PORT, freePort, KEY_MODELS, modelEnv, openUrl, server, shouldOpen } from "../lib/start.mjs";
+import { DEFAULT_PORT, freePort, KEY_MODELS, modelEnv, openLineUrl, openUrl, server, shouldOpen } from "../lib/start.mjs";
 
 const PACKAGE = new URL("..", import.meta.url).pathname;
 const BIN = join(PACKAGE, "bin", "agentrun.mjs");
@@ -106,9 +106,20 @@ test("the address to open is the URL on the server's first \"Open \" line, howev
   const plain = stub(["agentrun-serve on http://127.0.0.1:7341/v2 (agent store in /tmp/x)\nAGENTRUN_BASE_URL=http://127.0.0.1:7341/v2\nOp", "en http://127.0.0.1:7341/\n", "Open http://127.0.0.1:7341/other\nGET /v2/health 200\n"]);
   t.after(() => plain.kill());
   assert.equal(await openUrl(plain.stdout), "http://127.0.0.1:7341/");
-  const link = stub(["agentrun-serve on http://127.0.0.1:7342/v2\r\n", "Open http://127.0.0.1:7342/pair?code=Q7-2x\r\n"]);
+  const link = stub(["agentrun-serve on http://127.0.0.1:7342/v2\r\n", "Open http://127.0.0.1:7342/pair?code=Q7-2x (signs this browser in, once)\r\n"]);
   t.after(() => link.kill());
-  assert.equal(await openUrl(link.stdout), "http://127.0.0.1:7342/pair?code=Q7-2x", "a sign-in link is taken as it is");
+  assert.equal(await openUrl(link.stdout), "http://127.0.0.1:7342/pair?code=Q7-2x", "a sign-in link is taken as it is, without the words after it");
+  const elsewhere = stub(["Open https://agents.example.com/ (the public address)\n", "Open file:///etc/passwd\n", "Open not-a-url\n", "Open http://127.0.0.1:7343/\n"]);
+  t.after(() => elsewhere.kill());
+  assert.equal(await openUrl(elsewhere.stdout), "http://127.0.0.1:7343/", "only an http(s) URL on the loopback address this command started the server on");
+});
+
+test("an Open line's URL is its first word, an http(s) URL on the server's loopback address; nothing else is", () => {
+  assert.equal(openLineUrl("Open http://127.0.0.1:7340/"), "http://127.0.0.1:7340/");
+  assert.equal(openLineUrl("Open http://127.0.0.1:7340/pair?code=a.b-c (signs this browser in, once)"), "http://127.0.0.1:7340/pair?code=a.b-c");
+  for (const line of ["Open https://agents.example.com/", "Open ftp://127.0.0.1/", "Open javascript:alert(1)", "Open ", "Opening http://127.0.0.1:7340/", "open http://127.0.0.1:7340/", " Open http://127.0.0.1:7340/"]) {
+    assert.equal(openLineUrl(line), undefined, line);
+  }
 });
 
 test("a server whose output ends with no \"Open \" line gives no address", async () => {
