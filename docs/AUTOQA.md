@@ -127,7 +127,85 @@ edits only its own subsection.
 
 ### Kernel (runs, journal, cap, harness adapters)
 
-_Written by the lane that owns this subsystem._
+Code: `packages/serve/src/{runs,app,harness-app,harness,adapters,cap,request-start}.ts`, `packages/run-adapters`,
+`packages/run-adapters-claude-agent`, `packages/run-adapters-codex`, `packages/pi-durable-disk`, and the timeline of
+`packages/pi-durable-agent`. Rows 8 to 13 of the core catalog are its checks on a live model; the checks below are the
+same ground with no key.
+
+**Seam.**
+
+| | Names on main |
+| --- | --- |
+| Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
+| Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
+| Journal | In the run's store, from `@parcha/pi-durable-agent/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`. Read through `timelineOf` and `runMetricsOf` |
+| Run directory | `DIR/runs/<id>/`: `run.json` (`status`, `holder.pid`, `generation`), `serve.json`, `store/run.sqlite`, `work/`, `process.log` |
+| Adapters it calls | `adapterFor(harness, env, needs: AdapterNeeds)` gives an `AgentAdapter` (`check`, `open`) for a `SessionSpec`, driven by `createHarnessRunner`. There the cap is the runner's `beforeRequest`, asked by `startModelProxy` under a `ProviderPolicy`; on pi it wraps the models (`capModels`) |
+| Takes from the tool plane | `TOOLS` (`ToolEntry`), bound on pi as a `ToolBinding`; `hostTools()` gives claude-agent and codex `HostTool[]`, each with its `REPLAY` (`safe` or `never`) |
+| Takes from places | The revision's `definition.place`: `runner` (the default: a local process under `confinePrefix()`) or `sandbox` with a `box`. A sandbox run on a box this server lacks is `409 agent_not_runnable` naming it (`boxAvailability`); `places` in capabilities lists the boxes, none available yet. `startServe({ box })` takes a `BoxHost` that sweeps the boxes runs left (the run's `box.json`) |
+| Gives the console | The routes above, and `GET /v2/stats` `analytics`, summed from the `RunMetrics` each run's `carryBack` stores |
+| Gives the learning loop | Not wired into serve yet. The seam is run-adapters' `followUpOnce` (one more turn, held to `reserveUsd`), which learn's `reflectBudget` sizes |
+
+**Alone.** No model key, no tool key, no box and no console. Build as in [How to run](#how-to-run), without the console
+lines. Then:
+
+- pi runs alone through the CLI on the tests' faux model. On `faux-output-priced.mjs`, one request's worst case is
+  16,384 output tokens at $100 a million: $1.6384.
+
+  ```sh
+  Q=$(mktemp -d)
+  env -i PATH="$PATH" HOME="$Q" TMPDIR="$Q" node packages/serve/dist/cli.js --data "$Q/data" --port 0 \
+    --drain-timeout 2s --faux packages/serve/test/fixtures/faux-output-priced.mjs
+  ```
+
+  Drive it with the README's quick-start calls; the token is in `$Q/data/.token`. The faux model answers by the message:
+  `What is six times seven?` gives `The answer is 42.`, `Take your time.` holds its answer for 60 s, `Answer once <file>
+  exists.` gives `Now.` once the file exists, and a follow-up `<message>` to `Take your time.` gives
+  `On <message>: done.`.
+- claude-agent and codex run alone only inside the tests. `startServe({ fauxHarness })` puts every harness but pi on
+  run-adapters' `fauxAdapter`; the CLI has no flag for it, and no environment variable turns it on. `claude-run` drives
+  the pinned Claude CLI against `fakeAnthropic`, and `codex-run` drives agentrun-codex's app-server stand-in. From
+  `packages/serve`:
+
+  ```sh
+  node --test --test-reporter=tap test/runs.test.mjs test/harness-run.test.mjs test/cap-unknown.test.mjs \
+    test/harness-cap.test.mjs test/claude-run.test.mjs test/codex-run.test.mjs test/recovery.test.mjs
+  ```
+
+  The checks below name these files without `.test.mjs`.
+
+**Checks.** Each reads `GET /v2/runs/{id}` once the run's timeline says `final: true`, unless it names another route.
+The journal is the `entries` table of the run's `store/run.sqlite`.
+
+1. **Each harness answers.** For every entry of `harnesses[]` with `available: true`, a run ends `completed` with
+   `result.final_answer` set and `cost.usd` a number. Each paid request is counted once. Alone: pi through the CLI
+   (`What is six times seven?`); claude-agent and codex in `harness-run`, `claude-run` and `codex-run`.
+2. **The cap refuses before anything is sent.** `max_cost_usd: 1`, below one request's worst case: `failed`,
+   `error.code: spend_cap_reached`, `result: null`, `cost.usd: 0`. The journal's only request mark is
+   `agentrun.request_started` with `capRefused: true`. Alone: pi through the CLI; claude-agent and codex in
+   `claude-run` and `codex-run`.
+3. **A stopped request counts at the worst case the cap held.** `Take your time.` at `max_cost_usd: 2`; once it reads
+   `working`, `POST /v2/runs/{id}/stop` (`stopped: true`) leaves it `input_required`. A message is a `follow_up`, and
+   the run ends `failed`, `spend_cap_reached`, its `error.message` saying `with $1.638400 spent`. At `10` the follow-up
+   completes. `cost.usd` is `null` both ways. Read before `final`, at the first poll that shows the terminal status, it
+   can still be the live figure (`0`, or `0.0004` after the follow-up). The stopped request's `agentrun.request_ended`
+   mark carries `heldUsd: 1.6384`. Alone: pi through the CLI, and `cap-unknown`. For claude-agent and codex,
+   `harness-cap` covers a crash mid-request and run-adapters' `held-worst-case.test.mjs` a request cut short; no test
+   stops one through serve.
+4. **Cancel ends the run and nothing more is sent.** `POST /v2/runs/{id}/cancel` on a working run answers `202` with
+   `cancel_requested: true`; the run ends `cancelled`, a second cancel says `already_terminal: true`, and a message is
+   `409 not_continuable`. A request cut by the cancel leaves `cost.usd` `null`. Alone: `runs` (pi, on
+   `Take your time.`) and `harness-run` (codex, cancelled while a request is out).
+5. **A crash or a restart resumes the run.** Restart: `Answer once <file> exists.`; once it reads `working`, SIGTERM
+   the server's own PID. It exits within `--drain-timeout` plus 3 s, the run's `holder.pid` exits with it, and
+   `run.json` reads `sleeping`. Start it again on the same `--data` and make the file: the run ends `completed` with
+   `Now.`. Crash: `kill -KILL` the run's `holder.pid`; the run opens again and completes, each paid request counted
+   once. Alone: the restart on pi through the CLI, and `recovery`; the crash in `harness-run` and `claude-run`, and in
+   `codex-run`, which checks that no Codex process is left behind.
+6. **A multi-tool turn completes on claude-agent and codex.** Two tool calls in one model response end `completed`,
+   each call shown before its result under the answer that asked for it, none interrupted. Runnable alone once #1363
+   merges: `node --test test/harness-multi-tool.test.mjs` from `packages/serve`. Until then it hangs, the first of the
+   known open findings, and on a live model it is part of row 8.
 
 ### Tool plane
 
