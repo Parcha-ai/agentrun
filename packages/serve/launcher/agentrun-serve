@@ -17,7 +17,7 @@
 # one in agentrun/seal.key under XDG_CONFIG_HOME (or ~/.config), made here the first time: 32 random bytes in base64,
 # 0600 in a 0700 directory, written by this shell's printf, never on a command line. It is outside the data directory
 # on purpose: a copy of that holds the tool keys as ciphertext alone.
-SECRETS='AGENTRUN_TOKEN AGENTRUN_API_KEY AGENT_MODEL_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY BROWSERBASE_API_KEY OPENROUTER_API_KEY TYPESAFE_API_KEY PARALLEL_API_KEY MONID_API_KEY AGENTRUN_SEAL_KEY'
+SECRETS='AGENTRUN_TOKEN AGENTRUN_API_KEY AGENT_MODEL_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY BROWSERBASE_API_KEY OPENROUTER_API_KEY TYPESAFE_API_KEY PARALLEL_API_KEY MONID_API_KEY AGENTRUN_SEAL_KEY DAYTONA_API_KEY MODAL_TOKEN_ID MODAL_TOKEN_SECRET'
 set -eu
 # Each secret out of the environment and into an unexported variable of this shell (agentrun_secret_<NAME>).
 for name in $SECRETS; do

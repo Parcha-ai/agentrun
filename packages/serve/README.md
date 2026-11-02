@@ -84,6 +84,7 @@ at=2026-10-25T21:04:09.010Z event=auth_failed route=/v2/runs reason=wrong_token
 A request's path has no query. `auth_failed` names the route and why (`no_credential`, `wrong_token`,
 `wrong_link_token`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
+One line at start, `event=boxes`, says which boxes this server has ([Boxes](#boxes)); quiet keeps it too.
 
 ## In a container
 
@@ -173,6 +174,31 @@ A run whose end the agent store cannot take (a full disk) still ends: a cancel m
 its rows, and the server writes the end to the store again every 30 s until it lands; a restart before then reads the
 run as the store last had it. A run whose process was killed is opened again on its next message at once: a heartbeat
 of a process that is gone is not trusted.
+
+## Boxes
+
+A box is a machine apart from this one where a run's tools could run. No run uses a box yet. This release sets the boxes
+up and says which ones this server has. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
+(`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
+refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
+log line says what the server found:
+
+    event=boxes available=<ids or none> unavailable=<ids> <id>="<why>" ...
+
+The line gives a reason for each listed box that is unavailable. A reason never holds a key, a command's output or a
+provider's answer.
+
+- `docker`: the `docker` command on PATH, with a daemon that answers `docker version` for this server's user. It needs no key.
+- `daytona`: needs `DAYTONA_API_KEY`. Set `DAYTONA_API_URL` and `DAYTONA_TARGET` when Daytona's defaults do not fit.
+  The probe makes one authenticated read, of a box that does not exist. If Daytona refuses the key, the box is unavailable.
+- `modal`: needs `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and the SDK, which the host installs (`npm install modal`).
+  Its sandboxes live in the app that `AGENTRUN_BOX_APP` names (default `agentrun`). The probe checks that the SDK loads
+  and the token is set. It asks nothing of the provider.
+- `bwrap` is not in this release yet.
+
+The boxes come from `@parcha/pi-transport`, an optional peer of this package; install it beside the server to use any.
+The keys belong to the server alone. The launcher hands them over with the server's other secrets, and no run's process
+gets them, in its environment or on its pipe.
 
 ## Models
 
@@ -296,7 +322,10 @@ A tool's key comes from one of two places. The server's own environment, through
 name: `PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one, field by field (`parallel` takes
 `PARALLEL_API_KEY`, `monid` `MONID_API_KEY`, `browserbase` `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`), and
 `DELETE` forgets it. `GET /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and
-each field's `set` and `source` (`server`, `stored` or null): never a value, nor any part of one. A field the server is
+each field's `set` and `source` (`server`, `stored` or null): never a value, nor any part of one. `unlocks` holds only
+what capabilities show this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): the
+Parallel key does not list `web_search`, which this server does not bind, and a key whose tools it binds none of
+still lists, with nothing in `unlocks`. A field the server is
 started with is the server's, and wins: saving it is `409 key_set_by_server`. A value is text of at most 1024 bytes
 with no control character (`422` otherwise).
 
@@ -322,7 +351,7 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -408,6 +437,24 @@ system prompt, as every skill is on `pi` and `codex`; so do all of them when tog
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
 `serve/1`), and lists them in `info.x-agentrun-serve.fields`.
+
+## Place
+
+A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
+`bwrap`, `docker`, `modal` or `daytona`. A runner has no shell. In a sandbox the agent's file and shell tools (`read`,
+`write`, `edit`, `bash`) run in the named box, while the agent's loop, its log and every key stay on the server, whatever
+its harness. Any other shape is `422 input_invalid` on `definition.place`. A definition that names none runs in this
+host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one that names a place keeps
+it, `runner` included. An edit that names no place keeps the agent's.
+
+A run may narrow a sandbox agent to `runner`, never widen a runner agent into a sandbox. The run request's field for it
+comes later. A harness's own tools in the box, when they come, will be an option of `sandbox` (such as
+`native_tools: true`), never a third mode.
+
+`GET /v2/capabilities` lists `places`: the modes, the default, and each box with `available` and, when not, the `reason`.
+This server has no box yet: a definition naming one saves with a warning on `definition.place`, and a run of it is
+`409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place` and `capabilities.places`
+`x-agentrun-serve: "place/1"`.
 
 ## Decision workflows
 
@@ -658,7 +705,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   CSP allows this origin only.
 - Each run's door listens on loopback and takes only the server's door token.
 - A run's process gets the server's environment (model keys and the `AGENT_MODEL` variables among it) without the
-  server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token.
+  server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token. It gets none of
+  the boxes' keys either ([Boxes](#boxes)).
 - A run's file tools (`read`, `write`, `edit`) reach its own `work/`, and two places of its own beside it: `read` also
   reaches the run's `tmp/` (next to `work/`, where a command's spilled output would go), and a write may also land in a
   temporary directory the run's environment made for a tool (`createTempDir`). Every other path, a link inside `work/`
