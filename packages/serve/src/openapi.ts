@@ -41,7 +41,9 @@ const closed = (properties: Json, description?: string) => ({ type: "object", ad
 const USD = { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." };
 /** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
 const GROUP = {
-  runs: COUNT, completed: COUNT, failed: { ...COUNT, description: "Failed or escalated." },
+  runs: COUNT, completed: { ...COUNT, description: "Completed, escalated runs included: one completed and waits for a person's review." },
+  needs_review: { ...COUNT, description: "Of `completed`, the escalated runs, which wait for a person's review.", "x-agentrun-serve": "stats/3" },
+  failed: { ...COUNT, description: "Failed: never an escalated run." },
   runs_with_metrics: { ...COUNT, description: "Of `runs`, those that ended with metrics: a running run, and a run whose end wrote none, has none." },
   tokens: { ...COUNT, description: "Input, cache read, cache write and output tokens, summed over `runs_with_metrics`." },
   cost_usd: USD, unknown_cost_runs: { ...COUNT, description: "Runs with no known cost: running, or ended without one." },
@@ -63,8 +65,8 @@ const ANALYTICS = closed({
 const STATS = closed({
   agents: { ...COUNT, description: "Agents not archived." },
   runs: closed(
-    { total: COUNT, active: COUNT, needs_input: COUNT, failed: COUNT, status_unknown: COUNT },
-    "Runs not archived. `total` counts them all; a completed or cancelled run is counted in `total` alone. `failed` includes escalated. Each running run is in exactly one of `active` (this server holds it, queued, working or paused), `needs_input` (it holds it, input_required) and `status_unknown` (it does not hold it, or holds it as ended before its end is written).",
+    { total: COUNT, active: COUNT, needs_input: COUNT, failed: COUNT, needs_review: { ...COUNT, "x-agentrun-serve": "stats/3" }, status_unknown: COUNT },
+    "Runs not archived. `total` counts them all; a completed or cancelled run is counted in `total` alone, but for an escalated one, which completed and waits for a person's review: it is in `needs_review`, never in `failed`. Each running run is in exactly one of `active` (this server holds it, queued, working or paused), `needs_input` (it holds it, input_required) and `status_unknown` (it does not hold it, or holds it as ended before its end is written).",
   ),
   per_agent: {
     type: "array", description: "Each agent not archived, by name then id, with how many of its runs are not archived; an agent with no runs is listed with 0.",

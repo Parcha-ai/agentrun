@@ -591,10 +591,11 @@ metrics and gains the tables from the first `openStore`, and an earlier version 
 and reads every run and `stats` as before (one that ends a run opened again leaves its metrics as they were).
 
 `store.analytics({ from?, to?, agent? })` sums the metrics in one read, over the runs not archived that started in
-[`from`, `to`) (ISO times in UTC) and are `agent`'s, each bound optional: `totals` (the runs, how many completed and
-failed, escalated included, how many have metrics, their tokens and token kinds, requests and unmetered requests, and
-their cost as `stats` sums it), `time` (ended minus started over the ended runs, and `activeMs` over those whose metrics
-have one), `byHarnessEffort` (the revision's harness, `pi` when it names none and `workflow` for a workflow revision, then
+[`from`, `to`) (ISO times in UTC) and are `agent`'s, each bound optional: `totals` (the runs, how many completed, an
+escalated run among them, how many of those need review (`needsReview`, the escalated ones), how many failed, how
+many have metrics, their tokens and token kinds, requests and unmetered requests, and their cost as `stats` sums it),
+`time` (ended minus started over the ended runs, and `activeMs` over those whose metrics have one),
+`byHarnessEffort` (the revision's harness, `pi` when it names none and `workflow` for a workflow revision, then
 the metrics' effort, null when unset), `byDay` (the UTC date a run started), `bySource` (`live`, or the source an imported
 run came from) and `tools` (the 20 with the most calls, by name on a tie, with their errors). Each group has `runs` beside
 `runsWithMetrics`, so a run with no metrics counts as a run and never as 0 tokens; a running run's metrics are its last
