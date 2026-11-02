@@ -14,7 +14,8 @@ describe("model labels", () => {
     const bare = { source: "gateway", default: "anthropic/claude-x", route_prefix: null };
     expect(gatewayPrefix(bare)).toBeUndefined();
     expect(modelLabel("anthropic/claude-x", bare)).toEqual({ text: "anthropic/claude-x" });
-    expect(modelLabel("anthropic/claude-x", { source: "gateway", default: "anthropic/claude-x" })).toEqual({ text: "anthropic/claude-x" }, "a server that names no prefix");
+    // A server that names no prefix at all: nothing is taken off either.
+    expect(modelLabel("anthropic/claude-x", { source: "gateway", default: "anthropic/claude-x" })).toEqual({ text: "anthropic/claude-x" });
   });
   it("leaves a provider's own id, and any id when the models do not come from a gateway, whole", () => {
     expect(modelLabel("openai/gpt-5", gateway)).toEqual({ text: "openai/gpt-5" });
