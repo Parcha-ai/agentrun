@@ -35,6 +35,10 @@ import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
+import { type Place, storedPlace } from "./place.js";
+import { destroyRunBoxes, FAUX_BOX_ENV, sweepRunBoxes } from "./run-box.js";
+import type { BoxProvider } from "@parcha/pi-transport";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 
 export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -70,6 +74,9 @@ const EXIT_AFTER_RELEASE_MS = 30_000;
 /** How many 500 ms ticks in a row a live run's record is unreadable before the server says so. */
 const UNREADABLE_TICKS = 10;
 const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
+/** How long serve's calls on a run's box (its destroy, the start's sweep) may take. */
+const BOX_CALL_MS = 60_000;
+const boxContext = () => withAbortSignal(AbortSignal.timeout(BOX_CALL_MS), BACKGROUND_CONTEXT);
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
 const holderPid = (record: Json | null) => (isObject(record?.holder) && Number.isSafeInteger(record.holder.pid) ? (record.holder.pid as number) : undefined);
@@ -101,6 +108,9 @@ type RunMeta = {
   /** What its newest process took its thinking level from (app.ts's thinkingOf), as its environment had them: `effort`,
    *  the run's effort, and `host`, the host's AGENT_THINKING. Absent for a process an older server started. */
   launch_thinking?: { effort?: string; host?: string };
+  /** Where it runs, as its start resolved it (place.ts): its process reads it. Absent for a run an older server started,
+   *  which ran on the runner. */
+  place?: Place;
 };
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
@@ -292,7 +302,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; fauxBox?: string; runBoxes?: BoxProvider; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
@@ -438,6 +448,7 @@ export class Runs {
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
+      ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
     };
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, known?.revision);
@@ -625,10 +636,17 @@ export class Runs {
   /** Every run's box let go that nothing owns, and every run cgroup no record names: once, before any run of this server
    *  starts, opens again or relaunches, so a box or cgroup being made is never swept away. */
   private sweepOnce(): Promise<void> {
-    const box = this.options.box;
-    if (!box) return Promise.resolve();
+    const { box, runBoxes } = this.options;
+    if (!box && !runBoxes) return Promise.resolve();
     this.swept ??= (async () => {
       const rows = await this.options.agents.request(() => this.store.listRuns());
+      // The boxes of sandbox runs, by their label: one whose run has ended, or is archived, is destroyed. A failure only
+      // warns: the next start sweeps again, and a box's lifetime bounds it.
+      if (runBoxes) {
+        const ended = new Set(rows.filter((row) => row.state !== "running" || row.archivedAt).map((row) => row.id));
+        await sweepRunBoxes(runBoxes, (id) => ended.has(id), boxContext()).catch((error: Error) => warn("-", `its start's sweep of run boxes failed (${error.message}); the next start sweeps again`));
+      }
+      if (!box) return;
       const settled = await sweepBoxes(box.host, box.quarantine, rows.map((row) => ({ id: row.id, dir: join(this.options.agents.dir, "runs", row.id) })));
       for (const [id, how] of Object.entries(settled)) if (how === "quarantined") warn(id, "its box could not be emptied; it is quarantined, and tried again at each start");
     })().catch((error: unknown) => {
@@ -638,6 +656,18 @@ export class Runs {
       throw error;
     });
     return this.swept;
+  }
+
+  /** A sandbox run's box (run-box.ts), destroyed by its label: at every settle, a cancel included, and at archive. A
+   *  failure only warns: the next start's sweep tries again, and the box's lifetime bounds it. */
+  private async dropBox(run: Run): Promise<void> {
+    const { runBoxes } = this.options;
+    if (!runBoxes || run.meta.place?.mode !== "sandbox") return;
+    try {
+      await destroyRunBoxes(runBoxes, run.id, boxContext());
+    } catch (error) {
+      warn(run.id, `its box was not destroyed (${(error as Error).message}); the next start sweeps it`);
+    }
   }
 
   /** The run's box let go (archive, or its process gone after an archive): reaped by the box's own count. */
@@ -656,11 +686,16 @@ export class Runs {
   /** After an archive (a run's, or an agent's, which archives its runs): the box of every run now archived is let go,
    *  now when its process is gone, else when it exits. */
   async archived(): Promise<void> {
-    if (!this.options.box) return;
+    if (!this.options.box && !this.options.runBoxes) return;
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
       if (!row.archivedAt) continue;
-      const run = await this.get(row.id);
-      if (run) await this.teardown(run);
+      // A run's box needs only the runs this server holds: one it has not read has ended, or was swept at its start.
+      const run = this.options.box ? await this.get(row.id) : this.runs.get(row.id);
+      if (!run) continue;
+      // A run's box goes at its archive, its process live or not (an ended run's went at its end): an archived run takes
+      // no message, and a call it still makes gets a fresh box, which its end or the next start's sweep destroys.
+      if (!run.outcome) await this.dropBox(run);
+      await this.teardown(run);
     }
   }
 
@@ -832,6 +867,7 @@ export class Runs {
       ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}), ...(this.options.fauxParallel ? { [FAUX_PARALLEL_ENV]: this.options.fauxParallel } : {}), ...(this.options.fauxOpenrouter ? { [FAUX_OPENROUTER_ENV]: this.options.fauxOpenrouter } : {}) } : {}),
       ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
       ...(this.options.faux && this.options.fauxMonid ? { [FAUX_MONID_ENV]: this.options.fauxMonid } : {}),
+      ...(this.options.faux && this.options.fauxBox ? { [FAUX_BOX_ENV]: this.options.fauxBox } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
       ...(this.options.documents ? { [DOCUMENTS_ENV]: this.options.documents } : {}),
     };
@@ -1020,6 +1056,8 @@ export class Runs {
   /** Ends the run in the agent store, once: how it ended, its cost, a line for the list and its metrics. A store held by
    *  another writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
+    // Its process is gone: its box goes with its end, whatever the end (a follow-up after it gets a fresh box; work/ stays).
+    await this.dropBox(run);
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
@@ -1147,7 +1185,7 @@ export class Runs {
     this.starting++;
   }
 
-  async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; place: Place; effort?: string; maxCostUsd?: number }): Promise<Run> {
     await this.sweepOnce();
     await this.takePlace();
     try {
@@ -1160,12 +1198,13 @@ export class Runs {
     }
   }
 
-  private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; place: Place; effort?: string; maxCostUsd?: number }): Promise<Run> {
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
       created_at: new Date().toISOString(),
       input: options.input,
+      place: options.place,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
     };
@@ -1403,6 +1442,7 @@ export class Runs {
       status,
       state,
       title: run.meta.title,
+      place: run.meta.place ?? { mode: "runner" },
       ...(run.meta.effort ? { effort: run.meta.effort } : {}),
       created_at: run.meta.created_at,
       updated_at: run.updatedAt,

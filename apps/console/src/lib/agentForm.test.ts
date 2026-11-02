@@ -272,3 +272,17 @@ describe("call-only tools", () => {
     expect(defaultTools("pi", offers)).toEqual(["read"]);
   });
 });
+
+describe("sandbox-only tools", () => {
+  const offers = toolOffers([
+    { name: "read", nodes: true, available: true, harnesses: ["pi", "codex"] },
+    { name: "bash", nodes: false, sandbox_only: true, available: true, harnesses: ["pi", "codex"] },
+  ]);
+  it("keeps what capabilities say of a tool: sandbox_only", () => {
+    expect(offers[1]).toEqual({ name: "bash", available: true, harnesses: ["pi", "codex"], sandbox_only: true, nodes: false });
+  });
+  it("lists one for an agent to name, and starts no new agent with it ticked: a new agent's place is the runner", () => {
+    expect(toolsFor("codex", offers).map((t) => t.name)).toEqual(["read", "bash"]);
+    expect(defaultTools("pi", offers)).toEqual(["read"]);
+  });
+});
