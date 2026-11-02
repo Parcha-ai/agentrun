@@ -47,9 +47,9 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED });
   assert.deepEqual(listed.body.keys.map((k) => [k.id, k.unlocks, k.harnesses]), [
     ["parallel", ["web_fetch", "decisions.parallel"], ["pi", "claude-agent", "codex"]],
-    ["monid", [], []],
+    ["monid", ["monid.discover", "monid.inspect", "monid.run"], ["pi"]],
     ["browserbase", ["browser"], ["pi"]],
-  ], "only what this server binds: no web_search, no monid tool");
+  ], "only what this server binds: no web_search; the monid tools, on pi");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
   const file = join(data, "tool-keys.json");
@@ -71,7 +71,7 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
 });
 
 test("each key unlocks only what capabilities bind, a tool or a decision provider, and runs on the union of those tools' harnesses; a name bound later shows with no edit to the key table", async (t) => {
-  for (const [label, env] of [["no key set", {}], ["every key set", { PARALLEL_API_KEY: made(), BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() }]]) {
+  for (const [label, env] of [["no key set", {}], ["every key set", { PARALLEL_API_KEY: made(), MONID_API_KEY: made(), BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() }]]) {
     await t.test(label, async (st) => {
       withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), ...env }, KEYS);
       const { api } = await serve(st);
@@ -89,10 +89,9 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
       await meetsDocument(api, view);
     });
   }
-  // Bound later: once capabilities list web_search or a monid tool, the key table's own names show it.
-  const later = [{ name: "web_fetch", harnesses: ["pi", "claude-agent", "codex"] }, { name: "web_search", harnesses: ["pi"] }, { name: "monid.run", harnesses: ["pi"] }];
+  // Bound later: once capabilities list web_search, the key table's own name shows it.
+  const later = [{ name: "web_fetch", harnesses: ["pi", "claude-agent", "codex"] }, { name: "web_search", harnesses: ["pi"] }];
   assert.deepEqual(unlockedBy(TOOL_KEYS[0].unlocks, later, [{ id: "jev" }]), { unlocks: ["web_fetch", "web_search"], harnesses: ["pi", "claude-agent", "codex"] }, "no parallel provider, no decisions.parallel");
-  assert.deepEqual(unlockedBy(TOOL_KEYS[1].unlocks, later, []), { unlocks: ["monid.run"], harnesses: ["pi"] });
 });
 
 test("a sealed value moved to another field's name does not open there: it is asked for again as a damaged entry", async (t) => {
