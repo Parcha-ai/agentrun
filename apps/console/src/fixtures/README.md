@@ -25,7 +25,9 @@ archive and unarchive, an invalid harness (422 with its `fields`), and a run on 
 - a run pinned to an earlier revision;
 - a workflow run with its typed input;
 - a workflow input its schema refuses (422);
-- a start with no key.
+- a start with no key;
+- a sandbox agent's run on a box the server does not have (409 `agent_not_runnable` with `details.box`), recorded from a
+  server started on the faux model with no box enabled.
 
 `auth.*` are the owner's sign-in routes, recorded on a fresh server with accounts (the CLI's default) as the page meets them (same origin, the session cookie):
 - no password yet;

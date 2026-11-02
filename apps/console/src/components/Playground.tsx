@@ -2,10 +2,16 @@ import { ArrowRight, Copy, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
+import { ClientError } from "@/lib/client";
 import { curlFor, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { cn } from "@/lib/utils";
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
+
+/** A start that did not succeed, as the response pane shows it: the server's typed error whole (its `details`
+ *  included) with the fields a 422 names, or a network failure. */
+export const startFailure = (e: unknown, ms: number): StartResult =>
+  e instanceof ClientError ? { status: e.status, ms, body: { error: { ...e.toApiError(), ...(e.fields ? { fields: e.fields } : {}) } } } : { status: 0, ms, body: { error: { code: "network", message: String(e) } } };
 export type PlaygroundProps = {
   agents: Agent[];
   revisions?: { revision: string; version: number; current: boolean; note: string | null }[];
@@ -50,6 +56,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [pane, setPane] = useState<"code" | "response">(initialResult ? "response" : "code");
   const [lang, setLang] = useState<"curl" | "fetch">("curl");
   const [result, setResult] = useState<StartResult | null>(initialResult);
+  // A refused start, said plainly above its answer: the server's reason, and the box it names when it lacks one.
+  const refusal = useMemo(() => {
+    const error = (result && result.status >= 400 ? (result.body as { error?: { message?: unknown; details?: { box?: unknown } } } | null)?.error : undefined);
+    return error && typeof error.message === "string" ? { message: error.message, box: typeof error.details?.box === "string" ? error.details.box : undefined } : undefined;
+  }, [result]);
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
   const built = startBody(kind, { text, revision, effort, maxCostUsd: cap });
@@ -137,6 +148,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           ) : result && (
             <>
               <p className="border-b px-5 py-2.5 font-mono text-[12px] md:px-6"><span className={result.status < 300 ? "text-success-text" : "text-destructive-text"}>{result.status}</span> <span className="text-muted-foreground">{result.ms} ms</span></p>
+              {refusal && (
+                <p className="border-b px-5 py-2.5 font-mono text-[12px] text-destructive-text md:px-6" role="alert">
+                  The run did not start: {refusal.message}{refusal.box ? <span className="text-muted-foreground"> (box: {refusal.box})</span> : null}
+                </p>
+              )}
               {result.runId && live ? (
                 // The server answered 202: the run itself, followed until it ends, with the raw answer one click away.
                 <>
