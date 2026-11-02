@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -42,6 +42,39 @@ describe("endLeftCommands: the commands a gone host left running in its box", ()
 		expect(existsSync(late)).toBe(false);
 		// None left: a second call kills nothing.
 		expect(await endLeftCommands(attached.value, context)).toEqual({ ok: true, value: 0 });
+		await box.destroy(context);
+	});
+});
+
+describe("endLeftCommands: a command whose session has not written its group yet", () => {
+	it("leaves it a tombstone, so the session never runs its command, and kills nothing it cannot see", async () => {
+		const provider = localBoxes({ root });
+		const made = await provider.create({ maxLifetimeMs: 60_000 }, context);
+		if (!made.ok) throw made.error;
+		const box = made.value;
+		const state = join(root, box.id, "tmp", ".pi-transport");
+		mkdirSync(state, { recursive: true });
+		// The session opened its group file and was cut before it wrote its group.
+		writeFileSync(join(state, "cut.pid"), "");
+		expect(await endLeftCommands(box, context)).toEqual({ ok: true, value: 0 });
+		expect(existsSync(join(state, "cut.cancel"))).toBe(true);
+		// The session goes on as boxEnv's does: it writes its group, finds the tombstone and ends without its command.
+		const ran = join(box.facts().workspace, "ran.txt");
+		const lead = await box.exec(
+			[
+				"sh",
+				"-c",
+				`echo $$ > "$1"; if [ -e "$2" ]; then rm -f "$1" "$2"; exit 130; fi; touch ${ran}`,
+				"lead",
+				join(state, "cut.pid"),
+				join(state, "cut.cancel"),
+			],
+			undefined,
+			context,
+		);
+		if (!lead.ok) throw lead.error;
+		expect(await lead.value.wait()).toEqual({ ok: true, value: 130 });
+		expect(existsSync(ran)).toBe(false);
 		await box.destroy(context);
 	});
 });

@@ -4,15 +4,22 @@ import { type Box, BoxError } from "./box.ts";
 import { finish } from "./files.ts";
 
 /**
- * Kills every command group `boxEnv` (`@parcha/pi-transport/hands`) wrote down in the box, and forgets it. A command's
- * group file is `<tmp>/.pi-transport/<id>.pid`, `<tmp>` the box's `TMPDIR` or `/tmp`, as `boxEnv` writes it; a test of
- * this package runs the two together, so the layout stays one.
+ * Kills every command group `boxEnv` (`@parcha/pi-transport/hands`) wrote down in the box, as its own kill does: a group
+ * file is `<tmp>/.pi-transport/<id>.pid`, `<tmp>` the box's `TMPDIR` or `/tmp`. A file still empty (its command's session
+ * started and has not written its group yet) gets the tombstone `<id>.cancel` and is read once more: either the group
+ * is seen here, or the session sees the tombstone and never runs its command. A group's file goes only once no live
+ * process of the group is left (a zombie not counted); a group still alive after 5 s fails the call, its file kept. A
+ * test of this package runs it against `boxEnv`'s own files, so the layout stays one.
  */
 const LEFT_SCRIPT = [
 	't=$TMPDIR; [ -n "$t" ] || t=/tmp; s=$t/.pi-transport; n=0',
-	'for f in "$s"/*.pid; do [ -f "$f" ] || continue; g=$(cat "$f" 2>/dev/null); [ -n "$g" ] && kill -KILL "-$g" 2>/dev/null && n=$((n+1)); rm -f "$f"; done',
+	`live() { if [ ! -r /proc/self/stat ]; then kill -0 "-$1" 2>/dev/null; return; fi; cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$1" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($1 != "Z" && $3 == g) n++ } END { exit n > 0 ? 0 : 1 }'; }`,
+	'for f in "$s"/*.pid; do [ -f "$f" ] || continue; id=$(basename "$f" .pid); g=$(cat "$f" 2>/dev/null)',
+	'if [ -z "$g" ]; then touch "$s/$id.cancel"; g=$(cat "$f" 2>/dev/null); fi; [ -n "$g" ] || continue',
+	'kill -KILL "-$g" 2>/dev/null; i=0; while [ $i -lt 50 ] && live "$g"; do sleep 0.1; i=$((i+1)); done',
+	'if live "$g"; then echo "the command group $g is still alive" >&2; exit 1; fi; rm -f "$f"; n=$((n+1)); done',
 	'echo "$n"',
-].join("; ");
+].join("\n");
 
 const LEFT_TIMEOUT_MS = 15_000;
 

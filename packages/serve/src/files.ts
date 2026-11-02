@@ -1,8 +1,8 @@
 // The small JSON files the server reads and writes beside the agent store.
 import { randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
-import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { closeSync, constants, existsSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { Json } from "./validate.js";
 
 /** The server's own file in each run's directory: the run's title, input and how it was asked to run. */
@@ -91,5 +91,38 @@ export function writeDurableSync(path: string, text: string, mode = 0o600): void
     fsyncSync(dir);
   } finally {
     closeSync(dir);
+  }
+}
+
+const DIRECTORY = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+const NEW_FILE = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+const HELD_PATHS = existsSync("/proc/self/fd");
+
+/** Writes `data` as a new file `name` in `dirs` below the run's `work`, never through a link: a box's command can plant
+ *  one there, and this process writes with the server's rights. Each directory is made when missing and opened without
+ *  following a link, the next reached through the one held before it (`/proc/self/fd`), and the file is created, never
+ *  replaced: a link in the way refuses the write (ELOOP, ENOTDIR or EEXIST). Without /proc, each step is reached by its
+ *  path, which a link swapped in between two steps could still turn. */
+export async function writeInWork(work: string, dirs: readonly string[], name: string, data: string | Uint8Array): Promise<void> {
+  let dir = await open(work, DIRECTORY);
+  let path = work;
+  const below = (part: string) => (HELD_PATHS ? `/proc/self/fd/${dir.fd}/${part}` : join(path, part));
+  try {
+    for (const part of dirs) {
+      await mkdir(below(part)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") throw error;
+      });
+      const next = await open(below(part), DIRECTORY);
+      await dir.close();
+      [dir, path] = [next, join(path, part)];
+    }
+    const file = await open(below(name), NEW_FILE, 0o644);
+    try {
+      await file.writeFile(data);
+    } finally {
+      await file.close();
+    }
+  } finally {
+    await dir.close();
   }
 }

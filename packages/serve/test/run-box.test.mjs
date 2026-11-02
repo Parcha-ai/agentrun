@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -19,6 +19,8 @@ const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const WORK = "/run/agentrun/run/work";
+/** A value planted in the server's environment, which the box must not hold. */
+const PLANTED = ["planted", "foo", "sentinel"].join("-");
 
 /** A fake docker first on PATH, with docker listed in AGENTRUN_BOXES, for test `t`. */
 async function fakeDocker(t, vars = {}) {
@@ -101,7 +103,7 @@ test("a mount source is refused when it is, or runs through, a link below the da
 });
 
 test("fake docker: one create per run, with no network, serve's user, work/ alone at its target, the run's labels and the fixed environment as NAME=value; a setting or a request field cannot open the network; destroyed at the run's end", { timeout: 120_000 }, async (t) => {
-  const docker = await fakeDocker(t, { AGENTRUN_DOCKER_IMAGE: "registry.example/agentrun-box:1", AGENTRUN_DOCKER_NETWORK: "host", AGENTRUN_BOX_NETWORK: "open", FOO_API_KEY: "planted-key-value" });
+  const docker = await fakeDocker(t, { AGENTRUN_DOCKER_IMAGE: "registry.example/agentrun-box:1", AGENTRUN_DOCKER_NETWORK: "host", AGENTRUN_BOX_NETWORK: "open", FOO_API_KEY: PLANTED });
   const { api, data } = await serve(t, { faux: PROBE });
   assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker"), { id: "docker", available: true });
   await boxedAgent(api);
@@ -120,7 +122,7 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   assert.match(said[3].text, /\/run\/agentrun\/run\/work\/missing\.md/, "an error names the box's path");
   assert.ok(!said[3].text.includes(realpathSync(data)), "never the data root");
   assert.equal(said[1].text, "hi");
-  assert.ok(!said[2].text.includes("planted-key-value"), "the run's environment is not the box's");
+  assert.ok(!said[2].text.includes(PLANTED), "the run's environment is not the box's");
   assert.equal(readFileSync(join(data, "runs", runId, "work", "out.txt"), "utf8"), "hi");
   const runs = docker.runs();
   assert.equal(runs.length, 1, "one box for the run's calls");
@@ -224,4 +226,33 @@ test("fake docker: the start's sweep destroys the box of a run that has ended, a
   await until(() => docker.removed().includes("a".repeat(64)), "the sweep");
   assert.deepEqual(docker.removed(), ["a".repeat(64)]);
   assert.deepEqual((await docker.containers()).map((c) => c.Id), ["b".repeat(64)]);
+});
+
+test("a link a box's command plants in work/ never turns the server's own writes there: monid's and the browser's evidence are refused through it, and written beside it", async (t) => {
+  const { monidText, CLIP } = await import("../dist/monid.js");
+  const { evidenceIn } = await import("../dist/tools.js");
+  const work = realpathSync(await scratch(t));
+  const outside = realpathSync(await scratch(t));
+  const huge = { runId: "run_1", output: "x".repeat(CLIP + 10) };
+  // evidence/ itself a link out: the whole answer is not filed, and nothing lands outside.
+  await symlink(outside, join(work, "evidence"));
+  assert.match(await monidText(huge, work, "run"), /the whole answer could not be saved \((ELOOP|ENOTDIR)\)\]$/);
+  await assert.rejects(evidenceIn(work).file("page", { tool: "browser_read", facts: {}, body: "text" }), (error) => ["ELOOP", "ENOTDIR"].includes(error.code));
+  assert.deepEqual(await readdir(outside), []);
+  // evidence/ real, evidence/monid a link out: refused the same.
+  await rm(join(work, "evidence"));
+  await mkdir(join(work, "evidence"));
+  await symlink(outside, join(work, "evidence", "monid"));
+  assert.match(await monidText(huge, work, "run"), /could not be saved \((ELOOP|ENOTDIR)\)\]$/);
+  assert.deepEqual(await readdir(outside), []);
+  // A file's own name a link out: never written through; evidence takes the next name.
+  await writeFile(join(outside, "target.md"), "kept");
+  await symlink(join(outside, "target.md"), join(work, "evidence", "0001-browser_read.md"));
+  assert.deepEqual(await evidenceIn(work).file("page", { tool: "browser_read", facts: {}, body: "text" }), { path: "evidence/0002-browser_read.md", bodyLine: 3 });
+  assert.equal(readFileSync(join(outside, "target.md"), "utf8"), "kept");
+  assert.deepEqual(await readdir(outside), ["target.md"]);
+  // With no link in the way, both file as before.
+  await rm(join(work, "evidence", "monid"));
+  assert.match(await monidText(huge, work, "run"), /the whole answer is in the run's files at evidence\/monid\/run_1\.json\]$/);
+  assert.equal(readFileSync(join(work, "evidence", "monid", "run_1.json"), "utf8"), JSON.stringify(huge));
 });

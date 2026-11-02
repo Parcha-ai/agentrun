@@ -463,8 +463,10 @@ request's `place` and `capabilities.places` `x-agentrun-serve: "place/1"`.
 With `AGENTRUN_BOXES=docker` and a Docker daemon this server's user may use, a run whose place is
 `{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `read`, `write`, `edit` or `bash` call
 (a run with no such call gets none). Those four tools are pi's own, on every harness; their calls run in the container.
-`fetch_page`, `web_fetch`, `browser` and the `monid.*` tools stay on this server, and so do the run's loop, its log,
-its model calls and every key.
+`fetch_page`, `web_fetch` and the `monid.*` tools stay on this server, and so do the run's loop, its log, its model
+calls and every key. What the server itself files in `work/` (monid's long answers, the browser's evidence) never goes
+through a link a box's command planted there. `browser` is runner-only for now (`422` in a sandbox place): its downloads
+go through `work/` by path.
 
 - The container binds the run's `work/` alone, read-write, at `/run/agentrun/run/work`, where the tools start. Nothing
   else of the data directory enters it. `read`, `write` and `edit` take a path in that directory, relative or absolute;

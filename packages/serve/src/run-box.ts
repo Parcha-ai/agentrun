@@ -75,7 +75,7 @@ export function runBox(provider: () => Promise<BoxProvider>, run: { id: string; 
   let held: Promise<ExecutionEnv> | undefined;
   const open = async (context: Context): Promise<ExecutionEnv> => {
     const boxes = await provider();
-    const [{ boxEnv }, { endLeftCommands }] = await Promise.all([import("@parcha/pi-transport/hands"), import("@parcha/pi-transport/box/left-commands")]);
+    const { boxEnv, endLeftCommands } = await import("@parcha/pi-transport/hands");
     let box = await attachRunBox(boxes, run.id, context);
     if (box) {
       // A process before this one left it: what it still runs is killed first, since its calls were answered interrupted.

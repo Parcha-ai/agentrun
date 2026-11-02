@@ -288,7 +288,7 @@ const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONT
   `killUnconfirmed` is `true`, and the command stays tracked, so `cleanup()` ends it with the rest. `killUnconfirmed` is
   absent when the group was confirmed gone, which is the normal case.
 - A host that dies leaves its commands running (ending a `docker exec` client does not end its program), and its
-  `cleanup()` with it. `endLeftCommands(box, context)`, from `@parcha/pi-transport/box/left-commands`, kills every command
+  `cleanup()` with it. `endLeftCommands(box, context)`, from `@parcha/pi-transport/hands`, kills every command
   group an environment wrote down in the box: the host that takes a box over calls it once, before its first command.
 - The variables a caller asks for, `PATH` included, reach the command alone. The environment's own scripts keep the
   box's search path, so a `PATH` with no shell in it still runs a program named by its path.

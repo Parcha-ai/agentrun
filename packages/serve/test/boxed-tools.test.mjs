@@ -19,7 +19,9 @@ const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const NO_SHELL = "<harness>\n[error] Tool bash is not available\n</harness>";
-const SENTINELS = { FOO_API_KEY: "planted-key-value", OPENAI_API_KEY: "planted-model-key", MONID_API_KEY: "planted-tool-key" };
+// Values planted in the server's environment, each one no box may hold: an unnamed key, a model key and a tool key.
+const planted = (name) => `planted-${name}-sentinel`;
+const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("model"), MONID_API_KEY: planted("tool") };
 const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 // What a shell adds to its own environment, and what pi-transport's local box adds (its marker and private TMPDIR).
 const SHELL_OWN = ["OLDPWD", "PWD", "SHLVL", "_"];
@@ -200,7 +202,7 @@ test("a narrowed run of a box this server does not have runs, without bash; unna
   assert.deepEqual(answers(data, run.run_id).map((a) => [a.tool, a.text]), [["bash", NO_SHELL]]);
 });
 
-test("bash is a 422 on an agent whose place is the runner (named or by default), and a workflow whose place is a box is a 422", async (t) => {
+test("bash is a 422 on an agent whose place is the runner (named or by default); a workflow whose place is a box, and the browser in one, are 422", async (t) => {
   const { api } = await boxed(t);
   for (const place of [undefined, { mode: "runner" }]) {
     const made = await api("POST", "/agents", { definition: { id: "shell", name: "shell", instructions: "Probe.", tools: ["read", "bash"], ...(place ? { place } : {}) } });
@@ -209,6 +211,10 @@ test("bash is a 422 on an agent whose place is the runner (named or by default),
   }
   const flow = await api("POST", "/agents", flowAgent("flow", undefined, { place: SANDBOX }));
   assert.deepEqual([flow.status, flow.body.error.fields.map((f) => f.field)], [422, ["definition.place"]]);
+  // The browser writes work/ from this machine by path, which a box's command could turn through a link: runner only.
+  const browser = await api("POST", "/agents", { definition: { id: "browsing", name: "browsing", instructions: "Probe.", tools: ["bash", "browser"], place: SANDBOX } });
+  assert.deepEqual([browser.status, browser.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.tools[1]", "not_an_option"]]]);
+  assert.match(browser.body.error.fields[0].message, /runs on the runner only/);
   // And a place that tries to open the box's network is no place.
   const open = await api("POST", "/agents", { definition: { id: "open", name: "open", instructions: "Probe.", tools: ["bash"], place: { ...SANDBOX, network: "open" } } });
   assert.deepEqual([open.status, open.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.place", "not_allowed"]]]);

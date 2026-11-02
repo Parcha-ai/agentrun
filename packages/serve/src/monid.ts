@@ -8,8 +8,7 @@
 // caller stops, or one that outlasts the wait, is asked to stop. Every answer reaches the model as JSON, cut at CLIP
 // characters, the whole of it then filed under the run's work/evidence/monid/.
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { writeInWork } from "./files.js";
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -139,8 +138,10 @@ export async function monidText(answer: MonidAnswer, work: string, label: string
   const name = `${runId ?? `${label}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`}.json`;
   const cut = `${text.slice(0, CLIP)}\n[cut at ${CLIP} of ${text.length} characters; `;
   try {
-    await mkdir(join(work, "evidence", "monid"), { recursive: true });
-    await writeFile(join(work, "evidence", "monid", name), text);
+    // Never through a link a box's command planted in work/ (files.ts); an answer filed already keeps its file.
+    await writeInWork(work, ["evidence", "monid"], name, text).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+    });
   } catch (error) {
     // The error's code only (ENOSPC, ENOTDIR): its message names the server's paths.
     return `${cut}the whole answer could not be saved (${(error as NodeJS.ErrnoException)?.code ?? "write failed"})]`;

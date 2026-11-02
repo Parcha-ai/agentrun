@@ -17,7 +17,9 @@ const LIVE = process.env.AGENTRUN_SERVE_LIVE_DOCKER === "1";
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
-const SENTINELS = { FOO_API_KEY: "planted-key-value", OPENAI_API_KEY: "planted-model-key", MONID_API_KEY: "planted-tool-key" };
+// Values planted in the server's environment, each one no box may hold: an unnamed key, a model key and a tool key.
+const planted = (name) => `planted-${name}-sentinel`;
+const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("model"), MONID_API_KEY: planted("tool") };
 const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 const SHELL_OWN = ["OLDPWD", "PWD", "SHLVL", "_", "HOSTNAME"];
 

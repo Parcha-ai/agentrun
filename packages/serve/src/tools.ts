@@ -4,12 +4,11 @@
 // without `bash`, so a run gets no shell on this machine; in a box, pi's four, each call made in the box. `bash` may be
 // named only by an agent whose place is a box (runnable.ts).
 import type { TSchema } from "@earendil-works/pi-ai";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { AppContext } from "@parcha/pi-durable-disk";
 import type { CodingSource } from "./coding-tools.js";
+import { writeInWork } from "./files.js";
 import { FETCH_PAGE_TOOL, fetchOptions, fetchPage, fetchPageTool } from "./fetch-page.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
@@ -84,6 +83,9 @@ export type ToolEntry = {
   callOnly?: true;
   /** Only an agent whose place is a sandbox may name it: it runs in the box (runnable.ts). */
   sandboxOnly?: true;
+  /** No agent whose place is a sandbox may name it: it writes the run's work/ from this machine by paths a box's command
+   *  could turn through a link (runnable.ts). */
+  runnerOnly?: true;
 };
 
 const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): ToolEntry => ({
@@ -111,20 +113,19 @@ export const evidenceIn = (work: string) => {
   let seq = 0;
   return {
     file: async (label: string, record: { tool: string; facts: Record<string, unknown>; body: string | Uint8Array; ext?: string }) => {
-      const dir = join(work, "evidence");
-      await mkdir(dir, { recursive: true });
       const facts = JSON.stringify({ label, tool: record.tool, ...record.facts });
       const text = typeof record.body === "string";
       for (;;) {
         const name = `${String(++seq).padStart(4, "0")}-${record.tool}`;
         try {
-          await writeFile(join(dir, text ? `${name}.md` : `${name}.json`), text ? `${facts}\n\n${record.body}` : `${facts}\n`, { flag: "wx" });
+          // Never through a link a box's command planted in work/ (files.ts).
+          await writeInWork(work, ["evidence"], text ? `${name}.md` : `${name}.json`, text ? `${facts}\n\n${record.body}` : `${facts}\n`);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
           throw error;
         }
         if (text) return { path: `evidence/${name}.md`, bodyLine: 3 };
-        await writeFile(join(dir, `${name}.${record.ext ?? "bin"}`), record.body);
+        await writeInWork(work, ["evidence"], `${name}.${record.ext ?? "bin"}`, record.body);
         return { path: `evidence/${name}.json`, bodyPath: `evidence/${name}.${record.ext ?? "bin"}` };
       }
     },
@@ -137,6 +138,8 @@ const browserTool: ToolEntry = {
   summary: "Drive a Browserbase browser: open pages, read and screenshot them, and act on them.",
   needs: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
   nodes: true,
+  // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
+  runnerOnly: true,
   bind: async (host) => {
     const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY }] = await Promise.all([
       import("@earendil-works/chord/context"),
