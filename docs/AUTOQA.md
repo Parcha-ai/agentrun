@@ -135,7 +135,51 @@ _Written by the lane that owns this subsystem._
 
 ### Places (boxes, home, files)
 
-_Written by the lane that owns this subsystem._
+**Seam.** Takes a revision's `definition.place` (`runner`, or `sandbox` with its box) and a run request's
+`place: "runner"`, which only narrows. Gives back the run's resolved `place` (kept in its `serve.json`, shown by
+`GET /v2/runs/{id}`) and `capabilities.places`, whose boxes come from the box registry (`boxes.ts`): runs execute in
+`docker` only. In the run's process, `codingSource(place, box?)` (`coding-tools.ts`) is the boxed coding source: on the
+runner pi's `read`, `write` and `edit`; in a box those and `bash`, each call on pi-transport's `boxEnv` over the run's
+box (`run-box.ts`). pi's tool table and the other harnesses' `hostTools` both take it, and the tool plane's permission
+gate wraps it. `agentWorkDir(runDir, place)` (`place.ts`) is the run's `work/` as its tools see it: `<runDir>/work` on
+the runner, `/run/agentrun/run/work` in a box.
+
+**Alone.** No model key, no network. Without Docker, the faux box (pi-transport's local box, `startServe({ fauxBox })`)
+and a fake `docker` first on PATH:
+
+```sh
+cd packages/serve && node --test test/boxed-tools.test.mjs test/run-box.test.mjs test/place.test.mjs
+```
+
+With a Docker daemon this user may use, and `docker pull debian:bookworm-slim` done, the real container on the faux
+model (it runs each tool call its first message lists):
+
+```sh
+AGENTRUN_BOXES=docker packages/serve/launcher/agentrun-serve --data "$QA_DATA" --port 0 \
+  --faux packages/serve/test/fixtures/faux-probe.mjs
+# POST /v2/agents {"definition": {"id": "boxed", "name": "boxed", "instructions": "Probe.",
+#   "place": {"mode": "sandbox", "box": "docker"}, "tools": ["read", "write", "edit", "bash"]}}
+# POST /v2/agents/boxed/runs {"input": {"content": "{\"probe\": [{\"tool\": \"bash\", \"args\": {\"command\": \"printf hi > out.txt; env\"}}]}"}}
+```
+
+`AGENTRUN_SERVE_LIVE_DOCKER=1 node --test test/boxed-tools.docker.test.mjs` runs the same on pi, claude-agent and
+codex (CI's `transport-docker` job, advisory).
+
+**Checks.**
+
+1. `capabilities.places.boxes`: `docker` is available only when `docker version` answers; every other box is
+   unavailable with a reason.
+2. A sandbox run's `bash` `printf hi > out.txt` shows in `GET /v2/runs/{id}/files`. `docker ps --filter
+   label=agentrun.run=<id>` lists one container while the run lives, and none once it completed, was cancelled or was
+   archived.
+3. In the box, `env` holds `LANG`, `HOME=/tmp`, `PATH` and `HOSTNAME` and no key or token; `/proc/net/dev` lists `lo`
+   only. `docker inspect` shows `NetworkMode` `none`, one bind of `work/` at `/run/agentrun/run/work`, and `User`
+   the server's uid:gid.
+4. A run request with `place: "runner"`: the run view says runner, `bash` answers "not available", and no container
+   is made. A runner agent naming `bash`, and a workflow with a sandbox place, are `422`.
+5. A link swapped in at a run's `work/` before its first call: the call fails naming the link, and no container is made.
+6. SIGKILL the run's process (the holder pid in `runs/<id>/run.json`) while a `bash` sleeps: the relaunch reuses the
+   container (`docker ps` lists the same one id) and the sleep is gone.
 
 ### Console, import and analytics
 
