@@ -396,6 +396,28 @@ test("a note's name that holds a value made secret after it was written is never
   assert.deepEqual([own.status, own.body], [200, NEW]);
   const old = await api("GET", "/agents/namer/learning/files/old-plan.md");
   assert.equal(old.status, 200);
-  const shown = JSON.stringify([view, page1, page2, log, diff, (await api("GET", `/runs/${two.view.run_id}/learning`)).body, old.body, [...old.headers], [...own.headers]]);
+  // A retire by that name: the checks refuse it (its name holds a secret now), naming none of it.
+  const retire = await api("POST", `/agents/namer/learning/files/${named}/retire`, undefined, { "if-match": own.headers.get("etag") });
+  assert.deepEqual([retire.status, retire.body?.error?.problems?.map((p) => p.rule)], [400, ["secret_value"]]);
+  const shown = JSON.stringify([view, page1, page2, log, diff, (await api("GET", `/runs/${two.view.run_id}/learning`)).body, old.body, [...old.headers], [...own.headers], retire.body]);
   assert.ok(!shown.includes(value), "the value is nowhere a person reads");
+});
+
+test("a retire passes the checks a PUT does: a note at the 4 KB cap that status: retired would push over it is 400 with problems, and nothing is committed", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t);
+  await made(api, learner("capped"));
+  const repo = repoOf(data, "capped");
+  const head = note("Full", "A note at the cap", "");
+  const full = `${head}${"x".repeat(4095 - Buffer.byteLength(head))}\n`;
+  assert.equal(Buffer.byteLength(full), 4096);
+  const files = "/agents/capped/learning/files";
+  const created = await api("PUT", `${files}/full.md`, { text: full }, { "if-none-match": "*" });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const main = git(repo, ["rev-parse", "main"]);
+  const objectsBefore = objects(repo);
+  const retired = await api("POST", `${files}/full.md/retire`, undefined, { "if-match": created.headers.get("etag") });
+  assert.deepEqual([retired.status, retired.body?.error?.code, retired.body?.error?.problems], [400, "bad_request", [{ rule: "too_large", path: "full.md", detail: "4112 bytes; the cap is 4096" }]]);
+  assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing committed");
+  assert.equal(objects(repo), objectsBefore, "no object written");
+  assert.equal((await api("GET", `${files}/full.md`)).body, full, "the note as it was");
 });

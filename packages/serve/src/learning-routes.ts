@@ -46,9 +46,9 @@ export type Shown = { text: (text: string) => string; name: (name: string) => st
 /** What a name holding a secret reads: packages/learn redactSecrets' mark, the name's whole, never a part of it. */
 const REDACTED = "[redacted]";
 
-/** The host's secrets as a reader cuts them: a text holding a value or a shape is cut of it (whole when long: packages/learn
- *  redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its route still answers
- *  the real name, to a caller who knows it); any other text or name is shown as it is. */
+/** The host's secrets as a reader cuts them: a text holding a value or a shape is cut of it (whole when long:
+ *  packages/learn redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
+ *  route still answers the real name, to a caller who knows it); any other text or name is shown as it is. */
 export function secretsShown(values: readonly string[]): Shown {
   const matches = valueMatcher(values);
   const holds = (text: string) => matches(text) || secretShapes(text).length > 0;
@@ -180,9 +180,9 @@ async function logPage(home: string, repo: string, sha: string, offset: number, 
   return { items: log.map((change) => ({ ...change, reason: shown.text(change.reason), files: change.files.map(shown.name) })), total, next_cursor: offset + limit < total ? cursorOf(sha, offset + limit) : null };
 }
 
-/** Commit `sha`'s index and notes, its notes as the view shows them: active first, then by their newest change on main's
- *  first-parent log (their place in the walk, so two changes in one second keep their order), newest first, then by name.
- *  Read once a commit, then kept (parsedAt). */
+/** Commit `sha`'s index and notes, its notes as the view shows them: active first, then by their newest change on
+ *  main's first-parent log (their place in the walk, so two changes in one second keep their order), newest first, then
+ *  by name. Read once a commit, then kept (parsedAt). */
 async function notesAt(home: string, repo: string, sha: string): Promise<{ index: string; notes: Note[] }> {
   const key = `${repo}\0${sha}`;
   const known = parsedAt.get(key);
@@ -200,7 +200,7 @@ async function notesAt(home: string, repo: string, sha: string): Promise<{ index
 const noteView = ({ file, name, description, type, status, superseded_by, text }: Note, shown: Shown): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text) });
 
 const cursorOf = (sha: string, offset: number) => Buffer.from(`${sha}.${offset}`).toString("base64url");
-/** A page of `all`, from `offset`, at most `limit`, each item shown by `view` (so only the page's are cut of secrets). */
+/** A page of `all`, from `offset`, at most `limit`, each shown by `view` (so only the page's are cut of secrets). */
 const pageOf = <T, U>(all: readonly T[], sha: string, offset: number, limit: number, view: (item: T) => U): Page<U> => ({ items: all.slice(offset, offset + limit).map(view), total: all.length, next_cursor: offset + limit < all.length ? cursorOf(sha, offset + limit) : null });
 
 /** A page's request: its limit (1 to PAGE_MAX), and the commit and offset its cursor names, a commit of the folder's. */
@@ -321,12 +321,12 @@ function conditionOf(ifMatch: string | undefined, ifNoneMatch: string | undefine
 }
 
 /** PUT /agents/{id}/learning/files/{file} (`body`, the note's whole text) or POST .../retire (no body), as a person:
- *  the precondition, then the checks (a retire's note must parse), then one commit on main
+ *  the precondition, then the checks (a retire's note must parse, then pass them as retired), then one commit on main
  *  in the agent's queue, on the folder agentFolder checked: the note, and MEMORY.md rebuilt from main's notes with it,
  *  its message `learning: <edited|created|retired> by a person: <file>` and a `Changed-By: user` trailer, main moved
  *  only from the commit it was made on (once more on a main that moved meanwhile), then the checked-out files. A note
- *  the checks refuse is never written to git. A retire of a note that is not active, and an edit that changes nothing, commit
- *  nothing. `refuse`: the host's secrets. */
+ *  the checks refuse is never written to git. A retire of a note that is not active, and an edit that changes nothing,
+ *  commit nothing. `refuse`: the host's secrets. */
 export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[] }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
   const file = fileOf(raw, true);
   const condition = conditionOf(input.ifMatch, input.ifNoneMatch, input.body !== undefined);
@@ -352,7 +352,11 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         const note = parseNoteFile(file, current!.text);
         if (Array.isArray(note)) throw refused(note.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
         if (note.status !== "active") return { status: 200, file, text: current!.text, etag: etagOf(current!.oid) };
-        text = retire(current!.text);
+        // The note as retired passes the checks a PUT's does, against the host's secrets now: no blob is written over
+        // the cap, nor holding a value made secret since it was.
+        const checked = checkNote(file, Buffer.from(retire(current!.text), "utf8"), input.refuse);
+        if (!checked.note) throw refused(checked.problems);
+        text = checked.note.text;
       }
       if (current && text === current.text) return { status: 200, file, text, etag: etagOf(current.oid) };
       const notes = main ? (await readAt(home, repo, main)).notes : new Map<string, LearnedNote>();
