@@ -188,6 +188,9 @@ test("agents_create and agents_revise pass any other definition field through to
   // A field the route refuses is its own 422, by field; a definition that is no object is the tool's.
   const refused = await mcp.tool("agents_create", { id: "bad", name: "Bad", instructions: "Answer.", definition: { input_schema: {} } }, { ok: false });
   assert.deepEqual([refused.structuredContent.error.code, refused.structuredContent.error.fields.map((f) => f.field)], ["input_invalid", ["definition.input_schema"]]);
+  // A null the tool does not clear (only model and thinking) reaches the route, which refuses it by field.
+  const nulled = await mcp.tool("agents_revise", { agent_id: "placed", definition: { input_schema: null } }, { ok: false });
+  assert.deepEqual([nulled.structuredContent.error.code, nulled.structuredContent.error.fields.map((f) => f.field)], ["input_invalid", ["definition.input_schema"]]);
   const wrong = await mcp.tool("agents_revise", { agent_id: "placed", definition: "sandbox" }, { ok: false });
   assert.deepEqual([wrong.structuredContent.error.code, wrong.structuredContent.error.fields[0].field], ["input_invalid", "definition"]);
   // The tools say so.

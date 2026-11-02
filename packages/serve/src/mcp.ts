@@ -138,7 +138,8 @@ export const TOOLS: Tool[] = [
       // The revision's number is the server's to give, and new instructions make an agentic revision.
       delete merged.version;
       if ("instructions" in changes) delete merged.workflow;
-      for (const key of Object.keys(merged)) if (merged[key] === null) delete merged[key];
+      // null clears model or thinking (the server's default then); any other null goes to the route, which checks it.
+      for (const key of ["model", "thinking"]) if (merged[key] === null) delete merged[key];
       const etag = read.headers.etag;
       return resultOf(await context.call({ method: "PUT", path: `/agents/${id(agent)}/definition`, body: { definition: merged, ...(note === undefined ? {} : { note }) }, headers: etag ? { "if-match": etag } : {} }));
     },
