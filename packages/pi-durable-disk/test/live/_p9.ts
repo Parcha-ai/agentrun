@@ -138,7 +138,7 @@ export class NotOursError extends Error {}
 export function guardedClient(inner: DaytonaClient = daytonaRest({ apiKey: process.env.DAYTONA_API_KEY!, apiUrl: process.env.DAYTONA_API_URL || undefined })): DaytonaClient {
   const ours = (box: SandboxInfo) => box.labels?.[LABEL_FLEET] === FLEET && box.name.startsWith(NAME_PREFIX) && ledger.ids().has(box.id);
   const require = (box: SandboxInfo) => {
-    if (!ours(box)) throw new NotOursError(`refusing to touch sandbox ${box.id}: not created by lane P9`);
+    if (!ours(box)) throw new NotOursError(`refusing to touch sandbox ${box.id}: not created by these live tests`);
   };
   /** A box being deleted carries a soft-delete name, so it no longer matches; it needs nothing more from this lane. */
   const requireId = async (id: string): Promise<SandboxInfo | null> => {

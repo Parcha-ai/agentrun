@@ -8,7 +8,9 @@ import { ERROR_STATUS } from "./errors.js";
 import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
+import { BOXES, PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
+import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 
 type Json = Record<string, unknown>;
@@ -40,7 +42,9 @@ const closed = (properties: Json, description?: string) => ({ type: "object", ad
 const USD = { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." };
 /** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
 const GROUP = {
-  runs: COUNT, completed: COUNT, failed: { ...COUNT, description: "Failed or escalated." },
+  runs: COUNT, completed: { ...COUNT, description: "Completed, escalated runs included: one completed and waits for a person's review." },
+  needs_review: { ...COUNT, description: "Of `completed`, the escalated runs, which wait for a person's review.", "x-agentrun-serve": "stats/3" },
+  failed: { ...COUNT, description: "Failed: never an escalated run." },
   runs_with_metrics: { ...COUNT, description: "Of `runs`, those that ended with metrics: a running run, and a run whose end wrote none, has none." },
   tokens: { ...COUNT, description: "Input, cache read, cache write and output tokens, summed over `runs_with_metrics`." },
   cost_usd: USD, unknown_cost_runs: { ...COUNT, description: "Runs with no known cost: running, or ended without one." },
@@ -56,14 +60,14 @@ const ANALYTICS = closed({
   by_harness_effort: { type: "array", description: "By the revision's harness (`pi` when it names none, `workflow` for a workflow revision), then the effort the run's metrics name (null: unset, or no metrics).", items: closed({ harness: { type: "string" }, effort: { type: ["string", "null"] }, ...GROUP }) },
   by_day: { type: "array", description: "By the UTC date the run started, oldest first.", items: closed({ day: { type: "string", format: "date" }, ...GROUP }) },
   by_source: { type: "array", description: "`live`, run here, first, then each source runs were imported from.", items: closed({ source: { enum: ["live", "claude-code", "codex", "pi"] }, ...GROUP }) },
-  tools: { type: "array", maxItems: 20, description: "The 20 tools with the most calls, by name on a tie; `errors` counts the calls that failed or never returned.", items: closed({ tool: { type: "string" }, calls: COUNT, errors: COUNT }) },
+  tools: { type: "array", maxItems: 20, description: "The 20 tools with the most calls, by name on a tie; `errors` counts the calls that failed (an error, a result the tool reads as failed such as a refused fetch, or no result at all).", items: closed({ tool: { type: "string", description: "The name the tool was called by." }, label: { type: "string", description: "What a person calls the tool, from the timeline's label registry; the name it was called by when it has none.", "x-agentrun-serve": "stats/3" }, calls: COUNT, errors: COUNT }) },
 }, "The runs' tokens, requests, time and tool calls from their metrics, over the runs not archived that the query picks; a run with no metrics counts in `runs` alone.");
 /** GET /stats's answer (stats.ts). */
 const STATS = closed({
   agents: { ...COUNT, description: "Agents not archived." },
   runs: closed(
-    { total: COUNT, active: COUNT, needs_input: COUNT, failed: COUNT, status_unknown: COUNT },
-    "Runs not archived. `total` counts them all; a completed or cancelled run is counted in `total` alone. `failed` includes escalated. Each running run is in exactly one of `active` (this server holds it, queued, working or paused), `needs_input` (it holds it, input_required) and `status_unknown` (it does not hold it, or holds it as ended before its end is written).",
+    { total: COUNT, active: COUNT, needs_input: COUNT, failed: COUNT, needs_review: { ...COUNT, "x-agentrun-serve": "stats/3" }, status_unknown: COUNT },
+    "Runs not archived. `total` counts them all; a completed or cancelled run is counted in `total` alone, but for an escalated one, which completed and waits for a person's review: it is in `needs_review`, never in `failed`. Each running run is in exactly one of `active` (this server holds it, queued, working or paused), `needs_input` (it holds it, input_required) and `status_unknown` (it does not hold it, or holds it as ended before its end is written).",
   ),
   per_agent: {
     type: "array", description: "Each agent not archived, by name then id, with how many of its runs are not archived; an agent with no runs is listed with 0.",
@@ -145,7 +149,9 @@ const TOOL_KEYS_VIEW = closed({
   keys: {
     type: "array",
     items: closed({
-      id: { enum: TOOL_KEYS.map((row) => row.id) }, label: { type: "string" }, unlocks: { type: "array", items: { type: "string" } }, harnesses: { type: "array", items: { enum: [...HARNESSES] } },
+      id: { enum: TOOL_KEYS.map((row) => row.id) }, label: { type: "string" },
+      unlocks: { type: "array", items: { type: "string" }, description: "What the key unlocks on this server: tools capabilities' `tools` lists, and `decisions.<id>` for a provider its `workflows.decisions.providers` lists. Empty when the key unlocks nothing this server binds." },
+      harnesses: { type: "array", items: { enum: [...HARNESSES] }, description: "The harnesses that run the tools in `unlocks`: the union of their `harnesses` in capabilities' `tools`." },
       fields: {
         type: "array",
         items: {
@@ -165,6 +171,26 @@ const TOOL_KEYS_VIEW = closed({
   },
 });
 const KEY_ID = { name: "key_id", in: "path", required: true, description: "The tool key: one of GET /settings/tool-keys' ids.", schema: { type: "string" } };
+const WEBHOOK_ID = { name: "webhook_id", in: "path", required: true, description: "The message, as its `webhook-id` names it.", schema: { type: "string" } };
+const WEBHOOK_SET_FIELDS = {
+  configured: { const: true }, url: { type: "string" },
+  signing: { enum: ["sealed", "seal_key_missing", "unreadable"], description: "Whether the secret signs here: `sealed`; `seal_key_missing` (the server was handed no seal key) or `unreadable` (sealed under another key, or damaged), when nothing is sent until the webhook is removed and set again. Never the secret." },
+  disabled: { oneOf: [closed({ at: { type: "string", format: "date-time" }, reason: { type: "string" } }), { type: "null" }], description: "Set when the receiver answered 410 Gone: nothing is sent until a PUT sets the webhook again." },
+  updated_at: { type: "string", format: "date-time" },
+};
+const WEBHOOK_SET = closed(WEBHOOK_SET_FIELDS);
+/** GET /settings/webhook (webhooks.ts): the webhook, or none; never its secret. */
+const WEBHOOK_VIEW = { oneOf: [closed({ configured: { const: false } }), WEBHOOK_SET] };
+const WEBHOOK_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "The signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Keep it where the receiver checks `webhook-signature`." };
+const WEBHOOK_ATTEMPT = closed({
+  webhook_id: { type: "string", description: "The message's `webhook-id`: the same on each of its tries, and on a redelivery." },
+  type: { enum: [...MESSAGE_TYPES] }, at: { type: "string", format: "date-time" },
+  status_code: { type: ["integer", "null"], description: "The receiver's answer; null when it was not reached." },
+  latency_ms: { type: "integer", minimum: 0 },
+  error: { type: ["string", "null"], description: "Why the try failed: an answer not 2xx (a redirect is not followed), no answer in 15 s, not reached, or the webhook removed or off." },
+  retry_at: { type: ["string", "null"], format: "date-time", description: "When the message is tried again after this one, if it is." },
+  redelivery: { type: "boolean", description: "Sent again by POST .../redeliver." },
+});
 const PAUSED = { type: "object", additionalProperties: false, required: ["run_id", "paused", "status"], properties: { run_id: { type: "string" }, paused: { type: "boolean" }, status: ref("schemas/RunStatus") } };
 
 /** POST .../archive and .../unarchive: hide an agent and its runs, or one run, from the lists, and show them again. */
@@ -413,6 +439,53 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   ...archiving("agents", "Agent", ref("parameters/AgentId"), "The agent, with archived_at."),
   ...archiving("runs", "Run", ref("parameters/RunId"), "The run, with archived_at."),
+  "/settings/webhook": {
+    get: {
+      operationId: "getWebhook", tags: ["local"], summary: "The webhook this server POSTs run notices to, if one is set; never its secret",
+      responses: { "200": json(WEBHOOK_VIEW, "The webhook, or `configured: false`."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+    put: {
+      operationId: "saveWebhook", tags: ["local"], summary: "Set the webhook's URL",
+      description: `Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to \`url\` as JSON \`{type, timestamp, data}\`: \`run.needs_input\` when a run comes to need its person (status input_required; \`data.pending.kind\` \`question\` for an ask_person question, \`stopped\` for a stopped turn) and \`run.ended\` when it ends (completed, failed or cancelled), with \`data: {run_id, agent_id, status, title, url}\`, \`url\` the run on the page; never a tool's arguments, an output or an input, which the API reads. Headers: \`webhook-id\` (the same on every try, the receiver's idempotency key), \`webhook-timestamp\` (Unix seconds) and \`webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">\` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT keeps it, turns the webhook on again and answers 200. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters; 409 no_sealing_key when the server was handed no seal key to keep the secret under.`,
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: { type: "string", format: "uri", maxLength: 2048 } } } } } },
+      responses: {
+        "201": json(closed({ ...WEBHOOK_SET_FIELDS, secret: WEBHOOK_SECRET }), "Set, with its secret, shown this once."),
+        "200": json(WEBHOOK_SET, "Changed; the secret is kept."),
+        ...errors(400, 401, 409, 415, 422, 429, 500),
+      },
+      "x-agentrun-serve": "webhook/1",
+    },
+    delete: {
+      operationId: "deleteWebhook", tags: ["local"], summary: "Remove the webhook; its pending messages are dropped, the log of attempts is kept",
+      responses: { "204": { description: "Removed." }, ...errors(401, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+  },
+  "/settings/webhook/test": {
+    post: {
+      operationId: "testWebhook", tags: ["local"], summary: "Send a `webhook.test` message now, once, and say how it went",
+      description: "The body is `{type: \"webhook.test\", timestamp, data: {}}`, signed as every message is. It is tried once, never again, and kept in the log. 409 webhook_off when a 410 turned the webhook off: nothing is sent until a PUT sets it again.",
+      responses: { "200": json(WEBHOOK_ATTEMPT, "Its attempt."), ...errors(401, 404, 409, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+  },
+  "/settings/webhook/deliveries": {
+    get: {
+      operationId: "listWebhookDeliveries", tags: ["local"], summary: `The last ${ATTEMPTS_KEPT} attempts, newest first`,
+      responses: { "200": json(closed({ attempts: { type: "array", items: WEBHOOK_ATTEMPT } }), "Each attempt."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+  },
+  "/settings/webhook/deliveries/{webhook_id}/redeliver": {
+    post: {
+      operationId: "redeliverWebhook", tags: ["local"], summary: "Send a message of the log again, once now, under the same webhook-id and body",
+      description: "Signed again at a new timestamp. A message still pending that this try delivers is settled; one this try fails keeps its own schedule. 409 webhook_off when a 410 turned the webhook off.",
+      parameters: [WEBHOOK_ID],
+      responses: { "200": json(WEBHOOK_ATTEMPT, "Its attempt."), ...errors(401, 404, 409, 429, 500) },
+      "x-agentrun-serve": "webhook/1",
+    },
+  },
 };
 
 let vendored: Json | undefined;
@@ -434,13 +507,36 @@ const REVIEW: Json = {
   description: "Set when a workflow run escalated: it completed, and waits for a person to review it. Like every workflow run, it takes no messages (501 unsupported_here).",
   "x-agentrun-serve": "review/1",
 };
+/** What this server's run answers carry beyond the contract's Run and RunSummary: added before they were marked, so
+ *  `serve/1`. */
+const RUN_FIELDS: Record<string, Json> = {
+  revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
+  kind: { enum: ["agentic", "workflow"], description: "The revision's kind: an agentic run, or a workflow run.", "x-agentrun-serve": "serve/1" },
+  archived_at: { type: ["string", "null"], description: "When the run, or its agent, was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
+};
+/** What a run waits on, one field for every kind, told apart by `kind`: here a question it asked a person. A later kind
+ *  (a tool call waiting on approval) is one more variant of the same union. */
+const PENDING: Json = {
+  oneOf: [
+    {
+      type: "object", additionalProperties: false, required: ["kind", "question", "asked_at"],
+      properties: { kind: { const: "question" }, question: { type: "string", description: "What it asked, at most 2000 characters." }, asked_at: { type: "string", format: "date-time" } },
+      description: "A question the run asked a person (status input_required, state waiting): a message answers it.",
+    },
+    { type: "null" },
+  ],
+  description: "What the run waits on, told apart by kind; null when it waits on nothing. A run read from its stored row alone has ended, so null.",
+  "x-agentrun-serve": "pending/1",
+};
 /** This server's own properties on the contract's objects, outside the contract, by where they go (a schema of
  *  components.schemas, then property names down to the object that takes them). Each is marked x-agentrun-serve with
- *  the addition that made it: `harness/1` is the one a later contract version would take on; `model/1` and `serve/1`
- *  are what this server added before it marked them. */
+ *  the addition that made it: `harness/1` and `place/1` are ones a later contract version would take on; `model/1` and
+ *  `serve/1` are what this server added before it marked them. */
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Run: {
+    ...RUN_FIELDS,
     review: REVIEW,
+    pending: PENDING,
     imported_from: {
       type: ["object", "null"],
       additionalProperties: false,
@@ -452,7 +548,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
   RunSummary: {
+    ...RUN_FIELDS,
+    effort: { $ref: "#/components/schemas/Effort", description: "The effort the run was started with, as the run shows it; absent when it was started with none.", "x-agentrun-serve": "effort/1" },
+    error: { oneOf: [{ $ref: "#/components/schemas/RunError" }, { type: "null" }], description: "Set when `failed`, as the run's own.", "x-agentrun-serve": "serve/1" },
     review: REVIEW,
+    pending: PENDING,
     imported_from: {
       type: ["object", "null"],
       additionalProperties: false,
@@ -477,6 +577,14 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     model: { type: "string", description: "`provider/model-id`, the model an agentic revision runs on; absent, this host's default. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     thinking: { enum: [...THINKING_LEVELS], description: "An agentic revision's thinking level; absent, the model's. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     harness: { enum: [...HARNESSES], description: "The harness that runs the revision. Absent on a request, pi; every answer names it. One this server does not run saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.harnesses).", "x-agentrun-serve": "harness/1" },
+    place: {
+      oneOf: [
+        { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
+        { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOXES] } } },
+      ],
+      description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent, this host's default (capabilities.places.default), and an answer shows none; a revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes).",
+      "x-agentrun-serve": "place/1",
+    },
   },
   AgentCreate: {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
@@ -488,6 +596,16 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     archived_at: { type: ["string", "null"], description: "When the agent was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
   },
   Capabilities: {
+    places: {
+      type: "object", additionalProperties: false, required: ["modes", "default", "boxes"],
+      properties: {
+        modes: { type: "array", items: { enum: [...PLACE_MODES] } },
+        default: { enum: [...PLACE_MODES], description: "The mode a revision that names no place runs in here." },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: [...BOXES] }, available: { type: "boolean" }, reason: { type: "string" } } } },
+      },
+      description: "The places a revision may name, this host's default, and each box: whether this server has it, and when not, why.",
+      "x-agentrun-serve": "place/1",
+    },
     harnesses: {
       type: "array",
       description: "Each harness a revision may name, and whether this server runs it; when not, why.",
@@ -562,6 +680,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept `sealed` under the seal key the server was handed; `unavailable` with none, when nothing is kept.",
       "x-agentrun-serve": "toolkeys/1",
     },
+    webhooks: {
+      type: "object", additionalProperties: false, required: ["routes", "events", "signing", "at_rest"],
+      properties: { routes: { type: "boolean" }, events: { type: "array", items: { enum: [...WEBHOOK_EVENTS] } }, signing: { const: "standard-webhooks/v1" }, at_rest: { enum: ["sealed", "unavailable"] } },
+      description: "/settings/webhook: one URL each of `events` is POSTed to, signed by the Standard Webhooks spec; its secret kept `sealed` under the seal key the server was handed, `unavailable` with none, when no webhook is set.",
+      "x-agentrun-serve": "webhook/1",
+    },
   },
   "Features/agents": { revisions: { type: "boolean", description: "`GET /agents/{agent_id}/revisions` and `POST /agents/{agent_id}/current`.", "x-agentrun-serve": "serve/1" } },
   "Features/runs": {
@@ -581,6 +705,7 @@ const BLOCKED_DETAILS = {
     unbound: { type: "array", items: { type: "string" }, description: "The tools the revision names that this server does not bind, or does not bind on its harness." },
     missing: { type: "object", additionalProperties: { type: "array", items: { type: "string" } }, description: "Each bound tool this host cannot run yet, with the variables it is missing." },
     harness: { enum: [...HARNESSES], description: "The revision's harness, when this server does not run it (capabilities.harnesses)." },
+    box: { enum: [...BOXES], description: "The box of the revision's place, when this server does not have it (capabilities.places.boxes)." },
     adapters: { type: "array", items: { type: "string" }, description: "A workflow revision: the adapters it needs that this server does not bind." },
     code: { type: "boolean", description: "A workflow revision: whether it needs code this server does not run." },
     tier: { type: "string", description: "A workflow revision: the model tier this host has no model for." },

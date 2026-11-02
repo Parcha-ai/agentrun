@@ -5,7 +5,7 @@ import { bytes, markdown, when } from "@/lib/format";
 import type { RunFile } from "@/lib/v2";
 import { viewKind } from "@/lib/viewing";
 
-/** The run's FILES tab: what it wrote, newest first, each opened in the viewer. */
+/** The run's FILES tab: what it wrote, in the server's path order, each opened in the viewer. */
 export function RunFiles({ files, onOpen }: { files: RunFile[]; onOpen: (file: RunFile) => void }) {
   const total = files.reduce((n, f) => n + f.size_bytes, 0);
   return (
