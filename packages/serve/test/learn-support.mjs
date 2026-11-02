@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { homeOf } from "../dist/files.js";
 import { agent, follow } from "./support.mjs";
 
 /** The faux model and faux harness that plan an end-of-run turn's notes (fixtures/faux-learn.mjs). */
@@ -64,7 +65,8 @@ export function git(cwd, args) {
 /** Every object of the repository, read whole: what a scan for a value must search. */
 export const objects = (repo) => spawnSync("git", ["cat-file", "--batch-all-objects", "--batch"], { cwd: repo, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }, maxBuffer: 1 << 26 }).stdout.toString("latin1");
 
-export const repoOf = (data, agentId) => join(data, "homes", agentId, "learning");
+/** The agent's learning folder: `learning/` in its home, as files.ts homeOf names the home. */
+export const repoOf = (data, agentId) => join(homeOf(data, agentId), "learning");
 export const copyOf = (data, runId) => join(data, "runs", runId, "work", ".learning");
 /** That copy once the run ended after its end-of-run turn: set aside in the run's directory, outside its work. */
 export const turnCopyOf = (data, runId) => join(data, "runs", runId, "learning-turn");

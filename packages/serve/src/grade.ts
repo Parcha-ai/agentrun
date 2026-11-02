@@ -18,8 +18,9 @@ import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergeProblem
 import type { PageJudge } from "@parcha/pi-browser";
 import { claudeModel } from "./adapters.js";
 import { FAUX_JEV_ENV, fauxFetch, jevKey } from "./decisions.js";
+import { homeOf } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
-import { agentFolder, git, homeDir, line, mainOf, NO_TOKENS, type Proposal, readBlobs, type Tokens, withAgentRepo } from "./learning.js";
+import { agentFolder, git, line, mainOf, NO_TOKENS, type Proposal, readBlobs, type Tokens, withAgentRepo } from "./learning.js";
 import { type Complete, completer } from "./llm.js";
 import { runModels, thinkingOf } from "./model.js";
 import { authContextOf } from "./secrets.js";
@@ -87,7 +88,7 @@ export type GradeMain = { active: IndexEntry[]; superseded: NoteText[] };
 /** Main now, for run `runId`'s grade, in the agent's queue: merged already (a commit names the run), what stops its
  *  proposal joining main as it is now, or its active notes' index lines and the notes the proposal supersedes in full. */
 export function readForGrade(data: string, agentId: string, runId: string, proposal: Proposal): Promise<{ merged: string } | { problems: Problem[] } | GradeMain> {
-  const home = homeDir(data, agentId);
+  const home = homeOf(data, agentId);
   return withAgentRepo(data, agentId, async () => {
     const repo = await agentFolder(data, agentId);
     const sha = (await mainOf(home, repo))!;
@@ -225,7 +226,7 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
  *  when main, as it is now, takes the notes no more (mergeProblems). `checkout` is why the files could not be brought in
  *  line, when they could not: main is merged all the same. */
 export function mergeProposal(data: string, agentId: string, runId: string, proposal: Proposal, reason: string): Promise<{ merged: string; checkout: Error | undefined } | { problems: Problem[] }> {
-  const home = homeDir(data, agentId);
+  const home = homeOf(data, agentId);
   const added = proposedOf(proposal);
   return withAgentRepo(data, agentId, async () => {
     const repo = await agentFolder(data, agentId);

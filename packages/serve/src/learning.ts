@@ -88,8 +88,6 @@ const MIN_GIT = [2, 40] as const;
 /** How long one git call may take before it is killed: a hung call would hold its agent's queue. */
 const GIT_TIMEOUT_MS = 60_000;
 
-/** The agent's home: files.ts homeOf, under the name the learning loop's callers import. */
-export const homeDir = (data: string, agentId: string): string => homeOf(data, agentId);
 /** The agent's learning folder: its home's `learning/` entry, which only the host writes. The home is files.ts homeOf,
  *  the one definition the home's routes use too, so two ids that differ only in case never share a folder. */
 export const learningRepo = (data: string, agentId: string): string => join(homeOf(data, agentId), "learning");
@@ -324,7 +322,7 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
 /** What commit `sha` of the agent's folder holds for a run, as seedOf reads main: a run's seed, read again. In the
  *  agent's queue, through agentFolder. */
 export const seedAt = (data: string, agentId: string, sha: string): Promise<Seed> =>
-  withAgentRepo(data, agentId, async () => readSeed(homeDir(data, agentId), await agentFolder(data, agentId), sha));
+  withAgentRepo(data, agentId, async () => readSeed(homeOf(data, agentId), await agentFolder(data, agentId), sha));
 /** The active notes of a seed, parsed. */
 export const activeOf = (seed: Pick<Seed, "notes">): LearnedNote[] => Object.entries(seed.notes).flatMap(([file, text]) => {
   const note = parseNoteFile(file, text);

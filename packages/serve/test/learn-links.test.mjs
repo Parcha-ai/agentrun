@@ -1,7 +1,7 @@
 // Every path the end of a run takes into its agent's learning folder goes through agentFolder (learning.ts): the
 // end-of-run turn's seed, read again; the check of what the turn wrote against that seed; the grade's read of main; and
-// the merge. With a link planted at homes/<agent>/learning, to a folder that works, each refuses: the run's learning is
-// dropped with that step's reason, and nothing is read or written through the link.
+// the merge. With a link planted at homes/<key>/learning (homeOf), to a folder that works, each refuses: the run's
+// learning is dropped with that step's reason, and nothing is read or written through the link.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
