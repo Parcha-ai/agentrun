@@ -1082,3 +1082,23 @@ test("a moved Claude Code session whose copy adds work it could not price has an
     assert.deepEqual(runs.map(({ run, metrics }) => [run.costUsd ?? null, typeof metrics.costUsdEst, metrics.costBasis]), [[null, "number", "catalog"]], moved);
   }
 });
+
+test("an untied thread resumed in a second file of the same id counts its own subagent once, in the import's summary and the dry run's", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "untied-twice");
+  mkdirSync(project, { recursive: true });
+  claudeSession(home, project, 204);
+  codexSession(home, project, 205, { subagent: true, parent: null });
+  // The untied thread resumed an hour later, in a file of its own with the same thread id; its child names the thread.
+  shifted(codexSession(home, project, 206, { subagent: true, parent: null }), `rollout-2026-10-20T10-00-00-${sessionId(206)}.jsonl`, 60, (r) => (r.type === "session_meta" ? { ...r, payload: { ...r.payload, id: sessionId(205) } } : r));
+  codexSession(home, project, 207, { subagent: true, parent: sessionId(205) });
+  const data = join(root, "agents");
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    return lines.slice(-5);
+  };
+  // 2,688 + 1,965 + 1,965 + 1,965 tokens: the session, the thread's two files, its child once.
+  for (const block of [await run("--dry-run"), await run()]) assert.match(block[2], /^\+ 8\.6K tokens /);
+});

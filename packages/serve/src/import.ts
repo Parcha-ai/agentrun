@@ -222,14 +222,19 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
 /** The subagents tied to no session: each one's tokens and tool calls, for a summary's totals, each response once. */
 export async function untiedFound(plan: Plan): Promise<Found[]> {
   const seen = new Map<Source, Set<string>>();
-  const found: Found[] = [];
+  const counted = (source: Source) => seen.get(source) ?? seen.set(source, new Set()).get(source)!;
+  // A thread resumed in a second file of the same id is one: its own subagents, which name it, count once with it.
+  const threads = new Map<string, Session[]>();
   for (const { file, source } of plan.untied) {
     const stats = await stat(file).catch(() => null);
     if (!stats || stats.size > MAX_SESSION_BYTES) continue;
-    const counted = seen.get(source) ?? seen.set(source, new Set()).get(source)!;
-    const session = await readSession(file, source, { seen: counted }).catch(() => undefined);
-    // Its own subagents, which name it, are its too.
-    if (session) found.push({ source, agent: "", untied: true, metrics: metricsOf(session, await readChildren(plan, session, [session], counted)) });
+    const session = await readSession(file, source, { seen: counted(source) }).catch(() => undefined);
+    if (session) threads.set(`${source}:${session.id}`, [...(threads.get(`${source}:${session.id}`) ?? []), session]);
+  }
+  const found: Found[] = [];
+  for (const parts of threads.values()) {
+    const session = merged(parts);
+    found.push({ source: session.source, agent: "", untied: true, metrics: metricsOf(session, await readChildren(plan, session, parts, counted(session.source))) });
   }
   return found;
 }
