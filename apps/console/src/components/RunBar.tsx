@@ -32,7 +32,10 @@ export function RunBar({ agent, efforts, v2, go }: { agent: Agent; efforts: stri
   };
   // A start that answers after the bar is gone (the person went elsewhere) still runs, and moves nobody's page.
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const start = async () => {
     if (!built.ok || sending) return;
     setSending(true); setProblem(null);

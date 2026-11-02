@@ -18,13 +18,15 @@ export function AnalyticsTab({ agent, v2, now = Date.now, stats: first }: { agen
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!first?.analytics);
   const asked = useRef(0);
-  const given = useRef(!!first?.analytics);
+  // The range whose answer is on screen: the page's first one when it gave it. Read again only for another range, so an
+  // effect run twice (React's StrictMode) reads nothing more.
+  const shown = useRef<StatsRange | null>(first?.analytics ? FIRST_RANGE : null);
   useEffect(() => {
-    if (given.current) return void (given.current = false);
+    if (shown.current === range) { setError(null); setLoading(false); return; }
     const n = ++asked.current;
     setLoading(true); setError(null);
     v2.statsOver({ from: rangeFrom(range, now()), agent: agent.agent_id })
-      .then((s) => { if (n === asked.current) { if (s.analytics) setStats(s); else setError("this server gives no analytics"); } })
+      .then((s) => { if (n === asked.current) { if (s.analytics) { setStats(s); shown.current = range; } else setError("this server gives no analytics"); } })
       .catch((e) => { if (n === asked.current) setError(problemOf(e)); })
       .finally(() => { if (n === asked.current) setLoading(false); });
   }, [v2, agent.agent_id, range]); // eslint-disable-line react-hooks/exhaustive-deps

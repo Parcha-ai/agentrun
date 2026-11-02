@@ -1,4 +1,4 @@
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentPage } from "./AgentPage";
@@ -18,9 +18,9 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const efforts = recorded<{ features: { efforts: string[] } }>("capabilities").body.features.efforts;
 /** A start's answer: the run (202), or a recorded refusal thrown as the client throws it. */
 type Answer = { run: Run } | { refused: string };
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string }; hold?: Promise<unknown> };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string }; hold?: Promise<unknown>; strict?: boolean };
 /** By default the server's stats carry no analytics, as an older server's. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}), models, hold }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}), models, hold, strict = false }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const statsAsked: string[] = [];
@@ -42,7 +42,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, efforts, go: (h: string) => went.push(h), tab })));
+  act(() => root!.render(strict ? createElement(StrictMode, null, createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, efforts, go: (h: string) => went.push(h), tab })) : createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, efforts, go: (h: string) => went.push(h), tab })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -316,6 +316,23 @@ describe("AgentPage", () => {
     act(() => root?.unmount());
     await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
     expect(page.went).toEqual([]);
+  });
+
+  it("under React's StrictMode (effects run twice), a start still ends: Run comes back and the run opens; the tab reads its stats once", async () => {
+    const page = await open(agentFixture("invoice-checker"), { strict: true });
+    await page.set(page.input(), "Check invoice INV-1050.");
+    await page.click(/^Run$/);
+    expect(page.went).toEqual([`#/runs/${recorded<Run>("start.run").body.run_id}`]);
+    expect(page.button(/^Run$/)).toBeTruthy();
+    expect(page.button(/^Starting$/)).toBeUndefined();
+    act(() => root?.unmount());
+    // StrictMode runs the page's own read twice in development; the Analytics tab adds none of its own to it.
+    const runs = await open(agentFixture("invoice-checker"), { strict: true, stats: async () => statsWith(ANALYTICS) });
+    const pageReads = runs.statsAsked.length;
+    act(() => root?.unmount());
+    const tab = await open(agentFixture("invoice-checker"), { strict: true, tab: "analytics", stats: async () => statsWith(ANALYTICS) });
+    expect(tab.host.textContent).toContain("Success by harness and effort");
+    expect(tab.statsAsked).toHaveLength(pageReads);
   });
 
   it("opening the page, then its Analytics tab, reads the agent's stats once", async () => {
