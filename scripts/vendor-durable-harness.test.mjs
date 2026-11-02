@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { PRISTINE_DIR, UPSTREAM_FILE } from './upstream-attribution.mjs';
+import { budgetLines, budgetProblems } from './port-durable-harness.mjs';
 import { changedLines, gitBlob, provenanceProblems } from './vendor-durable-harness.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,18 +15,20 @@ const packageDir = join(root, 'packages', 'run-adapters');
 const scratch = await mkdtemp(join(tmpdir(), 'agentrun-provenance-'));
 after(() => rm(scratch, { recursive: true, force: true }));
 
-test('every copied or matched file in this tree matches its recorded upstream blob and carries its header', async () => {
+test('every copied or matched file in this tree matches its recorded upstream blob and carries its header', async (t) => {
   for (const [name, least] of [['run-adapters', 7], ['run-adapters-codex', 6]]) {
     const dir = join(root, 'packages', name);
     assert.deepEqual(await provenanceProblems(dir), [], name);
     const upstream = JSON.parse(await readFile(join(dir, UPSTREAM_FILE), 'utf8'));
     assert.ok(Object.keys(upstream.files).length >= least, name);
-    const lines = await changedLines(dir);
     // A copy's change against upstream stays small enough to review by eye (the largest are inbox.ts, which drops a
-    // function, and the Codex harness.ts, whose imports and messages name AgentRun's host layer). A matched-interface
+    // function, and the Codex harness.ts, whose imports and messages name AgentRun's host layer): its own patches under
+    // 60 lines, and the fixes it offers upstream under 20 more (port-durable-harness.mjs budgetLines). A matched-interface
     // file is not a copy, so it has no such count.
     assert.deepEqual(Object.entries(upstream.files).filter(([, r]) => r.kind === 'interfaces matched').map(([p]) => p).sort(), name === 'run-adapters' ? ['src/kernel/errors.ts', 'src/kernel/types.ts'] : [], name);
-    assert.ok(Object.values(lines).every((n) => n < 60), `each copy in ${name} changes few lines against upstream: ${JSON.stringify(lines)}`);
+    const budget = await budgetLines(dir);
+    for (const [path, { ours, offer }] of Object.entries(budget)) t.diagnostic(`${name}/${path}: ${ours} lines its own, ${offer} offered upstream`);
+    assert.deepEqual(await budgetProblems(dir), [], `each copy in ${name} changes few lines against upstream: ${JSON.stringify(budget)}`);
   }
 });
 

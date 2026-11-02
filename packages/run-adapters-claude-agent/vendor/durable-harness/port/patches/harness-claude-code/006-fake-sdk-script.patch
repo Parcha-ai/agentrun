@@ -1,0 +1,37 @@
+Patch: 006-fake-sdk-script
+Reason: the scripted SDK takes its command from the message text; a runner sends its own prompts, so a test needs a script of commands
+Upstream: ours
+Pins: a DSL agent node runs on the Claude Agent adapter: the host tool, then submit, each model request through the proxy
+---
+diff --git a/packages/harness-claude-code/test/fake-sdk.ts b/packages/harness-claude-code/test/fake-sdk.ts
+--- a/packages/harness-claude-code/test/fake-sdk.ts
++++ b/packages/harness-claude-code/test/fake-sdk.ts
+@@ -59,6 +59,11 @@ export interface FakeSdkOptions {
+   onMessage?: (message: { uuid: string; text: string; priority?: string }) => void;
+   /** Stream what it says from the model behind `ANTHROPIC_BASE_URL` (see above). */
+   remoteModel?: boolean;
++  /**
++   * Commands, one per user message the fake consumes, in place of the message's text: a runner sends its own prompts
++   * (the node's, then a nudge), so a test scripts what the "model" does instead. Past the end, the message's text.
++   */
++  script?: readonly string[];
+   /** Each `PreToolUse` decision a built-in got (with the input the hook rewrote, if it did). */
+   onDecision?: (call: { id: string; name: string; decision: string; updatedInput?: Record<string, unknown>; reason?: string }) => void;
+ }
+@@ -123,6 +128,7 @@ export interface FakeSdk extends ClaudeAgentSdk {
+ 
+ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
+   const lag = fake.mirrorLagMs ?? 100;
++  let scripted = 0;
+   const queries: Record<string, any>[] = [];
+   const sdk = {
+     queries,
+@@ -294,7 +300,7 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
+           parent = u.uuid;
+           await mirror([{ type: 'queue-operation', operation: 'enqueue' }, u]);
+           // A note the harness put before the message (the sandbox's: a lost Drive) is not part of the command.
+-          const command = text.replace(/^(?!(?:builtin|exit-during-builtin|exit-during|call) )[^\n]*\n\n/, '');
++          const command = fake.script && scripted < fake.script.length ? fake.script[scripted++]! : text.replace(/^(?!(?:builtin|exit-during-builtin|exit-during|call) )[^\n]*\n\n/, '');
+           const builtin = /^(builtin|exit-during-builtin) (\S+) (.*)$/s.exec(command);
+           if (builtin) {
+             const id = `toolu_${randomUUID().slice(0, 8)}_${++calls}`;

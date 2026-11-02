@@ -1,4 +1,4 @@
-// A workflow run as GET /v2/runs/{id}/graph gives it (the sprint's contract C4), and what the graph view draws from it:
+// A workflow run as GET /v2/runs/{id}/graph gives it (the agentrun.v2 contract), and what the graph view draws from it:
 // each node's state, the route branches taken, each map's item cells, a decision's verdict on its card, and, for one
 // selected map item, its body's nodes in that item's states.
 import type { WorkflowGraph } from "@dsl/graph";

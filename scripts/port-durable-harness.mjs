@@ -29,7 +29,7 @@ import { dirname, join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { UPSTREAM, UPSTREAM_FILE, PRISTINE_DIR } from './upstream-attribution.mjs';
-import { gitBlob } from './vendor-durable-harness.mjs';
+import { gitBlob, linesChanged, MATCHED } from './vendor-durable-harness.mjs';
 
 export const PORT_DIR = 'vendor/durable-harness/port';
 const PATCH_FIELDS = ['Patch', 'Reason', 'Upstream', 'Pins'];
@@ -54,7 +54,10 @@ export function parsePatch(name, text) {
   }
   for (const field of PATCH_FIELDS) if (!fields[field]) throw new Error(`patch ${name}: no ${field} line`);
   if (fields.Patch !== name) throw new Error(`patch ${name}: its Patch line says ${fields.Patch}`);
-  if (fields.Upstream !== 'offer' && fields.Upstream !== 'ours') throw new Error(`patch ${name}: Upstream is "offer" or "ours", not ${JSON.stringify(fields.Upstream)}`);
+  // An offer is a fix meant to go back upstream: it names the upstream function it changes and the bug, so upstream can act on it.
+  const offer = /^offer: ([A-Za-z_$][\w$.]*): (\S.{19,})$/.exec(fields.Upstream);
+  if (fields.Upstream !== 'ours' && !offer) throw new Error(`patch ${name}: Upstream is "ours", or "offer: <the upstream function>: <the bug it fixes>", not ${JSON.stringify(fields.Upstream)}`);
+  if (offer) fields.offer = { function: offer[1], bug: offer[2] };
   const diff = lines.slice(cut + 1).join('\n');
   const files = [...diff.matchAll(/^diff --git a\/(\S+) b\/(\S+)$/gm)].map((m) => m[1]);
   if (!files.length) throw new Error(`patch ${name}: no "diff --git" in its body`);
@@ -278,6 +281,47 @@ function pristineReader(dir, upstream, problems) {
     }
     return bytes;
   };
+}
+
+/** The vendored-copy budget, per copy: `ours` is the lines every patch but the offers (and the import rewrite) change against
+ *  upstream, which each re-sync carries and keeps under OURS_LINES; `offer` is the lines the "Upstream: offer" patches change on
+ *  top, fixes upstream may take (a taken one is deleted, a refused one becomes ours), kept under OFFER_LINES summed per copy. */
+export const OURS_LINES = 60;
+export const OFFER_LINES = 20;
+
+/** Each copy's `ours` and `offer` lines. The port without its offer patches must still apply: an "ours" patch written against an
+ *  offer's text would leave with it. */
+export async function budgetLines(dir) {
+  const { upstream, manifests } = await loadPort(dir);
+  const offers = manifests.flatMap((m) => m.patches.filter((p) => p.offer).map((p) => p.name));
+  const full = await portPackage(dir);
+  const base = offers.length ? await portPackage(dir, { drop: offers }) : full;
+  if (base.problems.length) throw new Error(`the port without its offer patches (${offers.join(', ')}) does not make: ${base.problems.join('; ')}`);
+  const scratch = await mkdtemp(join(tmpdir(), 'agentrun-budget-'));
+  try {
+    const out = {};
+    for (const [path, record] of Object.entries(upstream.files ?? {})) {
+      if (record.kind === MATCHED) continue;
+      const made = full.files.get(path) ?? (await readFile(join(dir, path), 'utf8'));
+      const without = bodyOf(base.files.get(path) ?? made);
+      const between = join(scratch, 'without');
+      await writeFile(between, without);
+      out[path] = { ours: linesChanged(join(dir, PRISTINE_DIR, record.upstream), without, path), offer: linesChanged(between, bodyOf(made), path) };
+    }
+    return out;
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+/** The copies over either budget, each named with its count and the cap. */
+export async function budgetProblems(dir) {
+  const problems = [];
+  for (const [path, { ours, offer }] of Object.entries(await budgetLines(dir))) {
+    if (ours >= OURS_LINES) problems.push(`${path}: its own patches change ${ours} lines against upstream (fewer than ${OURS_LINES})`);
+    if (offer >= OFFER_LINES) problems.push(`${path}: its offer patches change ${offer} lines (fewer than ${OFFER_LINES}): a larger fix is ours, or split`);
+  }
+  return problems;
 }
 
 /** The whole port of one package directory: every manifest's output and the problems. */
