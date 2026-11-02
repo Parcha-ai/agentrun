@@ -257,11 +257,11 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-test("capabilities say which harnesses run each tool: the file tools, fetch_page and web_fetch on every harness, the rest on pi", async (t) => {
+test("capabilities say which harnesses run each tool: the file tools, bash (in a box), fetch_page and web_fetch on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
   const every = ["pi", "claude-agent", "codex"];
-  const host = ["read", "write", "edit", "fetch_page", "web_fetch"];
+  const host = ["read", "write", "edit", "bash", "fetch_page", "web_fetch"];
   for (const name of host) assert.deepEqual(tools[name], every, name);
   for (const [name, harnesses] of Object.entries(tools)) if (!host.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });
