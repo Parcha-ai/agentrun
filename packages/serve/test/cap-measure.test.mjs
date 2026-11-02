@@ -1,4 +1,4 @@
-// A run with no cap still measures each request's worst case, so a cost no one knows has a bound (cost-bound/1): pi's
+// A run with no cap still measures each request's worst case, so a cost no one knows has a bound (costbound/1): pi's
 // requests carry it to their marks (measureModels), and another harness's runner gets it from a guard that refuses
 // nothing (measureBefore). One formula with the cap's (requestWorst, capBefore's worstOf). Neither ever refuses or throws:
 // an unpriced model, a model with no output ceiling, an input that cannot be measured, or an error while measuring, sends

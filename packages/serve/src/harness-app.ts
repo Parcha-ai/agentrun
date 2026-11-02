@@ -21,7 +21,7 @@ import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPo
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
-import type { CapGuard } from "./cap.js";
+import { type CapGuard, HELD_FIELD } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
 import { REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
@@ -226,7 +226,11 @@ export function adapterRun(
       // Marked on the root as it leaves, as a pi run's request is (request-start.ts): one never answered, a run that ends
       // without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
       // A store that refuses it has refused a write already, and the process ends on that.
-      later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn } })))).catch(() => undefined);
+      // It carries the request's worst case (what a cap holds; with no cap, only measured), as a pi run's mark does: the
+      // timeline bounds the run's cost by it when the request's own cost is never known. A cap reads the runner's records,
+      // never this mark.
+      const held = event.heldUsd === undefined ? {} : { [HELD_FIELD]: event.heldUsd };
+      later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...held } })))).catch(() => undefined);
     } else {
       open.delete(event.turn);
       costed.push({ request: event.turn, usage: event.usage });

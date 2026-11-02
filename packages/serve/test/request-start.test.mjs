@@ -23,5 +23,6 @@ test("a request stopped before its first content is booked: the run counts it, a
   await sleep(500);
   assert.equal((await api("POST", `/runs/${run.run_id}/stop`)).body.stopped, true);
   const { rows } = await follow(api, run.run_id, ["input_required"]);
-  assert.deepEqual(usageOf(rows), { usd: null, requests: 2 }, "the cut request counts, at an unknown cost");
+  // The faux model is priced at $0, so the cut request's worst case, and the bound, are $0: the cost itself stays unknown.
+  assert.deepEqual(usageOf(rows), { usd: null, requests: 2, at_most_usd: 0 }, "the cut request counts, at an unknown cost");
 });

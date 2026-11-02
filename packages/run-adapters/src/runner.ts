@@ -85,7 +85,8 @@ const positive = (value: number, name: string): number => {
 export const NO_PROGRESS_TURNS = 3;
 
 /** What a paid request tells a host, beside its session's key and label. */
-export type ModelPortEvent = { type: "request_start"; turn: number; model: string } | { type: "request_end"; turn: number; usage: ModelUsage };
+/** `heldUsd` on a request's start: what its host held for it (`holdUsd`), when it held anything. */
+export type ModelPortEvent = { type: "request_start"; turn: number; model: string; heldUsd?: number } | { type: "request_end"; turn: number; usage: ModelUsage };
 
 export interface ModelPortOptions {
   /** The session's key: what `beforeRequest` and every event carry. */
@@ -222,7 +223,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       throw stoppedNow;
     }
     open.push({ turn, model, inputTokensMax });
-    emit({ type: "request_start", turn, model });
+    emit({ type: "request_start", turn, model, ...(hold === undefined ? {} : { heldUsd: hold }) });
     return { turn };
   };
   const models: ModelPort = {
@@ -327,7 +328,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     // label, which map items and loops repeat.
     const key = request.step ? `step:${request.step.sessionId}` : `call:${randomUUID()}`;
     const node = { key, label: request.label, ...(request.executionPath === undefined ? {} : { executionPath: request.executionPath }) };
-    const emit = (event: AdapterEvent | { type: "request_start"; turn: number; model: string } | { type: "request_end"; turn: number; usage: ModelUsage }) => options.onEvent?.({ ...event, ...node } as HarnessEvent);
+    const emit = (event: AdapterEvent | { type: "request_start"; turn: number; model: string; heldUsd?: number } | { type: "request_end"; turn: number; usage: ModelUsage }) => options.onEvent?.({ ...event, ...node } as HarnessEvent);
     const refuse = (message: string, turns = 0, submissions = 0) => new HarnessRunError("refused", turns, submissions, { message });
 
     const signals = [options.signal, request.signal].filter((s): s is AbortSignal => Boolean(s));

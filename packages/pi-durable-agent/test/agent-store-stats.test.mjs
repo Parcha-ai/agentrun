@@ -40,7 +40,7 @@ test("stats counts runs by state and sums only the known costs: an unknown cost 
   const stats = store.stats();
   assert.equal(stats.agents, 3);
   assert.deepEqual(stats.runs, { total: 7, running: 1, completed: 3, failed: 1, stopped: 1, escalated: 1 });
-  assert.deepEqual(stats.cost, { usd: 1.75, known: 4, unknown: 3 }, "a $0 cost is known; a null cost, and a running run's, are not");
+  assert.deepEqual(stats.cost, { usd: 1.75, known: 4, unknown: 3, boundedUnknown: { runs: 0, atMostUsd: null } }, "a $0 cost is known; a null cost, and a running run's, are not");
   assert.deepEqual(stats.byAgent, [{ id: "alpha", name: "ALPHA", runs: 4 }, { id: "beta", name: "BETA", runs: 3 }, { id: "gamma", name: "GAMMA", runs: 0 }]);
   assert.deepEqual(stats.running, ["run-4"]);
   store.close();
@@ -58,17 +58,17 @@ test("a run opened again keeps its last cost on its row while it runs: that cost
   store.reopenRun(first.runId);
   assert.deepEqual([store.readRun(first.runId).state, store.readRun(first.runId).costUsd], ["running", 0.4], "the row keeps the cost of its last end");
   const stats = store.stats();
-  assert.deepEqual(stats.cost, { usd: 0.25, known: 1, unknown: 1 });
+  assert.deepEqual(stats.cost, { usd: 0.25, known: 1, unknown: 1, boundedUnknown: { runs: 0, atMostUsd: null } });
   assert.deepEqual(stats.running, [first.runId]);
   store.close();
 });
 
 test("a store where every cost is unknown answers null for the total, never 0", async () => {
   const { store } = await seeded(["alpha"], [["alpha", "completed", null], ["alpha", "running", null], ["alpha", "failed", null]]);
-  assert.deepEqual(store.stats().cost, { usd: null, known: 0, unknown: 3 });
+  assert.deepEqual(store.stats().cost, { usd: null, known: 0, unknown: 3, boundedUnknown: { runs: 0, atMostUsd: null } });
   store.close();
   const empty = openStore(await scratch());
-  assert.deepEqual(empty.stats(), { agents: 0, archivedAgents: 0, runs: zero, archivedRuns: 0, cost: { usd: null, known: 0, unknown: 0 }, byAgent: [], running: [] });
+  assert.deepEqual(empty.stats(), { agents: 0, archivedAgents: 0, runs: zero, archivedRuns: 0, cost: { usd: null, known: 0, unknown: 0, boundedUnknown: { runs: 0, atMostUsd: null } }, byAgent: [], running: [] });
   empty.close();
 });
 
@@ -83,7 +83,7 @@ test("archived agents and runs are left out of every number and counted apart; a
   const stats = store.stats();
   assert.deepEqual([stats.agents, stats.archivedAgents, stats.archivedRuns], [1, 1, 3]);
   assert.deepEqual(stats.runs, { ...zero, total: 2, running: 1, completed: 1 });
-  assert.deepEqual(stats.cost, { usd: 1, known: 1, unknown: 1 });
+  assert.deepEqual(stats.cost, { usd: 1, known: 1, unknown: 1, boundedUnknown: { runs: 0, atMostUsd: null } });
   assert.deepEqual(stats.byAgent, [{ id: "alpha", name: "ALPHA", runs: 2 }]);
   assert.deepEqual(stats.running, ["run-1"]);
   store.setArchived("agent", "beta", false);
