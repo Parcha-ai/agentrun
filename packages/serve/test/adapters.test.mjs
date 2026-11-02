@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { claudeModel, claudeModelId, claudeOf, claudeProvider, codexProvider, HarnessUnavailable, installHint, priceOf, startedByNpx } from "../dist/adapters.js";
+import { claudeModel, claudeModelId, claudeOf, claudeProvider, codexOf, codexProvider, HarnessUnavailable, installHint, priceOf, startedByNpx } from "../dist/adapters.js";
 
 const openai = { provider: "openai", modelId: "gpt-5.4-mini" };
 const refused = (pattern) => (error) => error instanceof HarnessUnavailable && pattern.test(error.message);
@@ -171,6 +171,21 @@ test("demo: run from npx, a missing Claude Agent SDK says the npx line that runs
   const noSdk = async () => ({ ...real, claudeAgentAdapter: () => real.verifyClaudeAgent({}, () => undefined) });
   const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
   await assert.rejects(claudeOf({}, needs, noSdk, true), (error) => error instanceof HarnessUnavailable && error.message.includes(`install it with: npx -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun-serve`) && !error.message.includes("npm install"));
+});
+
+test("demo: run from npx, a missing Codex says the npx line that runs this server with it; installed in a project, the npm line", async () => {
+  const codex = await import("@parcha/agentrun-codex");
+  const missing = new codex.CodexNotInstalled("no binary for this platform").message;
+  assert.ok(missing.endsWith(`; ${codex.CODEX_INSTALL}`), missing);
+  const spec = `@openai/codex@${codex.CODEX_VERSION}`;
+  assert.equal(installHint(missing, codex.CODEX_INSTALL, spec, true), missing.replace(codex.CODEX_INSTALL, `npx -p @parcha/agentrun-serve@${SERVE} -p @openai/codex@0.164.0 agentrun-serve`));
+  assert.equal(installHint(missing, codex.CODEX_INSTALL, spec, false), missing, "in a project: the adapter's npm line");
+  // Through serve's own check of the harness: the reason a person reads, under npx and in a project.
+  const absent = async () => ({ ...codex, verifyCodex: () => { throw new codex.CodexNotInstalled("no binary for this platform"); } });
+  const needs = { model: { provider: "openai", modelId: "gpt-5.4-mini" }, models: { getModel: () => undefined } };
+  const reason = async (npx) => codexOf({}, needs, absent, npx).then(() => assert.fail("refused"), (error) => (assert.ok(error instanceof HarnessUnavailable, String(error)), error.message));
+  assert.ok((await reason(true)).endsWith(`; npx -p @parcha/agentrun-serve@${SERVE} -p ${spec} agentrun-serve`));
+  assert.ok((await reason(false)).endsWith(`; ${codex.CODEX_INSTALL}`));
 });
 
 test("npx is told by where serve's files are: under npm's _npx cache, not a project's node_modules, and not this checkout", () => {

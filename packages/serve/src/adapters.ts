@@ -2,8 +2,8 @@
 // every id runs on run-adapters' faux harness, scripted by the module's `script(spec)`, as `--faux` runs pi on the
 // faux model. Otherwise codex runs on @parcha/agentrun-codex and claude-agent on @parcha/agentrun-claude-agent, each
 // with serve's own model, price and endpoint, under the run's confinement; a package or a pinned CLI that is missing
-// says so with the one line that installs it: an npm install beside serve, or, for claude-agent's SDK when serve runs
-// from npx, the npx line that runs it with the SDK.
+// says so with the one line that installs it: an npm install beside serve, or, when serve runs from npx, the npx line
+// that runs it with the missing package (claude-agent's SDK, Codex).
 import { readFileSync } from "node:fs";
 import { sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -225,8 +225,9 @@ export const thinkingFor = (harness: string, level: string): SessionSpec["thinki
 
 /** The bare id Codex takes: serve's "openai/<id>" without its provider. */
 
-async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
-  const codex = await import("@parcha/agentrun-codex").catch(() => {
+/** codex's adapter, from `load` (the installed package; a test gives its own). */
+export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<typeof import("@parcha/agentrun-codex")> = () => import("@parcha/agentrun-codex"), npx = startedByNpx()): Promise<AgentAdapter> {
+  const codex = await load().catch(() => {
     throw new HarnessUnavailable(`codex is not installed here: ${INSTALL.codex}`);
   });
   const standIn = env[CODEX_STANDIN_ENV] ? (JSON.parse(env[CODEX_STANDIN_ENV]) as { command: string; args?: string[]; env?: Record<string, string> }) : undefined;
@@ -235,7 +236,8 @@ async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<Age
       codex.verifyCodex();
     } catch (error) {
       const message = (error as Error).message;
-      throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL.codex})`);
+      const said = message.includes("npm install") ? message : `${message} (${INSTALL.codex})`;
+      throw new HarnessUnavailable(installHint(said, codex.CODEX_INSTALL, `@openai/codex@${codex.CODEX_VERSION}`, npx));
     }
   }
   // The id as model.ts chose it: a gateway's own name for the model, whole (AGENT_MODEL_GATEWAY_IDS says whether it is
