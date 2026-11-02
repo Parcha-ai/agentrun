@@ -245,7 +245,7 @@ land (native and picked web search and tool settings, monid on every harness, th
 5. A `monid.run` is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
    by name; an answer over 60,000 characters is filed under `work/evidence/monid/`.
 6. On pi, `web_search` searches Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server; a 429
-   is a tool error naming the rate limit, never a hang; `AGENTRUN_WEB_SEARCH_KEYLESS=off` sends nothing.
+   is a tool error naming the rate limit, never a hang.
 
 ### Places (boxes, home, files)
 

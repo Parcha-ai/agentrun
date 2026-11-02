@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { exaSearch } from "../dist/exa-keyless.js";
-import { searchFor, WEB_SEARCH_KEYLESS_ENV } from "../dist/web-search.js";
+import { searchFor } from "../dist/web-search.js";
 import fakeExa from "./fixtures/faux-exa.mjs";
 import { agent, client, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -40,10 +40,9 @@ test("Exa's free rate limit (429) is a tool error that says so, at once; a searc
   assert.ok(Date.now() - started < 5_000, "no hang");
 });
 
-test(`${WEB_SEARCH_KEYLESS_ENV}=off searches nothing: the tool says it is off and nothing is sent`, async (t) => {
+test("a search with no query sends nothing and says so", async (t) => {
   const log = join(await scratch(t), "exa.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_EXA_CALLS: log });
-  assert.deepEqual(await searchFor({ [WEB_SEARCH_KEYLESS_ENV]: "off" }, { query: "widgets" }), { error: `web_search is turned off on this server (${WEB_SEARCH_KEYLESS_ENV}=off): nothing was searched` });
   assert.deepEqual(await searchFor({}, { query: "  " }), { error: "web_search needs a query" });
   assert.deepEqual(await lines(log), []);
 });
@@ -58,7 +57,7 @@ test("capabilities list web_search on pi, available with no key; Parallel's key 
 
 test("a pi run's model searches the web: the search goes from the run's process to Exa with no key, and its answer cites the result", { timeout: 90_000 }, async (t) => {
   const log = join(await scratch(t), "exa.jsonl");
-  withEnv(t, { AGENTRUN_TEST_FAUX_EXA_CALLS: log }, ["AGENTRUN_TEST_FAUX_EXA", WEB_SEARCH_KEYLESS_ENV]);
+  withEnv(t, { AGENTRUN_TEST_FAUX_EXA_CALLS: log }, ["AGENTRUN_TEST_FAUX_EXA"]);
   const { api } = await serve(t, { fauxExa: FAUX_EXA });
   const saved = await api("POST", "/agents", agent("searcher", { tools: ["web_search"] }));
   assert.deepEqual([saved.status, saved.body.warnings], [201, []], JSON.stringify(saved.body));
@@ -75,17 +74,8 @@ test("a pi run's model searches the web: the search goes from the run's process 
   assert.deepEqual(rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_status), ["success"]);
 });
 
-test("on a server that turned it off, a pi run's search is a failed call that sends nothing; on claude-agent web_search is not bound", { timeout: 90_000 }, async (t) => {
-  const log = join(await scratch(t), "exa.jsonl");
-  withEnv(t, { AGENTRUN_TEST_FAUX_EXA_CALLS: log, [WEB_SEARCH_KEYLESS_ENV]: "off" }, ["AGENTRUN_TEST_FAUX_EXA"]);
-  const { api } = await serve(t, { fauxExa: FAUX_EXA, fauxHarness: FAUX_HARNESS });
-  await api("POST", "/agents", agent("searcher", { tools: ["web_search"] }));
-  const started = await api("POST", "/agents/searcher/runs", { input: { content: "Search the web for widgets." } });
-  await follow(api, started.body.run_id, ["completed"]);
-  const rows = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body.rows;
-  assert.deepEqual(rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_status), ["failed"]);
-  assert.match((await api("GET", `/runs/${started.body.run_id}`)).body.result.final_answer, /web_search is turned off on this server/);
-  assert.deepEqual(await lines(log), [], "nothing reached Exa");
+test("on claude-agent web_search is not bound yet: a revision naming it saves with the pi-only warning", async (t) => {
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const claude = await api("POST", "/agents", agent("searcher-claude", { harness: "claude-agent", tools: ["read", "web_search"] }));
   assert.equal(claude.status, 201, JSON.stringify(claude.body));
   assert.match(claude.body.warnings.find((w) => w.field === "definition.tools[1]")?.message ?? "", /^web_search runs on pi here; on claude-agent it is not bound yet\.$/);

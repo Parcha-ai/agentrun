@@ -1,10 +1,9 @@
-// web_search on pi: the web searched through Exa's keyless MCP endpoint (exa-keyless.ts), with no key. Only the
-// search query and the number of results asked for leave this server, to https://mcp.exa.ai/mcp over IPv4; nothing
-// else from the run goes with them. A server turns it off with AGENTRUN_WEB_SEARCH_KEYLESS=off: the tool then answers
-// that it is off and sends nothing. The answer is `{provider: "exa-keyless", query, results: [{url, title, snippet,
-// published?}]}`, followed for the model by one line asking it to cite the URLs it relies on; or `{error}`, a tool
-// error the model reads: no query, turned off, Exa's free rate limit (429, with its Retry-After), a refusal, nothing
-// within 60 s. Nothing is retried and nothing else is searched instead. The query is cut at 200 characters, 1 to 8
+// web_search on pi: the web searched through Exa's keyless MCP endpoint (exa-keyless.ts), with no key: the default
+// for a harness with no native search when no search key is saved. Only the search query and the number of results
+// asked for leave this server, to https://mcp.exa.ai/mcp over IPv4; nothing else from the run goes with them. The answer
+// is `{provider: "exa-keyless", query, results: [{url, title, snippet, published?}]}`, followed for the model by one
+// line asking it to cite the URLs it relies on; or `{error}`, a tool error the model reads: no query, Exa's free rate
+// limit (429, with its Retry-After), a refusal, nothing within 60 s. Nothing is retried and nothing else is searched instead. The query is cut at 200 characters, 1 to 8
 // results (5 by default), and a result's snippet (its excerpts joined, links reduced to their text) is cut at 3,000
 // characters.
 import type { TSchema } from "@earendil-works/pi-ai";
@@ -16,8 +15,6 @@ import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 
 export const WEB_SEARCH_TOOL = "web_search";
-/** Set to `off` in the server's environment, web_search searches nothing: no query leaves the server. */
-export const WEB_SEARCH_KEYLESS_ENV = "AGENTRUN_WEB_SEARCH_KEYLESS";
 export const QUERY_MAX = 200;
 /** The most results asked for: Exa's keyless search answers at most 8. */
 export const RESULTS_MAX = 8;
@@ -45,9 +42,8 @@ export const searchArgs = (args: Record<string, unknown>) => ({
   n: Math.max(1, Math.min(RESULTS_MAX, Math.floor(Number(args.n) || RESULTS_DEFAULT))),
 });
 
-/** `{query, n?}` searched on Exa's keyless endpoint, unless this server turned it off, as a Search. */
+/** `{query, n?}` searched on Exa's keyless endpoint, as a Search. */
 export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unknown>, signal?: AbortSignal): Promise<Search> {
-  if (env[WEB_SEARCH_KEYLESS_ENV] === "off") return { error: `web_search is turned off on this server (${WEB_SEARCH_KEYLESS_ENV}=off): nothing was searched` };
   const { query, n } = searchArgs(args);
   if (!query) return { error: "web_search needs a query" };
   // Under --faux, Exa is the faux module's or none: a test never reaches the network.
