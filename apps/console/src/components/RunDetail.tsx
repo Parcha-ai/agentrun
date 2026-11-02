@@ -6,7 +6,7 @@ import { RunError } from "@/components/RunError";
 import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
 import { Timeline, Working } from "@/components/Timeline";
-import { type MessageFeatures, runState } from "@/lib/runState";
+import { isEscalated, type MessageFeatures, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { latest, pendingQuestion } from "@/lib/viewing";
 import type { Run, RunFile, TimelineRow } from "@/lib/v2";
@@ -36,7 +36,7 @@ type Tab = "graph" | "report" | "timeline" | "files";
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
 export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText }: RunDetailProps) {
-  const view = runState(run.status, run.state, run.kind, messages, harnessSteers);
+  const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error);
   const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   const waiting = pendingQuestion(run.status, run.state, rows);
@@ -67,7 +67,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       </div>
       {tab === "graph" ? <div className="min-h-0 flex-1">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
-          {run.status === "failed" && run.error && <RunError error={run.error} />}
+          {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
             <section className="border border-border-strong/60 p-4"><p className="caps text-[11px] text-muted-foreground">Cancelled</p>
               <p className="mt-2 text-[14px] text-muted-foreground">This run was cancelled. It keeps what it did before; it takes no more messages.</p></section>

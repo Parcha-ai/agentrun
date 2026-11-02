@@ -38,6 +38,27 @@ const HEALTH = {
 
 const COUNT = { type: "integer", minimum: 0 };
 const closed = (properties: Json, description?: string) => ({ type: "object", additionalProperties: false, required: Object.keys(properties), properties, ...(description ? { description } : {}) });
+const USD = { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." };
+/** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
+const GROUP = {
+  runs: COUNT, completed: COUNT, failed: { ...COUNT, description: "Failed or escalated." },
+  runs_with_metrics: { ...COUNT, description: "Of `runs`, those that ended with metrics: a running run, and a run whose end wrote none, has none." },
+  tokens: { ...COUNT, description: "Input, cache read, cache write and output tokens, summed over `runs_with_metrics`." },
+  cost_usd: USD, unknown_cost_runs: { ...COUNT, description: "Runs with no known cost: running, or ended without one." },
+};
+/** GET /stats's `analytics` (stats.ts analyticsView). */
+const ANALYTICS = closed({
+  filter: closed({ from: { type: ["string", "null"], format: "date-time" }, to: { type: ["string", "null"], format: "date-time" }, agent: { type: ["string", "null"] } }, "The query's bounds, each null when not given: runs started at or after `from` and before `to`, of `agent`."),
+  totals: closed({
+    ...GROUP, input: COUNT, cache_read: COUNT, cache_write: COUNT, output: COUNT,
+    requests: { ...COUNT, description: "Model requests." }, unmetered: { ...COUNT, description: "Of `requests`, those whose tokens are unknown: in no token sum." },
+  }, "Over every run the filter picks. `input` excludes cached input: the whole input is `input + cache_read + cache_write`."),
+  time: closed({ ended_runs: COUNT, wall_ms: { ...COUNT, description: "Ended minus started, summed over `ended_runs`." }, active_runs: COUNT, active_ms: { ...COUNT, description: "How long the runs were at work, summed over the `active_runs` whose metrics say." } }),
+  by_harness_effort: { type: "array", description: "By the revision's harness (`pi` when it names none, `workflow` for a workflow revision), then the effort the run's metrics name (null: unset, or no metrics).", items: closed({ harness: { type: "string" }, effort: { type: ["string", "null"] }, ...GROUP }) },
+  by_day: { type: "array", description: "By the UTC date the run started, oldest first.", items: closed({ day: { type: "string", format: "date" }, ...GROUP }) },
+  by_source: { type: "array", description: "`live`, run here, first, then each source runs were imported from.", items: closed({ source: { enum: ["live", "claude-code", "codex", "pi"] }, ...GROUP }) },
+  tools: { type: "array", maxItems: 20, description: "The 20 tools with the most calls, by name on a tie; `errors` counts the calls that failed or never returned.", items: closed({ tool: { type: "string" }, calls: COUNT, errors: COUNT }) },
+}, "The runs' tokens, requests, time and tool calls from their metrics, over the runs not archived that the query picks; a run with no metrics counts in `runs` alone.");
 /** GET /stats's answer (stats.ts). */
 const STATS = closed({
   agents: { ...COUNT, description: "Agents not archived." },
@@ -58,6 +79,7 @@ const STATS = closed({
     "Over the runs not archived: `usd` sums the cost of each run that ended with one; every other run (running, or ended with no cost) is in `unknown_runs`.",
   ),
   archived: closed({ agents: COUNT, runs: COUNT }, "Agents archived, and runs archived or of an archived agent: counted here and in nothing else."),
+  analytics: { ...ANALYTICS, "x-agentrun-serve": "stats/2" },
 });
 const NODE_STATUS = { enum: ["pending", "working", "done", "failed", "stopped", "escalated", "not_run", "needs_review"] };
 const nullable = (type: string) => ({ type: [type, "null"] });
@@ -182,7 +204,31 @@ const archiving = (collection: string, noun: string, id: Json, answer: string): 
   );
 
 /** This server's own routes, outside the contract. */
+/** One JSON-RPC 2.0 message, and the answer to a request (POST /mcp). */
+const RPC_MESSAGE = { type: "object", required: ["jsonrpc"], properties: { jsonrpc: { const: "2.0" }, id: { type: ["string", "number"] }, method: { type: "string" }, params: { type: "object" } } };
+const RPC_ANSWER = {
+  type: "object", required: ["jsonrpc", "id"],
+  properties: { jsonrpc: { const: "2.0" }, id: { type: ["string", "number", "null"] }, result: {}, error: { type: "object", required: ["code", "message"], properties: { code: { type: "integer" }, message: { type: "string" } } } },
+};
 const EXTENSIONS: Record<string, Record<string, Json>> = {
+  "/mcp": {
+    post: {
+      operationId: "callMcp", tags: ["local"], summary: "The MCP endpoint: this API's tools, for a coding agent",
+      description:
+        "The Model Context Protocol over Streamable HTTP: one JSON-RPC 2.0 message per POST (initialize, ping, tools/list, tools/call), answered as JSON, stateless: no stream (any other method is 405) and no session. Ten tools: whoami, agents_list, agents_create, agents_revise, runs_start, runs_get, runs_events, runs_files, runs_respond and runs_cancel. Each calls this API's routes in process, with the caller's token, and answers as they do: the route's JSON as structured content, a refusal as a result with isError and the route's error. A run is started, then polled; no call is held open for one. The token only: the page's session cookie is never taken here, and a browser Origin other than this server's own is 403. A refusal of the request itself carries a JSON-RPC error.",
+      requestBody: { required: true, content: { "application/json": { schema: RPC_MESSAGE } } },
+      responses: {
+        "200": json(RPC_ANSWER, "The request's answer: its result, or its JSON-RPC error."),
+        "202": { description: "A notification, or a response, taken. No body." },
+        "400": json(RPC_ANSWER, "Not one JSON-RPC 2.0 request (a batch is not taken), or an MCP-Protocol-Version this server does not speak."),
+        "401": json(RPC_ANSWER, "No token, or not this server's."),
+        "403": json(RPC_ANSWER, "An Origin other than this server's own."),
+        "413": json(RPC_ANSWER, "The body is over 1 MiB."),
+        "415": json(RPC_ANSWER, "The body is not application/json."),
+      },
+      "x-agentrun-serve": "mcp/1",
+    },
+  },
   "/openapi.json": {
     get: {
       operationId: "getOpenapi", tags: ["capabilities"], summary: "This document", security: [{}],
@@ -251,8 +297,13 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/stats": {
     get: {
       operationId: "getStats", tags: ["runs"], summary: "Counts and cost over every agent and run",
-      description: "Read from the agent store's aggregates alone: no run's files are opened. Archived agents and runs are left out of every number but their own counts.",
-      responses: { "200": json(STATS, "The counts and the cost."), ...errors(401, 429, 500) },
+      description: "Read from the agent store's aggregates alone: no run's files are opened. Archived agents and runs are left out of every number but their own counts. `from`, `to` and `agent` bound `analytics` only; every other number is the whole store's.",
+      parameters: [
+        { name: "from", in: "query", required: false, description: "Runs started at or after this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.", schema: { type: "string", format: "date-time" }, "x-agentrun-serve": "stats/2" },
+        { name: "to", in: "query", required: false, description: "Runs started before this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.", schema: { type: "string", format: "date-time" }, "x-agentrun-serve": "stats/2" },
+        { name: "agent", in: "query", required: false, description: "One agent's runs.", schema: ref("schemas/Id"), "x-agentrun-serve": "stats/2" },
+      ],
+      responses: { "200": json(STATS, "The counts and the cost."), ...errors(400, 401, 429, 500) },
       "x-agentrun-serve": "stats/1",
     },
   },
@@ -586,6 +637,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // What this server changes in a contract operation, by the addition that made it.
   update["x-agentrun-serve-changed"] = { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" };
   const changed = ["PUT /agents/{agent_id}/definition"];
+  // A timeline page of at most `limit` rows: the contract's pages hold up to 500, more than a small client reads at once.
+  const timeline = (doc.paths["/runs/{run_id}/timeline"] as Json).get as Json;
+  timeline.parameters = [...(timeline.parameters as Json[]), { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } }];
+  timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1" };
+  changed.push("GET /runs/{run_id}/timeline");
   // A workflow run pauses here (POST /runs/{run_id}/pause): its status reads `paused` until it is resumed.
   const runStatus = schemas.RunStatus as Json & { enum?: string[] };
   if (Array.isArray(runStatus.enum) && !runStatus.enum.includes("paused")) {

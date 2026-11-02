@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
@@ -15,7 +15,7 @@ import type { Holder, LeaseRecord, Ownership } from "./ownership.ts";
 import type { MoveFacts, MoveWhere } from "./run.ts";
 import { type StopRunner, stopRunner } from "./stop.ts";
 import { type Seal, sealStore, verifyStore } from "./store.ts";
-import { manifestOf, moveFile, moveWorkspace, type WorkspaceOptions } from "./workspace.ts";
+import { moveFile, moveWorkspace, restoreTree, treeProblem, type WorkspaceOptions } from "./workspace.ts";
 
 /** One place a session's home can be: an environment, its box, and where the store and the workspace are in it. */
 export type Place = {
@@ -490,40 +490,58 @@ async function boxGone(box: Box, context: Context): Promise<boolean> {
 	return status.error.code === "gone" || status.error.code === "not_found";
 }
 
-/** The newest checkpoint whose store and tree are what its record says, or `undefined`. */
+/** Whether every file's content in the checkpoint's tree is in the vault, whole: its size and SHA-256 read again. */
+async function contentsCheckOut(vault: CheckpointVault, checkpoint: Checkpoint): Promise<boolean> {
+	if (treeProblem(checkpoint.manifest) !== undefined) return false;
+	const checked = new Set<string>();
+	for (const entry of checkpoint.manifest.entries) {
+		if (entry.kind !== "file" || entry.sha256 === undefined || checked.has(entry.sha256)) continue;
+		const content = vault.content(checkpoint.session, entry.sha256);
+		if (content === undefined) return false;
+		const hash = createHash("sha256");
+		let bytes = 0;
+		try {
+			for await (const chunk of content) {
+				hash.update(chunk);
+				bytes += chunk.length;
+			}
+		} catch {
+			return false;
+		}
+		if (bytes !== entry.bytes || hash.digest("hex") !== entry.sha256) return false;
+		checked.add(entry.sha256);
+	}
+	return true;
+}
+
+/**
+ * The newest checkpoint whose store and contents are what its record says, if any, and the vault's refusals on the way:
+ * a generation an earlier version kept is named there, never used.
+ */
 async function usableCheckpoint(
 	vault: CheckpointVault,
 	session: string,
 	context: Context,
 	/** Only a checkpoint whose store ends at or before this head: the one a restore at that head started from. */
 	upToHead?: number,
-): Promise<Checkpoint | undefined> {
+): Promise<{ readonly checkpoint?: Checkpoint; readonly refused: readonly string[] }> {
+	const refused: string[] = [];
 	const latest = await vault.latest(session, context);
-	if (!latest.ok || latest.value === undefined) return undefined;
+	if (!latest.ok) {
+		if (latest.error.code === "refused") refused.push(latest.error.message);
+		return { refused };
+	}
+	if (latest.value === undefined) return { refused };
 	for (let n = latest.value.n; n >= 1; n -= 1) {
 		const got = await vault.get(session, n, context);
+		if (!got.ok && got.error.code === "refused") refused.push(got.error.message);
 		const checkpoint = got.ok ? got.value : undefined;
 		if (checkpoint === undefined) continue;
 		if (upToHead !== undefined && checkpoint.seal.head > upToHead) continue;
 		if (!(await verifyStore(checkpoint.storeFile, checkpoint.seal, context)).ok) continue;
-		const tree = await manifestOf(vault.box, checkpoint.filesRoot, undefined, context);
-		if (!tree.ok) continue;
-		const mine = (
-			entries: readonly {
-				path: string;
-				kind: string;
-				bytes: number;
-				mode?: number;
-				target?: string;
-				sha256?: string;
-			}[],
-		) =>
-			JSON.stringify(
-				entries.map((e) => [e.path, e.kind, e.bytes, e.mode ?? null, e.target ?? null, e.sha256 ?? null]),
-			);
-		if (mine(tree.value.entries) === mine(checkpoint.manifest.entries)) return checkpoint;
+		if (await contentsCheckOut(vault, checkpoint)) return { checkpoint, refused };
 	}
-	return undefined;
+	return { refused };
 }
 
 /**
@@ -574,9 +592,12 @@ async function restoreHome(
 	>
 > {
 	const { session, vault } = options;
-	const checkpoint = await usableCheckpoint(vault, session, context);
+	const { checkpoint, refused } = await usableCheckpoint(vault, session, context);
 	if (checkpoint === undefined) {
-		const none = new MoveError("no_checkpoint", `the box of ${session} is gone and no checkpoint of it checks out`);
+		const none = new MoveError(
+			"no_checkpoint",
+			`the box of ${session} is gone and no checkpoint of it checks out${refused.length === 0 ? "" : `: ${refused.join("; ")}`}`,
+		);
 		if (options.restoreFromLog !== true) return err(none);
 		// No checkpoint: the host's log is the session, if it holds every commit from the first.
 		const whole = await storeFromLog(vault, session, context);
@@ -679,10 +700,13 @@ async function restoreInto(
 	if (!file.ok)
 		return err(new MoveError("ship", `the restored store did not reach the new box: ${file.error.message}`));
 	if (checkpoint !== undefined) {
-		const tree = await moveWorkspace(
-			vault.box,
+		// The tree is written from the record and the contents, and the new box's own tar makes it: its links are made
+		// there, never on the host.
+		const tree = await restoreTree(
 			place.box,
-			{ fromRoot: checkpoint.filesRoot, toRoot: place.workspace, ...options.workspace },
+			checkpoint.manifest,
+			(sha256) => vault.content(session, sha256),
+			{ ...options.workspace, toRoot: place.workspace },
 			context,
 		);
 		if (!tree.ok)
@@ -858,7 +882,7 @@ export async function recoverHome(
 	let notice = options.notice;
 	if (lease.move?.startsWith("restore-") && lease.seal !== undefined && options.vault !== undefined) {
 		// Verified again, not only read: a checkpoint whose files failed the check was not what the restore used.
-		const from = await usableCheckpoint(options.vault, options.session, context, lease.seal.head);
+		const { checkpoint: from } = await usableCheckpoint(options.vault, options.session, context, lease.seal.head);
 		const made = (options.noticeOfRestore ?? restoreNotice)(
 			from,
 			options.calls ?? [],

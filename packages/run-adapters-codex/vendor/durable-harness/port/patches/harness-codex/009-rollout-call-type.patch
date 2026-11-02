@@ -1,0 +1,28 @@
+Patch: 009-rollout-call-type
+Reason: the rollout summary says what kind of item a dangling call is (a function call, or a custom tool call such as code mode's exec and Codex's own apply_patch), because the output that answers a call must be of the kind the call asks for
+Upstream: ours
+Pins: a cut-off code-mode exec is answered with a custom tool output holding the nested outcomes, and never with a generic one
+Pins: a settled turn whose exec dangles with a completed never call does not answer a new turn's same call as recorded earlier: the new call runs
+---
+diff --git a/packages/harness-codex/src/rollout.ts b/packages/harness-codex/src/rollout.ts
+index 6958a36..b9d93ea 100644
+--- a/packages/harness-codex/src/rollout.ts
++++ b/packages/harness-codex/src/rollout.ts
+@@ -42,6 +42,8 @@ export interface RolloutLine {
+ export interface RolloutCall {
+   callId: string;
+   name: string;
++  /** `function_call` (a model tool, or a host tool) or `custom_tool_call` (code mode's `exec`, Codex's `apply_patch`). */
++  type: string;
+   arguments: string;
+   /** Whether a `function_call_output` for it follows. */
+   answered: boolean;
+@@ -105,7 +107,7 @@ export function summarizeRollout(lines: readonly string[]): RolloutSummary {
+       if (typeof id === 'string') threadId = id;
+     } else if (line.type === 'response_item') {
+       if ((p.type === 'function_call' || p.type === 'custom_tool_call') && typeof p.call_id === 'string') {
+-        calls.push({ callId: p.call_id, name: String(p.name ?? ''), arguments: String(p.arguments ?? p.input ?? ''), answered: false, line: i });
++        calls.push({ callId: p.call_id, name: String(p.name ?? ''), type: p.type, arguments: String(p.arguments ?? p.input ?? ''), answered: false, line: i });
+       } else if ((p.type === 'function_call_output' || p.type === 'custom_tool_call_output') && typeof p.call_id === 'string') {
+         outputs.add(p.call_id);
+       }

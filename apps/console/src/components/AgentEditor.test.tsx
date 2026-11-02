@@ -19,6 +19,28 @@ describe("AgentEditor, a new agent's tools", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: noWeb, step: "tools" }));
     expect(html).toContain("can&#x27;t reach the web");
   });
+  const webFetch = { name: "web_fetch", available: true, summary: "Read one public web page through Parallel's extract." };
+  const withWebFetch = { ...caps, tools: [...tools.filter((t) => t.name !== "fetch_page"), webFetch] };
+  it("an agent whose only tool is web_fetch reaches the web: no notice", () => {
+    const reader = { agent_id: "reader", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["web_fetch"] } };
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: reader, caps: withWebFetch, step: "tools" }));
+    expect((html.match(/checked=""/g) ?? []).length).toBe(1);
+    expect(html.match(/<input[^>]*value="web_fetch"[^>]*>/)?.[0]).toContain('checked=""');
+    expect(html).not.toContain("can&#x27;t reach the web");
+  });
+  it("an agent with no web tool is told which to tick, or that its harness runs none here", () => {
+    const reader = { agent_id: "reader", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["read"] } };
+    const both = { ...caps, tools: [...tools, webFetch] };
+    expect(renderToStaticMarkup(createElement(AgentEditor, { agent: reader, caps: both, step: "tools" }))).toContain("tick fetch_page or web_fetch in Tools.");
+    const piOnly = { ...both, tools: both.tools.map((t) => ({ ...t, harnesses: t.name === "read" ? ["pi", "codex"] : ["pi"] })) };
+    const onCodex = { ...reader, definition: { ...reader.definition, harness: "codex" } };
+    expect(renderToStaticMarkup(createElement(AgentEditor, { agent: onCodex, caps: piOnly, step: "tools" }))).toContain("codex runs no web tool on this server.");
+  });
+  it("the tools step shows web_fetch from the server's capabilities, with what it does", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: withWebFetch, step: "tools" }));
+    expect(html).toContain('value="web_fetch"');
+    expect(html).toContain("Read one public web page through Parallel&#x27;s extract.");
+  });
 });
 
 describe("AgentEditor, a new agent whose server capabilities arrive after it opens", () => {

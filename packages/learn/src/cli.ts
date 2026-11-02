@@ -78,13 +78,21 @@ async function main(argv: string[]): Promise<number> {
     refuseValues: secrets,
   });
   const { ok } = report;
-  // Everything printed is redacted: a secret can be a file's name or in the branch's name, not only in a file.
-  const print = (line: string) => console.log(redactSecrets(line, secrets));
-  if (values.json) print(JSON.stringify(report, null, 2));
+  // Everything printed is redacted: a secret can be a file's name or in the branch's name, not only in a file. Each
+  // field on its own, so one that must be redacted whole leaves the rest of the report, and the JSON, readable.
+  const hide = (text: string) => redactSecrets(text, secrets);
+  const shown = {
+    ...report,
+    ...(report.run === undefined ? {} : { run: hide(report.run) }),
+    ...(report.branch === undefined ? {} : { branch: hide(report.branch) }),
+    ...(report.forkPoint === undefined ? {} : { forkPoint: hide(report.forkPoint) }),
+    problems: report.problems.map((p) => ({ ...p, ...(p.path === undefined ? {} : { path: hide(p.path) }), detail: hide(p.detail) })),
+  };
+  if (values.json) console.log(JSON.stringify(shown, null, 2));
   else {
-    const name = report.branch ?? "(no branch)";
-    print(ok ? `${name}: ok` : `${name}: ${report.problems.length} problem${report.problems.length === 1 ? "" : "s"}`);
-    for (const problem of report.problems) print(`  ${problem.rule}  ${problem.path ?? "-"}  ${problem.detail}`);
+    const name = shown.branch ?? "(no branch)";
+    console.log(ok ? `${name}: ok` : `${name}: ${shown.problems.length} problem${shown.problems.length === 1 ? "" : "s"}`);
+    for (const problem of shown.problems) console.log(`  ${problem.rule}  ${problem.path ?? "-"}  ${problem.detail}`);
   }
   return ok ? 0 : 1;
 }

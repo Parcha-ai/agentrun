@@ -13,15 +13,16 @@ import { scratch } from "./support.mjs";
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const buildx = spawnSync("docker", ["buildx", "version"], { stdio: "ignore" }).status === 0;
 
-test("the image's build context holds the workspace and never a .env, an .npmrc, node_modules or dist", { skip: !buildx && "docker buildx is not installed", timeout: 120_000 }, async (t) => {
+test("the image's build context holds the workspace and the console's sources, and never a .env, an .npmrc, node_modules or dist", { skip: !buildx && "docker buildx is not installed", timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const context = join(dir, "context");
-  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "scripts/build-pi-demo.mjs", "examples/typed-research.ts", "examples/typed-research-fixtures.ts"];
+  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "scripts/build-pi-demo.mjs", "examples/typed-research.ts", "examples/typed-research-fixtures.ts", "apps/console/package.json", "apps/console/package-lock.json", "apps/console/index.html", "apps/console/src/main.tsx"];
   const dropped = [
     ".env", ".env.local", ".env.production", ".npmrc",
     "packages/serve/.env", "packages/serve/.env.test", "packages/serve/.npmrc", "packages/serve/src/.env",
-    "scripts/.env", "examples/.env",
+    "scripts/.env", "examples/.env", "apps/console/.env",
     "node_modules/zod/index.js", "packages/serve/node_modules/x/index.js", "packages/serve/dist/cli.js", "packages/serve/tsconfig.tsbuildinfo",
+    "apps/console/node_modules/vite/index.js", "apps/console/dist/index.html", "apps/viewer/index.html",
     ".git/config", "docs/releasing.md", "examples/starter/index.ts", "render.yaml", "changes/x.md",
   ];
   for (const path of [...kept, ...dropped]) {
@@ -52,4 +53,14 @@ test("both stages build on one digest-pinned node:22 trixie base, and the runtim
   const guard = [...runtime.matchAll(/^RUN (?:[^\n]*\\\n)*[^\n]*/gm)].map(([run]) => run).find((run) => run.includes("git --version")) ?? "";
   assert.match(guard, /dpkg --compare-versions "\$v" ge 2\.40\b/, "the build compares the git it installed with 2.40");
   assert.match(guard, /\|\| \{[^}]*\bexit 1; \}/, "an older git fails the build");
+});
+
+test("the build stage builds the console before the server, so the server's dist carries it, and keeps none of its sources", async () => {
+  const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
+  const build = dockerfile.slice(0, dockerfile.lastIndexOf("\nFROM "));
+  const at = (text) => build.indexOf(text);
+  const built = at("(cd apps/console && npm ci --ignore-scripts && npm run build)");
+  assert.ok(built > at("npm ci --ignore-scripts") && built < at(" && npm run build &&"), "the console builds after the workspace's install and before its build");
+  assert.ok(at("test -f packages/serve/dist/console/index.html") > at(" && npm run build &&"), "the build fails without the console in the server's dist");
+  assert.ok(at("rm -rf apps") > at("test -f packages/serve/dist/console/index.html"), "the console's sources and dependencies leave the image");
 });

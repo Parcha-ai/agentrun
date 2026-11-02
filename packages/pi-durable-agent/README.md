@@ -581,11 +581,25 @@ requests as the timeline's usage row does, and `unmetered` those of them whose t
 with no token counts, or one that reports no input at all: a request always sends some, so that is a writer's zeros for a request
 it did not measure, as an imported transcript's are): they are in `requests` and in no token sum, never read as 0. `models_json` counts requests by
 `provider/model`. `run_tool_metrics` holds a row per tool: its calls, and how many failed (an error result, or no result at all:
-interrupted). A run opened again keeps its metrics while it runs; its next end replaces them, and an end with none leaves it none,
+interrupted). The names come from the run's entries, which a model writes, so runMetricsOf keeps them to what the store takes
+(`METRIC_NAMES`): a name longer than 256 characters is cut to its first 255 and "…", the same name always to the same key; a
+run keeps its 100 busiest tools and models, and sums the rest under `…other tools` and `…other models`; a tool result with no
+name counts under `…unnamed tool`. No entry's name is one of those three: one that starts with "…" gets another. A run opened again keeps its metrics while it runs; its next end replaces them, and an end with none leaves it none,
 as an end with no cost leaves its cost unknown. They are in `store.sqlite`, so a sum over them opens nothing under `runs/`.
 Like `archive_changes`, the two tables came without a new store version: a store an earlier version wrote opens with no run's
 metrics and gains the tables from the first `openStore`, and an earlier version still opens a store that has them, ignores them
 and reads every run and `stats` as before (one that ends a run opened again leaves its metrics as they were).
+
+`store.analytics({ from?, to?, agent? })` sums the metrics in one read, over the runs not archived that started in
+[`from`, `to`) (ISO times in UTC) and are `agent`'s, each bound optional: `totals` (the runs, how many completed and
+failed, escalated included, how many have metrics, their tokens and token kinds, requests and unmetered requests, and
+their cost as `stats` sums it), `time` (ended minus started over the ended runs, and `activeMs` over those whose metrics
+have one), `byHarnessEffort` (the revision's harness, `pi` when it names none and `workflow` for a workflow revision, then
+the metrics' effort, null when unset), `byDay` (the UTC date a run started), `bySource` (`live`, or the source an imported
+run came from) and `tools` (the 20 with the most calls, by name on a tie, with their errors). Each group has `runs` beside
+`runsWithMetrics`, so a run with no metrics counts as a run and never as 0 tokens; a running run's metrics are its last
+end's, so it counts as one without them. It reads `run_metrics`, `run_tool_metrics`, `runs` and `revisions` alone, in one
+snapshot; a store without the metrics tables answers its runs with no metrics.
 
 A workflow revision whose call nodes name a tool that is not a `tool` call passes the commit check on purpose: whether it runs is the host's to decide. `openStoreReader(folder)` reads `store.sqlite` in place, read-only: it writes nothing and makes no copy. On a store a run was stopped in the middle of writing, it says so in one line and changes no file; open the store once with write access to roll the write back.
 
@@ -661,7 +675,7 @@ exists to check them. [Errors](#errors) says what each code means.
 | `localHostKey(id, bytes)` | A `HostKey` held in this process: 32 bytes, AES-256-GCM | `invalid`: an id that is not letters, digits, `.`, `_`, `:` or `-`, or not 32 bytes |
 | `seal(key, plain, aad)`, `unseal(key, sealed, aad)` | The vault's own AES-256-GCM, for a host's secrets under a 32-byte key of its own: `seal` gives the IV, the ciphertext and the tag in one buffer, bound to the `aad` text; `unseal` opens it | `unseal` throws Node's error when the bytes, the key or the `aad` differ from the sealing's |
 | `VAULT_KEYS_FILE`, `MAX_SESSION_COOKIE_AGE_MS` | `vault.keys`, and 24 hours | |
-| `openStore(dir, { busyTimeoutMs? })` | The agent store in `dir`, created if missing (`busyTimeoutMs`: how long a call waits synchronously for another connection to let go of the store before it throws SQLite's busy error, default 5000; opening it always waits up to 5 s): `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent?, ifCurrent? })` (`ifCurrent`, the current revision the caller read or null, makes it a compare-and-swap), `setCurrent(agent, revision)`, `setArchived(kind, id, archived)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `stats()`, `runMetrics(runId)`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary?, metrics? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id. `stale`: the agent's current revision is not `ifCurrent`, checked in the commit's own transaction; nothing is written |
+| `openStore(dir, { busyTimeoutMs? })` | The agent store in `dir`, created if missing (`busyTimeoutMs`: how long a call waits synchronously for another connection to let go of the store before it throws SQLite's busy error, default 5000; opening it always waits up to 5 s): `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent?, ifCurrent? })` (`ifCurrent`, the current revision the caller read or null, makes it a compare-and-swap), `setCurrent(agent, revision)`, `setArchived(kind, id, archived)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `stats()`, `analytics({ from?, to?, agent? })`, `runMetrics(runId)`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary?, metrics? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id. `stale`: the agent's current revision is not `ifCurrent`, checked in the commit's own transaction; nothing is written |
 | `openStoreReader(dir, { busyTimeoutMs? })` | The same reads on a read-only handle (`busyTimeoutMs` as `openStore`'s) (`store.sqlite` in place, no copy), plus `runStorePath(runId)`; it writes nothing | `missing`: no `store.sqlite` in `dir`; `busy`: a store with an unfinished write; `format`: a store a newer version wrote |
 | `AgentStore`, `AgentStoreReader`, `STORE_FILE` | The two classes `openStore` and `openStoreReader` return, and `store.sqlite` | |
 | `AgentHomeError` | The one error class of this package ([Errors](#errors)) | |
@@ -681,7 +695,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
-- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), `StoredMetrics` (a run's metrics as `carryBack`, `importRun` and `runMetrics` carry them), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), `StoreAnalytics` with `AnalyticsGroup` and `AnalyticsFilter` (what `analytics` answers and takes), `StoredMetrics` (a run's metrics as `carryBack`, `importRun` and `runMetrics` carry them), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.
@@ -704,15 +718,17 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `failedCall(call)` | Whether a call's result has `tool_status` `failed` |
 | `renderText(rowsOrGroups, { fold? })` | Plain text, one line per row or group; `fold: false` shows every call on its own line |
 | `registerLabel(tool, label, fold?)` | The label of a host's own tool, in the past tense, for every later call; `fold` says how its calls fold into one line |
+| `registerOutcome(tool, outcome)` | How a host's tool tells its outcome from a result it returned, not an error: `outcome(result)` gives `{ failed, text }`, and the result row reads `<label>: <text>`, with `tool_status` `failed` when `failed`, in place of `<label>: ok`. `web_fetch` and `fetch_page` have theirs: a page with `ok: false` reads `refused: …` or `failed: …` |
 | `registerTurnEnding(tool)` | A host's tool that ends its turn (pi's `terminate`, as an ask-the-person tool does). A message after a round whose tools all end the turn is the person's next message, never a `(steer)` |
 | `labelOf(tool, args, result?, extra?)` | The label of one call. An unknown tool gets `Using tool: <name>` |
 | `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
 | `inputPreview(args, max)` | The input worth showing, or `null`: a `description`, `command`, `query`, `file_path`, `url`, `path` or `code` argument, with a URL's query values dropped, cut to `max` |
-| `runMetricsOf(records)` | What a run that ended used, from the entries of all its conversations, in log order: its tokens (`input`, `cacheRead`, `cacheWrite`, `output`), its `requests` as the usage row counts them and `unmetered`, those of unknown tokens (an aborted response's partial usage, and a usage with no input at all, are never summed), its requests by `provider/model` (`models`) and the busiest `model`, and each tool's `calls` and `errors` (`tools`). A `RunMetrics`, for the store's `carryBack` and `importRun` ([Agents in a folder](#agents-in-a-folder-the-agent-store)) |
+| `runMetricsOf(records)` | What a run that ended used, from the entries of all its conversations, in log order: its tokens (`input`, `cacheRead`, `cacheWrite`, `output`), its `requests` as the usage row counts them and `unmetered`, those of unknown tokens (an aborted response's partial usage, and a usage with no input at all, are never summed), its requests by `provider/model` (`models`) and the busiest `model`, and each tool's `calls` and `errors` (`tools`), their names kept to what the store takes (`METRIC_NAMES`). A `RunMetrics`, for the store's `carryBack` and `importRun` ([Agents in a folder](#agents-in-a-folder-the-agent-store)) |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
+| `METRIC_NAMES` | How `runMetricsOf` keeps tool and model names: `max` 256 characters, the `kept` 100 busiest of each, and the names it sums the rest and a nameless tool under: `otherTools` (`…other tools`), `otherModels` (`…other models`), `unnamedTool` (`…unnamed tool`) |
 | `REQUEST_STARTED`, `REQUEST_ENDED`, `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted; and the cost of a request with no `pi.assistant` entry of its own (a compaction summary, marked `request: "compaction"`). An answer written before its cost came in is followed by `REQUEST_COST_PENDING`, and its cost comes later as `REQUEST_COST_LATE` (`usd`): it adds to the cost and is not counted as a request; the cost reads unknown while one is pending. The usage row counts each marked request and sums each cost; one with no entry or cost (cut before its answer) other than the latest still in flight makes the cost unknown. A request the host refused before it left (`REQUEST_REFUSED`) is not counted, and pi's error entry for it is not shown. A conversation with no marks reads as before |
 
-Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`,
+Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`, `OutcomeFn`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
 `FoldSpec`, `ToolResultView`, and `RunMetrics` and `ToolMetrics` (what `runMetricsOf` returns).
 

@@ -4,8 +4,9 @@
 // page's own origin with a JSON body. With accounts, a browser holding neither gets the setup page (no password yet) or
 // the sign-in page.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { extname, join, sep } from "node:path";
 import type { Owner } from "./owner.js";
 import { fileURLToPath } from "node:url";
 import { STORE_PAGE_FILES, storeApi } from "@parcha/pi-durable-agent/serve";
@@ -32,6 +33,12 @@ const ACCOUNT_FILES: Record<string, { path: string; type: string }> = {
 };
 const SETUP = own("setup.html", HTML);
 const SIGN_IN = own("sign-in.html", HTML);
+/** The console (apps/console), which this package's build copies into dist/console when it was built first. */
+const CONSOLE_DIR = fileURLToPath(new URL("./console/", import.meta.url));
+/** The kinds of file Vite builds the console into; any other is not served. */
+const CONSOLE_TYPES: Record<string, string> = { ".html": HTML, ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".woff2": "font/woff2", ".woff": "font/woff" };
+/** A segment of a console file's path as sent: no dot segment, no hidden file, no percent-encoding, no separator. */
+const CONSOLE_SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 
 const read = new Map<string, Promise<Buffer>>();
 const bytesOf = (path: string) => {
@@ -68,7 +75,7 @@ function send(req: IncomingMessage, res: ServerResponse, status: number, type: s
 const refuse = (req: IncomingMessage, res: ServerResponse, error: ApiError) =>
   send(req, res, error.status, "application/json", JSON.stringify(error.body(String(res.getHeader("x-request-id") ?? ""))), error.headers);
 
-type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner };
+type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; console?: string | undefined };
 
 const redirect = (res: ServerResponse, location: string) => (res.writeHead(303, { ...SECURITY, location, "content-length": 0 }), void res.end());
 
@@ -105,10 +112,28 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
   return send(req, res, 200, HTML, await bytesOf(PAGE.path));
 }
 
+/** The console's files under /console/, public like the page's: a file of a known type inside `dir`, read through no link
+ *  that leaves it. Vite's hashed assets (assets/) are cached for a year; everything else, index.html first, is no-store. */
+async function answerConsole(req: IncomingMessage, res: ServerResponse, raw: string, dir: string): Promise<void> {
+  if (req.method !== "GET" && req.method !== "HEAD") return refuse(req, res, new ApiError("method_not_allowed", `the console answers GET and HEAD; ${req.method} is not one`, {}, { allow: "GET, HEAD" }));
+  if (raw === "/console") return redirect(res, `/console/${(req.url ?? "").slice(raw.length)}`);
+  const rel = raw.slice("/console/".length) || "index.html";
+  const missing = () => refuse(req, res, new ApiError("not_found", `no file ${raw} in the console`));
+  const type = CONSOLE_TYPES[extname(rel).toLowerCase()];
+  if (!type || !rel.split("/").every((segment) => CONSOLE_SEGMENT.test(segment))) return missing();
+  const [root, real] = await Promise.all([realpath(dir).catch(() => null), realpath(join(dir, rel)).catch(() => null)]);
+  if (!root || !real) {
+    return rel === "index.html" ? send(req, res, 404, "text/plain; charset=utf-8", "This server was built without its console: build apps/console, then rebuild the server.\n") : missing();
+  }
+  if (!real.startsWith(root + sep) || !(await stat(real)).isFile()) return missing();
+  send(req, res, 200, type, await readFile(real), { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store" });
+}
+
 /**
- * Answers the page's paths ("/", its files and its /api/*) and returns true; returns false for every other path. On a
- * /v2 path with no Authorization header, the page's cookie becomes the Bearer header for a GET or HEAD, and for any other
- * method only when the request's Origin is the page's own origin and its body is application/json.
+ * Answers the page's paths ("/", its files and its /api/*) and the console's (/console and below) and returns true;
+ * returns false for every other path. On a /v2 path with no Authorization header, the page's cookie becomes the Bearer
+ * header for a GET or HEAD, and for any other method only when the request's Origin is the page's own origin and its body
+ * is application/json.
  */
 export function answerPage(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): boolean {
   const held = server.owner ? signedIn(req, server.owner) : cookiesOf(req, cookieName(req)).some((value) => same(value, sessionOf(server.token)));
@@ -117,9 +142,10 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
     if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && isJson(req)))) req.headers.authorization = `Bearer ${server.token}`;
     return false;
   }
+  const inConsole = raw === "/console" || raw.startsWith("/console/");
   const accountPage = server.owner !== undefined && (raw === "/setup" || raw === "/sign-in" || Boolean(ACCOUNT_FILES[raw]));
-  if (raw !== "/" && !FILES[raw] && !accountPage && !raw.startsWith("/api/")) return false;
-  answer(req, res, raw, server, held).catch(() => {
+  if (!inConsole && raw !== "/" && !FILES[raw] && !accountPage && !raw.startsWith("/api/")) return false;
+  (inConsole ? answerConsole(req, res, raw, server.console ?? CONSOLE_DIR) : answer(req, res, raw, server, held)).catch(() => {
     if (!res.headersSent) refuse(req, res, new ApiError("internal", "the page could not be read"));
     else res.destroy();
   });

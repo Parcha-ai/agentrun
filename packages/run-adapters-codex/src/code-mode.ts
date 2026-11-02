@@ -11,8 +11,11 @@
 //  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn.
 import type { DriveContext, SessionState } from "./host/kernel.js";
 import type { SessionMachine } from "./host/process.js";
-import { openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey } from "./host/process.js";
-import type { RolloutSummary } from "./rollout.js";
+import { openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
+// cycle with harness.ts: read repairOutput only inside functions, never at module top level (pinned by "code mode and the harness
+// load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
+import { repairOutput } from "./harness.js";
+import { type RolloutSummary, summarizeRollout } from "./rollout.js";
 import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, type NestedFact, outputTextOf, recoveryFacts, Scripts, settle, UNWATCHED } from "./scripts.js";
 
 /** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec, since }` (`since`: the turn it ran in), written before the call runs. */
@@ -51,7 +54,31 @@ export interface CodeModeDeps {
 interface Dangling {
   callId: string;
   name: string;
+  /** `function_call` or `custom_tool_call` (code mode's `exec`, Codex's own `apply_patch`). */
+  type: string;
+  arguments?: string;
 }
+
+/** Only a custom tool call named `exec` is code mode's: a host tool that happens to be called `exec` is a function call. */
+const isExec = (d: Dangling) => d.type === "custom_tool_call" && d.name === "exec";
+
+/** The item that answers a dangling call that is not an `exec`: of the kind the call asks for (the Responses API refuses an output of the
+ *  wrong kind), a custom tool call output for a custom tool call such as `apply_patch`, a function call output for any other. */
+export function withOutputKind<T extends { call_id?: unknown; output?: unknown }>(item: T, call: Dangling): T & { type: string } {
+  return { ...item, type: call.type === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output" };
+}
+
+/** Where the turn that ended last began, as `openTurn` gave it while that turn was open: the end before its own (a `turn` entry, or a turn the
+ *  harness could not run), or -1. With no open turn, the calls whose script could not be told that ran in it are tied to this. */
+function endedTurnSince(state: SessionState): number {
+  const ends = [...transcriptOf(state).filter((r) => r.data?.type === "turn").map((r) => r.at), ...state.effectOrder.flatMap((e, i) => (e.name === "unavailable" ? [i] : []))];
+  ends.sort((a, b) => a - b);
+  return ends.length >= 2 ? ends[ends.length - 2]! : -1;
+}
+
+/** What a dangling `wait` of code mode is told: it had started, on the cell named, when the session stopped and took the cell's script with it. */
+export const waitStoppedText = (cell: string) =>
+  `The session stopped while waiting on cell ${cell}; that cell's script was cut off, and nothing was run again. Check the actual state before relying on it.`;
 
 type Tie = { callId: string; exec: string | null; since?: number };
 
@@ -124,6 +151,18 @@ export function codeMode(deps: CodeModeDeps) {
     }
   };
 
+  /** The cell a dangling call waited on, when it is code mode's `wait` (a function call named `wait` with a `cell_id`, and no host tool of
+   *  that name); otherwise `undefined`. */
+  const waitedCell = (c: Dangling): string | undefined => {
+    if (c.type !== "function_call" || c.name !== "wait" || deps.bridge.get("wait")) return undefined;
+    try {
+      const cell = (JSON.parse(c.arguments ?? "") as { cell_id?: unknown }).cell_id;
+      return typeof cell === "string" || typeof cell === "number" ? String(cell) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   const declined = { contentItems: [{ type: "inputText", text: deps.declined }], success: false };
 
   return {
@@ -154,21 +193,42 @@ export function codeMode(deps: CodeModeDeps) {
       };
     },
 
-    /** The outputs injected for the calls the rollout left dangling: a cut-off `exec` gets a custom tool call output from the log, in place of `items`'. */
+    /** The outputs injected for the calls the rollout left dangling: a cut-off `exec` gets a custom tool call output from the log, in place of `items`';
+     *  any other call keeps its generic output, as an item of its own kind, and code mode's `wait` is told that it had started. `since`: the
+     *  turn the dangling calls ran in: the interrupted one a recovery note resumes, or with none, the turn that ended last. */
     async recoverItems(items: Record<string, unknown>[], dangling: readonly Dangling[], lines: readonly string[], since: number): Promise<void> {
       const state: SessionState = ctx.state();
       const ties = (await journal.read<Tie>(NESTED_STREAM)).map((r) => r.data);
-      const execs = dangling.filter((d) => d.name === "exec").map((d) => d.callId);
+      const execs = dangling.filter(isExec).map((d) => d.callId);
       const rolled = completedNested(lines);
       // Each cut-off exec lists its own calls. A call whose script could not be told when it ran (an answer the proxy did not see to its end)
       // is listed once, apart, in the LAST cut-off exec's output, if it ran in this interrupted turn.
       const told = new Map((recoveryNote(state)?.calls ?? []).map((c) => [c.callId, c.status] as const));
       const listed = recoveryFacts(execs, ties, since, (tie) => factOf(state, rolled, tie, told));
       dangling.forEach((c, i) => {
-        if (c.name !== "exec") return;
+        if (!isExec(c)) {
+          // Code mode's `wait` on a cell had started: the generic answer, that the call never started, would be false.
+          const cell = waitedCell(c);
+          const item = items[i] as { call_id?: unknown; output?: unknown };
+          items[i] = withOutputKind(cell === undefined ? item : { ...item, output: waitStoppedText(cell) }, c);
+          return;
+        }
         const { own, loose } = listed.get(c.callId)!;
         items[i] = { type: "custom_tool_call_output", call_id: c.callId, output: execRecoveryOutput(own, loose) };
       });
+    },
+
+    /** With no recovery note, the calls the rollout has no output for get theirs from the log before any turn is sent: a turn that ended without
+     *  them (one interrupted mid-call, or settled instead of resumed) left them dangling, and the provider refuses a history with a call unanswered.
+     *  Nothing is armed here: a new turn that calls a `never` call the ended turn completed runs it. */
+    async repairUnnoted(lines: readonly string[]): Promise<void> {
+      const dangling = summarizeRollout(lines).dangling;
+      if (dangling.length === 0) return;
+      const items: Record<string, unknown>[] = dangling.map((c) => ({ type: "function_call_output", call_id: c.callId, output: repairOutput(ctx.state(), c) }));
+      // A cut-off exec of the ended turn still lists the calls of that turn whose script could not be told: they ran.
+      await this.recoverItems(items, dangling, lines, endedTurnSince(ctx.state()));
+      await deps.guard(deps.rpc().request("thread/inject_items", { threadId: deps.threadId(), items }));
+      await deps.guard(synced());
     },
 
     /** The user's turn that resumes an interrupted one: only the user's own words, or a bare nudge. The harness's note about the turn goes to

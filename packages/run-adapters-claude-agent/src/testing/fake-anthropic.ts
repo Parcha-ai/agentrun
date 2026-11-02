@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/test/fake-anthropic.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from this package; its usage is the real API's nested shape; a reply may open with a thinking or a redacted_thinking block, as a model that thinks answers; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own.
+// Changed by Parcha, 2026-10-27: imports from this package; its usage is the real API's nested shape; a reply may open with a thinking or a redacted_thinking block, as a model that thinks answers; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; 2026-11-01: a reply may be a web search the provider ran (its call, its results and its searches in usage), as the answer to a request with the web search tool.
 /**
  * A scripted Anthropic Messages API for the real Claude Code CLI (docs/workspaces.md
  * §11.4, "the restart-on-a-new-sandbox tests"): what `query()` and the pinned
@@ -68,6 +68,9 @@ type Thought = { thinking?: string; redacted?: string };
 export type FakeReply =
   | ({ text: string } & Thought)
   | ({ tool: { name: string; input: unknown; id?: string }; text?: string } & Thought)
+  /** The provider's own web search (the answer to a request with its web search tool): its call and results, then
+   *  `text`, with `searches` (default 1) in `usage.server_tool_use.web_search_requests`. */
+  | { search: { query: string; results: { title: string; url: string }[]; text: string; searches?: number } }
   | { error: { status: number; type: string; message: string } }
   /** Hold the response open (after `message_start`) until `release` resolves, then say `then`. */
   | { hold: Promise<void>; then: FakeReply };
@@ -262,9 +265,16 @@ export async function fakeAnthropic(options: FakeAnthropicOptions): Promise<Fake
     if ('redacted' in reply && reply.redacted) blocks.push({ type: 'redacted_thinking', data: reply.redacted });
     if ('text' in reply && reply.text) blocks.push({ type: 'text', text: reply.text });
     if ('tool' in reply) blocks.push({ type: 'tool_use', id: reply.tool.id ?? `toolu_fake_${String(++toolSeq).padStart(4, '0')}_${Date.now().toString(36)}`, name: reply.tool.name, input: reply.tool.input });
+    if ('search' in reply) {
+      const id = `srvtoolu_fake_${String(++toolSeq).padStart(4, '0')}`;
+      blocks.push({ type: 'server_tool_use', id, name: 'web_search', input: { query: reply.search.query } });
+      blocks.push({ type: 'web_search_tool_result', tool_use_id: id, content: reply.search.results.map((r) => ({ type: 'web_search_result', title: r.title, url: r.url, encrypted_content: 'ZmFrZQ==', page_age: null })) });
+      blocks.push({ type: 'text', text: reply.search.text });
+    }
     const stopReason = 'tool' in reply ? 'tool_use' : 'end_turn';
     // The real API's shape, nested objects included (a recorded response is in test/fixtures/).
-    const usage = { input_tokens: Math.ceil(text.length / 4), cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 }, output_tokens: 12, output_tokens_details: { thinking_tokens: 0 }, service_tier: 'standard' };
+    const searched = 'search' in reply ? { server_tool_use: { web_search_requests: reply.search.searches ?? 1 } } : {};
+    const usage = { input_tokens: Math.ceil(text.length / 4), cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 }, output_tokens: 12, output_tokens_details: { thinking_tokens: 0 }, service_tier: 'standard', ...searched };
     const id = `msg_fake_${requests.length}`;
     const metadata = { gateway: { cost, gatewayCost: cost } };
 
@@ -274,7 +284,7 @@ export async function fakeAnthropic(options: FakeAnthropicOptions): Promise<Fake
     }
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'request-id': `req_fake_${requests.length}` });
     const ev = (type: string, data: unknown) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
-    ev('message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model: parsed.model, content: [], stop_reason: null, stop_sequence: null, usage: { ...usage, output_tokens: 1, output_tokens_details: undefined } } });
+    ev('message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model: parsed.model, content: [], stop_reason: null, stop_sequence: null, usage: { ...usage, output_tokens: 1, output_tokens_details: undefined, ...('search' in reply ? { server_tool_use: { web_search_requests: 0 } } : {}) } } });
     if (held) await held;
     blocks.forEach((b, index) => {
       if (b.type === 'thinking') {
@@ -286,13 +296,15 @@ export async function fakeAnthropic(options: FakeAnthropicOptions): Promise<Fake
       } else if (b.type === 'text') {
         ev('content_block_start', { type: 'content_block_start', index, content_block: { type: 'text', text: '' } });
         ev('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'text_delta', text: b.text } });
+      } else if (b.type === 'web_search_tool_result') {
+        ev('content_block_start', { type: 'content_block_start', index, content_block: b });
       } else {
-        ev('content_block_start', { type: 'content_block_start', index, content_block: { type: 'tool_use', id: b.id, name: b.name, input: {} } });
+        ev('content_block_start', { type: 'content_block_start', index, content_block: { type: b.type, id: b.id, name: b.name, input: {} } });
         ev('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(b.input) } });
       }
       ev('content_block_stop', { type: 'content_block_stop', index });
     });
-    ev('message_delta', { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { input_tokens: usage.input_tokens, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 12, output_tokens_details: { thinking_tokens: 0 } }, provider_metadata: metadata });
+    ev('message_delta', { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { input_tokens: usage.input_tokens, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 12, output_tokens_details: { thinking_tokens: 0 }, ...searched }, provider_metadata: metadata });
     ev('message_stop', { type: 'message_stop' });
     res.end();
   }

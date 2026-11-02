@@ -10,7 +10,8 @@ export type Rule =
   | "memo" | "memo_run" | "memo_base" | "memo_unlisted" | "other_memo" | "note" | "note_run" | "index" | "index_note" | "skill"
   | "workflow" | "no_tool_list" | "executable_node";
 
-/** One problem with a run's branch. `detail` never repeats a value that was refused. */
+/** One problem with a run's branch. `detail` never repeats a value that was refused; `path` is the path as it is, so a
+ *  host redacts it before printing it, as the CLI does. */
 export type Problem = { readonly rule: Rule; readonly path?: string; readonly detail: string };
 
 /** One file a run's branch changed, against the commit it starts from. `mode` is git's (`100644` for a regular file).
@@ -37,7 +38,7 @@ export type CheckInput = {
   readonly headFiles?: Iterable<string>;
   /** The host's tool list, passed to the DSL's `validateWorkflow`. Without it, a draft that names a tool is refused. */
   readonly tools?: readonly string[];
-  /** Values the host holds as secrets; a file that holds one is refused. */
+  /** Values the host holds as secrets; a file, a changed path or the branch's name that holds one is refused. */
   readonly refuseValues?: readonly string[];
   /** Paths the host locks beyond SPEC.md's, such as its hooks folder or its tool list's file. */
   readonly lockedPaths?: readonly string[];
@@ -60,13 +61,19 @@ export function checkRun(input: CheckInput): RunCheck {
   const add = (rule: Rule, detail: string, path?: string): void => {
     problems.push(path === undefined ? { rule, detail } : { rule, path, detail });
   };
+  const refused = valueMatcher(input.refuseValues ?? []);
+  // A run picks its branch's name and its folders' names: they reach main and the logs as paths.
+  const scanName = (name: string, whose: string, path?: string): void => {
+    for (const kind of secretShapes(name)) add("secret_shape", `${whose} holds text shaped like a secret (${kind})`, path);
+    if (refused(name)) add("secret_value", `${whose} holds a value the host named as secret`, path);
+  };
   const run = runOf(input.branch);
   if (!run) add("branch", input.branch === "" ? "no branch was named: give the branch the run pushes to" : `${JSON.stringify(input.branch)} is not runs/<run id>`);
+  scanName(input.branch, "the branch's name");
   if (input.changes.length > CAPS.changes) {
     add("too_many_files", `${input.changes.length} changed paths; the cap is ${CAPS.changes} a run, and nothing else was read`);
     return { ok: problems.length === 0, problems };
   }
-  const refused = valueMatcher(input.refuseValues ?? []);
   const head = input.headFiles === undefined ? undefined : new Set(input.headFiles);
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const flagged = new Set<string>();
@@ -77,6 +84,7 @@ export function checkRun(input: CheckInput): RunCheck {
 
   const one = (change: Change): void => {
     const { path } = change;
+    if (change.status !== "deleted") scanName(path, "its path", path);
     if (isLocked(path, input.lockedPaths)) return add("locked", "a run never touches this path", path);
     if (isGitFile(path)) return add("git_file", "git attributes and submodules are never part of a run", path);
     if (change.status !== "deleted" && change.mode !== undefined && change.mode !== "100644") return add("file_mode", `${MODES[change.mode] ?? `git mode ${change.mode}`}: only a regular, non-executable file`, path);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBody, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers } from "./agentForm";
+import { createBody, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers, toolsFor } from "./agentForm";
 import { ClientError } from "./client";
 import agent from "../fixtures/agent.invoice-checker.json";
 import workflow from "../fixtures/agent.support-triage.json";
@@ -137,9 +137,13 @@ describe("tools by default (tools on, Miguel's rule), and whether the agent reac
     const said = toolOffers([{ name: "read", available: true, harnesses: ["pi", "codex"] }, { name: "fetch_page", available: true, harnesses: ["pi", "codex"] }, { name: "ask_person", available: true, harnesses: ["pi"] }]);
     expect(defaultTools("codex", said)).toEqual(["read", "fetch_page"]);
   });
-  it("reaches the web only with fetch_page", () => {
-    expect(reachesWeb(["read", "fetch_page"])).toBe(true);
-    expect(reachesWeb(["read", "write"])).toBe(false);
+  it("reaches the web with any of fetch_page, web_fetch and web_search, and with none of them does not", () => {
+    for (const web of ["fetch_page", "web_fetch", "web_search"]) expect(reachesWeb(["read", web]), web).toBe(true);
+    expect(reachesWeb(["read", "write", "ask_person"])).toBe(false);
+    expect(reachesWeb([])).toBe(false);
+  });
+  it("keeps what each tool does, as the server says it", () => {
+    expect(toolOffers([{ name: "web_fetch", available: true, summary: "Read one public web page." }])).toEqual([{ name: "web_fetch", available: true, summary: "Read one public web page." }]);
   });
 });
 
@@ -147,5 +151,19 @@ describe("toolOffers, a tool object that doesn't say whether it's available", ()
   it("reads it as available: only an explicit false makes a tool unavailable", () => {
     expect(toolOffers([{ name: "read" }])).toEqual([{ name: "read", available: true }]);
     expect(toolOffers([{ name: "read", available: false }])).toEqual([{ name: "read", available: false }]);
+  });
+});
+
+describe("call-only tools", () => {
+  const offers = toolOffers([
+    { name: "read", nodes: true, available: true, harnesses: ["pi", "codex"] },
+    { name: "pdf_pages", nodes: false, call_only: true, available: true, harnesses: ["pi"] },
+  ]);
+  it("keeps what capabilities say of a tool: call_only and nodes", () => {
+    expect(offers[1]).toEqual({ name: "pdf_pages", available: true, harnesses: ["pi"], call_only: true, nodes: false });
+  });
+  it("no harness runs one, so no agent starts with one ticked", () => {
+    expect(toolsFor("pi", offers).map((t) => t.name)).toEqual(["read"]);
+    expect(defaultTools("pi", offers)).toEqual(["read"]);
   });
 });

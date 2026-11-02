@@ -88,17 +88,21 @@ export async function changedLines(dir, { diff: command = 'diff' } = {}) {
   const out = {};
   for (const [path, record] of Object.entries(upstream.files ?? {})) {
     if (record.kind === MATCHED) continue;
-    const ours = headerOf(await readFile(join(dir, path), 'utf8')).body;
-    let diff = '';
-    try {
-      execFileSync(command, ['-U0', join(dir, PRISTINE_DIR, record.upstream), '-'], { input: ours, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
-    } catch (error) {
-      if (error.status !== 1) throw new Error(`${path}: diff did not run (${error.code ?? `exit ${error.status}`})`);
-      diff = String(error.stdout ?? '');
-    }
-    out[path] = diff.split('\n').filter((line) => /^[-+](?![-+]{2} )/.test(line)).length;
+    out[path] = linesChanged(join(dir, PRISTINE_DIR, record.upstream), headerOf(await readFile(join(dir, path), 'utf8')).body, path, command);
   }
   return out;
+}
+
+/** How many lines `text` changes against the file at `from` (diff -U0: each removed and each added line counts). */
+export function linesChanged(from, text, what, command = 'diff') {
+  let diff = '';
+  try {
+    execFileSync(command, ['-U0', from, '-'], { input: text, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (error) {
+    if (error.status !== 1) throw new Error(`${what}: diff did not run (${error.code ?? `exit ${error.status}`})`);
+    diff = String(error.stdout ?? '');
+  }
+  return diff.split('\n').filter((line) => /^[-+](?![-+]{2} )/.test(line)).length;
 }
 
 if (import.meta.main) {

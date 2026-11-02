@@ -216,6 +216,7 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 			const keyOf = (id: string) => `${inner.name}\u0000${id}`;
 			const provider: BoxProvider = {
 				name: inner.name,
+				...(inner.mounts === undefined ? {} : { mounts: inner.mounts }),
 				async create(spec, context) {
 					const made = await inner.create(spec, context);
 					if (!made.ok) return made;

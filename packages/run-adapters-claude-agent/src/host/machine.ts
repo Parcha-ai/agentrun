@@ -16,7 +16,7 @@ import { isAbsolute, join, normalize } from "node:path";
 import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-adapters/host";
 import type { AcquireMachine, CacheDir, KillSignal, MachineSpawn, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
-import { anthropicPolicy, type AnthropicPolicyOptions } from "./policy.js";
+import { anthropicPolicy, type AnthropicPolicyOptions, withWebSearches } from "./policy.js";
 
 /** The variables a child takes from this process, when they are set. */
 export const INHERITED_ENV = Object.freeze(["PATH", "LANG", "TZ"] as const);
@@ -47,8 +47,11 @@ export interface LocalMachineOptions {
   proxy: {
     hooks: ModelProxyHooks;
     tools: readonly string[];
-    /** The CLI's own tools the session has (`Skill`, with skills), offered beside its tools. */
+    /** The CLI's own tools the session has (`Skill`, with skills; `WebSearch`), offered beside its tools. */
     builtins?: readonly string[];
+    /** Admit Anthropic's web search server tool, the one the CLI's WebSearch asks for. */
+    webSearch?: boolean;
+    /** The tokens' price; each web search a response reports is added to it (`withWebSearches`). */
     price?: ModelProxyOptions["price"];
     maxOutputTokens?: number;
     auth?: AnthropicPolicyOptions["auth"];
@@ -168,6 +171,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         tools: options.proxy.tools,
         ...(options.proxy.builtins?.length ? { builtins: options.proxy.builtins } : {}),
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
+        ...(options.proxy.webSearch ? { webSearch: true } : {}),
         ...(options.proxy.auth ? { auth: options.proxy.auth } : {}),
         onThinkingDisabled: ({ model: main }) => options.proxy.log?.("claude-agent: thinking.disabled", { model: main }),
       }),
@@ -175,7 +179,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       model: route.models.model,
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
-      ...(options.proxy.price ? { price: options.proxy.price } : {}),
+      ...(options.proxy.price ? { price: withWebSearches(options.proxy.price) } : {}),
       ...(options.proxy.headers ? { headers: options.proxy.headers } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       onResponse: ({ path, status }) => {

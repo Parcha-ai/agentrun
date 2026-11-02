@@ -36,4 +36,22 @@ describe("WorkflowEditor", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(validate).toHaveBeenCalledTimes(2);
   });
+  it("read-only shows the graph marked against the current revision, takes no edit, asks no check and lists no problems", async () => {
+    vi.useFakeTimers();
+    const validate = vi.fn(async () => ({ ok: true, issues: [], warnings: [] }));
+    const onText = vi.fn();
+    await mount({ text: JSON.stringify(wf(["a", "old"]), null, 2), onText, base: wf(["a"]), baseLabel: "rev 3, the current one", readOnly: true, validate });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(validate).not.toHaveBeenCalled();
+    expect(box.textContent).toContain("Read-only");
+    expect(box.textContent).toMatch(/1 new · 1 connection changed against rev 3, the current one/);
+    expect(box.querySelector("svg")?.textContent).toMatch(/old[\s\S]*NEW/);
+    const area = box.querySelector("textarea")!;
+    expect(area.readOnly).toBe(true);
+    await act(async () => { area.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })); });
+    expect(onText).not.toHaveBeenCalled();
+    expect(box.querySelector("[aria-label='Problems']")).toBeNull();
+    expect(box.textContent).not.toMatch(/checking\.\.\.|checked by the server|Valid|server checks the workflow again when you save/);
+    expect([...box.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Retry");
+  });
 });

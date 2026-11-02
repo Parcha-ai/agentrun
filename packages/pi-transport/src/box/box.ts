@@ -82,6 +82,15 @@ export type BoxSpec = {
 	readonly ports?: readonly BoxPort[];
 	/** What the box must have. `fuse`: the device exists and root in the box can open it; a FUSE mount there is root's. */
 	readonly capabilities?: readonly BoxCapability[];
+	/**
+	 * Paths of this machine bound into the box: `source` here appears at `target` in the box, and the box cannot write it
+	 * when `readOnly`. Both are absolute, in normal form (no `.`, `..` or empty segment, no trailing `/`) and free of commas,
+	 * double quotes and control characters; `target` is never `/` and no target is named twice; at most 8 mounts. A spec
+	 * that breaks one of these is refused with `invalid` by every provider. The paths are used as given and never resolved:
+	 * the caller passes canonical ones. Only a provider whose `BoxProvider.mounts` is true binds them (Docker, and only a
+	 * source that exists); every other refuses a spec with any as `unsupported`, before it makes anything.
+	 */
+	readonly mounts?: readonly { readonly source: string; readonly target: string; readonly readOnly?: boolean }[];
 };
 
 /** What a box is and can do, as its provider reports it. Fixed for the life of the box. */
@@ -241,6 +250,11 @@ export interface BoxLauncher {
 /** A source of boxes: one vendor, or one kind of machine. */
 export interface BoxProvider {
 	readonly name: string;
+	/**
+	 * `true` only when `create` binds a spec's `mounts` into the box. Absent means `false`: the provider refuses a spec with
+	 * any, so a caller that needs a path of this machine in the box asks this before it chooses the provider.
+	 */
+	readonly mounts?: boolean;
 	create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>>;
 	/** The box with this id, or `undefined` when it does not exist or has ended. */
 	attach(id: string, context: Context): Promise<Result<Box | undefined, BoxError>>;

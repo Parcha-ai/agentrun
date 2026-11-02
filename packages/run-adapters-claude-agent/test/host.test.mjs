@@ -8,11 +8,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { request } from 'node:http';
+import { modelPortFor } from '@parcha/agentrun-adapters';
 import { ProxyRefusal, startModelProxy } from '@parcha/agentrun-adapters/host';
-import { anthropicPolicy } from '@parcha/agentrun-claude-agent';
+import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { anthropicPolicy, CLAUDE_WEB_SEARCH_TOOL, CLAUDE_WEB_SEARCH_USD } from '@parcha/agentrun-claude-agent';
+import { fakeAnthropic } from '@parcha/agentrun-claude-agent/testing';
 import { childEnv, confined, launchCommand, localMachine } from '../dist/host/machine.js';
 import { PARENT_WATCH_SHIM, parentWatched, SETPRIV } from '@parcha/agentrun-adapters/host';
-import { CLAUDE_BETAS } from '../dist/host/policy.js';
+import { CLAUDE_BETAS, withWebSearches } from '../dist/host/policy.js';
 import { gatewayHandler, isBrandedMachine, journalLedger, ModelSteps, settleAbandonedModelSteps } from '../dist/host/process.js';
 import { isResumeDir, spawnProblem } from '../dist/spawn.js';
 
@@ -437,6 +440,66 @@ test('under setpriv --no-new-privs, a child of the session runs with NoNewPrivs 
   assert.equal(out.out, '1');
 });
 
+// Two runs on one host, each with its session machine. A client of run A that reads run B's address (a setting or a
+// port that is not its own) still holds A's key: B's proxy refuses it by name before anything is booked or forwarded.
+const MESSAGE_REPLY = JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-main', content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn', usage: { input_tokens: 3, output_tokens: 1 } });
+
+/** The user-agent of this test's own requests: another local client's keyless knock on a new loopback listener (a
+ *  shared machine's service does) is refused too, and is shown, never judged here. */
+const CROSS_RUN_AGENT = 'agentrun-cross-run-test';
+
+/** A run's session machine whose proxy's hooks and provider record what reached them. */
+async function runMachine(t, runId) {
+  const seen = { before: 0, after: 0, forwarded: 0, refused: [] };
+  const acquire = localMachine({ dir: scratch(), proxy: {
+    hooks: { beforeRequest: async () => { seen.before += 1; }, afterRequest: async () => { seen.after += 1; } },
+    tools: [],
+    log: (message, detail) => {
+      if (!/refused/.test(message)) return;
+      if (detail.userAgent === CROSS_RUN_AGENT) seen.refused.push(detail.reason);
+      else t.diagnostic(`the proxy refused another client: ${JSON.stringify(detail)}`);
+    },
+    fetch: async () => { seen.forwarded += 1; return new Response(MESSAGE_REPLY, { status: 200, headers: { 'content-type': 'application/json' } }); },
+  } });
+  const machine = await acquire({ ctx: { runId }, model: gatewayHandler({ routes: [], models: { model: 'claude-main' }, credential: () => 'provider-secret', target: 'https://provider.invalid' }) });
+  // Closed when the test ends, whatever happens after: a second machine that fails to start never leaves this one open.
+  t.after(() => machine.close());
+  return { machine, seen };
+}
+
+/** The CLI's request on `path` (its model request, or a free token count), with `key`, to the proxy at `url`. */
+async function ask(url, key, path = '/v1/messages') {
+  const res = await fetch(`${url}${path}?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': CROSS_RUN_AGENT, ...(key === null ? {} : { authorization: `Bearer ${key}` }), 'anthropic-version': '2023-06-01', 'anthropic-beta': [...CLAUDE_BETAS].join(',') }, body: JSON.stringify(path === '/v1/messages' ? body() : { model: 'claude-main', messages: [{ role: 'user', content: 'hi' }] }) });
+  return { status: res.status, text: await res.text() };
+}
+
+test("run A's key at run B's proxy is refused by name: B books nothing, nothing reaches the provider, and each key still works at its own run's proxy", async (t) => {
+  const a = await runMachine(t, 'run-a');
+  const b = await runMachine(t, 'run-b');
+  assert.notEqual(a.machine.modelKey, b.machine.modelKey, 'each run has a key of its own');
+  // The model request and the free token count alike: a free route still reaches the provider, so it takes the key too.
+  for (const [client, proxy] of [[a, b], [b, a]]) {
+    for (const path of ['/v1/messages', '/v1/messages/count_tokens']) {
+      const refused = await ask(proxy.machine.modelUrl, client.machine.modelKey, path);
+      assert.equal(refused.status, 401, path);
+      assert.match(refused.text, /this session's key is required/, path);
+    }
+  }
+  // No key at all is refused the same way.
+  const keyless = await ask(b.machine.modelUrl, null);
+  assert.deepEqual([keyless.status, /this session's key is required/.test(keyless.text)], [401, true]);
+  // The only route without the key is the local connectivity check, which answers here and reaches nothing.
+  assert.equal((await fetch(`${b.machine.modelUrl}/api/hello`, { method: 'HEAD', headers: { authorization: `Bearer ${a.machine.modelKey}` } })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  for (const run of [a, b]) {
+    assert.deepEqual({ before: run.seen.before, after: run.seen.after, forwarded: run.seen.forwarded }, { before: 0, after: 0, forwarded: 0 }, "the other run's requests were never booked or forwarded");
+    assert.deepEqual(run.seen.refused, Array(run === b ? 3 : 2).fill("this session's key is required"), 'each refusal is said, by name');
+  }
+  for (const run of [a, b]) assert.equal((await ask(run.machine.modelUrl, run.machine.modelKey)).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  for (const run of [a, b]) assert.deepEqual({ before: run.seen.before, forwarded: run.seen.forwarded }, { before: 1, forwarded: 1 }, "a run's own request is booked and forwarded once");
+});
+
 test("a request on the session's small model is asked about and priced as the small model", async () => {
   const asked = [];
   const rates = { 'claude-main': 15, 'claude-small': 1 };
@@ -450,4 +513,86 @@ test("a request on the session's small model is asked about and priced as the sm
     await proxy.close();
   }
   assert.deepEqual(asked, ['claude-small', (11 + 15) * 1 / 1e6, 'claude-main', (11 + 15) * 15 / 1e6]);
+});
+
+// The request the pinned CLI's WebSearch sends, recorded behind a local server with a fake key (its ids zeroed): one user
+// message and the web search server tool, on the session's model, with the CLI's own betas.
+const CLI_SEARCH = JSON.parse(readFileSync(new URL('./fixtures/web-search-request-cli-2.1.286.json', import.meta.url), 'utf8'));
+
+test("webSearch admits the web search tool exactly as the pinned CLI sends it, and nothing else hosted; off, it is refused as before", () => {
+  const recorded = CLI_SEARCH.body;
+  const on = anthropicPolicy({ model: recorded.model, tools: ['lookup'], builtins: ['WebSearch'], webSearch: true });
+  const off = anthropicPolicy({ model: recorded.model, tools: ['lookup'] });
+  const out = on.apply(structuredClone(recorded), MESSAGES);
+  assert.deepEqual(out.tools, [{ type: CLAUDE_WEB_SEARCH_TOOL, name: 'web_search', max_uses: 8 }], "the CLI's tool definition, as it sent it");
+  assert.equal(on.header('anthropic-beta', CLI_SEARCH.headers['anthropic-beta']), CLI_SEARCH.headers['anthropic-beta'], 'it needs no beta the allowlist lacks');
+  refused(() => off.apply(structuredClone(recorded), MESSAGES), 403, /provider-hosted tool is not offered/);
+  const search = recorded.tools[0];
+  const withTool = (tool, extra = {}) => ({ ...recorded, tools: [tool], ...extra });
+  // The domains the model may name, and a choice of the tool itself, pass.
+  for (const tool of [{ ...search, allowed_domains: ['example.com'] }, { ...search, blocked_domains: ['example.com'] }]) assert.deepEqual(on.apply(withTool(tool), MESSAGES).tools, [tool]);
+  assert.ok(on.apply(withTool(search, { tool_choice: { type: 'tool', name: 'web_search' } }), MESSAGES));
+  refused(() => off.apply(withTool(search, { tool_choice: { type: 'tool', name: 'web_search' } }), MESSAGES), 403, /provider-hosted tool/);
+  // Every other hosted tool, a later version, more searches, no limit, and any field the CLI does not send stay refused.
+  const { max_uses: _uses, ...unlimited } = search;
+  for (const tool of [{ type: 'web_fetch_20250910', name: 'web_fetch' }, { type: 'code_execution_20250825', name: 'code_execution' }, { type: 'web_search_20260209', name: 'web_search', max_uses: 8 }, { ...search, max_uses: 9 }, unlimited, { ...search, name: 'search' }, { ...search, allowed_callers: ['code_execution_20260120'] }, { ...search, user_location: { type: 'approximate', country: 'US' } }, { ...search, allowed_domains: 'example.com' }]) {
+    refused(() => on.apply(withTool(tool), MESSAGES), 403, /provider-hosted tool is not offered/);
+  }
+  refused(() => on.apply(withTool(search, { tool_choice: { type: 'tool', name: 'web_fetch' } }), MESSAGES), 403, /tool_choice/);
+  // No server tool's block passes either way: the CLI's WebSearch answers the model in text.
+  for (const b of [{ type: 'server_tool_use', name: 'web_search', id: 's', input: {} }, { type: 'web_search_tool_result', tool_use_id: 's', content: [] }]) {
+    refused(() => on.apply({ ...recorded, messages: [{ role: 'user', content: [b] }] }, MESSAGES), 403, /a block of a type this session does not send/);
+  }
+});
+
+test("usage: the searches a response reports, from a stream's last message_delta or a whole body, and unknown when they are not a count", () => {
+  const ev = (type, data) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+  const usage = (searches) => ({ input_tokens: 9, output_tokens: 4, server_tool_use: { web_search_requests: searches, web_fetch_requests: 0 } });
+  const stream = (start, end) => ev('message_start', { message: { usage: { ...usage(start), output_tokens: 1 } } }) + ev('message_delta', { usage: usage(end) }) + ev('message_stop', {});
+  assert.deepEqual(policy.usageOf(stream(0, 3)), { input: 9, output: 4, cacheRead: 0, cacheWrite: 0, webSearches: 3 }, 'the final count, not the start');
+  assert.deepEqual(policy.usageOf(JSON.stringify({ usage: usage(3) })), { input: 9, output: 4, cacheRead: 0, cacheWrite: 0, webSearches: 3 });
+  assert.deepEqual(policy.usageOf(JSON.stringify({ usage: usage(0) })), { input: 9, output: 4, cacheRead: 0, cacheWrite: 0 }, 'no searches, no field');
+  for (const bad of ['3', -1, 1.5]) assert.equal(policy.usageOf(JSON.stringify({ usage: usage(bad) })), undefined, String(bad));
+  const tokens = (_m, u) => (u.input + u.output) / 1e6;
+  assert.equal(withWebSearches(tokens)('m', { input: 9, output: 4, cacheRead: 0, webSearches: 3 }), tokens('m', { input: 9, output: 4 }) + 3 * CLAUDE_WEB_SEARCH_USD);
+  assert.equal(withWebSearches(() => null)('m', { input: 9, output: 4, cacheRead: 0, webSearches: 3 }), null, 'an unknown price stays unknown');
+});
+
+test("each web search is booked at Anthropic's rate into the session's cost, streamed and whole, and the cap refuses the next request once searches pass it; another hosted tool is still refused", async () => {
+  assert.equal(CLAUDE_WEB_SEARCH_USD, 10 / 1000, '$10 per 1,000 searches');
+  for (const stream of [true, false]) {
+    const provider = await fakeAnthropic({ reply: () => ({ search: { query: 'agentrun', results: [{ title: 'AgentRun', url: 'https://example.com/agentrun' }], text: 'found', searches: 3 } }) });
+    const ends = [];
+    const asked = [];
+    // The runner's booking of the session, under a $0.05 cap: three searches a request, so the second takes it past.
+    const store = memorySessionStore();
+    const booking = await modelPortFor(await store.open('s'), { key: 's', budgetUsd: 0.05, onEvent: (e) => { if (e.type === 'request_end') ends.push(e.usage); }, beforeRequest: ({ spentUsd, budgetUsd, inputTokensMax }) => {
+      asked.push(inputTokensMax);
+      return spentUsd === null || spentUsd >= budgetUsd ? { refuse: 'the session is past its cap' } : undefined;
+    } });
+    const handler = gatewayHandler({ routes: [], models: { model: 'claude-main' }, credential: () => 'provider-secret', target: provider.url });
+    const machine = await localMachine({ dir: scratch(), proxy: { hooks: booking.models, tools: [], builtins: ['WebSearch'], webSearch: true, price: priced } })({ ctx: { runId: 'r' }, model: handler });
+    const post = async (tools) => {
+      const res = await fetch(`${machine.modelUrl}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${machine.modelKey}`, 'anthropic-version': '2023-06-01' }, body: JSON.stringify({ ...CLI_SEARCH.body, model: 'claude-main', stream, ...(tools ? { tools } : {}) }) });
+      return { status: res.status, text: await res.text() };
+    };
+    let statuses;
+    try {
+      const fetchTool = await post([{ type: 'web_fetch_20250910', name: 'web_fetch' }]);
+      statuses = [fetchTool.status, (await post()).status, (await post()).status, (await post()).status];
+      assert.match(fetchTool.text, /provider-hosted tool is not offered/);
+    } finally {
+      await machine.close();
+      await provider.close();
+    }
+    assert.deepEqual(statuses, [403, 200, 200, 400], `stream ${stream}: web fetch refused; two searches answered; the third refused at the cap`);
+    assert.equal(provider.messages().length, 2, 'only the two admitted reached the provider');
+    assert.deepEqual(ends.map((u) => u.webSearches), [3, 3]);
+    for (const u of ends) assert.equal(u.usd, priced('', u) + 3 * CLAUDE_WEB_SEARCH_USD, 'tokens at the host price, searches at $0.01 each');
+    assert.equal(booking.spentUsd(), ends[0].usd + ends[1].usd);
+    // The tokens alone are under the cap: the searches take the session past it.
+    assert.ok(ends.reduce((sum, u) => sum + priced('', u), 0) < 0.05 && booking.spentUsd() > 0.06, String(booking.spentUsd()));
+    // The pages a search reads are billed as input: a request with the tool has no input bound, never one its bytes make.
+    assert.deepEqual(asked, [undefined, undefined, undefined]);
+  }
 });

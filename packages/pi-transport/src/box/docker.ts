@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { stat } from "node:fs/promises";
 import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import {
@@ -16,7 +17,7 @@ import {
 } from "./box.ts";
 import { adaptChild } from "./child.ts";
 import { downloadByExec, finish, uploadByExec } from "./files.ts";
-import { parseNetwork, refuseNetworkFields } from "./network.ts";
+import { type ParsedMount, parseMounts, parseNetwork, refuseNetworkFields } from "./network.ts";
 
 const DEFAULT_IMAGE = "debian:bookworm-slim";
 const DEFAULT_WORKSPACE = "/workspace";
@@ -147,6 +148,26 @@ function parseFacts(label: string | undefined): BoxFacts | undefined {
 	}
 }
 
+/** `not_found` for a mount whose source this machine does not have, before Docker is asked: `-v` would make it an empty directory. */
+async function checkSources(mounts: readonly ParsedMount[]): Promise<BoxError | undefined> {
+	for (const { source } of mounts) {
+		try {
+			await stat(source);
+		} catch (cause) {
+			const code = (cause as NodeJS.ErrnoException).code;
+			if (code === "ENOENT" || code === "ENOTDIR") {
+				return new BoxError("not_found", `the mount source ${source} does not exist on this machine`, cause);
+			}
+			return new BoxError(
+				"invalid",
+				`the mount source ${source} cannot be checked on this machine (${code ?? String(cause)})`,
+				cause,
+			);
+		}
+	}
+	return undefined;
+}
+
 function createError(stderr: string): BoxError {
 	const message = `docker could not start a box: ${stderr.trim()}`;
 	if (/pull access denied|unauthorized|denied:/i.test(stderr)) return new BoxError("unauthorized", message);
@@ -161,12 +182,18 @@ function createError(stderr: string): BoxError {
  * Docker cannot choose a GPU model: any `gpu` gives the container every GPU of the host, and `facts().gpu` repeats
  * the name the spec gave (not measured: nothing reads the host's cards in the box). The container's first process is a `sleep` of the lifetime in place of the image's own
  * entrypoint, so Docker ends the box when the lifetime has passed.
+ *
+ * A spec's `mounts` become `--mount type=bind,source=<source>,target=<target>` (`,readonly` when asked), never `-v`, which
+ * makes a missing source an empty directory: a source this machine does not have is refused with `not_found` before Docker is
+ * asked. The paths go to Docker as given, never resolved here, so the caller passes canonical ones. The daemon must run on this
+ * machine, where the sources are checked.
  */
 export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 	const docker = new Docker(options.docker ?? "docker");
 
 	return {
 		name: "docker",
+		mounts: true,
 
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
@@ -182,6 +209,10 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			const refused = refuseNetworkFields(spec, "docker", true);
 			if (refused !== undefined) return err(refused);
 			const network = parseNetwork(spec.network) as { kind: "open" | "none" };
+			const mounts = parseMounts(spec.mounts);
+			if (mounts instanceof BoxError) return err(mounts);
+			const missing = await checkSources(mounts);
+			if (missing !== undefined) return err(missing);
 			const facts: BoxFacts = {
 				provider: "docker",
 				isolation: "container",
@@ -206,6 +237,9 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			if (spec.cpus !== undefined) args.push("--cpus", String(spec.cpus));
 			if (spec.memoryMb !== undefined) args.push("--memory", `${spec.memoryMb}m`);
 			if (spec.gpu !== undefined) args.push("--gpus", "all");
+			for (const { source, target, readOnly } of mounts) {
+				args.push("--mount", `type=bind,source=${source},target=${target}${readOnly ? ",readonly" : ""}`);
+			}
 			// The sleep replaces the image's own entrypoint, so the lifetime holds whatever the image would run.
 			args.push("--entrypoint", "sleep", spec.image ?? options.image ?? DEFAULT_IMAGE);
 			args.push(String(Math.ceil(spec.maxLifetimeMs / 1000)));

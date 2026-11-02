@@ -238,7 +238,9 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
 | `web_fetch` | Read one web page from a public host through Parallel's extract, else fetched as `fetch_page` fetches it: `{url}` in, `fetch_page`'s Page plus `via`, `"parallel"` or `"direct"` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
-
+| `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
+| `monid.inspect` | One monid endpoint before it runs: `{provider, endpoint}` in, the JSON Schemas of its input (`pathParams`, `queryParams`, `body`), its price, notes and documentation out | `MONID_API_KEY` | no, no |
+| `monid.run` | Run one monid endpoint, paid per call from the monid wallet: `{provider, endpoint, input}` in, the run's `output`, `price` and `cost` out | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/`, the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
 
@@ -274,6 +276,18 @@ doing) is kept in the run's own store, so a run opened again on its directory re
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
 reads at once included. There is no recording and no live view. When the run is let go (its work done, or a SIGTERM)
 the sessions it still holds are released at Browserbase.
+
+`monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
+endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs
+it. Each run is paid per call from the monid workspace's wallet, and is sent once, never retried. An async provider's
+run is read until it ends, about two minutes at most, and asked to stop at monid when the run stops or it outlasts
+that. A refusal comes back as `{error, status?}` in words: the wallet too low (402), a workspace control such as its
+budget (`BLOCKED`), `FAILED`, `TIMED_OUT`, the provider's own error (not charged). The model reads each answer as JSON
+cut at 60,000 characters, the whole of it then filed under the run's `work/evidence/monid/`. An answer carries what
+monid charged (`cost`, in dollars); the run's own cost and its spend cap do not count it yet. They run on pi only for
+now (another harness saves a revision naming one with a warning, and refuses its runs), where the model and the run's
+timeline see them as `monid_discover`, `monid_inspect` and `monid_run`: a model API takes no dot in a tool's name. The
+key is a secret like the model keys: a run's process gets it over its pipe, never in its environment.
 
 ## Tool keys
 
@@ -351,23 +365,57 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
-| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). |
+| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (`429` when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
-| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`; `failed` includes escalated. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. |
+| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`; `failed` includes escalated. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, failed, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. The query bounds `analytics` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; a poll never answers `home_busy` (`stale: true` marks a last whole view). An agentic run has none (`404`). |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
+| `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
 feature, and capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
 browser sign-ins (`sign_ins: false`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
+
+## For coding agents
+
+A coding agent (Claude Code, Codex) sets the server up and drives it with
+[`skills/agentrun-serve/SKILL.md`](skills/agentrun-serve/SKILL.md), shipped in this package. `GET /llms.txt`, at the
+server's root and without a credential, is the API in brief ([`src/llms.txt`](src/llms.txt)), with no data of the
+server's.
+
+`POST /v2/mcp` is the MCP endpoint: Streamable HTTP in its simplest form, one JSON-RPC message per POST answered as JSON,
+with no stream and no session. Its ten tools:
+
+| Tool | Routes |
+| --- | --- |
+| `whoami` | `GET /capabilities`: the token checked, and what this server runs. |
+| `agents_list`, `agents_create` | `GET /agents`, `POST /agents` (the arguments are the definition). |
+| `agents_revise` | `GET /agents/{id}`, then `PUT /agents/{id}/definition` with the fields given changed, on that revision (`If-Match`). |
+| `runs_start` | `POST /agents/{id}/runs`, answered at once. |
+| `runs_get` | `GET /runs/{id}`, with `pending` (a waiting run's question, from its timeline) and `console_url`. |
+| `runs_events` | `GET /runs/{id}/timeline` with `limit` (100 by default). |
+| `runs_files` | `GET /runs/{id}/files`, or one file's text up to 64 KiB. |
+| `runs_respond`, `runs_cancel` | `POST /runs/{id}/messages`, `POST /runs/{id}/cancel`. |
+
+Each tool calls its routes in process, with the caller's token, so it checks and answers as they do: the route's JSON is
+the result's structured content (and its text), and a refusal is a result with `isError` holding the route's `error`. A
+run is started, then polled with `runs_get`; no call is held open for one, and a question a run asks waits as its
+`input_required` state, for `runs_respond` or a person in the console. The endpoint takes the Bearer token only (the
+page's session cookie is never taken there), refuses a browser `Origin` other than this server's own, and on loopback
+refuses a `Host` that is not a loopback name, as every route does.
+
+```sh
+claude mcp add --transport http agentrun "$AGENTRUN_BASE_URL/mcp" --header "Authorization: Bearer $AGENTRUN_API_KEY"
+codex mcp add agentrun --url "$AGENTRUN_BASE_URL/mcp" --bearer-token-env-var AGENTRUN_API_KEY
+```
 
 ## Harnesses
 
@@ -494,6 +542,14 @@ data (`/api/*` and `/v2`) takes the cookie in place of `Authorization: Bearer`: 
 only when the request's `Origin` is the page's own origin and its body is `application/json`. A request that sends an
 `Authorization` header is checked on that header alone.
 
+### The console
+
+The console (`apps/console` in the repository) is at `/console/` on the same origin, with the page's CSP and security
+headers. Its files are public, like the page's; it shows its own setup and sign-in screens, and its `/v2` calls take the
+owner's session cookie under the same rules. The server's build copies the console's build (`npm ci && npm run build` in
+`apps/console`, run first) into `dist/console`; the image always carries it. A server built without it answers
+`/console/` with a 404 that says so.
+
 ## Your password
 
 AgentRun Server is for one person, who signs in to the page with a password (`AGENTRUN_ACCOUNTS=0` turns this off). With
@@ -555,26 +611,50 @@ A completed agentic run's `result` is `{output: null, final_answer}`; a complete
 ## Spend cap
 
 An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process
-before each model request, the agent's and a compaction's alike: what the run has spent so far plus the request's worst
-case must stay within it, or the request is not sent and the run ends `failed` with `spend_cap_reached`. The worst
-case is the request's input tokens at the input price plus its max output tokens at the output price, the max output
-tokens being the ones the request sends (the model's, clamped to what its context window leaves). The input is priced
-at the higher of the model's input and cache-write prices, since the provider may bill any of it as a cache write. The
-input tokens are pi-ai's estimate (`estimateContextTokens`: the tokens the last response reported, plus about one token
-per 3.5 characters after it), which may run low on code or non-English text; the server's check after each response
-catches what it misses. Spent so far is read from the run's store each time its process starts, so it survives a
-restart, plus each response since; a request in flight holds its worst case until it answers. A model with no price (a
-gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`) cannot be kept within a cap: under one its first
-request is refused before anything is sent, and the run ends `spend_cap_reached` at $0; with no cap its run's cost reads
-`null`. Pricing the whole output ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's worst case is about $0.96,
-so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
+before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
+the worst case of each request still in flight, plus this request's worst case must stay within it, or the request is
+not sent and the run ends `failed` with `spend_cap_reached`. A request's worst case is its input bound at the higher of
+the model's input and cache-write prices (the provider may bill any of the input as a cache write), plus the model's
+whole output ceiling at its output price: its max output tokens, else its context window, clamped on pi to what the
+window leaves. A request asking for fewer output tokens is held at the ceiling all the same, since a thinking budget can
+raise any request to it. The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
+a token of less than one byte, and an image's base64 is far more bytes than its tokens), plus what the provider adds
+server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent and codex uses; there
+the proxy measures each request's body. A request in flight holds its worst case until it answers, so requests sent side
+by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
+survives a restart, plus each response since.
+
+Under a cap, whatever cannot be priced is refused, never passed as $0:
+
+- A model serve has no price for (a gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`): its first
+  request is refused before anything is sent, and the run ends `spend_cap_reached` at $0. With no cap its run's cost
+  reads `null`. A model the catalog lists at $0 is a known $0, and passes any cap.
+- A model whose output is priced and that names no output ceiling (no max output tokens and no context window): nothing
+  bounds a request. One whose output costs nothing at every price tier keeps a known worst case, and passes.
+- An input that could not be measured.
+- A spend no one knows: a cost that is not a number, a cost still pending, and on pi a request a stop or a crash cut
+  with no held figure (below). Every later request of the run is refused. `claude-agent` and `codex` runs also continue
+  after a cut, at the worst case the cap held, as pi does.
+
+On pi a request stopped before its end (`POST /runs/{id}/stop`, or a summary that failed) or cut by a crash (its process
+gone mid-request) counts at the worst case the cap held for it, the most the provider can have billed, never at the cut
+stream's own usage (the Responses API reports none until the end). The figure is written on the request's start mark
+(`agentrun.request_started`) and on the end mark of one stopped (`agentrun.request_ended`), as `heldUsd`, so a later
+process counts it the same: a capped pi run stopped and sent another message, or opened again after its process died,
+goes on while its cap allows. A cut request from a store written before serve kept the figure has none, and is a spend
+no one knows.
+
+Pricing the whole output ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's
+worst case is about $0.96, so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
 
 The server also checks the run's cost after each response, as a backstop, and stops a run whose cost passed its cap.
 Either way the run keeps the answer it paid for: a run the cap stopped has `result: {output: null, final_answer}`, the
 newest answer it received, beside its `error`; one stopped before any answer has `result: null`.
 
 A run's `cost.usd` is $0 before its first model request (a run cancelled before one included), and `null` when a
-response reported no price: no request costs nothing, but a request of unknown price is unknown, never $0.
+response reported no price or a request was cut before its end (a stop, a cancel, a crash): no request costs nothing,
+but a request of unknown price is unknown, never $0. A stopped request shows `null` whether or not its cap counted it at
+its held worst case.
 
 ## The faux model
 
@@ -591,8 +671,9 @@ export default function reply(context, faux) {
 
 `startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
 the `browser` tool's `{ provider, driver }` in place of Browserbase's (pi-browser's fake backend,
-`test/fixtures/faux-browser.mjs`), and `fetch_page`'s `{ lookup, fetchImpl }` in place of the system's resolver and
-undici (a table of names and pages, `test/fixtures/faux-web.mjs`). Each is honored only with `faux`.
+`test/fixtures/faux-browser.mjs`), `fetch_page`'s `{ lookup, fetchImpl }` in place of the system's resolver and
+undici (a table of names and pages, `test/fixtures/faux-web.mjs`), and, as `fauxMonid`, the fetch the monid tools send
+through in place of monid's API (`test/fixtures/faux-monid.mjs`). Each is honored only with `faux`.
 
 `faux.message`, `faux.text`, `faux.thinking` and `faux.toolCall` are pi-ai's faux helpers; `faux.signal` is aborted when
 the turn is stopped. A workflow's model node offers the `submit` tool (in its system message's `toolsAdded`), and

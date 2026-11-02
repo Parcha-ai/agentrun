@@ -171,6 +171,33 @@ test("a call to anything but the session's own tools is denied by the gate and n
   for (const name of names) assert.equal(existsSync(canary(name)), false, `${name} ran`);
 });
 
+test("webSearch: the CLI is offered WebSearch alone and told so, the gate lets it through as a built-in call recorded before it runs (safe to repeat), and still denies every other", async (t) => {
+  const decided = [];
+  const seen = [];
+  const names = ['WebSearch', 'WebFetch', 'Bash', 'Read', 'Write', 'Skill', 'Task', 'mcp__other__tool'];
+  const script = [...names.map((name) => `builtin ${name} {"query":"agentrun","url":"https://example.com"}`), 'call submit {"value":{"answer":"ok"}}'];
+  const { adapter } = await claude(t, { webSearch: true, script, sdk: { onDecision: (d) => decided.push(d), onQuery: (options) => seen.push(options) } });
+  const store = memorySessionStore();
+  const runNode = createHarnessRunner(adapter, { store, maxTurns: 40 });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'q', system: [], user: 'Go.', schema: SCHEMAS.Out, tools: [] }), { answer: 'ok' });
+  assert.deepEqual(decided.map((d) => [d.name, d.decision]), names.map((name) => [name, name === 'WebSearch' ? 'allow' : 'deny']));
+  const [options] = seen;
+  assert.deepEqual(options.tools, ['WebSearch']);
+  assert.ok(!options.disallowedTools.includes('WebSearch') && options.disallowedTools.includes('Skill'), JSON.stringify(options.disallowedTools));
+  assert.match(options.systemPrompt.append, /^Your only tools are this app's \(the mcp__hands__ tools, if it has any\) and WebSearch; you have no shell, file or fetch tools/);
+  // The search's intent is in the session's records before it runs, as a read: a crash cut is retried, not reported lost.
+  const records = await store.read(store.keys()[0]);
+  const searches = [...foldSession('s', records).effects.values()].filter((e) => e.name.startsWith('tool.Web'));
+  assert.deepEqual(searches.map((e) => [e.name, e.replay]), [['tool.WebSearch', 'safe']]);
+  // Off (the default), as before: not offered, off by name, and denied.
+  const off = [];
+  const plain = await claude(t, { script: ['builtin WebSearch {"query":"agentrun"}', 'call submit {"value":{"answer":"ok"}}'], sdk: { onDecision: (d) => off.push(d), onQuery: (o) => off.push(o) } });
+  assert.deepEqual(await createHarnessRunner(plain.adapter, { store: memorySessionStore() })({ kind: 'agent', label: 'q', system: [], user: 'Go.', schema: SCHEMAS.Out, tools: [] }), { answer: 'ok' });
+  assert.deepEqual(off[0].tools, []);
+  assert.ok(off[0].disallowedTools.includes('WebSearch'));
+  assert.equal(off.find((d) => d.name === 'WebSearch')?.decision, 'deny');
+});
+
 test("every model request reaches the host with its tokens and its price: request_end carries input, output and cache tokens, usd above 0", async (t) => {
   const { adapter } = await claude(t, { script: ['call submit {"value":{"answer":"ok"}}'] });
   const ends = [];

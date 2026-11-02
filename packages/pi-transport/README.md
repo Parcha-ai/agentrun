@@ -179,6 +179,7 @@ It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `iso
 `dockerBoxes` runs `sleep` for the lifetime in place of the image's own entrypoint, so Docker ends the box. It refuses
 `snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
 container every GPU of the host.
+It alone binds a spec's `mounts` (`[{ source: "/data/run", target: "/workspace/run", readOnly: true }]`, canonical paths used as given, at most 8) with `--mount type=bind`, never `-v`, and refuses a source this machine lacks with `not_found`; `provider.mounts` says whether a provider binds them, and every other one refuses them as `unsupported`.
 
 ### Archil exec
 
@@ -422,8 +423,21 @@ nothing of sessions beyond "a SQLite file and a directory". Node only.
 - **A store.** `sealStore(path)` returns a `Seal` (head, SHA-256, size) of a store its owner has closed; a store with a
   write-ahead log that holds content is refused with `not_sealed`. `checkpointStore(path, to)` takes a consistent copy
   of a store that is still open, with `VACUUM INTO` through a second read-only connection; the copy appears whole or
-  not at all. `verifyStore(path, seal)` checks size, hash, SQLite's quick check and the head, in that order. The head is
-  one read of `durable_metadata.next_seq`, the only knowledge of pi's schema here.
+  not at all. `verifyStore(path, seal)` checks size, hash, the schema, SQLite's quick check and the head, in that order.
+  The head is one read of `durable_metadata.next_seq`; the schema is compared with the one pi-durable makes, read from
+  pi-durable itself, never a copy kept here.
+- **A store from a box.** A store a host verifies or replays into is a file a box made, and a box is not trusted, so this
+  package opens one only one way (`verifyStore`, `replayCommits`), following SQLite's guidance for a database file another
+  security domain could have written. A regular file of at most `DEFAULT_MAX_STORE_BYTES` (1 GiB; `{ maxBytes }` sets
+  another) has its main file copied, without following a link, into a directory the host makes, so no journal or
+  write-ahead log the box left beside it is read; the size and hash checked are the copy's. The copy is opened
+  `immutable` and read-only, with no extension loading, `trusted_schema` off, `cell_size_check` on and `mmap_size` 0,
+  all of which Node 22's `node:sqlite` accepts. The schema must be pi-durable's, object for object and text for text,
+  before the quick check runs: a trigger, a view, a virtual table or a table of the file's own is `refused`, so nothing
+  the file defines is ever compiled, and a store of another pi-durable schema version is refused too. No SQL comes from
+  the box, only the file: the statements are this package's own. `replayCommits` never opens the file to write: the rows
+  of pi-durable's tables are read into a store pi-durable makes on the host, which takes the file's place, and the
+  commits go into that one.
 - **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
   hash on the way and on the target; it appears at its path whole or not at all.
 - **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,
@@ -451,6 +465,97 @@ short or flipped is `mismatch`; the directories are removed on success, on failu
 **Disk a move needs.** A side that moves files holds the archive once more: the source box needs free space for the
 archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
 tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
+
+## A box's archive, unpacked on this machine (`./sync`)
+
+A box is not trusted, so neither is a byte of a tar archive it makes. The host never unpacks one with `tar`:
+`@parcha/pi-transport/sync` reads it with its own reader as it arrives and writes it under one directory.
+
+```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { readStream } from "@parcha/pi-transport";
+import { extractTar } from "@parcha/pi-transport/sync";
+
+const packed = await box.exec(["tar", "-c", "-f", "-", "-C", "/work", "."], undefined, BACKGROUND_CONTEXT);
+if (!packed.ok) throw packed.error;
+const tar = packed.value;
+// Both streams are read: a program whose error pipe fills stops writing its output.
+const [extracted, errors] = await Promise.all([
+	extractTar(tar.stdout, "/data/runs/r1/work", {
+		onSkip: (skip) => console.warn(skip.reason, skip.path, skip.target ?? ""),
+	}),
+	readStream(tar.stderr),
+]);
+const exited = await tar.wait();
+if (!exited.ok || exited.value !== 0) console.warn("tar failed:", new TextDecoder().decode(errors));
+if (extracted.ok && extracted.value.stopped !== undefined) console.warn(extracted.value.stopped.message);
+```
+
+- **Regular files and directories only.** A symbolic or hard link, a device, a pipe or any other member is skipped,
+  counted by reason (`receipt.skipped`, the first 100 by path in `receipt.skips`, each one to `onSkip`), and never
+  created. The skip of a link carries `target`, what the link names, so a caller that keeps links keeps them as data.
+- **Safe names, and only the ones asked for.** A name is refused when it is absolute, holds `.`, `..`, an empty segment
+  or a NUL, or passes 255 bytes a segment or 4095 a path. `admit` decides by path and kind what may be written; a
+  second member of a path is skipped, and a pax global header is not honoured.
+- **Nothing outside the destination.** Every directory is opened from a held handle of the one above with
+  `O_NOFOLLOW`, so a link already in the destination is never followed (`link_in_destination`), and a file never
+  replaces a directory or the other way round (`occupied`). Each file is written under a temporary name and renamed
+  into place; one cut off halfway is removed.
+- **Modes capped.** A file gets at most 0755 (0644 without an execute bit), never setuid, setgid, group or world write;
+  a directory at most 0755. `receipt.masked` counts the files written that lost a bit.
+- **Limits.** The extraction stops cleanly past `maxBytes` of archive (header blocks, pax and long-name payloads and
+  member data, each charged before it is read; default `MAX_PULL_BYTES`, 1 GiB) or `maxEntries` members, written or
+  skipped (default `MAX_PULL_ENTRIES`, 100,000). One pax header or long name holds at most 64 KiB. A bad checksum, a
+  lone zero block or an archive cut short stops it too (`malformed`). What was written before a stop stays, every file
+  whole, and `receipt.stopped` says why.
+
+`openExtractor` is the same reader fed a chunk at a time: `write` until it returns `false`, then `finish`, which waits
+for a write still running. `keep: "newer"` keeps a host file newer than the member. `removeEntries` removes paths
+under a directory by the same walk: a file or a link is unlinked (never what a link names), a directory only when
+empty. A failure of the host's own file system is `transfer_failed`; everything the archive does wrong is in the
+receipt.
+
+## A run's files between this machine and a box (`./sync`)
+
+A run whose box shares no disk with the host keeps its files on the host and moves them: in when the box starts, back
+after each turn. `@parcha/pi-transport/sync` does both through any `Box`, with the transport of the movers above (one
+`tar`, streamed or as files by `facts().bulk`, the same stall limit, deadline and clean-up).
+
+```ts
+import { pullAgentHome, pullDir, seedAgentHome, seedDir } from "@parcha/pi-transport/sync";
+
+await seedAgentHome(box, { from: "/data/homes/a1", to: "/run/agentrun/home" }, ctx); // learning/ goes read-only
+const seeded = await seedDir(box, { from: "/data/runs/r1/work", to: "/run/agentrun/run/work" }, ctx);
+let mark = seeded.ok ? seeded.value.mark : undefined; // the box's listing, with the SHA-256 of each file sent
+const pulled = await pullDir(box, { from: "/run/agentrun/run/work", to: "/data/runs/r1/work", since: mark, mirrorDeletes: true }, ctx);
+if (pulled.ok) mark = pulled.value.mark; // kept for the next pull
+```
+
+- **Seed.** Regular files and directories go. A link on the host is never followed (it could carry a file from outside
+  the directory into the box): it is skipped and counted with pipes, sockets and devices. `exclude` leaves paths out,
+  `readOnly` sends them without a write bit. Modes are capped at 0755.
+- **Pull.** Incremental by listing: the box lists the directory (kind, size, mode, time to the nanosecond, every path
+  NUL-separated) and a path comes back when it is new or listed differently from the `mark` of the seed or the last
+  pull. The box's clock is never compared with the host's: a listing sees a file restored with an old time, and
+  deletions. Dotfiles come back like any file. `exclude` is applied to the listing, to deletions and to every member of
+  the archive. `mirrorDeletes` removes what the box no longer has: files and links unlinked, a directory only when
+  empty. `pullAgentHome` never brings back `learning/` and never removes it. The host reads at most `maxListingBytes`
+  of the listing (default `MAX_LISTING_BYTES`, 64 MiB): past it the box's program is stopped and the pull is
+  `too_large`. A copy that fails after something was written still returns the mark, with
+  `stopped.reason: "copy_failed"` and the copy's error; a file asked for and not written keeps its old entry.
+- **A home file another run wrote stays.** `overwrite: "if_unchanged"` (always on in `pullAgentHome`) lets a pulled file
+  replace, or a mirrored deletion remove, the host's copy only while that copy is still the bytes the mark records: the
+  SHA-256 of what was seeded into the box, or of what the last pull wrote. A host copy that changed since (another run's
+  pull, a host edit) wins; the box's file is not fetched, and the skip is counted and named as `host_changed`. The
+  mark keeps the hashes: `seedDir` returns the first one (what it sent; what the box already held comes on the first
+  pull), each pull the next. Pulls into one directory run one at a time in a process, from the first check to the mark,
+  so two runs' pulls into one home never both pass the check against the same bytes.
+- **The archive is not trusted.** Every pulled member goes through `extractTar` (above), never `tar`. Two names of one
+  inode in the box both come back as files: the box packs with `--hard-dereference`, and a hard link member is still
+  refused.
+
+The box needs `sh`, GNU `tar` and `find`, and `split`, `sha256sum`, `cut`, `wc` and `cat` when it moves files, as the
+movers do. No name is ever put in a shell string: the box reads the list on its standard input.
 
 ## A home: the session runs somewhere, and can stop without a cut
 
@@ -638,21 +743,32 @@ says what the host keeps so that it loses no more.
 
 `pullCheckpoint({ session, place, home, epoch, vault, ... })` takes one moment of a session off its box. It holds the
 session (a short drain), makes a sealed copy of the store in the box (`checkpointStore`), takes the workspace manifest,
-pulls the store (`moveFile`) and the files that changed since the previous checkpoint (`moveChanged`) into the vault,
+pulls the store (`moveFile`) and the content of the files that changed since the previous checkpoint into the vault,
 checks all of it, and lets the session go. The session is held through the pull because a file it writes meanwhile
 would no longer match the manifest. `holdMs` bounds the hold (120 s by default): every phase of the pull draws on the same clock, and a pull that outruns it is skipped (`failed`) and lets the session go. A checkpoint exists only when the
 store and the files are both on the host and verified; a store without its files is never kept. The vault
-(`localVault(directory)`: put `begin`/`commit`, `latest`, `get`, `prune`) is the host's disk, a generation per
-checkpoint made with hard links so that a generation costs its delta, and the newest 3 are kept (`keep`).
+(`localVault(directory)`: put `begin`/`commit`, `latest`, `get`, `prune`, and `holds`/`keep`/`content` for file contents)
+is the host's disk, a generation per checkpoint, and the newest 3 are kept (`keep`).
 A pull that does not complete is skipped, never half kept: `busy` (the session did not come to rest, with what held
 it), `changed` (a file moved on), `too_large` (`workspace.maxBytes`) or `failed`; the previous checkpoint stays the
 latest. `checkpointStats()` counts the checkpoints taken and the skips by reason, for a panel that says "checkpoint
 skipped: still running".
 
+A box is not trusted, and a checkpoint is what a box made, so the host never unpacks it. The box sends the bytes of the
+files the pull asks for, end to end, never names or an archive; the vault keeps each file's content once, as a plain
+file named by its SHA-256 and checked against it, so a generation costs its delta. The tree is the record's manifest:
+directories, symbolic links, hard links (`ManifestEntry.link`), named pipes (`kind: "fifo"`), modes (setuid included)
+and times are data the host never makes into anything. A listing with a path outside the tree (absolute, `..`, or
+through a link) is refused before a byte moves (`failed`). A restore writes a tar stream from the record and the
+contents, and the new box's own `tar` makes the tree, links included, there and nowhere else; the tree is then listed
+and hashed in the box against the record. A generation an earlier version kept as a tree the host unpacked is
+`refused` (`VaultError`, named in `no_checkpoint`): it is never read, unpacked or restored, a pull after it takes the
+workspace afresh, and `prune` removes it.
+
 `recoverHome` gains `vault` and `replace(place, context)`. When the lease's box is **gone** (`Box.status` says
 `ended`, or the provider no longer has it; a timeout or an error is never gone), the host's `replace` makes a box for
-the same environment, the newest checkpoint that still checks out (an older generation when it does not) is copied in
-and verified, the lease is taken at the next epoch (move id `restore-<epoch>`, the checkpoint's seal) and the home
+the same environment, the newest checkpoint that still checks out (its store and every content read again; an older
+generation when it does not) is made in it and verified, the lease is taken at the next epoch (move id `restore-<epoch>`, the checkpoint's seal) and the home
 resumes there. `recoverHome` never makes boxes. With no usable checkpoint it fails with `no_checkpoint` and changes
 nothing. The resume order's `move` says `kind: "restore"` and carries the checkpoint's `head` (`Seal.head`): commits of
 the lost box at or after it are gone and their sequence numbers are taken again, so whoever records the session's
@@ -677,8 +793,9 @@ The commits between two checkpoints are kept too, on the record stream: a host t
 has it. `recordSink(vault, session, context)` is that sink for the vault: `held` is where the vault's log is (`vault.through`),
 `append` keeps a commit on disk in order (`vault.appendLog`: ignores a repeat, refuses a gap with `through`, keeps nothing the
 latest checkpoint covers), and a checkpoint's `prune` cuts the log below the oldest generation kept. A restore takes the
-checkpoint's store, applies the unbroken run of commits from its head (`replayCommits`, through the store's own `Storage`,
-on a copy on the host and before any Harness opens it), seals the result, and gives the lease and the resume order that
+checkpoint's store, applies the unbroken run of commits from its head (`replayCommits`: the checkpoint's rows read into a
+store pi-durable makes on the host, then the commits through that store's own `Storage`, before any Harness opens it),
+seals the result, and gives the lease and the resume order that
 seal. The order's `move` says `replayed: { from, to }` and `head: to + 1`; the notice says the history was brought up to
 date. So a call the lost box admitted after the checkpoint is in the history the new box opens, and is settled by pi's
 recovery, not run again. A log that does not start where the checkpoint ends is not used: the restore is the checkpoint, as

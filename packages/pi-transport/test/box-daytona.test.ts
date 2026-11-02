@@ -492,6 +492,21 @@ describe("daytona boxes", () => {
 		expect(fake.requests.some((r) => r.method === "POST" && r.path === "/api/sandbox")).toBe(false);
 	});
 
+	it("refuses any mount as unsupported, by name, and a malformed one as invalid, before a sandbox exists", async () => {
+		fake.requests.length = 0;
+		expect(provider().mounts).toBeUndefined();
+		const refused = await provider().create(
+			spec({ mounts: [{ source: "/data/run", target: "/workspace/run" }] }),
+			context,
+		);
+		expect(refused.ok ? "ok" : refused.error.code).toBe("unsupported");
+		expect(refused.ok ? "" : refused.error.message).toMatch(/a daytona box takes no mounts/);
+		const malformed = await provider().create(spec({ mounts: [{ source: "/data/run", target: "/" }] }), context);
+		expect(malformed.ok ? "ok" : malformed.error.code).toBe("invalid");
+		expect(fake.sandboxes.size).toBe(0);
+		expect(fake.requests.some((r) => r.method === "POST" && r.path === "/api/sandbox")).toBe(false);
+	});
+
 	it("attach returns undefined, not a rejection, for labels it cannot use", async () => {
 		const odd: FakeSandbox = {
 			id: "odd-1",

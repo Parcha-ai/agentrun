@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { BoxError } from "../src/box/box.ts";
-import { parseNetwork, parsePorts, refuseNetworkFields } from "../src/box/network.ts";
+import {
+	MAX_MOUNTS,
+	parseMounts,
+	parseNetwork,
+	parsePorts,
+	refuseMounts,
+	refuseNetworkFields,
+} from "../src/box/network.ts";
 
 const code = (value: unknown) => (value instanceof BoxError ? value.code : "ok");
 
@@ -63,6 +70,70 @@ describe("a spec's ports", () => {
 			[{ port: 80, kind: "udp" as never }],
 		];
 		expect(bad.map((ports) => code(parsePorts(ports)))).toEqual(bad.map(() => "invalid"));
+	});
+});
+
+describe("a spec's mounts", () => {
+	it("are kept as given, read-write unless the entry says readOnly, nested targets included", () => {
+		expect(parseMounts(undefined)).toEqual([]);
+		expect(
+			parseMounts([
+				{ source: "/data/run", target: "/workspace/run" },
+				{ source: "/data/home", target: "/workspace/home", readOnly: false },
+				{ source: "/data/home/learning", target: "/workspace/home/learning", readOnly: true },
+				{ source: "/data/run", target: "/workspace/again" },
+				{ source: "/", target: "/host" },
+			]),
+		).toEqual([
+			{ source: "/data/run", target: "/workspace/run", readOnly: false },
+			{ source: "/data/home", target: "/workspace/home", readOnly: false },
+			{ source: "/data/home/learning", target: "/workspace/home/learning", readOnly: true },
+			{ source: "/data/run", target: "/workspace/again", readOnly: false },
+			{ source: "/", target: "/host", readOnly: false },
+		]);
+	});
+
+	it("refuse a relative path, a .. segment, a path not in normal form, a target of /, a repeat and too many, as invalid", () => {
+		const one = (source: string, target: string) => [{ source, target }];
+		const bad = [
+			one("data/run", "/workspace/run"),
+			one("/data/run", "workspace/run"),
+			one("", "/workspace/run"),
+			one("/data/../etc", "/workspace/run"),
+			one("/data/run", "/workspace/.."),
+			one("/data/run", "/"),
+			one("/data/run/", "/workspace/run"),
+			one("/data//run", "/workspace/run"),
+			one("/data/./run", "/workspace/run"),
+			one("/data/run", "//"),
+			one("/data/run,readonly=false", "/workspace/run"),
+			one("/data/run", '/workspace/"run"'),
+			one("/data/run\ntarget=/etc", "/workspace/run"),
+			one("/data/run\u0000", "/workspace/run"),
+			[{ source: "/data/run", target: "/workspace/run", readOnly: "yes" as unknown as boolean }],
+			[
+				{ source: "/data/a", target: "/workspace/run" },
+				{ source: "/data/b", target: "/workspace/run" },
+			],
+			Array.from({ length: MAX_MOUNTS + 1 }, (_, n) => ({ source: "/data/run", target: `/workspace/${n}` })),
+			[{ source: 1 as unknown as string, target: "/workspace/run" }],
+			[null as unknown as { source: string; target: string }],
+			"mounts" as never,
+		];
+		expect(bad.map((mounts) => code(parseMounts(mounts)))).toEqual(bad.map(() => "invalid"));
+		expect(
+			code(parseMounts(Array.from({ length: MAX_MOUNTS }, (_, n) => ({ source: "/d", target: `/m/${n}` })))),
+		).toBe("ok");
+	});
+
+	it("are refused by a provider that cannot bind them: any mount unsupported, by name, a malformed one invalid, none at all fine", () => {
+		const refused = (mounts?: { source: string; target: string }[]) =>
+			refuseMounts({ maxLifetimeMs: 1, mounts }, "x");
+		expect(refused()).toBeUndefined();
+		expect(refused([])).toBeUndefined();
+		expect(refused([{ source: "/data/run", target: "/workspace/run" }])?.code).toBe("unsupported");
+		expect(refused([{ source: "/data/run", target: "/workspace/run" }])?.message).toMatch(/^a x box takes no mounts/);
+		expect(refused([{ source: "/data/run", target: "/" }])?.code).toBe("invalid");
 	});
 });
 

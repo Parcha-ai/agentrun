@@ -44,7 +44,8 @@ function useServerCheck(text: string, value: Json | undefined, ok: boolean, tool
 /** A workflow's JSON beside its graph. The graph is drawn again as you type (the last text that parsed stays drawn while
  *  the JSON is broken), marked NEW and EDITED against the saved revision, with its removed nodes listed; the problems the
  *  console can see are listed under the text by line, and the server's own refusal of a save beside them. Clicking a node
- *  selects its JSON; the node the cursor is in is outlined in the graph. */
+ *  selects its JSON; the node the cursor is in is outlined in the graph. `readOnly` (a past revision) shows the JSON and
+ *  the marked graph only: the text takes no edit, and nothing is checked, by the server or the console. */
 export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, readOnly = false, validate, tools }: {
   text: string;
   onText: (text: string) => void;
@@ -53,6 +54,7 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
   baseLabel?: string;
   /** The server's refusal of the last save, as it said it. */
   serverIssues?: { path: string; message: string }[] | null;
+  /** A revision to look at, not edit: no edit, no check of it, and no problems list. */
   readOnly?: boolean;
   /** The server's check as you type; without it (or on a server without the route) the console's lint is shown. */
   validate?: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => Promise<WorkflowCheck>;
@@ -69,8 +71,8 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
   const graph = useMemo(() => workflowGraph(doc), [doc]);
   const baseGraph = useMemo(() => (base === undefined ? null : workflowGraph(base)), [base]);
   const diff = useMemo(() => (baseGraph ? graphDiff(baseGraph, graph) : null), [baseGraph, graph]);
-  const server = useServerCheck(text, parsed.ok ? parsed.value : undefined, parsed.ok, tools, validate);
-  const lint = useMemo<Issue[]>(() => (parsed.ok ? lintWorkflow(parsed.value) : []), [parsed]);
+  const server = useServerCheck(text, parsed.ok ? parsed.value : undefined, parsed.ok, tools, readOnly ? undefined : validate);
+  const lint = useMemo<Issue[]>(() => (parsed.ok && !readOnly ? lintWorkflow(parsed.value) : []), [parsed, readOnly]);
   // The server's answer for this text is the one that counts; the lint shows while it is asked, or when it cannot be.
   const issues = useMemo<Issue[]>(() => (server.mode !== "server" ? lint : [
     ...server.check.issues.map((i) => ({ path: i.path, message: i.message, severity: "error" as const })),
@@ -125,11 +127,13 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
           <span className="caps text-[11px] font-semibold">workflow.json</span>
           <span className="font-mono text-[11px] text-muted-foreground">{lines} lines</span>
           <span className="flex-1" />
+          {readOnly ? <span className="caps text-[11px] text-muted-foreground">Read-only</span> : <>
           {server.mode === "failed" && parsed.ok
             ? <span className="font-mono text-[11px] text-warning-text" title={server.failed}>server check failed, showing local checks <button type="button" onClick={server.retry} className="caps ml-1 border px-1.5 text-[10px] text-foreground hover:bg-accent">Retry</button></span>
             : server.mode !== "lint" && parsed.ok && <span className="font-mono text-[11px] text-muted-foreground">{server.mode === "pending" ? "checking..." : "checked by the server"}</span>}
           {errors ? <span className="caps inline-flex items-center gap-1 text-[11px] text-destructive-text"><CircleAlert className="size-3.5" aria-hidden /> {errors} {errors === 1 ? "problem" : "problems"}</span>
             : <span className="caps text-[11px] text-success-text">{server.mode === "server" ? "Valid" : "Valid shape"}</span>}
+          </>}
         </div>
         <div className="relative flex h-[560px] min-h-0 xl:h-[calc(100vh-390px)] xl:min-h-[440px]">
           <div ref={gutter} aria-hidden className="w-12 shrink-0 select-none overflow-hidden border-r bg-card py-3 text-right font-mono text-[11px] text-muted-foreground" style={{ lineHeight: `${LINE_PX}px` }}>
@@ -138,7 +142,7 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
             ))}
           </div>
           <textarea ref={area} value={text} readOnly={readOnly} spellCheck={false} wrap="off" aria-label="Workflow JSON"
-            onChange={(e) => { onText(e.target.value); setCursor(e.target.selectionStart); }}
+            onChange={(e) => { if (!readOnly) onText(e.target.value); setCursor(e.target.selectionStart); }}
             onSelect={(e) => setCursor((e.target as HTMLTextAreaElement).selectionStart)}
             onScroll={(e) => { if (gutter.current) gutter.current.scrollTop = (e.target as HTMLTextAreaElement).scrollTop; }}
             onKeyDown={(e) => {
@@ -151,7 +155,7 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
             className="min-w-0 flex-1 resize-none overflow-auto bg-background px-3 py-3 font-mono text-[12px] outline-none selection:bg-[hsl(var(--primary)/0.28)] selection:text-foreground"
             style={{ lineHeight: `${LINE_PX}px`, tabSize: 2 }} />
         </div>
-        <ul className="max-h-48 min-h-[44px] overflow-auto border-t font-mono text-[12px]" aria-label="Problems">
+        {!readOnly && <ul className="max-h-48 min-h-[44px] overflow-auto border-t font-mono text-[12px]" aria-label="Problems">
           {rows.length === 0 && <li className="px-4 py-3 text-muted-foreground">{server.mode === "server" ? "No problems: the server's validator takes this workflow as it is." : "No problems the console can see. The server checks the workflow again when you save."}</li>}
           {rows.map((r, k) => (
             <li key={k}>
@@ -162,7 +166,7 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
               </button>
             </li>
           ))}
-        </ul>
+        </ul>}
       </div>
       <div className="flex min-h-0 flex-col">
         <div className="flex flex-wrap items-center gap-3 border-b px-4 py-2">

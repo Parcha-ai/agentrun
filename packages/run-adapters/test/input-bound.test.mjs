@@ -100,6 +100,20 @@ test("a policy whose server-side input cannot be read leaves inputTokensMax unde
   assert.deepEqual([host.inputTokensMaxOf?.(policyWith(() => undefined), {}, '{}'), host.inputTokensMaxOf?.(policyWith(() => null), {}, '{}'), host.inputTokensMaxOf?.(policyWith(), {}, '{}')], [undefined, undefined, 2]);
 });
 
+test("an undefined overhead is the policy's word that the body has no input bound: the proxy sends it with inputTokensMax undefined, never 0 or the body's bytes, and reports no failure; null or a throw is still reported", async (t) => {
+  const { p, sent, before } = await proxy(t, policyWith(() => undefined));
+  await send(p.url, { model: 'other', input: 'hi' });
+  assert.equal(sent.length, 1, 'the request is still sent');
+  assert.ok('inputTokensMax' in before[0] && before[0].inputTokensMax === undefined, JSON.stringify(before[0]));
+  const said = [];
+  const say = (message) => said.push(message);
+  assert.equal(host.inputTokensMaxOf(policyWith(() => undefined), {}, '{"a":"é"}', say), undefined);
+  assert.deepEqual(said, [], 'no bound is an answer, not a failure');
+  for (const overhead of [() => null, () => { throw new Error('unreadable'); }]) assert.equal(host.inputTokensMaxOf(policyWith(overhead), {}, '{}', say), undefined);
+  assert.equal(said.length, 2, 'a figure that could not be read is reported');
+  assert.equal(host.inputTokensMaxOf(policyWith(() => 0), {}, '{"a":"é"}', say), 10, 'a 0 is a figure: the bytes alone');
+});
+
 test("providerInputOverhead holds each provider's figures in one place: Anthropic's tool-use prompt and per-image maximum, and OpenAI's per-image maximum", () => {
   assert.equal(typeof host.providerInputOverhead, 'function', 'exported from the host module');
   const of = host.providerInputOverhead;

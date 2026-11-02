@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkBranch, NO_TOOL_LIST } from "../dist/index.js";
-import { BRANCH, HOST_TOOLS, NOTE_ID, OLD_NOTE, RUN, cleanFiles, index, memo, note, skill, workflow } from "./support.mjs";
+import { BRANCH, HOST_TOOLS, NOTE_ID, OLD_NOTE, RUN, cleanFiles, index, memo, note, readme, skill, workflow } from "./support.mjs";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
@@ -196,6 +196,86 @@ test("a secret's value is printed nowhere: not in a file's name, not in the bran
     assert.match(out.stdout, /\[redacted\]/, "control: the problems are reported, redacted");
     assert.equal((out.stdout + out.stderr).includes(value), false, `${json ? "JSON" : "text"} output holds the value`);
   }
+});
+
+test("a value refused in a path, the branch's name or a detail, in hex of any case or base64, is printed in neither report", async (t) => {
+  const value = "Zq9sEcReT77xKp";
+  const hex = Buffer.from(value).toString("hex");
+  const b64 = Buffer.from(value).toString("base64url");
+  const files = {
+    ...cleanFiles(),
+    [`memos/${RUN}.md`]: memo({ proposed: ["learnings/L-7c21e0a4b9d3.md (new)", ".agents/skills/ (new)", "workflows/ (new)"] }),
+    [`.agents/skills/${hex}/SKILL.md`]: skill(),
+    [`workflows/${hex}/workflow.json`]: workflow(),
+    [`workflows/${hex}/README.md`]: readme,
+    [`notes/${hex.toUpperCase()}.txt`]: "a file named for a secret\n",
+  };
+  const { dir, tools } = await repo(t, files, { branch: `runs/${b64}` });
+  for (const json of [true, false]) {
+    const out = cli(dir, ["check", "--base", "main", "--tools", tools, "--refuse-values-from-env", "STORE_PASS", ...(json ? ["--json"] : [])], { STORE_PASS: value });
+    assert.equal(out.status, 1, out.stdout + out.stderr);
+    const printed = out.stdout + out.stderr;
+    for (const form of [value, hex, b64]) assert.equal(printed.toLowerCase().includes(form.toLowerCase()), false, `${json ? "JSON" : "text"} output holds ${form}`);
+    if (!json) continue;
+    const named = found(JSON.parse(out.stdout));
+    for (const problem of [["secret_value", undefined], ["secret_value", ".agents/skills/[redacted]/SKILL.md"], ["skill", ".agents/skills/[redacted]/SKILL.md"], ["secret_value", "workflows/[redacted]/workflow.json"], ["secret_value", "notes/[redacted].txt"]]) {
+      assert.ok(named.some(([rule, path]) => rule === problem[0] && path === problem[1]), `${JSON.stringify(problem)} in ${JSON.stringify(named)}`);
+    }
+  }
+});
+
+test("a value that holds another refused value is redacted whole, whichever is named first", async (t) => {
+  const [short, long] = ["abcdefgh", "abcdefgh-private-suffix"];
+  const hex = Buffer.from(long).toString("hex");
+  const files = { ...cleanFiles(), [`memos/${RUN}.md`]: memo({ proposed: ["learnings/L-7c21e0a4b9d3.md (new)", ".agents/skills/ (new)", "workflows/find-policies/ (new)"] }), [`.agents/skills/${hex}/SKILL.md`]: skill() };
+  const { dir, tools } = await repo(t, files);
+  for (const json of [true, false]) {
+    const out = cli(dir, ["check", "--base", "main", "--tools", tools, "--refuse-values-from-env", "STORE_PASS,STORE_KEY", ...(json ? ["--json"] : [])], { STORE_PASS: short, STORE_KEY: long });
+    assert.equal(out.status, 1, out.stdout + out.stderr);
+    const printed = out.stdout + out.stderr;
+    for (const form of [long, "private-suffix", hex, Buffer.from("-private-suffix").toString("hex")]) assert.equal(printed.includes(form), false, `${json ? "JSON" : "text"} output holds ${form}`);
+    if (json) assert.ok(found(JSON.parse(out.stdout)).some(([rule, path]) => rule === "secret_value" && path === ".agents/skills/[redacted]/SKILL.md"), out.stdout);
+  }
+});
+
+test("a value that squeezes to nothing leaves both reports readable", async (t) => {
+  const { dir, tools } = await repo(t);
+  for (const json of [true, false]) {
+    const out = cli(dir, ["check", "--base", "main", "--tools", tools, "--refuse-values-from-env", "STORE_PASS", ...(json ? ["--json"] : [])], { STORE_PASS: " ".repeat(8) });
+    if (json) assert.ok(JSON.parse(out.stdout).problems.every((p) => /^[a-z_]+$/.test(p.rule)), out.stdout);
+    else {
+      const [head, ...lines] = out.stdout.trimEnd().split("\n");
+      assert.match(head, /: (ok|\d+ problems?)$/, out.stdout);
+      for (const line of lines) assert.match(line, /^ {2}[a-z_]+ {2}/, out.stdout);
+    }
+  }
+});
+
+/** Checks a branch that adds `path`, outside the layout, with STORE_PASS set to `value`: the path is refused, neither
+ *  report holds any of `forms`, and the JSON report names the path as [redacted], whole. */
+async function refusedWhole(t, value, path, forms) {
+  const { dir, tools } = await repo(t, { ...cleanFiles(), [path]: "a file named for a secret\n" });
+  for (const json of [true, false]) {
+    const out = cli(dir, ["check", "--base", "main", "--tools", tools, "--refuse-values-from-env", "STORE_PASS", ...(json ? ["--json"] : [])], { STORE_PASS: value });
+    assert.equal(out.status, 1, out.stdout + out.stderr);
+    const printed = (out.stdout + out.stderr).toLowerCase();
+    for (const form of forms) assert.equal(printed.includes(form.toLowerCase()), false, `${json ? "JSON" : "text"} output holds ${form}`);
+    if (json) assert.deepEqual(found(JSON.parse(out.stdout)), [["secret_value", "[redacted]"], ["outside_layout", "[redacted]"]], out.stdout);
+    else assert.match(out.stdout, /^ {2}secret_value {2}\[redacted\] {2}its path holds/m, out.stdout);
+  }
+}
+
+test("a path holding a value percent-encoded, in mixed case, is refused and printed whole as [redacted]", async (t) => {
+  const value = "Zq9sEcReT77xKp";
+  const percent = [...Buffer.from(value)].map((byte, at) => `%${byte.toString(16)[at % 2 ? "toLowerCase" : "toUpperCase"]()}`).join("");
+  assert.match(percent, /^%5A%71%39%73%45%63/);
+  await refusedWhole(t, value, `learnings/${percent}.md`, [value, Buffer.from(value).toString("hex"), percent]);
+});
+
+test("a path holding a value split by whitespace is refused and printed whole as [redacted]", async (t) => {
+  const value = "Zq9sEcReT77xKp";
+  const split = "Zq9s EcRe T77x Kp";
+  await refusedWhole(t, value, `notes/${split}.txt`, [value, Buffer.from(value).toString("hex"), split, "EcRe T77x"]);
 });
 
 test("over the change cap, no body is read: the count comes first", async (t) => {

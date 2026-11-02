@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { useEffect, useState } from "react";
 import { AgentEditor } from "@/components/AgentEditor";
+import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { RunDetail } from "@/components/RunDetail";
 import { RunGraphView } from "@/components/RunGraphView";
 import { Shell } from "@/components/Shell";
@@ -96,4 +97,6 @@ export const EditorProblems: Story = {
     return editor(workflowAgent("KYB onboarding", kybWorkflow, 7), JSON.stringify(broken, null, 2));
   },
 };
+// History's View: a past revision's workflow, read-only, marked against the current one.
+export const PastRevisionReadOnly: Story = { render: () => <Shell active="agents"><div className="p-6"><WorkflowEditor readOnly text={JSON.stringify(kybRev6, null, 2)} onText={() => {}} base={kybWorkflow} baseLabel="rev 7, the current one" /></div></Shell> };
 export const EditorBrokenJson: Story = { render: () => editor(workflowAgent("KYB onboarding", kybWorkflow, 7), JSON.stringify(kybWorkflow, null, 2).replace('"label": "cross-check",', '"label": "cross-check"')) };

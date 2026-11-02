@@ -286,7 +286,7 @@ test("pi's confinement holds for another harness's read: a link out of the works
   assert.doesNotMatch(read[0], /not for the agent/);
 });
 
-test("a capped run whose spend became unknown (a request cut by a crash) refuses its next request: failed, spend_cap_reached", { timeout: 90_000 }, async (t) => {
+test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("capped-cut", { harness: "claude-agent", instructions: `Cut until ${go}.` }))).status, 201);
@@ -299,10 +299,10 @@ test("a capped run whose spend became unknown (a request cut by a crash) refuses
   }
   await writeFile(go, "");
   await killRun(data, runId);
-  await follow(api, runId, ["failed"], { deadlineMs: 55_000 });
+  // Priced cases, and a cut request that leaves no room, are harness-cap.test.mjs's.
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 55_000 });
   const ended = (await api("GET", `/runs/${runId}`)).body;
-  assert.deepEqual([ended.status, ended.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(ended));
-  assert.match(ended.error.message, /spent is unknown/);
+  assert.deepEqual([ended.status, ended.result?.final_answer], ["completed", "After the cut."], JSON.stringify(ended.error));
 });
 
 // Three runs in turn, each followed for up to 55 s.

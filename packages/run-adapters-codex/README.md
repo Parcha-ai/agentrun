@@ -39,6 +39,15 @@ const runNode = createHarnessRunner(
 - **A private, empty machine.** A session runs in its own directories with an empty working directory. Codex's
   environment is an allowlist (`PATH`, `LANG`, `TZ`, its own homes and the proxy key); nothing else of the host's
   reaches it, and its process group ends with the session.
+- **The host's skills, and no others.** `codexAdapter({ skills: [{ name, files }] })`: Codex lists each skill to the model
+  by its name and description, and the model reads its `SKILL.md` and the files it names with `read_skill_file` (it has
+  no shell). The skills are written into the session's `CODEX_HOME` at the start of every drive, where Codex lists a
+  user's skills even in a turn with its built-ins off (it lists none from a working directory's `.agents/skills` there).
+  Codex's bundled skills (imagegen, openai-docs, skill-creator, skill-installer, ...) are off in every session, with
+  skills or without. The skills are checked when the adapter is made, by `skillProblems` of `@parcha/agentrun-adapters`,
+  the Claude adapter's check: a lowercase name, a `SKILL.md` whose front matter names it and describes it, plain
+  relative paths, 1 MiB in all. Codex itself skips a skill with no front matter or no description and lists one under
+  its front matter's name, so each of those is refused here instead.
 - **Durable.** A session's records are in the store the host lends (Codex's rollout mirrored line by line, every tool
   call an effect recorded before it runs). A session a process died inside resumes from its records: a `safe` tool runs
   again, a `never` tool's cut-off call is reported to the model as interrupted and never repeated.

@@ -20,7 +20,7 @@ import {
 	isReservedLabel,
 } from "./box.ts";
 import { adaptChild } from "./child.ts";
-import { refuseNetworkFields } from "./network.ts";
+import { refuseMounts, refuseNetworkFields } from "./network.ts";
 
 const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin";
 const RECORD_FILE = "box.json";
@@ -420,8 +420,8 @@ function unsupportedField(spec: BoxSpec): string | undefined {
 /**
  * Boxes that are directories on this machine: no isolation, no account, for development and for tests.
  *
- * A spec that names an `image`, a `snapshot`, `cpus`, `memoryMb`, a `gpu`, a `region` or an `isolation` other than
- * `none` is refused with `unsupported`: a directory cannot give them. A detached watchdog ends a box when its
+ * A spec that names an `image`, a `snapshot`, `cpus`, `memoryMb`, a `gpu`, a `region`, any `mounts` or an `isolation`
+ * other than `none` is refused with `unsupported`: a directory cannot give them. A detached watchdog ends a box when its
  * lifetime has passed, whatever happened to the process that created it. `destroy` returns once the processes it killed
  * are gone (up to five seconds). On Linux `destroy` and the watchdog end the
  * process group of every program the box started and that still runs, and every process that carries the box's marker
@@ -462,6 +462,9 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 			}
 			const refusedNetwork = refuseNetworkFields(spec, "local");
 			if (refusedNetwork !== undefined) return err(refusedNetwork);
+			// A local box shares this machine's files: a mount would bind nothing and promise a separation it does not have.
+			const refusedMounts = refuseMounts(spec, "local");
+			if (refusedMounts !== undefined) return err(refusedMounts);
 			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {
 				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
