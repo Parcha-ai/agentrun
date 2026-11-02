@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { releasePackageNames, releasePackages } from './release-preflight.mjs';
+import { ownVersionPackages, releasePackageNames, releasePackages } from './release-preflight.mjs';
 import { buildOverrides, findDrift } from './pi-family-pins.mjs';
 import { isMain } from './is-main.mjs';
 
@@ -108,7 +108,9 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
     assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
     for (const pkg of plan.packages) {
       assert.equal(pkg.name, releasePackageNames[pkg.directory]);
-      assert.match(pkg.version, /^\d+\.\d+\.\d+-beta\.\d+$/);
+      // A package on its own version line (@parcha/agentrun) carries a plain version; every other one the workspace's beta.
+      const own = ownVersionPackages.includes(pkg.directory);
+      assert.match(pkg.version, own ? /^\d+\.\d+\.\d+$/ : /^\d+\.\d+\.\d+-beta\.\d+$/, `${pkg.name}@${pkg.version} is not on its version line (${own ? 'x.y.z' : 'x.y.z-beta.N'})`);
     }
     const results = [];
     for (const pkg of plan.packages.filter(pkg => selected === 'all' || selected === pkg.directory)) {
