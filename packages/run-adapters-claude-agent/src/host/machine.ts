@@ -1,7 +1,8 @@
 // The local session machine, written for AgentRun: where a session's Claude Agent CLI runs when the host runs it on its
 // own box (an operator's machine, or a sandbox box the host runs in). Nothing here assumes where that is:
-//  - the session gets private directories under its own directory (home, config, tmp, cache; mode 0700), and an empty
-//    working directory (`work`), never the host's workspace;
+//  - the session gets private directories under its own directory (home, config, tmp, cache; mode 0700). Its working
+//    directory is the host's workspace when the host names one (`cwd`), where the host's file tools write, and otherwise
+//    an empty one of its own (`work`). The CLI keeps nothing there: its state is in the private directories;
 //  - a child's environment is an allowlist: PATH, LANG and TZ from this process, plus what the harness names (its
 //    homes, and the per-session proxy key). Nothing else is inherited, so no provider key, token, sign-in or another
 //    session's state reaches it;
@@ -12,7 +13,7 @@
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { isAbsolute, join, normalize } from "node:path";
+import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-adapters/host";
 import type { AcquireMachine, CacheDir, KillSignal, MachineSpawn, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
@@ -39,6 +40,8 @@ export type ConfineChild = (child: Readonly<ChildCommand>) => ChildCommand;
 export interface LocalMachineOptions {
   /** The session's own directory. The machine makes its private directories in it. */
   dir: string;
+  /** The CLI's working directory: the host's workspace (absolute), where its file tools confine. Default `<dir>/work`. */
+  cwd?: string;
   /** Start every child of the session (the CLI) under the host's confinement. */
   confine?: ConfineChild;
   /** How a child is tied to this process (default what the machine supports; tests force the shim). */
@@ -148,6 +151,9 @@ export interface LocalSessionMachine extends SessionMachine {
   start(options: MachineSpawn): MachineChild;
 }
 
+/** Whether `path` is `base` or below it. */
+const inside = (path: string, base: string): boolean => path === base || path.startsWith(base + sep);
+
 /** A machine factory for sessions under `options.dir`: each acquire makes the directories and starts a proxy. */
 export function localMachine(options: LocalMachineOptions): AcquireMachine {
   const from = options.env ?? process.env;
@@ -157,8 +163,11 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     if (!isAbsolute(base)) throw new Error("agentrun-claude-agent: the session directory must be an absolute path");
     mkdirSync(base, { recursive: true, mode: 0o700 });
     const dirs = Object.fromEntries(DIRS.map((d) => [d, join(base, d)])) as Record<CacheDir, string>;
-    const root = join(base, "work");
+    if (options.cwd !== undefined && !isAbsolute(options.cwd)) throw new Error("agentrun-claude-agent: the working directory must be an absolute path");
+    const root = options.cwd === undefined ? join(base, "work") : normalize(options.cwd);
     for (const dir of [...Object.values(dirs), root]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // git stops at the session's directory and, for a workspace outside it, at the workspace's parent.
+    const ceiling = [base, ...(inside(root, base) ? [] : [dirname(root)])].join(":");
 
     const route = model.options;
     const key = randomBytes(32).toString("base64url");
@@ -194,7 +203,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     let closed = false;
     const start = (spawnOptions: MachineSpawn): MachineChild => {
       if (closed) throw new Error("agentrun-claude-agent: the session machine is closed");
-      const proc = startChild(spawnOptions, from, root, base, options.confine, options.parentWatch);
+      const proc = startChild(spawnOptions, from, root, ceiling, options.confine, options.parentWatch);
       children.add(proc);
       void proc.exited.then(() => children.delete(proc));
       return proc;

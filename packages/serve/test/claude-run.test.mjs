@@ -2,11 +2,11 @@
 // fake Anthropic Messages endpoint on loopback (no key, no network): its requests go through the adapter's proxy to
 // ANTHROPIC_BASE_URL's origin with the native model id, each paid request is booked once at serve's catalog price, and
 // the CLI runs under the run's confinement (setpriv's no_new_privs, as pi's commands do, under the same user), in the
-// session's private directory, with no key and no server variable in its environment. A run whose process dies while a
+// run's workspace (its state in the session's private directory), with no key and no server variable in its environment. A run whose process dies while a
 // request is in flight resumes on the next process, books the cut request once as unknown, and leaves no CLI behind.
 // Every process the test reads is its own descendant.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -112,7 +112,7 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   assert.equal(field(status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
   const cwd = await readlink(`/proc/${cli}/cwd`);
-  assert.ok(cwd.startsWith(join(data, "runs", runId, "harness")), `the CLI works in the session's private directory, not the workspace: ${cwd}`);
+  assert.equal(cwd, realpathSync(join(data, "runs", runId, "work")), "the CLI works in the run's workspace, where its file tools write");
   const environ = (await readFile(`/proc/${cli}/environ`, "utf8")).split("\0").filter(Boolean);
   assert.ok(!environ.some((line) => line.includes(KEY)), "the key never reaches the CLI");
   assert.deepEqual(environ.filter((line) => /^(ANTHROPIC_API_KEY|AGENTRUN_[A-Z_]*)=/.test(line)).map((line) => line.split("=")[0]), [], "nor the server's variables");
@@ -131,6 +131,47 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   assert.equal(usage?.usd, Math.round(expected * 1e6) / 1e6, "each response's input and output at serve's catalog price");
   const left = (await filesUnder(join(data, "runs", runId, "work"))).filter((path) => path.startsWith(".claude") || path.endsWith(".jsonl"));
   assert.deepEqual(left, [], "no CLI file in the run's workspace");
+});
+
+test("a claude-agent run writes where its CLI works: a file at an absolute path in the CLI's working directory lands in the workspace, and no tool result names the server's data directory", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  // The model as sonnet answered in QA (F20): the file at its working directory's absolute path, then a path out of the
+  // workspace and a file that is not there, then its answer.
+  let cwd;
+  const fake = await fakeAnthropic({
+    reply: (r) => {
+      if (!r.tools.includes("mcp__hands__write")) return { text: "ok" };
+      cwd ??= /(?:Primary working directory|Working directory): (\/[^\s"\\]+)/.exec(JSON.stringify(r.body))?.[1];
+      const done = r.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "tool_result").length;
+      if (done === 0) return { tool: { name: "mcp__hands__write", input: { path: `${cwd}/hello.md`, content: "hello\n" } } };
+      if (done === 1) return { tool: { name: "mcp__hands__write", input: { path: "../escape.md", content: "out" } } };
+      if (done === 2) return { tool: { name: "mcp__hands__read", input: { path: "missing.md" } } };
+      return { text: "I wrote hello.md." };
+    },
+  });
+  t.after(() => fake.close());
+  const { api, data } = await claudeServe(t, fake);
+  assert.equal((await api("POST", "/agents", agent("claude-files", { harness: "claude-agent", model: `anthropic/${MODEL}`, tools: ["read", "write"] }))).status, 201);
+  const run = await api("POST", "/agents/claude-files/runs", { input: { content: "Write a file called hello.md with one line saying hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 150_000 });
+  const work = join(data, "runs", runId, "work");
+  assert.ok(cwd, "the CLI told its model its working directory");
+  assert.equal(realpathSync(cwd), realpathSync(work), "the CLI's working directory is the run's workspace");
+  assert.equal(await readFile(join(work, "hello.md"), "utf8"), "hello\n", "the file is in the workspace");
+  assert.deepEqual(await filesUnder(work), ["hello.md"], "and nothing else: the CLI keeps no file of its own there");
+  const writes = rows.filter((r) => r.kind === "tool_result" && r.tool_name === "write");
+  assert.equal(writes[0]?.tool_status, "success", `the first write succeeds: ${JSON.stringify(writes[0])}`);
+  // What the model was told of each call: the CLI sends each tool's result back in the next request.
+  const results = fake.messages().flatMap((m) => m.messages ?? []).flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "tool_result").map((b) => (Array.isArray(b.content) ? b.content.map((c) => c.text ?? "").join("") : String(b.content)));
+  const told = [...new Set(results)];
+  assert.ok(told.some((text) => /escape\.md: outside the workspace/.test(text)), `the path out is refused: ${told.join(" | ")}`);
+  assert.ok(told.some((text) => /missing\.md/.test(text) && /ENOENT|no such file/i.test(text)), `the missing file is named: ${told.join(" | ")}`);
+  for (const root of new Set([data, realpathSync(data)])) {
+    assert.deepEqual(told.filter((text) => text.includes(root)), [], "no tool result names the server's data directory");
+    // A row's summary quotes the call's own arguments (the model's absolute path, here): its result is the tool's words.
+    assert.deepEqual(rows.filter((r) => r.kind === "tool_result" && String(r.tool_result_preview ?? "").includes(root)).map((r) => r.tool_result_preview), [], "nor does any tool result on the timeline");
+  }
 });
 
 test("a claude-agent run whose process dies while a request is in flight resumes on the next process: the cut request booked once as unknown, a chat sent meanwhile answered, and no CLI left behind", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
