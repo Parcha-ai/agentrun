@@ -4,7 +4,8 @@
 export type RunStatus = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled" | "paused";
 export type RunState = "working" | "waiting" | "idle";
 
-export type ApiError = { code: string; message: string; retryable: boolean; request_id?: string };
+/** `details`: what the server says beyond the message, by code (a 409 `agent_not_runnable` names the harness or box it lacks). */
+export type ApiError = { code: string; message: string; retryable: boolean; request_id?: string; details?: Record<string, unknown> };
 
 /** `source` (a serve extension): "reported" when every part of the cost is a provider's own report, else "estimate".
  *  An older server leaves it out, and then `basis` says whether the number is an estimate. */
@@ -29,7 +30,12 @@ export type Run = {
   cost: Cost | null;
   archived_at: string | null;
   poll_after_ms?: number;
+  /** A workflow run that escalated: it completed, and waits for a person to review it (`kind`, the node it stopped
+   *  at, and why). Null or absent on every other run. */
+  review?: RunReview | null;
 };
+
+export type RunReview = { kind: string | null; node: string | null; reason: string; at?: string };
 
 export type TimelineKind =
   | "user_message" | "thinking" | "tool_use" | "tool_result" | "waiting" | "usage" | "final_answer" | "phase" | "decision" | string;
