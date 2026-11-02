@@ -64,6 +64,14 @@ export const REQUEST_COST_PENDING = "agentrun.request_cost_pending";
 /** The cost (`usd`, or null when unknown) of an answer written earlier with its cost pending: it closes one pending cost
  *  and adds to the run's cost. It is not a request of its own: the answer already counted that. */
 export const REQUEST_COST_LATE = "agentrun.request_cost_late";
+/** What a paid tool's call charged, written apart from any request as the tool reports it: `tool` and `charged_by` name
+ *  it, `usd` is the charge, or null when the call may have charged and did not say how much. It adds to the run's cost,
+ *  which is then unknown on a null, and shows as a row of its own; it is no model request. */
+export const TOOL_COST = "agentrun.tool_cost";
+/** A paid tool's call marked before it is sent (`call`, and `heldUsd`, the most it is held to charge): the TOOL_COST of
+ *  the same `call` settles it. Unsettled, it is in flight while the run is; once the run is settled it was cut (a crash),
+ *  and counts at its held figure, unknown without one, as the cap counts a cut model request. */
+export const TOOL_STARTED = "agentrun.tool_started";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
 const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
@@ -139,6 +147,10 @@ function createMeter() {
   // whether its answer's tokens were unknown: its late cost's usage then stands in for them).
   let known = 0;
   let unknown = 0;
+  // Paid tool calls whose charge is in the cost (TOOL_COST).
+  let charges = 0;
+  // Paid tool calls marked and not yet settled, by call: their held figures.
+  const held = new Map<string, unknown>();
   const pending: boolean[] = [];
   const addCost = (cost: unknown) => (typeof cost === "number" && Number.isFinite(cost) ? (known += cost) : (unknown += 1));
   let marked = 0;
@@ -161,7 +173,7 @@ function createMeter() {
   };
   const models = new Map<string, number>();
 
-  function push(entry: EntryLike): "answer" | "mark" | undefined {
+  function push(entry: EntryLike): "answer" | "mark" | "charge" | undefined {
     const message = entry.model?.[0];
     const data = obj(entry.data);
     if (entry.kind === REQUEST_REFUSED) {
@@ -180,6 +192,13 @@ function createMeter() {
       compactionOpen = false;
       addCost(data?.usd);
       addTokens(tokensOf(data?.usage));
+    } else if (entry.kind === TOOL_STARTED) {
+      held.set(str(data?.call) ?? `#${held.size}`, data?.heldUsd);
+    } else if (entry.kind === TOOL_COST) {
+      held.delete(str(data?.call) ?? "");
+      charges += 1;
+      addCost(data?.usd);
+      return "charge";
     } else if (entry.kind === REQUEST_COST_PENDING) {
       // The answer just before it was counted as a cost unknown: it is one still to come.
       if (unknown > 0) (unknown -= 1), pending.push(lastUnmetered);
@@ -215,16 +234,18 @@ function createMeter() {
   }
 
   /** The usage row's count and cost; undefined while there is nothing to count. `settled`: nothing is running. */
-  function usage(settled: boolean): { usd: number | null; requests: number } | undefined {
+  function usage(settled: boolean): { usd: number | null; requests: number; charges: number } | undefined {
     // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
     // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
     // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
     // process that ended.
     const open = (flying: boolean) => (flying && !settled ? 1 : 0);
     const cut = marked - open(inFlight) > answered || compacting - open(compactionOpen) > compactions;
-    if (!requests && !compactions && !cut) return undefined;
+    const cutCalls = settled ? [...held.values()] : [];
+    if (!requests && !compactions && !cut && !charges && !cutCalls.length) return undefined;
+    const sum = cutCalls.reduce<number>((total, figure) => total + (typeof figure === "number" && Number.isFinite(figure) ? figure : NaN), known);
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
-    return { usd: unknown > 0 || pending.length > 0 || cut ? null : Math.round(known * 1e6) / 1e6, requests: count };
+    return { usd: unknown > 0 || pending.length > 0 || cut || Number.isNaN(sum) ? null : Math.round(sum * 1e6) / 1e6, requests: count, charges: charges + cutCalls.length };
   }
 
   /** The counts of a run that ended: a request it cut has unknown tokens. */
@@ -339,6 +360,12 @@ function createProjector(options: TimelineOptions) {
     const metered = meter.push(entry);
     if (metered === "mark") {
       // A request's mark or cost, or pi's answer to a request that never left: counted, nothing to show.
+    } else if (metered === "charge") {
+      // A paid tool's charge: counted in the cost, and shown on a line of its own.
+      const data = obj(entry.data);
+      const [tool, by, usd] = [str(data?.tool) ?? "a tool", str(data?.charged_by) ?? "its provider", data?.usd];
+      const amount = typeof usd === "number" && Number.isFinite(usd) ? dollars(usd) : "an unknown amount";
+      add(make("phase", conv, base, { summary: `Tool cost: ${by} charged ${amount} for ${tool}`, tool_name: tool, tool_use_id: str(data?.call) ?? null }));
     } else if (metered === "answer" && message) {
       if (message.stopReason === "error") {
         const why = str(message.errorMessage) ?? "unknown error";
@@ -463,9 +490,10 @@ function createProjector(options: TimelineOptions) {
   function usage(): TimelineEvent | undefined {
     const counted = meter.usage(options.settled === true);
     if (!counted || root === undefined) return undefined;
-    const { usd, requests } = counted;
+    const { usd, requests, charges } = counted;
+    const paid = charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : "";
     return make("usage", root, `${root}:usage`, {
-      summary: `Cost so far: ${usd === null ? "unknown" : dollars(usd)} over ${requests} model request${requests === 1 ? "" : "s"}`,
+      summary: `Cost so far: ${usd === null ? "unknown" : dollars(usd)} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
       usage: { usd, requests },
     });
   }

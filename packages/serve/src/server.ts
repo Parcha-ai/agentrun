@@ -25,10 +25,11 @@ import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./ru
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
+import { toolSpentIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
-import { SECRET_NAMES, withSecrets } from "./secrets.js";
+import { readStored, SECRET_NAMES, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
+import { keyOf, SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
 import { type ServerLock, takeServerLock } from "./server-lock.js";
@@ -205,6 +206,14 @@ export function workflowTitle(name: string, input: Record<string, unknown>): str
   return words.length ? `${name}${/[?!:.]$/.test(name) ? "" : ":"} ${words.join(", ")}` : name;
 }
 
+/** The server's reading of `base` with its secrets, saved keys among them, and its capabilities on it, the harnesses'
+ *  offers included: made at the start and again at each save or delete of a key, so a key saved later can make a harness
+ *  available with no restart. */
+export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number) {
+  const env = withSecrets(base);
+  return { env, caps: capabilities(env, maxRuns, await harnessOffers(env)) };
+}
+
 export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
   const models = modelSource(env);
   return {
@@ -217,13 +226,14 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(env),
     models,
-    /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing. */
-    tools: toolsView(env),
+    /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing;
+     *  `key`, the tool key that unlocks it (tool-keys.ts), when one does. */
+    tools: toolsView(env).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
     /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
     secrets: {
       names: [...SECRET_NAMES],
       handoff: "pipe",
-      condition: "Started by its launcher (the package's agentrun-serve, the image's entrypoint), the server takes each secret named here over a pipe and holds it in memory only, and every run's process gets all of them but the server's own token and seal key over a pipe of its own, whatever its harness and tools: none of them is in any process's environment or command line. The launcher runs before any run's process exists; the image starts it as PID 1. Started another way (node dist/cli.js), the server reads them from its environment, where a process of its user can read them.",
+      condition: "Started by its launcher (the package's agentrun-serve, the image's entrypoint), the server takes each secret named here over a pipe and holds it in memory only, and every run's process gets all of them but the server's own token and seal key, and a tool key only when its revision names a tool the key unlocks, over a pipe of its own, whatever its harness: none of them is in any process's environment or command line. The launcher runs before any run's process exists; the image starts it as PID 1. Started another way (node dist/cli.js), the server reads them from its environment, where a process of its user can read them.",
       limit: "In memory is not out of reach: a process of the same user can read another's memory (/proc/<pid>/mem) where the kernel lets it attach. Linux's Yama ptrace_scope of 1 or more refuses that to all but a process's own ancestors; a host at 0 exposes the secrets to a run's own code. A run's process holds its model keys in memory, since it calls the model itself. A harness's CLI (codex, claude-agent) holds a key of its own for its session's model proxy in its environment: not a provider's key, but one a process of the same user could spend through that run's proxy while the session lives. Started as the package's bin on a host, until it execs, the launcher and any subshell it forks show the caller's environment, secrets included, to a process of the same user (/proc keeps a process's environment as it was at its exec). A run's process gets its secrets over a socket, read and closed as it starts; another process can take a socket only through pidfd_getfd, which the same ptrace rule refuses.",
     },
     /** What a workflow revision's run gets: each model node runs on the model of its tier (`models.fast`,
@@ -241,7 +251,7 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: false, read: true, range: false, during_run: true },
       quotes: false,
-      usage: { basis: "estimate", meters: ["tokens"] },
+      usage: { basis: "estimate", meters: ["tokens", "tools"] },
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
       browser: "none",
@@ -339,8 +349,24 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  const env = withSecrets({ ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
-  const caps = capabilities(env, maxRuns, await harnessOffers(env));
+  const base = { ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
+  // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
+  // call each the server's, and none could be deleted.
+  const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
+  // A stored key that does not open is said once at the start, never a refusal to start.
+  toolKeys.view();
+  // The server's reading, saved keys with it (from readStored below), and its capabilities: made again at each save or
+  // delete of a key, the one writer of its file, so capabilities, the harnesses' offers, save checks and run checks see
+  // it with no restart and no request opening the file. A reading a later write overtook is dropped. The first is made
+  // once saved keys are read (below), so the offers are checked once at the start.
+  let env = withSecrets(base);
+  let caps!: Awaited<ReturnType<typeof readingOf>>["caps"];
+  let latest = 0;
+  const keysChanged = async () => {
+    const mine = ++latest;
+    const next = await readingOf(base, maxRuns);
+    if (mine === latest) ({ env, caps } = next);
+  };
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts). No run uses one yet: the log says which this server has.
   const boxes = await boxRegistry(env);
   log?.(logLine("boxes", boxesLog(boxes.offers(), enabledBoxes(env))));
@@ -367,10 +393,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await rename(`${keptFile}.partial`, keptFile);
       }));
   const host = options.host ?? "127.0.0.1";
-  const toolKeys = new ToolKeys(data, env, (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
-  // A stored key that does not open is said once at the start, never a refusal to start.
-  toolKeys.view();
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
+  // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
+  // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
+  const unread = readStored((name) => toolKeys.value(name));
+  await keysChanged();
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
 
@@ -626,6 +653,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
 
+  // What each run's paid tools charged, from its store: kept for a run that ended (its store no longer changes), keyed
+  // by its end, so a run opened again and ended again is read again. A store that cannot be read leaves it all tokens.
+  const toolCharges = new Map<string, number | null>();
+  const toolsOf = (row: { id: string; state: string; endedAt?: string | null }) => {
+    const kept = toolCharges.get(`${row.id} ${row.endedAt}`);
+    if (kept !== undefined) return kept;
+    let charged: number | null = 0;
+    try {
+      charged = toolSpentIn(join(data, "runs", row.id, "store", "run.sqlite"));
+    } catch {}
+    if (row.state !== "running") toolCharges.set(`${row.id} ${row.endedAt}`, charged);
+    return charged;
+  };
+
   async function usage(url: URL) {
     const now = new Date();
     const fromText = url.searchParams.get("from");
@@ -643,18 +684,24 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const live = row.state === "running" ? await runs.get(row.id) : null;
       const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
+      // By meter, what a run's paid tools charged (monid's) is `tools`, the rest `tokens`; a run of unknown cost is
+      // unpriced on the meter that made it so.
+      const tools = group === "meter" && usd !== 0 ? toolsOf(row) : 0;
+      const parts: [string, number | null][] = usd === null ? [[tools === null ? "tools" : key, null]] : tools ? [[key, usd - tools], ["tools", tools]] : [[key, usd]];
       // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
       // never passes as $0.
-      const line = lines.get(key) ?? lines.set(key, { usd: 0, unpriced: 0 }).get(key)!;
-      for (const sum of [line, total]) {
-        if (usd === null) sum.unpriced++;
-        else sum.usd += usd;
+      for (const [name, part] of parts) {
+        const line = lines.get(name) ?? lines.set(name, { usd: 0, unpriced: 0 }).get(name)!;
+        if (part === null) line.unpriced++;
+        else line.usd += part;
       }
+      if (usd === null) total.unpriced++;
+      else total.usd += usd;
     }
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
       from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
-      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: "tokens" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
+      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
       account: null,
     };
   }
@@ -894,13 +941,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter) });
       }
       case "listToolKeys":
-        return send(res, 200, toolKeys.view());
+        return send(res, 200, toolKeys.view(caps.harnesses));
       case "saveToolKey":
         // Never through `idempotent`: its record keeps the body, and this body is the values.
         toolKeys.save(id, await bodyOf(req));
+        await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "deleteToolKey":
         toolKeys.remove(id);
+        await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
     }
     throw new ApiError("not_found", `no route ${path}`);
@@ -951,7 +1000,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     route(req, res, url, raw.slice(3)).catch(fail);
   });
   const port = options.port ?? DEFAULT_PORT;
-  await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done())));
+  await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done()))).catch((error: Error) => {
+    unread();
+    throw error;
+  });
   const address = server.address() as AddressInfo;
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...(options.allowHosts ?? [])].map((h) => `${h.toLowerCase()}:${address.port}`));
   // An address of every interface is reached on this machine at its loopback one.
@@ -971,6 +1023,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       await runs.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();
+      unread();
       lock.release();
     },
   };

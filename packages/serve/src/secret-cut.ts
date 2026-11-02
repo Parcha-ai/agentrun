@@ -5,12 +5,12 @@
 const SECRET_NAME = /(_API_KEY|_TOKEN)$|SECRET/i;
 export const REDACTED = "[redacted]";
 
-/** A cut of every value of `env`'s key-shaped variables (8 characters or more) out of a string, and out of every string
- *  in a JSON value, its field names included. */
-export function secretCut(env: NodeJS.ProcessEnv) {
+/** A cut of every value of each of `envs`' key-shaped variables (8 characters or more) out of a string, and out of every
+ *  string in a JSON value, its field names included. */
+export function secretCut(...envs: NodeJS.ProcessEnv[]) {
   // Every own name, enumerable or not: an environment object may hold a key it does not list.
-  const secrets = Object.getOwnPropertyNames(env)
-    .map((name) => [name, env[name]] as const)
+  const secrets = envs
+    .flatMap((env) => Object.getOwnPropertyNames(env).map((name) => [name, env[name]] as const))
     .filter(([name, value]) => SECRET_NAME.test(name) && typeof value === "string" && value.length >= 8)
     .map(([, value]) => value as string)
     // The longest first: a key that holds a shorter one is cut whole.

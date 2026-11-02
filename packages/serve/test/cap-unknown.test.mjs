@@ -12,8 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
-import { CAP_REFUSED_FIELD, capBefore, capModels, HELD_FIELD, HELD_USD, spentIn } from "../dist/cap.js";
+import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { CAP_REFUSED_FIELD, capBefore, capModels, HELD_FIELD, HELD_USD, spentIn, toolSpentIn } from "../dist/cap.js";
 import { agent, follow, serve } from "./support.mjs";
 
 const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
@@ -51,6 +51,24 @@ test("the spend read from a run's store is each known cost summed, a compaction'
   assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), refused])), 0.001, "a request the cap refused never left: it costs nothing");
   assert.equal(spentIn(join(tmpdir(), `cap-unknown-none-${process.pid}`, "run.sqlite")), 0, "no store yet: nothing spent");
   assert.equal(spentIn(storeOf(t, [])), 0, "an empty store: nothing spent");
+  const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", usd } });
+  assert.equal(Math.round(spentIn(storeOf(t, [started, answer({ total: 0.001 }), charged(0.003)])) * 1e6) / 1e6, 0.004, "a paid tool's charge is spent too");
+  assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), charged(null)])), null, "an unknown charge leaves the spend unknown");
+});
+
+test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the spend, the run's cost and /usage's tools; settled, at its charge alone", (t) => {
+  const marked = (heldUsd) => ({ kind: TOOL_STARTED, data: { tool: "monid.run", charged_by: "monid", call: "c1", heldUsd } });
+  const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", call: "c1", usd } });
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  const cut = [started, answer({ total: 0.001 }), marked(0.05)];
+  assert.equal(round(spentIn(storeOf(t, cut))), 0.051);
+  assert.equal(timelineOf(cut, { settled: true }).at(-1).usage.usd, 0.051, "the run's cost once it is settled");
+  assert.equal(toolSpentIn(storeOf(t, cut)), 0.05);
+  const settled = [...cut, charged(0.003)];
+  assert.equal(round(spentIn(storeOf(t, settled))), 0.004, "its charge, not both");
+  assert.equal(timelineOf(settled, { settled: true }).at(-1).usage.usd, 0.004);
+  assert.equal(toolSpentIn(storeOf(t, settled)), 0.003);
+  assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), marked(undefined)])), null, "cut with no figure: unknown, never $0");
 });
 
 test("a spend the store cannot say is unknown (null), never $0: a request a crash cut, a stopped answer, a cost that is not a number, a cut compaction, a cut request the cap's refusal follows", (t) => {

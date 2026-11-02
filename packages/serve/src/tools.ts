@@ -197,7 +197,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     effect: async (args, run) => webFetch(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), parallel: parallelOf(run.env), signal: run.signal }),
   },
   browser: browserTool,
-  // monid's catalog on one key (monid.ts): pi binds each under its wire name, `monid_discover` and the rest.
+  // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.
   "monid.discover": monidTool("discover"),
   "monid.inspect": monidTool("inspect"),
   "monid.run": monidTool("run"),

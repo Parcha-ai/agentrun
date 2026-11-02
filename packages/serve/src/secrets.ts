@@ -2,7 +2,9 @@
 // (launcher/agentrun-serve) hands them to serve over a pipe, and serve hands each run's process those it needs over a
 // pipe of its own; each side reads its pipe as this module loads, before anything else, and closes it. A value set on
 // process.env would be the default environment of every child, so none is: code that needs one asks `secret(name)`,
-// or gets an env object `withSecrets` made for its own use, which no spawn takes.
+// or gets an env object `withSecrets` made for its own use, which no spawn takes. In the server, a secret it was not
+// started with may be a tool key saved through the settings API (tool-keys.ts): read by the same name, opened when asked
+// for, and handed to a run's process over its pipe like the launcher's, at each launch.
 //
 // With no launcher (a test that starts the server in its own process), a secret set in the environment is read from it.
 import { closeSync, existsSync, readFileSync, readSync } from "node:fs";
@@ -72,16 +74,32 @@ function readExactly(fd: number, length: number): Buffer {
   }
 }
 
-/** A secret's value: as handed over, else (no launcher) as this process's environment has it now. */
-export const secret = (name: string): string | undefined => held.get(name) ?? process.env[name];
+/** The tool keys a person saved through the settings API (tool-keys.ts), each opened by name when asked for. Only the
+ *  server's process sets it, as it starts: a run's process gets those it needs over its pipe, as it gets the rest. */
+let stored: ((name: string) => string | undefined) | undefined;
+/** Where saved tool keys are read from; the answer unsets it, if it is still the one set (a server closing). */
+export function readStored(read: (name: string) => string | undefined): () => void {
+  stored = read;
+  return () => void (stored === read && (stored = undefined));
+}
 
-/** `env` with the secrets this process holds, for this process's own reading. Each secret is a property that does not
- *  enumerate: `env.NAME` reads it, while a spread of the object, or a spawn given it (Node builds a child's environment
- *  from its enumerable keys), leaves it out. */
-export const withSecrets = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+/** A secret this process was started with: as handed over, else (no launcher) as its environment has it now. */
+const own = (name: string): string | undefined => held.get(name) ?? process.env[name];
+
+/** A secret's value: this process's own, which wins (tool-keys.ts' `source: "server"` is exactly these), else a saved
+ *  tool key, opened now. One that does not open is absent, never a crash. */
+export const secret = (name: string): string | undefined => {
+  const value = own(name);
+  return value || (stored?.(name) ?? value);
+};
+
+/** `env` with the secrets this process holds, for this process's own reading: every one, or (`"own"`) only those it was
+ *  started with, none saved. Each secret is a property that does not enumerate: `env.NAME` reads it, while a spread of
+ *  the object, or a spawn given it (Node builds a child's environment from its enumerable keys), leaves it out. */
+export const withSecrets = (env: NodeJS.ProcessEnv, which: "all" | "own" = "all"): NodeJS.ProcessEnv => {
   const out: NodeJS.ProcessEnv = { ...env };
   for (const name of SECRET_NAMES) {
-    const value = secret(name);
+    const value = (which === "own" ? own : secret)(name);
     if (value !== undefined) Object.defineProperty(out, name, { value, enumerable: false, writable: false, configurable: false });
   }
   return out;

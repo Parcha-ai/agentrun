@@ -10,10 +10,16 @@
 // written on the request's end mark (request-start.ts), so a later process counts it the same. Nor can a spend no one
 // knows (a request a crash cut, a cost that is not a number) or a model whose output is priced and that has no output
 // ceiling be kept within a cap: under one, each refuses the request, never passes as $0.
+//
+// A paid tool's charge (monid.run's, monid.ts) is the run's spend too: booked in the run's store as a TOOL_COST, which
+// the run's cost and spentIn both count (an unknown one makes the spend unknown), and added to what the run's process
+// counts as spent (useSpend), so the next request's check sees it. Before each paid call, paidCall refuses it once the
+// spend has reached the cap or is unknown, and runs paid calls one at a time: a call passes the cap by its own charge
+// at most.
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-adapters/host";
-import { type EntryLike, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { type EntryLike, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
 /** A run's cap in USD, passed to its process. */
@@ -46,13 +52,13 @@ const refusedHere = (entry: EntryLike): boolean => {
   return message?.stopReason === "error" && typeof message.errorMessage === "string" && message.errorMessage.startsWith(`${SPEND_CAP_REACHED}:`);
 };
 
-/** The cost an entry adds to what a run spent, as the timeline counts it: a pi answer's total (none for one stopped before
- *  its end), and the usd of a cost written apart from an answer; 0 for anything else, or for a cost that is not a number
- *  (which makes the whole spend unknown, by the timeline's verdict). */
+/** The cost an entry adds to what a run spent, as the timeline counts it: a pi answer's total (none for one stopped
+ *  before its end), and the usd of a cost written apart from an answer, a paid tool's charge among them; 0 for anything
+ *  else, or for a cost that is not a number (which makes the whole spend unknown, by the timeline's verdict). */
 const costOf = (entry: EntryLike): number => {
   const message = entry.kind === "pi.assistant" ? (entry.model?.[0] as { stopReason?: unknown; usage?: { cost?: { total?: unknown } } } | undefined) : undefined;
   const cost = message ? (message.stopReason === "aborted" ? undefined : message.usage?.cost?.total)
-    : entry.kind === REQUEST_COST || entry.kind === REQUEST_COST_LATE ? (entry.data as { usd?: unknown } | undefined)?.usd : undefined;
+    : entry.kind === REQUEST_COST || entry.kind === REQUEST_COST_LATE || entry.kind === TOOL_COST ? (entry.data as { usd?: unknown } | undefined)?.usd : undefined;
   return typeof cost === "number" && Number.isFinite(cost) ? cost : 0;
 };
 
@@ -94,6 +100,8 @@ export function spentIn(storeFile: string): number | null {
   // What the cap held for each request, as its start mark says (undefined: it says none), a generation's and a summary's.
   const starts = { generation: [] as (number | undefined)[], compaction: [] as (number | undefined)[] };
   let marked = false;
+  // Each paid tool call marked and not settled, by call: what it was held at.
+  const calls = new Map<unknown, unknown>();
   try {
     for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) {
       const entry = JSON.parse(String((row as { record: string }).record)) as EntryLike;
@@ -101,6 +109,8 @@ export function spentIn(storeFile: string): number | null {
       // A request this cap refused never left, and costs nothing: its mark and pi's error entry for it (an older store
       // has the entry alone, which the timeline would count as answering an earlier request a crash cut).
       if (refusedHere(entry) || (entry.kind === REQUEST_STARTED && data[CAP_REFUSED_FIELD] === true)) continue;
+      if (entry.kind === TOOL_STARTED) calls.set(data.call, data[HELD_FIELD]);
+      if (entry.kind === TOOL_COST) calls.delete(data.call);
       if (entry.kind === REQUEST_STARTED) {
         marked = true;
         starts[data.request === "compaction" ? "compaction" : "generation"].push(figureOf(data[HELD_FIELD]));
@@ -119,6 +129,8 @@ export function spentIn(storeFile: string): number | null {
   } finally {
     db.close();
   }
+  // A paid tool call a crash cut (marked, never settled) counts at its held figure, settled by it here, as a cut request.
+  for (const [call, figure] of calls) entries.push({ kind: TOOL_COST, data: { call, usd: figureOf(figure) ?? null } });
   // A request still open is one a crash cut, with no answer and no end: it counts at what the cap held for it, as its start
   // mark says. Which start an answer closed the marks do not say when requests overlap, so each open one counts at one of
   // the largest figures, which bounds it above; any start without a figure (an older store) leaves them all cut, unknown.
@@ -138,6 +150,48 @@ export function spentIn(storeFile: string): number | null {
   if (usage === undefined) return 0;
   if (typeof usage.usd !== "number" || !Number.isFinite(usage.usd)) return null;
   return entries.reduce((sum, entry) => sum + costOf(entry), 0);
+}
+
+/** What the paid tools of the run whose store is `storeFile` charged, as its settled timeline counts them (a call a crash
+ *  cut at its held figure): /usage's `tools` meter. Null when a charge is unknown. */
+export function toolSpentIn(storeFile: string): number | null {
+  if (!existsSync(storeFile)) return 0;
+  const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
+  try {
+    const paid = db.prepare("SELECT record FROM entries WHERE json_extract(record, '$.kind') IN (?, ?) ORDER BY rowid").all(TOOL_STARTED, TOOL_COST);
+    const usage = timelineOf(paid.map((row) => JSON.parse(String(row.record)) as EntryLike), { settled: true }).find((row) => row.kind === "usage");
+    return usage ? (usage.usage?.usd ?? null) : 0;
+  } finally {
+    db.close();
+  }
+}
+
+/** The run's spend as its process counts it, for a paid tool: what it has spent (`spent`, model requests in flight held
+ *  at their worst case; null when unknown) and the charge a call adds (`add`). Set by the run's cap, on pi (capModels)
+ *  and on another harness (harness-app.ts); none without a cap. A run is one process, so one is set per process. */
+export type RunSpend = { cap: number; spent(): number | null | Promise<number | null>; add(usd: number | null): void };
+let runSpend: RunSpend | undefined;
+let paying: Promise<unknown> = Promise.resolve();
+export const useSpend = (spend: RunSpend | undefined): void => void (runSpend = spend);
+
+/** `call`, a paid tool's (`name`), under the run's cap: refused, in words that name the cap and never calling it, once
+ *  what the run has spent has reached the cap or is unknown; else run, one paid call at a time, so each check sees the
+ *  charge before it, and the charge it reports (`charge` of its result, undefined for none) joins the spend. With no
+ *  cap it just runs. */
+export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined): Promise<{ refused: string } | { result: T }> {
+  const spend = runSpend;
+  if (!spend) return { result: await call() };
+  const turn = paying.then(async () => {
+    const spent = await spend.spent();
+    if (spent === null) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of $${spend.cap} cannot be kept: the run is out of budget.` };
+    if (spent >= spend.cap) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. The run has spent $${spent.toFixed(6)}, which has reached its cap of $${spend.cap}: the run is out of budget.` };
+    const result = await call();
+    const usd = charge(result);
+    if (usd !== undefined) spend.add(usd);
+    return { result };
+  });
+  paying = turn.catch(() => undefined);
+  return turn;
 }
 
 /** The most output tokens one request may take: the model's ceiling, else its context window. A thinking budget can
@@ -279,6 +333,8 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     void count(answered, worst).finally(() => void (held -= worst));
     return answered;
   };
+  // A paid tool's check reads the spend with the requests in flight held at their worst case, and its charge joins it.
+  useSpend({ cap, spent: () => (spent === null ? null : spent + held), add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) });
   /** `options` with the request's worst case for its marks. */
   const carrying = <O>(options: O, worst: number): O => ({ ...options, [HELD_USD]: worst }) as O;
   const stream = (send: (model: Model<Api>, context: Context, options?: { maxTokens?: number }) => AssistantMessageEventStream) =>
