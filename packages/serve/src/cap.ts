@@ -220,6 +220,25 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
   };
 }
 
+/** A request's worst case at its model's price, as a cap holds it: its input (inputBound of its context, plus `overhead`,
+ *  what its provider adds server-side) at the dearer of its input and cache-write prices, and its output (`ceiling`, or the
+ *  request's own maxTokens when larger, clamped to what its context leaves; none for a ceiling of 0) at its output price.
+ *  Undefined when its input cannot be measured. */
+export async function requestWorst(overhead: (model: Model<Api>, context: Context) => number | undefined = piOverhead) {
+  const [{ calculateCost }, { clampMaxTokensToContext }] = await Promise.all([
+    import("@earendil-works/pi-ai"),
+    import("@earendil-works/pi-ai/api/simple-options"),
+  ]);
+  return (model: Model<Api>, context: Context, ceiling: number, options?: { maxTokens?: number }) => {
+    const transcript = context as unknown as Parameters<typeof clampMaxTokensToContext>[1];
+    const added = overhead(model, context);
+    if (added === undefined) return undefined;
+    const input = inputBound(JSON.stringify(context), added);
+    const output = ceiling === 0 ? 0 : clampMaxTokensToContext(model, transcript, Math.max(options?.maxTokens ?? 0, ceiling));
+    return worstOf(calculateCost, model)(input, output);
+  };
+}
+
 /** `models`, refusing each request whose worst case would take the run past `cap` after `spent` USD, and, under the cap,
  *  each request to a model in `unpriced` (one serve has no price for) or whose output is priced and that has no output
  *  ceiling, each whose input cannot be bounded, and every request once what the run has spent is unknown: `spent` null
@@ -228,19 +247,8 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
  *  request sent carries its worst case (HELD_USD) to the marks below, and one stopped before its end counts at it.
  *  `refused` (markRequests') writes the start mark of a refused model request before pi writes its error entry. */
 export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: () => Promise<void> } = {}): Promise<M> {
-  const [{ calculateCost, createAssistantMessageEventStream }, { clampMaxTokensToContext }] = await Promise.all([
-    import("@earendil-works/pi-ai"),
-    import("@earendil-works/pi-ai/api/simple-options"),
-  ]);
+  const [{ createAssistantMessageEventStream }, worstCase] = await Promise.all([import("@earendil-works/pi-ai"), requestWorst(overhead)]);
   let held = 0;
-  const worstCase = (model: Model<Api>, context: Context, ceiling: number, options?: { maxTokens?: number }) => {
-    const transcript = context as unknown as Parameters<typeof clampMaxTokensToContext>[1];
-    const added = overhead(model, context);
-    if (added === undefined) return undefined;
-    const input = inputBound(JSON.stringify(context), added);
-    const output = ceiling === 0 ? 0 : clampMaxTokensToContext(model, transcript, Math.max(options?.maxTokens ?? 0, ceiling));
-    return worstOf(calculateCost, model)(input, output);
-  };
   /** A request's worst case, or why the cap refuses it. */
   const judge = (model: Model<Api>, context: Context, options?: { maxTokens?: number }): { worst: number } | { why: string } => {
     if (unpriced.has(model.id)) return { why: noPrice(cap) };
