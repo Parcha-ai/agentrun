@@ -408,7 +408,17 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
   if (requireConsole) {
     const index = await readFile(join(consumer, 'node_modules/@parcha/agentrun-serve/dist/console/index.html'), 'utf8').catch(() => '');
     assert.match(index, /\ssrc="\.\/assets\/[^"]+\.js"/, 'the installed agentrun-serve has the console, dist/console/index.html');
-    receipt.checks.push('The installed agentrun-serve carries the console (dist/console/index.html); its files passed the same scans.');
+    // The console bundles third-party code; its notices ship beside it, one section per bundled package with its license
+    // text, and NOTICE points to them. React and the fonts are in every console bundle, so a notices file without them is not
+    // this bundle's.
+    const notices = await readFile(join(consumer, 'node_modules/@parcha/agentrun-serve/dist/console/THIRD-PARTY-NOTICES.txt'), 'utf8').catch(() => '');
+    assert.match(notices, /^Third-party software in the AgentRun console\n/, 'the installed agentrun-serve has the console\'s notices, dist/console/THIRD-PARTY-NOTICES.txt');
+    for (const name of ['react', 'react-dom']) assert.match(notices, new RegExp(`^${name} \\d+\\.\\d+\\.\\d+ \\(MIT\\)\\n\\n\\S`, 'm'), `the console's notices list ${name} with its license text`);
+    // Its fonts reach the bundle as assets a stylesheet imports, not as modules: their license is listed too.
+    assert.match(notices, /^@fontsource\/[a-z-]+ \d+\.\d+\.\d+ \(OFL-1\.1\)\n\n\S/m, "the console's notices list its fonts with their license text");
+    const serveNotice = await readFile(join(consumer, 'node_modules/@parcha/agentrun-serve/NOTICE'), 'utf8');
+    assert.match(serveNotice, /dist\/console\/THIRD-PARTY-NOTICES\.txt/, "agentrun-serve's NOTICE points to the console's notices");
+    receipt.checks.push('The installed agentrun-serve carries the console (dist/console/index.html) and its third-party notices (dist/console/THIRD-PARTY-NOTICES.txt, which NOTICE names); its files passed the same scans.');
   }
   assert.match((await offlineNode(['node_modules/@parcha/agentrun-learn/dist/cli.js', '--help'])).stdout, /^usage: agentrun-learn check /, 'the installed agentrun-learn bin prints its usage');
   // The reference example runs in the consumer as a stranger would run it: its pages are served by the browser's fake backend on
