@@ -12,7 +12,7 @@ test("read, fetch_page and web_fetch are replay-safe; write and edit never repla
   for (const tool of tools) assert.equal(tool.inputSchema.type, "object", `${tool.name} keeps pi's parameters`);
 });
 
-test("an error, a refusal and a write's result name a path in the workspace relative to it; a path beside it by ../; no other path, and no file's text, is changed", () => {
+test("an error, a refusal and a write's result name a path in the run's directory relative to the workspace (../ beside it); a path outside the run's directory stays as given", () => {
   const work = "/data/runs/01a/work";
   const real = "/real/data/runs/01a/work";
   const cases = [
@@ -22,10 +22,15 @@ test("an error, a refusal and a write's result name a path in the workspace rela
     [`ENOENT: no such file or directory, open '${real}/notes/three.md'`, "ENOENT: no such file or directory, open 'notes/three.md'"],
     [`Successfully wrote to ${work}/hello.md`, "Successfully wrote to hello.md"],
     [`in ${work}`, "in ."],
-    // Not the workspace: a longer name, the same name under another directory, and a path elsewhere.
-    ["/data/runs/01a/workers/a", "/data/runs/01a/workers/a"],
+    // In the run's directory beside the workspace, a longer name than work/ among them: relative to the workspace.
+    ["/data/runs/01a/workers/a", "../workers/a"],
+    ["/data/runs/01a/store/run.sqlite: outside the workspace", "../store/run.sqlite: outside the workspace"],
+    // Outside the run's directory: another run's, a longer name than the run's own, the same path under another
+    // directory, and a path elsewhere, each exactly as given.
+    ["/data/runs/01b/work/a.md: outside the workspace", "/data/runs/01b/work/a.md: outside the workspace"],
+    ["/data/runs/01ab/x", "/data/runs/01ab/x"],
     [`/x${work}/a`, `/x${work}/a`],
-    ["/srv/other/x.md: outside the workspace", "/srv/other/x.md: outside the workspace"],
+    ["/elsewhere/x.md: outside the workspace", "/elsewhere/x.md: outside the workspace"],
   ];
   for (const [given, said] of cases) assert.equal(workspaceRelative(given, [work, real]), said, given);
 });
