@@ -47,7 +47,7 @@ const optionalText = (args: Json, name: string): string | undefined => (args[nam
 const id = encodeURIComponent;
 const pick = (args: Json, keys: string[]): Json => Object.fromEntries(keys.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
 const without = (args: Json, keys: string[]): Json => Object.fromEntries(Object.entries(args).filter(([k]) => !keys.includes(k)));
-const runLink = (origin: string, run: string) => `${origin}/console/#/runs/${id(run)}`;
+const runLink = (origin: string, run: string) => `${origin}/#/runs/${id(run)}`;
 
 /** A route's JSON answer as a tool's result: the body as structured content and, for a client without it, as text; a
  *  refusal (4xx, 5xx) as an error result holding the route's error envelope. `extra` is added to a body that is no
@@ -96,7 +96,7 @@ export const TOOLS: Tool[] = [
       const caps = json(answer) as { harnesses?: { id: string; available: boolean }[]; tools?: { name: string; available: boolean }[]; models?: Json; features?: { efforts?: string[]; thinking?: string[] } };
       const me = {
         authenticated: true, credential: "token", server: "agentrun-serve", version: context.version,
-        base_url: `${context.origin}/v2`, console_url: `${context.origin}/console/`,
+        base_url: `${context.origin}/v2`, console_url: `${context.origin}/`,
         harnesses: (caps.harnesses ?? []).filter((h) => h.available).map((h) => h.id),
         tools: (caps.tools ?? []).filter((t) => t.available).map((t) => t.name),
         efforts: caps.features?.efforts ?? [], thinking: caps.features?.thinking ?? [], models: caps.models ?? {},
