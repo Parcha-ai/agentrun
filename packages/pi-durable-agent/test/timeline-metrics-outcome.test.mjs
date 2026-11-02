@@ -2,7 +2,7 @@
 // each tool's name where calls are counted (nameOf), from the timeline's label registry.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { callFailed, nameOf, runMetricsOf, timelineOf } from "../dist/timeline/index.js";
+import { callFailed, nameOf, registerOutcome, runMetricsOf, timelineOf } from "../dist/timeline/index.js";
 import { assistant, call, result, user } from "./timeline-support.mjs";
 
 const usage = (input, output, total = 0.01) => ({ input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output, cost: { total } });
@@ -22,6 +22,26 @@ test("a call is counted failed by the rule its row reads: an error, or a result 
   const rows = timelineOf(entries, { settled: true }).filter((r) => r.kind === "tool_result").map((r) => r.tool_status);
   assert.deepEqual(rows, ["failed", "failed", "success"], "the same three, row by row");
   assert.deepEqual([callFailed("web_fetch", { text: refused, isError: false }), callFailed("read", { text: refused, isError: false }), callFailed("read", { text: "", isError: true })], [true, false, true], "a tool without an outcome fails only on an error");
+});
+
+test("a result row reads its outcome once, for its summary and its status both: a fetch's outcome parses its whole page", () => {
+  const read = [];
+  registerOutcome("outcome_once_probe", (result) => {
+    read.push(result.text);
+    const page = JSON.parse(result.text);
+    return page.ok ? { failed: false, text: `fetched ${page.url}` } : { failed: true, text: `refused ${page.url}` };
+  });
+  const refused = JSON.stringify({ ok: false, url: "http://127.0.0.1/" });
+  const fetched = JSON.stringify({ ok: true, url: "https://example.com/", text: "x".repeat(60_000) });
+  const entries = [
+    user("Fetch two pages."),
+    answer([call("p1", "outcome_once_probe", { url: "http://127.0.0.1/" }), call("p2", "outcome_once_probe", { url: "https://example.com/" })], usage(10, 5)),
+    result("p1", "outcome_once_probe", refused), result("p2", "outcome_once_probe", fetched),
+    answer([{ type: "text", text: "Fetched one." }], usage(20, 3)),
+  ];
+  const rows = timelineOf(entries, { settled: true }).filter((r) => r.kind === "tool_result");
+  assert.deepEqual(rows.map((r) => [r.tool_status, r.summary]), [["failed", "Using tool: outcome_once_probe: refused http://127.0.0.1/"], ["success", "Using tool: outcome_once_probe: fetched https://example.com/"]], "the status and the summary from the same outcome");
+  assert.deepEqual(read, [refused, fetched], "each result's outcome read once, by its row");
 });
 
 test("a tool's name where calls are counted: its registered one in plain words, else the name it was called by", () => {

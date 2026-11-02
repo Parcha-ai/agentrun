@@ -38,8 +38,12 @@ export function registerOutcome(tool: string, outcome: OutcomeFn): void {
 export const outcomeOf = (tool: string, result: { text: string; isError: boolean }) => (result.isError ? undefined : outcomes.get(tool)?.(result));
 
 /** Whether a finished call failed: an error, or a result its tool's outcome reads as failed (a refused fetch). The one
- *  rule a call's row and a run's tool counts both read. */
-export const callFailed = (tool: string, result: { text: string; isError: boolean }): boolean => result.isError || outcomeOf(tool, result)?.failed === true;
+ *  rule a call's row and a run's tool counts both read; `outcome` is the result's own (outcomeOf), so a caller that has
+ *  read it already (a row, which also shows it) reads it once: a fetch's outcome parses its whole page. */
+export const failedWith = (result: { isError: boolean }, outcome: ReturnType<OutcomeFn>): boolean => result.isError || outcome?.failed === true;
+
+/** failedWith, the outcome read here. */
+export const callFailed = (tool: string, result: { text: string; isError: boolean }): boolean => failedWith(result, outcomeOf(tool, result));
 
 const turnEnding = new Set<string>();
 
