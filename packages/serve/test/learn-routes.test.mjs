@@ -3,11 +3,11 @@
 // commit by a person with no grader, the structural checks still applied, and the next run starting from the result.
 // A write that names no version is 428, a stale one 412; MEMORY.md is the server's and never written.
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, readdirSync, readFileSync, renameSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync, renameSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, made, objects, repoOf, settled, started } from "./learn-support.mjs";
+import { ended, git, LEARN, learner, made, objects, repoOf, savedOf, settled, started, turnCopyOf } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, follow, scratch, serve } from "./support.mjs";
 
@@ -176,8 +176,9 @@ test("a person sees what the agent learned and controls it: the view, the log by
   const three = await started(api, id);
   const third = await ended(api, three);
   assert.equal(learnedIn(third.view.result.final_answer), index, third.view.result.final_answer);
-  assert.ok(existsSync(join(copyOf(data, three), "ask-first.md")) && !existsSync(join(copyOf(data, three), "quote-sources.md")), "the retired note is not in its .learning/");
-  assert.equal(readFileSync(join(copyOf(data, three), "check-units.md"), "utf8"), EDITED);
+  // Its copy, as the run settled: set aside from its work, as its end-of-run turn left it.
+  assert.ok(existsSync(join(turnCopyOf(data, three), "ask-first.md")) && !existsSync(join(turnCopyOf(data, three), "quote-sources.md")), "the retired note is not in its .learning/");
+  assert.equal(readFileSync(join(turnCopyOf(data, three), "check-units.md"), "utf8"), EDITED);
 
   // Pages: opaque cursors, each read at the commit the first page was, so a write between pages moves nothing.
   const page1 = (await api("GET", `/agents/${id}/learning/notes?limit=1`)).body;
@@ -294,4 +295,29 @@ test("a link planted at the agent's learning folder makes a person's edit, creat
   }
   assert.ok(lstatSync(repo).isSymbolicLink(), "the link is left where it was");
   assert.deepEqual(state(), before, "nothing written where the link points: main, its objects, its files and its .git as they were");
+});
+
+test("a restarted server counts an agent's runs that tried to learn from the learning ledger, as GET /stats does: its view's counts read with runs/ unreadable", { timeout: 180_000 }, async (t) => {
+  const first = await serve(t, { learning: "on", faux: LEARN });
+  const { data } = first;
+  await made(first.api, learner("counted", { plan: [["check-units.md", UNITS]], once: true }));
+  const merged = await ended(first.api, await started(first.api, "counted"));
+  settled(merged.view, merged.rows, "merged");
+  // The second run's index names the note: it plans nothing, and its learning is dropped as empty.
+  const empty = await ended(first.api, await started(first.api, "counted"));
+  settled(empty.view, empty.rows, "dropped", "empty");
+  for (const { view } of [merged, empty]) await savedOf(data, view.run_id);
+  const want = { merged: 1, dropped: { empty: 1 }, in_progress: 0 };
+  assert.deepEqual((await first.api("GET", "/agents/counted/learning")).body.counts, want);
+  await first.close();
+  // The restarted server holds neither run: both are counted from the ledger, and no run's files are opened.
+  const again = await serve(t, { learning: "on", faux: LEARN, data });
+  const runs = join(data, "runs");
+  chmodSync(runs, 0o000);
+  try {
+    assert.deepEqual((await again.api("GET", "/agents/counted/learning")).body.counts, want, "read back from the ledger");
+    assert.deepEqual((await again.api("GET", "/stats?agent=counted")).body.learning, { runs: 2, ...want });
+  } finally {
+    chmodSync(runs, 0o700);
+  }
 });

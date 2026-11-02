@@ -228,8 +228,8 @@ const LEARNING_CHANGE = closed({
 const LEARNING_COUNTS = closed({
   merged: COUNT,
   dropped: { type: "object", additionalProperties: COUNT, propertyNames: { enum: [...LEARNING_REASONS] }, description: "By reason (Run.learning.reason): only reasons with one run or more." },
-  in_progress: { ...COUNT, description: "Seeded, reflecting or proposed." },
-}, "How the agent's runs that tried to learn fared, archived runs left out: GET /stats' `learning` with `agent`, less `runs`.");
+  in_progress: { ...COUNT, description: "Seeded, reflecting or proposed: runs this server holds." },
+}, "How the agent's runs that tried to learn fared, archived runs left out: GET /stats' `learning` with `agent`, less `runs`, counted as it counts them, from the runs this server holds and its learning ledger, no run's files opened.");
 const AGENT_LEARNING = closed({
   agent: { type: "string" },
   main: { ...NULL_STRING, description: "Main's head commit; null while the agent has no learning folder (its learning was never on), when every page is empty." },
