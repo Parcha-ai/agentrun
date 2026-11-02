@@ -29,7 +29,7 @@ import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, learningStats, statsView } from "./stats.js";
-import { bookings } from "./usage.js";
+import { outcomes } from "./usage.js";
 import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
@@ -664,10 +664,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const live = row.state === "running" ? await runs.get(row.id) : null;
       add(keyOf(row.agent, row.startedAt, "tokens"), live ? runs.cost(live).usd : (row.costUsd ?? null));
     }
-    // What learning spent on this server, outside any run (usage.ts): each run's grade, on the day it was graded.
-    for (const entry of await bookings(data)) {
+    // What learning spent on this server, outside any run (usage.ts): each run's grade, on the day its learning ended.
+    for (const entry of (await outcomes(data)).values()) {
       const at = Date.parse(entry.at);
-      if (at >= from && at < to) add(keyOf(entry.agent, entry.at, "learning"), entry.usd);
+      if (at >= from && at < to) add(keyOf(entry.agent, entry.at, "learning"), entry.cost);
     }
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
@@ -909,7 +909,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "getStats": {
         const filter = analyticsFilter(url);
         const [stats, analytics, rows] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter), agents.store.listRuns()] as const);
-        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: await learningStats(rows, filter, (row) => runs.learningOfRow(row)) });
+        // How the runs that tried to learn fared: a held run's learning from memory, any other's end from the ledger.
+        const ledger = await outcomes(data);
+        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: learningStats(rows, filter, (row) => runs.heldLearning(row.id) ?? ledger.get(row.id) ?? null) });
       }
       case "listToolKeys":
         return send(res, 200, toolKeys.view());
