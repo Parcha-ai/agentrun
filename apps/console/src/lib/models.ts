@@ -1,12 +1,12 @@
-/** `capabilities.models`: where the models come from (`gateway`, `providers`, `faux`) and each tier's model id. */
-export type ModelsInfo = { source?: string; default?: string | null };
+/** `capabilities.models`: where the models come from (`gateway`, `providers`, `faux`), each tier's model id, and
+ *  `route_prefix`, the routing prefix the server puts before a gateway's model ids (null with no gateway). */
+export type ModelsInfo = { source?: string; default?: string | null; route_prefix?: string | null };
 
-/** The routing prefix a gateway puts before every model id it serves (serve names them `<prefix>/<id>`): the provider
- *  part of the server's default, read from capabilities, never named here. None unless the models come from a gateway. */
+/** The routing prefix to take off a model id: exactly the one the server names (`models.route_prefix`), never one read
+ *  off an id, so a gateway id with no routing prefix (`anthropic/claude-x`) keeps its provider. None when the server
+ *  names none. */
 export function gatewayPrefix(models: ModelsInfo | undefined): string | undefined {
-  if (models?.source !== "gateway" || !models.default) return undefined;
-  const slash = models.default.indexOf("/");
-  return slash > 0 ? models.default.slice(0, slash) : undefined;
+  return models?.route_prefix || undefined;
 }
 
 /** A model id as a person reads it: without the gateway's routing prefix, the full id kept for a title. Any other id

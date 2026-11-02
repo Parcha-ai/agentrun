@@ -13,7 +13,7 @@ const runsOf = (slug: string) => recorded<{ runs: Run[] }>(`agent.${slug}.runs`)
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; models?: { default: string; source: string }; harnesses?: { id: string; default_model?: string | null }[] };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null }[] };
 async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, models, harnesses }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
@@ -26,7 +26,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, harnesses, go: (h: string) => went.push(h), tab })));
+  act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, routePrefix: models?.route_prefix, harnesses, go: (h: string) => went.push(h), tab })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -150,7 +150,7 @@ describe("AgentPage", () => {
 });
 
 describe("AgentPage, the model on a gateway server", () => {
-  const gateway = { default: "agent-model/gpt-6-luna", source: "gateway" };
+  const gateway = { default: "agent-model/gpt-6-luna", source: "gateway", route_prefix: "agent-model" };
   const on = (harness: string, model?: string): Agent => {
     const a = agentFixture("invoice-checker");
     const { model: _m, ...definition } = a.definition;

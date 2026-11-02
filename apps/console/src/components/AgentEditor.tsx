@@ -13,9 +13,9 @@ import { cn } from "@/lib/utils";
 export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string; definition?: Agent["definition"] };
 /** `decisionProvider`: the decision provider a new decision agent's judge names (agentForm's decisionProvider); none when
  *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. `modelSource`:
- *  capabilities' `models.source`, to read a gateway's routing prefix off its model ids. A harness's `default_model` is the
+ *  capabilities' `models.source`; `routePrefix`, its `models.route_prefix`, the routing prefix taken off model ids. A harness's `default_model` is the
  *  model the server runs for it when a definition names none (null: none). */
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; decisionProvider?: string };
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -108,7 +108,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
   // off, the full id in a title.
   const fallback = harnessDefault(f.harness ?? "pi", caps.harnesses, caps.defaultModel);
-  const modelDefault = fallback ? modelLabel(fallback, { source: caps.modelSource, default: caps.defaultModel }) : undefined;
+  const modelDefault = fallback ? modelLabel(fallback, { source: caps.modelSource, default: caps.defaultModel, route_prefix: caps.routePrefix }) : undefined;
   const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
 
   return (
