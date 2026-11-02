@@ -727,12 +727,14 @@ with the token, an archived agent's too:
   `application/json` `{text}`, the form the console's page sends under its session) edits it under `If-Match: <etag>`,
   or creates it under `If-None-Match: *` (201); `POST .../learning/files/{file}/retire` under `If-Match` sets `status: retired`. A stale
   ETag, or a name already taken, is 412; neither header (or `If-Match: *`) is 428 `precondition_required`. The note
-  passes the same structural checks as a run's (packages/learn's `checkNote`), and no grader, as a retired note does
-  as retired, against the server's secrets then: a refusal is 400 with `problems`, and nothing is written. Each write
-  is one commit on `main` in the agent's queue, `learning: <edited, created or retired> by a person: <file>` with a
-  `Changed-By: user` trailer, with `MEMORY.md` rebuilt, `main` moved only from the commit it was made on, and the
-  folder's files brought in line; it answers the note as it now is, with its new `ETag`. `MEMORY.md` itself is never
-  written (400).
+  passes the same structural checks as a run's (packages/learn's `checkNote`), and no grader: a refusal is 400 with
+  `problems`, and nothing is written. A retire is how a person revokes a note, so it checks the note's format alone:
+  its front matter as retired, and the note cap with the status line on top. A secret shape or one of the server's
+  values in its name or text never blocks it (its answer and the log are cut of them as any read is), and a leaking
+  note is replaced by retiring it and creating a clean one. Each write is one commit on `main` in the agent's queue,
+  `learning: <edited, created or retired> by a person: <file>` with a `Changed-By: user` trailer, with `MEMORY.md`
+  rebuilt, `main` moved only from the commit it was made on, and the folder's files brought in line; it answers the
+  note as it now is, with its new `ETag`. `MEMORY.md` itself is never written (400).
 - `GET /runs/{run_id}/learning`: the run's learning whole (its seed, its merge, the grader's verdict, the checker's
   problems, what the grade cost), `null` for a run that does not learn. `GET /runs/{run_id}/learning/diff`: a merged
   run's merge commit against its parent, else its proposal against its seed, each file's patch as git writes it from

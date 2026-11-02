@@ -3,7 +3,7 @@
 // commit by a person with no grader, the structural checks still applied, and the next run starting from the result.
 // A write that names no version is 428, a stale one 412; MEMORY.md is the server's and never written.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync, renameSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
@@ -359,7 +359,7 @@ test("a commit's notes are read once: a later page and the view at the same main
   assert.deepEqual(reads(), [["log", "--skip=0", "--max-count=20"]]);
 });
 
-test("a note's name that holds a value made secret after it was written is never shown: the view, the notes, the log and the run's diff read it [redacted], and its route answers the real name only to a caller who knows it", { timeout: 240_000 }, async (t) => {
+test("a note's name that holds a value made secret after it was written is never shown: the view, the notes, the log and the run's diff read it [redacted], its route answers the real name only to a caller who knows it, and a retire by it takes it out of the index", { timeout: 240_000 }, async (t) => {
   // Built at the run: a value no file of this repository holds, made a launcher's secret only once its note is on main.
   const value = ["s3cret", "store", "pass", process.pid, Date.now().toString(36)].join("-");
   const named = `${value}.md`;
@@ -396,28 +396,59 @@ test("a note's name that holds a value made secret after it was written is never
   assert.deepEqual([own.status, own.body], [200, NEW]);
   const old = await api("GET", "/agents/namer/learning/files/old-plan.md");
   assert.equal(old.status, 200);
-  // A retire by that name: the checks refuse it (its name holds a secret now), naming none of it.
+  // A retire by that name revokes the note, whatever its name holds: out of the index, its answer and the log cut of it.
   const retire = await api("POST", `/agents/namer/learning/files/${named}/retire`, undefined, { "if-match": own.headers.get("etag") });
-  assert.deepEqual([retire.status, retire.body?.error?.problems?.map((p) => p.rule)], [400, ["secret_value"]]);
-  const shown = JSON.stringify([view, page1, page2, log, diff, (await api("GET", `/runs/${two.view.run_id}/learning`)).body, old.body, [...old.headers], [...own.headers], retire.body]);
+  assert.deepEqual([retire.status, retire.body], [200, NEW.replace("supersedes: [old-plan.md]\n", "supersedes: [old-plan.md]\nstatus: retired\n")]);
+  assert.equal(git(repoOf(data, "namer"), ["show", "main:MEMORY.md"]), "", "no active note is left in the index");
+  const after = (await api("GET", "/agents/namer/learning")).body;
+  assert.deepEqual([after.index, after.log.items[0].by, after.log.items[0].reason, after.log.items[0].files], ["", { user: true }, "retired by a person: [redacted].md", ["MEMORY.md", "[redacted]"]]);
+  assert.deepEqual(after.notes.items.map((n) => [n.file, n.status]), [["[redacted]", "retired"], ["old-plan.md", "superseded"]]);
+  const shown = JSON.stringify([view, page1, page2, log, diff, (await api("GET", `/runs/${two.view.run_id}/learning`)).body, old.body, [...old.headers], [...own.headers], retire.body, [...retire.headers], after]);
   assert.ok(!shown.includes(value), "the value is nowhere a person reads");
 });
 
-test("a retire passes the checks a PUT does: a note at the 4 KB cap that status: retired would push over it is 400 with problems, and nothing is committed", { timeout: 60_000 }, async (t) => {
-  const { api, data } = await serve(t);
-  await made(api, learner("capped"));
-  const repo = repoOf(data, "capped");
+test("a retire is always the way out: a note at the 4 KB cap retires, and so does one whose text holds a value made secret after it was written, its answers and the log cut of it; only a note out of format is refused", { timeout: 120_000 }, async (t) => {
+  // Built at the run: a value no file of this repository holds, made a launcher's secret only once its note is on main.
+  const value = ["vault", "code", process.pid, Date.now().toString(36)].join("-");
+  withEnv(t, {}, ["AGENT_MODEL_API_KEY"]);
+  const first = await serve(t);
+  const { data } = first;
+  await made(first.api, learner("revoker"));
+  const repo = repoOf(data, "revoker");
+  const files = "/agents/revoker/learning/files";
   const head = note("Full", "A note at the cap", "");
   const full = `${head}${"x".repeat(4095 - Buffer.byteLength(head))}\n`;
   assert.equal(Buffer.byteLength(full), 4096);
-  const files = "/agents/capped/learning/files";
-  const created = await api("PUT", `${files}/full.md`, { text: full }, { "if-none-match": "*" });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const VAULT = note("Vault", "Where the vault code is", `The vault code is ${value}.\n`);
+  for (const [file, text] of [["full.md", full], ["vault.md", VAULT]]) assert.equal((await first.api("PUT", `${files}/${file}`, { text }, { "if-none-match": "*" })).status, 201, file);
+  // Out of format, by an operator's hand on main: a note over the cap, and a file with no front matter.
+  writeFileSync(join(repo, "huge.md"), note("Huge", "Over the cap", `${"y".repeat(5000)}\n`));
+  writeFileSync(join(repo, "bare.md"), "no front matter\n");
+  git(repo, ["add", "huge.md", "bare.md"]);
+  git(repo, ["commit", "-q", "-m", "an operator's hand"]);
+  await first.close();
+
+  // The server again, with the vault code as a launcher's secret (the model key).
+  process.env.AGENT_MODEL_API_KEY = value;
+  const { api } = await serve(t, { data });
+  const etag = async (file) => (await api("GET", `${files}/${file}`)).headers.get("etag");
+  // The note at the cap retires, its status line on top of the cap.
+  const capped = await api("POST", `${files}/full.md/retire`, undefined, { "if-match": await etag("full.md") });
+  assert.deepEqual([capped.status, Buffer.byteLength(capped.body)], [200, 4112], JSON.stringify(capped.body).slice(0, 200));
+  // The note holding the value made secret retires: out of the index, its answer and the log cut of the value.
+  const vault = await api("POST", `${files}/vault.md/retire`, undefined, { "if-match": await etag("vault.md") });
+  assert.equal(vault.status, 200, JSON.stringify(vault.body));
+  assert.ok(vault.body.includes("status: retired\n") && vault.body.includes("The vault code is [redacted]."), vault.body);
+  const index = git(repo, ["show", "main:MEMORY.md"]);
+  assert.ok(!index.includes("vault.md") && !index.includes("full.md"), index);
+  const view = (await api("GET", "/agents/revoker/learning")).body;
+  assert.deepEqual(view.log.items.map((c) => [c.by, c.reason, c.files]).slice(0, 2), [[{ user: true }, "retired by a person: vault.md", ["MEMORY.md", "vault.md"]], [{ user: true }, "retired by a person: full.md", ["MEMORY.md", "full.md"]]]);
+  assert.ok(!JSON.stringify([vault.body, [...vault.headers], view]).includes(value), "the value is nowhere a person reads");
+  // Out of format is still refused, and nothing is committed.
   const main = git(repo, ["rev-parse", "main"]);
-  const objectsBefore = objects(repo);
-  const retired = await api("POST", `${files}/full.md/retire`, undefined, { "if-match": created.headers.get("etag") });
-  assert.deepEqual([retired.status, retired.body?.error?.code, retired.body?.error?.problems], [400, "bad_request", [{ rule: "too_large", path: "full.md", detail: "4112 bytes; the cap is 4096" }]]);
+  const huge = await api("POST", `${files}/huge.md/retire`, undefined, { "if-match": await etag("huge.md") });
+  assert.deepEqual([huge.status, huge.body?.error?.problems?.map((p) => p.rule)], [400, ["too_large"]]);
+  const bare = await api("POST", `${files}/bare.md/retire`, undefined, { "if-match": await etag("bare.md") });
+  assert.deepEqual([bare.status, bare.body?.error?.problems?.map((p) => p.rule)], [400, ["note"]]);
   assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing committed");
-  assert.equal(objects(repo), objectsBefore, "no object written");
-  assert.equal((await api("GET", `${files}/full.md`)).body, full, "the note as it was");
 });

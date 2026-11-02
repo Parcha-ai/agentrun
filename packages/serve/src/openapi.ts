@@ -332,7 +332,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/files/{file}/retire": {
     post: {
       operationId: "retireLearningFile", tags: ["agents"], summary: "Retire a note: out of the index, kept in history",
-      description: `Sets \`status: retired\` (and drops \`superseded_by\`), and the note as retired passes the checks below against the host's secrets as they are now; a note that is not active is answered as it is. ${WRITE_DESCRIPTION}`,
+      description: `Sets \`status: retired\` (and drops \`superseded_by\`); a note that is not active is answered as it is. A retire is how a person revokes a note, so only its format is checked: its front matter as retired, and the 4 KB cap with the status line on top (400 \`bad_request\` with \`problems\` otherwise). A secret shape or one of the host's values in its name or text never blocks it; the answer is cut of them. ${WRITE_DESCRIPTION}`,
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, retired."), ...WRITE_ERRORS }, ...MARK,
     },
   },

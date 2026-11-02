@@ -2,9 +2,10 @@
 // - Per agent: main's index, its notes and its log of changes, each a page, and how its runs' learning fared; one note as
 //   text with its ETag, the note's blob id on main.
 // - A person's edit, create or retire of one note: a precondition on the note's version (If-Match, or If-None-Match: * to
-//   create; neither is 428), the structural checks a run's notes pass (packages/learn checkNote) and no grader, then one
-//   host commit on main in the agent's queue, compare and swap, with MEMORY.md rebuilt and a `Changed-By: user` trailer,
-//   and the checked-out files brought in line. MEMORY.md itself is never written here.
+//   create; neither is 428), the structural checks a run's notes pass (packages/learn checkNote; a retire, the note's
+//   format alone, so a leaking note can always be revoked) and no grader, then one host commit on main in the agent's
+//   queue, compare and swap, with MEMORY.md rebuilt and a `Changed-By: user` trailer, and the checked-out files brought
+//   in line. MEMORY.md itself is never written here.
 // - Per run: its learning whole, and its diff: what it proposed against its seed, or once merged, its merge commit against
 //   its parent.
 // Every read is plumbing at one commit of main, outside the queue: a commit never changes, so a read needs no lock, and
@@ -17,7 +18,7 @@
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { buildIndex, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, redactSecrets, retire, secretShapes, valueMatcher } from "@parcha/agentrun-learn";
+import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, redactSecrets, retire, secretShapes, valueMatcher } from "@parcha/agentrun-learn";
 import { ApiError, invalid } from "./errors.js";
 import { readJson } from "./files.js";
 import { agentFolder, checkOut, git, homeDir, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, withAgentRepo } from "./learning.js";
@@ -34,6 +35,8 @@ const LOG_PAGE = 20;
 const PAGE_MAX = 200;
 /** The trailer of a person's commit, as `Run-Id` is a run's merge's. */
 const BY_USER = "Changed-By: user";
+/** What a retire adds to a note, on top of the note cap a retired note may fill (packages/learn retire). */
+const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
@@ -321,7 +324,7 @@ function conditionOf(ifMatch: string | undefined, ifNoneMatch: string | undefine
 }
 
 /** PUT /agents/{id}/learning/files/{file} (`body`, the note's whole text) or POST .../retire (no body), as a person:
- *  the precondition, then the checks (a retire's note must parse, then pass them as retired), then one commit on main
+ *  the precondition, then the checks (a retire's, the note's format alone: never its secrets), then one commit on main
  *  in the agent's queue, on the folder agentFolder checked: the note, and MEMORY.md rebuilt from main's notes with it,
  *  its message `learning: <edited|created|retired> by a person: <file>` and a `Changed-By: user` trailer, main moved
  *  only from the commit it was made on (once more on a main that moved meanwhile), then the checked-out files. A note
@@ -352,11 +355,14 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         const note = parseNoteFile(file, current!.text);
         if (Array.isArray(note)) throw refused(note.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
         if (note.status !== "active") return { status: 200, file, text: current!.text, etag: etagOf(current!.oid) };
-        // The note as retired passes the checks a PUT's does, against the host's secrets now: no blob is written over
-        // the cap, nor holding a value made secret since it was.
-        const checked = checkNote(file, Buffer.from(retire(current!.text), "utf8"), input.refuse);
-        if (!checked.note) throw refused(checked.problems);
-        text = checked.note.text;
+        // A retire is how a person takes a note out of every later run's prompt, a leaking one above all, so it always
+        // can: only the note's format is checked as retired (its front matter parses, and it fits the note cap with the
+        // status line added), never a secret in its name or text. Every answer cuts those as any read does.
+        text = retire(current!.text);
+        const retired = parseNoteFile(file, text);
+        if (Array.isArray(retired)) throw refused(retired.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
+        const size = Buffer.byteLength(text);
+        if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status line a retire adds` }, input.refuse)]);
       }
       if (current && text === current.text) return { status: 200, file, text, etag: etagOf(current.oid) };
       const notes = main ? (await readAt(home, repo, main)).notes : new Map<string, LearnedNote>();
