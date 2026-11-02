@@ -1044,8 +1044,8 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
   // `within` names what takes only a mechanical predicate: a poll, or a `not`.
   const checkPredicate = (pred: unknown, label: string, path: string, field: string, within?: "poll" | "not"): boolean => {
     const name = (pred as any)?.predicate;
-    // A predicate with no `predicate` field is the shape mistaken, not an unknown name: say the shape
-    // (GRE-2809), naming a predicate the object used as a key when it did.
+    // A predicate with no `predicate` field is the shape mistaken, not an unknown name: say the shape,
+    // naming a predicate the object used as a key when it did.
     if (pred && typeof pred === "object" && !Array.isArray(pred) && name === undefined) {
       const keyed = Object.keys(pred).find((key) => PREDICATES.has(key));
       fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: a predicate names itself in its "predicate" field beside its own fields, e.g. {"predicate": "${keyed ?? "field_true"}", "path": "..."}${keyed ? `, not {"${keyed}": {...}}` : ""}`);
