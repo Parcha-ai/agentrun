@@ -183,10 +183,13 @@ test("runs_get names the question a waiting run asked, runs_respond answers it, 
   await mcp.tool("agents_create", { id: "asker", name: "Asker", instructions: "Answer.", tools: ["ask_person"] });
   const { run_id } = (await mcp.tool("runs_start", { agent_id: "asker", input: { content: "Pick a region." } })).structuredContent;
   const waiting = await mcp.until(run_id, ["input_required"]);
-  assert.equal(waiting.pending.question, "Which region should I use?");
-  assert.equal(typeof waiting.pending.asked_at, "string");
+  assert.deepEqual([waiting.pending.kind, waiting.pending.question, typeof waiting.pending.asked_at], ["question", "Which region should I use?", "string"]);
+  // The run's own field, as GET /v2/runs/{id} gives it: no scan of its timeline.
+  assert.deepEqual((await v2(server, "GET", `/runs/${run_id}`)).body.pending, waiting.pending);
   assert.equal((await mcp.tool("runs_respond", { run_id, content: "eu" })).structuredContent.mode, "answer");
-  assert.deepEqual(JSON.parse((await mcp.until(run_id, ["completed"])).result.final_answer), { region: "eu" });
+  const answered = await mcp.until(run_id, ["completed"]);
+  assert.deepEqual(JSON.parse(answered.result.final_answer), { region: "eu" });
+  assert.equal(answered.pending, null, "answered, it waits on nothing");
 
   const slow = (await mcp.tool("runs_start", { agent_id: "asker", input: { content: "Take your time." } })).structuredContent;
   await mcp.until(slow.run_id, ["working"]);
@@ -200,7 +203,12 @@ test("GET /v2/runs/{id}/timeline takes a limit: pages of at most that many rows,
   await mcp.tool("agents_create", { id: "calc", name: "Calc", instructions: "Answer." });
   const { run_id } = (await mcp.tool("runs_start", { agent_id: "calc", input: { content: "What is six times seven?" } })).structuredContent;
   await mcp.until(run_id, ["completed"]);
-  const whole = (await v2(server, "GET", `/runs/${run_id}/timeline`)).body;
+  // The status reads completed before the run is settled, and settling replaces its rows with the store's (the live
+  // run:start and run:end rows go): every read is made once the timeline says final, so all of them see the same rows.
+  let whole;
+  for (const end = Date.now() + 5_000; !(whole = (await v2(server, "GET", `/runs/${run_id}/timeline`)).body).final; await sleep(50)) {
+    assert.ok(Date.now() < end, `the run's timeline is final within 5 s: ${JSON.stringify({ status: whole.status, rows: whole.rows.map((r) => r.id) })}`);
+  }
   const first = (await v2(server, "GET", `/runs/${run_id}/timeline?limit=1`)).body;
   assert.deepEqual([first.rows.length, first.has_more], [1, true]);
   const rest = (await v2(server, "GET", `/runs/${run_id}/timeline?after=${first.next_after}&limit=500`)).body;

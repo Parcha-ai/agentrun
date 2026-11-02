@@ -416,7 +416,20 @@ const PINNED_PROFILE: Json = {
   description: "The profile pack the run was made with (`profile`, `output` on its request), resolved then and pinned: the pack's name, the effort row it used, that row's thinking level when the pack sets one, every skill it loads in order, and its output type with the file the deliverable goes to and the writer skills; null when the run named none.",
   "x-agentrun-serve": "profile/1",
 };
-
+/** What a run waits on, one field for every kind, told apart by `kind`: here a question it asked a person. A later kind
+ *  (a tool call waiting on approval) is one more variant of the same union. */
+const PENDING: Json = {
+  oneOf: [
+    {
+      type: "object", additionalProperties: false, required: ["kind", "question", "asked_at"],
+      properties: { kind: { const: "question" }, question: { type: "string", description: "What it asked, at most 2000 characters." }, asked_at: { type: "string", format: "date-time" } },
+      description: "A question the run asked a person (status input_required, state waiting): a message answers it.",
+    },
+    { type: "null" },
+  ],
+  description: "What the run waits on, told apart by kind; null when it waits on nothing. A run read from its stored row alone has ended, so null.",
+  "x-agentrun-serve": "pending/1",
+};
 /** This server's own properties on the contract's objects, outside the contract, by where they go (a schema of
  *  components.schemas, then property names down to the object that takes them). Each is marked x-agentrun-serve with
  *  the addition that made it: `harness/1` and `place/1` are ones a later contract version would take on; `model/1` and
@@ -434,6 +447,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Run: {
     profile: PINNED_PROFILE,
     review: REVIEW,
+    pending: PENDING,
     imported_from: {
       type: ["object", "null"],
       additionalProperties: false,
@@ -446,6 +460,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
   RunSummary: {
     review: REVIEW,
+    pending: PENDING,
     imported_from: {
       type: ["object", "null"],
       additionalProperties: false,
