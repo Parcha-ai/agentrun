@@ -133,19 +133,25 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   assert.deepEqual(left, [], "no CLI file in the run's workspace");
 });
 
-test("a claude-agent run writes where its CLI works: a file at an absolute path in the CLI's working directory lands in the workspace, and no tool result names the server's data directory", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
-  // The model as sonnet answered in QA (F20): the file at its working directory's absolute path, then a path out of the
-  // workspace and a file that is not there, then its answer.
+test("a claude-agent run writes where its CLI works: a relative path, the CLI's own absolute one and a learning note all land in the workspace, and no tool result names the server's data directory", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  // The model as sonnet answers (QA run 3, F20): a relative path, then the file at its working directory's absolute
+  // path, then a learning note as M2's end-of-run turn writes one; then a path out of the workspace and a file that is not
+  // there, then its answer.
   let cwd;
+  const steps = [
+    () => ({ name: "mcp__hands__write", input: { path: "hello.md", content: "relative\n" } }),
+    () => ({ name: "mcp__hands__read", input: { path: "hello.md" } }),
+    () => ({ name: "mcp__hands__write", input: { path: `${cwd}/hello.md`, content: "hello\n" } }),
+    () => ({ name: "mcp__hands__write", input: { path: ".learning/note.md", content: "noted\n" } }),
+    () => ({ name: "mcp__hands__write", input: { path: "../escape.md", content: "out" } }),
+    () => ({ name: "mcp__hands__read", input: { path: "missing.md" } }),
+  ];
   const fake = await fakeAnthropic({
     reply: (r) => {
       if (!r.tools.includes("mcp__hands__write")) return { text: "ok" };
       cwd ??= /(?:Primary working directory|Working directory): (\/[^\s"\\]+)/.exec(JSON.stringify(r.body))?.[1];
       const done = r.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "tool_result").length;
-      if (done === 0) return { tool: { name: "mcp__hands__write", input: { path: `${cwd}/hello.md`, content: "hello\n" } } };
-      if (done === 1) return { tool: { name: "mcp__hands__write", input: { path: "../escape.md", content: "out" } } };
-      if (done === 2) return { tool: { name: "mcp__hands__read", input: { path: "missing.md" } } };
-      return { text: "I wrote hello.md." };
+      return done < steps.length ? { tool: steps[done]() } : { text: "I wrote hello.md." };
     },
   });
   t.after(() => fake.close());
@@ -158,13 +164,16 @@ test("a claude-agent run writes where its CLI works: a file at an absolute path 
   const work = join(data, "runs", runId, "work");
   assert.ok(cwd, "the CLI told its model its working directory");
   assert.equal(realpathSync(cwd), realpathSync(work), "the CLI's working directory is the run's workspace");
-  assert.equal(await readFile(join(work, "hello.md"), "utf8"), "hello\n", "the file is in the workspace");
-  assert.deepEqual(await filesUnder(work), ["hello.md"], "and nothing else: the CLI keeps no file of its own there");
-  const writes = rows.filter((r) => r.kind === "tool_result" && r.tool_name === "write");
-  assert.equal(writes[0]?.tool_status, "success", `the first write succeeds: ${JSON.stringify(writes[0])}`);
+  const calls = rows.filter((r) => r.kind === "tool_result").map((r) => [r.tool_name, r.tool_status]);
+  assert.deepEqual(calls, [["write", "success"], ["read", "success"], ["write", "success"], ["write", "success"], ["write", "failed"], ["read", "failed"]], JSON.stringify(rows.filter((r) => r.kind === "tool_result").map((r) => r.tool_result_preview)));
   // What the model was told of each call: the CLI sends each tool's result back in the next request.
   const results = fake.messages().flatMap((m) => m.messages ?? []).flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "tool_result").map((b) => (Array.isArray(b.content) ? b.content.map((c) => c.text ?? "").join("") : String(b.content)));
   const told = [...new Set(results)];
+  assert.ok(told.some((text) => text.includes("relative")), `the relative write landed where the read looks: ${told.join(" | ")}`);
+  assert.equal(await readFile(join(work, "hello.md"), "utf8"), "hello\n", "the absolute write landed on the same file, in the workspace");
+  assert.equal(await readFile(join(work, ".learning", "note.md"), "utf8"), "noted\n", "the learning note is in the workspace");
+  assert.deepEqual((await filesUnder(work)).sort(), [".learning", join(".learning", "note.md"), "hello.md"], "and nothing else: the CLI keeps no file of its own there");
+  assert.ok(!existsSync(join(data, "runs", runId, "escape.md")), "the path out was not written");
   assert.ok(told.some((text) => /escape\.md: outside the workspace/.test(text)), `the path out is refused: ${told.join(" | ")}`);
   assert.ok(told.some((text) => /missing\.md/.test(text) && /ENOENT|no such file/i.test(text)), `the missing file is named: ${told.join(" | ")}`);
   for (const root of new Set([data, realpathSync(data)])) {
