@@ -7,7 +7,7 @@ npx @parcha/agentrun
 ```
 
 It starts [AgentRun Server](https://github.com/Parcha-ai/agentrun/tree/main/packages/serve) on the first free port from
-7340 on this machine's loopback, keeps its data in `~/.agentrun`, prints the console's address and opens it in your
+7340 on this machine's loopback, keeps its data in `~/.agentrun`, prints the address the server says to open and opens it in your
 browser (`--no-open`, a CI run or a machine with no display skips that). The first run fetches the server's latest
 release, `@parcha/agentrun-serve`; this package has no dependencies of its own. Node.js 22.19 or
 newer on 22, or 24.2 or newer, on macOS or Linux.

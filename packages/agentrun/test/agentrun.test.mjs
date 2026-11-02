@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { DEFAULT_PORT, freePort, KEY_MODELS, modelEnv, server, shouldOpen } from "../lib/start.mjs";
+import { DEFAULT_PORT, freePort, KEY_MODELS, modelEnv, openUrl, server, shouldOpen } from "../lib/start.mjs";
 
 const PACKAGE = new URL("..", import.meta.url).pathname;
 const BIN = join(PACKAGE, "bin", "agentrun.mjs");
@@ -23,7 +23,7 @@ function bare(t) {
   return { home, env: { ...env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), CI: "1" } };
 }
 
-test("demo: with no model key, the bin starts on a free loopback port, prints one line with the console's address; the server has no model and the console asks for its first password", { timeout: 120_000 }, async (t) => {
+test("demo: with no model key, the bin starts on a free loopback port and prints one line, the address the server says to open; the server has no model and the console asks for its first password", { timeout: 120_000 }, async (t) => {
   const { home, env } = bare(t);
   const child = spawn(process.execPath, [BIN], { env, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
@@ -36,8 +36,8 @@ test("demo: with no model key, the bin starts on a free loopback port, prints on
     assert.ok(i < 1000, `the bin printed its line: ${out}${err}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  const match = /^AgentRun is running at (http:\/\/127\.0\.0\.1:(\d+))\/console\/\n$/.exec(out);
-  assert.ok(match, `one line, the console's address on loopback: ${JSON.stringify(out)}`);
+  const match = /^AgentRun is running at (http:\/\/127\.0\.0\.1:(\d+))\/\S*\n$/.exec(out);
+  assert.ok(match, `one line, the server's address to open, on loopback: ${JSON.stringify(out)}`);
   assert.ok(Number(match[2]) >= DEFAULT_PORT);
   const base = match[1];
   const health = await fetch(`${base}/v2/health`);
@@ -96,4 +96,22 @@ test("the first free loopback port from the default passes over one in use; the 
   t.after(() => held.close());
   assert.ok((await freePort(first)) > first);
   assert.deepEqual([shouldOpen([], {}, "darwin"), shouldOpen(["--no-open"], {}, "darwin"), shouldOpen([], { CI: "1" }, "darwin"), shouldOpen([], {}, "linux"), shouldOpen([], { DISPLAY: ":0" }, "linux")], [true, false, false, false, true]);
+});
+
+// A stub server: its output as the server prints it, a line at a time, then it waits. The command takes the URL of the first
+// "Open " line, whatever it is: the plain address today, a single-use sign-in link once the server prints that instead.
+const stub = (lines, { exit = false } = {}) => spawn(process.execPath, ["-e", `const lines = ${JSON.stringify(lines)}; let i = 0; const next = () => { if (i < lines.length) { process.stdout.write(lines[i++]); setTimeout(next, 20); } else if (${exit}) process.exit(0); else setInterval(() => {}, 1000); }; next();`], { stdio: ["ignore", "pipe", "inherit"] });
+
+test("the address to open is the URL on the server's first \"Open \" line, however its output is cut; a later Open line, and the lines around it, change nothing", async (t) => {
+  const plain = stub(["agentrun-serve on http://127.0.0.1:7341/v2 (agent store in /tmp/x)\nAGENTRUN_BASE_URL=http://127.0.0.1:7341/v2\nOp", "en http://127.0.0.1:7341/\n", "Open http://127.0.0.1:7341/other\nGET /v2/health 200\n"]);
+  t.after(() => plain.kill());
+  assert.equal(await openUrl(plain.stdout), "http://127.0.0.1:7341/");
+  const link = stub(["agentrun-serve on http://127.0.0.1:7342/v2\r\n", "Open http://127.0.0.1:7342/pair?code=Q7-2x\r\n"]);
+  t.after(() => link.kill());
+  assert.equal(await openUrl(link.stdout), "http://127.0.0.1:7342/pair?code=Q7-2x", "a sign-in link is taken as it is");
+});
+
+test("a server whose output ends with no \"Open \" line gives no address", async () => {
+  const silent = stub(["agentrun-serve: --port takes a port number\n", "Opening is not the line\n"], { exit: true });
+  assert.equal(await openUrl(silent.stdout), undefined);
 });

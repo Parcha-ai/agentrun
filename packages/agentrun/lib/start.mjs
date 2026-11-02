@@ -17,8 +17,28 @@ export const HOST = "127.0.0.1"; // key-gate: loopback-rule the server this star
 export const KEY_MODELS = [["ANTHROPIC_API_KEY", "anthropic/claude-sonnet-5-5"], ["OPENAI_API_KEY", "openai/gpt-6.1-sol"], ["OPENROUTER_API_KEY", "openrouter/anthropic/claude-sonnet-5.5"]];
 export const modelEnv = (env) => (env.AGENT_MODEL || env.AGENT_MODEL_BASE_URL ? {} : Object.fromEntries(KEY_MODELS.filter(([key]) => env[key]).slice(0, 1).map(([, model]) => ["AGENT_MODEL", model])));
 export const shouldOpen = (args, env, platform = process.platform) => !args.includes("--no-open") && !env.CI && (!["linux", "freebsd"].includes(platform) || Boolean(env.DISPLAY || env.WAYLAND_DISPLAY));
-/** The address a person opens first: the console, until a single-use sign-in link replaces it here. */
-export const firstUrl = (base) => `${base}/console/`;
+/** The address a person opens first, as the server says it: the URL of the first line of its output that starts with
+ *  "Open ". That line is the server's interface for it (the plain address today, a single-use sign-in link once the server
+ *  prints one), so this command never builds the address itself. Resolves undefined when the output ends without one;
+ *  the rest of the output is read and dropped, so the server never blocks on a full pipe. */
+export function openUrl(stdout) {
+  return new Promise((resolve) => {
+    let pending = "";
+    let found;
+    stdout.setEncoding("utf8");
+    stdout.on("data", (chunk) => {
+      if (found !== undefined) return;
+      pending += chunk;
+      for (let end = pending.indexOf("\n"); end >= 0 && found === undefined; end = pending.indexOf("\n")) {
+        const line = pending.slice(0, end).replace(/\r$/, "");
+        pending = pending.slice(end + 1);
+        const match = /^Open (\S+)/.exec(line);
+        if (match) resolve((found = match[1]));
+      }
+    });
+    stdout.on("end", () => resolve(found));
+  });
+}
 
 export async function freePort(from = DEFAULT_PORT) {
   for (let port = from; port < from + 100; port++) {
@@ -57,21 +77,20 @@ export async function main(argv, env = process.env) {
   const passed = rest.filter((arg, i) => arg !== "--no-open" && !(p >= 0 && (i === p || i === p + 1)));
   const { command, args, fetched } = server(["--data", dir, "--port", String(port), ...passed]);
   if (fetched) console.error(`Starting AgentRun (the first run fetches its server, ${SERVE_SPEC})...`);
-  // The server's banner and request lines stay out of this terminal: one line here says where to go.
-  const child = spawn(command, args, { stdio: ["ignore", "ignore", "inherit"], env: childEnv });
-  let ended = false;
-  const exited = new Promise((resolve) => child.on("exit", (code) => { ended = true; resolve(code ?? 1); }));
+  // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
+  // server's own "Open " line.
+  const child = spawn(command, args, { stdio: ["ignore", "pipe", "inherit"], env: childEnv });
+  const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
-  const base = `http://${HOST}:${port}`;
-  for (let i = 0; !ended && i < (fetched ? 6000 : 600); i++) {
-    if (await fetch(`${base}/v2/health`).then((r) => r.ok && r.json()).then((h) => h?.status === "ok", () => false)) {
-      console.log(`AgentRun is running at ${firstUrl(base)}`);
-      if (shouldOpen(argv, env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [firstUrl(base)], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
-      return exited;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+  let timer;
+  const url = await Promise.race([openUrl(child.stdout), new Promise((resolve) => { timer = setTimeout(resolve, fetched ? 600_000 : 60_000); })]);
+  clearTimeout(timer);
+  if (url === undefined) {
+    child.kill("SIGTERM");
+    console.error(`AgentRun did not start on http://${HOST}:${port}.`);
+    return (await exited) || 1;
   }
-  if (!ended) child.kill("SIGTERM");
-  console.error(`AgentRun did not start on ${base}.`);
-  return (await exited) || 1;
+  console.log(`AgentRun is running at ${url}`);
+  if (shouldOpen(argv, env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [url], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+  return exited;
 }

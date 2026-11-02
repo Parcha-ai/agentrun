@@ -27,7 +27,7 @@ the address it prints; they open it in their browser and set the console's passw
 ## 3. Give it a model
 
 ```sh
-curl -s "$(grep -o 'http://[^ ]*' agentrun.log | sed 's|/console/$||')/v2/capabilities" | node -p 'JSON.parse(require("fs").readFileSync(0)).models.default'
+curl -s "$(grep -o 'http://[^/ ]*' agentrun.log | head -1)/v2/capabilities" | node -p 'JSON.parse(require("fs").readFileSync(0)).models.default'
 ```
 
 `null` means it has no model yet. Ask the person to set one provider key in the shell that starts AgentRun
@@ -41,7 +41,7 @@ token without printing it, and connect over MCP:
 
 ```sh
 export AGENTRUN_API_KEY=$(cat ~/.agentrun/.token)
-export AGENTRUN_BASE_URL="$(grep -o 'http://[^ ]*' agentrun.log | sed 's|/console/$||')/v2"
+export AGENTRUN_BASE_URL="$(grep -o 'http://[^/ ]*' agentrun.log | head -1)/v2"
 claude mcp add --transport http agentrun "$AGENTRUN_BASE_URL/mcp" --header "Authorization: Bearer $AGENTRUN_API_KEY"
 codex mcp add agentrun --url "$AGENTRUN_BASE_URL/mcp" --bearer-token-env-var AGENTRUN_API_KEY
 ```
