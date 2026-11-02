@@ -114,6 +114,17 @@ test("the contract's operations are as vendored; this server's own are added and
         strip(property, `${at}.${field}`);
         continue;
       }
+      // A contract property whose enum this server widens (models.source) is marked on the property, each value it adds
+      // listed, as RunStatus is: cut back to the vendored enum and description, it is the contract's.
+      const vendored = at.split(".").slice(1).reduce((object, key) => object?.properties?.[key], VENDORED.components.schemas[at.split(".")[0]])?.properties?.[field];
+      if (Array.isArray(vendored?.enum) && Array.isArray(property.enum)) {
+        for (const value of property.enum.filter((v) => !vendored.enum.includes(v))) marked.push(`${at}.${field}.${value}`);
+        property.enum = property.enum.filter((v) => vendored.enum.includes(v));
+        if (vendored.description === undefined) delete property.description;
+        else property.description = vendored.description;
+        delete property["x-agentrun-serve"];
+        continue;
+      }
       assert.match(property["x-agentrun-serve"], /^[a-z]+\/\d+$/, `${at}.${field} names its addition`);
       // An addition inside one (a later mark on a property of this server's own) is listed too.
       const inner = (object, where) => {

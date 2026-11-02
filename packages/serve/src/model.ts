@@ -34,7 +34,9 @@ const fauxModel = (env: NodeJS.ProcessEnv, tier: Tier): string => (tier === "def
 
 /** `route_prefix`: the routing prefix this server puts before a gateway's model ids (MODEL_PROVIDER), which a reader takes off
  *  to show the gateway's own id; null with any other source. */
-export type ModelSource = { source: "faux" | "gateway" | "providers"; route_prefix: string | null } & Record<Tier, string | null>;
+/** The values `models.source` takes here: a faux module, a gateway, or each provider with its own key. */
+export const MODEL_SOURCES = ["faux", "gateway", "providers"] as const;
+export type ModelSource = { source: (typeof MODEL_SOURCES)[number]; route_prefix: string | null } & Record<Tier, string | null>;
 
 /** What capabilities say about models here: where they come from, and the model of each tier (`default` is also what a
  *  revision that names none runs on). */
