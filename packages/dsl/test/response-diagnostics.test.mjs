@@ -105,7 +105,7 @@ test('a Score rounded to two places is accepted when some unrounded distribution
   const four = { type: 'score', instructions: 'Fictional coverage', criteria };
   const legend = Object.fromEntries(criteria.map((text, i) => [String(i), text]));
   const reported = (score, p) => ({ type: 'score', score, confidence: 0.6, legend, probabilities: Object.fromEntries(p.map((v, i) => [String(i), v])) });
-  // jev-1.13.0 shape from GRE-3057: the weighted level of the reported probabilities is exactly the score.
+  // jev-1.13.0's shape, as a run reported it: the weighted level of the reported probabilities is exactly the score.
   const sample = JSON.parse('{"type":"score","score":2.81,"confidence":0.62,"legend":{"0":"None","1":"Some","2":"Most","3":"All"},"probabilities":{"0":0.0,"1":0.0,"2":0.19,"3":0.81}}');
   const before = structuredClone(sample);
   validateAnswers({ x: four }, { x: sample });
