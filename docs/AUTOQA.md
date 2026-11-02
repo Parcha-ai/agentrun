@@ -117,6 +117,263 @@ Each row: entry point, then what makes it pass.
     Graph. Capture console errors and HTTP ≥ 400 per page. The page CSP is
     `default-src 'self'`, so any violation is a finding.
 
+## Subsystems
+
+Each subsystem below names its seam: what it takes from the kernel and what it gives back, as types or routes, by name
+only. It gives an "alone" recipe that runs it end to end with the others faked, and 3 to 6 checks a QA pass runs when
+it changed. They are light and continuous: run a subsystem's checks when its code changed, not on every PR. Each lane
+edits only its own subsection.
+
+### Kernel (runs, journal, cap, harness adapters)
+
+Code: `packages/serve/src/{runs,app,harness-app,harness,adapters,cap,request-start}.ts`, `packages/run-adapters`,
+`packages/run-adapters-claude-agent`, `packages/run-adapters-codex`, `packages/pi-durable-disk`, and the timeline of
+`packages/pi-durable-agent`. Rows 8 to 13 of the core catalog are its checks on a live model; the checks below are the
+same ground with no key.
+
+**Seam.**
+
+| | Names on main |
+| --- | --- |
+| Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
+| Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
+| Journal | In the run's store, from `@parcha/pi-durable-agent/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`. Read through `timelineOf` and `runMetricsOf` |
+| Run directory | `DIR/runs/<id>/`: `run.json` (`status`, `holder.pid`, `generation`), `serve.json`, `store/run.sqlite`, `work/`, `process.log` |
+| Adapters it calls | `adapterFor(harness, env, needs: AdapterNeeds)` gives an `AgentAdapter` (`check`, `open`) for a `SessionSpec`, driven by `createHarnessRunner`. There the cap is the runner's `beforeRequest`, asked by `startModelProxy` under a `ProviderPolicy`; on pi it wraps the models (`capModels`) |
+| Takes from the tool plane | `TOOLS` (`ToolEntry`), bound on pi as a `ToolBinding`; `hostTools()` gives claude-agent and codex `HostTool[]`, each with its `REPLAY` (`safe` or `never`) |
+| Takes from places | The revision's `definition.place`: `runner` (the default: a local process under `confinePrefix()`) or `sandbox` with a `box`. A sandbox run on a box this server lacks is `409 agent_not_runnable` naming it (`boxAvailability`); `places` in capabilities lists the boxes, none available yet. `startServe({ box })` takes a `BoxHost` that sweeps the boxes runs left (the run's `box.json`) |
+| Gives the console | The routes above, and `GET /v2/stats` `analytics`, summed from the `RunMetrics` each run's `carryBack` stores |
+| Gives the learning loop | Not wired into serve yet. The seam is run-adapters' `followUpOnce` (one more turn, held to `reserveUsd`), which learn's `reflectBudget` sizes |
+
+**Alone.** No model key, no tool key, no box and no console. Build as in [How to run](#how-to-run), without the console
+lines. Then:
+
+- pi runs alone through the CLI on the tests' faux model. On `faux-output-priced.mjs`, one request's worst case is
+  16,384 output tokens at $100 a million: $1.6384.
+
+  ```sh
+  Q=$(mktemp -d)
+  env -i PATH="$PATH" HOME="$Q" TMPDIR="$Q" node packages/serve/dist/cli.js --data "$Q/data" --port 0 \
+    --drain-timeout 2s --faux packages/serve/test/fixtures/faux-output-priced.mjs
+  ```
+
+  Drive it with the README's quick-start calls; the token is in `$Q/data/.token`. The faux model answers by the message:
+  `What is six times seven?` gives `The answer is 42.`, `Take your time.` holds its answer for 60 s, `Answer once <file>
+  exists.` gives `Now.` once the file exists, and a follow-up `<message>` to `Take your time.` gives
+  `On <message>: done.`.
+- claude-agent and codex run alone only inside the tests. `startServe({ fauxHarness })` puts every harness but pi on
+  run-adapters' `fauxAdapter`; the CLI has no flag for it, and no environment variable turns it on. `claude-run` drives
+  the pinned Claude CLI against `fakeAnthropic`, and `codex-run` drives agentrun-codex's app-server stand-in. From
+  `packages/serve`:
+
+  ```sh
+  node --test --test-reporter=tap test/runs.test.mjs test/harness-run.test.mjs test/cap-unknown.test.mjs \
+    test/harness-cap.test.mjs test/claude-run.test.mjs test/codex-run.test.mjs test/recovery.test.mjs
+  ```
+
+  The checks below name these files without `.test.mjs`.
+
+**Checks.** Each reads `GET /v2/runs/{id}` once the run's timeline says `final: true`, unless it names another route.
+The journal is the `entries` table of the run's `store/run.sqlite`.
+
+1. **Each harness answers.** For every entry of `harnesses[]` with `available: true`, a run ends `completed` with
+   `result.final_answer` set and `cost.usd` a number. Each paid request is counted once. Alone: pi through the CLI
+   (`What is six times seven?`); claude-agent and codex in `harness-run`, `claude-run` and `codex-run`.
+2. **The cap refuses before anything is sent.** `max_cost_usd: 1`, below one request's worst case: `failed`,
+   `error.code: spend_cap_reached`, `result: null`, `cost.usd: 0`. The journal's only request mark is
+   `agentrun.request_started` with `capRefused: true`. Alone: pi through the CLI; claude-agent and codex in
+   `claude-run` and `codex-run`.
+3. **A stopped request counts at the worst case the cap held.** `Take your time.` at `max_cost_usd: 2`; once it reads
+   `working`, `POST /v2/runs/{id}/stop` (`stopped: true`) leaves it `input_required`. A message is a `follow_up`, and
+   the run ends `failed`, `spend_cap_reached`, its `error.message` saying `with $1.638400 spent`. At `10` the follow-up
+   completes. `cost.usd` is `null` both ways. Read before `final`, at the first poll that shows the terminal status, it
+   can still be the live figure (`0`, or `0.0004` after the follow-up). The stopped request's `agentrun.request_ended`
+   mark carries `heldUsd: 1.6384`. Alone: pi through the CLI, and `cap-unknown`. For claude-agent and codex,
+   `harness-cap` covers a crash mid-request and run-adapters' `held-worst-case.test.mjs` a request cut short; no test
+   stops one through serve.
+4. **Cancel ends the run and nothing more is sent.** `POST /v2/runs/{id}/cancel` on a working run answers `202` with
+   `cancel_requested: true`; the run ends `cancelled`, a second cancel says `already_terminal: true`, and a message is
+   `409 not_continuable`. A request cut by the cancel leaves `cost.usd` `null`. Alone: `runs` (pi, on
+   `Take your time.`) and `harness-run` (codex, cancelled while a request is out).
+5. **A crash or a restart resumes the run.** Restart: `Answer once <file> exists.`; once it reads `working`, SIGTERM
+   the server's own PID. It exits within `--drain-timeout` plus 3 s, the run's `holder.pid` exits with it, and
+   `run.json` reads `sleeping`. Start it again on the same `--data` and make the file: the run ends `completed` with
+   `Now.`. Crash: `kill -KILL` the run's `holder.pid`; the run opens again and completes, each paid request counted
+   once. Alone: the restart on pi through the CLI, and `recovery`; the crash in `harness-run` and `claude-run`, and in
+   `codex-run`, which checks that no Codex process is left behind.
+6. **A multi-tool turn completes on claude-agent and codex.** Two tool calls in one model response end `completed`,
+   each call shown before its result under the answer that asked for it, none interrupted. Runnable alone once #1363
+   merges: `node --test test/harness-multi-tool.test.mjs` from `packages/serve`. Until then it hangs, the first of the
+   known open findings, and on a live model it is part of row 8.
+
+### Tool plane
+
+What a run's agent can call, on every harness, and the keys those tools use. Later changes extend this section as they
+land (web search and tool settings, monid on every harness, the per-tool permission gate).
+
+**Seam.**
+- Takes from the kernel:
+  - the run's pinned revision (the tools it names);
+  - the run's secrets over its pipe (a tool key only to a run that needs it; Parallel's key on the decision descriptor);
+  - pi's tool binding (`TOOLS[name].bind`);
+  - the host-tool slot the claude-agent and codex adapters serve (`hostTools`, served over MCP or app-server dynamic
+    tools);
+  - the journal's replay classes (`REPLAY`: `safe` may run again after a crash, `never` is answered interrupted);
+  - the run's `work/` directory.
+- Gives back:
+  - tool registrations per harness, and one journal entry per call;
+  - `GET /v2/capabilities` `tools[]` (`name`, `harnesses`, `missing`);
+  - `GET/PUT/DELETE /v2/settings/tool-keys` (keys by name, sealed at rest, never returned);
+  - files the tools write under `work/` (`work/evidence/`).
+
+**Alone.** Run the plane with no model and no third party:
+- **Tests.** `startServe({ faux, fauxWeb, fauxParallel, fauxMonid })` in `packages/serve/test` replaces the model, the
+  resolver and HTTP for fetches, Parallel and monid with `test/fixtures/faux-*.mjs`. The faux harness
+  (`faux-harness.mjs`) stands in for claude-agent and codex.
+  `node --test packages/serve/test/{fetch-page,web-fetch,host-tools,harness-run,monid,tool-keys,secret-custody}.test.mjs`
+  runs the plane end to end that way.
+- **On a QA server.** `--faux MODULE` scripts the model's tool calls (see "The faux model" in `packages/serve/README.md`),
+  so a run calls `fetch_page`, `web_fetch`, `read`, `write` and `edit` with no model key. `fetch_page` and `web_fetch`
+  then read real public pages; nothing else leaves the box.
+
+**Checks when the tool plane changed.**
+1. Every name in `GET /v2/settings/tool-keys` `unlocks` is a tool `GET /v2/capabilities` binds, on the harnesses it lists,
+   and `missing` names the key each tool still needs.
+2. `fetch_page` and `web_fetch` refuse loopback, private, link-local and metadata addresses and ports other than 80/443,
+   at the first hop and after a redirect; a refused URL is never sent to Parallel.
+3. A tool key reaches only a run that names a tool it unlocks, over the pipe, never in any process's environment; a saved
+   key exists on disk only sealed (no plaintext under the data directory).
+4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `fetch_page`, `web_fetch`) run and are journaled
+   with their replay class; a `write` cut off by a crash comes back interrupted, never re-run.
+5. A `monid.run` is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
+   by name; an answer over 60,000 characters is filed under `work/evidence/monid/`.
+
+### Places (boxes, home, files)
+
+**Seam.** It takes a run's `BoxSpec` from the kernel (`workspace`, `env`, `network`, `mounts`) and the run directory
+the run's files go to. It gives back:
+
+- `Box` and `BoxProvider` from `@parcha/pi-transport`. Only a provider whose `BoxProvider.mounts` is true binds
+  `mounts` (Docker, as bind mounts); every other provider refuses a spec with any as `unsupported`.
+- `@parcha/pi-transport/sync`: the safe extractor (`extractTar`, `openExtractor`, `removeEntries`) and the sync layer
+  (`seedDir`/`pullDir`, `seedAgentHome`/`pullAgentHome`, `HOST_OWNED_HOME`), each answering with a receipt.
+- `@parcha/pi-transport/home`: the checkpoint vault (`CheckpointVault`, `localVault`, `pullCheckpoint`), which keeps a
+  box's tree as data and never unpacks it on the host; and `checkpointStore`/`verifyStore` with `UntrustedStoreOptions`,
+  which read a box-made SQLite store through `withUntrustedStore` (internal to the package).
+- Internal to pi-transport: `bwrapArgs`, `bwrapFiles` and `probeBwrap` (`src/box/bwrap-args.ts`).
+- `@parcha/pi-transport/testing`: `registerBoxConformance`, and fake providers for each box (`fakeBoxes` and the
+  provider-shaped fakes).
+- Serve: `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/{path}`, and the sweep before any run starts
+  (`sweepBoxes`, `settleBox`, `Quarantine` in `packages/serve/src/box/sweep.ts`).
+- Serve, an agent's place (`packages/serve/src/place.ts`): `definition.place` is `{mode: "runner"}` or
+  `{mode: "sandbox", box}`, checked by `placeIssues`; `GET /v2/capabilities` answers `places` (`placesOf`). A sandbox
+  place saves with a warning at `definition.place`, and its run is 409 `agent_not_runnable` with `details.box`.
+- Serve, the box registry (`packages/serve/src/boxes.ts`): `AGENTRUN_BOXES` lists the boxes to probe once at start
+  (`boxRegistry`), and the start log's `event=boxes` line says which are available and why the others aren't. Box
+  keys (`BOX_KEYS`) stay with the server.
+
+Not on main yet: the registry feeding `places` (capabilities and run refusals still say no box is set up), runs in a
+box, a files API for the agent's home, and uploads. Each one extends this section when it lands.
+
+**Alone.** Everything else is faked: boxes by fake providers, the model by the faux model. Put a `docker` that exits
+1 first on `PATH`, even where Docker is installed, so nothing reaches a daemon by accident:
+
+```sh
+mkdir -p "$TMPDIR/qa-bin" && printf '#!/bin/sh\nexit 1\n' > "$TMPDIR/qa-bin/docker" && chmod +x "$TMPDIR/qa-bin/docker"
+export PATH="$TMPDIR/qa-bin:$PATH"
+npm ci --ignore-scripts
+
+# pi-transport: vitest on source, no build
+npm test -w @parcha/pi-transport -- box- fake-boxes   # every box on fakes, Docker's argv without a daemon, bwrap
+npm test -w @parcha/pi-transport -- sync-extract sync-run-files home-vault     # hostile archives and boxes
+npm test -w @parcha/pi-transport -- home-untrusted-store                       # once on Node 22, once on Node 24
+
+# serve: node:test over dist, on the faux model
+npm run build
+(cd packages/serve && node --test test/place.test.mjs test/boxes.test.mjs test/files.test.mjs \
+  test/box-sweep.test.mjs test/box-record.test.mjs)
+```
+
+The Docker variant runs only where Docker exists, as CI's `transport-docker` job does:
+`docker pull debian:bookworm-slim && npm run test:live:docker -w @parcha/pi-transport`. Each `.live` file the `box-`
+filter picks up skips itself without its `PI_TRANSPORT_LIVE_*` variable, so the commands above start no real box.
+`boxes.test.mjs` puts its own fake `docker` first on `PATH` and answers Daytona from a loopback fake; never set a box key
+or a real `docker` on `PATH` for a server under test.
+
+**Checks when it changed.**
+
+1. **Places**: `place.test.mjs` passes. Each wrong shape is a 422 at `definition.place` and nothing is saved; a sandbox
+   place saves with a warning naming its box, and its run is 409 `agent_not_runnable` with that box; an edit with no
+   place keeps the agent's.
+2. **Box registry and keys**: `boxes.test.mjs` passes. A name in `AGENTRUN_BOXES` that is no box refuses the start;
+   each probe is bounded; no key's value is in an offer, a reason or the log; a box key set in the server's environment
+   reaches no run's process.
+3. **Hostile archives and home pulls**: `sync-extract`, `home-vault` and `sync-run-files` pass. Nothing is written
+   outside the destination, no link, device or fifo is created, a setuid mode is capped, a pull never reverts a file the
+   host changed (`host_changed`), and `learning/` is never written back.
+4. **Box-made stores**: `home-untrusted-store` passes on Node 22 and on Node 24. A store with a trigger, a view, an
+   `ATTACH` or a hot journal is refused, and nothing in it runs.
+5. **Box arguments and mounts**: `box-bwrap-args` matches its golden vectors and refuses a workspace with a link in it;
+   `box-bwrap-probe` refuses a setuid or too-old `bwrap`; `box-docker.test` refuses a missing source, a relative path,
+   a `..` segment, a target of `/` and a repeated target before `docker run`; `box-local` refuses any mount.
+6. **Run files and the sweep**: `files.test.mjs` never lists or serves a dotfile or a symlink, and refuses `..` with the
+   contract's codes; `box-sweep.test.mjs` reaps a box whose writer is gone and quarantines one it cannot empty.
+
+### Console, import and analytics
+
+**Seam.** Takes the `/v2` routes the console reads: `/agents`, an agent's `/revisions` and `/runs`, `/runs` and a
+run's `/timeline`, `/graph` and `/files`, `/stats` with its `analytics` block, `/usage`, `/capabilities` and
+`/settings/tool-keys`. Also the agent store's `run_metrics` and `run_tool_metrics`, which `/stats` sums. Gives back
+`/v2` writes only: create, revise and archive an agent; start a run, message it, stop, cancel or archive it. `import`
+gives the store its runs through `AgentStore.importRun`, each with its `run_metrics`.
+
+**Alone.** Each runs with no model key and no network. From a checkout built as in [How to run](#how-to-run), with
+fresh directories:
+
+```sh
+export QA_HOME=$(mktemp -d) QA_DATA=$(mktemp -d)
+# A fixture home: synthetic Claude Code, Codex and pi sessions, the importer's own test fixtures.
+node --input-type=module -e '
+  import { mkdirSync } from "node:fs";
+  import { claudeSession, codexSession, piSession } from "./packages/serve/test/fixtures/import-sessions.mjs";
+  const home = process.env.QA_HOME, project = `${home}/code/site`;
+  mkdirSync(project, { recursive: true });
+  claudeSession(home, project, 1); codexSession(home, project, 2); piSession(home, project, 3);'
+```
+
+1. The console against a seeded store, on the faux model:
+
+   ```sh
+   HOME="$QA_HOME" node packages/serve/dist/cli.js import --all --data "$QA_DATA"
+   XDG_CONFIG_HOME="$QA_HOME/.config" packages/serve/launcher/agentrun-serve --data "$QA_DATA" --port 0 \
+     --faux packages/serve/test/fixtures/faux-model.mjs
+   ```
+
+   Open the console at `/console/` on the address the banner prints. The imported project is one agent with its three
+   runs.
+2. The console's own suite, on recorded fixtures: `(cd apps/console && npm ci && npm test)`.
+3. Import alone: `HOME="$QA_HOME" node packages/serve/dist/cli.js import --dry-run --all --data "$QA_DATA"` prints what
+   it would import (1 project, 3 sessions) and writes nothing.
+
+`--all` because the fixture's project is in a temp directory, which import skips otherwise.
+
+**Checks.**
+
+1. The console loads at `/console/` and signs in: setup, then the password. With `AGENTRUN_ACCOUNTS=0` the printed
+   link signs the browser in and the token leaves the address.
+2. An agent is created from New agent with its defaults, and a run is started from its page. Once the workflow
+   starter is on main (#1315), a workflow agent is created from it too.
+3. One run on a priced faux model (`packages/serve/test/fixtures/faux-priced.mjs`): its timeline's usage row, its
+   stored `cost.usd` and `/v2/stats` agree, with nothing counted twice.
+4. Mission Control shows the same totals as `/v2/stats` for a date range (`?from=&to=`). So does the agent page's
+   Analytics tab, once it is on main (#1354).
+5. An import's dry run counts what the import then stores, and a second import adds nothing.
+6. Settings → Tool keys never shows a value.
+
+### Learning loop
+
+_Written by the lane that owns this subsystem._
+
 ## Model and key caveats
 
 - Run smokes on the cheapest capable model your gateway offers, and a stronger one only when a case needs it. Send

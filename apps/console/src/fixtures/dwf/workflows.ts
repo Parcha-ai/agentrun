@@ -1,4 +1,4 @@
-// The decision-workflow demo's workflows, as the console's fixtures draw them: the sprint's use cases (batch-20, kyb,
+// The decision-workflow demo's workflows, as the console's fixtures draw them: five use cases (batch-20, kyb,
 // jury, doc-valid, merchant-mcc) written by hand in the DSL's v2 shape. Every company is invented.
 
 const yes = (description: string) => ({ type: "boolean", description });

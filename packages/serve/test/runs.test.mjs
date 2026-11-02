@@ -78,12 +78,18 @@ test("ask_person makes the run input_required and waiting; a message answers it 
   const row = waiting.rows.find((r) => r.kind === "waiting");
   assert.equal(row.summary, "Waiting for you: Which region should I use?");
   assert.deepEqual([(await api("GET", `/runs/${run_id}`)).body.status, (await api("GET", `/runs/${run_id}`)).body.ended_at], ["input_required", null]);
+  // What it waits on, read from the run itself, on the run and on its row in both lists.
+  const pending = (await api("GET", `/runs/${run_id}`)).body.pending;
+  assert.deepEqual([pending.kind, pending.question, pending.asked_at], ["question", "Which region should I use?", row.timestamp]);
+  for (const path of ["/agents/regions/runs", "/runs"]) assert.deepEqual((await api("GET", path)).body.runs.find((r) => r.run_id === run_id).pending, pending, path);
   const answer = await api("POST", `/runs/${run_id}/messages`, { content: "EU" });
   assert.equal(answer.status, 202);
   assert.equal(answer.body.mode, "answer");
   const done = await follow(api, run_id, ["completed"], { after: waiting.after });
   assert.equal(done.pages.filter((p) => p.reset).length, 0);
   assert.deepEqual((await api("GET", `/runs/${run_id}`)).body.result, { output: null, final_answer: '{"region":"EU"}' });
+  assert.equal((await api("GET", `/runs/${run_id}`)).body.pending, null, "answered, it waits on nothing");
+  assert.equal((await api("GET", "/agents/regions/runs")).body.runs[0].pending, null);
   assert.deepEqual(done.rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: EU"], "the answer is the person's next message, never a steer");
   // What the model read back for its ask_person call, as the run's store holds it: never empty, on every pi-durable this
   // package takes (1.1 reads a result's `content`, 1.2 and later its `output`).

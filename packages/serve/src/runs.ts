@@ -219,6 +219,14 @@ function noteAnswer(run: Run, entries: readonly unknown[]): void {
 }
 
 const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id));
+/** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
+ *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
+ *  status reads, never from a scan of its timeline. */
+export type Pending = { kind: "question"; question: string; asked_at: string } | null;
+const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
+  const last = meaningful(rows);
+  return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
+};
 const answerOf = (rows: readonly TimelineEvent[]) => {
   const last = meaningful(rows);
   return last?.kind === "final_answer" || last?.kind === "text_block" ? last : undefined;
@@ -1410,6 +1418,7 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
+      pending: status === "input_required" && state === "waiting" ? pendingOf(run.rows) : null,
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
@@ -1418,8 +1427,8 @@ export class Runs {
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, pending, cost, archived_at, imported_from } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, pending, cost, archived_at, imported_from };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -1443,6 +1452,8 @@ export class Runs {
       review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
       archived_at: row.archivedAt ?? null,
+      // A run read from its row alone has ended: it waits on nothing.
+      pending: null,
       imported_from: row.importedFrom ?? null,
     };
   }
