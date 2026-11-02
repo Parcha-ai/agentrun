@@ -25,6 +25,8 @@ export const OUTBOX_FILE = "webhook-outbox.json";
 /** The waits before each try again, after the first at once: the Standard Webhooks schedule, cut at about a day. */
 export const RETRY_MS: readonly number[] = [5_000, 300_000, 1_800_000, 7_200_000, 18_000_000, 36_000_000];
 const TIMEOUT_MS = 15_000;
+/** How soon an outbox write that failed is tried again. */
+const OUTBOX_RETRY_MS = 5_000;
 /** How many attempts the log keeps, and with them the messages they tried, for a redelivery. */
 export const ATTEMPTS_KEPT = 50;
 const FORMAT = "webhook/1";
@@ -56,6 +58,9 @@ export class Webhooks {
   private readonly trying = new Set<Promise<Attempt>>();
   private readonly stop = new AbortController();
   private closed = false;
+  /** The outbox as held here is not on disk: its last write failed. Written again soon, and at the close. */
+  private unsaved = false;
+  private saving?: NodeJS.Timeout;
 
   /** `env` is the server's own (withSecrets); `say` takes a log line's fields; `retryMs` the waits between tries. */
   constructor(data: string, env: NodeJS.ProcessEnv, private readonly say: (fields: Record<string, string | number>) => void, private readonly retryMs: readonly number[] = RETRY_MS) {
@@ -142,8 +147,11 @@ export class Webhooks {
     this.closed = true;
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
+    clearTimeout(this.saving);
     this.stop.abort();
     await Promise.allSettled([...this.trying]);
+    // A notice a failed write left only here is written now, while the data directory is still this server's.
+    if (this.unsaved) this.store();
   }
 
   private config(): Config | undefined {
@@ -172,14 +180,27 @@ export class Webhooks {
   private writeOutbox(): void {
     // Closed, the data directory may be another server's already.
     if (this.closed) return;
-    // The last attempts, and the messages pending or tried by one of those (a redelivery sends one again).
+    if (this.store() || this.saving) return;
+    // Not saved: kept, and written again until a write lands (or the close writes it).
+    const timer = setTimeout(() => { this.saving = undefined; this.writeOutbox(); }, OUTBOX_RETRY_MS);
+    timer.unref();
+    this.saving = timer;
+  }
+
+  /** The outbox written whole: the last attempts, and the messages pending or tried by one of those (a redelivery sends
+   *  one again). False when the write failed, which the log says once until one lands. */
+  private store(): boolean {
     this.attempts = this.attempts.slice(-ATTEMPTS_KEPT);
     const tried = new Set(this.attempts.map((a) => a.webhook_id));
     this.messages = this.messages.filter((m) => m.status === "pending" || tried.has(m.id));
     try {
       writeDurableSync(this.outbox, `${JSON.stringify({ v: 2, messages: this.messages, attempts: this.attempts })}\n`);
+      this.unsaved = false;
+      return true;
     } catch (error) {
-      this.say({ condition: "outbox_unwritable", file: this.outbox, error: (error as NodeJS.ErrnoException).code ?? "unknown" });
+      if (!this.unsaved) this.say({ condition: "outbox_unwritable", file: this.outbox, error: (error as NodeJS.ErrnoException).code ?? "unknown" });
+      this.unsaved = true;
+      return false;
     }
   }
 
@@ -260,15 +281,18 @@ export class Webhooks {
     const gone = attempt.status_code === 410 && config !== undefined && standing !== undefined && standing.url === config.url && standing.updated_at === config.updated_at && !standing.disabled;
     const wait = how.retry && failure && config && !gone ? this.retryMs[message.attempts - 1] : undefined;
     if (!failure) Object.assign(message, { status: "delivered", next_at: null });
-    else if (!how.redelivery && wait !== undefined) {
-      // Jitter, so messages that failed together do not all come back together.
-      const delay = Math.round(wait * (0.8 + 0.4 * Math.random()));
-      message.next_at = Date.now() + delay;
-      attempt.retry_at = iso(message.next_at);
-      this.schedule(message, delay);
-    } else if (!how.redelivery) {
-      Object.assign(message, { status: "failed", next_at: null });
-      this.say({ condition: "delivery_failed", type: message.type, webhook_id: message.id, attempts: message.attempts, ...(attempt.status_code !== null ? { status_code: attempt.status_code } : {}), error: failure! });
+    // A redelivery that failed leaves the message as it is, and so does a try that ends after one delivered it.
+    else if (!how.redelivery && message.status === "pending") {
+      if (wait !== undefined) {
+        // Jitter, so messages that failed together do not all come back together.
+        const delay = Math.round(wait * (0.8 + 0.4 * Math.random()));
+        message.next_at = Date.now() + delay;
+        attempt.retry_at = iso(message.next_at);
+        this.schedule(message, delay);
+      } else {
+        Object.assign(message, { status: "failed", next_at: null });
+        this.say({ condition: "delivery_failed", type: message.type, webhook_id: message.id, attempts: message.attempts, ...(attempt.status_code !== null ? { status_code: attempt.status_code } : {}), error: failure });
+      }
     }
     if (gone) {
       // Gone: the receiver says this endpoint is no more. Off, its pending messages dropped, until a PUT sets it again.

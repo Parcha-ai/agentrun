@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -449,4 +449,76 @@ test("when a status is a notice: a change to a wait or an end; a live run adopte
   assert.deepEqual(nextMoment("unread", "input_required", 2), { keep: "input_required", notify: false });
   assert.deepEqual(nextMoment("unread", "cancelled", 0), { keep: "cancelled", notify: true });
   assert.deepEqual(nextMoment("unread", "completed", 4), { keep: "completed", notify: true });
+});
+
+test("a start that fails after its webhooks began stops them before it lets the data directory go: no try and no write after it", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t, () => 503);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", webhookRetryMs: [1_500] });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  const api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "pending", "hi");
+  await follow(api, run.run_id, ["completed"]);
+  await until(async () => (await api("GET", "/settings/webhook/deliveries")).body.attempts[0]?.retry_at, "a try again scheduled");
+  await first.close();
+  stopped = true;
+  const outbox = join(data, "webhook-outbox.json");
+  const before = readFileSync(outbox, "utf8");
+  // The next start finds its port taken: it fails after its webhooks read the pending message and set its next try.
+  const taken = createServer();
+  await new Promise((resolve) => taken.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => taken.close(resolve)));
+  await assert.rejects(startServe({ data, port: taken.address().port, faux: FAUX, drainTimeout: "5s" }), /EADDRINUSE/);
+  await sleep(2_500);
+  assert.equal(hook.got.length, 1, "the failed start tries nothing");
+  assert.equal(readFileSync(outbox, "utf8"), before, "and writes nothing");
+});
+
+test("a notice the outbox could not be written with is kept, and written by the close: a stop never loses it", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t, () => 503);
+  const lines = [];
+  const data = join(await scratch(t), "agents");
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", webhookRetryMs: [60_000], log: (line) => lines.push(line) });
+  let stopped = false;
+  t.after(() => stopped || server.close());
+  const api = client(server.baseUrl, server.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  // The outbox's temporary file is a directory: each write of it fails, as on a full disk.
+  const blocked = join(data, "webhook-outbox.json.tmp");
+  mkdirSync(blocked);
+  const run = await startRun(api, "unsaved", "hi");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => hook.got.length === 1, "the first try");
+  await sleep(200);
+  assert.equal(existsSync(join(data, "webhook-outbox.json")), false, "never written");
+  assert.equal(lines.filter((line) => line.includes("condition=outbox_unwritable")).length, 1, "said once");
+  rmdirSync(blocked);
+  await server.close();
+  stopped = true;
+  const kept = JSON.parse(readFileSync(join(data, "webhook-outbox.json"), "utf8")).messages;
+  assert.deepEqual(kept.map((m) => [m.id, m.type, m.status]), [[hook.got[0].headers["webhook-id"], "run.ended", "pending"]], "the close wrote it, pending, for the next server");
+});
+
+test("a try that fails after a redelivery delivered the same message leaves it delivered: no failure is said", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const hook = await receiver(t, (n) => (n === 1 ? held.then(() => 500) : 200));
+  t.after(() => release());
+  const lines = [];
+  const { api } = await serve(t, { webhookRetryMs: [], log: (line) => lines.push(line) });
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "both", "hi");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => hook.got.length === 1, "the automatic try, held");
+  const id = hook.got[0].headers["webhook-id"];
+  assert.equal((await api("POST", `/settings/webhook/deliveries/${id}/redeliver`, {})).body.status_code, 200);
+  release();
+  await until(async () => (await api("GET", "/settings/webhook/deliveries")).body.attempts.length === 2, "both tries logged");
+  await sleep(200);
+  assert.equal(lines.filter((line) => line.includes("condition=delivery_failed")).length, 0, "no false failure");
 });

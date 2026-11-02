@@ -328,15 +328,19 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // adopts or sweeps no run, binds no port and prints no address (server-lock.ts). A failed start releases the lock and
   // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile.
   const lock = takeServerLock(data);
+  // What a start that fails stops before the lock goes: the webhook deliveries it began, which would write the next
+  // server's outbox.
+  const stops: Array<() => Promise<void>> = [];
   try {
-    return await startHolding(options, data, lock, { maxRuns, minFreeBytes });
+    return await startHolding(options, data, lock, { maxRuns, minFreeBytes }, stops);
   } catch (error) {
+    for (const stop of stops) await stop().catch(() => undefined);
     lock.release();
     throw error;
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number }): Promise<Serve> {
+async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number }, stops: Array<() => Promise<void>>): Promise<Serve> {
   const { maxRuns, minFreeBytes } = checked;
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
   const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
@@ -351,6 +355,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
+  stops.push(() => webhooks.close());
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
   const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
