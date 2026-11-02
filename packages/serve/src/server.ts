@@ -17,6 +17,7 @@ import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from 
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
+import { placesOf } from "./place.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
@@ -212,6 +213,8 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
     runtimes: ["pi-durable-disk"],
     /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
     harnesses,
+    /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
+    places: placesOf(env),
     models,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing. */
     tools: toolsView(env),
@@ -432,7 +435,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
-  const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : { kind: "workflow", workflow: revision.body.workflow, ...(revision.body.harness ? { harness: revision.body.harness } : {}) });
+  /** A workflow revision's shape as runnable.ts checks it: its workflow, harness and place. */
+  const workflowShape = ({ workflow, harness, place }: { workflow: unknown; harness?: string; place?: RevisionShape["place"] }): RevisionShape => ({ kind: "workflow", workflow, ...(harness ? { harness } : {}), ...(place ? { place } : {}) });
+  const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : workflowShape(revision.body));
 
   /** What keeps `revision` from running here, checked before anything starts with the checks a save makes
    *  (runnable.ts): one a save refused, or one a setting of this host fixes that it does not have yet. */
@@ -443,7 +448,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
     const missing = Object.fromEntries(blockers.flatMap((b) => (b.missing ? [[b.missing.tool, b.missing.vars]] : [])));
     const harness = blockers.find((b) => b.harness)?.harness;
-    const named = harness ? { harness } : {};
+    const box = blockers.find((b) => b.box)?.box;
+    const named = { ...(harness ? { harness } : {}), ...(box ? { box } : {}) };
     if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, missing, ...named } });
     const tier = blockers.find((b) => b.tier)?.tier;
     const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
@@ -452,7 +458,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : { kind: "workflow", workflow: revision.workflow, ...(revision.harness ? { harness: revision.harness } : {}) });
+    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision));
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);
