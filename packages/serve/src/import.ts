@@ -263,9 +263,9 @@ function byRun(sessions: readonly Session[]): Session[][] {
 
 /** A session's files, read in the import's order with its `seen` (which file keeps a copied record), as the one run the
  *  store keeps of it: their turns in the order they ran (each file's by its start; each answer with its own file's model
- *  when it names none), its state and model the file's that ended last. Its cost, when known: Claude Code writes the
- *  session's running total (a moved session's copy goes on from the original's), so the highest total written; another
- *  source's file prices its own requests, so their sum. */
+ *  when it names none), its state and model the file's that ended last. Its cost, when each file's is known: Claude Code
+ *  writes the session's running total (a moved session's copy goes on from the original's), so the highest total
+ *  written; another source's file prices its own requests, so their sum. */
 function merged(parts: readonly Session[]): Session {
   if (parts.length === 1) return parts[0]!;
   const ordered = [...parts].sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? "") || a.file.localeCompare(b.file));
@@ -275,7 +275,9 @@ function merged(parts: readonly Session[]): Session {
   const effort = mostEffortOf(turns);
   const starts = parts.flatMap((part) => (part.startedAt ? [part.startedAt] : [])).sort();
   const priced = parts.flatMap((part) => (part.costUsd !== undefined ? [part.costUsd] : []));
-  const costUsd = first.source === "claude-code" ? (priced.length ? Math.max(...priced) : undefined) : priced.length === parts.length ? priced.reduce((n, cost) => n + cost, 0) : undefined;
+  // Known only when each file's is: a file whose spending is unknown (an unpriced model, no cost written) leaves the
+  // session's unknown, never a part of it stored as the whole.
+  const costUsd = priced.length < parts.length ? undefined : first.source === "claude-code" ? Math.max(...priced) : priced.reduce((n, cost) => n + cost, 0);
   const { model: _model, startedAt: _start, endedAt: _end, costUsd: _cost, firstPrompt: _prompt, effort: _effort, ...rest } = first;
   const model = last.model ?? first.model;
   const firstPrompt = ordered.find((part) => part.firstPrompt !== undefined)?.firstPrompt;

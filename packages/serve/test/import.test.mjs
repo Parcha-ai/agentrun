@@ -1060,3 +1060,19 @@ test("a subagent's failed request with zero tokens is a request of known zero to
   });
   assert.deepEqual([runs[0].metrics.requests, runs[0].metrics.unmetered], [3, 0], "the session's 2 and the failed one, every count known");
 });
+
+test("a moved Claude Code session whose copy adds work it could not price has an unknown cost and the catalog's estimate, never the original's total, in either folder order", async (t) => {
+  for (const moved of ["-a-moved", "~z-moved"]) {
+    const { runs } = await measuredAndImported(t, (home, project) => {
+      const file = claudeSession(home, project, 203, { cost: 1 });
+      const base = { sessionId: sessionId(203), cwd: project, isSidechain: false, userType: "external", version: "2.1.0" };
+      writeSession(join(home, ".claude", "projects", moved, `${sessionId(203)}.jsonl`), [
+        ...readFileSync(file, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line)),
+        { ...base, type: "user", uuid: "unpriced-u", timestamp: minute(30), message: { role: "user", content: "Again, here." } },
+        { ...base, type: "assistant", uuid: "unpriced-a", timestamp: minute(31), message: { id: "msg_unpriced", role: "assistant", model: "claude-sonnet-5", content: [{ type: "text", text: "Done." }], usage: { input_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 6 } } },
+        { type: "cost-state", sessionId: sessionId(203), totalCostUSD: 1.25, hasUnknownModelCost: true, timestamp: minute(31) },
+      ]);
+    });
+    assert.deepEqual(runs.map(({ run, metrics }) => [run.costUsd ?? null, typeof metrics.costUsdEst, metrics.costBasis]), [[null, "number", "catalog"]], moved);
+  }
+});
