@@ -265,8 +265,8 @@ test("learning is this server's own addition, learning/1: the definition's switc
   assert.equal((await api("POST", "/agents", agent("learner", { learning: true }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("blocked", { learning: true }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
-  await mkdir(join(data, "homes", "blocked"), { recursive: true });
-  await writeFile(join(data, "homes", "blocked", "learning"), "not a folder");
+  await mkdir(homeOf(data, "blocked"), { recursive: true });
+  await writeFile(join(homeOf(data, "blocked"), "learning"), "not a folder");
   const runs = {};
   for (const id of ["learner", "blocked", "plain"]) {
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });

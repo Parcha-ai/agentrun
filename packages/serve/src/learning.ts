@@ -1,5 +1,5 @@
 // Learning: an agent whose definition says `learning: true` keeps a folder of what it learned, and each of its runs
-// starts from it. The folder is `<data>/homes/<agent id>/learning/`, in Claude Code's auto-memory format
+// starts from it. The folder is its home's `learning/` (files.ts homeOf), in Claude Code's auto-memory format
 // (packages/learn notes.ts): `MEMORY.md`, the index, one line per active note, and one `<slug>.md` per note. It is plain
 // git with main checked out, so any reader sees its files. This server is its only writer. Every git call runs with the
 // repository's hooks, fsmonitor, replace refs and lazy fetches off and reads no system or global config, and every call
@@ -19,7 +19,7 @@ import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { INDEX_FILE, loadedIndex, NOTE_FILE, parseNoteFile } from "@parcha/agentrun-learn";
-import { writeDurable } from "./files.js";
+import { homeOf, writeDurable } from "./files.js";
 import { isObject } from "./validate.js";
 
 /** The server's learning switch (`--learning`, AGENTRUN_SERVE_LEARNING; capabilities.features.learning). `on`, the
@@ -61,10 +61,9 @@ const MIN_GIT = [2, 40] as const;
 /** How long one git call may take before it is killed: a hung call would hold its agent's queue. */
 const GIT_TIMEOUT_MS = 60_000;
 
-/** The agent's home, `<data>/homes/<agent id>`, and its learning folder: the home's `learning/` entry, which only the
- *  host writes. */
-const homeDir = (data: string, agentId: string): string => join(data, "homes", agentId);
-export const learningRepo = (data: string, agentId: string): string => join(homeDir(data, agentId), "learning");
+/** The agent's learning folder: its home's `learning/` entry, which only the host writes. The home is files.ts homeOf,
+ *  the one definition the home's routes use too, so two ids that differ only in case never share a folder. */
+export const learningRepo = (data: string, agentId: string): string => join(homeOf(data, agentId), "learning");
 
 /** Makes `dir` where it is absent: a plain `mkdir`, never recursive (which would follow a link on the way). One that is
  *  there, whatever it is, is left for the check after. */
@@ -99,7 +98,7 @@ async function refuseLink(data: string, path: string, absent = false): Promise<v
  *  goes through it, in the agent's queue: before anything reads or makes the repository, and again once `git init`
  *  has made `.git`. A refusal throws, so the run starts with nothing learned (seed_failed). */
 async function agentFolder(data: string, agentId: string): Promise<string> {
-  const home = homeDir(data, agentId);
+  const home = homeOf(data, agentId);
   const repo = learningRepo(data, agentId);
   await makeDir(dirname(home));
   for (const dir of [home, repo]) {
@@ -278,7 +277,7 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
   return withAgentRepo(data, agentId, async () => {
     const check = () => agentFolder(data, agentId);
     const repo = await check();
-    const home = homeDir(data, agentId);
+    const home = homeOf(data, agentId);
     const sha = await openAgentRepo(home, repo, check);
     return readSeed(home, repo, sha);
   });

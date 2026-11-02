@@ -682,7 +682,8 @@ definition that sets it keeps it on its revision, `false` included, and an edit 
 that never sets it stores nothing, so its revision id is the one it had before the switch. The server's `--learning off`
 turns learning off for every run it starts, whatever the agent says.
 
-An agent that learns has a learning folder, `DATA/homes/<agent id>/learning/`, in Claude Code's auto-memory format:
+An agent that learns has a learning folder, `learning/` in its home (`DATA/homes/<key>/learning/`), in Claude Code's
+auto-memory format:
 
 - `MEMORY.md`, the index a run reads, one line per active note: `- [name](file.md) — description`, built by the server;
 - one file per note, `<slug>.md`: front matter with `name`, `description` and `type` (`user`, `feedback`, `project` or
