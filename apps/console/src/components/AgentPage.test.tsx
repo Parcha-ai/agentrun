@@ -2,11 +2,11 @@ import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentPage } from "./AgentPage";
-import { agentFixture, archivedAgents, editorCaps, recorded } from "@/fixtures";
+import { agentFixture, archivedAgents, editorCaps, recorded, runFixture, runNames } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError, type FieldIssue } from "@/lib/client";
 import { ANALYTICS, statsWith } from "./AgentAnalytics.sample";
-import type { Run } from "@/lib/v2";
+import type { Run, TimelinePage } from "@/lib/v2";
 
 // An agent's own page: its current revision's settings in the header, its runs, and a workflow agent's graph, read-only.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -14,15 +14,23 @@ import type { Run } from "@/lib/v2";
 const runsOf = (slug: string) => recorded<{ runs: Run[] }>(`agent.${slug}.runs`).body.runs;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+/** Waits (up to two seconds) for what a timer-paced read brings, e.g. the next timeline page. */
+const until = async (ok: () => boolean) => { for (let i = 0; i < 100 && !ok(); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); }); expect(ok()).toBe(true); };
 
 const efforts = recorded<{ features: { efforts: string[] } }>("capabilities").body.features.efforts;
 /** A start's answer: the run (202), or a recorded refusal thrown as the client throws it. */
 type Answer = { run: Run } | { refused: string };
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string }; hold?: Promise<unknown>; strict?: boolean };
-/** By default the server's stats carry no analytics, as an older server's. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}), models, hold, strict = false }: Opts = {}) {
+/** Each recorded run's timeline by its run's id: an agent's latest run with one is followed through it. */
+const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
+/** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
+const endedPage = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string }; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run> };
+/** By default the server's stats carry no analytics, as an older server's. `followed` lists the latest run's reads (its
+ *  timeline's pages and its record), apart from the page's own reads in `asked`. */
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}), models, hold, strict = false, timeline, reread }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
+  const followed: string[] = [];
   const statsAsked: string[] = [];
   const starts: { id: string; body: Record<string, unknown>; key: string }[] = [];
   const v2 = {
@@ -39,6 +47,11 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
       asked.push(`runs ${id}${cursor ? ` after ${cursor}` : ""}${archived ? " archived" : ""}`);
       return cursor && more ? more() : { runs, next_cursor: next };
     },
+    getTimeline: async (id: string, o: { after?: number } = {}) => {
+      followed.push(`timeline ${id}${o.after === undefined ? "" : ` after ${o.after}`}`);
+      return timeline ? timeline(id, o) : recordedPages.get(id) ?? endedPage(runs.find((r) => r.run_id === id)!);
+    },
+    getRun: async (id: string) => { followed.push(`run ${id}`); return reread ? reread(id) : runs.find((r) => r.run_id === id)!; },
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -58,7 +71,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
     });
   };
   const effort = () => bar()!.querySelector('select[aria-label="Effort"]') as HTMLSelectElement;
-  return { host, went, asked, statsAsked, starts, click, button, tabs, fact, bar, input, set, effort };
+  return { host, went, asked, followed, statsAsked, starts, click, button, tabs, fact, bar, input, set, effort };
 }
 
 describe("AgentPage", () => {
@@ -111,10 +124,55 @@ describe("AgentPage", () => {
     expect(links[links.length - 1].textContent).not.toMatch(/\$|Unknown/);
   });
 
-  it("says when the agent has no runs yet", async () => {
+  it("says when the agent has no runs yet, and where its first one will show; nothing is followed", async () => {
     const page = await open(agentFixture("invoice-checker"), { runs: [] });
     expect(page.host.textContent).toContain("No runs of this agent yet.");
+    expect(page.host.textContent).toContain("Start one above: its timeline shows here as the agent works.");
+    expect(page.host.querySelector('section[aria-label="Latest run"]')).toBeNull();
     expect(page.host.querySelector('ul[aria-label="Runs"]')).toBeNull();
+    expect(page.followed).toEqual([]);
+  });
+
+  it("opens on the latest run as the run page shows it, above the runs: its status, its timeline and a link to the whole run", async () => {
+    const runs = runsOf("invoice-checker");
+    const page = await open(agentFixture("invoice-checker"));
+    const latest = page.host.querySelector('section[aria-label="Latest run"]')!;
+    const list = page.host.querySelector('ul[aria-label="Runs"]')!;
+    expect(latest.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(new Set([...latest.querySelectorAll("a")].map((a) => a.getAttribute("href")))).toEqual(new Set([`#/runs/${encodeURIComponent(runs[0].run_id)}`]));
+    expect(latest.textContent).toContain(runs[0].title);
+    // Its status reads as its row's does (this one ran out of budget), and its recorded timeline is the run page's.
+    expect(latest.textContent).toContain("Failed");
+    expect(latest.textContent).toContain("Model request failed: spend_cap_reached");
+    // An ended run's timeline is read once, never shown as still going, and its record is not read again.
+    expect(latest.textContent).not.toContain("Steps appear as the agent takes them.");
+    expect(page.followed).toEqual([`timeline ${runs[0].run_id}`]);
+  });
+
+  it("follows a running latest run: its timeline grows as the agent works, and its status and row move when it ends", async () => {
+    // A recorded run cut in two: its first steps while it works, then the rest as it completes.
+    const done = runFixture("run.completed.idle.1");
+    const running: Run = { ...done.run, status: "working", state: "working", ended_at: null, result: null, cost: null };
+    const first: TimelinePage = { ...done.page, status: "working", state: "working", rows: done.page.rows.slice(0, 3), final: false, next_after: 3 };
+    const rest: TimelinePage = { ...done.page, reset: false, rows: done.page.rows.slice(3) };
+    let release!: () => void;
+    const ends = new Promise<void>((r) => { release = r; });
+    const page = await open(agentFixture("lead-scorer"), { runs: [running], timeline: async (_id, o) => (o.after === undefined ? first : ends.then(() => rest)), reread: async () => done.run });
+    const latest = () => page.host.querySelector('section[aria-label="Latest run"]')!;
+    const row = () => page.host.querySelector('ul[aria-label="Runs"] a')!;
+    expect(latest().querySelectorAll("ol > li")).toHaveLength(3);
+    expect(latest().textContent).toContain("Working");
+    expect(latest().textContent).toContain("Steps appear as the agent takes them.");
+    expect(row().textContent).toContain("Working");
+    release();
+    await until(() => latest().textContent!.includes("Completed"));
+    // Seven steps now: the newest six shown, the first folded, as on the run page.
+    expect(latest().textContent).toContain("1 earlier steps");
+    expect(latest().textContent).toContain(done.page.rows[6].summary);
+    expect(latest().textContent).not.toContain("Steps appear as the agent takes them.");
+    expect(row().textContent).toContain("Completed");
+    const id = done.run.run_id;
+    expect(page.followed).toEqual([`timeline ${id}`, `timeline ${id} after 3`, `run ${id}`]);
   });
 
   it("reads the next page with Load more, and a failed one keeps the runs already read", async () => {
