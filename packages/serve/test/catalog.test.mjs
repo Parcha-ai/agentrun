@@ -1,6 +1,6 @@
 // The catalog name <-> wire name mapping: a wire name a CLI adapter accepts, reversible back to the catalog name by a
-// lookup, and a collision caught so a catalog never shadows a name. The served catalog is all bare names today (the
-// mapping is the identity for them), so the mapping's real work is checked against a synthetic catalog here.
+// lookup, and a collision caught so a catalog never shadows a name. The served catalog is mostly bare names (the mapping
+// is the identity for them) plus monid's dotted ones; the mapping's full range is checked against a synthetic catalog.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { collisions, reverseOf, WIRE_NAME, wireName } from "../dist/catalog.js";
@@ -21,8 +21,15 @@ test("a wire name is always one a CLI adapter accepts", () => {
 });
 
 test("the mapping is the identity for a name that already is a wire name", () => {
-  for (const name of Object.keys(TOOLS)) assert.equal(wireName(name), name, `the served tool ${name} keeps its name`);
+  for (const name of Object.keys(TOOLS).filter((name) => WIRE_NAME.test(name))) assert.equal(wireName(name), name, `the served tool ${name} keeps its name`);
   assert.equal(wireName("read"), "read");
+});
+
+test("the served catalog's dotted names, monid's, map to wire names", () => {
+  for (const kind of ["discover", "inspect", "run"]) {
+    assert.ok(Object.keys(TOOLS).includes(`monid.${kind}`), `monid.${kind} is served`);
+    assert.equal(wireName(`monid.${kind}`), `monid_${kind}`);
+  }
 });
 
 test("the reverse of the forward mapping is the identity for every catalog name", () => {

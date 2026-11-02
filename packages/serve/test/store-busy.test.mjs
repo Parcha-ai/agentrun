@@ -173,25 +173,36 @@ test("two edits held by a reader of the store are each checked against the revis
   assert.equal((await api("GET", "/agents/raced/revisions")).body.revisions.length, 3, "the same edit twice made one revision");
 });
 
-/** A workflow agent whose run is working, its model node answering 1.5 s after it starts. */
-async function workingFlow(api, id) {
-  assert.equal((await api("POST", "/agents", flowAgent(id, answerFlow("Answer soon.")))).status, 201);
-  const started = await api("POST", `/agents/${id}/runs`, { input: { question: "Answer soon." } });
+/** A workflow agent whose run is working, its model node answering 1.5 s after it starts, or once a file exists when
+ *  `instructions` say "Answer once <file> exists.". */
+async function workingFlow(api, id, instructions = "Answer soon.") {
+  assert.equal((await api("POST", "/agents", flowAgent(id, answerFlow(instructions)))).status, 201);
+  const started = await api("POST", `/agents/${id}/runs`, { input: { question: instructions } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["working"]);
   return started.body.run_id;
 }
 
-test("a workflow that ends while the agent store is held past a request's 2 s waits with the run end's retries, then completes", async (t) => {
+/** Refusals of the run's end, 100 ms apart, that add up to more than a request's 2 s wait. */
+const PAST_A_REQUEST = 21;
+
+test("a workflow that ends while the agent store is held past a request's 2 s waits with the run end's retries, then completes", { timeout: 60_000 }, async (t) => {
+  // The run ends when the test says (its node answers once `go` exists), after the store is held, and the store is let
+  // go once the end has been refused for longer than a request waits: no clock decides whether the two meet.
+  const go = join(await scratch(t), "go");
   const busy = [];
-  const { api, data } = await serve(t, { carryBackRetry: { delaysMs: Array(60).fill(100), onBusy: (_id, attempt) => busy.push(attempt) }, settleRetryMs: 120_000 });
-  const runId = await workingFlow(api, "held-end");
+  let waitedPastRequest;
+  const pastRequest = new Promise((resolve) => (waitedPastRequest = resolve));
+  const onBusy = (_id, attempt) => busy.push(attempt) >= PAST_A_REQUEST && waitedPastRequest();
+  const { api, data } = await serve(t, { carryBackRetry: { delaysMs: Array(60).fill(100), onBusy }, settleRetryMs: 120_000 });
+  const runId = await workingFlow(api, "held-end", `Answer once ${go} exists.`);
   const release = hold(t, data, "EXCLUSIVE");
-  await sleep(4_500);
+  await writeFile(go, "");
+  await pastRequest;
   release();
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 15_000 });
   assert.equal(last.status, "completed", JSON.stringify(last));
-  assert.ok(busy.length > 0, "the run's end met the held store");
+  assert.ok(busy.length >= PAST_A_REQUEST, `the run's end was refused ${busy.length} times while the store was held`);
 });
 
 test("a workflow whose end outlasts the run end's retries is settled again, not left until the next start", async (t) => {

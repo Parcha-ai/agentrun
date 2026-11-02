@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { type Agent, AgentHomeError, type AgentStore, type NewRevision, openStore, type Revision, type RevisionRow, type RunRow, STORE_FILE } from "@parcha/pi-durable-agent";
+import { type Agent, AgentHomeError, type AgentStore, type NewRevision, openStore, type Revision, type RevisionPlace, type RevisionRow, type RunRow, STORE_FILE } from "@parcha/pi-durable-agent";
 import { ApiError, invalid } from "./errors.js";
 import { DEFAULT_HARNESS, harnessOfBody } from "./harness.js";
 import { type DefinitionBody, isObject, type Json, skillIssues, skillNames, stable } from "./validate.js";
@@ -98,7 +98,9 @@ export class Agents {
     if (issues.length) throw invalid(issues);
     // The default harness is never stored: naming pi and naming none are one revision.
     const harness = typeof definition.harness === "string" && definition.harness !== DEFAULT_HARNESS ? { harness: definition.harness } : {};
-    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...(note !== undefined ? { note } : {}) };
+    // Unlike the harness, a place is kept when it is runner: the default is the host's, so naming runner says something.
+    const place = isObject(definition.place) ? { place: definition.place as RevisionPlace } : {};
+    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...(note !== undefined ? { note } : {}) };
     if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow as never, ...common };
     // The learning switch is kept whenever a definition sets it, false included; a definition that leaves it out keeps
     // none, and its revision id is the one it had before the switch.
@@ -150,7 +152,7 @@ export class Agents {
       if (ifCurrent !== undefined && (now.revision?.id ?? null) !== ifCurrent) storeError(new AgentHomeError("stale", "the agent's current revision is not the one the commit expects"));
       return now;
     };
-    const entry = held((await this.get(read.agent.id)) ?? read);
+    let entry = held((await this.get(read.agent.id)) ?? read);
     const { agent } = entry;
     const kept = [
       ...(definition.id !== undefined && definition.id !== agent.id ? [{ field: "definition.id", reason: "not_an_option", message: `definition.id is ${agent.id}, the agent's id` }] : []),
@@ -159,37 +161,38 @@ export class Agents {
         .map((key) => ({ field: `definition.${key}`, reason: "not_allowed", message: `The agent store keeps an agent's ${key} from its creation; an edit does not change it.`, fix: `Remove definition.${key}.` })),
     ];
     if (kept.length) throw invalid(kept);
-    let files = skills;
-    if (files === undefined) {
-      const held = Object.entries(entry.revision?.body.skills ?? {});
-      const texts = await this.request(() => this.texts(held.map(([, sha]) => sha)));
-      files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
-    }
-    // An edit that names no harness keeps the agent's, as it keeps its skill files: absent here is unchanged, not pi.
-    const current = entry.revision?.body.harness;
-    const revision = this.revisionOf(definition.harness === undefined && current ? { ...definition, harness: current } : definition, files, note);
-    await this.checked(revision);
-    await check?.(revision);
-    // An edit that names no learning switch keeps the switch of the revision it commits on, read in the same try as the
-    // commit, never the one read before the checks above: another edit may set it while they run. No check reads it.
-    const onto = (now: AgentEntry): NewRevision => {
-      const kept = now.revision?.kind === "agentic" ? now.revision.body.learning : undefined;
-      return revision.kind === "agentic" && definition.learning === undefined && kept !== undefined ? { ...revision, learning: kept } : revision;
-    };
-    // Each try reads the current revision, checks against it and commits on it in one go: a try a busy store sent back
-    // checks again, and the store refuses the commit if another writer moved the current revision after this read.
-    const attempt = async (): Promise<AgentEntry | undefined> => {
-      const now = held(this.entry(agent.id) ?? entry);
-      const next = onto(now);
-      if (!contract && now.revision && sameRevision(now.revision, next)) {
-        this.checkVersion(definition, now.version);
-        return now;
-      }
-      if (!contract) this.checkVersion(definition, now.revisions + 1);
-      await this.store.commitRevision(agent.id, next, { setCurrent: true, ifCurrent: now.revision?.id ?? null });
-      return undefined;
-    };
+    // Each try builds the revision on the current one, checks it and commits it on that one: a current revision another
+    // writer moved since the build is sent back as stale, and the next try builds and checks again on the new one, so
+    // what an edit leaves out (skill files, harness, place, learning) is never carried over from a revision it does not
+    // follow.
     for (let tries = 1; ; tries++) {
+      if (tries > 1) entry = held((await this.get(agent.id)) ?? entry);
+      let files = skills;
+      if (files === undefined) {
+        const held = Object.entries(entry.revision?.body.skills ?? {});
+        const texts = await this.request(() => this.texts(held.map(([, sha]) => sha)));
+        files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
+      }
+      // An edit that names no harness, place or learning switch keeps the agent's, as it keeps its skill files: absent
+      // here is unchanged, not the default.
+      const harness = entry.revision?.body.harness;
+      const place = entry.revision?.body.place;
+      const learning = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.learning : undefined;
+      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}) }, files, note);
+      await this.checked(revision);
+      await check?.(revision);
+      const base = entry.revision?.id ?? null;
+      const attempt = async (): Promise<AgentEntry | undefined> => {
+        const now = held(this.entry(agent.id) ?? entry);
+        if ((now.revision?.id ?? null) !== base) throw new AgentHomeError("stale", "the agent's current revision moved while the edit was checked");
+        if (!contract && now.revision && sameRevision(now.revision, revision)) {
+          this.checkVersion(definition, now.version);
+          return now;
+        }
+        if (!contract) this.checkVersion(definition, now.revisions + 1);
+        await this.store.commitRevision(agent.id, revision, { setCurrent: true, ifCurrent: base });
+        return undefined;
+      };
       try {
         return (await this.request(attempt)) ?? (await this.get(agent.id))!;
       } catch (error) {
@@ -269,7 +272,7 @@ export function definitionOf(agent: Agent, revision: Revision, version: number):
   const body = revision.kind === "agentic"
     ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}) }
     : { workflow: revision.body.workflow };
-  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools };
+  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools };
 }
 
 /** `Agent` as the contract shows it, with its current revision. */

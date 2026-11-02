@@ -39,6 +39,23 @@ describe("createClient", () => {
     expect(a.init?.credentials).toBe("same-origin");
   });
 
+  it("sends a tool key's PUT and its bodiless DELETE as same-origin JSON, so the server takes the session cookie", async () => {
+    const { fn, calls } = fakeFetch(() => new Response(null, { status: 204 }));
+    const v2 = createClient({ fetch: fn });
+    const fake = "not-a-real-key-0123";
+    await v2.saveToolKey("monid", { MONID_API_KEY: fake });
+    await v2.removeToolKey("monid");
+    await v2.listToolKeys();
+    const [put, del, get] = calls;
+    expect([put.init?.method, put.url, JSON.parse(String(put.init?.body))]).toEqual(["PUT", "/v2/settings/tool-keys/monid", { values: { MONID_API_KEY: fake } }]);
+    expect([del.init?.method, del.url, del.init?.body]).toEqual(["DELETE", "/v2/settings/tool-keys/monid", undefined]);
+    for (const write of [put, del]) {
+      expect(new Headers(write.init?.headers).get("content-type")).toBe("application/json");
+      expect(write.init?.credentials).toBe("same-origin");
+    }
+    expect(new Headers(get.init?.headers).get("content-type")).toBeNull();
+  });
+
   it("asks the timeline from its cursor and long-polls", async () => {
     const { fn, calls } = fakeFetch(() => json(200, running.body));
     const v2 = createClient({ fetch: fn });
@@ -83,6 +100,36 @@ describe("agents", () => {
     expect(new Headers(calls[1].init?.headers).get("if-match")).toBe('"rev-1"');
     expect(calls[1].url).toBe("/v2/agents/a1/definition");
     expect(saved).toMatchObject({ etag: '"rev-2"', agent: { revisions: 2 } });
+  });
+
+  it("archives and unarchives a run through its routes, as same-origin JSON with the empty body a cookie write needs", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { run_id: "r 1", archived_at: null }));
+    const v2 = createClient({ fetch: fn });
+    await v2.archiveRun("r 1");
+    await v2.unarchiveRun("r 1");
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual(["POST /v2/runs/r%201/archive", "POST /v2/runs/r%201/unarchive"]);
+    for (const c of calls) {
+      expect(new Headers(c.init?.headers).get("content-type")).toBe("application/json");
+      expect(c.init?.body).toBe("{}");
+      expect(c.init?.credentials).toBe("same-origin");
+    }
+  });
+
+  it("lists runs in one state, or the archived ones, with the server's list parameters", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { runs: [], next_cursor: null }));
+    const v2 = createClient({ fetch: fn });
+    await v2.listRuns(10);
+    await v2.listRuns(50, null, { status: "failed" });
+    await v2.listRuns(50, "c2", { archived: true });
+    await v2.listAgentRuns("x", 50, null, { status: "input_required", archived: true });
+    await v2.listRuns(50, null, { archived: false });
+    expect(calls.map((c) => c.url)).toEqual([
+      "/v2/runs?limit=10",
+      "/v2/runs?limit=50&status=failed",
+      "/v2/runs?limit=50&cursor=c2&archived=true",
+      "/v2/agents/x/runs?limit=50&status=input_required&archived=true",
+      "/v2/runs?limit=50",
+    ]);
   });
 
   it("keeps a create's warnings for the next read of that revision of the agent, and an edit's come on its answer", async () => {

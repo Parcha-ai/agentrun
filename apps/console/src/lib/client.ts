@@ -2,7 +2,7 @@ import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Run, RunFiles, TimelinePage, TimelineRow } from "./v2";
+import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -23,7 +23,19 @@ export class ClientError extends Error {
  *  workflow ("" for the document itself). */
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
 
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean } } };
+/** A runs list's filter (GET /v2/runs's `status` and `archived`): runs in one status, and the archived runs in place of
+ *  the others. */
+export type RunsFilter = { status?: RunStatus; archived?: boolean };
+
+const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived }: RunsFilter = {}) => {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (cursor) q.set("cursor", cursor);
+  if (status) q.set("status", status);
+  if (archived) q.set("archived", "true");
+  return `?${q}`;
+};
+
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
@@ -35,11 +47,13 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   /** A request and its response's ETag (an agent's current revision, for the next If-Match). `text`: the body as text
    *  whatever its type (a run's file is its bytes, never parsed). */
   async function callTagged<T>(method: string, path: string, { body, headers = {}, signal, text = false }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<{ body: T; etag: string | null; status: number }> {
+    // Every write is JSON, a bodiless DELETE too: the server takes the cookie on a write only with this type.
+    const json = body !== undefined || (method !== "GET" && method !== "HEAD");
     const res = await f(`${base}${path}`, {
       method,
       signal,
       credentials: "same-origin",
-      headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
+      headers: { accept: "application/json", ...(json ? { "content-type": "application/json" } : {}), ...headers },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
@@ -70,9 +84,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
-    listRuns: (limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
-    /** `archived`: the archived runs only (an archived agent's runs are all archived with it). */
-    listAgentRuns: (id: string, limit = 50, cursor?: string | null, archived = false) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}${archived ? "&archived=true" : ""}`),
+    listRuns: (limit = 50, cursor?: string | null, filter?: RunsFilter) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs${runsQuery(limit, cursor, filter)}`),
+    /** `filter`: one status and the archived runs only, or (the agent page's) just `archived`: the archived runs only (an
+     *  archived agent's runs are all archived with it). */
+    listAgentRuns: (id: string, limit = 50, cursor?: string | null, filter: RunsFilter | boolean = {}) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs${runsQuery(limit, cursor, typeof filter === "boolean" ? { archived: filter } : filter)}`),
     listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
       const q = new URLSearchParams();
       if (archived) q.set("archived", "true");
@@ -101,6 +116,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
     getRun: (id: string) => call<Run>("GET", run(id)),
+    /** Hides a run from the runs list (or shows it again), its history kept. The answer is the run. */
+    archiveRun: (id: string) => call<Run>("POST", `${run(id)}/archive`, { body: {} }),
+    unarchiveRun: (id: string) => call<Run>("POST", `${run(id)}/unarchive`, { body: {} }),
     /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run. */
     startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number }, idempotencyKey: string) => {
       const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });
@@ -134,6 +152,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     },
     /** A run file's URL on this origin (a rendered page's image), for an <img>: the session cookie goes with it. */
     fileUrl: (id: string, path: string) => `${base}${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
+    /** The tool keys and where each field is set, never a value (a serve extension; 404 on a server without it). */
+    listToolKeys: () => call<ToolKeys>("GET", "/settings/tool-keys"),
+    /** Saves the given fields of one key (204); its other fields stay. No Idempotency-Key: the same PUT twice is the same
+     *  state, and the server keeps no record of a body that holds the values. */
+    saveToolKey: (id: string, values: Record<string, string>) => call<unknown>("PUT", `/settings/tool-keys/${encodeURIComponent(id)}`, { body: { values } }),
+    removeToolKey: (id: string) => call<unknown>("DELETE", `/settings/tool-keys/${encodeURIComponent(id)}`),
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };
