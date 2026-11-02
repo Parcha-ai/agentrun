@@ -135,7 +135,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** One send, one key: a retry of the same send reuses its key, so the server keeps the first request's identity. */
     sendMessage: (id: string, content: string, idempotencyKey: string) =>
       call<{ mode: string; message_id: string }>("POST", `${run(id)}/messages`, { body: { content }, headers: { "idempotency-key": idempotencyKey } }),
-    /** A workflow run's graph, live: each node's state, its decisions and tool calls, and the totals (contract C4). */
+    /** A workflow run's graph, live: each node's state, its decisions and tool calls, and the totals. */
     getRunGraph: (id: string, signal?: AbortSignal) => call<RunGraph>("GET", `${run(id)}/graph`, { signal }),
     /** Pauses a workflow run: calls in flight finish, and no new node starts until it resumes. */
     pauseRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/pause`, { body: {} }),
