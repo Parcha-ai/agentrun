@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type Analytics, cachedShare, compact, costLine, duration, missionFrom, type MissionView, rangeFrom, type Stats, successRate, trendDays } from "@/lib/mission";
+import { type Analytics, cachedShare, compact, costLine, costParts, duration, missionFrom, type MissionView, outcomes, rangeFrom, type Stats, successRate, trendDays } from "@/lib/mission";
 import { MissionControl } from "./MissionControl";
 import type { Run } from "@/lib/v2";
 
@@ -210,3 +210,72 @@ describe("the analytics helpers", () => {
     expect([duration(5_400_000), duration(90_000), duration(4_000)]).toEqual(["1.5 h", "2 min", "4 s"]);
   });
 });
+
+// Escalated runs that wait for a person: a newer server counts them apart (needs_review), an older one in failed.
+describe("runs that need review (needs_review)", () => {
+  atNow();
+  it("with the field: the outcomes say completed, failed and need review apart, and a run waiting for review is no success", () => {
+    const g = { completed: 9, failed: 2, needs_review: 3 };
+    expect(outcomes(g)).toBe("6 completed · 2 failed · 3 need review");
+    expect(outcomes({ ...g, needs_review: 1 })).toBe("8 completed · 2 failed · 1 needs review");
+    expect(outcomes({ ...g, needs_review: 0 })).toBe("9 completed · 2 failed");
+    expect(successRate(g)).toBeCloseTo(6 / 11);
+  });
+  it("without it, as an older server counts them: failed or escalated, and the rate as before", () => {
+    const g = { completed: 6, failed: 5 };
+    expect(outcomes(g)).toBe("6 completed · 5 failed or escalated");
+    expect(successRate(g)).toBeCloseTo(6 / 11);
+  });
+  it("Mission Control says the runs that need review under Failed, never in it, and the analytics' outcomes apart", () => {
+    const stats: Stats = { agents: 1, runs: { total: 8, active: 0, needs_input: 0, failed: 2, status_unknown: 0, needs_review: 3 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 8 } };
+    const v = missionFrom(stats, []);
+    expect(v.runs.needsReview).toBe(3);
+    const a = analytics({ totals: { ...analytics().totals, completed: 9, failed: 2, needs_review: 3 } });
+    const html = render({ ...v, analytics: a }, scope);
+    expect(html).toContain("3 need review");
+    expect(html).toContain("6 completed · 2 failed · 3 need review");
+    expect(html).not.toContain("failed or escalated");
+  });
+  it("a server without the field reads exactly as before", () => {
+    const stats: Stats = { agents: 1, runs: { total: 8, active: 0, needs_input: 0, failed: 5, status_unknown: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 8 } };
+    const v = missionFrom(stats, []);
+    expect("needsReview" in v.runs).toBe(false);
+    const html = render({ ...v, analytics: analytics() }, scope);
+    expect(html).toContain("failed or escalated");
+    expect(html).not.toContain("need review");
+  });
+});
+
+// Runs whose cost is unknown because requests were cut: the total stays the known sum, and "up to $y more" says the rest.
+describe("the cost of cut runs (bounded_unknown)", () => {
+  atNow();
+  it("costParts says the known total as before and, apart, up to how much more the cut runs can add", () => {
+    expect(costParts({ usd: 0.5, basis: "estimate", unknownRuns: 3, bounded: { runs: 2, atMostUsd: 0.0517 } })).toEqual({ total: "$0.50 est.", note: "3 runs unknown", bound: "up to $0.06 more for 2 cut runs" });
+    expect(costParts({ usd: null, basis: null, unknownRuns: 1, bounded: { runs: 1, atMostUsd: 0.004 } })).toEqual({ total: "Unknown", bound: "up to $0.0040 for 1 cut run" });
+    expect(costLine({ usd: 0.5, basis: "estimate", unknownRuns: 3, bounded: { runs: 2, atMostUsd: 0.0517 } })).toBe("$0.50 est. · 3 runs unknown · up to $0.06 more for 2 cut runs");
+  });
+  it("without the field, or with no bound known, says what it always did", () => {
+    const before = { usd: 0.5, basis: "estimate" as const, unknownRuns: 3 };
+    expect(costParts(before)).toEqual({ total: "$0.50 est.", note: "3 runs unknown" });
+    expect(costParts({ ...before, bounded: { runs: 0, atMostUsd: null } })).toEqual(costParts(before));
+    expect(costParts({ ...before, bounded: { runs: 2, atMostUsd: null } })).toEqual(costParts(before));
+  });
+  it("missionFrom reads /v2/stats' bounded_unknown, and the page shows it under the total and under the analytics' cost", () => {
+    const stats: Stats = { agents: 1, runs: { total: 4, active: 0, needs_input: 0, failed: 0, status_unknown: 0 }, per_agent: [], cost: { usd: 0.012, basis: "estimate", unknown_runs: 2, bounded_unknown: { runs: 2, at_most_usd: 0.0311 } } };
+    const v = missionFrom(stats, []);
+    expect(v.cost.bounded).toEqual({ runs: 2, atMostUsd: 0.0311 });
+    const a = analytics({ totals: { ...analytics().totals, bounded_unknown: { runs: 1, at_most_usd: 0.25 } } });
+    const html = render({ ...v, analytics: a }, scope);
+    expect(html).toContain("up to $0.04 more for 2 cut runs");
+    expect(html).toContain("up to $0.25 more for 1 cut run");
+    // The known total stays the known sum.
+    expect(html).toContain("$0.01 est.");
+  });
+  it("a server without the field reads exactly as before", () => {
+    const stats: Stats = { agents: 1, runs: { total: 4, active: 0, needs_input: 0, failed: 0, status_unknown: 0 }, per_agent: [], cost: { usd: 0.012, basis: "estimate", unknown_runs: 2 } };
+    const v = missionFrom(stats, []);
+    expect(v.cost).toEqual({ usd: 0.012, basis: "estimate", unknownRuns: 2 });
+    expect(render({ ...v, analytics: analytics() }, scope)).not.toContain("cut run");
+  });
+});
+
