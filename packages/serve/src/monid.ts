@@ -20,7 +20,7 @@ import { pathToFileURL } from "node:url";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
-import { TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { FAUX_ENV } from "./model.js";
@@ -176,6 +176,11 @@ export async function monidText(answer: MonidAnswer, work: string, label: string
 const KINDS = ["discover", "inspect", "run"] as const;
 type Kind = (typeof KINDS)[number];
 const [DISCOVER, INSPECT, RUN] = KINDS.map((kind) => wireName(`monid.${kind}`));
+// What a person reads for each call, in a run's timeline, and what each tool is called where calls are counted.
+const endpointOf = (a: Record<string, unknown>) => (typeof a.provider === "string" && typeof a.endpoint === "string" ? ` ${a.provider} ${a.endpoint}` : "");
+registerLabel(DISCOVER, (a) => (typeof a.query === "string" ? `Searched monid's catalog for "${a.query.slice(0, 60)}"` : "Searched monid's catalog"), undefined, { name: "Search monid's catalog" });
+registerLabel(INSPECT, (a) => `Looked up the monid endpoint${endpointOf(a)}`, undefined, { name: "Look up a monid endpoint" });
+registerLabel(RUN, (a) => `Ran the monid endpoint${endpointOf(a)}`, undefined, { name: "Run a monid endpoint" });
 const named = { provider: { type: "string", minLength: 1, description: `The provider's slug, as ${DISCOVER} gave it.` }, endpoint: { type: "string", minLength: 1, description: `The endpoint's path, as ${DISCOVER} gave it.` } };
 const SPECS: Record<Kind, { summary: string; description: string; properties: Json; required: string[]; replay: "safe" | "unsafe" }> = {
   discover: {
@@ -203,7 +208,7 @@ const SPECS: Record<Kind, { summary: string; description: string; properties: Js
 export const MONID_RUN_ALLOWANCE_USD = 1;
 /** Each endpoint's per-call price in USD, as an inspect in this run's process quoted it. */
 const quoted = new Map<string, number>();
-const endpointOf = (args: unknown) => JSON.stringify([(args as Json).provider, (args as Json).endpoint]);
+const quoteKey = (args: unknown) => JSON.stringify([(args as Json).provider, (args as Json).endpoint]);
 /** A record on the run's root, where its spend is read on every harness (cap.ts, harness-app.ts). */
 const record = (api: ToolExecutionApi, kind: string, data: Record<string, string | number | null>, context: Context) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context);
 
@@ -224,7 +229,7 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
       const call = () => client[kind](args as never, context?.abortSignal);
       const label = { tool: "monid.run", charged_by: "monid", call: api.callId };
       // What the run is held at, under the cap and on its mark: the price an inspect quoted, else the allowance.
-      const quote = quoted.get(endpointOf(args));
+      const quote = quoted.get(quoteKey(args));
       const held = quote ?? MONID_RUN_ALLOWANCE_USD;
       const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no ${INSPECT} in this run quoted its price, so it is held at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its quote`;
       const send = async (): Promise<MonidAnswer> => {
@@ -244,7 +249,7 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
       if ("refused" in paid) return forModel(JSON.stringify({ error: paid.refused }), { isError: true });
       const answer = paid.result;
       const price = kind === "inspect" && isObject(answer.price) && answer.price.type === "PER_CALL" ? money(answer.price.amount) : undefined;
-      if (price?.currency === "USD") quoted.set(endpointOf(args), price.value);
+      if (price?.currency === "USD") quoted.set(quoteKey(args), price.value);
       const cost = money(answer.cost);
       return forModel(await monidText(answer, work(), kind), { isError: answer.error !== undefined, ...(cost ? { details: { cost } } : {}) });
     },

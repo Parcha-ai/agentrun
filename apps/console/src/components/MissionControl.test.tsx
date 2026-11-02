@@ -96,7 +96,7 @@ const analytics = (over: Partial<Analytics> = {}): Analytics => ({
   by_harness_effort: [{ harness: "codex", effort: "high", ...g(4, 3, 1, 4, 800_000, 0.9) }, { harness: "pi", effort: null, ...g(8, 6, 1, 8, 484_000, 0.334) }],
   by_day: [{ day: "2026-10-30", ...g(5, 4, 1, 5, 500_000, 0.5) }, { day: "2026-11-01", ...g(7, 5, 1, 7, 784_000, 0.734) }],
   by_source: [{ source: "live", ...g(12, 9, 2, 12, 1_284_000, 1.234) }],
-  tools: [{ tool: "fetch_page", calls: 40, errors: 4 }, { tool: "bash", calls: 12, errors: 0 }],
+  tools: [{ tool: "fetch_page", label: "Fetch web pages", calls: 40, errors: 4 }, { tool: "bash", label: "Run commands", calls: 12, errors: 0 }],
   ...over,
 });
 const withA = (a: Analytics | undefined): MissionView => ({ ...view, analytics: a ?? null });
@@ -128,8 +128,10 @@ describe("MissionControl's analytics", () => {
     expect(html).not.toContain("tokens from");
     // By harness and effort: an unset effort says so; success and tokens per row.
     for (const s of [">codex<", ">high<", ">75%<", ">800K<", ">pi<", ">unset<", ">86%<"]) expect(html).toContain(s);
-    // Top tools with their error rate.
-    for (const s of [">fetch_page<", ">40<", ">4<", ">10%<", ">bash<", ">0%<"]) expect(html).toContain(s);
+    // Top tools with their error rate, each by what a person calls it, the name it was called by its title.
+    for (const s of ['title="fetch_page">Fetch web pages<', ">40<", ">4<", ">10%<", 'title="bash">Run commands<', ">0%<"]) expect(html).toContain(s);
+    // An older server sends no label: the name it was called by stands.
+    expect(render(withA(analytics({ tools: [{ tool: "fetch_page", calls: 1, errors: 0 }] })), scope)).toContain('title="fetch_page">fetch_page<');
     // The trend: a bar per day for 30 days, a readout for each, and the table view.
     expect(html).toContain('aria-label="Runs per day"');
     expect(html).toContain('aria-label="Tokens per day"');
