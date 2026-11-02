@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the PreToolUse hook is always installed and, with the built-ins off, denies every call but the session's own tools; message prefixes and log tags name the Claude Agent adapter; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; comments that cite CLI 2.1.296 describe durable-harness's pin, and this copy runs 2.1.286, whose tool set test/tool-off.test.mjs pins; 2026-10-28: the session's tools are served by host/tool-server.ts (each JSON Schema as given, arguments as sent), not through the SDK's zod tool(), and the CLI is told the longest description so it cuts none; an optional `skills` (a local plugin and the names enabled in it) turns the Skill tool on for those skills alone; the PreToolUse hook takes a session skill by its bare name too (unless the CLI keeps that name), and rewrites it to the plugin-qualified one; a tool's images go to the model with its text; a refusal the CLI made reaches the host only once its tool_result entry is in the log; 2026-11-01: `providerTools: ['web_search']` turns the CLI's WebSearch on with the built-ins off: offered by name, let through the PreToolUse hook as a recorded built-in call, and named in the system prompt's note.
+// Changed by Parcha, imports rewritten for AgentRun; patches: 001-gate-always-on, 002-names, 003-comments, 008-tool-description-max, 009-tool-result-barrier-and-refusals, 010-served-tools-with-images, 011-session-skills, 013-recovery-note-system-prompt, 015-web-search
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -339,12 +339,12 @@ export function builtinTools(builtins: ClaudeBuiltins | undefined): string[] | u
   if (builtins === undefined || builtins === false) return [];
   if (builtins === true) return [...CLAUDE_BUILTINS];
   if (Array.isArray(builtins)) {
-    if (!builtins.every((b) => typeof b === 'string' && /^[A-Za-z][A-Za-z0-9_]*$/.test(b))) throw new TypeError('agentrun-claude-agent: builtins takes tool names (Bash, Read, ...)');
+    if (!builtins.every((b) => typeof b === 'string' && /^[A-Za-z][A-Za-z0-9_]*$/.test(b))) throw new TypeError('agentrun-harness-claude: builtins takes tool names (Bash, Read, ...)');
     return [...builtins];
   }
   const preset = builtins as { type?: unknown; preset?: unknown };
   if (preset.type === 'preset' && preset.preset === 'claude_code') return undefined;
-  throw new TypeError("agentrun-claude-agent: builtins takes true, a list of tool names, or { type: 'preset', preset: 'claude_code' }");
+  throw new TypeError("agentrun-harness-claude: builtins takes true, a list of tool names, or { type: 'preset', preset: 'claude_code' }");
 }
 
 /** The Claude Code sandbox settings for the VM (§5.5 "Claude Code runs under its own sandbox"; P0.10, P0.16). */
@@ -917,7 +917,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
 
 /** The refusal by provenance (docs/workspaces.md §6 rule 1). */
 function sandboxRequired(): Unavailable {
-  return new Unavailable('agentrun-claude-agent: the Claude Agent CLI runs only on the session machine its adapter makes', {
+  return new Unavailable('agentrun-harness-claude: the Claude Agent CLI runs only on the session machine its adapter makes', {
     code: 'sandbox_required',
     hint: "claudeAgentAdapter() makes it; a hand-built harness needs the adapter's machine.",
   });
@@ -925,7 +925,7 @@ function sandboxRequired(): Unavailable {
 
 /** Claude Code's sandbox can't start in the VM (with the built-ins on, and no `unsandboxedCommands`). */
 function noCommandSandbox(): Unavailable {
-  return new Unavailable("agentrun-claude-agent: the CLI's own command sandbox (bubblewrap) doesn't start on this machine, so its commands would run beside the CLI, where they can read its model key: this turn ends", {
+  return new Unavailable("agentrun-harness-claude: the CLI's own command sandbox (bubblewrap) doesn't start on this machine, so its commands would run beside the CLI, where they can read its model key: this turn ends", {
     hint: 'Boot from the base (prepareSandboxBase) or an image built by the same recipe (bubblewrap, socat, a mountable /proc); the next turn tries again.',
   });
 }
@@ -953,7 +953,7 @@ function spendCapped(cap: Exclude<GatewayCap, 'concurrency'>): Unavailable {
 
 /** The mirror guard (§5.6 "Mirror"): the turn ends, the session is kept. */
 function mirrorUnmapped(why: string): Unavailable {
-  return new Unavailable(`agentrun-claude-agent: mirror_unmapped: the CLI's transcript mirror sent ${why}, so the transcript can't be kept in the log; this turn ends and the session is kept`, {
+  return new Unavailable(`agentrun-harness-claude: mirror_unmapped: the CLI's transcript mirror sent ${why}, so the transcript can't be kept in the log; this turn ends and the session is kept`, {
     hint: 'This is a VM or CLI fault, not a model one: check the deployment pins the CLI the image carries; the next turn tries again.',
   });
 }

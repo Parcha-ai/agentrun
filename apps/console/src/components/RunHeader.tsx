@@ -3,7 +3,7 @@ import { useState } from "react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
-import { cost, isEstimate, when } from "@/lib/format";
+import { bounded, cost, CUT_NOTE, isEstimate, when } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { Run } from "@/lib/v2";
 
@@ -13,7 +13,7 @@ export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive
  *  Stop ends the turn and keeps the run open (it waits for a message); cancel ends the run for good, after a confirm.
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
 export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
-  const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error);
+  const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
   return (
@@ -35,8 +35,9 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. */}
             {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>
-              : <span className="font-mono" title={run.cost && run.cost.usd !== null && isEstimate(run.cost) ? "A local estimate, not a bill" : undefined}>{cost(run.cost)}</span>}
+              : <span className="font-mono" title={run.cost && run.cost.usd !== null && isEstimate(run.cost) ? "A local estimate, not a bill" : undefined}>{cost(run.cost)}{bounded(run.cost) && <span className="text-muted-foreground"> · {CUT_NOTE}</span>}</span>}
           </div>
+          {run.status === "completed" && run.review && <p className="mt-2 text-[13px] text-warning-text">Needs review: {run.review.reason}</p>}
         </div>
         {(view.canStop || view.canCancel || actions.onArchive) && (
           <div className="flex shrink-0 items-center gap-2">

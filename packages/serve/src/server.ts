@@ -4,7 +4,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { extname, join, resolve } from "node:path";
+import { dirname, extname, join, posix, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
@@ -12,24 +12,28 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
+import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir } from "./files.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
+import { placesOf } from "./place.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
+import { boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
+import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
-import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
+import { openWorkFile, removeWorkFile, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
 import { type ServerLock, takeServerLock } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -44,6 +48,8 @@ const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
 const IDEMPOTENCY_TTL_S = 86_400;
 const FILE_LIST_CAP = 2_000;
+/** Why a home's PUT or DELETE is 501 where `capabilities.home.writes` is false (workspace.ts writesHeld). */
+const HOME_WRITES_OFF = "This server can't write a home's files safely here: a write needs /proc/self/fd, as on Linux, which this platform lacks. Reads and the list still work.";
 const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
 const TYPES: Record<string, string> = {
   txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8", csv: "text/csv; charset=utf-8", json: "application/json", jsonl: "application/x-ndjson",
@@ -100,8 +106,8 @@ export type ServeOptions = {
   fauxHarness?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
-  /** The console's built files, answered at /console/ (default dist/console beside the server, which this package's build
-   *  copies from apps/console/dist). */
+  /** The console's built files, answered at / (default dist/console beside the server, which this package's build copies
+   *  from apps/console/dist). */
   console?: string;
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
@@ -118,6 +124,8 @@ export type ServeOptions = {
   carryBackRetry?: CarryBackRetry;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
+  /** The waits before each try again of a webhook delivery (default 10 s, 1 min and 5 min: webhooks.ts). */
+  webhookRetryMs?: readonly number[];
   /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
    *  swept at start and let go at archive. The quarantine of boxes a reap could not empty is kept in the data directory. */
   box?: BoxHost;
@@ -168,6 +176,10 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/home$/, name: "importHome", capability: "home.import" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/home\/files$/, name: "listHomeFiles" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "readHomeFile" },
+  { method: "PUT", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "writeHomeFile" },
+  { method: "DELETE", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "deleteHomeFile" },
   { method: "GET", pattern: /^\/runs$/, name: "listAllRuns" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/timeline$/, name: "getTimeline" },
@@ -191,6 +203,12 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
+  { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
+  { method: "PUT", pattern: /^\/settings\/webhook$/, name: "saveWebhook" },
+  { method: "DELETE", pattern: /^\/settings\/webhook$/, name: "deleteWebhook" },
+  { method: "POST", pattern: /^\/settings\/webhook\/test$/, name: "testWebhook" },
+  { method: "GET", pattern: /^\/settings\/webhook\/deliveries$/, name: "listWebhookDeliveries" },
+  { method: "POST", pattern: /^\/settings\/webhook\/deliveries\/([^/]+)\/redeliver$/, name: "redeliverWebhook" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
 ];
@@ -221,6 +239,8 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
     runtimes: ["pi-durable-disk"],
     /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
     harnesses,
+    /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
+    places: placesOf(env),
     models,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing. */
     tools: toolsView(env),
@@ -235,6 +255,9 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
      *  `models.default`, `models.strong`) with the tools it names of `node_tools`; a node that names no thinking level
      *  thinks at the run's effort, or medium. */
     workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS, ...(decisionsOf(env).some((offer) => offer.available) ? [DECISION_ADAPTER] : [])], decisions: { providers: decisionsOf(env) } },
+    /** Each agent's home (its files under `/agents/{id}/home/files`): on this server's disk, the paths in it only the host
+     *  writes, and the largest file a PUT takes (`limits.max_body_bytes`). */
+    home: { disk: "local", host_owned: [...HOME_HOST_OWNED], max_file_bytes: MAX_BODY, writes: writesHeld() },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
       /** This server's own routes, outside the contract: an archived agent or run is hidden from the lists (`?archived=true`
@@ -256,6 +279,9 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
       /** GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept sealed under the launcher's seal key
        *  (tool-keys.ts); with none handed over, nothing is kept, never in the clear. */
       tool_keys: { routes: true, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
+      /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
+       *  ends (webhooks.ts); its secret kept sealed under the same seal key, so with none no webhook is set. */
+      webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
     /** This server's own: where its OpenAPI document is, beside this one. */
@@ -317,6 +343,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
+  enabledBoxes(process.env);
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
@@ -325,15 +352,19 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // adopts or sweeps no run, binds no port and prints no address (server-lock.ts). A failed start releases the lock and
   // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile.
   const lock = takeServerLock(data);
+  // What a start that fails stops before the lock goes: the webhook deliveries it began, which would write the next
+  // server's outbox.
+  const stops: Array<() => Promise<void>> = [];
   try {
-    return await startHolding(options, data, lock, { maxRuns, minFreeBytes });
+    return await startHolding(options, data, lock, { maxRuns, minFreeBytes }, stops);
   } catch (error) {
+    for (const stop of stops) await stop().catch(() => undefined);
     lock.release();
     throw error;
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number }): Promise<Serve> {
+async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number }, stops: Array<() => Promise<void>>): Promise<Serve> {
   const { maxRuns, minFreeBytes } = checked;
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
   const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
@@ -345,12 +376,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   const env = withSecrets({ ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
   const caps = capabilities(env, maxRuns, await harnessOffers(env));
+  // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
+  const homeWrites = caps.home.writes;
+  // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts). No run uses one yet: the log says which this server has.
+  const boxes = await boxRegistry(env);
+  log?.(logLine("boxes", boxesLog(boxes.offers(), enabledBoxes(env))));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
+  const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
+  stops.push(() => webhooks.close());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -378,9 +416,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
-  async function bodyOf(req: IncomingMessage): Promise<Json> {
-    const type = String(req.headers["content-type"] ?? "");
-    if (!type.startsWith("application/json")) throw new ApiError("unsupported_media_type", "the body must be application/json");
+  /** The body's bytes, at most MAX_BODY of them. */
+  async function bytesOf(req: IncomingMessage): Promise<Buffer> {
     const chunks: Buffer[] = [];
     let size = 0;
     // An oversized body is read to its end before the refusal, so the client gets the answer and not a reset.
@@ -389,9 +426,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (size <= MAX_BODY) chunks.push(chunk as Buffer);
     }
     if (size > MAX_BODY) throw new ApiError("payload_too_large", `the body is over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
+    return Buffer.concat(chunks);
+  }
+
+  async function bodyOf(req: IncomingMessage): Promise<Json> {
+    const type = String(req.headers["content-type"] ?? "");
+    if (!type.startsWith("application/json")) throw new ApiError("unsupported_media_type", "the body must be application/json");
+    const bytes = await bytesOf(req);
     let value: unknown;
     try {
-      value = JSON.parse(Buffer.concat(chunks).toString("utf8") || "null");
+      value = JSON.parse(bytes.toString("utf8") || "null");
     } catch {
       throw new ApiError("bad_request", "the body is not JSON");
     }
@@ -442,7 +486,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
-  const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : { kind: "workflow", workflow: revision.body.workflow, ...(revision.body.harness ? { harness: revision.body.harness } : {}) });
+  /** A workflow revision's shape as runnable.ts checks it: its workflow, harness and place. */
+  const workflowShape = ({ workflow, harness, place }: { workflow: unknown; harness?: string; place?: RevisionShape["place"] }): RevisionShape => ({ kind: "workflow", workflow, ...(harness ? { harness } : {}), ...(place ? { place } : {}) });
+  const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : workflowShape(revision.body));
 
   /** What keeps `revision` from running here, checked before anything starts with the checks a save makes
    *  (runnable.ts): one a save refused, or one a setting of this host fixes that it does not have yet. */
@@ -453,7 +499,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
     const missing = Object.fromEntries(blockers.flatMap((b) => (b.missing ? [[b.missing.tool, b.missing.vars]] : [])));
     const harness = blockers.find((b) => b.harness)?.harness;
-    const named = harness ? { harness } : {};
+    const box = blockers.find((b) => b.box)?.box;
+    const named = { ...(harness ? { harness } : {}), ...(box ? { box } : {}) };
     if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, missing, ...named } });
     const tier = blockers.find((b) => b.tier)?.tier;
     const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
@@ -462,7 +509,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : { kind: "workflow", workflow: revision.workflow, ...(revision.harness ? { harness: revision.harness } : {}) });
+    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision));
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);
@@ -572,42 +619,65 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- files ----------------------------------------------------------------------------------------------------------
 
-  /** The run's files, through no link (workspace.ts): each regular file's own size and time, a dot-name left out. */
-  async function walk(base: string): Promise<{ path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[]> {
-    const out: { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[] = [];
-    if (!(await lstat(base).catch(() => null))?.isDirectory()) return out;
-    // work/ unreadable as a whole lists nothing; what the walk could not read in it is left out.
+  type FileView = { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true };
+  const fileView = (path: string, st: { size: number; mtimeMs: number }): FileView => ({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null });
+
+  /** The files under `base` (a run's work/, an agent's home), through no link (workspace.ts): each regular file's own size
+   *  and time, a dot-name left out. `deep` when a directory below WALK_DEPTH was there and not entered. In a `home`, a
+   *  host-owned name at its top is the host's: named in `owned`, and nothing below it walked. */
+  async function walk(base: string, home = false): Promise<{ files: FileView[]; deep: boolean; owned: string[] }> {
+    const out: FileView[] = [];
+    const owned: string[] = [];
+    let deep = false;
+    if (!(await lstat(base).catch(() => null))?.isDirectory()) return { files: out, deep, owned };
+    // The directory unreadable as a whole lists nothing; what the walk could not read in it is left out.
     await walkWork(base, (path, st, readable) => {
-      if (st.isFile()) out.push({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null, ...(readable ? {} : { unreadable: true }) });
+      if (st.isFile()) out.push({ ...fileView(path, st), ...(readable ? {} : { unreadable: true }) });
+      else if (st.isDirectory() && path.split("/").length > WALK_DEPTH) deep = true;
       return out.length <= FILE_LIST_CAP;
-    }, { skip: (name) => name.startsWith(".") }).catch((error) => {
+    }, {
+      skip: (name, path) => {
+        if (name.startsWith(".")) return true;
+        if (!home || path !== name || !hostOwnedOf(name)) return false;
+        owned.push(name);
+        return true;
+      },
+    }).catch((error) => {
       if (!(error instanceof WorkRefused)) throw error;
     });
-    return out;
+    return { files: out, deep, owned };
   }
 
-  async function readFileRoute(req: IncomingMessage, res: ServerResponse, url: URL, run: Run, raw: string): Promise<void> {
-    let rel: string;
+  /** A file path as the URL sends it, each segment percent-decoded. */
+  function decodedPath(raw: string): string {
     try {
-      rel = raw.split("/").map(decodeURIComponent).join("/");
+      return raw.split("/").map(decodeURIComponent).join("/");
     } catch {
       throw new ApiError("invalid_file_path", "the path is not percent-encoded right");
     }
+  }
+
+  /** `rel`, refused unless it is a relative path of names; a segment that starts with . is `own`'s. */
+  function checkedPath(rel: string, own: string): string {
     const parts = rel.split("/");
     if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || parts.some((p) => p === "" || p === "." || p === "..")) throw new ApiError("invalid_file_path", "the path has an empty, . or .. segment, a backslash, a NUL or a leading /");
-    if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", "a path segment that starts with . is the run's own, not a file it wrote");
-    const work = join(run.dir, "work");
-    if (!(await lstat(work).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
+    if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", `a path segment that starts with . is ${own}`);
+    return rel;
+  }
+
+  /** The file `rel` under `root`, raw; `unreadable` says why one this server cannot read is private. */
+  async function sendFile(req: IncomingMessage, res: ServerResponse, url: URL, root: string, rel: string, unreadable: string): Promise<void> {
+    if (!(await lstat(root).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
     // Through no link, held from the open to the last byte (workspace.ts): a name swapped for one is refused, not followed.
-    const opened = await openWorkFile(work, rel).catch((error) => {
-      if (error instanceof WorkRefused && error.reason === "unreadable") throw new ApiError("system_file_forbidden", "This file was created private by a tool in the run's box: this server cannot read it.", { details: { reason: "unreadable" } });
+    const opened = await openWorkFile(root, rel).catch((error) => {
+      if (error instanceof WorkRefused && error.reason === "unreadable") throw new ApiError("system_file_forbidden", `This file was created private by ${unreadable}: this server cannot read it.`, { details: { reason: "unreadable" } });
       return null;
     });
     if (!opened) throw new ApiError("not_found", "no such file");
     const { handle, stats: st } = opened;
     const type = TYPES[extname(rel).slice(1).toLowerCase()] ?? "application/octet-stream";
     const download = url.searchParams.get("download") === "1" || !INLINE.has(type);
-    const name = parts.at(-1)!.replace(/[^\w.-]/g, "_");
+    const name = rel.split("/").at(-1)!.replace(/[^\w.-]/g, "_");
     res.writeHead(200, {
       "content-type": type,
       "content-length": st.size,
@@ -622,6 +692,54 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     await pipeline(handle.createReadStream(), res).catch(() => undefined);
     await handle.close().catch(() => undefined);
+  }
+
+  // ---- an agent's home --------------------------------------------------------------------------------------------------
+
+  /** The host-owned path of the home that `path` is at or under, if any: on the path as normalized, and in any case, as a
+   *  disk that folds case (macOS's, by default) reaches learning/ as Learning/ too. */
+  const hostOwnedOf = (path: string) => {
+    const at = posix.normalize(path).replace(/^\/+/, "").toLowerCase();
+    return HOME_HOST_OWNED.find((owned) => at === owned.toLowerCase() || at.startsWith(`${owned.toLowerCase()}/`));
+  };
+
+  /** A path in an agent's home as its routes take it, checked as a run's file path is, and at most 1024 characters with
+   *  no segment over 255 bytes. Anything at or under a host-owned path is refused first, read or written, so
+   *  `./learning/x`, `a/../LeArNiNg/x` and `Learning/x` are refused as learning/ is; and a write goes no deeper than the
+   *  list does. */
+  function homePath(raw: string, agentId: string, write: boolean): string {
+    const rel = decodedPath(raw);
+    const owned = hostOwnedOf(rel);
+    // Its notes are read through the learning API alone, which redacts them; never raw here.
+    if (owned) throw new ApiError("system_file_forbidden", write ? `${owned}/ is written by the server, not through the API` : `read it through /v2/agents/${agentId}/${owned}`, { details: { reason: "host_owned" } });
+    checkedPath(rel, "the server's own, not a file of the home");
+    if (rel.length > 1024 || rel.split("/").some((p) => Buffer.byteLength(p) > 255)) throw new ApiError("invalid_file_path", "the path is over 1024 characters, or a segment of it over 255 bytes");
+    if (write && rel.split("/").length - 1 > WALK_DEPTH) throw new ApiError("invalid_file_path", `a file is written at most ${WALK_DEPTH} directories deep, as deep as the list goes`);
+    return rel;
+  }
+
+  /** The agent's home, `homes/<its home key>/`: null while nothing was ever written to it, made with homes/ (0700) when
+   *  `make`. Neither is ever a link: a read finds no home there, and a write is refused. */
+  async function homeDir(agentId: string, make: boolean): Promise<string | null> {
+    const home = homeOf(data, agentId);
+    for (const dir of [join(data, HOMES_DIR), home]) {
+      // One made is synced into its parent, so a write in it that is answered survives a crash of the machine.
+      if (make && (await mkdir(dir, { mode: 0o700 }).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "EEXIST" ? false : Promise.reject(error))))) await syncDir(dirname(dir));
+      if ((await lstat(dir).catch(() => null))?.isDirectory()) continue;
+      if (make) throw new WorkRefused(dir, "link");
+      return null;
+    }
+    return home;
+  }
+
+  /** A write to the home or a removal from it refused (workspace.ts), as its answer. */
+  function homeRefusal(error: unknown): never {
+    if (!(error instanceof WorkRefused)) throw error;
+    if (error.reason === "link") throw new ApiError("system_file_forbidden", "A link is on the way to this path, or is the file: this server follows none.", { details: { reason: "link" } });
+    if (error.reason === "unreadable") throw new ApiError("system_file_forbidden", "This server may not enter a directory on the way to this path.", { details: { reason: "unreadable" } });
+    if (error.reason === "not_regular") throw new ApiError("invalid_file_path", "the path names a directory, or runs through a file");
+    if (error.reason === "unheld") throw new ApiError("unsupported_here", HOME_WRITES_OFF);
+    throw new ApiError("not_found", "no such file");
   }
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
@@ -859,8 +977,44 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "listRunFiles": {
         const run = await needRun(id);
-        const files = (await walk(join(run.dir, "work"))).sort((a, b) => a.path.localeCompare(b.path));
-        return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: files.length > FILE_LIST_CAP });
+        const { files, deep } = await walk(join(run.dir, "work"));
+        files.sort((a, b) => a.path.localeCompare(b.path));
+        return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP });
+      }
+      // An archived agent's home is read and written as any other's: as its definition is.
+      case "listHomeFiles": {
+        await needAgent(id);
+        const home = await homeDir(id, false);
+        const { files, deep, owned } = home ? await walk(home, true) : { files: [], deep: false, owned: [] };
+        // A host-owned path there is one entry by its name, and none of what is in it.
+        const listed = [...files, ...owned.map((path) => ({ path, host_owned: true as const }))].sort((a, b) => a.path.localeCompare(b.path));
+        return send(res, 200, { agent_id: id, files: listed.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || listed.length > FILE_LIST_CAP });
+      }
+      case "readHomeFile": {
+        await needAgent(id);
+        const rel = homePath(second!, id, false);
+        const home = await homeDir(id, false);
+        if (!home) throw new ApiError("not_found", "no such file");
+        return sendFile(req, res, url, home, rel, "another user");
+      }
+      case "writeHomeFile": {
+        await needAgent(id);
+        if (!homeWrites) throw new ApiError("unsupported_here", HOME_WRITES_OFF);
+        const rel = homePath(second!, id, true);
+        const bytes = await bytesOf(req);
+        // Each write lands whole (a temporary file renamed over the old one); of two at once, the last rename wins.
+        const st = await homeDir(id, true).then((home) => writeWorkFile(home!, rel, bytes)).catch(homeRefusal);
+        return send(res, 200, fileView(rel, st));
+      }
+      case "deleteHomeFile": {
+        await needAgent(id);
+        if (!homeWrites) throw new ApiError("unsupported_here", HOME_WRITES_OFF);
+        const rel = homePath(second!, id, true);
+        const home = await homeDir(id, false);
+        if (!home) throw new ApiError("not_found", "no such file");
+        await removeWorkFile(home, rel).catch(homeRefusal);
+        res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        return void res.end();
       }
       case "validateWorkflow": {
         const body = await bodyOf(req);
@@ -884,8 +1038,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "pauseRun":
       case "resumeRun":
         return send(res, 200, await runs.pause(await needRun(id), found.name === "pauseRun"));
-      case "readRunFile":
-        return readFileRoute(req, res, url, await needRun(id), second!);
+      case "readRunFile": {
+        const run = await needRun(id);
+        return sendFile(req, res, url, join(run.dir, "work"), checkedPath(decodedPath(second!), "the run's own, not a file it wrote"), "a tool in the run's box");
+      }
       case "createFile": {
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/files", body, async () => ({ status: 201, body: await uploads.reserve(body) }));
@@ -909,6 +1065,22 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "deleteToolKey":
         toolKeys.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "getWebhook":
+        return send(res, 200, webhooks.view());
+      case "saveWebhook": {
+        // Never through `idempotent`: its record would keep the answer, and the first one holds the secret.
+        const saved = webhooks.save(await bodyOf(req));
+        return send(res, saved.created ? 201 : 200, { ...saved.view, ...(saved.secret ? { secret: saved.secret } : {}) });
+      }
+      case "deleteWebhook":
+        webhooks.remove();
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "testWebhook":
+        return send(res, 200, await webhooks.test());
+      case "listWebhookDeliveries":
+        return send(res, 200, webhooks.attemptsView());
+      case "redeliverWebhook":
+        return send(res, 200, await webhooks.redeliver(id));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
@@ -965,6 +1137,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
+  webhooks.attach(options.publicUrl ?? url);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   return {
     url,
@@ -975,7 +1148,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
     async close() {
+      // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
       await runs.close();
+      await webhooks.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();
       lock.release();

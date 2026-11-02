@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/versions.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; pinned to the SDK release whose CLI the production deployment runs (0.3.286, CLI 2.1.286); npm's install line; the message names the Claude Agent harness; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; the pinned CLI's tool set is pinned by test/tool-off.test.mjs.
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-names, 004-pins
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -64,7 +64,7 @@ export function installedVersion(name: string, from = import.meta.url): string |
 export function checkAgentSdkVersion(versionOf: (name: string) => string | undefined = installedVersion): Unavailable | undefined {
   const installed = versionOf(SDK);
   if (installed === undefined || installed === CLAUDE_AGENT_SDK_VERSION) return undefined;
-  return new Unavailable(`agentrun-claude-agent: installed ${SDK} ${installed} (expected ${CLAUDE_AGENT_SDK_VERSION}): the Claude Agent harness runs only with the Agent SDK it is built with`, {
+  return new Unavailable(`agentrun-harness-claude: installed ${SDK} ${installed} (expected ${CLAUDE_AGENT_SDK_VERSION}): the Claude Agent harness runs only with the Agent SDK it is built with`, {
     code: 'unavailable',
     hint: `Install the pinned version: ${CLAUDE_AGENT_SDK_INSTALL}`,
   });

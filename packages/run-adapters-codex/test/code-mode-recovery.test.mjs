@@ -3,9 +3,9 @@
 // binary: the log, the ties of the nested calls to their exec, and the hook that builds the output.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { openDrive } from '@parcha/agentrun-adapters/kernel';
-import { openTurn, placeSubmissions, recoveryNote, toolBridge } from '@parcha/agentrun-adapters/process';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { openDrive } from '@parcha/agentrun-kernel/kernel';
+import { openTurn, placeSubmissions, recoveryNote, toolBridge } from '@parcha/agentrun-kernel/process';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { codeMode, NESTED_STREAM } from '../dist/code-mode.js';
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

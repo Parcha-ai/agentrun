@@ -1,0 +1,28 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v2/agents/sandboxed/runs",
+    "body": {
+      "input": {
+        "content": "List the files here."
+      }
+    }
+  },
+  "status": 409,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "code": "agent_not_runnable",
+      "message": "This agent's place is sandbox on daytona, and daytona is not set up on this server.",
+      "retryable": false,
+      "request_id": "req_135fe1808b89453d",
+      "details": {
+        "unbound": [],
+        "missing": {},
+        "box": "daytona"
+      }
+    }
+  }
+}

@@ -1,9 +1,11 @@
 // GET /v2/openapi.json: the agentrun.v2/0 contract as vendored, with this server's marks. It holds every route the
 // server serves and nothing it does not, the contract's operations unchanged, and its references whole.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
+import { homeOf } from "../dist/files.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -166,6 +168,12 @@ test("the served definition takes exactly the fields this server takes: a contra
   assert.ok(shape, "the document gives agent_not_runnable's details");
   assert.deepEqual(schemaProblems(doc, shape, run.body.error.details), [], JSON.stringify(run.body.error.details));
   assert.equal(run.body.error.details.harness, "claude-agent");
+  // A place whose box this server does not have: the same, with the box.
+  assert.equal((await api("POST", "/agents", agent("boxed", { place: { mode: "sandbox", box: "docker" } }))).status, 201);
+  const boxed = await api("POST", "/agents/boxed/runs", { input: { content: "hi" } });
+  assert.deepEqual([boxed.status, boxed.body.error.code], [409, "agent_not_runnable"]);
+  assert.deepEqual(schemaProblems(doc, shape, boxed.body.error.details), [], JSON.stringify(boxed.body.error.details));
+  assert.equal(boxed.body.error.details.box, "docker");
   // An archived agent is refused the same way, with when it was archived.
   assert.equal((await api("POST", "/agents", agent("put-away"))).status, 201);
   assert.equal((await api("POST", "/agents/put-away/archive")).status, 200);
@@ -207,13 +215,13 @@ test("the document is OpenAPI 3.1 in shape: operations with responses, ids uniqu
   walk(doc);
 });
 
-test("live answers meet the served document: capabilities, and an agent made, read and edited on each harness, against the contract plus exactly its marked properties", async (t) => {
+test("live answers meet the served document: capabilities, and an agent made, read and edited on each harness and place, against the contract plus exactly its marked properties", async (t) => {
   const { baseUrl } = await serve(t);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const { api } = await serve(t);
   const check = (name, value) => assert.deepEqual(schemaProblems(doc, { $ref: `#/components/schemas/${name}` }, value), [], `${name}: ${JSON.stringify(value)}`);
   check("Capabilities", (await api("GET", "/capabilities")).body);
-  for (const [id, body] of [["on-pi", agent("on-pi", { model: "faux/faux-1", thinking: "high" })], ["on-claude", agent("on-claude", { harness: "claude-agent" })], ["on-codex", flowAgent("on-codex", undefined, { harness: "codex" })]]) {
+  for (const [id, body] of [["on-pi", agent("on-pi", { model: "faux/faux-1", thinking: "high" })], ["on-claude", agent("on-claude", { harness: "claude-agent" })], ["in-runner", agent("in-runner", { place: { mode: "runner" } })], ["in-bwrap", agent("in-bwrap", { place: { mode: "sandbox", box: "bwrap" } })], ["in-sandbox", agent("in-sandbox", { place: { mode: "sandbox", box: "daytona" } })], ["on-codex", flowAgent("on-codex", undefined, { harness: "codex" })]]) {
     const { warnings: _, ...made } = (await api("POST", "/agents", body)).body;
     const read = (await api("GET", `/agents/${id}`)).body;
     if (id !== "on-codex") {
@@ -224,6 +232,11 @@ test("live answers meet the served document: capabilities, and an agent made, re
     // A workflow definition keeps no instructions, which v2/0 requires of every definition: the one gap left, for v2/1.
     for (const answer of [made, read]) assert.deepEqual([...new Set(schemaProblems(doc, { $ref: "#/components/schemas/Agent" }, answer))], ["$.definition.instructions: is required"]);
   }
+  // The document's place takes the two modes the server takes, and refuses what it refuses.
+  const place = doc.components.schemas.DefinitionInput.properties.place;
+  for (const box of ["bwrap", "docker"]) assert.deepEqual(schemaProblems(doc, place, { mode: "sandbox", box }), []);
+  assert.notDeepEqual(schemaProblems(doc, place, { mode: "tool-box", box: "bwrap" }), []);
+  assert.notDeepEqual(schemaProblems(doc, place, { mode: "runner", box: "docker" }), []);
   // The same check sees a field the document does not hold: the positive control.
   assert.notDeepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, { ...(await api("GET", "/capabilities")).body, unheard_of: 1 }), []);
 });
@@ -234,4 +247,44 @@ test("the decision providers' widening to parallel is its own addition, decision
   assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
   assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
+});
+
+test("an agent's home is its own addition, home/1: its routes and capabilities.home marked and listed, beside the contract's packed home, and its answers meet the document", async (t) => {
+  const { api, baseUrl, token, data } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const at = "/agents/{agent_id}/home/files";
+  const files = doc.paths[at];
+  const file = doc.paths[`${at}/{path}`];
+  for (const [op, name] of [[files.get, "listHomeFiles"], [file.get, "readHomeFile"], [file.put, "writeHomeFile"], [file.delete, "deleteHomeFile"]]) {
+    assert.deepEqual([op.operationId, op["x-agentrun-serve"]], [name, "home/1"]);
+    assert.ok(op.responses["404"] && op.responses["401"], `${name} answers 401 and 404`);
+  }
+  assert.ok(file.put.responses["403"] && file.put.responses["413"] && file.delete.responses["403"], "a write answers 403, and a PUT 413");
+  assert.deepEqual(Object.keys(doc.paths["/agents/{agent_id}/home"]).sort(), Object.keys(VENDORED.paths["/agents/{agent_id}/home"]).sort(), "the contract's packed home keeps its path and methods");
+  assert.equal(doc.paths["/agents/{agent_id}/home"].get["x-agentrun-serve-unsupported"].capability, "home.export");
+  assert.equal(doc.components.schemas.Capabilities.properties.home["x-agentrun-serve"], "home/1");
+  assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.home"));
+
+  assert.equal((await api("POST", "/agents", agent("keeper"))).status, 201);
+  const headers = { authorization: `Bearer ${token}` };
+  const home = `${baseUrl}/agents/keeper/home/files`;
+  const written = await fetch(`${home}/notes/a.md`, { method: "PUT", headers, body: "# A\n" });
+  assert.equal(written.status, 200);
+  const json = (op, status) => op.responses[status].content["application/json"].schema;
+  assert.deepEqual(schemaProblems(doc, json(file.put, "200"), await written.json()), []);
+  // A host-owned note, planted as the server would: learning lists as one entry of its own shape, the note not at all.
+  await mkdir(join(homeOf(data, "keeper"), "learning"));
+  await writeFile(join(homeOf(data, "keeper"), "learning", "l.md"), "learned");
+  const listed = (await api("GET", "/agents/keeper/home/files")).body;
+  assert.deepEqual(listed.files.map((f) => [f.path, f.host_owned]), [["learning", true], ["notes/a.md", undefined]]);
+  assert.deepEqual(schemaProblems(doc, json(files.get, "200"), listed), []);
+  // Each entry is exactly one of the two shapes: a file's entry is no host entry, and a host entry no file's.
+  assert.notDeepEqual(schemaProblems(doc, json(files.get, "200"), { ...listed, files: [{ ...listed.files[1], host_owned: true }] }), []);
+  const read = await (await fetch(`${home}/learning/l.md`, { headers })).json();
+  assert.deepEqual([read.error.code, read.error.details], ["system_file_forbidden", { reason: "host_owned" }]);
+  const forbidden = await (await fetch(`${home}/learning/l.md`, { method: "PUT", headers, body: "x" })).json();
+  const shape = doc.components.schemas.ErrorBody.properties.details["x-agentrun-serve-details"]?.system_file_forbidden;
+  assert.ok(shape, "the document gives system_file_forbidden's details");
+  assert.deepEqual(schemaProblems(doc, shape, forbidden.error.details), [], JSON.stringify(forbidden.error));
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Error" }, forbidden), []);
 });

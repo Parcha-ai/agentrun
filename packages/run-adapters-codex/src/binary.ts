@@ -8,7 +8,7 @@ import { env } from 'node:process';
 
 /**
  * Where this machine's `codex` binary is, for the stand-in VM's tests and the
- * live tests on a laptop (`@parcha/agentrun-codex's binary.ts`, never the package's
+ * live tests on a laptop (`@parcha/agentrun-harness-codex's binary.ts`, never the package's
  * index: in a session, Codex is the pinned build in the sandbox's base image,
  * `CODEX_CLI`, and no Function looks a binary up). `@openai/codex` is a small
  * launcher plus one optional package per platform (`@openai/codex-<platform>`,

@@ -13,7 +13,8 @@ const A = { kind: "agentic", instructions: "Answer." };
 const metrics = (input, cacheRead, cacheWrite, output, requests, unmetered, tools, extra = {}) => ({ input, cacheRead, cacheWrite, output, requests, unmetered, models: { "anthropic/claude-opus-5-5": requests }, tools, ...extra });
 const usd = (value) => (value === null ? null : Math.round(value * 1e6) / 1e6);
 const rounded = (groups) => groups.map((g) => ({ ...g, costUsd: usd(g.costUsd) }));
-const group = (runs, completed, failed, runsWithMetrics, tokens, costUsd, unknownCostRuns) => ({ runs, completed, failed, runsWithMetrics, tokens, costUsd, unknownCostRuns });
+/** A group's counts: `completed` includes the escalated runs, which `needsReview` also counts; `failed` never does. */
+const group = (runs, completed, failed, runsWithMetrics, tokens, costUsd, unknownCostRuns, needsReview = 0) => ({ runs, completed, needsReview, failed, runsWithMetrics, tokens, costUsd, unknownCostRuns });
 const NONE = { totals: { ...group(0, 0, 0, 0, 0, null, 0), input: 0, cacheRead: 0, cacheWrite: 0, output: 0, requests: 0, unmetered: 0 }, time: { endedRuns: 0, wallMs: 0, activeRuns: 0, activeMs: 0 }, byHarnessEffort: [], byDay: [], bySource: [], tools: [] };
 
 /** A store with three agents (chat on pi by default, coder on codex, flow a workflow) and runs of each, at fixed times:
@@ -65,13 +66,13 @@ test("analytics sums the ended runs' metrics with coverage, by harness and effor
   const a = reader.analytics();
   reader.close();
   assert.deepEqual({ ...a.totals, costUsd: usd(a.totals.costUsd) }, {
-    ...group(8, 4, 2, 5, 1445, 0.82, 4),
+    ...group(8, 5, 1, 5, 1445, 0.82, 4, 1),
     input: 318, cacheRead: 1002, cacheWrite: 53, output: 72, requests: 8, unmetered: 1,
   }, "eight runs, five with metrics: the running ones (one opened again keeps its last end's metrics) are not counted");
   assert.deepEqual(a.time, { endedRuns: 6, wallMs: 316_500, activeRuns: 2, activeMs: 5000 });
   assert.deepEqual(rounded(a.byHarnessEffort), [
     { harness: "codex", effort: null, ...group(1, 0, 0, 0, 0, null, 1) },
-    { harness: "codex", effort: "medium", ...group(2, 1, 1, 2, 255, 0.5, 1) },
+    { harness: "codex", effort: "medium", ...group(2, 2, 0, 2, 255, 0.5, 1, 1) },
     { harness: "pi", effort: null, ...group(3, 1, 1, 1, 10, 0.02, 2) },
     { harness: "pi", effort: "high", ...group(1, 1, 0, 1, 1170, 0.25, 0) },
     { harness: "workflow", effort: null, ...group(1, 1, 0, 1, 10, 0.05, 0) },
@@ -79,11 +80,11 @@ test("analytics sums the ended runs' metrics with coverage, by harness and effor
   assert.deepEqual(rounded(a.byDay), [
     { day: "2026-10-01", ...group(1, 1, 0, 1, 10, 0.02, 0) },
     { day: "2026-10-02", ...group(2, 1, 1, 1, 1170, 0.25, 1) },
-    { day: "2026-10-03", ...group(4, 1, 1, 2, 255, 0.5, 3) },
+    { day: "2026-10-03", ...group(4, 2, 0, 2, 255, 0.5, 3, 1) },
     { day: "2026-10-04", ...group(1, 1, 0, 1, 10, 0.05, 0) },
   ], "a run started at 23:59:59.999 is that day's, one at 00:00 the next's");
   assert.deepEqual(rounded(a.bySource), [
-    { source: "live", ...group(7, 3, 2, 4, 1435, 0.8, 4) },
+    { source: "live", ...group(7, 4, 1, 4, 1435, 0.8, 4, 1) },
     { source: "codex", ...group(1, 1, 0, 1, 10, 0.02, 0) },
   ], "an imported run is its source's, never live");
   assert.deepEqual(a.tools, [{ tool: "read", calls: 6, errors: 1 }, { tool: "shell", calls: 5, errors: 2 }, { tool: "fetch", calls: 1, errors: 0 }]);

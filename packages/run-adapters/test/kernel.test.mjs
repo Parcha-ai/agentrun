@@ -3,10 +3,10 @@
 // reports a `never` one interrupted, never running it again. Each "process" here is a drive opened on the same store.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { EffectFailure, Fatal, foldSession, INTERRUPTED_TEXT, KERNEL_RECORDS, openDrive, readBlobs, Restart, sha256Hex, writeBlob } from '@parcha/agentrun-adapters/kernel';
-import { SessionFenced } from '@parcha/agentrun-adapters';
-import { BuiltinCalls, NativeJournal, placeSubmissions, readJournal, recoveryNote, toolBridge, toolKey, transcriptOf } from '@parcha/agentrun-adapters/process';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { EffectFailure, Fatal, foldSession, INTERRUPTED_TEXT, KERNEL_RECORDS, openDrive, readBlobs, Restart, sha256Hex, writeBlob } from '@parcha/agentrun-kernel/kernel';
+import { SessionFenced } from '@parcha/agentrun-kernel';
+import { BuiltinCalls, NativeJournal, placeSubmissions, readJournal, recoveryNote, toolBridge, toolKey, transcriptOf } from '@parcha/agentrun-kernel/process';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 /** One process's drive: it takes the session (every earlier drive's writer is fenced from now on), then opens on it. */
 const open = async (store, signal = new AbortController().signal) => openDrive({ writer: await store.open('run-1'), signal });

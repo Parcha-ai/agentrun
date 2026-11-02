@@ -136,7 +136,7 @@ function failed(error: Error): SdkSpawnedProcess {
 export function sandboxSpawn(options: SandboxSpawnOptions): (request: SdkSpawnOptions) => SdkSpawnedProcess {
   return (request) => {
     const refuse = (why: string) => {
-      const error = new Error(`agentrun-claude-agent: the CLI was not started: ${why}`);
+      const error = new Error(`agentrun-harness-claude: the CLI was not started: ${why}`);
       options.onError(error);
       return failed(error);
     };

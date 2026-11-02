@@ -16,9 +16,11 @@ import type { RunMetrics } from "./timeline/timeline.js";
 
 export const STORE_FILE = "store.sqlite";
 export type RevisionKind = "agentic" | "workflow";
-/** `harness`: the harness that runs the revision, an id its host knows (absent: the host's default). */
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string };
-export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string };
+/** `harness`: the harness that runs the revision, an id its host knows (absent: the host's default). `place`: where its
+ *  runs execute, a mode and the box it uses, ids its host knows (absent: the host's default). */
+export type RevisionPlace = { mode: string; box?: string };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace };
+export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });
 /** `archivedAt`: when it was archived, while it is: hidden from lists, kept with its history. */
@@ -61,10 +63,11 @@ export type StoreStats = {
   byAgent: Array<{ id: string; name: string; runs: number }>;
   running: string[];
 };
-/** Runs counted together in `analytics`: how many, how many completed and failed (escalated included), how many have
- *  metrics, their tokens (input, cache read, cache write and output, summed) and their cost as `stats` sums it (`costUsd`,
- *  null when no run ended with one; `unknownCostRuns` the rest). */
-export type AnalyticsGroup = { runs: number; completed: number; failed: number; runsWithMetrics: number; tokens: number; costUsd: number | null; unknownCostRuns: number };
+/** Runs counted together in `analytics`: how many, how many completed (escalated included: an escalated run completed and
+ *  waits for review, which `needsReview` counts) and failed (never an escalated one), how many have metrics, their tokens
+ *  (input, cache read, cache write and output, summed) and their cost as `stats` sums it (`costUsd`, null when no run
+ *  ended with one; `unknownCostRuns` the rest). */
+export type AnalyticsGroup = { runs: number; completed: number; needsReview: number; failed: number; runsWithMetrics: number; tokens: number; costUsd: number | null; unknownCostRuns: number };
 /** What `analytics` answers: the runs not archived, started in [`from`, `to`) and of `agent` when given, summed from their
  *  rows and their metrics. A running run's metrics are its last end's: it counts as a run without them. */
 export type StoreAnalytics = {
@@ -82,8 +85,8 @@ export type StoreAnalytics = {
 };
 export type AnalyticsFilter = { from?: string; to?: string; agent?: string };
 export type NewRevision =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; note?: string }
-  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; note?: string };
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; note?: string }
+  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; note?: string };
 export type StartedRun = { runId: string; dir: string; storePath: string; workspace: string; agentId: string; revision: Revision };
 
 const SCHEMA = `
@@ -227,7 +230,15 @@ function revisionOf(row: Record<string, unknown>): Revision {
   return revision;
 }
 
-const HARNESS_ID = /^[a-z][a-z0-9-]{0,63}$/;
+/** An id a host knows: a harness, a place's mode, a box. */
+const HOST_ID = /^[a-z][a-z0-9-]{0,63}$/;
+const hostId = (value: unknown): value is string => typeof value === "string" && HOST_ID.test(value);
+
+/** A place as a body keeps it: `{mode, box?}`, nothing else. */
+function placeOf(place: unknown): RevisionPlace {
+  if (!isObject(place) || !hostId(place.mode) || (place.box !== undefined && !hostId(place.box)) || Object.keys(place).some((key) => key !== "mode" && key !== "box")) throw invalid("the place is not {mode, box?}, each an id (lowercase letters, digits and dashes)");
+  return { mode: place.mode, ...(place.box !== undefined ? { box: place.box } : {}) };
+}
 
 /** The body of a new revision and the text of each skill it names. Everything about the input is checked here, before any write. */
 function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: Map<string, string> } {
@@ -240,16 +251,16 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
   }
   const tools = input.tools ?? [];
   if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string" && t !== "") || new Set(tools).size !== tools.length) throw invalid("the tools are not a list of distinct non-empty names");
-  if (input.harness !== undefined && (typeof input.harness !== "string" || !HARNESS_ID.test(input.harness))) throw invalid("the harness is not a harness id (lowercase letters, digits and dashes)");
-  const harness = input.harness !== undefined ? { harness: input.harness } : {};
+  if (input.harness !== undefined && !hostId(input.harness)) throw invalid("the harness is not a harness id (lowercase letters, digits and dashes)");
+  const host = { ...(input.harness !== undefined ? { harness: input.harness } : {}), ...(input.place !== undefined ? { place: placeOf(input.place) } : {}) };
   if (input.kind === "agentic") {
     if (typeof input.instructions !== "string") throw invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) throw invalid(`the ${field} is not a non-empty string`);
-    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}), ...harness }, texts };
+    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}), ...host }, texts };
   }
   if (input.kind !== "workflow") throw invalid("the revision kind is not agentic or workflow");
   if (!isObject(input.workflow)) throw invalid("a workflow revision needs a workflow (a JSON object)");
-  return { body: { workflow: structuredClone(input.workflow), skills, tools: [...tools], ...harness }, texts };
+  return { body: { workflow: structuredClone(input.workflow), skills, tools: [...tools], ...host }, texts };
 }
 
 /** The reads: plain SQL over the one file, on a read-only handle. `openStoreReader` reads `store.sqlite` in place: it writes nothing and makes no copy, and a store with an unfinished write is named, not rolled back. */
@@ -387,12 +398,12 @@ export class AgentStoreReader {
       FROM runs r JOIN revisions v ON v.id = r.revision_id
         ${this.metrics ? "LEFT JOIN run_metrics m ON m.run_id = r.id AND r.state <> 'running'" : ""} ${this.imports ? "LEFT JOIN run_imports i ON i.run_id = r.id" : ""}
       WHERE ${this.runArchivedAtSql()} IS NULL AND (:from IS NULL OR r.started_at >= :from) AND (:to IS NULL OR r.started_at < :to) AND (:agent IS NULL OR r.agent_id = :agent))`;
-    const group = `COUNT(*) AS runs, SUM(state = 'completed') AS completed, SUM(state IN ('failed', 'escalated')) AS failed, SUM(metered) AS metered,
+    const group = `COUNT(*) AS runs, SUM(state IN ('completed', 'escalated')) AS completed, SUM(state = 'escalated') AS needs_review, SUM(state = 'failed') AS failed, SUM(metered) AS metered,
       SUM(COALESCE(input + cache_read + cache_write + output, 0)) AS tokens, SUM(CASE WHEN state <> 'running' THEN cost_usd END) AS cost_usd,
       SUM(state <> 'running' AND cost_usd IS NOT NULL) AS known`;
     const n = (value: unknown) => Number(value ?? 0);
     const counted = (g: Record<string, unknown>): AnalyticsGroup => ({
-      runs: n(g.runs), completed: n(g.completed), failed: n(g.failed), runsWithMetrics: n(g.metered), tokens: n(g.tokens),
+      runs: n(g.runs), completed: n(g.completed), needsReview: n(g.needs_review), failed: n(g.failed), runsWithMetrics: n(g.metered), tokens: n(g.tokens),
       costUsd: n(g.known) > 0 ? Number(g.cost_usd) : null, unknownCostRuns: n(g.runs) - n(g.known),
     });
     const all = (sql: string) => this.db.prepare(`${scope} ${sql}`).all(params) as Array<Record<string, unknown>>;
