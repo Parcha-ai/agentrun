@@ -349,8 +349,7 @@ node --input-type=module -e '
      --faux packages/serve/test/fixtures/faux-model.mjs
    ```
 
-   Open the console at `/console/` on the address the banner prints. The imported project is one agent with its three
-   runs.
+   Open the console at `/` on the address the banner prints. The imported project is one agent with its three runs.
 2. The console's own suite, on recorded fixtures: `(cd apps/console && npm ci && npm test)`.
 3. Import alone: `HOME="$QA_HOME" node packages/serve/dist/cli.js import --dry-run --all --data "$QA_DATA"` prints what
    it would import (1 project, 3 sessions) and writes nothing.
@@ -359,7 +358,7 @@ node --input-type=module -e '
 
 **Checks.**
 
-1. The console loads at `/console/` and signs in: setup, then the password. With `AGENTRUN_ACCOUNTS=0` the printed
+1. The console loads at `/` and signs in: setup, then the password. With `AGENTRUN_ACCOUNTS=0` the printed
    link signs the browser in and the token leaves the address.
 2. An agent is created from New agent with its defaults, and a run is started from its page. Once the workflow
    starter is on main (#1315), a workflow agent is created from it too.
