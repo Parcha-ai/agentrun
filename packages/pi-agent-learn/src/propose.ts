@@ -59,7 +59,8 @@ export async function proposeFiles(options: ProposeFilesOptions): Promise<Propos
   return { status: created ? "proposed" : "already", sha };
 }
 
-/** A run's workflow uses, from lane B5; written to `uses/<run id>.json`. Undefined means none. */
+/** A run's workflow uses (each saved workflow it ran and how that ended, as `usesSource` reads them from the run's store);
+ *  written to `uses/<run id>.json`. Undefined means none. */
 export type UsesSource = (target: ProposeTarget) => unknown | Promise<unknown>;
 
 /** The DSL's saved records the host collected from the run's workflow store: per workflow name, each file's name
