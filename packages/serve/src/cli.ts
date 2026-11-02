@@ -14,7 +14,7 @@ import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes]
        agentrun-serve reset-password [--data DIR]
-       agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--all]
+       agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--all] [--port N]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -49,7 +49,9 @@ data directory is (inside the container) clears it and signs every browser out, 
 CLAUDE.md or AGENTS.md and its skill folders, and each session a run you can read but not continue. Nothing leaves this
 machine; the values of key-shaped environment variables are cut out of what is written. --dry-run lists what it would
 import; run again, it imports only what it has not. Sessions written in the last 10 minutes wait for the next import;
---all keeps projects whose directory is gone or temporary.`;
+--all keeps projects whose directory is gone or temporary. Each run keeps what its session used (tokens, requests, tools,
+time at work), priced at the catalog's list prices when its source did not price it. Both end with a summary of every
+session found, those imported before included, and the address to open the console at (--port as the server takes it).`;
 
 if (process.argv[2] === "reset-password") {
   let dir: string | undefined;
