@@ -1102,3 +1102,20 @@ test("an untied thread resumed in a second file of the same id counts its own su
   // 2,688 + 1,965 + 1,965 + 1,965 tokens: the session, the thread's two files, its child once.
   for (const block of [await run("--dry-run"), await run()]) assert.match(block[2], /^\+ 8\.6K tokens /);
 });
+
+test("a moved session's copy holding only copies still has its subagents' folder read: a request only it holds counts once, in the import and the dry run, in either folder order", async (t) => {
+  for (const moved of ["-a-moved", "~z-moved"]) {
+    const { runs, measured, imported } = await measuredAndImported(t, (home, project) => {
+      const file = claudeSession(home, project, 208);
+      claudeSubagent(home, project, 208, 1);
+      // The copy: the session's records only, its subagent's file, and a subagent's file the original's folder lacks.
+      const lines = (path) => readFileSync(path, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+      writeSession(join(home, ".claude", "projects", moved, `${sessionId(208)}.jsonl`), lines(file));
+      writeSession(join(home, ".claude", "projects", moved, sessionId(208), "subagents", "agent-a1.jsonl"), lines(join(dirname(file), sessionId(208), "subagents", "agent-a1.jsonl")));
+      claudeSubagent(home, project, 208, 2, { slug: moved });
+    });
+    // The session's 2 requests, its first subagent's 2 once, and the second subagent's 2.
+    assert.deepEqual(runs.map(({ metrics }) => [metrics.requests, metrics.input + metrics.output]), [[6, 88 + 60 + 60]], moved);
+    assert.equal(measured, imported, moved);
+  }
+});

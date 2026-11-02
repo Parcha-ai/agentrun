@@ -204,15 +204,17 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
         held.push(run);
         continue;
       }
-      const parts: Session[] = [];
+      // Each of its files read; those holding only copies add no records to it, but their subagents' folders are its
+      // too, read through the same count (readChildren).
+      const read: Session[] = [];
       for (const listed of files) {
         const part = await readSession(listed.file, listed.source, { seen: seen(listed.source) }).catch(() => undefined);
-        // A file of it holding only copies adds nothing to it.
-        if (part && !ownless(part)) parts.push(part);
+        if (part) read.push(part);
       }
+      const parts = read.filter((part) => !ownless(part));
       if (!parts.length) continue;
       const session = merged(parts);
-      const subagents = await readChildren(plan, session, parts, seen(session.source));
+      const subagents = await readChildren(plan, session, read, seen(session.source));
       found.push({ source: session.source, agent: project.agentId, ...measured(session, subagents) });
     }
   }
@@ -750,11 +752,14 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       // Each of its files, in order. The first's size and time before its read: a file that changes during it is read
       // again next time.
       const parts: Session[] = [];
+      // Every file of it read: one holding only copies adds no records, but its subagents' folder is read with the rest.
+      const searched: Session[] = [];
       let read: SourceFile | undefined;
       for (const { file } of files) {
         const stats = await stat(file).catch(() => null);
         const part = stats ? await readSession(file, listed.source, { seen: seen(listed.source) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed" });
         if (!part || !stats) continue;
+        searched.push(part);
         // A file of it holding only copies adds nothing to it.
         if (heldRun === undefined && ownless(part)) {
           report.skipped.push({ what: file, why: "holds only records of sessions imported already" });
@@ -765,7 +770,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       }
       if (!read) continue;
       const session = merged(parts);
-      const subagents = await readChildren(plan, session, parts, seen(listed.source));
+      const subagents = await readChildren(plan, session, searched, seen(listed.source));
       // The transcript is whole before its run is: written beside the store, then moved into the run's directory.
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
       let started: { runId: string; dir: string; storePath: string } | undefined;
