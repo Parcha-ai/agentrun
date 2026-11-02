@@ -51,7 +51,7 @@ test("in a box the source is pi's read, write, edit and bash, each call made on 
   }
   // A call's api reaches pi's tool with the box's env and every other field as given: pi's bash runs on it.
   const seen = [];
-  const api = { env: { cwd: "/host" }, output: (chunk) => seen.push(chunk), outputWindow: undefined, diagnostic() {}, callId: "c1" };
+  const api = { env: { cwd: "/host" }, output: (chunk) => seen.push(chunk), outputWindow: undefined, retainedOutput: () => ({ text: "", truncated: false }), diagnostic() {}, callId: "c1" };
   boxEnv.exec = async (command, options) => (seen.push({ command, cwd: options.cwd, env: options.env, inherit: options.inheritEnv }), { ok: true, value: { exitCode: 0 } });
   const bash = source.tools.find((tool) => tool.name === "bash");
   const context = { marker: "ctx" };

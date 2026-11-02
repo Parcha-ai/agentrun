@@ -46,3 +46,17 @@ test("a host tool's answer keeps the tail of a long output within pi's limits, t
     assert.equal(results.get(`c-${fail}`), answer);
   }
 });
+
+test("a tool answering as pi 1.2's bash does (its retained output asked for, its exit a result diagnostic) answers with that output and the diagnostic", async () => {
+  const run = { env: async () => ({}) };
+  const bash12 = {
+    name: "bash", description: "d", parameters: { type: "object" }, outputLimits: { retain: "tail" },
+    async execute(_args, api) {
+      api.output("first line\nlast line\n");
+      const retained = api.retainedOutput();
+      return { structuredOutput: { output: retained.text, truncated: retained.truncated, exitCode: 2 }, isError: true, diagnostics: [{ severity: "error", code: "exit_code", message: "Command exited with code 2" }] };
+    },
+  };
+  const [tool] = hostTools(run, ["bash"], ctx, new Map(), [bash12]);
+  assert.deepEqual(await tool.call({}, { callId: "c", signal: new AbortController().signal }), { text: "first line\nlast line\n\n\nCommand exited with code 2", isError: true });
+});

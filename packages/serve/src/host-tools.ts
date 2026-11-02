@@ -46,6 +46,11 @@ function bounded(limits: ToolRegistration["outputLimits"]) {
       // Trimmed once it is twice the limit, so a long output costs a bounded amount of memory and work.
       if (kept.length > 2 * maxBytes) kept = trim(kept);
     },
+    /** What is kept so far, and whether any was cut: pi 1.2's `retainedOutput`. */
+    retained: () => {
+      const text = trim(kept);
+      return { text, truncated: cut };
+    },
     text(): string {
       const out = trim(kept);
       return cut ? (tail ? `[earlier output omitted]\n${out}` : `${out}\n[later output omitted]`) : out;
@@ -79,12 +84,13 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
         const out = bounded(tool.outputLimits);
         const notes: string[] = [];
         const env = await run.env({ conversationId: ROOT_CONVERSATION_ID, read: undefined as never }, context);
-        const api = { env, output: (chunk: string | Uint8Array) => out.push(chunk), outputWindow: undefined, diagnostic: (note: { message: string }) => void notes.push(note.message) };
+        const api = { env, output: (chunk: string | Uint8Array) => out.push(chunk), outputWindow: undefined, retainedOutput: () => out.retained(), diagnostic: (note: { message: string }) => void notes.push(note.message) };
         // A tool that throws (bash on a non-zero exit or a timeout) still answers with its output, as pi's harness does.
         const result = await tool.execute(args as never, api as never, withAbortSignal(signal, context)).catch((error: Error) => ({ failed: error.message, isError: true }));
-        // pi 1.1 names the result's blocks `content`, pi 1.2 and later `output`.
-        const given = result as unknown as { content?: unknown; output?: unknown; isError?: boolean; failed?: string };
-        const said = [textOf(given.content ?? given.output) || out.text(), given.failed, ...notes].filter((part) => part).join("\n\n");
+        // pi 1.1 names the result's blocks `content`, pi 1.2 and later `output`; pi 1.2's bash answers its exit as a
+        // result's diagnostic, where 1.1 threw it.
+        const given = result as unknown as { content?: unknown; output?: unknown; isError?: boolean; failed?: string; diagnostics?: readonly { message: string }[] };
+        const said = [textOf(given.content ?? given.output) || out.text(), given.failed, ...notes, ...(given.diagnostics ?? []).map((note) => note.message)].filter((part) => part).join("\n\n");
         const answer = { text: said, isError: given.isError === true };
         results.set(callId, answer);
         return answer;
