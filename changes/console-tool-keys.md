@@ -1,0 +1,5 @@
+---
+packages: repo
+kind: feature
+---
+The console's Settings → Tool keys page, over `GET`, `PUT` and `DELETE /v2/settings/tool-keys`: each key (Parallel, Monid, Browserbase) with what it unlocks and the harnesses that run that, and each of its fields set or not set, from the server or saved here. Add key and Change open an inline form with one password input per field the page may set; it sends only the fields typed in, then reads the keys again, and Remove asks first. A key the server is started with is read-only and says so. No value is ever shown, pre-filled or left in the page: the inputs are uncontrolled (so no value reaches a `value` attribute) and cleared after a save or a cancel. Saved keys that no longer open raise a banner naming why and which to enter again. A server with no seal key (`at_rest: "unavailable"`, or a `409 no_sealing_key`) says it can't store keys and offers no save. A 422 shows at its field. Settings is in the nav only when the server's capabilities have `features.tool_keys.routes`.

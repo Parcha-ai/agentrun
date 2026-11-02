@@ -39,6 +39,23 @@ describe("createClient", () => {
     expect(a.init?.credentials).toBe("same-origin");
   });
 
+  it("sends a tool key's PUT and its bodiless DELETE as same-origin JSON, so the server takes the session cookie", async () => {
+    const { fn, calls } = fakeFetch(() => new Response(null, { status: 204 }));
+    const v2 = createClient({ fetch: fn });
+    const fake = "not-a-real-key-0123";
+    await v2.saveToolKey("monid", { MONID_API_KEY: fake });
+    await v2.removeToolKey("monid");
+    await v2.listToolKeys();
+    const [put, del, get] = calls;
+    expect([put.init?.method, put.url, JSON.parse(String(put.init?.body))]).toEqual(["PUT", "/v2/settings/tool-keys/monid", { values: { MONID_API_KEY: fake } }]);
+    expect([del.init?.method, del.url, del.init?.body]).toEqual(["DELETE", "/v2/settings/tool-keys/monid", undefined]);
+    for (const write of [put, del]) {
+      expect(new Headers(write.init?.headers).get("content-type")).toBe("application/json");
+      expect(write.init?.credentials).toBe("same-origin");
+    }
+    expect(new Headers(get.init?.headers).get("content-type")).toBeNull();
+  });
+
   it("asks the timeline from its cursor and long-polls", async () => {
     const { fn, calls } = fakeFetch(() => json(200, running.body));
     const v2 = createClient({ fetch: fn });
