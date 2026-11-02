@@ -12,6 +12,7 @@ import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
+import { monidTool } from "./monid.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 import { parallelOf, WEB_FETCH_TOOL, webFetch, webFetchTool } from "./web-fetch.js";
@@ -196,6 +197,10 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     effect: async (args, run) => webFetch(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), parallel: parallelOf(run.env), signal: run.signal }),
   },
   browser: browserTool,
+  // monid's catalog on one key (monid.ts): pi binds each under its wire name, `monid_discover` and the rest.
+  "monid.discover": monidTool("discover"),
+  "monid.inspect": monidTool("inspect"),
+  "monid.run": monidTool("run"),
   [PDF_PAGES_TOOL]: callOnly(
     "A workflow call: { path, maxPages?, dpi? } -> { name, pageCount, dpi, pages: [{ page, image }], text }; the document's first pages drawn as PNGs under work/pages/<stem>/<dpi>/ (the dpi lowered so a page's long side is at most 1568 px), from the server's documents (--documents) or the run's work directory.",
     (args, run) => pdfPages(args, { work: run.work, documents: run.env[DOCUMENTS_ENV], signal: run.signal }),

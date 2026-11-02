@@ -104,3 +104,12 @@ export function tree(root: string): Record<string, string> {
 	visit(root, "");
 	return out;
 }
+
+/** The content of every file under `root`, by relative path: what a round trip must keep. */
+export function contents(root: string): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [path, line] of Object.entries(tree(root))) {
+		out[path] = line.startsWith("file ") ? line.replace(/^file \d+ /, "file ") : line.replace(/^dir \d+$/, "dir");
+	}
+	return out;
+}
