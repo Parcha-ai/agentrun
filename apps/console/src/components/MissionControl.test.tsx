@@ -243,6 +243,8 @@ describe("runs that need review (needs_review)", () => {
     const html = render({ ...v, analytics: analytics() }, scope);
     expect(html).toContain("failed or escalated");
     expect(html).not.toContain("need review");
+  });
+});
 
 // Runs whose cost is unknown because requests were cut: the total stays the known sum, and "up to $y more" says the rest.
 describe("the cost of cut runs (bounded_unknown)", () => {
