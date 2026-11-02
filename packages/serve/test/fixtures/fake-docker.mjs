@@ -101,10 +101,6 @@ switch (args[0]) {
     child.once("exit", (code, signal) => process.exit(code ?? 128 + (constants.signals[signal] ?? 1)));
     break;
   }
-  case "network":
-    // The default bridge's gateway, as `docker network inspect bridge --format ...` names it.
-    done("172.17.0.1\n");
-    break;
   default:
     fail(`fake docker: no ${args[0]}`);
 }
