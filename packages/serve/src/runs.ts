@@ -48,6 +48,8 @@ const DRAIN = "30s";
 const PROCESS_LOG = "process.log";
 /** How long a request waits for a run's door: its process coming up, or a settle in progress. */
 const READY_TIMEOUT_MS = 45_000;
+/** The reducer's live "Run started" and "Run finished" rows: a turn's edges, which no store entry makes on any harness,
+ *  so a run's settled timeline never has them. Never served, live or settled, so no row a reader saw goes at the end. */
 const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
@@ -531,7 +533,7 @@ export class Runs {
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
   /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
   private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
-    run.rows = withAsks(rows);
+    run.rows = withAsks(rows.filter((r) => !QUIET.test(r.id)));
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
@@ -1295,7 +1297,9 @@ export class Runs {
   async cancel(run: Run): Promise<boolean> {
     // As stop: already terminal, and no cancel mark is written.
     if (run.imported) return false;
-    if (run.outcome) return false;
+    // Finishing is already ending with its outcome (an answer, a failure, the cap): a cancel now would turn a run that
+    // answered into a cancelled one, since the settle reads the cancel first.
+    if (run.outcome || run.finishing) return false;
     run.cancel = true;
     // First, so no request leaves after the cancel landed, whether or not the process can be reached yet.
     await writeWhole(join(run.dir, RUN_CANCELLED), "").catch((error: Error) => warn(run.id, `its cancel mark is not written: ${error.message}`));
