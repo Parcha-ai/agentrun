@@ -1,4 +1,4 @@
-import { BROWSER_OPENERS, endsTurn, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
+import { BROWSER_OPENERS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 
 export type TimelineKind =
@@ -297,12 +297,13 @@ function createProjector(options: TimelineOptions) {
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
   /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
-  /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. */
+  /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. Its
+   *  outcome is read once, for the summary and the status both. */
   const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, parent?: string) => {
     const outcome = outcomeOf(tool.name, view);
     return make("tool_result", conv, rowId, {
       summary: view.isError ? `${named} failed: ${failure(view.text)}` : outcome ? `${named}: ${scrubUrls(firstLine(outcome.text))}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
-      tool_status: view.isError || outcome?.failed ? "failed" : "success", tool_result_preview: view.text ? cut(scrubUrls(view.text), caps.preview) : null,
+      tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: view.text ? cut(scrubUrls(view.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
     });
   };
@@ -498,8 +499,9 @@ export function timelineOf(entries: readonly EntryLike[], options: TimelineOptio
 export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
   const meter = createMeter();
   const seen = new Set<string>();
-  // Each call by `conversation:id`, its tool's name as kept, and whether a result closed it, as the timeline pairs them.
-  const calls = new Map<string, { name: string; done: boolean }>();
+  // Each call by `conversation:id`, its tool's name as kept and as called, and whether a result closed it, as the timeline
+  // pairs them.
+  const calls = new Map<string, { name: string; called: string; done: boolean }>();
   const tools = new Map<string, ToolMetrics>();
   // Each tool's place by its first call, or its first result with no call: a tie for the last kept place goes by it.
   const order = new Map<string, number>();
@@ -523,14 +525,16 @@ export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
         const [id, name] = [str(block.id), str(block.name)];
         if (block.type !== "toolCall" || !id || !name) continue;
         const key = metricName(name);
-        calls.set(`${conv}:${id}`, { name: key, done: false });
+        calls.set(`${conv}:${id}`, { name: key, called: name, done: false });
         see(key);
       }
     } else if (entry.kind === "pi.tool-result" && message) {
       const call = calls.get(`${conv}:${str(message.toolCallId) ?? ""}`);
       if (call) call.done = true;
       const named = str(message.toolName);
-      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), message.isError === true);
+      // Failed as the call's row reads it (callFailed): an error, or a result its tool reads as failed (a refused fetch).
+      const called = call?.called ?? named ?? "";
+      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), callFailed(called, { text: textOf(message), isError: message.isError === true }));
     }
   }
   for (const call of calls.values()) if (!call.done) tally(call.name, true);
