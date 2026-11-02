@@ -10,7 +10,7 @@ import { note } from "./fixtures/faux-learn.mjs";
 import { ended, git, LEARN, learner, made, objects, repoOf, savedOf, settled, started, turnCopyOf } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { learningTestHooks } from "../dist/learning.js";
-import { agent, call, follow, scratch, serve } from "./support.mjs";
+import { agent, call, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 const SOURCES = note("Quote sources", "Name the page each figure came from");
@@ -357,4 +357,45 @@ test("a commit's notes are read once: a later page and the view at the same main
   const view = (await api("GET", "/agents/paged/learning")).body;
   assert.deepEqual([view.notes.items.map((n) => n.file), view.log.items.length], [["c-three.md", "b-two.md", "a-one.md"], 3]);
   assert.deepEqual(reads(), [["log", "--skip=0", "--max-count=20"]]);
+});
+
+test("a note's name that holds a value made secret after it was written is never shown: the view, the notes, the log and the run's diff read it [redacted], and its route answers the real name only to a caller who knows it", { timeout: 240_000 }, async (t) => {
+  // Built at the run: a value no file of this repository holds, made a launcher's secret only once its note is on main.
+  const value = ["s3cret", "store", "pass", process.pid, Date.now().toString(36)].join("-");
+  const named = `${value}.md`;
+  const OLD = note("Old plan", "Plan the answer before writing it");
+  const NEW = note("Plan", "Plan the answer, then check it", "Plan the answer, then check it.\n", "supersedes: [old-plan.md]\n");
+  withEnv(t, {}, ["AGENT_MODEL_API_KEY"]);
+  const first = await serve(t, { learning: "on", faux: LEARN });
+  const { data } = first;
+  await made(first.api, learner("namer", { plan: [["old-plan.md", OLD]], once: true }));
+  const one = await ended(first.api, await started(first.api, "namer"));
+  settled(one.view, one.rows, "merged");
+  assert.equal((await first.api("PUT", "/agents/namer/definition", learner("namer", { plan: [[named, NEW]], once: true, version: 2 }))).status, 200);
+  const two = await ended(first.api, await started(first.api, "namer"));
+  settled(two.view, two.rows, "merged");
+  const before = (await first.api("GET", "/agents/namer/learning")).body;
+  assert.deepEqual(before.notes.items.map((n) => [n.file, n.status, n.superseded_by]), [[named, "active", null], ["old-plan.md", "superseded", named]], "shown as it is while no secret");
+  await first.close();
+
+  // The server again, with the name's value as a launcher's secret (the model key).
+  process.env.AGENT_MODEL_API_KEY = value;
+  const { api } = await serve(t, { learning: "on", faux: LEARN, data });
+  const view = (await api("GET", "/agents/namer/learning")).body;
+  assert.deepEqual(view.notes.items.map((n) => [n.file, n.status, n.superseded_by]), [["[redacted]", "active", null], ["old-plan.md", "superseded", "[redacted]"]]);
+  assert.deepEqual(view.log.items.map((c) => c.files), [["MEMORY.md", "old-plan.md", "[redacted]"], ["MEMORY.md", "old-plan.md"]]);
+  const page1 = (await api("GET", "/agents/namer/learning/notes?limit=1")).body;
+  const page2 = (await api("GET", `/agents/namer/learning/notes?limit=1&cursor=${page1.next_cursor}`)).body;
+  assert.deepEqual([...page1.items, ...page2.items].map((n) => [n.file, n.superseded_by]), [["[redacted]", null], ["old-plan.md", "[redacted]"]]);
+  const log = (await api("GET", "/agents/namer/learning/log?limit=1")).body;
+  assert.deepEqual(log.items[0].files, ["MEMORY.md", "old-plan.md", "[redacted]"]);
+  const diff = (await api("GET", `/runs/${two.view.run_id}/learning/diff`)).body;
+  assert.deepEqual(diff.files.map((f) => [f.path, f.status, f.withheld ?? null]), [["MEMORY.md", "modified", "secret"], ["old-plan.md", "modified", "secret"], ["[redacted]", "added", null]]);
+  // The route answers the real name to a caller who knows it, and its text is cut as any text is.
+  const own = await api("GET", `/agents/namer/learning/files/${named}`);
+  assert.deepEqual([own.status, own.body], [200, NEW]);
+  const old = await api("GET", "/agents/namer/learning/files/old-plan.md");
+  assert.equal(old.status, 200);
+  const shown = JSON.stringify([view, page1, page2, log, diff, (await api("GET", `/runs/${two.view.run_id}/learning`)).body, old.body, [...old.headers], [...own.headers]]);
+  assert.ok(!shown.includes(value), "the value is nowhere a person reads");
 });

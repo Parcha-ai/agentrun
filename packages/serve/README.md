@@ -738,11 +738,13 @@ with the token, an archived agent's too:
   the first `@@`, or `withheld` (`too_large`, `secret`).
 
 Every read is git plumbing at one commit, with no optional lock, and every text it answers is cut of the server's
-secrets as they are then. A commit's notes are parsed once and kept, for the few commits last read, so the view and
-every page at that commit read no note again; a log page reads only its own commits (`git log` from the cursor's
-offset, at most `limit`), and the log's `total` is counted once a commit. A symbolic link at the agent's home, its
-learning folder or the folder's `.git` is never followed: a read or a write there answers `500`, and nothing is
-written.
+secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
+`[redacted]` whole, in the notes (`file`, `superseded_by`), the log's `files` and a diff's `path`, and a write's
+`Location` leaves it out, while its route still answers the real name to a caller who knows it. A commit's notes are
+parsed once and kept, for the few commits last read, so the view and every page at that commit read no note again; a
+log page reads only its own commits (`git log` from the cursor's offset, at most `limit`), and the log's `total` is
+counted once a commit. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
+followed: a read or a write there answers `500`, and nothing is written.
 
 ## Spend cap
 

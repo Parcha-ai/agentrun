@@ -213,17 +213,17 @@ const NULL_STRING = { type: ["string", "null"] };
 const MARK = { "x-agentrun-serve": "learning/1" };
 const PAGE = (item: Json, description: string) => closed({ items: { type: "array", items: item }, total: { ...COUNT, description: "How many there are in all, at the commit the page was read at." }, next_cursor: { ...NULL_STRING, description: "The next page, read at the same commit of main as this one: opaque. Null on the last." } }, description);
 const LEARNING_NOTE = closed({
-  file: { type: "string", description: "The note's file name, `<slug>.md`, at the folder's top." },
+  file: { type: "string", description: "The note's file name, `<slug>.md`, at the folder's top; `[redacted]` when it holds one of the host's secrets as they are now (its route still answers the real name)." },
   name: { type: "string" }, description: { type: "string" }, type: { enum: [...NOTE_TYPES] },
   status: { enum: [...NOTE_STATUSES], description: "Absent from the note's front matter: active. Only an active note is in MEMORY.md." },
-  superseded_by: { ...NULL_STRING, description: "The note that superseded it, on a superseded note." },
+  superseded_by: { ...NULL_STRING, description: "The note that superseded it, on a superseded note; `[redacted]` as `file` is." },
   text: { type: "string", description: "The note's whole file, front matter included." },
 });
 const LEARNING_CHANGE = closed({
   by: { oneOf: [closed({ run: { type: "string" } }), closed({ user: { type: "boolean", const: true } })], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation or retirement through this API (`Changed-By: user`)." },
   commit: { type: "string" }, at: { type: "string", format: "date-time" },
   reason: { type: "string", description: "A merge's: the grader's reason. A person's: what was done, `edited by a person: <file>`." },
-  files: { type: "array", items: { type: "string" }, description: "The files the commit changed, MEMORY.md among them." },
+  files: { type: "array", items: { type: "string" }, description: "The files the commit changed, MEMORY.md among them; a name holding one of the host's secrets reads `[redacted]`." },
 });
 const LEARNING_COUNTS = closed({
   merged: COUNT,
@@ -263,7 +263,7 @@ const LEARNING_DIFF = closed({
     items: {
       type: "object", additionalProperties: false, required: ["path", "status"],
       properties: {
-        path: { type: "string" }, status: { enum: ["added", "modified", "deleted"] },
+        path: { type: "string", description: "The file's name; `[redacted]` when it holds one of the host's secrets." }, status: { enum: ["added", "modified", "deleted"] },
         patch: { type: "string", description: "The file's unified diff as git writes it, hunks only: from the first `@@` line, 3 lines of context. An added file diffs against nothing (`@@ -0,0 +1,N @@`)." },
         withheld: { enum: ["too_large", "secret"], description: "Set instead of `patch` when the file is not shown: its patch is over 64 KiB, or holds one of the host's secrets." },
       },
@@ -282,7 +282,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning": {
     get: {
       operationId: "getAgentLearning", tags: ["agents"], summary: "What the agent has learned: its index, notes, log of changes and counts",
-      description: "Read at main's head with git's plumbing; every text cut of the host's secrets as they are now. An agent whose learning was never on has no folder: `main` null and every page empty. An archived agent's is readable.",
+      description: "Read at main's head with git's plumbing; every text cut of the host's secrets as they are now, and a file name holding one `[redacted]` whole. An agent whose learning was never on has no folder: `main` null and every page empty. An archived agent's is readable.",
       parameters: [AGENT_ID], responses: { "200": json(AGENT_LEARNING, "The agent's learning."), ...errors(401, 404, 429, 500) }, ...MARK,
     },
   },

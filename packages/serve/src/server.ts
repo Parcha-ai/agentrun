@@ -960,7 +960,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
         const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
         const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets() });
-        return sendNote(res, written.status, { ...written, text: secretsShown(learningSecrets()).text(written.text) }, written.status === 201 ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
+        // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
+        const shown = secretsShown(learningSecrets());
+        const located = written.status === 201 && shown.name(written.file) === written.file;
+        return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
       }
       case "getRunLearning":
         return send(res, 200, await runLearning(await needRun(id), secretsShown(learningSecrets()), learningSecrets()));

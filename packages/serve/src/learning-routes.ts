@@ -12,8 +12,8 @@
 // commits last read (Recent), so later pages and the view at the same commit read no note again; the log reads only
 // its page's commits (skip and max-count). A read reaches the folder through readFolder, a write through agentFolder:
 // the same link rule, so a link at the folder is an error on either, never followed. A text that leaves holding one of
-// the host's secrets as they are now (a value made secret after it was written) is cut of it, and a diff's file holding
-// one is withheld.
+// the host's secrets as they are now (a value made secret after it was written) is cut of it, a file's name holding
+// one reads "[redacted]" whole, and a diff's file holding one is withheld.
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -41,15 +41,18 @@ type NoteView = { file: string; name: string; description: string; type: string;
 type Change = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
 type Note = LearnedNote & { text: string };
 export type Counts = { merged: number; dropped: Record<string, number>; in_progress: number };
-/** What a text that leaves shows of the host's secrets now: none (secretsShown). */
-export type Shown = { text: (text: string) => string; holds: (text: string) => boolean };
+/** What a text or a name that leaves shows of the host's secrets now: none (secretsShown). */
+export type Shown = { text: (text: string) => string; name: (name: string) => string; holds: (text: string) => boolean };
+/** What a name holding a secret reads: packages/learn redactSecrets' mark, the name's whole, never a part of it. */
+const REDACTED = "[redacted]";
 
 /** The host's secrets as a reader cuts them: a text holding a value or a shape is cut of it (whole when long: packages/learn
- *  redactSecrets); any other text is shown as it is. */
+ *  redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its route still answers
+ *  the real name, to a caller who knows it); any other text or name is shown as it is. */
 export function secretsShown(values: readonly string[]): Shown {
   const matches = valueMatcher(values);
   const holds = (text: string) => matches(text) || secretShapes(text).length > 0;
-  return { holds, text: (text) => (holds(text) ? redactSecrets(text, values) : text) };
+  return { holds, text: (text) => (holds(text) ? redactSecrets(text, values) : text), name: (name) => (holds(name) ? REDACTED : name) };
 }
 
 /** The few values last kept, by key, oldest dropped first: at most `entries` of them, `bytes` in all by their sizes. */
@@ -174,7 +177,7 @@ async function changeCount(home: string, repo: string, sha: string): Promise<num
 /** A page of the changes on main to `sha`, cut of the host's secrets. */
 async function logPage(home: string, repo: string, sha: string, offset: number, limit: number, shown: Shown): Promise<Page<Change>> {
   const [total, log] = await Promise.all([changeCount(home, repo, sha), changesFrom(home, repo, sha, offset, limit)]);
-  return { items: log.map((change) => ({ ...change, reason: shown.text(change.reason) })), total, next_cursor: offset + limit < total ? cursorOf(sha, offset + limit) : null };
+  return { items: log.map((change) => ({ ...change, reason: shown.text(change.reason), files: change.files.map(shown.name) })), total, next_cursor: offset + limit < total ? cursorOf(sha, offset + limit) : null };
 }
 
 /** Commit `sha`'s index and notes, its notes as the view shows them: active first, then by their newest change on main's
@@ -193,8 +196,8 @@ async function notesAt(home: string, repo: string, sha: string): Promise<{ index
   return parsed;
 }
 
-/** A note as the view shows it, cut of the host's secrets. */
-const noteView = ({ file, name, description, type, status, superseded_by, text }: Note, shown: Shown): NoteView => ({ file, name: shown.text(name), description: shown.text(description), type, status, superseded_by, text: shown.text(text) });
+/** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole. */
+const noteView = ({ file, name, description, type, status, superseded_by, text }: Note, shown: Shown): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text) });
 
 const cursorOf = (sha: string, offset: number) => Buffer.from(`${sha}.${offset}`).toString("base64url");
 /** A page of `all`, from `offset`, at most `limit`, each item shown by `view` (so only the page's are cut of secrets). */
@@ -419,8 +422,10 @@ function addedPatch(text: string): string {
 export async function runDiff(data: string, run: Run, shown: Shown) {
   const learning = run.meta.learning;
   if (!learning) throw new ApiError("not_found", "the run does not learn, so it proposed nothing");
-  const file = (path: string, status: string, patch: string) =>
-    Buffer.byteLength(patch) > PATCH_CAP ? { path, status, withheld: "too_large" } : shown.holds(patch) ? { path, status, withheld: "secret" } : { path, status, patch };
+  const file = (name: string, status: string, patch: string) => {
+    const path = shown.name(name);
+    return Buffer.byteLength(patch) > PATCH_CAP ? { path, status, withheld: "too_large" } : shown.holds(patch) ? { path, status, withheld: "secret" } : { path, status, patch };
+  };
   if (learning.merged) {
     const { home, repo } = await placeOf(data, run.agentId);
     const head = learning.merged;
