@@ -109,9 +109,9 @@ test("a run on the claude-agent or codex harness ends with metrics: its model th
   const claude = await started(api, "claude", { harness: "claude-agent", model: "anthropic/claude-opus-5-5", instructions: "Make three requests." }, { input: { content: "hi" } });
   await follow(api, claude, ["completed"], { deadlineMs: 55_000 });
   const m = metricsOf(data, claude);
-  // The faux harness books 10 input and 5 output tokens a request; the journal names the harness, not the model.
+  // The faux harness books 10 input and 5 output tokens a request; the journal names the model each request asked for.
   assert.deepEqual([m.input, m.output, m.requests, m.unmetered], [30, 15, 3, 0]);
-  assert.deepEqual([m.model, m.models], ["anthropic/claude-opus-5-5", { "claude-agent/claude-agent": 3 }]);
+  assert.deepEqual([m.model, m.models], ["anthropic/claude-opus-5-5", { "claude-agent/faux": 3 }]);
   assert.equal(m.tools.read.calls, 2);
   assert.equal(m.effort, "medium");
   // Codex takes no max: its process runs at xhigh, and the stored effort says so.
@@ -119,7 +119,7 @@ test("a run on the claude-agent or codex harness ends with metrics: its model th
   await follow(api, codex, ["completed"], { deadlineMs: 55_000 });
   assert.equal((await api("GET", `/runs/${codex}`)).body.result.final_answer, "Thinking xhigh.");
   const c = metricsOf(data, codex);
-  assert.deepEqual([c.effort, c.requests, c.model], ["xhigh", 1, "codex/codex"], "no model named: the journal's");
+  assert.deepEqual([c.effort, c.requests, c.model], ["xhigh", 1, "codex/faux"], "no model named: the journal's");
 });
 
 test("a follow-up on a completed run carries it back again with its counts updated", async (t) => {

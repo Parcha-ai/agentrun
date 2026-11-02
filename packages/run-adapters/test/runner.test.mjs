@@ -510,7 +510,7 @@ test("modelPortFor, alone (a chat run's session): the runner's records and event
   await first.models.beforeRequest({ model: 'm' });
   await first.models.afterRequest({ input: 10, output: 2, cacheRead: 0, usd: 0.5 });
   await first.models.beforeRequest({ model: 'm' });
-  assert.deepEqual(await runnerRecords(), [[RUNNER_RECORDS.request, { turn: 1, model: 'm' }], [RUNNER_RECORDS.turn, { turn: 1, usd: 0.5 }], [RUNNER_RECORDS.request, { turn: 2, model: 'm' }]], "the runner's own records: each answer names its turn");
+  assert.deepEqual(await runnerRecords(), [[RUNNER_RECORDS.request, { turn: 1, model: 'm' }], [RUNNER_RECORDS.turn, { turn: 1, usd: 0.5, usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 } }], [RUNNER_RECORDS.request, { turn: 2, model: 'm' }]], "the runner's own records: each answer names its turn and keeps its tokens");
   assert.deepEqual([first.turns(), first.spentUsd()], [2, 0.5]);
 
   // The next process: the cut request counts as a turn, the spend is unknown, and it is booked once, as cut.
@@ -534,6 +534,19 @@ test("modelPortFor, alone (a chat run's session): the runner's records and event
   const before = (await store.read(key)).length;
   await assert.rejects(refusing.models.beforeRequest({ model: 'm' }), (e) => e instanceof HarnessRunError && e.reason === 'refused');
   assert.equal((await store.read(key)).length, before);
+});
+
+test("a runner.turn keeps its request's tokens in pi's shape; a usage that reports none (zeros) keeps none", async () => {
+  const store = memorySessionStore();
+  const key = 'chat:t1';
+  const port = await modelPortFor(await store.open(key), { key });
+  await port.models.afterRequest({ input: 12, output: 4, cacheRead: 30, cacheWrite: 5, usd: 0.25 }, await port.models.beforeRequest({ model: 'm' }));
+  // The proxy books an answer whose usage it could not read with zeros, at an unknown cost.
+  await port.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true }, await port.models.beforeRequest({ model: 'm' }));
+  assert.deepEqual((await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data), [
+    { turn: 1, usd: 0.25, usage: { input: 12, output: 4, cacheRead: 30, cacheWrite: 5 } },
+    { turn: 2, usd: null, estimated: true },
+  ]);
 });
 
 test('requests in flight together are each booked under the turn they were admitted as: answers in reverse, and a cut one booked by its own turn', async () => {
