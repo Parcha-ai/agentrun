@@ -7,7 +7,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { processAlive } from "@parcha/agentrun-adapters/host";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { homeOf } from "../dist/files.js";
 import { startServe } from "../dist/index.js";
 import { learningTestHooks } from "../dist/learning.js";
