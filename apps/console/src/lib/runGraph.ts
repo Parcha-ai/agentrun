@@ -1,4 +1,4 @@
-// A workflow run as GET /v2/runs/{id}/graph gives it (the sprint's contract C4), and what the graph view draws from it:
+// A workflow run as GET /v2/runs/{id}/graph gives it (the agentrun.v2 contract), and what the graph view draws from it:
 // each node's state, the route branches taken, each map's item cells, a decision's verdict on its card, and, for one
 // selected map item, its body's nodes in that item's states.
 import type { WorkflowGraph } from "@dsl/graph";
@@ -83,9 +83,9 @@ export function metaOf(workflow: unknown, graph: WorkflowGraph): Record<string, 
 
 const pct = (p: number) => (p >= 0.995 ? "1.00" : p.toFixed(2));
 
-/** A decision's answer in a few characters: the chosen option or branch and its probability, yes/no with P(yes). Of
- *  several answers, the least sure one; `short` leaves out its yes/no (the probability is P(yes)), for a card. */
-export function verdictOf(d: Decision, short = false): string | undefined {
+/** A decision's answer in a few characters, as the timeline says it: the chosen option or branch and its probability,
+ *  yes/no with the probability of that answer. Of several answers, the least sure one, named. */
+export function verdictOf(d: Decision): string | undefined {
   if (d.status === "failed") return "failed";
   if (d.status === "cancelled") return "interrupted";
   const answers = d.answers ?? {};
@@ -101,7 +101,8 @@ export function verdictOf(d: Decision, short = false): string | undefined {
   const one = (id: string) => {
     const x = answers[id];
     if (x.type === "choice") return `${optionName(d, id, x.choice)} ${pct(x.probabilities[x.choice] ?? x.confidence)}`;
-    if (x.type === "noul") return `${x.noul >= 0.5 ? "yes" : "no"} ${pct(x.noul)}`;
+    // The verdict and its own probability, as the timeline says it: "no 0.99" for a P(yes) of 0.01, never "no 0.01".
+    if (x.type === "noul") return `${x.noul >= 0.5 ? "yes" : "no"} ${pct(x.noul >= 0.5 ? x.noul : 1 - x.noul)}`;
     if (x.type === "score") return `${x.score} ${pct(x.confidence)}`;
     if (x.type === "refusal") return "refused";
     return "box";
@@ -113,8 +114,7 @@ export function verdictOf(d: Decision, short = false): string | undefined {
     return x.type === "noul" ? Math.abs(x.noul - 0.5) * 2 : "confidence" in x && typeof x.confidence === "number" ? x.confidence : 1;
   };
   const weakest = ids.reduce((w, id) => (sure(id) < sure(w) ? id : w), ids[0]);
-  const w = answers[weakest];
-  return short && w.type === "noul" ? `${weakest} ${pct(w.noul)}` : `${weakest} ${one(weakest)}`;
+  return `${weakest} ${one(weakest)}`;
 }
 
 /** A choice's name as the reader knows it: a pick numbers its options (item_0, item_1, ...), so its option's own text
@@ -182,7 +182,7 @@ export function runMarks(g: RunGraph, selected: Selection): GraphMarks {
   const inMap = (p: string) => /\/body(\/|$)/.test(p) && g.graph.nodes.some((n) => n.kind === "map" && p.startsWith(`${n.path}/body`));
   for (const d of g.decisions) {
     if (!d.node || d.item !== null || inMap(d.node)) continue;
-    const v = verdictOf(d, true);
+    const v = verdictOf(d);
     if (v) verdict[d.node] = v;
   }
   if (selected && selected.item != null && kindOf.get(selected.path) === "map") {
@@ -196,7 +196,7 @@ export function runMarks(g: RunGraph, selected: Selection): GraphMarks {
       taken.push(took);
       for (const n of g.graph.nodes) if (n.path.startsWith(prefix) && !(n.path === took || n.path.startsWith(`${took}/`))) status[n.path] = "not-run";
     }
-    for (const d of g.decisions) if (d.node && d.item === selected.item && d.node.startsWith(`${selected.path}/body`)) { const v = verdictOf(d, true); if (v) verdict[d.node] = v; }
+    for (const d of g.decisions) if (d.node && d.item === selected.item && d.node.startsWith(`${selected.path}/body`)) { const v = verdictOf(d); if (v) verdict[d.node] = v; }
   }
   // A paused run's working nodes and items are held: nothing new starts until it resumes. Last, so a selected item's
   // own states are held too.

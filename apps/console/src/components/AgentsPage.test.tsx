@@ -88,6 +88,8 @@ describe("AgentEditPage, a new agent from a starter", () => {
       getAgent: async () => ({ agent: made, etag: "r1" }),
       listRevisions: async () => ({ revisions: [{ revision: "r1", version: 1, current: true, note: null, created_at: "2026-11-01T00:00:00Z" }], next_cursor: null }),
       validateWorkflow: async () => ({ ok: true, issues: [], warnings: [] }),
+      // The agent page reads the server's stats for its Analytics tab: this server's carry none.
+      statsOver: async () => ({}),
     };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);

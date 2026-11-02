@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { test as nodeTest } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, openJournal, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
-import { createHarnessRunner, HarnessRunError, modelPortFor, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
-import { fauxAdapter as scriptedAdapter, memorySessionStore, FAUX_RECORDS } from '@parcha/agentrun-adapters/testing';
+import { createHarnessRunner, HarnessRunError, modelPortFor, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
+import { fauxAdapter as scriptedAdapter, memorySessionStore, FAUX_RECORDS } from '@parcha/agentrun-kernel/testing';
 
 /** Every test fails in 30 s at most: a node a regression leaves waiting fails the run instead of hanging it. */
 const test = (name, fn) => nodeTest(name, { timeout: 30_000 }, fn);

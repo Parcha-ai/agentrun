@@ -1,11 +1,11 @@
-# @parcha/agentrun-codex
+# @parcha/agentrun-harness-codex
 
-Codex as an AgentRun harness: a DSL `agent` node runs on Codex through `@parcha/agentrun-adapters`, durable in AgentRun's
-own store, with the host's tools as its only tools. It is held: not on npm yet.
+Codex as an AgentRun harness: a DSL `agent` node runs on Codex through `@parcha/agentrun-kernel`, durable in AgentRun's
+own store, with the host's tools as its only tools.
 
 ```ts
-import { createHarnessRunner } from "@parcha/agentrun-adapters";
-import { codexAdapter } from "@parcha/agentrun-codex";
+import { createHarnessRunner } from "@parcha/agentrun-kernel";
+import { codexAdapter } from "@parcha/agentrun-harness-codex";
 
 const runNode = createHarnessRunner(
   codexAdapter({
@@ -18,8 +18,10 @@ const runNode = createHarnessRunner(
 ```
 
 - **The host's tools only.** Codex's app-server runs with its built-in tools off: no shell, no file edits, no web, no
-  images, no sub-agents. A classic model is offered exactly the host's tools (and the runner's `submit`); a code-mode
-  model is offered code mode's `exec` and `wait`, whose runtime has no Node modules, no process and no network, and
+  images, no sub-agents. Codex's sandbox stays read-only for those built-ins, and its message describing that sandbox
+  is not sent, so the model is never told its files are read-only while the host's tools write them
+  (`test/developer-messages.test.mjs`). A classic model is offered exactly the host's tools (and the runner's
+  `submit`); a code-mode model is offered code mode's `exec` and `wait`, whose runtime has no Node modules, no process and no network, and
   reaches the host's tools by their own names, as nested calls of the script it writes. The proxy passes `exec` and
   `wait` and drops the sub-agent and user-input tools Codex lists beside them; it keeps parallel tool calls off for a
   code-mode request, and offers no `exec` while a script that yielded still runs, so one script is live at a time. A
@@ -44,7 +46,7 @@ const runNode = createHarnessRunner(
   no shell). The skills are written into the session's `CODEX_HOME` at the start of every drive, where Codex lists a
   user's skills even in a turn with its built-ins off (it lists none from a working directory's `.agents/skills` there).
   Codex's bundled skills (imagegen, openai-docs, skill-creator, skill-installer, ...) are off in every session, with
-  skills or without. The skills are checked when the adapter is made, by `skillProblems` of `@parcha/agentrun-adapters`,
+  skills or without. The skills are checked when the adapter is made, by `skillProblems` of `@parcha/agentrun-kernel`,
   the Claude adapter's check: a lowercase name, a `SKILL.md` whose front matter names it and describes it, plain
   relative paths, 1 MiB in all. Codex itself skips a skill with no front matter or no description and lists one under
   its front matter's name, so each of those is refused here instead.

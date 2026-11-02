@@ -12,11 +12,13 @@ export class ClientError extends Error {
   fields?: FieldIssue[];
   /** A retryable refusal's wait before asking again, when the server named one (a busy store). */
   retryAfterMs?: number;
+  /** What the server says beyond the message (`error.details`): a 409 `agent_not_runnable` names the box it lacks. */
+  details?: Record<string, unknown>;
   constructor(readonly status: number, readonly code: string, message: string, readonly retryable = false, readonly requestId?: string) {
     super(message);
     this.name = "ClientError";
   }
-  toApiError(): ApiError { return { code: this.code, message: this.message, retryable: this.retryable, request_id: this.requestId }; }
+  toApiError(): ApiError { return { code: this.code, message: this.message, retryable: this.retryable, request_id: this.requestId, ...(this.details ? { details: this.details } : {}) }; }
 }
 
 /** POST /v2/workflows/validate's answer: issues refuse a save, warnings only advise. Paths are JSON Pointers into the
@@ -61,6 +63,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
       if (e?.fields) err.fields = e.fields;
       if (typeof e?.retry_after_ms === "number") err.retryAfterMs = e.retry_after_ms;
+      if (e?.details && typeof e.details === "object" && !Array.isArray(e.details)) err.details = e.details;
       throw err;
     }
     const out = !text && (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
@@ -135,7 +138,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** One send, one key: a retry of the same send reuses its key, so the server keeps the first request's identity. */
     sendMessage: (id: string, content: string, idempotencyKey: string) =>
       call<{ mode: string; message_id: string }>("POST", `${run(id)}/messages`, { body: { content }, headers: { "idempotency-key": idempotencyKey } }),
-    /** A workflow run's graph, live: each node's state, its decisions and tool calls, and the totals (contract C4). */
+    /** A workflow run's graph, live: each node's state, its decisions and tool calls, and the totals. */
     getRunGraph: (id: string, signal?: AbortSignal) => call<RunGraph>("GET", `${run(id)}/graph`, { signal }),
     /** Pauses a workflow run: calls in flight finish, and no new node starts until it resumes. */
     pauseRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/pause`, { body: {} }),

@@ -1,7 +1,6 @@
 {
-  "name": "@parcha/agentrun-claude-agent",
+  "name": "@parcha/agentrun-harness-claude",
   "version": "0.1.0-beta.28",
-  "private": true,
   "description": "The Claude Agent SDK as an AgentRun harness: the host's tools as its only tools, its model behind a loopback proxy, durable in AgentRun's own store.",
   "keywords": [
     "agentrun",
@@ -45,8 +44,8 @@
     "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
   },
   "dependencies": {
-    "@parcha/agentrun-adapters": "0.1.0-beta.28",
-    "@parcha/agentrun-dsl": "0.1.0-beta.28"
+    "@parcha/agentrun-dsl": "0.1.0-beta.28",
+    "@parcha/agentrun-kernel": "0.1.0-beta.28"
   },
   "peerDependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.286",

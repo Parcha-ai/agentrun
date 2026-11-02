@@ -9,16 +9,16 @@
 //  - Each child runs in its own process group, which kill() and close() end whole, and dies with this process: started
 //    with a watch on its parent (./host's parentWatched, inside the host's confinement), so a host that is SIGKILLed,
 //    and runs no close, leaves no Codex behind.
-//  - The model proxy (@parcha/agentrun-adapters/host, with the Codex policy) starts with the machine and stops with it.
+//  - The model proxy (@parcha/agentrun-kernel/host, with the Codex policy) starts with the machine and stops with it.
 import { spawn as spawnChild } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { createInterface } from "node:readline";
-import { FileTail } from "@parcha/agentrun-adapters/process";
+import { FileTail } from "@parcha/agentrun-kernel/process";
 import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
-import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-adapters/host";
+import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { codexPolicy } from "./policy.js";
 import { UNWATCHED } from "../scripts.js";
 
@@ -42,11 +42,11 @@ export interface MachineSeed {
  *  or a directory that is not one of the machine's private ones. */
 function seedFiles(seed: MachineSeed | undefined): readonly CacheFile[] {
   if (seed === undefined) return [];
-  if (!DIRS.includes(seed.dir)) throw new Error(`agentrun-codex: a seed goes in one of the machine's private directories (${DIRS.join(", ")}), not ${JSON.stringify(String(seed.dir).slice(0, 40))}`);
+  if (!DIRS.includes(seed.dir)) throw new Error(`agentrun-harness-codex: a seed goes in one of the machine's private directories (${DIRS.join(", ")}), not ${JSON.stringify(String(seed.dir).slice(0, 40))}`);
   const encoder = new TextEncoder();
   return Object.entries(seed.files).map(([path, text]) => {
-    if (!path || path.startsWith("/") || /[\\\0]/.test(path) || path.split("/").some((part) => part === "" || part.startsWith("."))) throw new Error(`agentrun-codex: the seed path ${JSON.stringify(path.slice(0, 80))} is not a plain relative path inside ${seed.dir}`);
-    if (typeof text !== "string") throw new Error(`agentrun-codex: the seed file ${JSON.stringify(path.slice(0, 80))} is not text`);
+    if (!path || path.startsWith("/") || /[\\\0]/.test(path) || path.split("/").some((part) => part === "" || part.startsWith("."))) throw new Error(`agentrun-harness-codex: the seed path ${JSON.stringify(path.slice(0, 80))} is not a plain relative path inside ${seed.dir}`);
+    if (typeof text !== "string") throw new Error(`agentrun-harness-codex: the seed file ${JSON.stringify(path.slice(0, 80))} is not text`);
     return { path, bytes: encoder.encode(text) };
   });
 }
@@ -95,7 +95,7 @@ export function confined(child: ChildCommand, confine: ConfineChild | undefined)
   const argv = [out?.command, ...(Array.isArray(out?.args) ? out.args : [])];
   const tail = argv.slice(argv.length - child.args.length - 1);
   const kept = argv.length > child.args.length + 1 && tail.length === child.args.length + 1 && tail.every((a, i) => a === (i === 0 ? child.command : child.args[i - 1]));
-  if (typeof out?.command !== "string" || !argv.every((a) => typeof a === "string") || !kept) throw new Error("agentrun-codex: the host's confinement must start the child's own command and arguments, after its own");
+  if (typeof out?.command !== "string" || !argv.every((a) => typeof a === "string") || !kept) throw new Error("agentrun-harness-codex: the host's confinement must start the child's own command and arguments, after its own");
   return { command: out.command, args: out.args };
 }
 
@@ -111,9 +111,9 @@ export function childEnv(from: Readonly<Record<string, string | undefined>>, ext
 
 /** A path inside `base`, from a relative one; anything that would leave it throws. */
 function inside(base: string, rel: string): string {
-  if (typeof rel !== "string" || !rel || isAbsolute(rel) || rel.includes("\0")) throw new Error(`agentrun-codex: ${JSON.stringify(String(rel).slice(0, 80))} is not a relative path`);
+  if (typeof rel !== "string" || !rel || isAbsolute(rel) || rel.includes("\0")) throw new Error(`agentrun-harness-codex: ${JSON.stringify(String(rel).slice(0, 80))} is not a relative path`);
   const path = normalize(join(base, rel));
-  if (!path.startsWith(base + sep)) throw new Error(`agentrun-codex: ${JSON.stringify(rel.slice(0, 80))} leaves the session's directory`);
+  if (!path.startsWith(base + sep)) throw new Error(`agentrun-harness-codex: ${JSON.stringify(rel.slice(0, 80))} leaves the session's directory`);
   return path;
 }
 
@@ -178,9 +178,9 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
   const from = options.env ?? process.env;
   const seeded = seedFiles(options.seed);
   return async ({ ctx, model }) => {
-    if (!model) throw new Error("agentrun-codex: the harness gave the machine no model route");
+    if (!model) throw new Error("agentrun-harness-codex: the harness gave the machine no model route");
     const base = normalize(options.dir);
-    if (!isAbsolute(base)) throw new Error("agentrun-codex: the session directory must be an absolute path");
+    if (!isAbsolute(base)) throw new Error("agentrun-harness-codex: the session directory must be an absolute path");
     mkdirSync(base, { recursive: true, mode: 0o700 });
     const dirs = Object.fromEntries(DIRS.map((d) => [d, sessionDir(base, d)])) as Record<CacheDir, string>;
     const root = join(base, "work");
@@ -246,7 +246,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       onRolloutLine: (listener) => void rolloutListeners.push(listener),
       notes: [],
       spawn: async (spawnOptions) => {
-        if (closed) throw new Error("agentrun-codex: the session machine is closed");
+        if (closed) throw new Error("agentrun-harness-codex: the session machine is closed");
         const proc = start(spawnOptions, from, root, base, options.confine, options.parentWatch);
         children.add(proc);
         void proc.exited.then(() => children.delete(proc));
@@ -271,7 +271,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
           read: () => {
             // Only the file Codex wrote: a link put in its place is not followed.
             try {
-              if (lstatSync(file).isSymbolicLink()) throw new Error(`agentrun-codex: ${path} is a link`);
+              if (lstatSync(file).isSymbolicLink()) throw new Error(`agentrun-harness-codex: ${path} is a link`);
             } catch (err) {
               if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
             }

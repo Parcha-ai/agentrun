@@ -64,10 +64,11 @@ export type StoreStats = {
   byAgent: Array<{ id: string; name: string; runs: number }>;
   running: string[];
 };
-/** Runs counted together in `analytics`: how many, how many completed and failed (escalated included), how many have
- *  metrics, their tokens (input, cache read, cache write and output, summed) and their cost as `stats` sums it (`costUsd`,
- *  null when no run ended with one; `unknownCostRuns` the rest). */
-export type AnalyticsGroup = { runs: number; completed: number; failed: number; runsWithMetrics: number; tokens: number; costUsd: number | null; unknownCostRuns: number };
+/** Runs counted together in `analytics`: how many, how many completed (escalated included: an escalated run completed and
+ *  waits for review, which `needsReview` counts) and failed (never an escalated one), how many have metrics, their tokens
+ *  (input, cache read, cache write and output, summed) and their cost as `stats` sums it (`costUsd`, null when no run
+ *  ended with one; `unknownCostRuns` the rest). */
+export type AnalyticsGroup = { runs: number; completed: number; needsReview: number; failed: number; runsWithMetrics: number; tokens: number; costUsd: number | null; unknownCostRuns: number };
 /** What `analytics` answers: the runs not archived, started in [`from`, `to`) and of `agent` when given, summed from their
  *  rows and their metrics. A running run's metrics are its last end's: it counts as a run without them. */
 export type StoreAnalytics = {
@@ -399,12 +400,12 @@ export class AgentStoreReader {
       FROM runs r JOIN revisions v ON v.id = r.revision_id
         ${this.metrics ? "LEFT JOIN run_metrics m ON m.run_id = r.id AND r.state <> 'running'" : ""} ${this.imports ? "LEFT JOIN run_imports i ON i.run_id = r.id" : ""}
       WHERE ${this.runArchivedAtSql()} IS NULL AND (:from IS NULL OR r.started_at >= :from) AND (:to IS NULL OR r.started_at < :to) AND (:agent IS NULL OR r.agent_id = :agent))`;
-    const group = `COUNT(*) AS runs, SUM(state = 'completed') AS completed, SUM(state IN ('failed', 'escalated')) AS failed, SUM(metered) AS metered,
+    const group = `COUNT(*) AS runs, SUM(state IN ('completed', 'escalated')) AS completed, SUM(state = 'escalated') AS needs_review, SUM(state = 'failed') AS failed, SUM(metered) AS metered,
       SUM(COALESCE(input + cache_read + cache_write + output, 0)) AS tokens, SUM(CASE WHEN state <> 'running' THEN cost_usd END) AS cost_usd,
       SUM(state <> 'running' AND cost_usd IS NOT NULL) AS known`;
     const n = (value: unknown) => Number(value ?? 0);
     const counted = (g: Record<string, unknown>): AnalyticsGroup => ({
-      runs: n(g.runs), completed: n(g.completed), failed: n(g.failed), runsWithMetrics: n(g.metered), tokens: n(g.tokens),
+      runs: n(g.runs), completed: n(g.completed), needsReview: n(g.needs_review), failed: n(g.failed), runsWithMetrics: n(g.metered), tokens: n(g.tokens),
       costUsd: n(g.known) > 0 ? Number(g.cost_usd) : null, unknownCostRuns: n(g.runs) - n(g.known),
     });
     const all = (sql: string) => this.db.prepare(`${scope} ${sql}`).all(params) as Array<Record<string, unknown>>;

@@ -86,6 +86,8 @@ syncBuiltinESMExports();
   env.npm_config_globalconfig = join(temporary, 'global.npmrc');
   env.npm_config_cache = join(temporary, 'npm-cache');
   await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], consumer);
+  // The console's own lockfile, outside the workspaces: installed here, with the network, as the root build would.
+  await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], join(consumer, 'apps', 'console'));
   await run('npm', ['run', 'build'], consumer, 0, true);
   const demo = await run('npm', ['run', 'demo'], consumer, 0, true);
   assert.match(demo, /Report: Pilot the repository workflow first\./);
