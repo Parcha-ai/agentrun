@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const script = fileURLToPath(new URL('./ci-shard.mjs', import.meta.url));
@@ -16,6 +17,18 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 const write = (path, value) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value)); };
 // Unref'd: a wait that loses a race does not hold this file's process.
 const sleep = (ms, value) => new Promise((resolve) => { setTimeout(resolve, ms, value).unref(); });
+// Linux's state letter for `pid` from /proc (Z: exited, not yet reaped); undefined where there is no entry to read (no /proc,
+// or the process was reaped meanwhile).
+const state = (pid) => { try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').at(-1)[0]; } catch { return undefined; } };
+// Whether `pid` has ended within 5 s, asked every 50 ms. A killed process whose parent died first is reparented and can still
+// answer kill(pid, 0) for a moment, while it exits or as a zombie until it is reaped.
+const ended = async (pid) => {
+  for (const until = Date.now() + 5_000; ; await delay(50)) {
+    try { process.kill(pid, 0); } catch (error) { if (error.code === 'ESRCH') return true; throw error; }
+    if (state(pid) === 'Z') return true;
+    if (Date.now() >= until) return false;
+  }
+};
 
 // A repository ci-shard can read: the workspaces its shards name, each with a test that passes, and one more, stall, whose
 // test runs packages/stall/test/*.test.mjs (or `stallScript`). The rest shard runs stall's test, then test:release, which passes.
@@ -101,7 +114,7 @@ test('a suite whose tests pass but whose process never exits is killed at the sh
   assert.match(output, /^::error::ci-shard: npm exec -c "node --test --test-timeout=60000 'release\/\*\.test\.mjs'" was not run: the shard's 0\.2-minute limit had passed$/m, output);
   assert.match(output, /^failed: npm exec -w stall -c "node --test --test-timeout=60000 'test\/\*\.test\.mjs'", npm exec -c "node --test --test-timeout=60000 'release\/\*\.test\.mjs'"$/m, output);
   const pid = Number(readFileSync(pidFile, 'utf8'));
-  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, `the test file's process ${pid} was killed with the suite`);
+  assert.ok(await ended(pid), `the test file's process ${pid} is still running 5 s after its suite was killed`);
   assert.ok(seconds < 30, `${seconds} s`);
 });
 
@@ -140,7 +153,7 @@ test('a cancel that reaches ci-shard stops its suite as the limit does: SIGTERM 
   const status = await Promise.race([run.closed, sleep(30_000, 'still running')]);
   const seconds = (Date.now() - sent) / 1000;
   assert.equal(status, 143, run.output());
-  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, `the suite's process ${pid}, which ignores SIGTERM, was killed`);
+  assert.ok(await ended(pid), `the suite's process ${pid}, which ignores SIGTERM, is still running 5 s after ci-shard exited`);
   assert.ok(seconds >= 9 && seconds < 25, `${seconds} s: SIGTERM, the 10 s grace, then SIGKILL`);
   assert.doesNotMatch(run.output(), /::group::npm exec -c/, 'the suites after it were not started');
 });
