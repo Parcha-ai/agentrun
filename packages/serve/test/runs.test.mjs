@@ -48,6 +48,8 @@ test("a run starts queued, its timeline follows it to completed and final, and t
   assert.ok(reread.ended_at >= run.ended_at, "it ended again");
   // The same session goes on: the follow-up's row, then a new turn's answer after it.
   const kinds = again.rows.map((r) => r.kind);
+  assert.equal(kinds.at(-1), "usage", `the usage row stays last, its count the run's latest: ${kinds.join(", ")}`);
+  assert.ok(again.rows.every((r, i) => i === 0 || r.timestamp >= again.rows[i - 1].timestamp), `rows by seq are in time order: ${again.rows.map((r) => `${r.kind}@${r.timestamp}`).join(", ")}`);
   assert.deepEqual(again.rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["What is six times seven?", "again"]);
   assert.ok(kinds.lastIndexOf("final_answer") > kinds.lastIndexOf("user_message"), `a new answer after the follow-up: ${kinds.join(", ")}`);
   assert.deepEqual((await api("GET", "/agents/calc")).body.runs, { count: 1, live: 0 }, "one run, not a second");
