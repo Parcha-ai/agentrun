@@ -24,9 +24,7 @@ is the documented toolchain, but `npm ci` also works with npm 10.9 (the npm bund
 
 ```sh
 npm ci --ignore-scripts
-npm run build
-(cd apps/console && npm ci && npm run build)   # the console; the serve build copies it into dist/console
-npm run build -w @parcha/agentrun-serve         # rebuild serve after the console so dist/console exists
+npm run build   # the console first (apps/console, skipped when its dist is current), then every package
 ```
 
 Start it with the launcher, which hands secrets to the server over a pipe:

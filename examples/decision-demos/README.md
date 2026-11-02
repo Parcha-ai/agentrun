@@ -96,7 +96,7 @@ the question itself counts social casinos that pay out cash prizes as gambling. 
 
 ## Running it
 
-Build once from the repo root: `npm run build`, and for the console `cd apps/console && npm run build`.
+Build once from the repo root: `npm run build` (it builds the console too).
 
 ```sh
 node examples/decision-demos/run.mjs batch-20            # faux providers, no key, no network
