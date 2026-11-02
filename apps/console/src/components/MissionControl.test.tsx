@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type Analytics, cachedShare, compact, costLine, duration, missionFrom, type MissionView, rangeFrom, type Stats, successRate, trendDays } from "@/lib/mission";
+import { type Analytics, cachedShare, compact, costLine, duration, missionFrom, type MissionView, outcomes, rangeFrom, type Stats, successRate, trendDays } from "@/lib/mission";
 import { MissionControl } from "./MissionControl";
 import type { Run } from "@/lib/v2";
 
@@ -210,3 +210,39 @@ describe("the analytics helpers", () => {
     expect([duration(5_400_000), duration(90_000), duration(4_000)]).toEqual(["1.5 h", "2 min", "4 s"]);
   });
 });
+
+// Escalated runs that wait for a person: a newer server counts them apart (needs_review), an older one in failed.
+describe("runs that need review (needs_review)", () => {
+  atNow();
+  it("with the field: the outcomes say completed, failed and need review apart, and a run waiting for review is no success", () => {
+    const g = { completed: 9, failed: 2, needs_review: 3 };
+    expect(outcomes(g)).toBe("6 completed · 2 failed · 3 need review");
+    expect(outcomes({ ...g, needs_review: 1 })).toBe("8 completed · 2 failed · 1 needs review");
+    expect(outcomes({ ...g, needs_review: 0 })).toBe("9 completed · 2 failed");
+    expect(successRate(g)).toBeCloseTo(6 / 11);
+  });
+  it("without it, as an older server counts them: failed or escalated, and the rate as before", () => {
+    const g = { completed: 6, failed: 5 };
+    expect(outcomes(g)).toBe("6 completed · 5 failed or escalated");
+    expect(successRate(g)).toBeCloseTo(6 / 11);
+  });
+  it("Mission Control says the runs that need review under Failed, never in it, and the analytics' outcomes apart", () => {
+    const stats: Stats = { agents: 1, runs: { total: 8, active: 0, needs_input: 0, failed: 2, status_unknown: 0, needs_review: 3 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 8 } };
+    const v = missionFrom(stats, []);
+    expect(v.runs.needsReview).toBe(3);
+    const a = analytics({ totals: { ...analytics().totals, completed: 9, failed: 2, needs_review: 3 } });
+    const html = render({ ...v, analytics: a }, scope);
+    expect(html).toContain("3 need review");
+    expect(html).toContain("6 completed · 2 failed · 3 need review");
+    expect(html).not.toContain("failed or escalated");
+  });
+  it("a server without the field reads exactly as before", () => {
+    const stats: Stats = { agents: 1, runs: { total: 8, active: 0, needs_input: 0, failed: 5, status_unknown: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 8 } };
+    const v = missionFrom(stats, []);
+    expect("needsReview" in v.runs).toBe(false);
+    const html = render({ ...v, analytics: analytics() }, scope);
+    expect(html).toContain("failed or escalated");
+    expect(html).not.toContain("need review");
+  });
+});
+

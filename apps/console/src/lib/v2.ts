@@ -27,7 +27,12 @@ export type Run = {
   cost: Cost | null;
   archived_at: string | null;
   poll_after_ms?: number;
+  /** A workflow run that escalated: it completed, and waits for a person to review it (`kind`, the node it stopped
+   *  at, and why). Null or absent on every other run. */
+  review?: RunReview | null;
 };
+
+export type RunReview = { kind: string | null; node: string | null; reason: string; at?: string };
 
 export type TimelineKind =
   | "user_message" | "thinking" | "tool_use" | "tool_result" | "waiting" | "usage" | "final_answer" | "phase" | "decision" | string;

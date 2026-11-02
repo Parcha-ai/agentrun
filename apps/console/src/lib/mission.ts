@@ -4,8 +4,9 @@ import type { Run } from "./v2";
 /** What Mission Control shows: counts from the server's store, the cost said with its basis, and the latest runs. */
 export type MissionView = {
   agents: number;
-  /** `statusUnknown`: running runs whose state the server can't tell without reading their files, in no other count. */
-  runs: { total: number; active: number; needsInput: number; failed: number; statusUnknown: number };
+  /** `statusUnknown`: running runs whose state the server can't tell without reading their files, in no other count.
+   *  `needsReview` (a newer server's): escalated runs that completed and wait for a person, apart from `failed`. */
+  runs: { total: number; active: number; needsInput: number; failed: number; statusUnknown: number; needsReview?: number };
   perAgent: { agentId: string; name: string; runs: number }[];
   /** `usd` sums the runs whose cost is known; `unknownRuns` counts the rest. No known cost at all is null, never 0. */
   cost: { usd: number | null; basis: "reported" | "estimate" | null; unknownRuns: number };
@@ -32,7 +33,7 @@ export function costParts(c: MissionView["cost"]): { total: string; note?: strin
  *  every number but `archived`. */
 export type Stats = {
   agents: number;
-  runs: { total: number; active: number; needs_input: number; failed: number; status_unknown: number };
+  runs: { total: number; active: number; needs_input: number; failed: number; status_unknown: number; needs_review?: number };
   per_agent: { agent_id: string; name: string; runs: number }[];
   /** `basis` is the contract's Cost.basis: "charge" or "estimate" (serve says estimate), null when `usd` is null. */
   cost: { usd: number | null; basis: "charge" | "estimate" | null; unknown_runs: number };
@@ -41,9 +42,10 @@ export type Stats = {
   analytics?: Analytics;
 };
 
-/** Runs counted together in `analytics`. `failed` takes escalated runs too; `tokens` sums over `runs_with_metrics`
- *  alone; `cost_usd` is null when no run's cost is known, and `unknown_cost_runs` counts the runs it leaves out. */
-export type AnalyticsGroup = { runs: number; completed: number; failed: number; runs_with_metrics: number; tokens: number; cost_usd: number | null; unknown_cost_runs: number };
+/** Runs counted together in `analytics`. From an older server, `failed` takes escalated runs too; a newer one counts
+ *  them in `completed` and says how many in `needs_review`. `tokens` sums over `runs_with_metrics` alone; `cost_usd` is
+ *  null when no run's cost is known, and `unknown_cost_runs` counts the runs it leaves out. */
+export type AnalyticsGroup = { runs: number; completed: number; failed: number; needs_review?: number; runs_with_metrics: number; tokens: number; cost_usd: number | null; unknown_cost_runs: number };
 /** GET /v2/stats's `analytics`. `input` excludes cached input: the whole input is input + cache_read + cache_write. */
 export type Analytics = {
   filter: { from: string | null; to: string | null; agent: string | null };
@@ -66,8 +68,16 @@ export function rangeFrom(range: StatsRange, now = Date.now()): string | undefin
   return days ? new Date(utcDay(now) - (days - 1) * DAY).toISOString() : undefined;
 }
 
-/** completed / (completed + failed), or null when no run ended either way. */
-export const successRate = (g: Pick<AnalyticsGroup, "completed" | "failed">) => (g.completed + g.failed ? g.completed / (g.completed + g.failed) : null);
+/** The runs that ended accepted over those that ended, or null when none did. A run that waits for review is no
+ *  success: a newer server counts it in `completed` and says so in `needs_review`, an older one in `failed`. */
+export const successRate = (g: Pick<AnalyticsGroup, "completed" | "failed" | "needs_review">) => (g.completed + g.failed ? (g.completed - (g.needs_review ?? 0)) / (g.completed + g.failed) : null);
+
+/** How the runs that ended split: "9 completed · 2 failed · 1 needs review" from a server that counts review apart, else
+ *  "9 completed · 3 failed or escalated" as an older one counts them. */
+export function outcomes(g: Pick<AnalyticsGroup, "completed" | "failed" | "needs_review">): string {
+  if (g.needs_review === undefined) return `${g.completed} completed · ${g.failed} failed or escalated`;
+  return [`${g.completed - g.needs_review} completed`, `${g.failed} failed`, g.needs_review ? `${g.needs_review} ${g.needs_review === 1 ? "needs" : "need"} review` : ""].filter(Boolean).join(" · ");
+}
 /** The share of the whole input that was read from the cache, or null with no input at all. */
 export function cachedShare(t: Analytics["totals"]): number | null {
   const input = t.input + t.cache_read + t.cache_write;
@@ -111,7 +121,7 @@ export function trendDays(byDay: Analytics["by_day"], from: string | null, now =
 export function missionFrom(s: Stats, recent: Run[]): MissionView {
   return {
     agents: s.agents,
-    runs: { total: s.runs.total, active: s.runs.active, needsInput: s.runs.needs_input, failed: s.runs.failed, statusUnknown: s.runs.status_unknown },
+    runs: { total: s.runs.total, active: s.runs.active, needsInput: s.runs.needs_input, failed: s.runs.failed, statusUnknown: s.runs.status_unknown, ...(s.runs.needs_review === undefined ? {} : { needsReview: s.runs.needs_review }) },
     perAgent: s.per_agent.map((a) => ({ agentId: a.agent_id, name: a.name, runs: a.runs })),
     cost: { usd: s.cost.usd, basis: s.cost.basis === "charge" ? "reported" : s.cost.basis, unknownRuns: s.cost.unknown_runs },
     recent,
