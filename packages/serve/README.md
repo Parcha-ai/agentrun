@@ -179,8 +179,8 @@ of a process that is gone is not trusted.
 
 ## Boxes
 
-A box is a machine apart from this one where a run's tools run. Runs execute in `docker` boxes ([place](#place)); the
-others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
+A box is a machine apart from this one where a run's tools run. Runs execute in `docker` and `daytona` boxes
+([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
 (`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
 refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
 log line says what the server found:
@@ -619,6 +619,30 @@ go through `work/` by path.
   the run ends (completed, failed or cancelled: a follow-up after a completed run gets a fresh one, with the same
   `work/`) and when the run is archived. A start destroys every such container whose run has ended or is archived; one
   of a run this data directory does not know is left to its 24-hour lifetime.
+
+### A run in a Daytona box
+
+With `AGENTRUN_BOXES=daytona` and `DAYTONA_API_KEY`, a run whose place is `{"mode": "sandbox", "box": "daytona"}` gets one
+Daytona sandbox, made on its first `read`, `write`, `edit` or `bash` call, with the same tools, path rules, environment,
+`bash` and labels as a Docker box. What differs:
+
+- The key is this server's alone. The server makes, copies to and from, and destroys the sandbox itself. The run's
+  process holds no key: it reaches its sandbox only through the server's box relay, on loopback, which takes the door
+  token and adds the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs
+  and files). It refuses every other call (a create, a listing, a stop, a delete, another run's sandbox, any other host).
+- Its network is blocked (`networkBlockAll`). A sandbox Daytona does not report blocked is deleted, and the tool call
+  fails saying so. An organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot
+  override, so a run there gets no Daytona box.
+- A sandbox cannot bind `work/`. The server copies `work/` into it at `/run/agentrun/run/work` when it makes it, and
+  copies what changed back at each turn's end (a read of the run's files waits for that copy) and once more before the
+  run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
+  never a link and nothing outside `work/`, and a file this server changed since the last copy stays as this server
+  has it. A file the box removed is removed here too. What the server files in `work/` during the run (monid's long
+  answers) is copied into the sandbox as well. The copy's mark is `box-sync.json` beside the run.
+- The sandbox is destroyed after the last copy back: when the run ends, and when it is archived (a copy that fails at an
+  archive keeps the sandbox for the run's end). A start copies back, then destroys, the sandbox of every run that has
+  ended or is archived. One whose copy fails is kept for the next start; its 24-hour lifetime bounds it.
+- The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
 
 ## Decision workflows
 

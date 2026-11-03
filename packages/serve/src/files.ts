@@ -13,6 +13,9 @@ export const RUN_CANCELLED = "cancelled";
 /** A run's launch mark in its directory, written before its process is spawned and removed once that process serves
  *  or exits: found at a start, the server went down while it launched the run. */
 export const RUN_LAUNCHING = "launching";
+/** The token the server and its runs' processes share, in the data directory: the server's calls to a run's door carry
+ *  it, and so do a run's calls to the server's box relay (box-relay.ts). */
+export const DOOR_TOKEN_FILE = ".door-token";
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
 

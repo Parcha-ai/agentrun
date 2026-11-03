@@ -28,6 +28,7 @@ type FakeSandbox = {
 	labels: Record<string, string>;
 	env: Record<string, string>;
 	sandboxClass?: string;
+	networkBlockAll?: boolean;
 };
 type Failure = { match: (method: string, path: string) => boolean; status: number; body: string; times: number };
 
@@ -43,6 +44,8 @@ class FakeDaytona {
 	failExecuteContaining: string | undefined;
 	/** Runs before every toolbox command, to hold one back while something else happens. */
 	beforeExecute: ((command: string) => Promise<void>) | undefined;
+	/** false: an organization whose own network policy holds (tier 1 or 2), which takes `networkBlockAll` and sets nothing. */
+	honorsBlockAll = true;
 	/** Each new sandbox stays out of the label listing for this many list calls, as Daytona's does for a moment. */
 	listPattern: boolean[] = [];
 	readonly #hidden = new Map<string, boolean[]>();
@@ -73,7 +76,8 @@ class FakeDaytona {
 		response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
 	}
 
-	#info(sandbox: FakeSandbox) {
+	/** `single`: a sandbox's own read, the one that carries its network settings (a create's answer and a listing do not). */
+	#info(sandbox: FakeSandbox, single = false) {
 		return {
 			id: sandbox.id,
 			state: sandbox.state,
@@ -81,6 +85,7 @@ class FakeDaytona {
 			cpu: 1,
 			memory: 1,
 			sandboxClass: sandbox.sandboxClass,
+			...(single && sandbox.networkBlockAll !== undefined ? { networkBlockAll: sandbox.networkBlockAll } : {}),
 		};
 	}
 
@@ -125,6 +130,7 @@ class FakeDaytona {
 				labels: (spec.labels ?? {}) as Record<string, string>,
 				env: (spec.env ?? {}) as Record<string, string>,
 				sandboxClass: String(spec.snapshot ?? "").includes("vm") ? "linux-vm" : "container",
+				...(spec.networkBlockAll === true && this.honorsBlockAll ? { networkBlockAll: true } : {}),
 			};
 			this.sandboxes.set(created.id, created);
 			if (this.listPattern.length > 0) this.#hidden.set(created.id, [...this.listPattern]);
@@ -145,7 +151,7 @@ class FakeDaytona {
 			this.sandboxes.delete(sandbox.id);
 			return this.#json(response, 200, {});
 		}
-		return this.#json(response, 200, this.#info(sandbox));
+		return this.#json(response, 200, this.#info(sandbox, true));
 	}
 
 	async #toolbox(
@@ -394,7 +400,6 @@ describe("daytona boxes", () => {
 		}
 		for (const fields of [
 			{ network: { allow: ["example.com"] } },
-			{ network: "none" as const },
 			{ ports: [80] },
 			{ capabilities: ["fuse" as const] },
 		]) {
@@ -407,6 +412,75 @@ describe("daytona boxes", () => {
 		expect(none.ok ? "ok" : none.error.code).toBe("invalid");
 		expect(fake.sandboxes.size).toBe(0);
 	});
+
+	it("asks Daytona to block all of a box's traffic for a network of none, and the box says none once Daytona reports it", async () => {
+		await withBox(
+			async (box) => {
+				const posted = fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").at(-1);
+				expect((JSON.parse(posted?.body ?? "{}") as { networkBlockAll?: boolean }).networkBlockAll).toBe(true);
+				expect(box.facts().network).toBe("none");
+				const attached = await provider().attach(box.id, context);
+				if (!attached.ok) throw attached.error;
+				expect(attached.value?.facts().network).toBe("none");
+			},
+			{ network: "none" },
+		);
+		// A box made with no network field asks Daytona for nothing, and its network is not claimed.
+		await withBox(async (box) => {
+			const posted = fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").at(-1);
+			expect(JSON.parse(posted?.body ?? "{}")).not.toHaveProperty("networkBlockAll");
+			expect(box.facts().network).toBeUndefined();
+		});
+	});
+
+	it("refuses a box Daytona did not block, deleting its sandbox: a tier whose own network policy holds sets nothing", async () => {
+		fake.honorsBlockAll = false;
+		try {
+			const created = await provider().create(spec({ network: "none" }), context);
+			expect(created.ok ? "ok" : created.error.code).toBe("unsupported");
+			expect(created.ok ? "" : created.error.message).toContain("networkBlockAll");
+			expect(fake.sandboxes.size).toBe(0);
+		} finally {
+			fake.honorsBlockAll = true;
+		}
+	});
+
+	// Root may write a directory without its write bit, so there no sudo is needed and none is asked.
+	it.skipIf(process.getuid?.() === 0)(
+		"makes a workspace its user may not create through sudo -n, and gives it to that user",
+		async () => {
+			const bin = fake.path("sudo-bin");
+			const parent = fake.path("root-owned");
+			mkdirSync(bin, { recursive: true });
+			mkdirSync(parent, { recursive: true });
+			const log = fake.path("sudo.log");
+			// A stand-in for the snapshot's passwordless sudo: it opens the parent as root would, then runs the command.
+			writeFileSync(
+				join(bin, "sudo"),
+				`#!/bin/sh\n[ "$1" = -n ] || exit 1\nshift\necho "$*" >> '${log}'\nchmod 755 '${parent}'\nexec "$@"\n`,
+			);
+			chmodSync(join(bin, "sudo"), 0o755);
+			chmodSync(parent, 0o555);
+			try {
+				const workspace = join(parent, "work");
+				const created = await provider().create(
+					spec({ workspace, env: { PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}` } }),
+					context,
+				);
+				if (!created.ok) throw created.error;
+				try {
+					expect(readdirSync(parent)).toEqual(["work"]);
+					const sudoed = readFileSync(log, "utf8");
+					expect(sudoed).toContain(`mkdir -p -- ${workspace}`);
+					expect(sudoed).toMatch(/chown \d+:\d+ -- /);
+				} finally {
+					await created.value.destroy(context);
+				}
+			} finally {
+				chmodSync(parent, 0o755);
+			}
+		},
+	);
 
 	it("removes a sandbox it could not make ready", async () => {
 		fake.failExecuteContaining = "mkdir";

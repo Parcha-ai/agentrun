@@ -1,17 +1,27 @@
 // A sandbox run's box: one per run, made on its first tool call and labelled with the run's id, so the label is the
 // record. A run's process that starts again finds it by that label and first kills the commands the process before it
 // left running. Serve destroys it at every settle (a cancel included) and at archive, and its start sweeps the boxes of
-// runs that have ended. A box gets the run's work/ only, bound at BOX_WORK, a fixed environment (never this process's,
-// so no key or token enters it), no network, and this server's user. pi-transport is an optional peer of this package:
-// it is loaded only for a run whose place is a box.
+// runs that have ended. A box gets the run's work/ only, at BOX_WORK, a fixed environment (never this process's, so no
+// key or token enters it) and no network. pi-transport is an optional peer of this package: it is loaded only for a run
+// whose place is a box.
+//
+// Docker's box is made here, in the run's process, as this server's user, with work/ bound. A Daytona box is remote: it
+// cannot bind work/, and its key is the server's alone. The server makes it (through the box relay, box-relay.ts), seeds
+// it with work/, pulls work/ back at each turn's end and once more before the run's end is recorded, and destroys it
+// after that pull; the run's process reaches it through the relay, which holds the key. What the run's own host tools
+// file in work/ meanwhile (writeInWork) is copied into the box too, so its tools read it.
 import { lstat, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { isAbsolute, join, posix, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProvider, BoxSpec } from "@parcha/pi-transport";
+import type { Manifest, PullReceipt } from "@parcha/pi-transport/sync";
+import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
+import { readJson, writeDurable } from "./files.js";
 import { FAUX_ENV } from "./model.js";
-import { agentWorkDir, type Place } from "./place.js";
+import { agentWorkDir, BOX_WORK, type Place } from "./place.js";
 
 /** The label a run's box carries: the run's id. */
 export const RUN_LABEL = "agentrun.run";
@@ -29,6 +39,9 @@ export const DEFAULT_DOCKER_IMAGE = "debian:bookworm-slim";
 /** Under `--faux` only: a module whose default export, given the data root, is the provider runs' boxes come from in
  *  place of Docker (the tests' faux box). */
 export const FAUX_BOX_ENV = "AGENTRUN_SERVE_FAUX_BOX";
+
+/** A remote box's sync mark in its run's directory: the box's id and the listing its seed or last pull left. */
+export const BOX_SYNC_FILE = "box-sync.json";
 
 type Mount = NonNullable<BoxSpec["mounts"]>[number];
 
@@ -68,45 +81,145 @@ export const fauxBoxes = async (module: string, root: string): Promise<BoxProvid
   ((await import(pathToFileURL(module).href)) as { default: (root: string) => BoxProvider }).default(root);
 
 /** A run's box, as its tools' environment: found by its label or made on the first call, once; made again on the call
- *  after it was lost. A box that cannot be had fails that call; nothing falls back to this machine. */
-export type RunBox = { env(context: Context): Promise<ExecutionEnv>; hostWork: string };
+ *  after it was lost. A box that cannot be had fails that call; nothing falls back to this machine. `mirror`, on a remote
+ *  box: copies a file the run's host tools filed in work/ (at `path`, relative to it) into the box, once the box is open. */
+export type RunBox = { env(context: Context): Promise<ExecutionEnv>; hostWork: string; mirror?: (path: string, data: string | Uint8Array) => Promise<void> };
 
-export function runBox(provider: () => Promise<BoxProvider>, run: { id: string; root: string; dir: string; place: Place }): RunBox {
-  let held: Promise<ExecutionEnv> | undefined;
-  const open = async (context: Context): Promise<ExecutionEnv> => {
-    const boxes = await provider();
+/** Where a run's box comes from: a provider of this process's own (Docker, or the tests' faux box), or, for a remote box,
+ *  the server's relay in data root `relay`. */
+export type BoxSource = { provider: () => Promise<BoxProvider> } | { relay: string };
+
+export function runBox(source: BoxSource, run: { id: string; root: string; dir: string; place: Place }): RunBox {
+  let held: Promise<{ env: ExecutionEnv; box: Box }> | undefined;
+  const open = async (context: Context): Promise<{ env: ExecutionEnv; box: Box }> => {
     const { boxEnv, endLeftCommands } = await import("@parcha/pi-transport/hands");
-    let box = await attachRunBox(boxes, run.id, context);
-    if (box) {
+    const { box, made } = "relay" in source ? await relayedRunBox(source.relay, run.id, context) : await localRunBox(await source.provider(), run, context);
+    if (!made) {
       // A process before this one left it: what it still runs is killed first, since its calls were answered interrupted.
       const ended = await endLeftCommands(box, context);
       if (!ended.ok) throw new Error(`the run's box could not be taken over: ${ended.error.message}`);
-    } else {
-      const spec: BoxSpec = {
-        env: BOX_ENV, workspace: agentWorkDir(run.dir, run.place), mounts: await boxMounts(run.root, run.dir, run.place),
-        labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run" }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
-      };
-      const made = await boxes.create(spec, context);
-      if (!made.ok) {
-        // A create that failed may still have left a box (a client cut off while the daemon made it): it carries the label.
-        await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
-        throw new Error(`the run's box could not be made: ${made.error.message}`);
-      }
-      box = made.value;
     }
-    return boxEnv(box, { maxExecMs: BASH_TIMEOUT_MS, onLost: () => void (held = undefined) }) as unknown as ExecutionEnv;
+    return { box, env: boxEnv(box, { maxExecMs: BASH_TIMEOUT_MS, onLost: () => void (held = undefined) }) as unknown as ExecutionEnv };
+  };
+  const opened = (context: Context) => {
+    held ??= open(context).catch((error: unknown) => {
+      held = undefined;
+      throw error;
+    });
+    return held;
   };
   return {
-    // The bind's source: a path another harness names under it is the same file in the box (coding-tools.ts boxPath).
+    // The bind's source, or what a remote box is seeded from: a path another harness names under it is the same file in
+    // the box (coding-tools.ts boxPath).
     hostWork: join(run.dir, "work"),
-    env(context) {
-      held ??= open(context).catch((error: unknown) => {
-        held = undefined;
-        throw error;
-      });
-      return held;
-    },
+    env: async (context) => (await opened(context)).env,
+    ...("relay" in source
+      ? {
+          // A box not opened yet gets the file with its seed: only an open (or opening) box is written.
+          mirror: async (path: string, data: string | Uint8Array) => {
+            const box = held && (await held.catch(() => undefined))?.box;
+            if (!box) return;
+            const sent = await box.upload([{ path: posix.join(BOX_WORK, path), bytes: typeof data === "string" ? new TextEncoder().encode(data) : data }], BACKGROUND);
+            if (!sent.ok) throw sent.error;
+          },
+        }
+      : {}),
   };
+}
+
+/** A box of this process's provider: the run's, by its label, or one made now with work/ bound. */
+async function localRunBox(boxes: BoxProvider, run: { id: string; root: string; dir: string; place: Place }, context: Context): Promise<{ box: Box; made: boolean }> {
+  const found = await attachRunBox(boxes, run.id, context);
+  if (found) return { box: found, made: false };
+  const spec: BoxSpec = {
+    env: BOX_ENV, workspace: agentWorkDir(run.dir, run.place), mounts: await boxMounts(run.root, run.dir, run.place),
+    labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run" }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
+  };
+  const made = await boxes.create(spec, context);
+  if (!made.ok) {
+    // A create that failed may still have left a box (a client cut off while the daemon made it): it carries the label.
+    await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
+    throw new Error(`the run's box could not be made: ${made.error.message}`);
+  }
+  return { box: made.value, made: true };
+}
+
+/** A remote box, which the server finds or makes and seeds (ensureRemoteBox), reached through its relay: this process's
+ *  Daytona provider holds no key, and every call it makes goes to the relay, which sends it on with the server's. */
+async function relayedRunBox(root: string, runId: string, context: Context): Promise<{ box: Box; made: boolean }> {
+  const given = await relayedBox(root, runId, context.abortSignal);
+  const { daytonaBoxes } = await import("@parcha/pi-transport/box/daytona");
+  const boxes = daytonaBoxes({ apiKey: RELAYED_KEY, apiUrl: given.apiUrl, fetch: relayFetch(root, runId) });
+  const attached = await boxes.attach(given.id, context);
+  if (!attached.ok) throw new Error(`the run's box could not be reached: ${attached.error.message}`);
+  if (!attached.value) throw new Error(`the run's box ${given.id} is not running`);
+  return { box: attached.value, made: given.made };
+}
+
+/** The spec of a run's remote box: its work/ comes with its seed, never a mount. */
+const remoteSpec = (runId: string): BoxSpec => ({
+  env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run" }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
+});
+
+type SyncMark = { box: string; mark: Manifest };
+const markOf = async (runDir: string): Promise<SyncMark | undefined> => {
+  const kept = (await readJson(join(runDir, BOX_SYNC_FILE))) as Partial<SyncMark> | null;
+  return typeof kept?.box === "string" && kept.mark && Array.isArray(kept.mark.entries) ? (kept as SyncMark) : undefined;
+};
+const keepMark = (runDir: string, mark: SyncMark) => writeDurable(join(runDir, BOX_SYNC_FILE), `${JSON.stringify(mark)}\n`);
+
+/** The server's side of a remote box: run `run`'s box, found by its label or made, with its work/ seeded once (its mark
+ *  says so); its id, and whether it was made now. A found box whose network is not closed is destroyed and made again;
+ *  a box whose seed fails is destroyed, and the call fails. */
+export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context): Promise<{ id: string; made: boolean }> {
+  let box = await attachRunBox(boxes, run.id, context);
+  let made = false;
+  if (box && box.facts().network !== "none") {
+    await destroyRunBoxes(boxes, run.id, context);
+    box = undefined;
+  }
+  if (!box) {
+    const created = await boxes.create(remoteSpec(run.id), context);
+    if (!created.ok) {
+      await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
+      throw new Error(`the run's box could not be made: ${created.error.message}`);
+    }
+    box = created.value;
+    made = true;
+    if (box.facts().network !== "none") {
+      await box.destroy(context);
+      throw new Error("the run's box was made with its network open, so it is not used");
+    }
+  }
+  // A box found without its seed's mark was made by a server that went down before it seeded it: seeded now.
+  if ((await markOf(run.dir))?.box !== box.id) {
+    const { seedDir } = await import("@parcha/pi-transport/sync");
+    const seeded = await seedDir(box, { from: join(run.dir, "work"), to: BOX_WORK }, context);
+    if (!seeded.ok) {
+      await box.destroy(context).catch(() => undefined);
+      throw new Error(`the run's files could not be copied into its box: ${seeded.error.message}`);
+    }
+    await keepMark(run.dir, { box: box.id, mark: seeded.value.mark });
+  }
+  return { id: box.id, made };
+}
+
+/** What a pull of a remote box brought back; undefined when the run has no box (none made, or it is gone). */
+export type RemotePull = Pick<PullReceipt, "changed" | "files" | "bytes" | "removed" | "skipped" | "stopped">;
+
+/** The server's side of a remote box: what changed in the box's work/ since its mark, pulled into the run's work/ by the
+ *  safe extractor (nothing outside work/, no link, safe names only). A file this machine changed since the mark stays
+ *  (`if_unchanged`), and what the box removed is removed here too. Throws when the copy fails, the mark kept. */
+export async function pullRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context): Promise<RemotePull | undefined> {
+  const box = await attachRunBox(boxes, run.id, context);
+  if (!box) return undefined;
+  const kept = await markOf(run.dir);
+  const { pullDir } = await import("@parcha/pi-transport/sync");
+  const pulled = await pullDir(box, { from: BOX_WORK, to: join(run.dir, "work"), ...(kept?.box === box.id ? { since: kept.mark } : {}), mirrorDeletes: true, overwrite: "if_unchanged" }, context);
+  if (!pulled.ok) throw new Error(`the run's files could not be copied back from its box: ${pulled.error.message}`);
+  await keepMark(run.dir, { box: box.id, mark: pulled.value.mark });
+  const { changed, files, bytes, removed, skipped, stopped } = pulled.value;
+  return { changed, files, bytes, removed, skipped, ...(stopped ? { stopped } : {}) };
 }
 
 /** The running box labelled with run `runId`, if any. */
@@ -126,13 +239,14 @@ export async function destroyRunBoxes(boxes: BoxProvider, runId: string, context
   return destroyListed(boxes, { [RUN_LABEL]: runId }, () => true, context);
 }
 
-/** The start's sweep: destroys every run's box whose run `ended` says is over. A box of a run this server does not know
- *  is left to its lifetime: another server's, or one being made. */
-export async function sweepRunBoxes(boxes: BoxProvider, ended: (runId: string) => boolean, context: Context): Promise<number> {
-  return destroyListed(boxes, { [KIND_LABEL]: "run" }, (labels) => typeof labels[RUN_LABEL] === "string" && ended(labels[RUN_LABEL]), context);
+/** The start's sweep: destroys every run's box whose run `ended` says is over, once `before` (a remote box's pull) for its
+ *  run says it may go. A box of a run this server does not know is left to its lifetime: another server's, or one being
+ *  made. */
+export async function sweepRunBoxes(boxes: BoxProvider, ended: (runId: string) => boolean, context: Context, before?: (runId: string) => Promise<boolean>): Promise<number> {
+  return destroyListed(boxes, { [KIND_LABEL]: "run" }, (labels) => typeof labels[RUN_LABEL] === "string" && ended(labels[RUN_LABEL]), context, before);
 }
 
-async function destroyListed(boxes: BoxProvider, labels: Record<string, string>, pick: (labels: Readonly<Record<string, string>>) => boolean, context: Context): Promise<number> {
+async function destroyListed(boxes: BoxProvider, labels: Record<string, string>, pick: (labels: Readonly<Record<string, string>>) => boolean, context: Context, before?: (runId: string) => Promise<boolean>): Promise<number> {
   const listed = await boxes.list(labels, context);
   if (!listed.ok) throw listed.error;
   let destroyed = 0;
@@ -140,6 +254,7 @@ async function destroyListed(boxes: BoxProvider, labels: Record<string, string>,
     const box = await boxes.attach(ref.id, context);
     if (!box.ok) throw box.error;
     if (!box.value) continue;
+    if (before && !(await before(ref.labels[RUN_LABEL]!))) continue;
     const gone = await box.value.destroy(context);
     if (!gone.ok) throw gone.error;
     destroyed++;
