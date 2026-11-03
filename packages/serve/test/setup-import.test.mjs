@@ -4,16 +4,16 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { claudeSession, claudeSubagent, codexSession, piSession } from "./fixtures/import-sessions.mjs";
+import { at as minute, claudeSession, claudeSubagent, codexSession, piSession } from "./fixtures/import-sessions.mjs";
 import { call, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
@@ -393,7 +393,7 @@ test("under its launcher, setup's import cuts each of the server's own secrets o
   for (const [name, value] of Object.entries(keys)) assert.deepEqual(holding(data, value), [], `no file under the data directory holds ${name}'s value`);
 });
 
-test("a key saved on the Tool keys page, not in the server's environment, is cut out of everything setup's import writes: a session's text and title, and its subagent's file", { timeout: 60_000 }, async (t) => {
+test("a key saved on the Tool keys page, not in the server's environment, is cut out of everything setup's import writes: a session's text and title, its subagent's file, and a session named after its file, kept under a redacted- id that the next start's import finds again", { timeout: 90_000 }, async (t) => {
   // Built here, so no scanner reads it as a credential.
   const saved = ["not-a-secret", "monid", randomBytes(8).toString("hex")].join("-");
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["MONID_API_KEY"]);
@@ -403,24 +403,67 @@ test("a key saved on the Tool keys page, not in the server's environment, is cut
   mkdirSync(site, { recursive: true });
   claudeSession(home, site, 1, { prompt: `Use ${saved} to list the files.`, output: `README.md (with ${saved})` });
   claudeSubagent(home, site, 1, 1, { answer: `It is ${saved}.` });
-  const server = await serve(t, { accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } });
-  const kept = await server.api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: saved } });
-  assert.equal(kept.status, 204, JSON.stringify(kept.body));
+  // A session file whose records carry no session id, named with the key: the import names the session after its file.
+  const unnamed = claudeSession(home, site, 2, { prompt: "Check the logs." });
+  const lines = readFileSync(unnamed, "utf8").trimEnd().split("\n").map((line) => {
+    const { sessionId: _, ...rest } = JSON.parse(line);
+    return JSON.stringify(rest);
+  });
+  rmSync(unnamed);
+  const named = join(dirname(unnamed), `${saved}.jsonl`);
+  writeFileSync(named, `${lines.join("\n")}\n`);
+  utimesSync(named, new Date(minute(10)), new Date(minute(10)));
+  const data = join(root, "agents");
+  const start = () => startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } });
+  let server = await start();
+  t.after(() => server.close());
+  const kept = await call(server.port, { method: "PUT", path: "/v2/settings/tool-keys/monid", headers: { ...json, authorization: `Bearer ${server.token}` }, body: { values: { MONID_API_KEY: saved } } });
+  assert.equal(kept.status, 204, kept.text);
+  // Setup's count, by the ids as the import keeps them.
+  const read = () => call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  let counted = await read();
+  for (const deadline = Date.now() + 30_000; counted.status === 202 && Date.now() < deadline; ) (await sleep(100), (counted = await read()));
+  assert.deepEqual([counted.status, counted.json], [200, { projects: 1, sessions: 2 }]);
   const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
   assert.deepEqual([made.status, made.json], [201, { signed_in: true, importing: true }], made.text);
   const state = async () => (await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
   for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
-  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 1, skipped: 0 });
-  const names = [];
-  const walk = (at) => {
-    for (const name of readdirSync(at)) {
-      names.push(name);
-      if (statSync(join(at, name)).isDirectory()) walk(join(at, name));
+  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 2, skipped: 0 });
+  const nowhere = (when) => {
+    const names = [];
+    const walk = (at) => {
+      for (const name of readdirSync(at)) {
+        names.push(name);
+        if (statSync(join(at, name)).isDirectory()) walk(join(at, name));
+      }
+    };
+    walk(data);
+    assert.deepEqual([holding(data, saved), names.filter((name) => name.includes(saved))], [[], []], `${when}: no file under the data directory holds the saved key, or is named after it`);
+  };
+  nowhere("the first import");
+  assert.ok(holding(join(data, "runs"), "[redacted]").length > 0, "[redacted] where it was");
+  const sessions = () => {
+    const reader = openStoreReader(data);
+    try {
+      return reader.listRuns().map((run) => run.importedFrom.session).sort();
+    } finally {
+      reader.close();
     }
   };
-  walk(server.data);
-  assert.deepEqual([holding(server.data, saved), names.filter((name) => name.includes(saved))], [[], []], "no file under the data directory holds the saved key, or is named after it");
-  assert.ok(holding(join(server.data, "runs"), "[redacted]").length > 0, "[redacted] where it was");
+  const first = sessions();
+  assert.equal(first.filter((id) => /^redacted-[0-9a-f]{16}$/.test(id)).length, 1, "the session named after its file, under its id as kept");
+  // The file named with the key grows by a turn; setup's import, gone on with at the next start, finds the run the first
+  // made of it under the id as kept: no second run of it.
+  const last = JSON.parse(lines.at(-1));
+  appendFileSync(named, `${JSON.stringify({ ...last, type: "user", uuid: "u9-2", parentUuid: last.uuid ?? null, timestamp: minute(9), message: { role: "user", content: "One more thing." } })}\n`);
+  utimesSync(named, new Date(minute(20)), new Date(minute(20)));
+  await server.close();
+  writeFileSync(join(data, ".import-at-setup"), "", { mode: 0o600 });
+  server = await start();
+  for (const deadline = Date.now() + 30_000; existsSync(join(data, ".import-at-setup")) && Date.now() < deadline; ) await sleep(100);
+  assert.equal(existsSync(join(data, ".import-at-setup")), false, "the next start's import ended");
+  assert.deepEqual(sessions(), first, "no run made twice");
+  nowhere("the next start's import");
 });
 
 test("setup counts sessions as the import takes them: a thread resumed in a second file of the same id is one session", { timeout: 60_000 }, async (t) => {

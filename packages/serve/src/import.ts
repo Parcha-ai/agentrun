@@ -92,11 +92,12 @@ export type ImportReport = {
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 
-/** A session's id as an import keeps it: as it is, unless it holds one of the environment's keys (a session named after
- *  its file can), then `redacted-` and a hash of it, the same each time and different for each id, so two such sessions
- *  stay two runs and a later import finds each one's. */
-const keptId = (env: NodeJS.ProcessEnv) => {
-  const { text } = secretCut(env, SECRET_NAMES);
+/** A session's id as an import keeps it: as it is, unless it holds one of the keys the import cuts, the environment's or
+ *  one saved on the server (a session named after its file can), then `redacted-` and a hash of it, the same each time
+ *  and different for each id, so two such sessions stay two runs and a later import finds each one's. The plan and the
+ *  import keep it from the same keys, or a later import would not find the run an earlier one made. */
+const keptId = (envs: readonly NodeJS.ProcessEnv[]) => {
+  const { text } = secretCut(envs, SECRET_NAMES);
   return (id: string) => (text(id) === id ? id : `redacted-${hash(id).slice(0, 16)}`);
 };
 export const agentIdOf = (cwd: string) => `imp-${hash(`dir:${cwd}`).slice(0, 32)}`;
@@ -124,10 +125,10 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 /** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Keeps no turns
  *  (with `measure`, only until each session is measured), and reads no file `store`'s imports already read whole and
  *  that has not changed since. */
-export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, signal }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
+export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, signal }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
   // A session's id that holds a key (one named after its file can) is kept as a hash of it: every lookup of an earlier
   // import's run then goes by the id as kept.
-  const idOf = keptId(env);
+  const idOf = keptId([env, stored ?? {}]);
   const skipped: Skipped[] = [];
   const seen = store ? await filesIn(store) : new Map<string, SourceFile & { run: string }>();
   let already = 0;
@@ -744,7 +745,7 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
  *  transcript never landed (the process stopped between the two) has it written now. */
 export async function runImport(store: AgentStore, plan: Plan, options: ImportOptions): Promise<ImportReport> {
   const { text, json } = secretCut([options.env, options.stored ?? {}], SECRET_NAMES);
-  const idOf = keptId(options.env);
+  const idOf = keptId([options.env, options.stored ?? {}]);
   const report: ImportReport = { agents: [], skipped: [...plan.skipped], already: plan.already };
   let prices: Promise<Map<string, Listed[]>> | undefined;
   const catalog = () => (prices ??= catalogPrices());
