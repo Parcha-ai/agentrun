@@ -1,13 +1,18 @@
 // A workflow run's decisions as timeline rows: one row per receipt its judge, pick, sift, route, ask and verify nodes
 // committed to the run's store (`agentrun.decisions`), so a run shows its verdicts beside its model nodes' rows. The
 // rows are read from the released store, as the rest of a workflow run's rows are.
-import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { CAPS, cut, scrubUrls, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 
 type Answer = { type?: unknown; noul?: unknown; choice?: unknown; score?: unknown; legend?: unknown; confidence?: unknown; probabilities?: unknown };
 type Receipt = Record<string, unknown>;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const two = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "?");
+/** A row's string as the timeline makes every row's: its URLs keep their origin, path and query keys, then it is cut. */
+const clean = (text: string, max: number) => cut(scrubUrls(text), max);
+/** How the request ended. A row stored before its status was kept says it by its rule and error: a rule is set only on
+ *  an answered request, and an answered one carries no error. Such a row cannot tell a cancelled request from a failed one. */
+const statusOf = (receipt: Receipt): unknown => receipt.status ?? (isObject(receipt.rule) && receipt.error === undefined ? "answered" : "failed");
 
 /** One answer as a reader says it: the answer, then how likely the provider thought it. */
 function said(id: string, answer: Answer): string {
@@ -27,7 +32,7 @@ function said(id: string, answer: Answer): string {
 /** What the decision decided, in a line: a route's branch, else each answer. */
 function summaryOf(receipt: Receipt): string {
   const node = String(receipt.node ?? "decision");
-  const status = receipt.status;
+  const status = statusOf(receipt);
   if (receipt.kind === "route") {
     const action = isObject(receipt.action) ? receipt.action : {};
     const taken = action.taken ?? action.branch;
@@ -53,18 +58,21 @@ function textOf(receipt: Receipt): string | null {
   return lines.length ? lines.join("\n") : null;
 }
 
-/** One `decision` row per receipt, in commit order. Each carries its own cost: unknown stays null, never $0. */
+/** One `decision` row per receipt, in commit order. Each carries its own cost: unknown stays null, never $0. Its summary
+ *  and text are cleaned and cut to `CAPS` as every timeline row's are: a batched sift's answers and a provider's sources
+ *  are as long as the receipt, and a source's URL can carry a signed query or credentials. */
 export function decisionRows(receipts: readonly Receipt[]): TimelineEvent[] {
   return receipts.map((receipt, place) => {
     const at = typeof receipt.at === "string" ? receipt.at : new Date(0).toISOString();
     const request = isObject(receipt.request) ? receipt.request : {};
     const cost = typeof receipt.cost_usd === "number" && Number.isFinite(receipt.cost_usd) ? receipt.cost_usd : null;
+    const text = textOf(receipt);
     return {
       id: `decision:${String(receipt.id ?? place)}:${String(request.index ?? 0)}`,
       timestamp: at, created_at: at, kind: "decision",
-      summary: summaryOf(receipt), agent_label: typeof receipt.node === "string" ? receipt.node : null,
+      summary: clean(summaryOf(receipt), CAPS.summary), agent_label: typeof receipt.node === "string" ? receipt.node : null,
       tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null,
-      text: textOf(receipt), usage: { usd: cost, requests: 1 },
+      text: text === null ? null : clean(text, CAPS.text), usage: { usd: cost, requests: 1 },
     };
   });
 }
@@ -72,8 +80,17 @@ export function decisionRows(receipts: readonly Receipt[]): TimelineEvent[] {
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
 /** `rows` with the decisions' rows among them by time, and their cost on the run's usage row, which stays last: one
- *  unknown cost makes the total unknown, never a lower figure. */
-export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly Receipt[]): TimelineEvent[] {
+ *  unknown cost makes the total unknown, never a lower figure. `receipts` null: the decisions could not be read, so the
+ *  rows are as they were but the usage row's total is unknown, never the model nodes' alone. */
+export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly Receipt[] | null): TimelineEvent[] {
+  if (receipts === null) {
+    const at = rows.findLastIndex((row) => row.kind === "usage");
+    return rows.map((row, i) => {
+      if (i !== at) return row;
+      const requests = row.usage?.requests ?? 0;
+      return { ...row, summary: `Cost so far: unknown over ${plural(requests, "model request")}; its decisions could not be read`, usage: { usd: null, requests } };
+    });
+  }
   if (!receipts.length) return [...rows];
   const decisions = decisionRows(receipts);
   const at = rows.findLastIndex((row) => row.kind === "usage");
