@@ -27,8 +27,8 @@ export function openLineUrl(line) {
 }
 
 /** The address a person opens first, as the server says it: the URL of the first "Open " line of its output that names
- *  one (openLineUrl). That line is the server's interface for it (the plain address today, a single-use sign-in link
- *  once the server prints one), so this command never builds the address itself. Resolves undefined when the output ends
+ *  one (openLineUrl). That line is the server's interface for it (the console's address, whose first visit sets the
+ *  owner's password), so this command never builds the address itself. Resolves undefined when the output ends
  *  without one; the rest of the output is read and dropped, so the server never blocks on a full pipe. */
 export function openUrl(stdout) {
   return new Promise((resolve) => {

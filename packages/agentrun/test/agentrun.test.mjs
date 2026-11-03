@@ -43,7 +43,7 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   const health = await fetch(`${base}/v2/health`);
   assert.deepEqual([health.status, (await health.json()).status], [200, "ok"]);
   assert.equal((await (await fetch(`${base}/v2/capabilities`)).json()).models.default, null, "no model: none was given");
-  // Until a single-use sign-in link replaces the plain address, the console's first visit sets the owner's password.
+  // The browser opens on the console, whose first visit sets the owner's password.
   assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { password_set: false, signed_in: false });
   assert.ok(existsSync(join(home, ".agentrun", ".token")), "the data directory is ~/.agentrun");
   child.kill("SIGTERM");
@@ -101,7 +101,7 @@ test("the first free loopback port from the default passes over one in use; the 
 });
 
 // A stub server: its output as the server prints it, a line at a time, then it waits. The command takes the URL of the first
-// "Open " line, whatever it is: the plain address today, a single-use sign-in link once the server prints that instead.
+// "Open " line, whatever it is: its first word, a URL with a path or a query taken as it is.
 const stub = (lines, { exit = false } = {}) => spawn(process.execPath, ["-e", `const lines = ${JSON.stringify(lines)}; let i = 0; const next = () => { if (i < lines.length) { process.stdout.write(lines[i++]); setTimeout(next, 20); } else if (${exit}) process.exit(0); else setInterval(() => {}, 1000); }; next();`], { stdio: ["ignore", "pipe", "inherit"] });
 
 test("the address to open is the URL on the server's first \"Open \" line, however its output is cut; a later Open line, and the lines around it, change nothing", async (t) => {
@@ -110,7 +110,7 @@ test("the address to open is the URL on the server's first \"Open \" line, howev
   assert.equal(await openUrl(plain.stdout), "http://127.0.0.1:7341/");
   const link = stub(["agentrun-serve on http://127.0.0.1:7342/v2\r\n", "Open http://127.0.0.1:7342/pair?code=Q7-2x (signs this browser in, once)\r\n"]);
   t.after(() => link.kill());
-  assert.equal(await openUrl(link.stdout), "http://127.0.0.1:7342/pair?code=Q7-2x", "a sign-in link is taken as it is, without the words after it");
+  assert.equal(await openUrl(link.stdout), "http://127.0.0.1:7342/pair?code=Q7-2x", "a URL with a path and a query is taken as it is, without the words after it");
   const elsewhere = stub(["Open https://agents.example.com/ (the public address)\n", "Open file:///etc/passwd\n", "Open not-a-url\n", "Open http://127.0.0.1:7343/\n"]);
   t.after(() => elsewhere.kill());
   assert.equal(await openUrl(elsewhere.stdout), "http://127.0.0.1:7343/", "only an http(s) URL on the loopback address this command started the server on");
