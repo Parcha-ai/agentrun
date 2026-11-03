@@ -35,7 +35,8 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
   | { say: string; usd?: number | null }
-  | { call: string; args?: unknown; usd?: number | null }
+  /** `takesMs`: the call runs that long after it starts, as a slow tool does. */
+  | { call: string; args?: unknown; usd?: number | null; takesMs?: number }
   /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls. */
   | { calls: { call: string; args?: unknown }[]; usd?: number | null }
   | { submit: unknown; usd?: number | null }
@@ -147,6 +148,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                 const tool = tools.get(name);
                 await append(FAUX_RECORDS.call, { callId, name });
                 io.onEvent({ type: "tool_start", callId, name, args });
+                if ("takesMs" in action && action.takesMs) await new Promise((resolve) => setTimeout(resolve, action.takesMs));
                 const result = tool ? await tool.call(args, { callId, signal }).catch((error: Error) => ({ text: error.message, isError: true })) : { text: `unknown tool ${name}`, isError: true };
                 if (tool) stats.calls.push(name);
                 await append(FAUX_RECORDS.result, { callId, isError: result.isError === true });

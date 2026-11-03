@@ -40,3 +40,17 @@ test("ask_person's question is one row: waiting while it waits, the asked action
   assert.deepEqual(asked.map((r) => [r.kind, r.tool_name, r.tool_status]), [["tool_use", "ask_person", "success"]], shown(done.rows));
   assert.match(asked[0].summary, /^Asked you: Which region should I use\?/, shown(done.rows));
 });
+
+for (const harness of ["claude-agent", "codex"]) {
+  test(`${harness}: a call's row says when it began and when it ended: a call that takes over a second shows it`, { timeout: 60_000 }, async (t) => {
+    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    assert.equal((await api("POST", "/agents", agent(`slow-${harness}`, { harness, instructions: "Write slowly.", tools: ["write"] }))).status, 201);
+    const started = await api("POST", `/agents/slow-${harness}/runs`, { input: { content: "go" } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const [write] = rows.filter((r) => r.kind === "tool_use");
+    assert.equal(write?.tool_status, "success", shown(rows));
+    const took = Date.parse(write.ended_at) - Date.parse(write.timestamp);
+    assert.ok(took >= 1000, `the row's timestamp is when the call began and ended_at when its result came: ${took} ms apart (${write.timestamp} to ${write.ended_at})`);
+  });
+}
