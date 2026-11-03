@@ -167,3 +167,21 @@ test('the provider is given what is left of the deadline after the images loaded
   assert.equal(seen.length, 1);
   assert.ok(seen[0] <= 1000 - 70 && seen[0] > 0, `the provider got ${seen[0]} ms of the 1000`);
 });
+
+test('a load that ends past the deadline before its timer can fire is cut before sending: no request on an expired budget', async () => {
+  // The loader blocks the thread past the deadline (synchronous work, as a slow decode or hash would), so the deadline's
+  // timer cannot fire while it runs, and the load completes after the deadline.
+  const blocking = () => { const until = Date.now() + 120; while (Date.now() < until); return Promise.resolve({ bytes: PNG, mime: 'image/png' }); };
+  const cases = [
+    ['the provider deadline', (provider) => judgeFromProvider(provider, { deadlineMs: 50, loadImage: blocking })(ASK)],
+    ['the registry deadline', (provider) => judgeFromProviders({ providers: { jev: provider }, default: 'jev', deadlineMs: 50, loadImage: blocking })(ASK)],
+    ["a node's shorter timeoutMs", (provider) => judgeFromProviders({ providers: { jev: provider }, default: 'jev', deadlineMs: 60_000, loadImage: blocking })({ ...ASK, timeoutMs: 50 })],
+  ];
+  for (const [what, judging] of cases) {
+    const { provider, asked } = imageProvider();
+    let caught;
+    assert.equal(await within(1500, judging(provider).catch((error) => { caught = error; throw error; })), 'rejected timeout', what);
+    assert.match(caught.message, /nothing was sent/, what);
+    assert.equal(asked.length, 0, `${what}: the provider was not called on an expired budget`);
+  }
+});
