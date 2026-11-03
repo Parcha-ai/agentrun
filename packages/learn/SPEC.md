@@ -41,8 +41,9 @@ letter or digit, then `.md`, and never `MEMORY.md`.
 | `description` | yes | one line that says when the note applies; it is the note's index line |
 | `type` | yes | `user`, `feedback`, `project` or `reference`, Claude Code's four |
 | `supersedes` | no | the notes it replaces, `[old.md, other.md]` or one bare file name |
-| `status` | no, host only | `superseded` or `retired`; absent, the note is active |
+| `status` | no, host only | `superseded`, `retired` or `pending` (a risky rule the user asked for, waiting for their OK); absent, the note is active |
 | `superseded_by` | no, host only | the note that replaced it, on a superseded note |
+| `origin` | no, host only | `you`, kept from what the user asked in their own words, or `run`, what the run worked out; absent, `run` |
 
 One `key: value` per line, a value bare or in one pair of quotes. Keys it does not know are left alone. The body after
 the front matter is the memory itself.
@@ -61,8 +62,8 @@ may only add notes:
 
 - one note per block, in the format above, named for a file at the folder's top;
 - to replace a note, a new note whose `supersedes` names it; the old one stays, and the host marks it;
-- never a note with the name of a file that was there (an edit), and never `status` or `superseded_by`, which are the
-  host's;
+- never a note with the name of a file that was there (an edit), and never `status`, `superseded_by` or `origin`, which
+  are the host's;
 - `MEMORY.md` is the host's: a note by that name is ignored, never refused.
 
 An answer with no note is a fine answer: the host drops it as `empty`. One that gives notes out of format is dropped as
@@ -100,7 +101,7 @@ Over a cap is refused, never cut.
 | `secret_shape` | text shaped like a secret, by kind, in a note or its name |
 | `secret_value` | a value the host holds as secret, in a note or its name |
 | `note` | front matter missing or out of shape |
-| `status` | a note that sets `status` or `superseded_by` |
+| `status` | a note that sets `status`, `superseded_by` or `origin` |
 | `supersedes` | `supersedes` naming a note that is not active, or one another new note supersedes too, or more than 8 notes superseded |
 | `index_full` | the index would pass 200 lines |
 
@@ -122,18 +123,25 @@ One grader judges the whole proposal against the agent's active notes and standi
 the instructions (their first 16,000 characters), the index line of each active note (cut to 300 characters), the
 whole text of only the notes the proposal supersedes, what the user said in the run (the first message and the newest
 three, each cut to 1,000 characters), and the new notes. The user's messages let the grader tell what the user asked
-the agent to keep from what a page told it to; they are evidence of who asked, never a pass: what was asked meets the
-same tests, since a run's messages can carry someone else's words. So the prompt is bounded by the caps above, never by how many
-notes the folder holds: `GRADE_CAPS.prompt`, 200,000 characters, half what a completion takes.
+the agent to keep from what a page told it to. So the prompt is bounded by the caps above, never by how many notes the
+folder holds: `GRADE_CAPS.prompt`, 200,000 characters, half what a completion takes.
+
+Each note's decision is `keep`, `pending` or `drop`, with its `origin`, `you` or `run`. A note the rubric drops is
+dropped. A risky rule the user asked for in their own words (one that widens trust in a site or a seller, skips or
+loosens an approval or a check, or names an account or a destination for money or data) is `pending`: kept, with
+`status: pending`, and in no index, so no run reads it until a person approves it. Every other note is kept. The
+user is the agent's owner, so a risky request is never silently dropped; it waits.
 `parseVerdict` reads one verdict with one item per new note and fails closed: an answer it cannot read, a missing or
-extra item, or a merge with a note not kept is no merge. Every note merges, or none does.
+extra item, a decision or an origin out of its list, a pending note that is not the user's, or a merge with a note
+dropped is no merge. Every note merges, or none does.
 
 A separate injection screen is the host's option, only with a judge independent of the agent's model.
 
 ## The merge
 
-One host commit on `main`, made with plumbing: the new notes added, each note a new one supersedes marked
-`status: superseded` with `superseded_by`, and `MEMORY.md` rebuilt. Its message is `learning: <run id>: merged`, the
+One host commit on `main`, made with plumbing: the new notes added (`mergedNote`: each with its `origin`, a pending one
+with `status: pending`), each note a kept one supersedes marked `status: superseded` with `superseded_by` (a pending
+note's supersedes waits for its approval, `approve`), and `MEMORY.md` rebuilt. Its message is `learning: <run id>: merged`, the
 grader's reason, and a `Run-Id: <run id>` trailer; a run a trailer on `main` already names is merged, never twice.
 `main` moves only from the commit the merge was made on. Before it, the host asks `mergeProblems` again of `main` as it
 is then: a name another run added since is `exists`, and a note superseded since or an index past 200 lines is refused

@@ -4,7 +4,7 @@
 // own routes are added as operations marked `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed
 // in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
-import { NOTE_STATUSES, NOTE_TYPES } from "@parcha/agentrun-learn";
+import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "@parcha/agentrun-learn";
 import { ERROR_STATUS } from "./errors.js";
 import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
@@ -237,12 +237,13 @@ const PAGE = (item: Json, description: string) => closed({ items: { type: "array
 const LEARNING_NOTE = closed({
   file: { type: "string", description: "The note's file name, `<slug>.md`, at the folder's top; `[redacted]` when it holds one of the host's secrets as they are now (its route still answers the real name)." },
   name: { type: "string" }, description: { type: "string" }, type: { enum: [...NOTE_TYPES] },
-  status: { enum: [...NOTE_STATUSES], description: "Absent from the note's front matter: active. Only an active note is in MEMORY.md." },
+  status: { enum: [...NOTE_STATUSES], description: "Absent from the note's front matter: active. Only an active note is in MEMORY.md. `pending`: a rule the user asked for that the grader held as risky; no run reads it until a person approves it." },
+  origin: { enum: [...NOTE_ORIGINS], description: "`you`: kept from what the user asked in their own words; `run`: what the run worked out (absent from older notes: `run`)." },
   superseded_by: { ...NULL_STRING, description: "The note that superseded it, on a superseded note; `[redacted]` as `file` is." },
   text: { type: "string", description: "The note's whole file, front matter included." },
 });
 const LEARNING_CHANGE = closed({
-  by: { oneOf: [closed({ run: { type: "string" } }), closed({ user: { type: "boolean", const: true } })], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation or retirement through this API (`Changed-By: user`)." },
+  by: { oneOf: [closed({ run: { type: "string" } }), { type: "object", additionalProperties: false, required: ["user"], properties: { user: { type: "boolean", const: true }, via: { type: "string", description: "On an approval: how it came, `console` (the owner's signed-in page)." } } }], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval)." },
   commit: { type: "string" }, at: { type: "string", format: "date-time" },
   reason: { type: "string", description: "A merge's: the grader's reason. A person's: what was done, `edited by a person: <file>`." },
   files: { type: "array", items: { type: "string" }, description: "The files the commit changed, MEMORY.md among them; a name holding one of the host's secrets reads `[redacted]`." },
@@ -265,8 +266,10 @@ const VERDICT_ITEM = {
   type: "object", additionalProperties: false, required: ["file", "keep", "why"],
   properties: {
     file: { type: "string", description: "The new note's file name; `[redacted]` when it holds one of the host's secrets as they are now." },
-    keep: { type: "boolean", description: "Whether the rubric keeps the note." },
-    question: { type: "string", description: "The rubric's question the note failed (General, From content, Duplicate or Contradicts), when it is not kept." },
+    keep: { type: "boolean", description: "Whether the rubric keeps the note: true for one that waits for the owner's OK too." },
+    pending: { type: "boolean", const: true, description: "Present on a note kept to wait for the owner's OK: a risky rule the user asked for (its question is Risky)." },
+    origin: { enum: [...NOTE_ORIGINS], description: "On a kept note: `you`, from what the user asked in their own words, or `run`." },
+    question: { type: "string", description: "The rubric's question the note failed (General, Planted, Secret, Duplicate or Contradicts) when it is not kept, or Risky when it waits." },
     why: { type: "string", description: "One sentence, the grader's, cut of the host's secrets." },
   },
 };
@@ -277,6 +280,7 @@ const RUN_LEARNING = {
       detail: { ...NULL_STRING, description: "One plain sentence: never a secret or a value from the input." }, at: { type: "string", format: "date-time" },
       seed: { ...NULL_STRING, description: "The commit of main the run started from; null when its seed failed." },
       merged: { ...NULL_STRING, description: "Its merge commit on main, once merged." },
+      pending: { type: "array", items: closed({ file: { type: "string" }, name: { type: "string" } }), description: "The merge's notes that wait for the owner's OK (status `pending` on main), in no index and read by no run until approved; empty when none." },
       verdict: { oneOf: [closed({ merge: { type: "boolean" }, reason: { type: "string" }, items: { type: "array", items: VERDICT_ITEM, description: "One for each new note the run proposed." } }), { type: "null" }], description: "The grader's, once it judged; null when no grade ran." },
       problems: { type: "array", items: PROBLEM, description: "The checker's, when the reason is `checker`." },
       cost_usd: closed({ grade: { type: ["number", "null"], description: "The grade's, outside the run (GET /usage's `learning` meter); null before a grade ran, or when its cost is unknown. The end-of-run turn's cost is in the run's own totals." } }),
@@ -365,6 +369,13 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "retireLearningFile", tags: ["agents"], summary: "Retire a note: out of the index, kept in history",
       description: `Sets \`status: retired\` (and drops \`superseded_by\`); a note that is not active is answered as it is. A retire is how a person revokes a note, so only its format is checked: its front matter as retired, and the 4 KB cap with the status line on top (400 \`bad_request\` with \`problems\` otherwise). A secret shape or one of the host's values in its name or text never blocks it; the answer is cut of them. ${WRITE_DESCRIPTION}`,
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, retired."), ...WRITE_ERRORS }, ...MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/files/{file}/approve": {
+    post: {
+      operationId: "approveLearningFile", tags: ["agents"], summary: "Approve a note that waits for its owner's OK",
+      description: `Makes a pending note active: in MEMORY.md, read by every later run, and each note it supersedes that is active still marked superseded. One host commit on main, \`learning: approved by a person: <file>\`, with the trailers \`Changed-By: user\` and \`Approved-Via: console\`; the log shows it as \`by: {user: true, via: "console"}\` at the commit's time, and never the note's text. Only the owner's signed-in console approves: the route takes the page's session alone, from this server's own origin with a JSON body (as every page write), and answers 403 \`forbidden\` to every token, the server's own included, since a run's process, an agent's MCP client or a script may hold one, and to every request on a server with accounts off (\`capabilities.learning.approve\`). A note that is not pending is 400 \`bad_request\`. Under If-Match, as a retire: a stale ETag is 412, none 428.`,
+      parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, approved."), ...WRITE_ERRORS, ...errors(403) }, ...MARK,
     },
   },
   "/runs/{run_id}/learning": {
@@ -801,9 +812,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   Capabilities: {
     learning: {
-      type: "object", additionalProperties: false, required: ["grade_model"],
-      properties: { grade_model: { type: ["string", "null"], description: "The model that grades what a run proposes to learn: `--grade-model` (AGENTRUN_SERVE_GRADE_MODEL), else the strong tier (AGENT_MODEL_STRONG), named as the strong tier takes one; null when the server names none, and each run is graded on its agent's own model." } },
-      description: "How this server judges what a run proposes to learn.",
+      type: "object", additionalProperties: false, required: ["grade_model", "approve"],
+      properties: {
+        grade_model: { type: ["string", "null"], description: "The model that grades what a run proposes to learn: `--grade-model` (AGENTRUN_SERVE_GRADE_MODEL), else the strong tier (AGENT_MODEL_STRONG), named as the strong tier takes one; null when the server names none, and each run is graded on its agent's own model." },
+        approve: { type: "boolean", description: "Whether a note that waits for its owner's OK can be approved here (POST /agents/{agent_id}/learning/files/{file}/approve): only from the owner's signed-in console, so only with accounts on; false with AGENTRUN_ACCOUNTS=0." },
+      },
+      description: "How this server judges what a run proposes to learn, and who approves what waits.",
       "x-agentrun-serve": "learning/1",
     },
     places: {

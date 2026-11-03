@@ -23,7 +23,7 @@ import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { placesOf } from "./place.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
+import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
@@ -236,6 +236,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "writeLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/approve$/, name: "approveLearningFile" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
@@ -260,21 +261,21 @@ export function workflowTitle(name: string, input: Record<string, unknown>): str
 /** The server's reading of `base` with its secrets, saved keys among them, and its capabilities on it, the harnesses'
  *  offers included: made at the start and again at each save or delete of a key, so a key saved later can make a harness
  *  available with no restart. */
-export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, gradeModel?: string) {
+export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, gradeModel?: string, approve = false) {
   const env = withSecrets(base, "all", stored);
-  return { env, caps: await capabilities(env, maxRuns, learning ?? learningOf(env), gradeModel) };
+  return { env, caps: await capabilities(env, maxRuns, learning ?? learningOf(env), gradeModel, approve) };
 }
 
 /** The capabilities document GET /v2/capabilities answers for `env`: each harness's offer resolved, its `default_model`
  *  included (harnessOffers), so what this returns is what the route serves and what the document's schema holds.
  *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given; `gradeModel`,
  *  its `--grade-model`. */
-export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), gradeModel?: string) {
-  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, gradeModel);
+export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), gradeModel?: string, approve = false) {
+  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, gradeModel, approve);
 }
 
 /** The capabilities document from offers already resolved: the route builds it once, at start. */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, gradeModel?: string) {
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, gradeModel?: string, approve = false) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -288,7 +289,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     models,
     /** What grades a run's proposed notes: the model this server names for it (learning.ts gradeModelOf), or null when
      *  each run is graded on its agent's own model. */
-    learning: { grade_model: gradeModelOf(env, gradeModel) ?? null },
+    learning: { grade_model: gradeModelOf(env, gradeModel) ?? null, approve },
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing;
      *  `key`, the tool key that unlocks it (tool-keys.ts), when one does. */
     tools: toolsView(env).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
@@ -445,7 +446,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let latest = 0;
   const keysChanged = async () => {
     const mine = ++latest;
-    const next = await readingOf(base, maxRuns, storedKeys, learning, options.gradeModel);
+    const next = await readingOf(base, maxRuns, storedKeys, learning, options.gradeModel, options.accounts === true);
     if (mine === latest) ({ env, caps } = next);
   };
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts). No run uses one yet: the log says which this server has.
@@ -930,6 +931,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const health = await healthOf(data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
     }
+    // Approving a note the grader held for its owner's OK (a risky rule a run's user asked for) takes the owner's
+    // signed-in page alone: never a token, which a run's process, an agent's MCP client or a script may hold, nor a
+    // page cookie a token can mint (accounts off). The page's cookie stands in for the token only on its own origin
+    // with a JSON body (page.ts), so this is CSRF-checked as every page write is. With no credential at all it is 401,
+    // as every route is.
+    if (found.name === "approveLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+      authFailed(`/v2${path}`, "approve_without_session");
+      throw new ApiError("forbidden", owner ? "Approving a note takes the owner's signed-in console, never a token." : "Approving a note takes the owner's signed-in console, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
@@ -1173,11 +1183,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await needAgent(id);
         return sendNote(res, 200, await readNote(data, id, second!, secretsShown(learningSecrets())));
       case "writeLearningFile":
-      case "retireLearningFile": {
+      case "retireLearningFile":
+      case "approveLearningFile": {
         await needAgent(id);
         const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
         const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
-        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets() });
+        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets(), ...(found.name === "approveLearningFile" ? { approve: { via: "console" } } : {}) });
         // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
         const shown = secretsShown(learningSecrets());
         const located = written.status === 201 && shown.name(written.file) === written.file;

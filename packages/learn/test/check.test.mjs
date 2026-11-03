@@ -47,11 +47,11 @@ test("a link, a folder or anything not a regular file is refused, never read", (
   assert.deepEqual(rules(check([{ path: "shipping-path.md", status: "modified", mode: "120000" }])), ["file_mode"]);
 });
 
-test("front matter missing or out of shape is refused with why; a run that sets status or superseded_by is refused", () => {
+test("front matter missing or out of shape is refused with why; a run that sets status, superseded_by or origin is refused", () => {
   assert.deepEqual(check([added(NEW, "Just text.\n")]).problems, [{ rule: "note", path: NEW, detail: "it does not start with front matter" }]);
   assert.deepEqual(rules(check([added(NEW, note({ type: "lesson" }))])), ["note"]);
   assert.deepEqual(rules(check([added(NEW, note({ extra: "supersedes: [../x.md]\n" }))])), ["note"]);
-  for (const extra of ["status: active\n", "status: superseded\nsuperseded_by: x.md\n", "superseded_by: x.md\n"]) assert.deepEqual(rules(check([added(NEW, note({ extra }))])), ["status"], extra);
+  for (const extra of ["status: active\n", "status: superseded\nsuperseded_by: x.md\n", "superseded_by: x.md\n", "status: pending\n", "origin: you\n", "origin: run\n"]) assert.deepEqual(rules(check([added(NEW, note({ extra }))])), ["status"], extra);
 });
 
 test("supersedes must name a note active on the seed, once among the new notes", () => {

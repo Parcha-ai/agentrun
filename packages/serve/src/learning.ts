@@ -67,6 +67,9 @@ export const gradeModelOf = (env: NodeJS.ProcessEnv, given?: string): string | u
 export type Learning = {
   state: LearningState; reason: LearningReason | null; detail: string | null; at: string;
   problems?: Problem[]; verdict?: Verdict; merged?: string; cost_usd?: { grade: number | null }; tokens?: { grade: Tokens | null };
+  /** A merge's notes that wait for a person's OK (`status: pending` on main): in no index, and no run reads them until
+   *  approved. */
+  pending?: { file: string; name: string }[];
 };
 /** A run's learning as its view shows it: the state, why and when. */
 export const learningView = ({ state, reason, detail, at }: Learning) => ({ state, reason, detail, at });

@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, onMain, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { client, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
@@ -45,7 +45,7 @@ test("a note that supersedes one: the old note is marked superseded by the new o
   const runId = await started(api, "replacer");
   const { view, rows } = await ended(api, runId);
   settled(view, rows, "merged");
-  assert.equal(git(repo, ["show", "main:refunds-v2.md"]), NEW.trimEnd());
+  assert.equal(git(repo, ["show", "main:refunds-v2.md"]), onMain(NEW).trimEnd());
   assert.equal(git(repo, ["show", "main:refunds.md"]), note("Refunds path", "Refunds live under /help/", "Refunds live under /help/.\n", "status: superseded\nsuperseded_by: refunds-v2.md\n").trimEnd());
   assert.equal(`${git(repo, ["show", "main:MEMORY.md"])}\n`, "- [Prefers tables](prefers-tables.md) — The user reads results as tables\n- [Refunds path](refunds-v2.md) — Refunds live under /policies/refunds\n");
   assert.deepEqual(git(repo, ["diff-tree", "-r", "--name-status", "--no-commit-id", "main"]).split("\n"), ["M\tMEMORY.md", "A\trefunds-v2.md", "M\trefunds.md"], "one commit: the note added, the old one marked, the index rebuilt");

@@ -4,8 +4,13 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { mergedNote } from "@parcha/agentrun-learn";
 import { homeOf } from "../dist/files.js";
 import { agent, follow } from "./support.mjs";
+
+/** A run's new note as main keeps it once merged: with the host's `origin: you` line when it keeps the user's own words
+ *  (the run's, the default, adds none). */
+export const onMain = (text, origin = "run") => mergedNote(text, { origin });
 
 /** The faux model and faux harness that plan an end-of-run turn's notes (fixtures/faux-learn.mjs). */
 export const LEARN = new URL("./fixtures/faux-learn.mjs", import.meta.url).pathname;

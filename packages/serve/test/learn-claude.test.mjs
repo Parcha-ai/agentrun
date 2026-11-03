@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
-import { ended, git, learner, made, reflectRows, repoOf, savedOf, settled, started, turnOf } from "./learn-support.mjs";
+import { ended, git, learner, made, onMain, reflectRows, repoOf, savedOf, settled, started, turnOf } from "./learn-support.mjs";
 import { serve, withEnv } from "./support.mjs";
 
 const MODEL = "claude-haiku-4-5";
@@ -66,8 +66,8 @@ test("on claude-agent's real adapter, with no tool of its own, the end-of-run tu
   assert.equal(learning.verdict.merge, true, JSON.stringify(learning));
   const repo = repoOf(data, id);
   assert.equal(learning.merged, git(repo, ["rev-parse", "main"]));
-  assert.equal(`${git(repo, ["show", "main:check-units.md"])}\n`, UNITS);
-  assert.equal(`${git(repo, ["show", "main:cite-sources.md"])}\n`, SOURCES);
+  assert.equal(`${git(repo, ["show", "main:check-units.md"])}\n`, onMain(UNITS));
+  assert.equal(`${git(repo, ["show", "main:cite-sources.md"])}\n`, onMain(SOURCES));
   assert.deepEqual(git(repo, ["show", "main:MEMORY.md"]).split("\n").sort(), [
     "- [Check units](check-units.md) — Convert every amount to one unit before comparing",
     "- [Cite sources](cite-sources.md) — Name the page each figure came from",

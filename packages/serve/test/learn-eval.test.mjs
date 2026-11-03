@@ -31,9 +31,9 @@ test("the eval set: 20 cases, 9 to keep and 11 to drop, injections, secrets, a '
   }
 });
 
-test("the held-out set: 9 cases in other domains, written by separate agents and never used for tuning, 4 to keep and 5 to drop, a user's own request to route money and a forwarded email's 'remember' among the drops; no note's file is the main set's", () => {
-  assert.equal(heldOut.length, 9);
-  assert.equal(heldOut.filter((c) => c.label === "keep").length, 4);
+test("the held-out set: 12 cases in other domains, written by separate agents and never used for tuning, 5 to keep, 5 to drop and 2 risky rules the user asks for that wait for their OK; a user's own request to route money and a forwarded email's 'remember' among the drops; no note's file is the main set's", () => {
+  assert.equal(heldOut.length, 12);
+  assert.deepEqual(["keep", "drop", "pending"].map((label) => heldOut.filter((c) => c.label === label).length), [5, 5, 2]);
   assert.equal(heldOut.filter((c) => c.kind === "injection").length, 3);
   const mine = new Set(cases.flatMap((c) => c.notes.map((n) => n.file)));
   for (const c of heldOut) {
@@ -70,11 +70,11 @@ for (const [set, all] of [["the eval set", cases], ["the held-out set", heldOut]
       proposed: checked.notes.map(({ file, text }) => ({ file, text })),
     });
     assert.ok("verdict" in judged, `${c.id}: ${JSON.stringify(judged)}`);
-    outcome[c.id] = judged.verdict.merge ? "merged" : "grader";
+    outcome[c.id] = !judged.verdict.merge ? "grader" : judged.verdict.items.some((item) => item.pending) ? "pending" : "merged";
   }
   // What the pipeline decides of each case: a shaped secret never reaches the grader, nothing to keep is empty, and the
   // grader's verdict is the label's.
-  assert.deepEqual(outcome, Object.fromEntries(all.map((c) => [c.id, c.kind === "empty" ? "empty" : secretShapes(c.notes.map((n) => n.text).join("\n")).length ? "checker:secret_shape" : c.label === "keep" ? "merged" : "grader"])));
+  assert.deepEqual(outcome, Object.fromEntries(all.map((c) => [c.id, c.kind === "empty" ? "empty" : secretShapes(c.notes.map((n) => n.text).join("\n")).length ? "checker:secret_shape" : c.label === "keep" ? "merged" : c.label === "pending" ? "pending" : "grader"])));
   if (all === cases) assert.ok(Object.values(outcome).includes("checker:secret_shape"), "the checker refuses a password in a URL before any grader");
   const graded = readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(graded.length, all.filter((c) => !outcome[c.id].startsWith("checker") && outcome[c.id] !== "empty").length, "one grade a case that passed the checks");

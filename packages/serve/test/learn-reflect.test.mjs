@@ -14,7 +14,7 @@ import { homeOf } from "../dist/files.js";
 import { startServe } from "../dist/index.js";
 import { learningTestHooks } from "../dist/learning.js";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, learningRows, made, reflectRows, repoOf, savedOf, settled, sleep, started, turnOf } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learner, learningRows, made, onMain, reflectRows, repoOf, savedOf, settled, sleep, started, turnOf } from "./learn-support.mjs";
 import { agent, client, follow, scratch, serve, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -150,7 +150,7 @@ test("a follow-up sent as the run settles changes nothing that is checked: the t
   settled(view, rows, "merged");
   assert.deepEqual(JSON.parse(readFileSync(join(data, "runs", runId, "learning-proposal.json"), "utf8")).notes, [{ file: "check-units.md", text: PLAN[0][1] }], "exactly the turn's note");
   const repo = repoOf(data, "follower");
-  assert.equal(`${git(repo, ["show", "main:check-units.md"])}\n`, PLAN[0][1]);
+  assert.equal(`${git(repo, ["show", "main:check-units.md"])}\n`, onMain(PLAN[0][1]));
   assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md", "check-units.md"], "nothing of the follow-up's");
 });
 

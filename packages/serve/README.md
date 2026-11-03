@@ -821,9 +821,12 @@ run first, on Jev: a note it scores at `INJECTION_THRESHOLD` (0.75) or over, or 
 grade spends is in no run's totals: it is kept on the run's learning, and counted once on `GET /usage` under the meter
 `learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.
 
-A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each note they supersede marked
+A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each with its `origin` (`you`
+for what the user asked in their own words, `run` for what the run worked out), each note they supersede marked
 `status: superseded` with `superseded_by`, `MEMORY.md` rebuilt from the active notes, and the checked-out files brought
-in line. Its message is `learning: <run id>: merged`, the grader's reason and a `Run-Id` trailer; `main` moves only from
+in line. A risky rule the user asked for (to trust a site or a seller, skip or loosen an approval or a check, or send
+money or data to an account) is merged as `status: pending`: in no `MEMORY.md` and no run's copy until its owner
+approves it, and named on the run's learning (`pending: [{file, name}]`, detail "Waiting for your OK: <name>."). Its message is `learning: <run id>: merged`, the grader's reason and a `Run-Id` trailer; `main` moves only from
 the commit the merge was made on (once more on a `main` that moved meanwhile), and a run a trailer already names is
 merged, never twice. The merge's own questions are asked again of `main` first: a name another run added since is
 refused as `exists`. A server that goes between steps picks the run up at its next start, once.
@@ -849,6 +852,17 @@ injections), runs in CI through the parser, the checks and the grader's prompt o
 (`test/learn-eval.test.mjs`). `scripts/learn-eval.mjs` runs the same set on real models, the grade and the end-of-run
 turn both, and prints keep-precision, keep-recall and the injection-drop rate per model; it spends.
 
+### Who can approve
+
+Only the owner, from the signed-in console: `POST .../approve` takes the page's password session alone, sent from this
+server's own origin with a JSON body (CSRF-checked as every page write), and answers 403 to everything else. That
+includes every token, the server's own among them, since a script, an agent's MCP client or a run's process may hold
+one; a run's door token; and, on a server with accounts off (`AGENTRUN_ACCOUNTS=0`), the page's cookie too, which the
+token mints. So with accounts off nothing approves (`capabilities.learning.approve` is false), and the server has no
+API key with an approve scope. The approval is one host commit, `learning: approved by a person: <file>`, with the
+trailers `Changed-By: user` and `Approved-Via: console`; the log shows `by: {user: true, via: "console"}` at the commit's
+time, never the note's text.
+
 ### What a person sees and controls
 
 A person reads and changes an agent's learning through this server's own routes (`learning/1` in `/v2/openapi.json`),
@@ -865,7 +879,9 @@ with the token, an archived agent's too:
   git blob id.
 - `PUT .../learning/files/{file}` with the note's whole text (as `text/markdown` or `text/plain`, or as
   `application/json` `{text}`, the form the console's page sends under its session) edits it under `If-Match: <etag>`,
-  or creates it under `If-None-Match: *` (201); `POST .../learning/files/{file}/retire` under `If-Match` sets `status: retired`. A stale
+  or creates it under `If-None-Match: *` (201); `POST .../learning/files/{file}/retire` under `If-Match` sets `status: retired`,
+  on an active or a pending note; `POST .../learning/files/{file}/approve` under `If-Match` makes a pending note active
+  (see who can approve, below). A stale
   ETag, or a name already taken, is 412; neither header (or `If-Match: *`) is 428 `precondition_required`. The note
   passes the same structural checks as a run's (packages/learn's `checkNote`), and no grader: a refusal is 400 with
   `problems`, and nothing is written. A retire is how a person revokes a note, so it checks the note's format alone:

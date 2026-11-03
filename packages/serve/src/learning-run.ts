@@ -15,7 +15,7 @@
 // the kernel writes.
 import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ANSWER_MAX } from "@parcha/agentrun-learn";
+import { ANSWER_MAX, parseNoteFile } from "@parcha/agentrun-learn";
 import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { SPEND_CAP_REACHED } from "./cap.js";
@@ -97,6 +97,12 @@ export function learningStats(rows: readonly RunRow[], filter: AnalyticsFilter, 
   }
   return out;
 }
+
+/** A note's name, from its front matter; its file when it has none. */
+const nameOf = (file: string, text: string) => {
+  const note = parseNoteFile(file, text);
+  return Array.isArray(note) ? file : note.name;
+};
 
 /** What run `run`'s end-of-run turn answered, and what the user said in the run, as beforeSettle keeps them: the whole
  *  text of each of the turn's assistant messages, in order (its notes may come in more than one), cut once past
@@ -535,10 +541,13 @@ export class LearningRuns {
         this.setLearning(run, "proposed", null, before.detail, kept);
         await this.kernel.save(run);
       }
-      const merge = await mergeProposal(data, run.agentId, run.id, proposal, kept.verdict?.reason || "The grader kept every new note.");
+      const merge = await mergeProposal(data, run.agentId, run.id, proposal, kept.verdict?.reason || "The grader kept every new note.", kept.verdict);
       if ("problems" in merge) return await end("dropped", "checker", `Main no longer takes what the run proposed: ${[...new Set(merge.problems.map((problem) => problem.rule))].join(", ")}.`, { problems: merge.problems });
       if (merge.checkout) warn(run.id, `its merge is on main, but the folder's files were not brought in line: ${merge.checkout.message}`);
-      await end("merged", null, "What the run learned is merged into main.", { merged: merge.merged });
+      // A note the user asked for whose rule is risky waits on main for their OK: named here, and no run reads it yet.
+      const waiting = new Set((kept.verdict?.items ?? []).filter((item) => item.pending).map((item) => item.file));
+      const pending = proposal.notes.filter(({ file }) => waiting.has(file)).map(({ file, text }) => ({ file, name: nameOf(file, text) }));
+      await end("merged", null, pending.length ? `Waiting for your OK: ${pending.map((note) => note.name).join(", ")}.` : "What the run learned is merged into main.", { merged: merge.merged, ...(pending.length ? { pending } : {}) });
     } catch (error) {
       // A server closing: nothing was decided, and the next start grades the run.
       if (this.closing) return;

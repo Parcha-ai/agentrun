@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started, turnOf } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learner, onMain, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started, turnOf } from "./learn-support.mjs";
 import { scratch, serve } from "./support.mjs";
 
 const FILE = "check-units.md";
@@ -51,13 +51,13 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     // What the merge left: one host commit on main naming the run, with the note, and MEMORY.md built from it.
     const repo = repoOf(data, id);
     const { learning } = await savedOf(data, one);
-    assert.deepEqual(learning.verdict, { merge: true, reason: "Each note is general and new.", items: [{ file: FILE, keep: true, why: "It holds as a general rule." }] });
+    assert.deepEqual(learning.verdict, { merge: true, reason: "Each note is general and new.", items: [{ file: FILE, keep: true, origin: "run", why: "It holds as a general rule." }] });
     const main = git(repo, ["rev-parse", "main"]);
     assert.equal(learning.merged, main);
     assert.deepEqual(mergesOf(repo, one).map((entry) => entry.split(" ")[0]), [main], "one commit names the run");
     assert.deepEqual(git(repo, ["log", "-1", "--format=%an%n%s%n%b", main]).split("\n").filter(Boolean), ["agentrun-serve", `learning: ${one}: merged`, "Each note is general and new.", `Run-Id: ${one}`]);
     assert.equal(git(repo, ["rev-list", "--count", "main"]), "2", "the folder's first commit, then the merge");
-    assert.equal(`${git(repo, ["show", `main:${FILE}`])}\n`, NOTE);
+    assert.equal(`${git(repo, ["show", `main:${FILE}`])}\n`, onMain(NOTE), "the note, with the host's origin line");
     assert.equal(git(repo, ["show", "main:MEMORY.md"]), LINE);
     assert.equal(readFileSync(join(repo, "MEMORY.md"), "utf8"), `${LINE}\n`, "the checked-out files are main's");
     assert.equal(git(repo, ["status", "--porcelain"]), "");
@@ -71,7 +71,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const two = await started(api, id);
     const second = await ended(api, two);
     assert.equal(learnedIn(second.view.result.final_answer), LINE, second.view.result.final_answer);
-    assert.equal(readFileSync(join(copyOf(data, two), FILE), "utf8"), NOTE, "the note was in run 2's .learning/");
+    assert.equal(readFileSync(join(copyOf(data, two), FILE), "utf8"), onMain(NOTE), "the note was in run 2's .learning/");
     assert.equal(JSON.parse(readFileSync(join(data, "runs", two, "learning.json"), "utf8")).seed, main);
     // It learned nothing new: its turn added nothing, and main did not move.
     settled(second.view, second.rows, "dropped", "empty");

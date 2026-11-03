@@ -16,7 +16,7 @@
 // The merge runs in the agent's queue; the screen and the grader never do, so no run's seed waits on a model.
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, type Verdict } from "@parcha/agentrun-learn";
+import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, type Verdict } from "@parcha/agentrun-learn";
 import type { PageJudge } from "@parcha/pi-browser";
 import { claudeModel, claudeProvider } from "./adapters.js";
 import { FAUX_JEV_ENV, fauxFetch, jevKey } from "./decisions.js";
@@ -232,15 +232,20 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
   }
 }
 
-/** Merges run `runId`'s proposal into main as main is now, in the agent's queue: one commit on main (its parent main)
- *  that adds the new notes, marks each note they supersede and rebuilds MEMORY.md, its message `learning: <run>: merged`,
+/** Merges run `runId`'s proposal into main as main is now, in the agent's queue, as `verdict` judged its notes: one commit
+ *  on main (its parent main) that adds the new notes, each with its `origin` and a pending one with `status: pending`
+ *  (in no index, so no run reads it, until a person approves it), marks each note a kept one supersedes (a pending
+ *  note's wait for its approval) and rebuilds MEMORY.md, its message `learning: <run>: merged`,
  *  `reason` and the run's Run-Id; moved onto main only from the commit it was made on, once more on a main that moved
  *  meanwhile. Then the checked-out files are main's. A run a commit on main already names is that commit. `problems`
  *  when main, as it is now, takes the notes no more (mergeProblems). `checkout` is why the files could not be brought in
  *  line, when they could not: main is merged all the same. */
-export function mergeProposal(data: string, agentId: string, runId: string, proposal: Proposal, reason: string): Promise<{ merged: string; checkout: Error | undefined } | { problems: Problem[] }> {
+export function mergeProposal(data: string, agentId: string, runId: string, proposal: Proposal, reason: string, verdict?: Verdict): Promise<{ merged: string; checkout: Error | undefined } | { problems: Problem[] }> {
   const home = homeOf(data, agentId);
-  const added = proposedOf(proposal);
+  // Each note as main keeps it: its origin, the grader's (a run's when it names none), and a pending one waiting.
+  const judged = new Map((verdict?.items ?? []).map((item) => [item.file, item]));
+  const texts = proposal.notes.map(({ file, text }) => ({ file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run", pending: judged.get(file)?.pending === true }) }));
+  const added = proposedOf({ ...proposal, notes: texts });
   return withAgentRepo(data, agentId, async () => {
     const repo = await agentFolder(data, agentId);
     const checkout = (sha: string) => checkOut(repo, sha);
@@ -252,9 +257,10 @@ export function mergeProposal(data: string, agentId: string, runId: string, prop
       const problems = problemsOf(main, added);
       if (problems.length) return { problems };
       const notes = notesOf(main);
-      // The new tree: main's, with the new notes, the superseded ones marked, and the index rebuilt from what is active then.
-      const files = new Map(proposal.notes.map(({ file, text }) => [file, text]));
-      const replaced = new Map(added.flatMap((note) => note.supersedes.map((old) => [old, note.file] as const)));
+      // The new tree: main's, with the new notes, the ones the kept notes supersede marked, and the index rebuilt from
+      // what is active then (a pending note is not).
+      const files = new Map(texts.map(({ file, text }) => [file, text]));
+      const replaced = new Map(added.filter((note) => note.status === "active").flatMap((note) => note.supersedes.map((old) => [old, note.file] as const)));
       for (const [old, by] of replaced) files.set(old, supersede(main.texts.get(old)!, by));
       const after = [...notes.filter((note) => !replaced.has(note.file)), ...added];
       files.set(INDEX_FILE, buildIndex(after));
