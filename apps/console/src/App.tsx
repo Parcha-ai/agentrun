@@ -153,6 +153,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [revs, setRevs] = useState<{ revision: string; version: number; current: boolean; note: string | null }[]>([]);
   const [pick, setPick] = useState<string | null>(null);
+  // The picked agent's least cap, from its own record (GET /agents/{id} min_cap_usd); undefined while unread or when the
+  // server names none. Its harness's (capabilities' harnesses[].min_cap_usd) stands in until then.
+  const [pickMin, setPickMin] = useState<{ id: string; min: number | null } | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   useEffect(() => {
@@ -184,6 +187,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     const n = ++revsAsked.current;
     setRevs([]);
     if (pick) allPages((cursor) => v2.listRevisions(pick, cursor), (p) => p.revisions).then((r) => { if (n === revsAsked.current) setRevs(r); }).catch(() => {});
+    if (pick) v2.getAgent(pick).then(({ agent: a }) => { if (n === revsAsked.current && "min_cap_usd" in a) setPickMin({ id: pick, min: a.min_cap_usd ?? null }); }).catch(() => {});
   }, [v2, pick]);
   const send = async (agentId: string, body: Parameters<typeof v2.startRun>[1], key: string): Promise<StartResult> => {
     const t0 = performance.now();
@@ -195,6 +199,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     }
   };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
+  /** The playground's least cap for `id`: its record's, else its harness's, else none said. */
+  const leastCap = (id: string | null): number | null | undefined => {
+    if (!id) return undefined;
+    if (pickMin?.id === id) return pickMin.min;
+    const harness = agents?.find((a) => a.agent_id === id)?.definition.harness ?? "pi";
+    const offer = caps?.harnesses.find((h) => h.id === harness);
+    return offer && "min_cap_usd" in offer ? (offer.min_cap_usd ?? null) : undefined;
+  };
   return (
     <Shell active={where.section} settings={!!caps?.features?.tool_keys?.routes} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
@@ -209,7 +221,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
             scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
         : where.section === "playground"
-        ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
+        ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} minCapUsd={leastCap(pick)} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
         : where.section === "agents"
         ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} go={go} />

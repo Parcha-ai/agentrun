@@ -1,5 +1,17 @@
 export type StartBody = { input: unknown; revision?: string; effort?: string; max_cost_usd?: number };
-export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string };
+/** `minCapUsd`: the agent's least cap (GET /agents/{id} min_cap_usd): a cap under it is refused here as the server
+ *  refuses it (`cap >= min_cap_usd`); null, no cap can be kept on its model; absent, the server said nothing. */
+export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string; minCapUsd?: number | null };
+
+/** The least cap in dollars, rounded up to a cent, so a cap of what it says is never under it. */
+const dollarsAtLeast = (usd: number) => `$${(Math.ceil(usd * 100 - 1e-9) / 100).toFixed(2)}`;
+/** The cap field's hint from the agent's least cap: the least (at default effort, when another effort is chosen: the
+ *  server works it out at the agent's default), that none can be kept, or nothing when the server says nothing. */
+export function capHint(minCapUsd: number | null | undefined, effortChosen: boolean): string | undefined {
+  if (minCapUsd === undefined) return undefined;
+  if (minCapUsd === null) return "No cap can be kept on this agent's model.";
+  return `At least ${dollarsAtLeast(minCapUsd)} for this agent${effortChosen ? ", at default effort" : ""}.`;
+}
 
 /** The body of `POST /v2/agents/{id}/runs` from the form. An agentic run's input is its first message, `{content}`; a
  *  workflow run's is its typed input, as JSON. A workflow run takes no spend cap (the server refuses one). */
@@ -17,6 +29,8 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
   if (kind === "agentic" && f.maxCostUsd?.trim()) {
     const cap = Number(f.maxCostUsd);
     if (!Number.isFinite(cap) || cap <= 0) return { ok: false, field: "max_cost_usd", message: "A spend cap is a positive number of dollars." };
+    if (f.minCapUsd === null) return { ok: false, field: "max_cost_usd", message: "No cap can be kept on this agent's model." };
+    if (typeof f.minCapUsd === "number" && cap < f.minCapUsd) return { ok: false, field: "max_cost_usd", message: `At least ${dollarsAtLeast(f.minCapUsd)} for this agent.` };
     body.max_cost_usd = cap;
   }
   return { ok: true, body };
