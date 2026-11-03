@@ -25,7 +25,7 @@ test("no tool the table binds registers bash on the runner: what each installs a
   const installed = [];
   const host = { where: { work: "/nonexistent", ref: { id: "run" } }, env: {}, coding: codingSource({ mode: "runner" }), install: (extension) => void installed.push(extension), onConversation() {}, beforeResume() {}, beforeRelease() {} };
   const bound = BOUND_TOOLS.filter((name) => missingEnv(TOOLS[name], {}).length === 0);
-  for (const name of ["read", "write", "edit", "ask_person", "fetch_page"]) assert.ok(bound.includes(name), `${name} binds with no key`);
+  for (const name of ["read", "write", "edit", "ask_person", "web_fetch"]) assert.ok(bound.includes(name), `${name} binds with no key`);
   assert.ok(bound.includes("bash"), "bash is in the table, for a box");
   assert.deepEqual(await TOOLS.bash.bind(host), { tools: [], extensions: [] }, "on the runner bash binds nothing");
   for (const name of bound.filter((name) => name !== "bash")) {

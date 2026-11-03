@@ -25,6 +25,7 @@ import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
 import { withLearned } from "./learning.js";
 import { completer } from "./llm.js";
+import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
 import { type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
@@ -110,6 +111,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools);
     return { models: {}, registry: createRegistry(), door, onOpen } as unknown as AppOptions;
   }
+  // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts).
+  searchOn(models);
   // Each tool the revision names is bound once, from the table: its extensions installed here, its documents written in
   // each conversation's creating commit, what it settles done before anything resumes, and what it lets go done before
   // the run is released.
