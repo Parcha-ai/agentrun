@@ -1,10 +1,17 @@
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
-import type { ClassifierAnswer, ClassifierContext, ClassifierResult, Models } from "@earendil-works/pi-ai";
+import type { ClassifierAnswer, ClassifierContext, ClassifierResult, Models, Provider } from "@earendil-works/pi-ai";
 import { calculateCost, createModels, createProvider } from "@earendil-works/pi-ai/models";
+import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { typesafeProvider } from "@earendil-works/pi-ai/providers/typesafe";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { afterEach, describe, expect, it } from "vitest";
-import { type EnvironmentFacts, jevPlacer, type PlacementQuery, type PlacementRecord } from "../src/place/placer.ts";
+import {
+	type EnvironmentFacts,
+	jevClassifier,
+	jevPlacer,
+	type PlacementQuery,
+	type PlacementRecord,
+} from "../src/place/placer.ts";
 import {
 	askedKey,
 	type ReplayLine,
@@ -45,24 +52,31 @@ const query = (more: Partial<PlacementQuery> = {}): PlacementQuery => ({
 
 /**
  * TypeSafe answering with `answer` for each question it is asked: a stand-in at pi-ai's provider boundary. `catalog` is
- * the models the provider lists, pi-ai's own by default.
+ * the models the provider lists, pi-ai's own by default; `from` is the provider's id and auth, a keyless TypeSafe by
+ * default. `sent` is where each question would have gone, and with which key.
  */
 function answering(
 	answer: (context: ClassifierContext) => ClassifierResult | Promise<ClassifierResult>,
 	catalog = typesafeProvider().getAllModels?.() ?? [],
+	from: Pick<Provider, "id" | "auth"> = {
+		id: "typesafe",
+		auth: { apiKey: { name: "no key", resolve: async () => ({ auth: {} }) } },
+	},
 ) {
 	const asked: ClassifierContext[] = [];
+	const sent: { readonly baseUrl: string; readonly apiKey: string | undefined }[] = [];
 	const models = createModels();
 	models.setProvider(
 		createProvider({
-			id: "typesafe",
-			name: "TypeSafe, in a test",
-			auth: { apiKey: { name: "no key", resolve: async () => ({ auth: {} }) } },
+			id: from.id,
+			name: `${from.id}, in a test`,
+			auth: from.auth,
 			models: catalog,
 			classifiers: {
 				"typesafe-system-one": {
-					async classify(model, given) {
+					async classify(model, given, sending) {
 						asked.push(structuredClone(given));
+						sent.push({ baseUrl: model.baseUrl, apiKey: sending?.apiKey });
 						const answered = structuredClone(await answer(given));
 						// As pi-ai's TypeSafe provider prices a call: from the entry it was handed.
 						if (answered.usage !== undefined) calculateCost(model, answered.usage);
@@ -72,7 +86,7 @@ function answering(
 			},
 		}),
 	);
-	return { models, asked };
+	return { models, asked, sent };
 }
 
 const result = (answers: Record<string, ClassifierAnswer>): ClassifierResult => ({
@@ -131,6 +145,65 @@ describe("the placer", () => {
 			if (saved !== undefined) process.env.TYPESAFE_API_KEY = saved;
 		}
 		expect((await jevPlacer(answering(() => said(0, "local")).models, JEV, { rest: "local" })).ok).toBe(true);
+	});
+
+	it("places a step with only an OpenRouter key: Jev through OpenRouter's System One, on that key", async () => {
+		const saved = { typesafe: process.env.TYPESAFE_API_KEY, openrouter: process.env.OPENROUTER_API_KEY };
+		delete process.env.TYPESAFE_API_KEY;
+		// Not a key and never sent: the classify below answers at pi-ai's provider boundary.
+		process.env.OPENROUTER_API_KEY = "openrouter-key-in-a-test";
+		try {
+			// pi-ai's own OpenRouter auth and catalog, with TypeSafe's real provider beside it.
+			const openrouter = openrouterProvider();
+			const jev = answering(() => said(0.9, "gpu"), openrouter.getAllModels?.() ?? [], openrouter);
+			jev.models.setProvider(typesafeProvider());
+			const typesafe = await jevPlacer(jev.models, JEV, { rest: "local" });
+			expect(typesafe.ok ? "built" : typesafe.error.code).toBe("no_key");
+			// pi-ai's OpenRouter catalog lists Jev by its alias, not by the version serve pins for images.
+			const pinned = await jevPlacer(
+				jev.models,
+				{ provider: "openrouter", modelId: "typesafe/jev-1.14" },
+				{ rest: "local" },
+			);
+			expect(pinned.ok ? "built" : pinned.error.code).toBe("no_classifier");
+
+			const classifier = jevClassifier(process.env);
+			expect(classifier).toEqual({ provider: "openrouter", modelId: "~typesafe/jev-latest" });
+			if (classifier === undefined) return;
+			const placer = getOrThrow(await jevPlacer(jev.models, classifier, { rest: "local", newId }));
+			const record = kept(await placer.decide(query(), context));
+			expect({ target: record.target, moved: record.moved, by: record.by }).toEqual({
+				target: "gpu",
+				moved: true,
+				by: "jev",
+			});
+			expect(record.error).toBeUndefined();
+			expect(record.classifier).toEqual({ provider: "openrouter", model: "~typesafe/jev-latest" });
+			expect(jev.sent).toEqual([{ baseUrl: "https://openrouter.ai/api/v1", apiKey: "openrouter-key-in-a-test" }]);
+			// OpenRouter's catalog prices Jev, so the cost is known: 10 input tokens at its price.
+			const price = jev.models.getModelOfType("classifier", "openrouter", "~typesafe/jev-latest")?.cost.input ?? 0;
+			expect(price).toBeGreaterThan(0);
+			expect(record.usage?.costUsd).toBeCloseTo((10 * price) / 1_000_000, 12);
+		} finally {
+			for (const [name, value] of [
+				["TYPESAFE_API_KEY", saved.typesafe],
+				["OPENROUTER_API_KEY", saved.openrouter],
+			] as const) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
+	});
+
+	it("chooses Jev's route by the keys, as serve's decisions do: TypeSafe's own API first, then OpenRouter", () => {
+		const both = { TYPESAFE_API_KEY: "typesafe-key-in-a-test", OPENROUTER_API_KEY: "openrouter-key-in-a-test" };
+		expect(jevClassifier(both)).toEqual(JEV);
+		expect(jevClassifier({ ...both, TYPESAFE_API_KEY: " " })).toEqual({
+			provider: "openrouter",
+			modelId: "~typesafe/jev-latest",
+		});
+		expect(jevClassifier({ TYPESAFE_API_KEY: "", OPENROUTER_API_KEY: "" })).toBeUndefined();
+		expect(jevClassifier({})).toBeUndefined();
 	});
 
 	it("moves only for a need: Jev must judge the step needs another environment, and choose one", async () => {
