@@ -7,7 +7,7 @@
 // Where the frame and the receipts come from: while the run goes its process holds its store exclusively, so they are
 // the process's live view (pause.ts `live.json`), and the store is never opened (an open racing the process's own would
 // fail it). Once the run ended, the store.
-import { type NodeLine, readLiveView, readNodeLog } from "./pause.js";
+import { llmAnswers, type NodeLine, readLiveView, readNodeLog } from "./pause.js";
 
 export type GraphNodeStatus = "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
 type Item = { index: number; status: GraphNodeStatus; executionPath: string; label?: string; branches?: Record<string, string> };
@@ -201,8 +201,7 @@ export async function runGraph(given: GraphInput) {
   // The run's spend: its decisions', its llm calls' and its model nodes'; one unknown makes it unknown. An llm call's cost
   // is a REQUEST_COST entry, in `modelCost` once the run's rows hold it: the first `llmRead` answers of the node log (an
   // answer is logged after its cost is committed). Only the later ones are counted from the node log.
-  const answers = lines.filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done");
-  const calls = answers.slice(given.llmRead ?? 0).map((line) => (line.t === "effect.end" && isObject(line.output) && typeof line.output.cost_usd === "number" ? line.output.cost_usd : null));
+  const calls = llmAnswers(lines).slice(given.llmRead ?? 0).map((line) => (isObject(line.output) && typeof line.output.cost_usd === "number" ? line.output.cost_usd : null));
   const costs: Array<number | null> = [...decisions.map((d) => d.cost_usd), ...calls, given.modelCost];
   const cost = costs.some((c) => c === null) ? null : Math.round((costs as number[]).reduce((a, b) => a + b, 0) * 1e8) / 1e8;
   const startedMs = Date.parse(given.run.startedAt);

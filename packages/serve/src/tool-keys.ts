@@ -11,11 +11,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { decisionsOf } from "./decisions.js";
-import { ApiError, type InputIssue, invalid } from "./errors.js";
+import { ApiError, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { toolsView } from "./tools.js";
-import { isObject } from "./validate.js";
+import { isObject, unknownFields } from "./validate.js";
 
 export const TOOL_KEYS_FILE = "tool-keys.json";
 export const SEAL_KEY_ENV = "AGENTRUN_SEAL_KEY";
@@ -122,7 +122,7 @@ export class ToolKeys {
   /** PUT: each of `body.values` sealed under the seal key; the key's other fields stay as they are. */
   save(id: string, body: Record<string, unknown>): void {
     const row = this.row(id);
-    const issues: InputIssue[] = Object.keys(body).filter((key) => key !== "values").map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
+    const issues = unknownFields(body, ["values"]);
     const values = isObject(body.values) ? body.values : {};
     if (!Object.keys(values).length) issues.push({ field: "values", reason: body.values === undefined ? "missing" : "wrong_type", message: `values holds one or more of ${row.fields.join(", ")}, by name` });
     // No message holds a value, or any part of one.

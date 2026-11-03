@@ -596,8 +596,9 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
       if (call) call.done = true;
       const named = str(message.toolName);
       // Failed as the call's row reads it (callFailed): an error, or a result its tool reads as failed (a refused fetch).
+      // The text is read only by a tool that tells its outcome (most tell none; a fetch's is its whole page).
       const called = call?.called ?? named ?? "";
-      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), callFailed(called, { text: textOf(message), isError: message.isError === true }));
+      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), callFailed(called, { get text() { return textOf(message); }, isError: message.isError === true }));
     }
   }
   for (const call of calls.values()) if (!call.done) tally(call.name, true);
