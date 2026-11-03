@@ -145,7 +145,7 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
   });
   const out = await printed(child, /^AGENTRUN_BASE_URL=\S+$/m);
   assert.deepEqual(readdirSync(tmp), [], "the launcher's FIFO and its directory are gone");
-  return { root: child.pid, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], env.AGENTRUN_TOKEN), output: () => out };
+  return { root: child.pid, child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], env.AGENTRUN_TOKEN), output: () => out };
 }
 
 /** `root` and every process under it (a harness's CLI may start a session of its own, so not by session). */
@@ -330,7 +330,7 @@ process.on("SIGUSR2", async () => {
   server = await startServe(options);
   process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");
 });`;
-  const { root, api, output } = await launched(t, secrets, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
+  const { root, child, api } = await launched(t, secrets, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
   // Each agent's tools, and the tool keys its runs get.
   const agents = { monid: [["monid.run"], ["MONID_API_KEY"]], browse: [["browser"], BROWSERBASE], reader: [["read"], []] };
   const expected = (unlocked) => Object.fromEntries(SECRET_NAMES.map((name) => [name, [...SERVER_ONLY, ...DECISION_KEYS].includes(name) || (TOOL_KEYS.includes(name) && !unlocked.includes(name)) ? "none" : digest(secrets[name])]));
@@ -350,12 +350,10 @@ process.on("SIGUSR2", async () => {
 
   // A restart: the new server reads each run from the store, and a follow-up opens it again in a new process, which
   // gets what its first did.
+  // Its ready line again, or its exit: never a clock (support.mjs printed). Listened for before the signal.
+  const restarted = printed(child, /^AGENTRUN_BASE_URL=\S+$/m);
   process.kill(root, "SIGUSR2");
-  for (let i = 0; output().match(/AGENTRUN_BASE_URL=\S+/g).length < 2; i++) {
-    assert.ok(i < 300, `the server started again: ${output()}`);
-    await sleep(50);
-  }
-  const again = client(output().match(/AGENTRUN_BASE_URL=(\S+)/g)[1].slice("AGENTRUN_BASE_URL=".length), secrets.AGENTRUN_TOKEN);
+  const again = client(/AGENTRUN_BASE_URL=(\S+)/.exec(await restarted)[1], secrets.AGENTRUN_TOKEN);
   for (const [id, { runId, handed }] of Object.entries(runs)) {
     const sent = await again("POST", `/runs/${runId}/messages`, { content: "Report." });
     assert.equal(sent.status, 202, JSON.stringify(sent.body));
