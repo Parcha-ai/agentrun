@@ -381,8 +381,10 @@ export function adapterRun(
         } finally {
           // The last request's cost, booked once the proxy has answered: waited for, so the answer is written with it.
           await bookings(BOOKING_WAIT_MS);
-          // A turn that failed ends the run on its error, as a pi run's does: the cap's refusal, a cost the booking could
-          // not write, or the harness's own failure.
+          // A turn that failed (the cap's refusal, a cost the booking could not write, or the harness's own failure) writes
+          // its error and ends failed. The run's status is its last turn's end (turns.ts): with no message waiting, the run
+          // fails on this error, as a pi run does; a message waiting behind it is still sent, and when that turn completes,
+          // the run completes with its answer, this failure kept in the timeline.
           const why = refused ?? halted?.message ?? (failed === undefined ? undefined : `${harness}: ${failed}`);
           refused = undefined;
           const pending = open.size > 0;
