@@ -97,7 +97,10 @@ test("a create while the agent store is held waits for it; GET /capabilities ans
   let createAnswered = null;
   const created = timed(port, token, "POST", "/agents", agent("patient"));
   created.then((answer) => (createAnswered = answer.status), () => (createAnswered = "an error"));
-  await busy;
+  // The create reaches the held store, or answers before it does: then the test fails at once, saying so, never waits on a
+  // store the create did not reach.
+  const first = await Promise.race([busy.then(() => "busy"), created.then((answer) => answer, (error) => ({ status: "an error", body: String(error) }))]);
+  assert.ok(first === "busy", `the create answered before it reached the store: ${first.status} ${JSON.stringify(first.body)}`);
   // By order, not by a clock: the create waits on the store the test holds, and capabilities answers before it does.
   const capabilities = await timed(port, token, "GET", "/capabilities");
   assert.equal(createAnswered, null, `the create answered ${createAnswered} before GET /capabilities answered ${capabilities.status}: capabilities waited on the store`);
