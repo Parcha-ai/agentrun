@@ -88,6 +88,13 @@ export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly
   // Rounded off float noise only: a decision costs millionths of a dollar, and the row agrees with the run's cost.
   const usd = models.usd === null || spent === null ? null : Math.round((models.usd + spent) * 1e12) / 1e12;
   const base = at < 0 ? { ...decisions.at(-1)!, id: "decisions:usage", agent_label: null, text: null } : rows[at]!;
-  const summary = `Cost so far: ${usd === null ? "unknown" : usd === 0 ? "$0" : usd < 0.0001 ? "<$0.0001" : `$${usd.toFixed(4)}`} over ${plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}`;
-  return [...rest, { ...base, kind: "usage", summary, usage: { usd, requests: models.requests + decisions.length } }];
+  // While the total is unknown: the known charges' sum and how many have no price (costsofar/1), the model row's and the
+  // decisions' together; none when the model row says neither.
+  const modelsSoFar = models.usd !== null ? { known: models.usd, unpriced: 0 } : models.so_far_usd !== undefined && models.unpriced !== undefined ? { known: models.so_far_usd, unpriced: models.unpriced } : undefined;
+  const unpriced = (modelsSoFar?.unpriced ?? 0) + costs.filter((cost) => cost === null).length;
+  const soFar = usd === null && modelsSoFar && unpriced > 0 ? { so_far_usd: Math.round((modelsSoFar.known + costs.reduce<number>((a, b) => a + (b ?? 0), 0)) * 1e6) / 1e6, unpriced } : undefined;
+  const dollars = (n: number) => (n === 0 ? "$0" : n < 0.0001 ? "<$0.0001" : `$${n.toFixed(4)}`);
+  const said = usd !== null ? dollars(usd) : soFar ? `${dollars(soFar.so_far_usd)} known, ${soFar.unpriced} not priced,` : "unknown";
+  const summary = `Cost so far: ${said} over ${plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}`;
+  return [...rest, { ...base, kind: "usage", summary, usage: { usd, requests: models.requests + decisions.length, ...(soFar ?? {}) } }];
 }

@@ -605,7 +605,14 @@ const RUN_PLACE: Json = {
   description: "Where the run executes, as its start resolved it: the request's `runner`, else its revision's place, else runner. In a sandbox place the agent's read, write, edit and bash run in the box, which binds only the run's work/ and has no network and no key; its loop, its log and every key stay on the server.",
   "x-agentrun-serve": "place/1",
 };
+/** costsofar/1: a cost no one fully knows, said as what is known and how much is not, with no ceiling claimed. */
+const SO_FAR = {
+  so_far_usd: { type: "number", minimum: 0, description: "Set only while `usd` is null: the sum of the charges whose cost is known (model requests, a workflow's decisions, paid tool calls). Never the cost: the charges counted in `unpriced` are not in it, and nothing bounds them.", "x-agentrun-serve": "costsofar/1" },
+  unpriced: { type: "integer", minimum: 1, description: "Set only while `usd` is null: how many charges have no known cost (a model request cut, stopped, still pending or with no price; a decision whose cost is unknown; a paid tool call charged an unknown amount or cut).", "x-agentrun-serve": "costsofar/1" },
+};
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  Cost: SO_FAR,
+  TimelineUsage: SO_FAR,
   RunCreate: {
     place: { const: "runner", description: "Narrows the run's place to the runner, whatever its revision's: the run has no box, and no bash. Absent, the revision's place. No other place may be named: a request never widens a place.", "x-agentrun-serve": "place/1" },
   },
