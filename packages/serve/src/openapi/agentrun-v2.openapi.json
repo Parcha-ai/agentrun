@@ -3154,6 +3154,7 @@
         }
       },
       "Effort": {
+        "description": "How hard a run works. It sets the model's thinking level, and adds a short note on how to work right after the agent's instructions, on every harness: low answers directly, medium plans briefly and checks once, high plans each part, fills the gaps and reviews. A run started with none thinks at the host's level and gets no note.",
         "type": "string",
         "enum": [
           "low",
