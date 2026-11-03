@@ -16,7 +16,7 @@ import { DOOR_TOKEN_FILE, readJson, writeWhole } from "./files.js";
 /** The relay's address in the data directory: `{"url": "http://<loopback>:<port>"}`. */
 export const BOX_RELAY_FILE = ".box-relay";
 /** Where the relay listens: only this machine's runs reach it. */
-const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the relay listens on this machine's loopback only, for this machine's runs
+const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the relay listens on loopback only, for the runs of this machine
 /** What a run's Daytona provider sends as its key: never a key. The relay sends the server's in its place. */
 export const RELAYED_KEY = "relayed-by-the-server";
 /** The header that names the Daytona URL a relayed call is for. */
