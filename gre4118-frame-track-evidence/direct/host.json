@@ -1,0 +1,38 @@
+{
+  "label": "host",
+  "ffmpeg": "ffmpeg version 6.1.1-3ubuntu5+esm15 Copyright (c) 2000-2023 the FFmpeg developers",
+  "cases": [
+    {
+      "name": "with-tail",
+      "list": "file 'input/big.jpg'\nduration 1.000\nfile 'input/third.jpg'\nduration 1.000\nfile 'input/big.jpg'\nduration 1.000\nfile 'input/third.jpg'\nduration 1.000\nfile 'input/third.jpg'\n",
+      "probe": {
+        "programs": [],
+        "streams": [
+          {
+            "r_frame_rate": "10/1",
+            "nb_read_frames": "40"
+          }
+        ],
+        "format": {
+          "duration": "4.000000"
+        }
+      }
+    },
+    {
+      "name": "without-tail",
+      "list": "file 'input/big.jpg'\nduration 1.000\nfile 'input/third.jpg'\nduration 1.000\nfile 'input/big.jpg'\nduration 1.000\nfile 'input/third.jpg'\nduration 1.000\n",
+      "probe": {
+        "programs": [],
+        "streams": [
+          {
+            "r_frame_rate": "10/1",
+            "nb_read_frames": "30"
+          }
+        ],
+        "format": {
+          "duration": "3.000000"
+        }
+      }
+    }
+  ]
+}

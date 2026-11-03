@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-11-03T02:40:42.077506+00:00",
+  "checkedAt": "2026-11-03T03:07:17.058699+00:00",
   "data": {
     "repository": {
       "pullRequests": {
@@ -77,33 +77,9 @@
             "url": "https://github.com/Parcha-ai/agentrun/pull/1230"
           },
           {
-            "number": 1292,
-            "title": "feat(dsl, jev): decision nodes send images, receipts keep what the judge saw, and a collecting map ends one item on a failed decision",
-            "headRefOid": "6f01769ccc29a320c5c31da395cbb37c6e4f89b8",
-            "baseRefName": "main",
-            "reviewDecision": null,
-            "url": "https://github.com/Parcha-ai/agentrun/pull/1292"
-          },
-          {
-            "number": 1293,
-            "title": "feat(decisions, dsl, jev): OpenRouter's Decisions models answer decision nodes, and four-place probabilities are accepted",
-            "headRefOid": "6138eb168477d6fec15c30df42e6d4338eed4080",
-            "baseRefName": "decision-node-images",
-            "reviewDecision": null,
-            "url": "https://github.com/Parcha-ai/agentrun/pull/1293"
-          },
-          {
-            "number": 1294,
-            "title": "feat(serve, pi): workflows read documents, call one completion, judge images, and run code nodes when the server allows them",
-            "headRefOid": "47a5be93eb5c8f0860193badf5a63087a84740fa",
-            "baseRefName": "openrouter-decisions",
-            "reviewDecision": null,
-            "url": "https://github.com/Parcha-ai/agentrun/pull/1294"
-          },
-          {
             "number": 1312,
             "title": "feat(serve): an agent with learning on starts every run from what it has learned, on pi, Claude and Codex",
-            "headRefOid": "4ee961688deb8445a6c3e03eac94a7e5eacc57c3",
+            "headRefOid": "c1ff33f45cf783bef8cb145e4f686af143da8683",
             "baseRefName": "main",
             "reviewDecision": "REVIEW_REQUIRED",
             "url": "https://github.com/Parcha-ai/agentrun/pull/1312"
@@ -175,7 +151,7 @@
           {
             "number": 1394,
             "title": "feat(serve, console): capabilities name each harness's default model and the gateway's routing prefix; models.source holds the served values",
-            "headRefOid": "5c100765c7e71670aa02940623a1ab00676ea964",
+            "headRefOid": "b5a9401b02ff6a9dcaa5956d73fe5c9d61ded0ea",
             "baseRefName": "main",
             "reviewDecision": "REVIEW_REQUIRED",
             "url": "https://github.com/Parcha-ai/agentrun/pull/1394"
@@ -189,22 +165,6 @@
             "url": "https://github.com/Parcha-ai/agentrun/pull/1396"
           },
           {
-            "number": 1399,
-            "title": "docs(serve): the console's build is the root build's, and a webhook may reach your own machine or network",
-            "headRefOid": "c3da329e96fd6c0ffab5f2265a382f573a7654d8",
-            "baseRefName": "main",
-            "reviewDecision": "APPROVED",
-            "url": "https://github.com/Parcha-ai/agentrun/pull/1399"
-          },
-          {
-            "number": 1405,
-            "title": "build(serve): the server is published, its console and notices with it",
-            "headRefOid": "06868a04f1469a63f037135485ddb5e7f2673099",
-            "baseRefName": "main",
-            "reviewDecision": "APPROVED",
-            "url": "https://github.com/Parcha-ai/agentrun/pull/1405"
-          },
-          {
             "number": 1407,
             "title": "feat(serve): web search and fetch on every harness with only a model key, native first, one tool catalog",
             "headRefOid": "9fe79a8eccb2bc374be56757e626d90a5eb0d77e",
@@ -215,18 +175,10 @@
           {
             "number": 1408,
             "title": "feat(console): complete standalone AgentRun administration",
-            "headRefOid": "d9ff826df3195a2fb94530ad95d39186168341c8",
+            "headRefOid": "23bf2743349e38461601fd6e959d6801b99df46e",
             "baseRefName": "main",
             "reviewDecision": "REVIEW_REQUIRED",
             "url": "https://github.com/Parcha-ai/agentrun/pull/1408"
-          },
-          {
-            "number": 1409,
-            "title": "fix(serve): host-owned names are matched by identity",
-            "headRefOid": "765667c2011122d73be64c1e84998d0cca5096b6",
-            "baseRefName": "main",
-            "reviewDecision": "APPROVED",
-            "url": "https://github.com/Parcha-ai/agentrun/pull/1409"
           },
           {
             "number": 1410,
@@ -237,44 +189,36 @@
             "url": "https://github.com/Parcha-ai/agentrun/pull/1410"
           },
           {
-            "number": 1411,
-            "title": "ci: the pi compatibility check runs as five parallel jobs per pi version",
-            "headRefOid": "2d7dec5963235568c98461b70ea730c30fe8f595",
-            "baseRefName": "main",
-            "reviewDecision": "APPROVED",
-            "url": "https://github.com/Parcha-ai/agentrun/pull/1411"
-          },
-          {
-            "number": 1412,
-            "title": "ci: the merge queue runs the test shards on one Node version; pull requests and main run all three",
-            "headRefOid": "85484a2ea235bd38d3b9709b4c7f92f89a77079f",
-            "baseRefName": "main",
-            "reviewDecision": "APPROVED",
-            "url": "https://github.com/Parcha-ai/agentrun/pull/1412"
-          },
-          {
-            "number": 1413,
-            "title": "ci: npm retries registry requests, and npm ci runs once more on a network error only",
-            "headRefOid": "ad9af6ca1d9ace8e7d440e4ba8a7f4ac9414f200",
-            "baseRefName": "main",
-            "reviewDecision": "APPROVED",
-            "url": "https://github.com/Parcha-ai/agentrun/pull/1413"
-          },
-          {
             "number": 1414,
             "title": "fix(serve): a message sent while a stop is in flight waits for the stop to answer",
-            "headRefOid": "3263399ea1c911ed22f06feabb0938b7f7831951",
+            "headRefOid": "5c0a30c0b51ad996a494a151ca88af176530d26f",
             "baseRefName": "main",
-            "reviewDecision": null,
+            "reviewDecision": "REVIEW_REQUIRED",
             "url": "https://github.com/Parcha-ai/agentrun/pull/1414"
           },
           {
-            "number": 1415,
-            "title": "test: dsl's fractional poll wait on fake timers; scripted pids past any real pid",
-            "headRefOid": "41768714f4cd10dac6795f6237b41419c71dfbc7",
+            "number": 1416,
+            "title": "test(serve): a started server is waited for by its ready line or its exit, never a clock",
+            "headRefOid": "dfc1ff72844381ad480d3b9a3dc54a17f289a384",
             "baseRefName": "main",
-            "reviewDecision": "APPROVED",
-            "url": "https://github.com/Parcha-ai/agentrun/pull/1415"
+            "reviewDecision": null,
+            "url": "https://github.com/Parcha-ai/agentrun/pull/1416"
+          },
+          {
+            "number": 1417,
+            "title": "fix(dsl): a judge failing in a parallel fails its item, and a decision's deadline counts its image loads",
+            "headRefOid": "385db9ef2bab15edb34c65eff445cf159d07ae2c",
+            "baseRefName": "main",
+            "reviewDecision": null,
+            "url": "https://github.com/Parcha-ai/agentrun/pull/1417"
+          },
+          {
+            "number": 1418,
+            "title": "fix(serve): an import cuts the server's own keys out of what it keeps",
+            "headRefOid": "3ac39d653d25f0fbffc648e8018ae3c3943e88b7",
+            "baseRefName": "main",
+            "reviewDecision": null,
+            "url": "https://github.com/Parcha-ai/agentrun/pull/1418"
           }
         ],
         "pages": 1,
@@ -284,64 +228,7 @@
       },
       "mergeQueue": {
         "entries": {
-          "nodes": [
-            {
-              "state": "AWAITING_CHECKS",
-              "position": 1,
-              "pullRequest": {
-                "number": 1399,
-                "headRefOid": "c3da329e96fd6c0ffab5f2265a382f573a7654d8"
-              }
-            },
-            {
-              "state": "AWAITING_CHECKS",
-              "position": 2,
-              "pullRequest": {
-                "number": 1413,
-                "headRefOid": "ad9af6ca1d9ace8e7d440e4ba8a7f4ac9414f200"
-              }
-            },
-            {
-              "state": "MERGEABLE",
-              "position": 3,
-              "pullRequest": {
-                "number": 1411,
-                "headRefOid": "2d7dec5963235568c98461b70ea730c30fe8f595"
-              }
-            },
-            {
-              "state": "MERGEABLE",
-              "position": 4,
-              "pullRequest": {
-                "number": 1409,
-                "headRefOid": "765667c2011122d73be64c1e84998d0cca5096b6"
-              }
-            },
-            {
-              "state": "AWAITING_CHECKS",
-              "position": 5,
-              "pullRequest": {
-                "number": 1405,
-                "headRefOid": "06868a04f1469a63f037135485ddb5e7f2673099"
-              }
-            },
-            {
-              "state": "AWAITING_CHECKS",
-              "position": 6,
-              "pullRequest": {
-                "number": 1415,
-                "headRefOid": "41768714f4cd10dac6795f6237b41419c71dfbc7"
-              }
-            },
-            {
-              "state": "AWAITING_CHECKS",
-              "position": 7,
-              "pullRequest": {
-                "number": 1412,
-                "headRefOid": "85484a2ea235bd38d3b9709b4c7f92f89a77079f"
-              }
-            }
-          ],
+          "nodes": [],
           "pages": 1,
           "pageInfo": {
             "hasNextPage": false

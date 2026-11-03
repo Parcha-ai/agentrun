@@ -1,0 +1,23 @@
+import { pathToFileURL } from "node:url";
+const { exportFrameTracks } = await import(pathToFileURL(`${process.argv[2]}/packages/pi-browser/dist/recorder/index.js`).href);
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const [checkout, root, label] = process.argv.slice(2);
+const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const [small, big, third] = ["small", "big", "third"].map((name) => new Uint8Array(readFileSync(join(root, "input", `${name}.jpg`))));
+const blobs = new Map([small, big, third].map((bytes) => [sha(bytes), bytes]));
+const frame = (t, bytes, w = 800, h = 500) => ({ channel: "live", source: "browser", kind: "frame", t, gen: 1, conv: 3, data: { session: "s1", provider: "cdp", w, h, mime: "image/jpeg" }, blobs: [sha(bytes)] });
+const lines = [frame(1000, small, 640, 400), frame(2000, big), { channel: "live", source: "browser", kind: "frame.gap", t: 3000, gen: 1, conv: 3, data: { session: "s1", from: 2000, reason: "credential_on_page", detail: "field" } }, frame(4000, third)];
+const [track] = await exportFrameTracks({ lines, readBlob: (hash) => blobs.get(hash) ?? null, fps: 10, endAt: 5000 });
+mkdirSync(join(root, label), { recursive: true });
+const file = join(root, label, "track.webm");
+writeFileSync(file, track.blobs[track.files.webm]);
+const index = JSON.parse(Buffer.from(track.blobs[track.files.index]).toString("utf8"));
+writeFileSync(join(root, label, "index.json"), JSON.stringify(index, null, 2));
+const probe = JSON.parse(execFileSync("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height,nb_read_frames,r_frame_rate:format=format_name,duration", "-of", "json", file], { encoding: "utf8" }));
+const result = { label, node: process.version, ffmpeg: execFileSync("ffmpeg", ["-version"], { encoding: "utf8" }).split("\n")[0], inputSha256: [...blobs.keys()], expected: { from: 1000, to: 5000, fps: 10, frames: 40, durationSeconds: 4 }, index: { from: index.from, to: index.to, fps: index.fps }, probe };
+writeFileSync(join(root, label, "result.json"), JSON.stringify(result, null, 2));
+console.log(JSON.stringify(result));

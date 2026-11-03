@@ -116,278 +116,13 @@
           }
         }
       },
-      "p1399": {
-        "number": 1399,
-        "title": "docs(serve): the console's build is the root build's, and a webhook may reach your own machine or network",
-        "url": "https://github.com/Parcha-ai/agentrun/pull/1399",
-        "state": "OPEN",
-        "isDraft": false,
-        "headRefOid": "c3da329e96fd6c0ffab5f2265a382f573a7654d8",
-        "headRefName": "docs/serve-console-build-and-webhook-hosts",
-        "baseRefName": "main",
-        "reviewDecision": "APPROVED",
-        "files": {
-          "nodes": [
-            {
-              "path": "changes/serve-console-build-text.md"
-            },
-            {
-              "path": "packages/serve/README.md"
-            },
-            {
-              "path": "packages/serve/src/page.ts"
-            },
-            {
-              "path": "packages/serve/test/files.test.mjs"
-            }
-          ],
-          "pages": 1,
-          "pageInfo": {
-            "hasNextPage": false
-          }
-        }
-      },
-      "p1405": {
-        "number": 1405,
-        "title": "build(serve): the server is published, its console and notices with it",
-        "url": "https://github.com/Parcha-ai/agentrun/pull/1405",
-        "state": "OPEN",
-        "isDraft": false,
-        "headRefOid": "06868a04f1469a63f037135485ddb5e7f2673099",
-        "headRefName": "serve/server-published",
-        "baseRefName": "main",
-        "reviewDecision": "APPROVED",
-        "files": {
-          "nodes": [
-            {
-              "path": ".github/workflows/ci.yml"
-            },
-            {
-              "path": ".github/workflows/release.yml"
-            },
-            {
-              "path": "README.md"
-            },
-            {
-              "path": "apps/console/third-party-notices.mjs"
-            },
-            {
-              "path": "apps/console/vite.config.ts"
-            },
-            {
-              "path": "changes/serve-published.md"
-            },
-            {
-              "path": "docs/releasing.md"
-            },
-            {
-              "path": "packages/decisions/README.md"
-            },
-            {
-              "path": "packages/decisions/package.json"
-            },
-            {
-              "path": "packages/serve/NOTICE"
-            },
-            {
-              "path": "packages/serve/README.md"
-            },
-            {
-              "path": "packages/serve/package.json"
-            },
-            {
-              "path": "packages/serve/scripts/copy-page.mjs"
-            },
-            {
-              "path": "scripts/build-console.mjs"
-            },
-            {
-              "path": "scripts/console-notices.test.mjs"
-            },
-            {
-              "path": "scripts/release-preflight.test.mjs"
-            },
-            {
-              "path": "scripts/stranger/agentrun-serve.json"
-            },
-            {
-              "path": "scripts/verify-packages.mjs"
-            }
-          ],
-          "pages": 1,
-          "pageInfo": {
-            "hasNextPage": false
-          }
-        }
-      },
-      "p1409": {
-        "number": 1409,
-        "title": "fix(serve): host-owned names are matched by identity",
-        "url": "https://github.com/Parcha-ai/agentrun/pull/1409",
-        "state": "OPEN",
-        "isDraft": false,
-        "headRefOid": "765667c2011122d73be64c1e84998d0cca5096b6",
-        "headRefName": "serve/home-host-owned-identity",
-        "baseRefName": "main",
-        "reviewDecision": "APPROVED",
-        "files": {
-          "nodes": [
-            {
-              "path": "changes/serve-home-host-owned-identity.md"
-            },
-            {
-              "path": "packages/serve/README.md"
-            },
-            {
-              "path": "packages/serve/src/home-path.ts"
-            },
-            {
-              "path": "packages/serve/src/openapi.ts"
-            },
-            {
-              "path": "packages/serve/src/server.ts"
-            },
-            {
-              "path": "packages/serve/test/home-path.test.mjs"
-            },
-            {
-              "path": "packages/serve/test/home.test.mjs"
-            }
-          ],
-          "pages": 1,
-          "pageInfo": {
-            "hasNextPage": false
-          }
-        }
-      },
-      "p1411": {
-        "number": 1411,
-        "title": "ci: the pi compatibility check runs as five parallel jobs per pi version",
-        "url": "https://github.com/Parcha-ai/agentrun/pull/1411",
-        "state": "OPEN",
-        "isDraft": false,
-        "headRefOid": "2d7dec5963235568c98461b70ea730c30fe8f595",
-        "headRefName": "ci/pi-legs-parallel",
-        "baseRefName": "main",
-        "reviewDecision": "APPROVED",
-        "files": {
-          "nodes": [
-            {
-              "path": ".github/workflows/ci.yml"
-            },
-            {
-              "path": "changes/pi-legs-five-jobs.md"
-            },
-            {
-              "path": "changes/pi-legs-split-and-required.md"
-            },
-            {
-              "path": "scripts/pi-leg.mjs"
-            }
-          ],
-          "pages": 1,
-          "pageInfo": {
-            "hasNextPage": false
-          }
-        }
-      },
-      "p1412": {
-        "number": 1412,
-        "title": "ci: the merge queue runs the test shards on one Node version; pull requests and main run all three",
-        "url": "https://github.com/Parcha-ai/agentrun/pull/1412",
-        "state": "OPEN",
-        "isDraft": false,
-        "headRefOid": "85484a2ea235bd38d3b9709b4c7f92f89a77079f",
-        "headRefName": "ci/queue-one-node",
-        "baseRefName": "main",
-        "reviewDecision": "APPROVED",
-        "files": {
-          "nodes": [
-            {
-              "path": ".github/workflows/ci.yml"
-            },
-            {
-              "path": "changes/ci-queue-one-node.md"
-            }
-          ],
-          "pages": 1,
-          "pageInfo": {
-            "hasNextPage": false
-          }
-        }
-      },
-      "p1413": {
-        "number": 1413,
-        "title": "ci: npm retries registry requests, and npm ci runs once more on a network error only",
-        "url": "https://github.com/Parcha-ai/agentrun/pull/1413",
-        "state": "OPEN",
-        "isDraft": false,
-        "headRefOid": "ad9af6ca1d9ace8e7d440e4ba8a7f4ac9414f200",
-        "headRefName": "ci/npm-fetch-retries",
-        "baseRefName": "main",
-        "reviewDecision": "APPROVED",
-        "files": {
-          "nodes": [
-            {
-              "path": ".github/workflows/ci.yml"
-            },
-            {
-              "path": "changes/ci-npm-fetch-retries.md"
-            },
-            {
-              "path": "scripts/build-console.mjs"
-            },
-            {
-              "path": "scripts/build-console.test.mjs"
-            },
-            {
-              "path": "scripts/npm-ci-retry.mjs"
-            },
-            {
-              "path": "scripts/npm-ci-retry.test.mjs"
-            }
-          ],
-          "pages": 1,
-          "pageInfo": {
-            "hasNextPage": false
-          }
-        }
-      },
-      "p1415": {
-        "number": 1415,
-        "title": "test: dsl's fractional poll wait on fake timers; scripted pids past any real pid",
-        "url": "https://github.com/Parcha-ai/agentrun/pull/1415",
-        "state": "OPEN",
-        "isDraft": false,
-        "headRefOid": "41768714f4cd10dac6795f6237b41419c71dfbc7",
-        "headRefName": "test/clock-and-fake-pid-flakes",
-        "baseRefName": "main",
-        "reviewDecision": "APPROVED",
-        "files": {
-          "nodes": [
-            {
-              "path": "changes/dsl-poll-wait-and-scripted-pid-tests.md"
-            },
-            {
-              "path": "packages/dsl/test/recovery-long-deadlines.test.mjs"
-            },
-            {
-              "path": "packages/pi-durable-disk/test/commands.test.ts"
-            }
-          ],
-          "pages": 1,
-          "pageInfo": {
-            "hasNextPage": false
-          }
-        }
-      },
       "p1408": {
         "number": 1408,
         "title": "feat(console): complete standalone AgentRun administration",
         "url": "https://github.com/Parcha-ai/agentrun/pull/1408",
         "state": "OPEN",
         "isDraft": false,
-        "headRefOid": "d9ff826df3195a2fb94530ad95d39186168341c8",
+        "headRefOid": "23bf2743349e38461601fd6e959d6801b99df46e",
         "headRefName": "codex/gre-4118-standalone-console",
         "baseRefName": "main",
         "reviewDecision": "REVIEW_REQUIRED",
@@ -571,6 +306,9 @@
               "path": "apps/console/tailwind.config.ts"
             },
             {
+              "path": "apps/console/third-party-notices.mjs"
+            },
+            {
               "path": "apps/console/tsconfig.library.json"
             },
             {
@@ -622,6 +360,9 @@
               "path": "packages/serve/test/openapi.test.mjs"
             },
             {
+              "path": "packages/serve/test/revisions.test.mjs"
+            },
+            {
               "path": "packages/serve/test/runs.test.mjs"
             },
             {
@@ -635,6 +376,9 @@
             },
             {
               "path": "scripts/console-boundary.test.mjs"
+            },
+            {
+              "path": "scripts/console-notices.test.mjs"
             },
             {
               "path": "scripts/export-source.mjs"

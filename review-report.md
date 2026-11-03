@@ -1,22 +1,22 @@
-PR #1408 has zero unresolved threads at `d9ff826df3195a2fb94530ad95d39186168341c8`, while current-head review-clean remains pending. Greptile’s latest 5/5 explicitly reviews `3573f4a6`, not this head.
+PR #1408 has zero unresolved reviewer requests at `23bf2743349e38461601fd6e959d6801b99df46e`. Current-head review-clean is pending because the only Greptile 5/5 explicitly reviews the historical `3573f4a6` commit.
 
 | Field | Value |
 |---|---|
 | Repository / PR | `Parcha-ai/agentrun#1408` |
 | Iterations | 2 of max 3 |
 | Threads found (per reviewer) | Greptile 5; Devin 0; humans 0 |
-| Resolved this run | 0 in this read-only audit; all 5 previously resolved threads independently verified resolved |
+| Resolved this run | 0 in this read-only audit; all 5 prior resolutions independently verified |
 | Replied, left open for a human | 0 |
 | Remaining | 0 across inline threads, review bodies and issue comments |
-| Final Greptile score | Pending for current head `d9ff826df3195a2fb94530ad95d39186168341c8`; prior 5/5 at `3573f4a6` is stale |
-| Stop reason | Current-head automated review pending; bounded read-only audit complete, no additional manual trigger authorized |
+| Final Greptile score | Pending for current `23bf2743349e38461601fd6e959d6801b99df46e`; historical 5/5 at `3573f4a6` is stale |
+| Stop reason | Bounded read-only audit complete; current-head automated review and terminal CI pending |
 
-The fully paginated audit at `2026-11-03T02:42:56.467957+00:00` read all 5 review threads and nested comments, all 7 reviews and all 3 issue comments. Every connection exhausted its pages. No new human, review-body or summary-only request exists.
+Full pagination at `2026-11-03T03:09:07.296011+00:00` read all 5 inline threads and every nested comment, all 7 reviews and all 3 issue comments. There is no new human, review-body or summary-only change request. Every connection exhausted its pages.
 
-The [Greptile summary](https://github.com/Parcha-ai/agentrun/pull/1408#issuecomment-6592483255) was last updated `2026-11-03T01:36:45Z` and explicitly links the prior commit. No Greptile check exists on the current head. Both permitted manual requests were already used; no trigger or API mutation was sent.
+The [Greptile summary](https://github.com/Parcha-ai/agentrun/pull/1408#issuecomment-6592483255) was last edited `2026-11-03T01:36:45Z` and links `3573f4a6`. No current-head Greptile check exists. Both authorized manual triggers have already been used; no extra review request was sent.
 
-Exact-head CI at this observation: **32 successful, 32 running, zero failed checks**. The checks are still running, so no terminal CI verdict is claimed. The root’s corrected full check is also in progress. Local source proof reported by root: all 400 console tests and typecheck pass on this head. Earlier 01970/12fc native/browser/container receipts remain historical until the merged artifact is rebuilt and verified.
+Exact-head CI was read from every workflow-run/job page as well as every check-run page. At `2026-11-03T03:09:09.224977+00:00`, [Package checks](https://github.com/Parcha-ai/agentrun/actions/runs/41570207587) has **7 successful jobs, 64 running jobs, 0 queued jobs and 0 failed jobs**. This is a progress snapshot, not a terminal CI verdict. The previous d9ff durable failures were the exact-key summary assertion mismatch already fixed in `9f37cc9d`, now included; those failed receipts remain historical and are not attributed to this head.
 
-Current main is `bc18a59f7d7275726ec42cd70d4adca96140493d`, already contained by the candidate and unchanged at the final stack snapshot. All seven queued heads combine cleanly before this candidate; appending the candidate has the four packaging conflicts from open #1405. Approved-only #1377 conflicts with main before this candidate enters the stack. #1321 is no longer approved/queued. The current App/README merge preserves naming, provider/capability/session restrictions, native uploads and availability metadata.
+Current main `0ca81bce2d7cf7db398080efe2427d296a552a4d` is included and unchanged at final readback. Candidate/main is clean; the merge queue is empty. Approved-only #1377 has genuine conflicts with main before this candidate enters the trial. Prior #1400/#1405 conflicts are resolved through ordinary main merges.
 
-The publisher has refreshed the PR body for this merged head: integrated main/native fixes and 400 console tests are recorded, with prior proof heads explicitly scoped and current live/full checks pending. This audit made no source, build, PR, review, dependency or lifecycle changes.
+The root’s current build/regenerated contract passed before this audit; the root is refreshing final source-export/full-check/live evidence. Earlier native/browser/container results remain scoped to their recorded heads. This audit makes no new runtime, paid-model, desktop-launch or release claim. It changed no source, index, head, review, dependency or external application.

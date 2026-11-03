@@ -1,8 +1,8 @@
 {
-  "commit": "d9ff826df3195a2fb94530ad95d39186168341c8",
-  "tag": "gre4118-console-proof:d9ff826d-ccee69d4",
-  "container": "gre4118-console-proof-ccee69d4",
-  "volume": "gre4118-console-proof-ccee69d4-data",
+  "commit": "23bf2743349e38461601fd6e959d6801b99df46e",
+  "tag": "gre4118-console-proof:23bf2743-e1d6fb73",
+  "container": "gre4118-console-proof-e1d6fb73",
+  "volume": "gre4118-console-proof-e1d6fb73-data",
   "checks": [
     {
       "name": "loopback-only publication and isolated data",
@@ -10,11 +10,11 @@
       "binding": [
         {
           "HostIp": "127.0.0.1",
-          "HostPort": "32832"
+          "HostPort": "32833"
         }
       ],
       "imageUser": "node",
-      "dataVolume": "gre4118-console-proof-ccee69d4-data"
+      "dataVolume": "gre4118-console-proof-e1d6fb73-data"
     },
     {
       "name": "health",
@@ -38,7 +38,7 @@
             "code": "unauthenticated",
             "message": "this route needs Authorization: Bearer <the token in the data directory>",
             "retryable": false,
-            "request_id": "req_d84802b085f481bc"
+            "request_id": "req_348ce707904676a9"
           }
         }
       },
@@ -127,7 +127,7 @@
       "startStatus": 202,
       "agentId": "container-proof",
       "revision": "bd1e004e5ba9f1ff00143fe063b5121d8db825dbafd27c0d6b212e90acff9910",
-      "runId": "01a19f4b-8e91-755e-9185-5a536c1d39f0",
+      "runId": "01a19f62-2cca-7500-be7c-7308f7f875ab",
       "timelineFinal": true,
       "status": "completed",
       "result": {
@@ -169,7 +169,7 @@
       "revision": "bd1e004e5ba9f1ff00143fe063b5121d8db825dbafd27c0d6b212e90acff9910"
     },
     {
-      "runId": "01a19f4b-8e91-755e-9185-5a536c1d39f0"
+      "runId": "01a19f62-2cca-7500-be7c-7308f7f875ab"
     }
   ],
   "cleanup": {
@@ -179,15 +179,15 @@
     "containerAbsentReadback": true,
     "volumeAbsentReadback": true,
     "imagePresentReadback": true,
-    "imageRetained": "gre4118-console-proof:d9ff826d-ccee69d4"
+    "imageRetained": "gre4118-console-proof:23bf2743-e1d6fb73"
   },
   "image": {
-    "id": "sha256:41cee42115ea7ea972ebb9d6bbc9e368dfa6b28e6b6e9808075c9045b3ac8cd0",
-    "sizeBytes": 388818745,
+    "id": "sha256:6a12444a5ad9d75bce5b920e18befb02b017813abe55947b557d03c6a568b6ed",
+    "sizeBytes": 388833763,
     "user": "node",
-    "created": "2026-11-03T02:43:54.606679146Z"
+    "created": "2026-11-03T03:08:49.260612362Z"
   },
-  "containerId": "9842a80aadf37f1bde95ebecbf4636f67e6a0bc09c65387dd195955452de4da5",
-  "origin": "http://127.0.0.1:32832",
+  "containerId": "802f9fa1dcb3c7d3a6a3c46714c947bf4a37fc384553c3e3fde41249c3bf3a2e",
+  "origin": "http://127.0.0.1:32833",
   "status": "PASS"
 }

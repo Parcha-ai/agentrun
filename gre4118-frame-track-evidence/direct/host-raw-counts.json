@@ -1,0 +1,10 @@
+[
+  {
+    "tail": "with-tail",
+    "frames": 40
+  },
+  {
+    "tail": "without-tail",
+    "frames": 30
+  }
+]

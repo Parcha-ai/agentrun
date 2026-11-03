@@ -1,0 +1,8 @@
+{
+  "container": "gre4118-frame-track-eb08937c",
+  "removedReadback": true,
+  "network": "none",
+  "checkout": "read-only",
+  "sourceChanged": false,
+  "image": "sha256:6ad01f2cc3009a227831792982e055053428f739a4c6e9b1ce7ffd337249f4d8"
+}

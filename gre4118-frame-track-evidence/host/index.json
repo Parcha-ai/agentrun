@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "session": "s1",
+  "fps": 10,
+  "from": 1000,
+  "to": 5000,
+  "width": 800,
+  "height": 500,
+  "codec": "vp9",
+  "frames": [
+    {
+      "t": 1000,
+      "ms": 0,
+      "sha256": "56f688915a977aa4f454c9ea24733540cc1b625068ff7878c2da04bd0ccb8dc6",
+      "w": 640,
+      "h": 400
+    },
+    {
+      "t": 2000,
+      "ms": 1000,
+      "sha256": "178ee1d6459fb10b371ad6f2f45daa0dfde644293b21d1d709e76286c4587d1e",
+      "w": 800,
+      "h": 500
+    },
+    {
+      "t": 4000,
+      "ms": 3000,
+      "sha256": "8bfd9ada4b4cef91ad0c67844bcaa3de419aef6764a1dea5565b3cec1bd35281",
+      "w": 800,
+      "h": 500
+    }
+  ],
+  "gaps": [
+    {
+      "from": 3000,
+      "reason": "credential_on_page",
+      "detail": "field",
+      "to": 4000
+    }
+  ]
+}

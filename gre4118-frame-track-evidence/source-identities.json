@@ -1,0 +1,14 @@
+{
+  "95cdc5b9": {
+    "packages/pi-browser/src/recorder/track.ts": "271c3ace587948a04b68538304597131d8a3f938",
+    "packages/pi-browser/test/frame_track.test.mjs": "e24de3829394134083d33abebfefd36b85fcfcee"
+  },
+  "bc18a59f": {
+    "packages/pi-browser/src/recorder/track.ts": "271c3ace587948a04b68538304597131d8a3f938",
+    "packages/pi-browser/test/frame_track.test.mjs": "e24de3829394134083d33abebfefd36b85fcfcee"
+  },
+  "d9ff826d": {
+    "packages/pi-browser/src/recorder/track.ts": "271c3ace587948a04b68538304597131d8a3f938",
+    "packages/pi-browser/test/frame_track.test.mjs": "e24de3829394134083d33abebfefd36b85fcfcee"
+  }
+}

@@ -1,0 +1,39 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 456B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/4] FROM docker.io/library/node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6
+#4 resolve docker.io/library/node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6 0.0s done
+#4 CACHED
+
+#5 [2/4] RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ghostscript poppler-utils ffmpeg git openssl python3 procps >/dev/null && rm -rf /var/lib/apt/lists/*
+#5 DONE 21.5s
+
+#6 [3/4] RUN command -v ps && ps --version
+#6 0.186 /usr/bin/ps
+#6 0.187 ps from procps-ng 4.0.4
+#6 DONE 0.2s
+
+#7 [4/4] RUN npm install --global --ignore-scripts npm@11.21.0 >/dev/null
+#7 DONE 4.3s
+
+#8 exporting to image
+#8 exporting layers
+#8 exporting layers 16.5s done
+#8 exporting manifest sha256:e41ad219fa65827046607a01629ff9111fed0b3452dfda2e4be550b7c1edb222 done
+#8 exporting config sha256:c51d2a748557c1cc4d5bde72f8efa7d3f42c01593ff5d09414f4cf554d8b37cc done
+#8 exporting attestation manifest sha256:f67f0d15b15fb8b049b64deb90d0ea5a41c98963f4351f756feb61858cb9eb3a done
+#8 exporting manifest list sha256:6ad01f2cc3009a227831792982e055053428f739a4c6e9b1ce7ffd337249f4d8 done
+#8 naming to docker.io/library/gre4118-check-tools:node22 done
+#8 unpacking to docker.io/library/gre4118-check-tools:node22
+#8 unpacking to docker.io/library/gre4118-check-tools:node22 2.4s done
+#8 DONE 18.9s

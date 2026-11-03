@@ -1,0 +1,39 @@
+{
+  "label": "image",
+  "node": "v22.23.2",
+  "ffmpeg": "ffmpeg version 7.1.5-0+deb13u1 Copyright (c) 2000-2026 the FFmpeg developers",
+  "inputSha256": [
+    "56f688915a977aa4f454c9ea24733540cc1b625068ff7878c2da04bd0ccb8dc6",
+    "178ee1d6459fb10b371ad6f2f45daa0dfde644293b21d1d709e76286c4587d1e",
+    "8bfd9ada4b4cef91ad0c67844bcaa3de419aef6764a1dea5565b3cec1bd35281"
+  ],
+  "expected": {
+    "from": 1000,
+    "to": 5000,
+    "fps": 10,
+    "frames": 40,
+    "durationSeconds": 4
+  },
+  "index": {
+    "from": 1000,
+    "to": 5000,
+    "fps": 10
+  },
+  "probe": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "vp9",
+        "width": 800,
+        "height": 500,
+        "r_frame_rate": "10/1",
+        "nb_read_frames": "50"
+      }
+    ],
+    "format": {
+      "format_name": "matroska,webm",
+      "duration": "5.000000"
+    }
+  }
+}

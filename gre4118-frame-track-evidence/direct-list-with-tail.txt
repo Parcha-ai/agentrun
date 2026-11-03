@@ -1,0 +1,9 @@
+file 'input/big.jpg'
+duration 1.000
+file 'input/third.jpg'
+duration 1.000
+file 'input/big.jpg'
+duration 1.000
+file 'input/third.jpg'
+duration 1.000
+file 'input/third.jpg'

@@ -1,0 +1,40 @@
+#format: frame checksums
+#version: 2
+#hash: MD5
+#software: Lavf60.16.100
+#tb 0: 1/10
+#media_type 0: video
+#codec_id 0: rawvideo
+#dimensions 0: 800x500
+#sar 0: 1/1
+#stream#, dts,        pts, duration,     size, hash
+0,          0,          0,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,          1,          1,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,          2,          2,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,          3,          3,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,          4,          4,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,          5,          5,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,          6,          6,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,          7,          7,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,          8,          8,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,          9,          9,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,         10,         10,        1,   600000, 9df0295153242c0b8f790b5911e65c09
+0,         11,         11,        1,   600000, 9df0295153242c0b8f790b5911e65c09
+0,         12,         12,        1,   600000, 9df0295153242c0b8f790b5911e65c09
+0,         13,         13,        1,   600000, 9df0295153242c0b8f790b5911e65c09
+0,         14,         14,        1,   600000, 9df0295153242c0b8f790b5911e65c09
+0,         15,         15,        1,   600000, 9df0295153242c0b8f790b5911e65c09
+0,         16,         16,        1,   600000, 9df0295153242c0b8f790b5911e65c09
+0,         17,         17,        1,   600000, 9df0295153242c0b8f790b5911e65c09
+0,         18,         18,        1,   600000, 9df0295153242c0b8f790b5911e65c09
+0,         19,         19,        1,   600000, 9df0295153242c0b8f790b5911e65c09
+0,         20,         20,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,         21,         21,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,         22,         22,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,         23,         23,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,         24,         24,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,         25,         25,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,         26,         26,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,         27,         27,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,         28,         28,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34
+0,         29,         29,        1,   600000, 47cea58b6df4ec4a46b8dbc4d0e4fc34

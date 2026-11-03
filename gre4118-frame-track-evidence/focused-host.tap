@@ -1,0 +1,16 @@
+TAP version 13
+# Subtest: a session's frames become a WebM of the recording's own timeline and an index that names every frame and gap
+ok 1 - a session's frames become a WebM of the recording's own timeline and an index that names every frame and gap
+  ---
+  duration_ms: 573.859843
+  type: 'test'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 680.57297
