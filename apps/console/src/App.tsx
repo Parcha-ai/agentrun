@@ -294,7 +294,11 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   useEffect(() => {
     if (!tick || where.section !== "mission") return;
     const n = ++missionAsked.current;
-    readMission().then(([s, r]) => { if (n === missionAsked.current) { setMission(missionFrom(s, r.runs)); setMissionError(null); } }).catch(() => {});
+    // The newest read clears what an older one in flight would have: that one no longer lands.
+    readMission()
+      .then(([s, r]) => { if (n === missionAsked.current) { setMission(missionFrom(s, r.runs)); setMissionError(null); } })
+      .catch(() => {})
+      .finally(() => { if (n === missionAsked.current) setMissionReading(false); });
   }, [tick]); // eslint-disable-line react-hooks/exhaustive-deps
   const revsAsked = useRef(0);
   useEffect(() => {
@@ -354,7 +358,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
-            onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); } }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
+            onMore={cursor ? () => { const n = ++asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); } }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
     </Shell>
   );
 }

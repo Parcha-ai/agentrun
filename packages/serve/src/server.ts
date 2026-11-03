@@ -32,7 +32,7 @@ import { fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, toolCostOf } from "./runs.js";
+import { type CarryBackRetry, importingNow, type Run, Runs, STATUSES, type Status, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
@@ -810,7 +810,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const limit = asked === null ? PAGE_ROWS : Number(asked);
     // An imported run whose transcript the import at setup has still to write: no rows yet, and not final, so a client
     // reads again soon, without waiting on a page that cannot change; the next read finds the transcript once it lands.
-    const importing = importState?.state === "running" && runs.awaitingTranscript(run);
+    const transcript = runs.transcriptOf(run);
+    const importing = importingNow(transcript.awaiting, transcript.landed, importState?.state === "running");
     const pageOf = async (from: number, wait: number) => {
       const page = await runs.page(run, from, importing ? 0 : wait, limit);
       return { run_id: run.id, status: page.status, state: page.state, reset: page.reset, rows: page.rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final: page.final && !importing, cost: runs.cost(run), ...(importing ? { transcript: "importing" as const } : {}) };

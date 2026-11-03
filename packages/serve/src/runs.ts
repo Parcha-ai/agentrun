@@ -475,6 +475,11 @@ export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   }
 }
 
+/** Whether a timeline read of a run says its transcript is importing (no rows yet, not final, read again soon): a run read
+ *  before its transcript was there, while the import runs, or once the transcript has landed though this read of the
+ *  run is older than it, so a page is never final with none of the transcript's rows. */
+export const importingNow = (awaiting: boolean, landed: boolean, importRunning: boolean): boolean => awaiting && (landed || importRunning);
+
 export class Runs {
   private readonly runs = new Map<string, Run>();
   /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
@@ -619,9 +624,10 @@ export class Runs {
     return url?.protocol === "http:" && isLoopback(url.hostname) ? url.origin : undefined;
   }
 
-  /** Whether `run` is an imported run whose transcript is not there yet. */
-  awaitingTranscript(run: Run): boolean {
-    return run.awaitingTranscript === true && !existsSync(this.storeFile(run));
+  /** An imported run read before its transcript was there (`awaiting`), and whether the transcript is there now
+   *  (`landed`): such a read is stale, and the next one reads the run again. */
+  transcriptOf(run: Run): { awaiting: boolean; landed: boolean } {
+    return { awaiting: run.awaitingTranscript === true, landed: existsSync(this.storeFile(run)) };
   }
 
   private storeFile(run: Run): string {
