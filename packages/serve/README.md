@@ -372,12 +372,14 @@ on your own machine or network works. Two kinds of message are POSTed to it: `ru
 need its person (`input_required`: an `ask_person` question, or a stopped turn) and `run.ended` when it ends
 (completed, failed or cancelled, once carried back).
 
-A run's end and its `run.ended` are one durable step. The server chooses the end's time once and saves it with the run
-(`serve.json`) before it writes the end anywhere; the agent store's row (`ended_at`) and the message's `webhook-id`
-both come from it. `run.ended` is queued only once the agent store has the end, so a receiver that reads the run back
-on its message (`GET /v2/runs/{id}`) reads it ended; while the store refuses the end (a full disk, a busy store),
-nothing is sent, until a later try of the write or the next server stores it. A server killed between the two queues
-nothing, and the next one queues it at its start, under the same `webhook-id`, for an end within the last day.
+A run's end and its `run.ended` are one durable step. The server chooses the end's time once and gives it to the agent
+store, so the row's `ended_at` and the message's `webhook-id` name one time. `run.ended` is queued only once the agent
+store has the end, so a receiver that reads the run back on its message (`GET /v2/runs/{id}`) reads it ended; while the
+store refuses the end (a full disk, a busy store), nothing is sent, until a later try of the write or the next server
+stores it. It is recorded with the run (`serve.json`) once the outbox holds it on disk, and a server that starts queues
+any end of the last day that record does not name, under the same `webhook-id`: one lost to a kill, or a record lost to
+a crash of the machine. A run is continued only once its end's `run.ended` is in the outbox (`503` meanwhile), so a
+continued run's next end is its own, under its own id.
 
 ```json
 { "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",

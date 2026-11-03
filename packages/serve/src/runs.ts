@@ -109,10 +109,9 @@ type RunMeta = {
   /** What its newest process took its thinking level from (app.ts's thinkingOf), as its environment had them: `effort`,
    *  the run's effort, and `host`, the host's AGENT_THINKING. Absent for a process an older server started. */
   launch_thinking?: { effort?: string; host?: string };
-  /** The run's end as the server chose it, before it wrote the end anywhere: its time, which the agent store's row and
-   *  its run.ended both name, and `queued` once that notice is in the webhook outbox on disk. A server that starts after
-   *  a kill queues one that is not (recover). */
-  end_notice?: { ended_at: string; queued?: true };
+  /** Its end's run.ended, recorded once the webhook outbox holds it on disk, by the end's time (the agent store's row's).
+   *  A start queues an end in the store that this does not name (recover), and a continuation waits for it (reopen). */
+  end_notice?: { ended_at: string; queued: true };
   /** Where the run's learning stands (learning.ts); absent for a run that does not learn. */
   learning?: Learning;
 };
@@ -498,7 +497,8 @@ export class Runs {
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
-      ...(isObject(stored?.end_notice) && typeof stored.end_notice.ended_at === "string" ? { end_notice: { ended_at: stored.end_notice.ended_at, ...(stored.end_notice.queued === true ? { queued: true as const } : {}) } } : {}),
+      // An earlier end's record, kept only while the run is ended: a running run's next end is its own.
+      ...(row.state !== "running" && isObject(stored?.end_notice) && typeof stored.end_notice.ended_at === "string" && stored.end_notice.queued === true ? { end_notice: { ended_at: stored.end_notice.ended_at, queued: true as const } } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
     };
     // A server that went down while it copied what the run's agent learned saved the run's input and no learning, and
@@ -749,12 +749,13 @@ export class Runs {
     }
   }
 
-  /** An ended run whose run.ended is recorded as chosen but not as queued (its server was killed between the store's end
-   *  and the outbox write): queued now, under the same time, so the same webhook-id. */
+  /** An ended run whose run.ended is not recorded as queued for its end (its server was killed between the store's end
+   *  and the outbox write, or the record never reached the disk): queued now, under the store's end time, so the same
+   *  webhook-id; the outbox, or the receiver, drops one it already has. */
   private async endNotice(row: RunRow): Promise<void> {
     const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<RunMeta> | null;
     const end = meta?.end_notice;
-    if (!end || end.queued || end.ended_at !== row.endedAt) return;
+    if (end?.queued === true && end.ended_at === row.endedAt) return;
     const run = await this.adopt(row);
     // Adopted as it stands, which notices nothing: from `other`, its end is a moment again.
     run.moment = "other";
@@ -779,7 +780,7 @@ export class Runs {
       // Recorded only once the outbox holds it on disk (or nothing is to be sent): a record of a notice the outbox lost
       // (its write failed, then a kill) would keep the next server from queuing it again.
       const end = run.meta.end_notice;
-      if (!waits && end && end.ended_at === at && !end.queued && (emitted === "queued" || emitted === "off")) {
+      if (!waits && at && !(end?.queued && end.ended_at === at) && (emitted === "queued" || emitted === "off")) {
         run.meta.end_notice = { ended_at: at, queued: true };
         this.recordMeta(run);
       }
@@ -1159,10 +1160,9 @@ export class Runs {
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
-    // Its end's time, chosen once and saved first (persist's saveMeta) with the notice it is to give: the store's row, a
-    // retry of the write, a server that settles it after a kill, and its run.ended all name this one time.
-    const endedAt = (run.endedAt ??= run.meta.end_notice?.ended_at ?? new Date().toISOString());
-    if (run.meta.end_notice?.ended_at !== endedAt) run.meta.end_notice = { ended_at: endedAt };
+    // Its end's time, chosen once and given to the store: the row, a retry of the write and its run.ended all name this one
+    // time. A server that settles the run after a kill chooses its own: nothing was sent before the store had an end.
+    const endedAt = (run.endedAt ??= new Date().toISOString());
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}), endedAt } as const;
     const counted = run.metrics;
     const end = (metrics?: StoredMetrics) => {
@@ -1478,6 +1478,12 @@ export class Runs {
       const now = this.store.readRun(run.id);
       if (now?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
       if (now?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+      // Its end's run.ended in the outbox before the run opens again, or not opened: once the row runs, nothing queues it.
+      if (this.options.notify && now?.endedAt && !(run.meta.end_notice?.queued && run.meta.end_notice.ended_at === now.endedAt)) {
+        run.moment = "other";
+        this.mark(run);
+        if (!(run.meta.end_notice?.queued && run.meta.end_notice.ended_at === now.endedAt)) throw new ApiError("unavailable", "The run's end is still being announced to its webhook; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+      }
       try {
         this.store.reopenRun(run.id);
       } catch (error) {
@@ -1486,8 +1492,6 @@ export class Runs {
       run.outcome = undefined;
       run.settled = false;
       run.endedAt = undefined;
-      // Its next end is chosen anew, with its own notice.
-      delete run.meta.end_notice;
       run.error = undefined;
       delete run.meta.error;
       run.relaunches = 0;
