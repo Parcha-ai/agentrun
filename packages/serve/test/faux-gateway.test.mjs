@@ -56,3 +56,38 @@ test("the gateway answers Responses, Messages and Chat Completions with their us
     ["GET", "/v1/models", "", undefined, undefined, undefined, null],
   ]);
 });
+
+test("the gateway's other mode of each API: Responses and Messages whole, Chat Completions streamed, each with its text and usage", async (t) => {
+  const gw = await startFauxGateway({ text: "hello", usage: { input: 1000, output: 100 } });
+  t.after(() => gw.close());
+  const post = (path, body) => fetch(`${gw.url}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  // Responses, whole: one JSON response, completed, with the text and the usage.
+  const responses = await post("/v1/responses", { model: "openai/gpt-x", input: [] });
+  assert.equal(responses.status, 200);
+  assert.match(responses.headers.get("content-type"), /application\/json/);
+  const r = await responses.json();
+  assert.equal(r.status, "completed");
+  assert.equal(r.output[0].content[0].text, "hello");
+  assert.deepEqual([r.usage.input_tokens, r.usage.output_tokens], [1000, 100]);
+
+  // Messages, whole: one JSON message that ended its turn, with the text and the usage.
+  const messages = await post("/v1/messages", { model: "claude-x", messages: [] });
+  assert.equal(messages.status, 200);
+  assert.match(messages.headers.get("content-type"), /application\/json/);
+  const m = await messages.json();
+  assert.deepEqual([m.type, m.stop_reason, m.content[0].text], ["message", "end_turn", "hello"]);
+  assert.deepEqual([m.usage.input_tokens, m.usage.output_tokens], [1000, 100]);
+
+  // Chat Completions, streamed: the text, then a stopped chunk with the usage, then [DONE].
+  const chat = await post("/v1/chat/completions", { model: "openai/gpt-y", stream: true, messages: [] });
+  assert.equal(chat.status, 200);
+  assert.match(chat.headers.get("content-type"), /text\/event-stream/);
+  const c = events(await chat.text());
+  assert.equal(c.events.map((e) => e.choices[0].delta.content ?? "").join(""), "hello");
+  assert.equal(c.events.at(-1).choices[0].finish_reason, "stop");
+  assert.deepEqual([c.events.at(-1).usage.prompt_tokens, c.events.at(-1).usage.completion_tokens], [1000, 100]);
+  assert.ok(c.done, "a Chat Completions stream ends [DONE]");
+
+  assert.deepEqual(gw.requests.map((q) => [q.path, q.body?.stream ?? false]), [["/v1/responses", false], ["/v1/messages", false], ["/v1/chat/completions", true]]);
+});

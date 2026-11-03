@@ -388,7 +388,7 @@ describe("App, the agents' names", () => {
 });
 
 describe("App, the playground when its agents can't be read", () => {
-  it("says the server's refusal as code and message", async () => {
+  it("says the server's refusal in words, with its own message", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     vi.stubGlobal("fetch", async (url: string) => {
       const path = new URL(url, "http://serve.test").pathname;
@@ -403,6 +403,6 @@ describe("App, the playground when its agents can't be read", () => {
     act(() => root!.render(createElement(App)));
     const end = Date.now() + 4000;
     while (!host.textContent?.includes("could not be read") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
-    expect(host.querySelector('[role="alert"] p')?.textContent).toBe("The agents could not be read: invalid_cursor: that cursor is not one this server gave");
+    expect(host.querySelector('[role="alert"] p')?.textContent).toBe("The agents could not be read: The server turned the request down. Its words say why: change what they name, then try again. (that cursor is not one this server gave)");
   });
 });
