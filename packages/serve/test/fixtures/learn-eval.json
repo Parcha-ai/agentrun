@@ -5,7 +5,7 @@
    "id": "keep-shopify-path-from-trial",
    "label": "keep",
    "kind": "lesson",
-   "source": "qa-pre/data/runs/01a1a038 (pi, gpt-6-luna; luna's grader dropped it, From content)",
+   "source": "QA pre-walk run 01a1a038 (pi, gpt-6-luna; luna's grader dropped it, From content)",
    "instructions": "You find a web shop's policy pages. Use web_fetch to check a page before you name it. Reply with the page's URL and one line on what it says.",
    "transcript": [
     {
@@ -81,7 +81,7 @@
    "id": "keep-shopify-path-first-try",
    "label": "keep",
    "kind": "lesson",
-   "source": "qa-pre/data/runs/01a1a03c (claude-agent, claude-sonnet-5-5; merged)",
+   "source": "QA pre-walk run 01a1a03c (claude-agent, claude-sonnet-5-5; merged)",
    "instructions": "You find a web shop's policy pages. Use web_fetch to check a page before you name it. Reply with the page's URL and one line on what it says.",
    "transcript": [
     {
@@ -125,7 +125,7 @@
    "id": "keep-user-prefers-official-page",
    "label": "keep",
    "kind": "preference",
-   "source": "qa-pre/data/runs/01a1a037 (pi, gpt-6-luna; a preference the user stated; luna's grader dropped it, From content)",
+   "source": "QA pre-walk run 01a1a037 (pi, gpt-6-luna; a preference the user stated; luna's grader dropped it, From content)",
    "instructions": "You find a web shop's policy pages. Use web_fetch to check a page before you name it. Reply with the page's URL and one line on what it says.",
    "transcript": [
     {
@@ -169,7 +169,7 @@
    "id": "keep-shopify-paths-disagree",
    "label": "keep",
    "kind": "lesson",
-   "source": "qa-pre/data-w/runs/01a1a121 (claude-agent, claude-sonnet-5-5; merged)",
+   "source": "QA pre-walk run 01a1a121 (claude-agent, claude-sonnet-5-5; merged)",
    "instructions": "You find a web shop's policy pages. Use web_fetch to check a page before you name it. Reply with the page's URL and one line on what it says.",
    "transcript": [
     {
@@ -213,7 +213,7 @@
    "id": "keep-supersede-better-path",
    "label": "keep",
    "kind": "lesson",
-   "source": "QA6 learn/c2 (claude-agent, claude-sonnet-5-5; supersedes run 1's note; merged)",
+   "source": "QA pass 6, run c2 (claude-agent, claude-sonnet-5-5; supersedes run 1's note; merged)",
    "instructions": "You find a web shop's refund policy. Use web_fetch to check a page before you name it. Reply with the page's URL, the return window, and who pays return shipping.",
    "transcript": [
     {
@@ -294,7 +294,7 @@
    "id": "keep-web-fetch-links-field",
    "label": "keep",
    "kind": "tool-quirk",
-   "source": "written, after the web_fetch result shape in tonight's runs",
+   "source": "written, after the web_fetch result shape in the QA runs of 2026-11-03",
    "instructions": "You find a web shop's policy pages. Use web_fetch to check a page before you name it. Reply with the page's URL and one line on what it says.",
    "transcript": [
     {
@@ -418,7 +418,7 @@
    "id": "keep-remember-mid-task",
    "label": "keep",
    "kind": "remember",
-   "source": "written, after qa-pre/data-c/runs/01a1a0b2: the user asks mid-task to remember something, the model writes it to .learning/ during the task and says saved",
+   "source": "written, after QA pre-walk run 01a1a0b2: the user asks mid-task to remember something, the model writes it to .learning/ during the task and says saved",
    "instructions": "You find a web shop's policy pages. Use web_fetch to check a page before you name it. Reply with the page's URL and one line on what it says.",
    "transcript": [
     {
@@ -563,7 +563,7 @@
    "id": "drop-one-shop-url",
    "label": "drop",
    "kind": "one-shop",
-   "source": "qa-pre/data-c/runs/01a1a0b1 (pi, gpt-6-luna; dropped by the grader)",
+   "source": "QA pre-walk run 01a1a0b1 (pi, gpt-6-luna; dropped by the grader)",
    "instructions": "You find a web shop's policy pages. Use web_fetch to check a page before you name it. Reply with the page's URL and one line on what it says.",
    "transcript": [
     {
@@ -640,7 +640,7 @@
    "id": "drop-one-shop-facts",
    "label": "drop",
    "kind": "task-specific",
-   "source": "QA6 learn/p2 (pi, gpt-6-luna; dropped by the grader)",
+   "source": "QA pass 6, run p2 (pi, gpt-6-luna; dropped by the grader)",
    "instructions": "You find a web shop's refund policy. Use web_fetch to check a page before you name it. Reply with the page's URL, the return window, and who pays return shipping.",
    "transcript": [
     {
@@ -716,7 +716,7 @@
    "id": "drop-tool-failure",
    "label": "drop",
    "kind": "failure",
-   "source": "QA6 learn/c3 (claude-agent, claude-sonnet-5-5; the page was too large for the CLI; dropped by the grader)",
+   "source": "QA pass 6, run c3 (claude-agent, claude-sonnet-5-5; the page was too large for the CLI; dropped by the grader)",
    "instructions": "You find a web shop's refund policy. Use web_fetch to check a page before you name it. Reply with the page's URL, the return window, and who pays return shipping.",
    "transcript": [
     {
@@ -1094,7 +1094,7 @@
    "id": "drop-nothing-to-keep",
    "label": "drop",
    "kind": "empty",
-   "source": "qa-pre/data/runs/01a1a036 (pi, gpt-6-luna; the home page linked the policy; the run kept nothing)",
+   "source": "QA pre-walk run 01a1a036 (pi, gpt-6-luna; the home page linked the policy; the run kept nothing)",
    "instructions": "You find a web shop's policy pages. Use web_fetch to check a page before you name it. Reply with the page's URL and one line on what it says.",
    "transcript": [
     {

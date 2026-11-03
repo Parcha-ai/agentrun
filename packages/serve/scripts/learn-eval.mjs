@@ -27,14 +27,15 @@ const { values: opts } = parseArgs({ options: {
   only: { type: "string" }, concurrency: { type: "string", default: "4" }, label: { type: "string", default: "eval" },
 } });
 if (!opts.out) throw new Error("--out DIR is where the rows go");
+// Read before serve's modules load: its secrets module takes the keys out of this process's environment as it loads.
+const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENT_MODEL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL_PRICE", "AGENT_MODEL_STRONG_PRICE", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"];
+const ENV = { PATH: process.env.PATH, ...Object.fromEntries(MODEL_VARS.flatMap((name) => (process.env[name] ? [[name, process.env[name]]] : []))) };
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const mod = (path) => import(pathToFileURL(join(root, path)).href);
 const [{ judgeProposal }, { runModels, thinkingOf }, adapters, { authContextOf }, learn, { builtinModels }] = await Promise.all([
   mod("packages/serve/dist/grade.js"), mod("packages/serve/dist/model.js"), mod("packages/serve/dist/adapters.js"), mod("packages/serve/dist/secrets.js"),
   mod("packages/learn/dist/index.js"), mod("node_modules/@earendil-works/pi-ai/dist/providers/all.js"),
 ]);
-const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENT_MODEL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL_PRICE", "AGENT_MODEL_STRONG_PRICE", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"];
-const ENV = { PATH: process.env.PATH, ...Object.fromEntries(MODEL_VARS.flatMap((name) => (process.env[name] ? [[name, process.env[name]]] : []))) };
 const PROFILES = { default: { harness: "pi", model: undefined }, claude: { harness: "claude-agent", model: opts["claude-model"] } };
 
 /** A profile's model, picked as the server picks an agent's own (grade.ts), for a completion with tools. */
