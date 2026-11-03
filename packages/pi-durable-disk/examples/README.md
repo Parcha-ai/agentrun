@@ -47,7 +47,7 @@ older than that, it stops at its first import. To run one from an install, in an
 
 ```sh
 npm init -y && npm pkg set type=module
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 mkdir audit-across-crashes && cd audit-across-crashes
 # copy the example's files in (main.ts and any helper beside it, not its README or its test), from a checkout or from GitHub
 node main.ts
@@ -63,7 +63,7 @@ The `ExperimentalWarning` about SQLite on stderr is Node's own and harmless.
 The Since cells are checked, not just written: the `stranger` CI job (`scripts/stranger.mjs pi-durable-disk`, spec
 `scripts/stranger/pi-durable-disk.json`) installs each keyless example's Since from npm the way the section above says,
 runs it and expects its `ok:` line; on macOS it installs 0.1.0-beta.14 at the least (the spec's `platformFloors`), and the
-macOS CI job runs the same walk on a Mac. An example whose version is above the registry's `beta` tag is skipped, with the
+macOS CI job runs the same walk on a Mac. An example whose version is above the registry's `latest` tag is skipped, with the
 reason printed; `node scripts/stranger.mjs pi-durable-disk --examples` runs just this check.
 
 ## Writing an example

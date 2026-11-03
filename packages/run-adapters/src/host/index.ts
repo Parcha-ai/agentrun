@@ -16,3 +16,4 @@ export { BoxError } from "./box.js";
 export type { Box, BoxedChild, BoxErrorCode, BoxRecord, BoxRecorder, BoxSpec, Isolation, Reaped } from "./box.js";
 export { boxSlot } from "./box-slot.js";
 export type { BoxSlot, BoxSlotState, BoxStart, SlotChild } from "./box-slot.js";
+export { checkedOnce, sha256OfFile } from "./pinned-binary.js";

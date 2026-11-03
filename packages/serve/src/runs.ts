@@ -183,6 +183,10 @@ export type Run = {
   cancel: boolean;
   /** Set when the run has answered or failed and is being let go; the outcome it gets. */
   finishing?: Status;
+  /** A stop on its way: from its mark to its abort's answer, or a server's abort of a saved stop's turn that outlived the
+   *  server before it (finishStop). The abort withdraws every input queued behind that turn, so a message meanwhile waits
+   *  for it (stopAnswered). */
+  stopping?: true;
   endedAt?: string;
   outcome?: Status;
   error?: RunError;
@@ -494,6 +498,10 @@ export class Runs {
   /** Why this host keeps no learning folder, said once. */
   private learningOff?: string;
   constructor(private readonly options: RunsOptions) {}
+
+  /** A test's seam (startServe's `beforeAbort`): awaited by a stop between its mark and its abort, so a test can hold a
+   *  stop in flight there. */
+  beforeAbort?: (runId: string) => Promise<void> | void;
 
   private get store() {
     return this.options.agents.store;
@@ -897,7 +905,12 @@ export class Runs {
         this.take(run, rows, keepCommitted(run.live, rows, reducer.isLive));
         if (event === "snapshot" && run.finishStop) {
           run.finishStop = false;
-          if (run.working && stopped(run) && run.submitted === 0) void this.abortTurn(run);
+          if (run.working && stopped(run) && run.submitted === 0) {
+            // The run reads stopped already, so a message sent now would go in behind the turn this abort ends, and be
+            // withdrawn with it: it waits for the abort, as for a stop in flight.
+            run.stopping = true;
+            void this.abortTurn(run).catch(() => undefined).finally(() => (run.stopping = undefined));
+          }
         }
       }
     }
@@ -1492,16 +1505,26 @@ export class Runs {
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
-    // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
-    // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
-    if (run.finishing && !run.outcome) await this.endWritten(run);
-    if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
+    let steers: boolean;
+    // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
+    // to the count below nothing awaits, so no stop can begin in between.
+    do {
+      // A stop in flight is answered first. Sent between its mark and its abort, a message would read the run stopped, go
+      // to the turn the abort is cutting, and be dropped with it, its row never coming.
+      if (run.stopping) await this.stopAnswered(run);
+      // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
+      // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
+      if (run.finishing && !run.outcome) await this.endWritten(run);
+      if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
+      // Its harness, read from the agent store at the run's first message.
+      steers = await this.steers(run);
+    } while (run.stopping);
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
     // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
     // the same run, which the contract calls follow_up, never a steer it does not do.
     const working = status === "queued" || (status === "working" && state === "working");
-    const mode = working ? ((await this.steers(run)) ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
+    const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
     run.submitted++;
     this.refresh(run);
@@ -1513,6 +1536,13 @@ export class Runs {
       throw error;
     }
     return { mode, messageId };
+  }
+
+  /** Waits, up to a request's deadline, for a stop in flight to answer. */
+  private async stopAnswered(run: Run): Promise<void> {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.stopping; await sleep(50)) {
+      if (Date.now() > deadline) throw new ApiError("unavailable", "The run is being stopped; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+    }
   }
 
   /** Waits, up to a request's deadline, for the end of a run that is finishing to be written. */
@@ -1576,12 +1606,23 @@ export class Runs {
     if (run.kind !== "workflow") await this.caughtUp(run);
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
+    run.stopping = true;
+    try {
+      return await this.stopTurn(run);
+    } finally {
+      run.stopping = undefined;
+    }
+  }
+
+  /** stop()'s mark and abort, once it took the stop. */
+  private async stopTurn(run: Run): Promise<boolean> {
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.
     const before = { stopped_at: run.meta.stopped_at, stopped_after: run.meta.stopped_after };
     delete run.meta.stopped_at;
     delete run.meta.stopped_after;
     Object.assign(run.meta, stopMark(run.rows));
     await this.saveMeta(run).catch((error: Error) => warn(run.id, `its stop is not saved, so a restart will not keep it: ${error.message}`));
+    await this.beforeAbort?.(run.id);
     const answer = await this.toDoor(run, "/abort", {}).catch(() => null);
     if (!answer || answer.status >= 400) {
       if (before.stopped_at === undefined) delete run.meta.stopped_at;

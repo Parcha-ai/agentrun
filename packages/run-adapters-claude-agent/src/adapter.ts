@@ -10,13 +10,13 @@
 // The Agent SDK is the host's: an exact optional peer dependency (`CLAUDE_AGENT_SDK_VERSION`), never shipped here.
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { hostHeaderProblems, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
@@ -160,17 +160,31 @@ export function claudeAgentCliPins(): { sha256?: string; version: string } {
   return sha256 ? { sha256, version: CLAUDE_CODE_VERSION } : { version: CLAUDE_CODE_VERSION };
 }
 
-/** The CLI at `path`, checked against the pins: its path, or the typed reason it is not the pinned build. */
+/** The CLI at `path`, checked against the pins: its path, or the typed reason it is not the pinned build. Its sha256 is
+ *  read a chunk at a time, never the whole CLI in memory, and a check that passed holds for this process while the CLI
+ *  stays the same file, unchanged (the kernel's checkedOnce): a host that checks it for each model it resolves, and a
+ *  run's process that makes its adapter, check it once. */
 export function verifyClaudeAgentCli(path: string | undefined, pins = claudeAgentCliPins()): { path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled {
   if (!path) return new ClaudeAgentNotInstalled(`no CLI of @anthropic-ai/claude-agent-sdk ${CLAUDE_AGENT_SDK_VERSION} for ${platformSuffix()} (its platform package, an optional dependency npm installs with it), and no cliPath`, CLAUDE_AGENT_SDK_INSTALL);
-  let bytes: Buffer;
+  // Hashed a chunk at a time, and once per CLI in this process while it stays the same file (the kernel's pinned-binary).
+  return checkedOnce(path, JSON.stringify(pins), () => checkCli(path, pins), (result) => !(result instanceof Error));
+}
+
+/** The CLI at `path` against `pins`' sha256 and version. */
+function checkCli(path: string, pins: { sha256?: string; version: string }): { path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled {
   try {
-    bytes = readFileSync(path);
+    if (!statSync(path).isFile()) throw new Error("not a file");
+    accessSync(path, constants.R_OK);
   } catch {
     return new ClaudeAgentNotInstalled(`no CLI at ${path}`);
   }
   if (pins.sha256) {
-    const found = createHash("sha256").update(bytes).digest("hex");
+    let found: string;
+    try {
+      found = sha256OfFile(path);
+    } catch {
+      return new ClaudeAgentNotInstalled(`no CLI at ${path}`);
+    }
     if (found !== pins.sha256) return new ClaudeAgentPinMismatch("cli_sha256", pins.sha256, found, path);
   }
   let version: string;
