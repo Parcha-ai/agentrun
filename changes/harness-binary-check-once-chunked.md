@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-kernel, @parcha/agentrun-harness-codex, @parcha/agentrun-harness-claude, @parcha/agentrun-serve
+kind: fix
+---
+Checking a harness's binary against its pins no longer reads the whole binary into memory, and runs once per binary in a process. `verifyCodexBinary` (the codex binary, 294 MiB) and `verifyClaudeAgentCli` (claude-agent's CLI, 231 MiB) each read the file whole to hash it, and agentrun-serve checked each again for every model it resolved: twice per harness in its start's probe, then once per save and once per run check, and a run's own process once more when it made its adapter. One start probe peaked at 395 MiB of memory, 675 MiB with a default model, past a 512 MiB container's limit. The hash now reads 1 MiB at a time, and a check that passed is kept for the process while the binary stays the same file (its path, device, inode, size, and modification and change times, with the pins); touched or replaced, it is checked again, and a failed check is never kept. The kernel's `@parcha/agentrun-kernel/host` exports both parts, `sha256OfFile` and `checkedOnce`.

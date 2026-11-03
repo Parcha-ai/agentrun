@@ -17,9 +17,9 @@ package has `import` entries and no `require` entry.
 ## Install
 
 ```sh
-pi install npm:@parcha/pi-browser@beta    # the pi coding agent's extension
-npm install @parcha/pi-browser@beta       # the library: providers, driver, durable adapter
-npm install @parcha/pi-browser@beta @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0 @earendil-works/pi-ai@1.3.0   # a pi-durable host: its peers, pinned to 1.3.0 (unpinned, npm takes 1.4.0 and stops with ERESOLVE)
+pi install npm:@parcha/pi-browser@latest    # the pi coding agent's extension
+npm install @parcha/pi-browser@latest       # the library: providers, driver, durable adapter
+npm install @parcha/pi-browser@latest @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0 @earendil-works/pi-ai@1.3.0   # a pi-durable host: its peers, pinned to 1.3.0 (unpinned, npm takes 1.4.0 and stops with ERESOLVE)
 ```
 
 `pi install` loads the extension. A Chrome starts on the model's first browser call, and not before. pi 1.4 is not supported yet; a later release widens the range.
@@ -268,8 +268,12 @@ pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version a
   budget, the repeat guard, evidence and decision-hook types, usage and prices, `find` (chunking and ranking a long page),
   `browser_downloads`, the opt-in request observer, and the provider interface. The public-host guard under the coding
   agent's HTTP backup is here too: `publicFetch(url, { lookup?, fetchImpl?, signal?, maxBytes? })` and
-  `readPage(html, url)`, with `isPrivateAddress` and `pinnedLookup`. Outside Node's builtins and undici it loads only
-  node-html-parser and node-html-markdown, on demand, for `browser_read`'s page text and frame scan and for `readPage`.
+  `readPage(html, url, { deadlineMs?, signal? })`, with `isPrivateAddress` and `pinnedLookup`. `readPage` never holds
+  the event loop: it drops a page's script, style, svg, noscript and template blocks, cuts what is left at
+  `READ_MAX_CHARS` (`truncated`, with the page's length in `html_chars`), and converts it to markdown in a worker thread
+  within `READ_DEADLINE_MS`, falling back to the page's plain text (`converted: "text"`). Outside Node's builtins and
+  undici it loads only node-html-parser and node-html-markdown, on demand, for `browser_read`'s page text and frame scan
+  and for `readPage`.
 - `/durable`: the pi-durable adapter. `createBrowserExtension` is session custody in the run's own store (a create is
   committed before the provider is called, release is a durable task, reconcile runs at run open). `createWebExtension` is
   `web_fetch` and `web_search`.

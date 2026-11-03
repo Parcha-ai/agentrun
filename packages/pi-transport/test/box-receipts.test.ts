@@ -337,13 +337,31 @@ registerHandsCases(
 	"hands on local boxes, every box on a receipts ledger",
 	async (use) => {
 		const directory = mkdtempSync(join(tmpdir(), "pi-transport-receipts-hands-"));
-		const ledger = boxReceipts({ prices: PRICES, write: (receipt) => handsWritten.push(receipt) });
+		const written: BoxReceipt[] = [];
+		const ledger = boxReceipts({
+			prices: PRICES,
+			write: (receipt) => {
+				written.push(receipt);
+				handsWritten.push(receipt);
+			},
+		});
+		// Every box the pool had made, counted under the ledger.
+		const local = localBoxes({ root: join(directory, "boxes") });
+		const made: string[] = [];
+		const counted: BoxProvider = {
+			name: local.name,
+			async create(spec, createContext) {
+				const created = await local.create(spec, createContext);
+				if (created.ok) made.push(created.value.id);
+				return created;
+			},
+			attach: (id, attachContext) => local.attach(id, attachContext),
+			list: (labels, listContext) => local.list(labels, listContext),
+		};
 		try {
-			await use({
-				provider: () => ledger.wrap(localBoxes({ root: join(directory, "boxes") })),
-				environment: { provider: "local" },
-				directory,
-			});
+			await use({ provider: () => ledger.wrap(counted), environment: { provider: "local" }, directory });
+			// The case has ended every box it made: each has one receipt, under its own label.
+			expect(written.map(({ box }) => box).sort()).toEqual(made.map((id) => ledger.labelOf(local.name, id)).sort());
 		} finally {
 			rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 		}
