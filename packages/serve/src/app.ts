@@ -29,6 +29,7 @@ import { type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, w
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { promptOf, systemOf } from "./skills.js";
+import { EnvironmentLine, environmentLine } from "./environment.js";
 import { isObject } from "./validate.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
@@ -76,6 +77,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced, refused: marked.refused });
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   const registry = createRegistry();
+  // An agentic run's system prompt starts with the date and the workspace (environment.ts). On pi it is a section,
+  // installed first so it comes before every other extension's and the instructions.
+  if (revision.kind === "agentic") registry.install(EnvironmentLine);
   registry.install(CodingTools);
   // What the run's agent learned goes into its instructions, the one path for every harness (learning.ts).
   const learned = revision.kind === "agentic" ? await withLearned(where.root, revision.body.instructions) : "";
@@ -85,7 +89,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts).
     const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
     const { system: instructions, native } = await systemOf(learned, Object.keys(revision.body.skills), where.work, check);
-    const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
+    // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
+    // opened with that day.
+    const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions].filter(Boolean), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
     // The harness's own files (its homes, its state) go in a private directory beside the workspace, never in it. It works
