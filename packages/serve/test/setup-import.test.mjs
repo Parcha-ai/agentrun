@@ -3,7 +3,7 @@
 // arrive, and the signed-in owner can read how the import stands.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
@@ -336,4 +336,75 @@ process.on("SIGTERM", () => void serve.close().then(() => process.exit(0)));
   const state = async () => (await call(port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
   for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
   assert.deepEqual(await state(), { state: "done", agents: 1, runs: 2, skipped: 0 }, err);
+});
+
+/** Every file under `dir` that holds `value`, by its path under `dir`. */
+const holding = (dir, value) => {
+  const found = [];
+  const walk = (at) => {
+    for (const name of readdirSync(at)) {
+      const path = join(at, name);
+      if (statSync(path).isDirectory()) walk(path);
+      else if (readFileSync(path).includes(value)) found.push(path.slice(dir.length + 1));
+    }
+  };
+  walk(dir);
+  return found;
+};
+
+test("under its launcher, setup's import cuts the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
+  // The value of a key the server holds (the launcher hands it over a pipe; no environment has it).
+  const KEY = "not-a-secret-key-4f9e2a7c1d8b6e3a";
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const site = join(home, "code", "acme-site");
+  mkdirSync(join(site, ".claude", "skills", "deploy"), { recursive: true });
+  writeFileSync(join(site, "CLAUDE.md"), `Deploy with ${KEY}.\n`);
+  writeFileSync(join(site, ".claude", "skills", "deploy", "SKILL.md"), `---\nname: deploy\n---\nThe key is ${KEY}.\n`);
+  claudeSession(home, site, 1, { output: `README.md (env ${KEY})`, env: { OPENAI_API_KEY: KEY } });
+  const [data, config, temp] = [join(root, "agents"), join(root, "config"), join(root, "tmp")];
+  mkdirSync(temp, { recursive: true });
+  const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
+  const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config, OPENAI_API_KEY: KEY } });
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  t.after(async () => {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {}
+    await exited;
+  });
+  let [out, err] = ["", ""];
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (const deadline = Date.now() + 30_000; !/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.test(out); ) {
+    assert.ok(Date.now() < deadline, `the server started: ${out}${err}`);
+    await sleep(50);
+  }
+  const port = Number(/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.exec(out)[1]);
+  const made = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin: `http://127.0.0.1:${port}` }, body: { password: PASSWORD, import: true } });
+  assert.deepEqual([made.status, made.json], [201, { signed_in: true, importing: true }], made.text);
+  const state = async () => (await call(port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
+  for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
+  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 1, skipped: 0 }, err);
+  assert.deepEqual(holding(data, KEY), [], "no file under the data directory holds the key");
+});
+
+test("setup counts sessions as the import takes them: a thread resumed in a second file of the same id is one session", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const site = join(home, "code", "acme-site");
+  mkdirSync(site, { recursive: true });
+  claudeSession(home, site, 1);
+  const first = codexSession(home, site, 2);
+  // The thread resumed in a file of its own under the same id.
+  const resumed = codexSession(home, site, 3);
+  const records = readFileSync(resumed, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line)).map((r) => (r.type === "session_meta" ? { ...r, payload: { ...r.payload, id: JSON.parse(readFileSync(first, "utf8").split("\n")[0]).payload.id } } : r));
+  writeFileSync(resumed, `${records.map((r) => JSON.stringify(r)).join("\n")}\n`);
+  const old = new Date(Date.now() - 60 * 60_000);
+  for (const file of [first, resumed]) utimesSync(file, old, old);
+  const server = await serve(t, { accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } });
+  const read = () => call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  let found = await read();
+  for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
+  assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 2 }], "the Claude Code session and the thread, not its two files");
 });

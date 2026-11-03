@@ -8,19 +8,25 @@ import { parentPort, workerData } from "node:worker_threads";
 import { openStore } from "@parcha/pi-durable-agent";
 import { planImport, runImport } from "./import.js";
 
-export type ImportTask = { task: "plan" | "import"; data: string; home: string; temp?: string };
+/** `secrets`: the server's own, which the import cuts out of everything it writes; never put in an environment. */
+export type ImportTask = { task: "plan" | "import"; data: string; home: string; temp?: string; secrets?: Record<string, string> };
 export type ImportAnswer = { projects: number; sessions: number } | { took: { agents: number; runs: number; skipped: number } } | { stopped: true };
 
-const { task, data, home, temp } = workerData as ImportTask;
+const { task, data, home, temp, secrets = {} } = workerData as ImportTask;
 const stop = new AbortController();
 parentPort!.on("message", (message) => void (message === "stop" && stop.abort()));
 // The port does not keep the thread alive: the task does, and the thread ends with it.
 parentPort!.unref();
-const options = { home, ...(temp ? { temp } : {}), env: process.env, signal: stop.signal };
+// The values to cut: this thread's environment (the server's, which holds none of its secrets) with the server's secrets as
+// properties that do not enumerate, as secrets.ts's withSecrets gives them: read by name, left out of a spread or a spawn.
+const env: NodeJS.ProcessEnv = { ...process.env };
+for (const [name, value] of Object.entries(secrets)) Object.defineProperty(env, name, { value, enumerable: false });
+const options = { home, ...(temp ? { temp } : {}), env, signal: stop.signal };
 const answer = async (): Promise<ImportAnswer> => {
   if (task === "plan") {
     const plan = await planImport(options);
-    return stop.signal.aborted ? { stopped: true } : { projects: plan.projects.length, sessions: plan.projects.reduce((n, p) => n + p.sessions.length, 0) };
+    // Sessions as the import takes them: a session written in several files (a resumed thread) is one run.
+    return stop.signal.aborted ? { stopped: true } : { projects: plan.projects.length, sessions: plan.projects.reduce((n, p) => n + new Set(p.sessions.map((s) => `${s.source}:${s.id}`)).size, 0) };
   }
   // A connection of its own, which may wait for the store: only this thread waits.
   const store = openStore(data);
