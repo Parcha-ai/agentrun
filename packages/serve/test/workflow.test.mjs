@@ -114,7 +114,7 @@ test("a run loads only the tiers its revision uses: a fast-only workflow runs on
   const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_FAST: "m-fast" };
   const fast = await runModels(gateway, undefined, ["fast"]);
   assert.deepEqual([...fast.byTier], [["fast", { provider: "agent-model", modelId: "m-fast" }]]);
-  await assert.rejects(runModels(gateway, undefined, ["default"]), /no default/);
+  await assert.rejects(runModels(gateway, undefined, ["default"]), /No model yet: name the gateway's model in AGENT_MODEL/);
   const saved = Object.fromEntries(["AGENT_MODEL_BASE_URL", "AGENT_MODEL_FAST", "AGENT_MODEL"].map((name) => [name, process.env[name]]));
   t.after(() => { for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : (process.env[name] = value); });
   delete process.env.AGENT_MODEL;

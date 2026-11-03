@@ -58,7 +58,7 @@ test("the host's model counts for a harness only when that harness runs it: clau
 test("with no model here, the refusal says what a person does: a model key in Settings or where AgentRun starts, no operator flags", async () => {
   const none = "No model yet: add a model key in Settings → Model keys, or set ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY where AgentRun starts.";
   assert.equal((await chooseModel({}, undefined)).why, none);
-  assert.equal((await chooseModel({}, undefined, "fast")).why, none.replace("No model yet:", "No model yet for this workflow's fast steps:"));
+  assert.equal((await chooseModel({}, undefined, "fast")).why, none.replace("No model yet:", "No model yet for this workflow's fast tier:"));
   assert.equal((await chooseModel({}, "openai/gpt-5")).why, "No OpenAI key here for openai/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts.");
   assert.equal(claudeModel({}, undefined).why, "No model yet for claude-agent: add an Anthropic key in Settings → Model keys, or set ANTHROPIC_API_KEY where AgentRun starts.");
   for (const why of [(await chooseModel({}, undefined)).why, (await chooseModel({}, "openai/gpt-5")).why, claudeModel({}, undefined).why]) assert.doesNotMatch(why, /--faux|AGENT_MODEL|agentrun-serve/);
