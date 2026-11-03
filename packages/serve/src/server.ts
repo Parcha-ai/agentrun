@@ -692,7 +692,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!profile.output) throw new ApiError("not_found", `This run's profile (${profile.name}) gave it no output: a run names one with output.`);
     const { type, file } = profile.output;
     if (file === undefined) return { run_id: run.id, type, path: null, url: null };
-    const html = TYPES[extname(file).slice(1).toLowerCase()]?.startsWith("text/html");
+    const html = typeOf(file)?.startsWith("text/html");
     return { run_id: run.id, type, path: file, url: `/v2/runs/${run.id}/files/${file.split("/").map(encodeURIComponent).join("/")}${html ? "?download=1" : ""}` };
   }
 
