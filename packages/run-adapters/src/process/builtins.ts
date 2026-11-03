@@ -135,7 +135,7 @@ export class BuiltinCalls {
    * failed): the drive is halted, and the hook must refuse the call.
    */
   begin(call: BuiltinCall): Promise<BuiltinStart> {
-    if (!call.callId) return Promise.reject(new TypeError(`agentrun-adapters: a built-in ${call.name} call has no call id`));
+    if (!call.callId) return Promise.reject(new TypeError(`agentrun-kernel: a built-in ${call.name} call has no call id`));
     const first = this.begun.get(call.callId);
     if (first) return this.again(call.callId, first);
     const start = this.beginOnce(call);
@@ -155,7 +155,7 @@ export class BuiltinCalls {
     const known = this.ctx.state().effects.get(toolKey(callId));
     if (known?.status === 'completed') return { run: false, result: { text: String(known.output ?? ''), isError: false } };
     if (known?.status === 'failed' && known.error) return { run: false, result: { text: failureText(known.error), isError: true, ...(known.error.interrupted ? { interrupted: true } : {}) } };
-    throw new Fatal(`agentrun-adapters: built-in call ${callId} has no recorded outcome`);
+    throw new Fatal(`agentrun-kernel: built-in call ${callId} has no recorded outcome`);
   }
 
   private async beginOnce(call: BuiltinCall): Promise<BuiltinStart> {

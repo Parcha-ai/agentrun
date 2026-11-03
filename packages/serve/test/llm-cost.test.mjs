@@ -9,7 +9,7 @@ import { openStoreReader } from "@parcha/pi-durable-agent";
 import { REQUEST_COST, REQUEST_STARTED, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
 import { spentIn } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
-import { processAlive } from "@parcha/agentrun-adapters/host";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { flowAgent, follow, scratch, serve, storeRun } from "./support.mjs";
 
 const FAUX_PRICED = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
@@ -101,8 +101,9 @@ test("a workflow resumed after its process died counts an llm call it made befor
   const answered = await until(async () => (await log()).find((line) => line.t === "effect.end" && line.tool === "llm"), "the call's answer");
   const paid = answered.output.cost_usd;
   assert.ok(paid > 0);
-  // Its completion committed, the run waits at the pause; its process dies, and the server opens it again.
-  await sleep(1_000);
+  // Its completion committed (its node's end, logged after), the run waits at the pause; its process dies, and the server
+  // opens it again.
+  await until(async () => (await log()).some((line) => line.t === "node.end" && line.path === answered.path), "the call's node's end");
   const { holder, generation } = JSON.parse(await readFile(join(dir, "run.json"), "utf8"));
   t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   process.kill(holder.pid, "SIGKILL");

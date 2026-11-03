@@ -7,7 +7,7 @@ description: Connect to AgentRun Server (start it when it is not running), then 
 
 The open platform's server for agents. One process on this machine's loopback address, port 7340 by default, keeps
 agents (a prompt with tools, or a typed workflow) and every run of them: its timeline, its files and its cost. A coding
-agent drives it over MCP (`/v2/mcp`) or HTTP (`/v2`); a person follows the same runs in its console (`/console/`).
+agent drives it over MCP (`/v2/mcp`) or HTTP (`/v2`); a person follows the same runs in its console (`/`).
 
 ## 1. Check the server
 
@@ -66,8 +66,8 @@ levels, default model and console address. The other tools:
 | `runs_get` | A run's status, result or error, `pending` (its question, when it asked one) and `console_url`. |
 | `runs_events` | The run's steps, a page at a time (`after`, `limit`). |
 | `runs_files` | The files it wrote; with `path`, one file's text. |
-| `runs_respond` | Answers a run's question (`content`), or follows up after it completed. |
-| `runs_cancel` | Ends a run for good. |
+| `runs_respond` | Answers a run's question (`content`), or follows up after it completed or was stopped (a fresh turn with its history). |
+| `runs_cancel` | Ends a run for good: it takes no more messages (`409 not_continuable`); go on in a new run. |
 
 A refusal comes back as a tool error holding the server's `error`: `code`, `message`, and for a `422` each field to fix.
 
@@ -105,7 +105,7 @@ curl -s "$AGENTRUN_BASE_URL/runs/$run/messages" -H "$H" -H 'content-type: applic
 ```
 
 The whole API is in `GET $AGENTRUN_BASE_URL/openapi.json`, and in brief at `/llms.txt` on the server's root
-(`curl -s "${AGENTRUN_BASE_URL%/v2}/llms.txt"`). The run's page for a person is `${AGENTRUN_BASE_URL%/v2}/console/#/runs/$run`.
+(`curl -s "${AGENTRUN_BASE_URL%/v2}/llms.txt"`). The run's page for a person is `${AGENTRUN_BASE_URL%/v2}/#/runs/$run`.
 
 ## Troubleshooting
 

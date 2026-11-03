@@ -5,10 +5,10 @@ import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { processAlive } from "@parcha/agentrun-adapters/host";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { BOX_IDS } from "../dist/boxes.js";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, scratch, withEnv } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const DOCKER = new URL("../docker/", import.meta.url);
@@ -25,10 +25,7 @@ async function bin(t, data, args = [], env = {}) {
   const seen = { out: "", err: "" };
   child.stdout.on("data", (chunk) => (seen.out += chunk));
   child.stderr.on("data", (chunk) => (seen.err += chunk));
-  for (let i = 0; !/^Open /m.test(seen.out); i++) {
-    assert.ok(i < 200 && child.exitCode === null, `the server did not start: ${seen.out}${seen.err}`);
-    await sleep(50);
-  }
+  await printed(child, /^Open /m);
   const base = /AGENTRUN_BASE_URL=(\S+)/.exec(seen.out)[1];
   return { child, seen, base, exited: new Promise((resolve) => child.once("exit", (code) => resolve(code))) };
 }

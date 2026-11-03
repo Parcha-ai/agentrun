@@ -12,11 +12,13 @@
 // one copy at that version, then builds the leg's workspaces and those they use and runs each leg workspace's type-check and tests with
 // PI_EXPECT_VERSION set. A leg workspace that depends on another pi workspace runs only with that one in the leg: their
 // tests load both in one process. `--tests` runs the type-check and tests of only the named leg workspaces, and
-// `--tests-except` of every other one: CI runs a leg as two jobs, one with each and the same names, so each suite runs once
-// and a new pi workspace runs in the second. Both install and check the whole leg.
+// `--tests-except` of every other one: CI splits a leg into jobs that each name some with `--tests` and one that names all
+// of those with `--tests-except`, so each suite runs once and a new pi workspace runs in that last job. Each installs and
+// checks the whole leg.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { isMain } from './is-main.mjs';
 
 /** The pi family: the packages that are released together and break together in a minor. */
 export const FAMILY = ['@earendil-works/pi-durable', '@earendil-works/chord', '@earendil-works/pi-ai', '@earendil-works/pi-agent-core', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', '@earendil-works/pi-codemode'];
@@ -266,6 +268,6 @@ function main() {
   process.exit(failed ? 1 : 0);
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   try { main(); } catch (error) { console.error(`pi-leg: ${error.message}`); process.exit(2); }
 }

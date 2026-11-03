@@ -106,24 +106,33 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
   const [names, setNames] = useState<Record<string, string>>({});
+  // Whether `names` is the whole answer of the newest read (both of its reads landed): a name it lacks then is an agent
+  // gone, and shows as its id.
+  const [namesRead, setNamesRead] = useState(false);
+  const namesAsked = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const asked = useRef(0);
   const go = (hash: string) => { location.hash = hash; };
   useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
+  useEffect(() => { v2.capabilities().then(setCaps).catch(() => {}); }, [v2]);
+  // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
+  // view opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere, is named at once.
+  // Only the newest read lands.
   useEffect(() => {
-    v2.capabilities().then(setCaps).catch(() => {});
-    // Every page of agents, for their names.
-    (async () => {
-      const all: Record<string, string> = {};
-      for (let c: string | null | undefined = undefined, i = 0; i < 50; i++) {
-        const page = await v2.listAgents({ cursor: c });
-        for (const x of page.agents) all[x.agent_id] = x.definition.name ?? x.agent_id;
-        if (!page.next_cursor) break;
-        c = page.next_cursor;
-      }
-      setNames(all);
-    })().catch(() => {});
-  }, [v2]);
+    if (namesAsked.current && where.section !== "runs") return;
+    const n = ++namesAsked.current;
+    setNamesRead(false);
+    void Promise.allSettled([false, true].map((archived) => allPages((cursor) => v2.listAgents({ archived, cursor }), (p) => p.agents))).then((reads) => {
+      if (n !== namesAsked.current) return;
+      const fresh = Object.fromEntries(reads.flatMap((r) => (r.status === "fulfilled" ? r.value : [])).map((x) => [x.agent_id, x.definition.name ?? x.agent_id]));
+      // Each read's answer is kept. Both landed: the names are theirs. One failed: what came back goes over the names
+      // held, and the lookup is not complete, so a name it lacks (an agent the failed read would have named) shows as
+      // nothing yet, never as an id read as gone; the next runs view reads again.
+      const whole = reads.every((r) => r.status === "fulfilled");
+      setNames((held) => (whole ? fresh : { ...held, ...fresh }));
+      setNamesRead(whole);
+    });
+  }, [v2, where]);
   const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
   useEffect(() => {
     if (where.section !== "runs" || where.run) return;
@@ -134,8 +143,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); } })
       .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
   }, [v2, where]);
-  const agentName = (id: string) => names[id] ?? id;
-  const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string } } | null;
+  // A name the lookup lacks while a read of it is under way shows as nothing yet, never as the id.
+  const agentName = (id: string) => names[id] ?? (namesRead ? id : "");
+  const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string; route_prefix?: string | null } } | null;
   // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", settings: "#/settings/keys" }[s]);
@@ -203,9 +213,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
         : where.section === "agents"
         ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} go={go} />
-          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} defaultModel={editorCaps.defaultModel} modelSource={c?.models?.source} go={go} />
+          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} defaultModel={editorCaps.defaultModel} modelSource={c?.models?.source} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
-          : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={{ ...editorCaps, modelSource: c?.models?.source, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows) }} agentId={where.agent} go={go} />
+          : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows) }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}

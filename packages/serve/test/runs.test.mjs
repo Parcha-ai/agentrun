@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
+import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -48,6 +49,8 @@ test("a run starts queued, its timeline follows it to completed and final, and t
   assert.ok(reread.ended_at >= run.ended_at, "it ended again");
   // The same session goes on: the follow-up's row, then a new turn's answer after it.
   const kinds = again.rows.map((r) => r.kind);
+  assert.equal(kinds.at(-1), "usage", `the usage row stays last, its count the run's latest: ${kinds.join(", ")}`);
+  assert.ok(again.rows.every((r, i) => i === 0 || r.timestamp >= again.rows[i - 1].timestamp), `rows by seq are in time order: ${again.rows.map((r) => `${r.kind}@${r.timestamp}`).join(", ")}`);
   assert.deepEqual(again.rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["What is six times seven?", "again"]);
   assert.ok(kinds.lastIndexOf("final_answer") > kinds.lastIndexOf("user_message"), `a new answer after the follow-up: ${kinds.join(", ")}`);
   assert.deepEqual((await api("GET", "/agents/calc")).body.runs, { count: 1, live: 0 }, "one run, not a second");
@@ -165,16 +168,6 @@ test("cancel ends a working run cancelled once its process has exited; a second 
   assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "x" })).body.error.code, "not_continuable");
 });
 
-test("a model failure ends the run failed with run_failed", async (t) => {
-  const { api } = await serve(t);
-  const failed = await startRun(api, "broken", "Fail now.");
-  await follow(api, failed.run_id, ["failed"]);
-  const run = (await api("GET", `/runs/${failed.run_id}`)).body;
-  assert.equal(run.error.code, "run_failed");
-  assert.match(run.error.message, /failed on purpose/);
-  assert.equal(run.result, null);
-});
-
 test("ask_person reaches only an agent that names it: one that does not goes on without asking", async (t) => {
   const { api } = await serve(t);
   const { run_id } = await startRun(api, "silent", "Pick a region.");
@@ -218,7 +211,7 @@ test("the timeline as server-sent events: one rows event per change with id = ne
   assert.equal(JSON.parse(/^data: (.*)$/m.exec(tail[0])[1]).unchanged, true, "Last-Event-ID resumes after the last change");
 });
 
-test("after a restart the runs are read from the agent home: status, result and rows, and an old cursor resets", async (t) => {
+test("after a restart the runs are read from the agent home: status, result and rows, and an old cursor resets; a completed run takes a follow-up on the next server and completes again, the same run", { timeout: 60_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   const api = client(one.baseUrl, one.token);
@@ -235,6 +228,64 @@ test("after a restart the runs are read from the agent home: status, result and 
   assert.equal(page.final, true);
   assert.deepEqual(page.rows.map((r) => r.kind), before.rows.map((r) => r.kind));
   assert.equal(JSON.parse(await readFile(join(data, "runs", run_id, "serve.json"), "utf8")).title, "What is six times seven?");
+  const next = await again("POST", `/runs/${run_id}/messages`, { content: "go on" });
+  assert.equal(next.status, 202, JSON.stringify(next.body));
+  assert.equal(next.body.mode, "follow_up");
+  const { rows } = await follow(again, run_id, ["completed"]);
+  const kinds = rows.map((r) => r.kind);
+  assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["What is six times seven?", "go on"]);
+  assert.ok(kinds.lastIndexOf("final_answer") > kinds.lastIndexOf("user_message"), `a new answer after the follow-up: ${kinds.join(", ")}`);
+  assert.equal(storeRun(data, run_id).state, "completed");
+});
+
+test("a run, and every run summary in both runs indexes, meet the served document whole, live and after a restart: the index carries a run's effort, a failed run's error and an archived run's archived_at", { timeout: 60_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  // Closed by the test before its restart; a failure before then still closes it, so the file never hangs open.
+  let oneOpen = true;
+  t.after(() => (oneOpen ? one.close() : undefined));
+  const api = client(one.baseUrl, one.token);
+  const doc = (await api("GET", "/openapi.json")).body;
+  const meets = (name, value, what) => assert.deepEqual(schemaProblems(doc, { $ref: `#/components/schemas/${name}` }, value), [], `${what}, a ${name}: ${JSON.stringify(value)}`);
+  const plain = await startRun(api, "calc", "What is six times seven?");
+  const high = await api("POST", "/agents/calc/runs", { input: { content: "And seven times six?" }, effort: "high" });
+  assert.equal(high.status, 202, JSON.stringify(high.body));
+  assert.equal(high.body.effort, "high");
+  const failed = await startRun(api, "broken", "Fail now.");
+  const gone = (await api("POST", "/agents/calc/runs", { input: { content: "Archive me." } })).body;
+  for (const run of [plain, high.body, failed, gone]) meets("Run", run, "a started run");
+  for (const id of [plain.run_id, high.body.run_id, gone.run_id]) await follow(api, id, ["completed"]);
+  await follow(api, failed.run_id, ["failed"]);
+  const broke = (await api("GET", `/runs/${failed.run_id}`)).body;
+  assert.deepEqual([broke.error.code, broke.result], ["run_failed", null], "a model failure ends the run failed, with no result");
+  assert.match(broke.error.message, /failed on purpose/);
+  const archived = await api("POST", `/runs/${gone.run_id}/archive`);
+  meets("Run", archived.body, "an archived run");
+  assert.equal(typeof archived.body.archived_at, "string");
+  const want = { [plain.run_id]: "none", [high.body.run_id]: "high", [failed.run_id]: "none" };
+  const index = async (call, path) => {
+    const page = (await call("GET", path)).body;
+    meets("RunList", page, path);
+    return page.runs;
+  };
+  const check = async (call, when) => {
+    for (const path of ["/agents/calc/runs", "/runs"]) {
+      const runs = await index(call, path);
+      const listed = Object.fromEntries(runs.map((r) => [r.run_id, Object.hasOwn(r, "effort") ? r.effort : "none"]));
+      assert.deepEqual(listed, Object.fromEntries(Object.entries(want).filter(([id]) => path === "/runs" || id !== failed.run_id)), `${path} ${when}`);
+    }
+    const errored = (await index(call, "/agents/broken/runs"))[0];
+    assert.equal(errored.error.code, "run_failed", `the failed run's error ${when}`);
+    const hidden = await index(call, "/agents/calc/runs?archived=true");
+    assert.deepEqual(hidden.map((r) => [r.run_id, typeof r.archived_at]), [[gone.run_id, "string"]], `the archived run ${when}`);
+    for (const id of Object.keys(want)) meets("Run", (await call("GET", `/runs/${id}`)).body, `a run ${when}`);
+  };
+  await check(api, "live");
+  await one.close();
+  oneOpen = false;
+  const two = await startServe({ data, port: 0, faux: FAUX });
+  t.after(() => two.close());
+  await check(client(two.baseUrl, two.token), "after a restart");
 });
 
 test("a run's process never sees the server's token, by name or by value, nor a model key in its environment (each comes over its pipe); the AGENT_MODEL variables still reach it", async (t) => {
