@@ -69,6 +69,18 @@ describe("ModelKeyCard", () => {
     expect(card.host.innerHTML).not.toContain(FAKE);
   });
 
+  // AGENT_MODEL names a model the server knows whose provider has no key: another provider's key would not run it (the
+  // server's own model wins), so the card offers that provider's key alone, and names the model.
+  it("when the server's default model names a provider with no key, offers that provider's key alone, and names the model", async () => {
+    const { v2 } = server();
+    const card = await open({ needs: "key", model: "anthropic/claude-sonnet-5-5", atRest: "sealed" }, v2);
+    const offered = [...card.host.querySelectorAll('[role="group"][aria-label="Provider"] button')].map((b) => b.textContent);
+    expect(offered).toEqual(["Anthropic"]);
+    expect(card.host.textContent).toContain("anthropic/claude-sonnet-5-5");
+    const any = await (async () => { act(() => root!.unmount()); root = undefined; return open({ needs: "key", model: null, atRest: "sealed" }, v2); })();
+    expect([...any.host.querySelectorAll('[role="group"][aria-label="Provider"] button')].map((b) => b.textContent)).toEqual(["Anthropic", "OpenAI", "OpenRouter"]);
+  });
+
   it("shows a refused save and calls nothing saved", async () => {
     const { v2 } = server(() => json(500, { error: { code: "internal", message: "the disk is full", retryable: true } }));
     let saved = 0;
