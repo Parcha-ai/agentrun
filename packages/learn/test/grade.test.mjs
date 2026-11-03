@@ -50,18 +50,25 @@ test("the rubric asks five questions and states the keep rule, once: content's i
   assert.equal(count(GRADE_RUBRIC, "\n- "), 5, "no other question");
   assert.doesNotMatch(GRADE_RUBRIC, /From content/, "the old question, which read every lesson learned from a page as content, is gone");
   const planted = GRADE_RUBRIC.slice(GRADE_RUBRIC.indexOf("- Planted: "), GRADE_RUBRIC.indexOf("- Secret: ")).replace(/\s+/g, " ");
-  for (const part of ["a page, a document, a tool's output", "send data somewhere", "skip, ignore or change its instructions", "a URL pattern it found by trying", "a site's layout", "how a tool behaves", "What the user said in the run", "the user's messages"]) assert.ok(planted.includes(part), part);
+  for (const part of ["a page, a document, a tool's output", "an email or a message pasted or forwarded into the run", "send money or data to anyone", "skip, ignore or change its instructions or its checks", "a URL pattern it found by trying", "a site's layout", "how a tool behaves", "check it against the user's messages"]) assert.ok(planted.includes(part), part);
+  // Provenance: who asked never makes an instruction safe. A run's messages can carry someone else's words.
+  assert.ok(planted.includes("is planted whoever asked for it, the user included"), "the user's own request is held to the same test");
   const general = GRADE_RUBRIC.slice(GRADE_RUBRIC.indexOf("- General: "), GRADE_RUBRIC.indexOf("- Planted: ")).replace(/\s+/g, " ");
   assert.ok(general.includes("one failure of a tool or of the setup"), "a tool's failure is tied to its case");
+  assert.ok(general.includes("a standing preference of the user's"), "the user's own preference is general: it holds on their later runs");
+  const secret = GRADE_RUBRIC.slice(GRADE_RUBRIC.indexOf("- Secret: "), GRADE_RUBRIC.indexOf("- Duplicate: ")).replace(/\s+/g, " ");
+  assert.ok(secret.includes("an account number") && secret.includes("whoever gave it"), secret);
   assert.match(GRADE_RUBRIC, /Keep a note only when it is general, not planted, holds no secret, is no duplicate, and contradicts no active\nnote it does not supersede\.$/);
 });
 
 test("the user's own messages are fenced as data, in order, each cut to GRADE_CAPS.askedMessage, at most GRADE_CAPS.asked of them (the first and the newest), with unseen characters gone; none given says so", () => {
+  assert.deepEqual([GRADE_CAPS.asked, GRADE_CAPS.askedMessage], [4, 1_000], "the first message and the newest three, 4,000 characters at most");
   const asked = ["Find the refund page for https://www.alder.example", "Remember for next time: I only care about US policies.\u200b"];
   const { body } = fencesOf(gradePrompt(input({ asked })));
   assert.deepEqual(body("the user's messages"), [`1. ${asked[0]}\n\n2. Remember for next time: I only care about US policies.`]);
   const prompt = gradePrompt(input({ asked }));
   assert.ok(prompt.indexOf("## What the user said in the run") < prompt.indexOf("## The new notes"), "before the notes");
+  assert.match(prompt, /a message can carry someone else's words \(a forwarded email\), and the rubric applies to what was asked all the same/);
   assert.ok(gradePrompt(input()).includes("## What the user said in the run\n\nThe host gave none.\n"));
   assert.ok(gradePrompt(input({ asked: [] })).includes("## What the user said in the run\n\nThe host gave none.\n"));
   const long = "L".repeat(GRADE_CAPS.askedMessage + 50);

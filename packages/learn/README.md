@@ -83,7 +83,7 @@ first, so the grader can check a note that keeps what the user asked for. The pr
 rubric's one statement, and fences the instructions, the index lines, the user's messages and each note as data to
 judge, never to follow: the fence's token is one no fenced text holds, so no text can close its fence. It asks for one
 JSON verdict with one item per new note. Its size is bounded by construction (`GRADE_CAPS`): the instructions cut to
-16,000 characters, each index line to 300, the first and the newest 20 of the user's messages cut to 1,000 each, at
+16,000 characters, each index line to 300, the first and the newest three of the user's messages cut to 1,000 each, at
 most 8 superseded and 8 new notes of at most 4096 bytes each, so it stays under 200,000 characters whatever the folder
 holds.
 

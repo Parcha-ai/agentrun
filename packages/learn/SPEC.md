@@ -120,9 +120,10 @@ Whether a note holds one case's data is the grader's judgment, not the checker's
 One grader judges the whole proposal against the agent's active notes and standing instructions, with `GRADE_RUBRIC`
 (`src/grade.ts`, the rubric's one statement), on the model the host picks for grading. `gradePrompt` fences, as data,
 the instructions (their first 16,000 characters), the index line of each active note (cut to 300 characters), the
-whole text of only the notes the proposal supersedes, what the user said in the run (the first message and the newest,
-20 in all, each cut to 1,000 characters), and the new notes. The user's messages let the grader tell what the user
-asked the agent to keep from what a page told it to. So the prompt is bounded by the caps above, never by how many
+whole text of only the notes the proposal supersedes, what the user said in the run (the first message and the newest
+three, each cut to 1,000 characters), and the new notes. The user's messages let the grader tell what the user asked
+the agent to keep from what a page told it to; they are evidence of who asked, never a pass: what was asked meets the
+same tests, since a run's messages can carry someone else's words. So the prompt is bounded by the caps above, never by how many
 notes the folder holds: `GRADE_CAPS.prompt`, 200,000 characters, half what a completion takes.
 `parseVerdict` reads one verdict with one item per new note and fails closed: an answer it cannot read, a missing or
 extra item, or a merge with a note not kept is no merge. Every note merges, or none does.
