@@ -286,6 +286,11 @@ function byRun(sessions: readonly Session[]): Session[][] {
   return [...runs.values()];
 }
 
+/** The sessions `files` write, as the import takes them: one per source and session id, however many files write it
+ *  (`byRun`), with its cost known when each of its files' is (as `merged` prices it). What a dry run counts. */
+export const sessionsOf = (files: readonly Session[]): { source: Source; key: `${Source}:${string}`; priced: boolean }[] =>
+  byRun(files).map((parts) => ({ source: parts[0]!.source, key: `${parts[0]!.source}:${parts[0]!.id}` as const, priced: parts.every((s) => s.costUsd !== undefined) }));
+
 /** A session's files, read in the import's order with its `seen` (which file keeps a copied record), as the one run the
  *  store keeps of it: their turns in the order they ran (each file's by its start; each answer with its own file's model
  *  when it names none), its state and model the file's that ended last. Its cost, when each file's is known: Claude Code
@@ -838,15 +843,17 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
   return report;
 }
 
-/** The plan as a person reads it: one line per project, then what is left out and why. */
+/** The plan as a person reads it: one line per project, its sessions counted as the import takes them, then what is
+ *  left out and why. */
 export function describePlan(plan: Plan, store?: AgentStoreReader): string[] {
   const held = store ? importedIn(store) : undefined;
   const lines = plan.projects.map((project) => {
+    const sessions = sessionsOf(project.sessions);
     const by = new Map<string, number>();
-    for (const s of project.sessions) by.set(s.source, (by.get(s.source) ?? 0) + 1);
-    const already = held ? project.sessions.filter((s) => held.has(`${s.source}:${s.id}`)).length : 0;
-    const priced = project.sessions.filter((s) => s.costUsd !== undefined).length;
-    return `${project.cwd}  ${[...by].map(([source, n]) => `${source} ${n}`).join(", ")}  cost known ${priced}/${project.sessions.length}${already ? `  already imported ${already}` : ""}`;
+    for (const s of sessions) by.set(s.source, (by.get(s.source) ?? 0) + 1);
+    const already = held ? sessions.filter((s) => held.has(s.key)).length : 0;
+    const priced = sessions.filter((s) => s.priced).length;
+    return `${project.cwd}  ${[...by].map(([source, n]) => `${source} ${n}`).join(", ")}  cost known ${priced}/${sessions.length}${already ? `  already imported ${already}` : ""}`;
   });
   return [...lines, ...(plan.already ? [`already imported, unchanged: ${plan.already} session files`] : []), ...plan.skipped.map((s) => `skipped ${s.what}: ${s.why}`)];
 }
@@ -920,7 +927,7 @@ export async function importCommand(
     } finally {
       reader?.close();
     }
-    out(`${plan.projects.length} projects, ${plan.projects.reduce((n, p) => n + p.sessions.length, 0)} sessions; nothing was written (dry run)`);
+    out(`${plan.projects.length} projects, ${sessionsOf(plan.projects.flatMap((p) => p.sessions)).length} sessions; nothing was written (dry run)`);
     for (const line of summaryLines(found, open, { dryRun: true })) out(line);
     return 0;
   }
