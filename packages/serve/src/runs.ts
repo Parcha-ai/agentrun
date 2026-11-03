@@ -63,7 +63,7 @@ const SETTLE_RETRY_MS = 30_000;
 const STATUS_OF: Record<Ended, Status> = { completed: "completed", failed: "failed", escalated: "completed", stopped: "cancelled" };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-/** Availability scans stop at the first readable public file, or at a bounded number of entries. */
+/** Availability scans stop at the first readable public file and bound entry metadata reads. */
 const FILE_AVAILABILITY_CAP = 128;
 // A run's process that exited and was never reaped (a zombie, under a PID 1 that does not reap) is not alive.
 const alive = processAlive;
@@ -1522,7 +1522,7 @@ export class Runs {
   }
 
   /** A run's summary for a list. An ended run's status and result availability come from its row and serve.json,
-   *  without opening its store; file availability uses a bounded workspace scan. `versions` numbers its revisions. */
+   *  without opening its store; file availability uses a workspace scan with bounded metadata reads. `versions` numbers its revisions. */
   async summaryOfRow(row: RunRow, versions: Map<string, number>): Promise<Awaited<ReturnType<Runs["summary"]>>> {
     const known = this.runs.get(row.id) ?? (row.state === "running" ? await this.get(row.id) : null);
     if (known) return this.summary(known);

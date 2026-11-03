@@ -1280,7 +1280,7 @@ export interface components {
       ended_at: components["schemas"]["Timestamp"] | null;
       /** @description Set when `failed`, as the run's own. */
       error?: components["schemas"]["RunError"] | null;
-      /** @description Whether at least one readable public work file was found, without reading file content. Dot paths, links and unsafe entries are excluded. The confined scan examines at most 128 entries and 16 directory levels. True means a readable file was found, even if other entries were not inspected. False means a complete scan found none. Null means none was found and the scan was incomplete, unreadable, unavailable or imported. */
+      /** @description Whether at least one readable public work file was found, without reading file content. Dot paths, links and unsafe entries are excluded. The confined scan limits entry metadata reads to 128 and directory depth to 16; directory-name enumeration is not bounded by that metadata budget. True means a readable file was found, even if other entries were not inspected. False means a complete scan found none. Null means none was found and the scan was incomplete, unreadable, unavailable or imported. */
       files_available?: boolean | null;
       /** @description Imported history (`agentrun-serve import`): where the run was run, and its session there; else null. An imported run takes no message (`409 not_continuable`, `details.reason` `imported`); a stop or a cancel answers as for an ended run. */
       imported_from?: ({

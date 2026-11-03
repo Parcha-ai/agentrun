@@ -49,7 +49,7 @@ Skill edits take a complete text-file bundle and require an explicit replacement
 
 Run timelines preserve cursor, reset, drop and final semantics. Reconnect resumes a retained cursor; a server reset replaces the displayed rows. Stop requests an interruption that can continue; Cancel requests termination. Acceptance of a command is displayed separately from the observed run state. Costs are local estimates or reported usage; unknown values stay unknown. Mission Control labels bounded activity separately from whole-store totals.
 
-Imported histories accept no new messages. Completed archived runs must be unarchived before a follow-up; archiving an active run retains its native controls. Mission Control uses optional `result_available` and `files_available` summary fields, displaying absent or null facts as unknown. File availability uses a confined scan with an entry/depth limit and reads no file content.
+Imported histories accept no new messages. Completed archived runs must be unarchived before a follow-up; archiving an active run retains its native controls. Mission Control uses optional `result_available` and `files_available` summary fields, displaying absent or null facts as unknown. File availability uses a confined scan with a metadata-read/depth limit and reads no file content. Directory-name enumeration uses the native walker and is not bounded by that metadata budget.
 
 File bytes are fetched through the authenticated client. Downloads preserve the original Blob. Markdown is sanitized, HTML previews are sandboxed, and scripts never run in an artifact preview. Incomplete listings and failed reads remain visible.
 
