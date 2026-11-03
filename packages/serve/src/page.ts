@@ -103,6 +103,12 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
   return file(req, res, raw, dir, "index.html", given === null ? 200 : 401);
 }
 
+/** The page writes of the owner's signed-in session: on this server's own origin, with a JSON body, under a password
+ *  session (never the cookie accounts-off mints from the token). */
+const ownerSessions = new WeakSet<IncomingMessage>();
+/** Whether `req` is a write from the owner's signed-in page (answerPage). A token, whoever holds it, never is. */
+export const byOwnerSession = (req: IncomingMessage): boolean => ownerSessions.has(req);
+
 /**
  * Answers the console's paths ("/" and its /assets/*, and the addresses that moved to "/") and the store's /api/*, and
  * returns true; returns false for every other path. On a /v2 path with no Authorization header, the browser's cookie
@@ -115,7 +121,12 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
   if (raw.startsWith("/v2/")) {
     const safe = req.method === "GET" || req.method === "HEAD";
     const bytes = req.method === "PUT" && server.takesBytes?.(req.method, raw.slice(3)) === true;
-    if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && (isJson(req) || bytes)))) req.headers.authorization = `Bearer ${server.token}`;
+    if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && (isJson(req) || bytes)))) {
+      req.headers.authorization = `Bearer ${server.token}`;
+      // The owner's own signed-in session (accounts on), never a cookie a token mints: what a route only a person may
+      // call asks for (byOwnerSession).
+      if (server.owner && !safe) ownerSessions.add(req);
+    }
     return false;
   }
   if (raw !== "/" && !raw.startsWith("/assets/") && !raw.startsWith("/api/") && !MOVED.has(raw)) return false;
