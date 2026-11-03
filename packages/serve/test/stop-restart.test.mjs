@@ -171,3 +171,28 @@ test("a start waits as long as the stopping server's close runs, past its runs' 
   assert.equal(said.length, 1, JSON.stringify(said));
   assert.equal((await client(next.baseUrl, next.token)("GET", `/runs/${run.body.run_id}`)).body.status, "completed");
 });
+
+test("a notice that throws never stops a close: the listener, the runs' processes and the data root are all let go", { timeout: 120_000 }, async (t) => {
+  // Greptile P2: the stopping line is best-effort; a close that rejected on it would keep the lock and the port.
+  const data = join(await scratch(t), "agents");
+  // The notice throws once: the test's own last close (below) still lets go of a server whose first close stopped there.
+  let thrown = false;
+  const notice = () => {
+    if (thrown) return;
+    thrown = true;
+    throw new Error("the notice failed");
+  };
+  const { close, pid, first } = await midTurn(t, data, { notice });
+  t.after(() => first.close().catch(() => undefined));
+  // Bounded: a close that stops at the notice fails here by name, never as the file's timeout.
+  let timer;
+  const bound = new Promise((resolve) => (timer = setTimeout(() => resolve("still closing after 20 s"), 20_000)));
+  const outcome = await Promise.race([close().then(() => "closed", (error) => `rejected: ${error.message}`), bound]);
+  clearTimeout(timer);
+  assert.equal(outcome, "closed", "the close finished though a notice threw");
+  assert.equal(alive(pid), false, "the run's process is gone");
+  await assert.rejects(fetch(`${first.baseUrl}/health`), "the listener is closed");
+  const next = await startServe({ data, port: 0, faux: FAUX });
+  t.after(() => next.close());
+  assert.equal((await client(next.baseUrl, next.token)("GET", "/agents")).status, 200, "the data root is free");
+});
