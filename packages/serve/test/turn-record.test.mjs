@@ -8,10 +8,11 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
+const HELD_EXIT = new URL("./fixtures/faux-harness-held-exit.mjs", import.meta.url).pathname;
 const TERMINAL = ["completed", "failed", "cancelled"];
 const ADAPTERS = ["claude-agent", "codex"];
 const ALL = ["pi", ...ADAPTERS];
@@ -111,8 +112,12 @@ for (const harness of ADAPTERS) {
   });
 
   test(`${harness}: a cancel, then a cost that takes the run over its cap, ends the run cancelled, never failed first`, { timeout: 90_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
-    const signal = join(await scratch(t), "admitted");
+    // The run's process cannot exit until the gate's file exists: the server reads the cost its cut turn writes on the
+    // way out while that process still lives.
+    const dir = await scratch(t);
+    const [signal, gate] = [join(dir, "admitted"), join(dir, "gate")];
+    withEnv(t, { EXIT_GATE: gate });
+    const { api } = await serve(t, { fauxHarness: HELD_EXIT });
     const runId = await start(api, harness, `Answer, then hold a request the cancel cuts and books (signal ${signal}).`, { input: "hi", max_cost_usd: 0.001 });
     await until("the second request is admitted", async () => existsSync(signal));
     await until("the answer's row is in, under the cap", async () => (await rowsOf(api, runId)).some((r) => r.kind === "final_answer" && r.text === "Done."));
@@ -122,6 +127,10 @@ for (const harness of ADAPTERS) {
     assert.deepEqual([cancel.status, cancel.body.cancel_requested], [202, true], JSON.stringify(cancel.body));
     seen.push(cancel.body.status);
     await watch(api, runId, terminal, "the cancel ends the run", { seen });
+    // The cost the cut request books on the way out, over the cap, while the process is held.
+    await until("the cut request's cost is in", async () => ((await api("GET", `/runs/${runId}`)).body.cost?.usd ?? 0) > 0.001);
+    await watch(api, runId, () => true, "", { seen });
+    await writeFile(gate, "");
     const view = await endsAs(api, runId, seen, "cancelled");
     assert.ok(typeof view.cost?.usd === "number" && view.cost.usd > 0.001, `the case: the cut request's cost came in after the cancel, over the cap: ${JSON.stringify(view.cost)}`);
   });
