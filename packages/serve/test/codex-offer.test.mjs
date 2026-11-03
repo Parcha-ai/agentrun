@@ -19,7 +19,7 @@ const skip = pinned instanceof Error && env.AGENTRUN_CODEX_REQUIRE_BINARY !== "1
 const codexOf = async (given) => (await harnessOffers(given)).find((h) => h.id === "codex");
 
 test("codex is offered on the pinned build: available with a model key, unavailable for the key it names without one", { skip }, async () => {
-  assert.deepEqual(await codexOf({ OPENAI_API_KEY: "fake-test-key" }), { id: "codex", available: true, steer: false, default_model: null }, "no default model here");
+  assert.deepEqual(await codexOf({ OPENAI_API_KEY: "fake-test-key" }), { id: "codex", available: true, steer: false, default_model: "openai/gpt-6.1-sol" }, "on the key's default model (model.ts MODEL_KEYS)");
   const keyless = await codexOf({});
   assert.equal(keyless.available, false);
   assert.match(keyless.reason, /^codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL\.$/);

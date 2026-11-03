@@ -61,7 +61,7 @@ test("a model key saved with no restart: a server with none says no model runs a
   const lines = [];
   const { api, data } = await serve(t, { faux: undefined, log: (line) => lines.push(line) });
   const models = async () => (await api("GET", "/capabilities")).body.models;
-  assert.deepEqual(await models(), { source: "gateway", fast: null, default: null, strong: null, ready: false, needs: "key" });
+  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key" });
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   const refused = await api("POST", "/agents/plain/runs", { input: { content: "hi" } });
   assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
@@ -69,7 +69,7 @@ test("a model key saved with no restart: a server with none says no model runs a
   const value = made();
   assert.equal((await api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: value } })).status, 204);
   const model = "anthropic/claude-sonnet-5-5";
-  assert.deepEqual(await models(), { source: "gateway", fast: `agent-model/${model}`, default: `agent-model/${model}`, strong: `agent-model/${model}`, ready: true, needs: null }, "no restart");
+  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: `agent-model/${model}`, default: `agent-model/${model}`, strong: `agent-model/${model}`, ready: true, needs: null }, "no restart");
   const offered = (await api("GET", "/capabilities")).body.harnesses.filter((harness) => harness.available).map((harness) => harness.id);
   const row = (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "anthropic");
   assert.deepEqual([row.kind, row.unlocks, row.harnesses, row.fields], ["model", [], ["pi", "claude-agent"].filter((id) => offered.includes(id)), [{ name: "ANTHROPIC_API_KEY", set: true, source: "stored" }]]);
@@ -85,5 +85,5 @@ test("a model key saved with no restart: a server with none says no model runs a
   for (const file of filesUnder(data)) holdsNone(readFileSync(file), formsOf(value), file);
 
   assert.equal((await api("DELETE", "/settings/tool-keys/anthropic")).status, 204);
-  assert.deepEqual(await models(), { source: "gateway", fast: null, default: null, strong: null, ready: false, needs: "key" }, "deleted, none again");
+  assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key" }, "deleted, none again");
 });

@@ -350,7 +350,7 @@ test("a key a harness reads, saved later, makes the harness available with no re
   const claude = async () => (await readingOf(base, 4, stored)).caps.harnesses.find((offer) => offer.id === "claude-agent");
   assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY."]);
   saved = ["not-a-secret", "anthropic"].join("-");
-  assert.deepEqual(await claude(), { id: "claude-agent", available: true, steer: false, default_model: null }, "saved: offered");
+  assert.deepEqual(await claude(), { id: "claude-agent", available: true, steer: false, default_model: "anthropic/claude-sonnet-5-5" }, "saved: offered, on the key's default model");
   saved = undefined;
   assert.equal((await claude()).available, false, "deleted: not offered");
 });
