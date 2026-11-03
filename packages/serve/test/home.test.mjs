@@ -191,6 +191,41 @@ test("learning/ is the server's in any case: a GET, PUT or DELETE there is 403 h
   assert.ok(again.filter((f) => f.path !== "learning").every((f) => f.host_owned === undefined && typeof f.size_bytes === "number"));
 });
 
+test("a home path takes only plain segments, and a host-owned name in another spelling a disk could take for it is the server's, while other names stay the client's", async (t) => {
+  const server = await served(t);
+  assert.equal((await put(server, "mine.md", "mine")).status, 200);
+  await mkdir(join(server.home, "learning"), { recursive: true });
+  await writeFile(join(server.home, "learning", "notes.md"), "# Learned\n");
+  const encoded = (path) => path.split("/").map(encodeURIComponent).join("/");
+  const each = async (path, check) => {
+    for (const method of ["GET", "PUT", "DELETE"]) check(method, await raw(server, method, "keeper", encoded(path), method === "PUT" ? "x" : undefined));
+  };
+  // A segment holding a default-ignorable code point, or not in its NFC form, is no plain segment.
+  for (const path of ["learn\u200Cing/notes.md", "learn\u200Bing/notes.md", "learn\u00ADing/notes.md", "\uFEFFlearning/notes.md", "learnin\u0301g/x", "\u212Aeeper/x", "a\u2060b/x", "a\u034Fb/x"]) {
+    await each(path, (method, answer) => {
+      assert.deepEqual(refused(answer), [400, "invalid_file_path"], `${method} ${JSON.stringify(path)}: ${JSON.stringify(answer.body)}`);
+      assert.equal(answer.body.error.message, "a path segment must be plain text (NFC, no invisible characters)");
+    });
+  }
+  // Plain, and folded to learning: dotless and dotted i, fullwidth letters.
+  for (const path of ["learn\u0131ng/notes.md", "LEARN\u0130NG/notes.md", "\uFF4C\uFF45\uFF41\uFF52\uFF4E\uFF49\uFF4E\uFF47/notes.md", "\uFF2C\uFF25\uFF21\uFF32\uFF2E\uFF29\uFF2E\uFF27"]) {
+    await each(path, (method, answer) => {
+      assert.deepEqual([...refused(answer), answer.body.error?.details?.reason], [403, "system_file_forbidden", "host_owned"], `${method} ${JSON.stringify(path)}`);
+      assert.ok(!answer.bytes.toString().includes("Learned"), "no note is served");
+    });
+  }
+  assert.deepEqual((await readdir(server.home)).sort(), ["learning", "mine.md"], "nothing was made");
+  assert.equal(await readFile(join(server.home, "learning", "notes.md"), "utf8"), "# Learned\n");
+  // A name that only looks near it, one below the top, and a plain non-ASCII name are the client's.
+  for (const path of ["learning2/x.md", "notes/learning/y.md", "caf\u00E9.md"]) {
+    assert.equal((await raw(server, "PUT", "keeper", encoded(path), "client")).status, 200, path);
+    assert.equal((await raw(server, "GET", "keeper", encoded(path))).body, "client", path);
+  }
+  const listed = (await files(server)).body.files;
+  assert.deepEqual(listed.map((f) => f.path), ["caf\u00E9.md", "learning", "learning2/x.md", "mine.md", "notes/learning/y.md"]);
+  assert.deepEqual(listed.filter((f) => f.host_owned).map((f) => f.path), ["learning"]);
+});
+
 test("two agents whose ids differ only in case get homes of their own: keys that differ in any case, in lower case only, and neither sees the other's files", async (t) => {
   const server = await served(t);
   assert.equal((await server.api("POST", "/agents", agent("Keeper"))).status, 201, "the store keeps Keeper apart from keeper");

@@ -20,6 +20,38 @@ export async function scratch(t) {
   return dir;
 }
 
+/** Resolves once `child`, a server in a process of its own, has printed a whole line on stdout that `ready` matches (the
+ *  line it prints once it listens); rejects as soon as it exits or cannot be spawned, with what it printed. A slow start
+ *  on a loaded machine is still a start: the backstop is only for a child that neither prints the line nor exits. */
+export function printed(child, ready, { backstopMs = 120_000 } = {}) {
+  let out = "";
+  let err = "";
+  return new Promise((resolve, reject) => {
+    const settle = (error) => {
+      clearTimeout(backstop);
+      child.stdout.off("data", onOut);
+      child.stderr?.off("data", onErr);
+      child.off("close", onClose);
+      child.off("error", settle);
+      if (error) reject(error);
+      else resolve(out);
+    };
+    const onOut = (chunk) => {
+      out += chunk;
+      if (ready.test(out.slice(0, out.lastIndexOf("\n") + 1))) settle();
+    };
+    const onErr = (chunk) => (err = (err + chunk).slice(-8_000));
+    // "close", not "exit": by then its stdout and stderr are read to their end, so its last words are in the message.
+    const onClose = (code, signal) => settle(new Error(`the server exited (${signal ?? code}) before it printed ${ready}: ${out}${err}`));
+    const backstop = setTimeout(() => settle(new Error(`the server printed no ${ready} in ${backstopMs / 1000} s and has not exited: ${out}${err}`)), backstopMs);
+    backstop.unref();
+    child.stdout.on("data", onOut);
+    child.stderr?.on("data", onErr);
+    child.once("close", onClose);
+    child.once("error", settle);
+  });
+}
+
 /** The index.html of a built console, as Vite writes it: one module script and one stylesheet, both relative. */
 export const CONSOLE_INDEX = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" /><title>AgentRun</title>
@@ -119,7 +151,8 @@ export async function startRun(api, id, content, extra = {}, skills) {
   return run.body;
 }
 
-/** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until` and settled. */
+/** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until`: an end
+ *  once its page is final, any other status on the first page that leaves no change behind it. */
 export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000 } = {}) {
   const view = new Map();
   const pages = [];
@@ -133,7 +166,9 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
     for (const id of page.drop) view.delete(id);
     for (const row of page.rows) view.set(row.id, row);
     after = page.next_after;
-    const settled = ["completed", "failed", "cancelled"].includes(page.status) ? page.final : !page.has_more && (page.unchanged || page.rows.length === 0);
+    // A page's status and its rows are read together, so a page with no more to come has every row up to that status. A
+    // second, empty page to confirm it would only return when its long poll runs out.
+    const settled = ["completed", "failed", "cancelled"].includes(page.status) ? page.final : !page.has_more;
     if (until.includes(page.status) && settled) break;
     assert.ok(Date.now() < end, `the run did not reach ${until.join("|")}: last ${page.status}/${page.state}`);
   }

@@ -9,7 +9,8 @@ import { homeOf } from "../dist/files.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, flowAgent, serve } from "./support.mjs";
+import { capabilities } from "../dist/index.js";
+import { agent, FAUX, flowAgent, serve } from "./support.mjs";
 
 const VENDORED = JSON.parse(await readFile(new URL("../src/openapi/agentrun-v2.openapi.json", import.meta.url), "utf8"));
 const METHODS = ["get", "put", "post", "delete", "patch", "head", "options", "trace"];
@@ -54,13 +55,14 @@ test("every route the server serves is in the document, and every operation in i
     else assert.equal(op["x-agentrun-serve-unsupported"], undefined, `${op.operationId} is served`);
     if (route.capability) assert.equal(op["x-agentrun-serve-unsupported"].capability, route.capability);
   }
-  assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 6, "the six this server answers 501");
-  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported.length, 6);
+  assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 4, "the four this server answers 501");
+  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported.length, 4);
 });
 
 test("the contract's operations are as vendored; this server's own are added and marked x-agentrun-serve", async (t) => {
   const { doc } = await served(t);
   const vendored = new Map(operations(VENDORED).map(({ path, method, op }) => [`${method} ${path}`, op]));
+  assert.ok(vendored.has("put /agents/{agent_id}/definition") && doc.paths["/agents/{agent_id}/definition"].put["x-agentrun-serve-changed"], "PUT definition is a changed operation, its bodies checked below");
   const own = [];
   for (const { path, method, op } of operations(doc)) {
     const original = vendored.get(`${method} ${path}`);
@@ -92,6 +94,16 @@ test("the contract's operations are as vendored; this server's own are added and
     assert.deepEqual(Object.keys(changes).sort(), ["If-Match", "requestBody"]);
     const schema = (o) => o.requestBody.content["application/json"].schema;
     assert.deepEqual(schema(op).oneOf[0], schema(original), "the contract's body is one of the two");
+    if (path === "/agents/{agent_id}/definition") {
+      // Exactly one of PUT definition's two bodies: the contract's, or this server's {definition, skills?, note?}.
+      assert.deepEqual(changes, { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" });
+      const definition = { id: "a", version: 2, name: "a", instructions: "x", skills: [], tools: [] };
+      const problems = (value) => schemaProblems(doc, schema(op), value);
+      assert.deepEqual(problems(definition), [], "the contract's body");
+      assert.deepEqual(problems({ definition, skills: { "cite/SKILL.md": "# Cite" }, note: "why" }), [], "this server's body");
+      assert.notDeepEqual(problems({ ...definition, definition }), [], "never both at once");
+      assert.notDeepEqual(problems({ note: "why" }), [], "never neither");
+    }
     const plain = (params) => params.map(({ required, description, ...p }) => (p.name === "If-Match" ? p : { required, description, ...p }));
     assert.deepEqual(plain(op.parameters), plain(original.parameters));
     const { requestBody: _a, parameters: _b, ...same } = rest;
@@ -114,6 +126,17 @@ test("the contract's operations are as vendored; this server's own are added and
       }
       if (property["x-agentrun-serve"] === undefined) {
         strip(property, `${at}.${field}`);
+        continue;
+      }
+      // A contract property whose enum this server widens (models.source) is marked on the property, each value it adds
+      // listed, as RunStatus is: cut back to the vendored enum and description, it is the contract's.
+      const vendored = at.split(".").slice(1).reduce((object, key) => object?.properties?.[key], VENDORED.components.schemas[at.split(".")[0]])?.properties?.[field];
+      if (Array.isArray(vendored?.enum) && Array.isArray(property.enum)) {
+        for (const value of property.enum.filter((v) => !vendored.enum.includes(v))) marked.push(`${at}.${field}.${value}`);
+        property.enum = property.enum.filter((v) => vendored.enum.includes(v));
+        if (vendored.description === undefined) delete property.description;
+        else property.description = vendored.description;
+        delete property["x-agentrun-serve"];
         continue;
       }
       assert.match(property["x-agentrun-serve"], /^[a-z]+\/\d+$/, `${at}.${field} names its addition`);
@@ -241,12 +264,75 @@ test("live answers meet the served document: capabilities, and an agent made, re
   assert.notDeepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, { ...(await api("GET", "/capabilities")).body, unheard_of: 1 }), []);
 });
 
+// The exported helper is what the route serves: every harness's offer resolved, its default_model included, so a direct
+// caller's document holds the schema the server publishes (the field is required), on a server with a gateway, with
+// providers, and with the faux harness.
+const NOT_A_KEY = "fake";
+test("capabilities(), the exported helper, gives a document that passes the published Capabilities schema whole", async (t) => {
+  const { doc } = await served(t);
+  const shape = { $ref: "#/components/schemas/Capabilities" };
+  const sources = [];
+  for (const env of [{}, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENT_MODEL: "m-1" }, { AGENT_MODEL: "anthropic/claude-sonnet-5", ANTHROPIC_API_KEY: NOT_A_KEY }, { AGENTRUN_SERVE_FAUX: FAUX }]) {
+    const caps = await capabilities(env);
+    sources.push(caps.models.source);
+    assert.deepEqual(schemaProblems(doc, shape, caps), [], JSON.stringify(env));
+    for (const harness of caps.harnesses) assert.ok("default_model" in harness, `${harness.id} names its default_model`);
+  }
+  assert.deepEqual(sources, ["providers", "gateway", "providers", "faux"], "every source this server answers with is proven against the schema");
+  // models/2 widens the contract's enum to what this server answers with, marked as its own addition.
+  const source = doc.components.schemas.Capabilities.properties.models.properties.source;
+  assert.equal(source["x-agentrun-serve"], "models/2");
+  assert.deepEqual(source.enum, ["managed", "chatgpt", "env", "faux", "gateway", "providers"]);
+  // The positive controls: a source outside the enum, and a harness without its default_model, are refused by the same schema.
+  const plain = await capabilities({});
+  assert.notDeepEqual(schemaProblems(doc, shape, { ...plain, models: { ...plain.models, source: "elsewhere" } }), []);
+  const caps = await capabilities({});
+  assert.notDeepEqual(schemaProblems(doc, shape, { ...caps, harnesses: caps.harnesses.map(({ default_model, ...offer }) => offer) }), []);
+});
+
 test("the decision providers' widening to parallel is its own addition, decisions/2, and info lists it", async (t) => {
   const { doc } = await served(t);
   const decisions = doc.components.schemas.Capabilities.properties.workflows.properties.decisions;
   assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
   assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
+});
+
+test("learning is this server's own addition, learning/1: the definition's switch, the server's in capabilities, and a run's learning whole on its read and short in lists, and the answers meet the document", { timeout: 120_000 }, async (t) => {
+  const { api, baseUrl, data } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const schemas = doc.components.schemas;
+  for (const [schema, field] of [["DefinitionInput", "learning"], ["Run", "learning"], ["RunSummary", "learning"], ["Features", "learning"]]) {
+    assert.equal(schemas[schema].properties[field]?.["x-agentrun-serve"], "learning/1", `${schema}.${field} is marked`);
+    assert.ok(doc.info["x-agentrun-serve"].fields.includes(`${schema}.${field}`), `info lists ${schema}.${field}`);
+  }
+  assert.equal(schemas.DefinitionInput.properties.learning.default, false, "off unless an agent says so");
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.equal(caps.features.learning, "on", "the server's switch is on by default");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, caps), []);
+  // A run seeded, one whose folder cannot be made (a file where it goes), and one of an agent that does not learn.
+  assert.equal((await api("POST", "/agents", agent("learner", { learning: true }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("blocked", { learning: true }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  await mkdir(homeOf(data, "blocked"), { recursive: true });
+  await writeFile(join(homeOf(data, "blocked"), "learning"), "not a folder");
+  const runs = {};
+  for (const id of ["learner", "blocked", "plain"]) {
+    const started = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    runs[id] = started.body.run_id;
+  }
+  const want = { learner: ["seeded", null], blocked: ["dropped", "seed_failed"], plain: null };
+  for (const [id, runId] of Object.entries(runs)) {
+    const read = (await api("GET", `/runs/${runId}`)).body;
+    assert.deepEqual(read.learning && [read.learning.state, read.learning.reason], want[id], id);
+    assert.deepEqual(schemaProblems(doc, schemas.Run.properties.learning, read.learning), [], `${id}: ${JSON.stringify(read.learning)}`);
+    const listed = (await api("GET", `/agents/${id}/runs`)).body.runs[0];
+    assert.deepEqual(listed.learning, want[id] && { state: want[id][0], reason: want[id][1] }, `${id} in its list`);
+    assert.deepEqual(schemaProblems(doc, schemas.RunSummary.properties.learning, listed.learning), [], id);
+  }
+  // The positive control: the same check sees a state the document does not hold.
+  assert.notDeepEqual(schemaProblems(doc, schemas.Run.properties.learning, { state: "merged", reason: null, detail: null, at: new Date().toISOString() }), []);
 });
 
 test("an agent's home is its own addition, home/1: its routes and capabilities.home marked and listed, beside the contract's packed home, and its answers meet the document", async (t) => {

@@ -1,6 +1,7 @@
-// fetch_page: one public web page as a Page, on pi-browser's public-host guard. The network here is a table (no socket):
-// every hostile target must be refused before it is dialled, in the tool itself, in an agentic run's process and in a
-// workflow's call node, and the public page must answer.
+// The guarded direct fetch, and fetch_page, web_fetch's legacy name: one public web page as a Page, on pi-browser's
+// public-host guard. The network here is a table (no socket): every hostile target must be refused before it is dialled,
+// in the fetch itself, in an agentic run's process and in a workflow's call node, and the public page must answer. A
+// revision or a call node naming fetch_page runs web_fetch under that name (its Page with `via`).
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -93,13 +94,15 @@ function pagesOf(data, runId) {
   }
 }
 
-test("an agentic run's fetch_page in its own process: every hostile target refused (ok false, never dialled), the public page answered", async (t) => {
+test("an agentic run's fetch_page, web_fetch under its legacy name, in its own process: every hostile target refused (ok false, never dialled), the public page answered", async (t) => {
   const log = join(await scratch(t), "dialled.txt");
   const saved = process.env.FAUX_WEB_LOG;
   process.env.FAUX_WEB_LOG = log;
   t.after(() => (saved === undefined ? delete process.env.FAUX_WEB_LOG : (process.env.FAUX_WEB_LOG = saved)));
   const { api, baseUrl, data } = await serve(t, { fauxWeb: FAUX_WEB });
-  const listed = (await client(baseUrl)("GET", "/capabilities")).body.tools.find((tool) => tool.name === "fetch_page");
+  const tools = (await client(baseUrl)("GET", "/capabilities")).body.tools;
+  assert.equal(tools.find((tool) => tool.name === "fetch_page"), undefined, "the table lists web_fetch alone");
+  const listed = tools.find((tool) => tool.name === "web_fetch");
   assert.deepEqual([listed.available, listed.nodes, listed.calls, listed.missing], [true, true, true, undefined], "no key needed");
   assert.equal((await api("POST", "/agents", { definition: { id: "reader", name: "reader", instructions: "Read.", tools: ["fetch_page"] } })).status, 201);
   const urls = [...HOSTILE.map(([url]) => url), "http://public.example/"];
@@ -109,7 +112,7 @@ test("an agentic run's fetch_page in its own process: every hostile target refus
   const pages = pagesOf(data, started.body.run_id);
   assert.equal(pages.length, urls.length);
   HOSTILE.forEach(([url], i) => assert.match(pages[i].refused ?? "", /^refused: /, `${url}: ${JSON.stringify(pages[i])}`));
-  assert.deepEqual((({ text, ...rest }) => rest)(pages.at(-1)), PUBLIC);
+  assert.deepEqual((({ text, ...rest }) => rest)(pages.at(-1)), { ...PUBLIC, via: "direct" }, "web_fetch's Page, under fetch_page's name");
   const dialled = (await readFile(log, "utf8")).trim().split("\n");
   assert.deepEqual(dialled, ["http://redirect.example/", "http://renamed.example/", "http://public.example/"], "only public addresses were dialled");
 });
@@ -133,7 +136,7 @@ test("a workflow's call node runs fetch_page: the Page is its output, a refusal 
     await follow(api, started.body.run_id, ["completed"]);
     return (await api("GET", `/runs/${started.body.run_id}`)).body.result.output;
   };
-  assert.deepEqual((({ text, ...rest }) => rest)(await run("http://public.example/")), PUBLIC);
+  assert.deepEqual((({ text, ...rest }) => rest)(await run("http://public.example/")), { ...PUBLIC, via: "direct" });
   for (const website of ["http://169.254.169.254/latest/meta-data/", "http://redirect.example/", "file:///etc/passwd"]) {
     const page = await run(website);
     assert.deepEqual([page.ok, /^refused: /.test(page.refused)], [false, true], `${website}: ${JSON.stringify(page)}`);
@@ -155,6 +158,6 @@ test("a workflow's call node runs fetch_page: the Page is its output, a refusal 
     other.root.steps[0].tool = tool;
     const refused = await api("POST", "/agents", { definition: { id: `call-${tool}`, name: tool, workflow: other, tools: [tool] } });
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => f.field)], [422, ["definition.workflow"]], tool);
-    assert.match(refused.body.error.fields[0].message, new RegExp(`call nodes run the tools fetch_page, web_fetch, pdf_pages, llm here; this workflow also calls ${tool}\\.`));
+    assert.match(refused.body.error.fields[0].message, new RegExp(`call nodes run the tools web_fetch, web_search, pdf_pages, llm here; this workflow also calls ${tool}\\.`));
   }
 });

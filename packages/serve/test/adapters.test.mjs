@@ -147,7 +147,6 @@ test("claude-agent's native skills reach the adapter as serve gives them, and an
 
 test("claude-agent's check of skills is the installed adapter's own skillProblems; none where the package is not installed", async () => {
   const { claudeSkillCheck } = await import("../dist/adapters.js");
-  assert.equal(typeof claudeSkillCheck, "function", "adapters.js exports claudeSkillCheck");
   const real = await import("@parcha/agentrun-harness-claude");
   assert.equal(await claudeSkillCheck(async () => real), real.skillProblems, "the adapter's own function, not a copy");
   assert.equal(await claudeSkillCheck(), real.skillProblems, "by default, the package installed beside serve");

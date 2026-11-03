@@ -3,11 +3,11 @@
 // or 8.12.2, nothing before 6, and any 9 or later. The disk SDK and @earendil-works/pi-coding-agent pin undici 8.10.2
 // exactly; the root package.json's overrides move only those two packages' copies, so a lock refresh, or either package
 // arriving under another parent, could bring 8.10.2 back unseen (verify-packages audits a clean consumer, not this
-// install). Exits 1 naming each such copy by its path. Runs as a command on Node 22.18 or later (import.meta.main); on an
-// older Node the command does nothing and exits 0.
+// install). Exits 1 naming each such copy by its path. On a Node too old to tell it is the command, it refuses (is-main.mjs).
 import { spawnSync } from 'node:child_process';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -36,7 +36,7 @@ export function staleUndici(tree) {
   return found;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const ls = spawnSync('npm', ['ls', 'undici', '--all', '--json'], { cwd: repo, encoding: 'utf8', maxBuffer: 64 << 20 });
   if (!ls.stdout) {
     console.error(`npm ls printed no tree (exit ${ls.status}): ${ls.stderr || ls.error}`);

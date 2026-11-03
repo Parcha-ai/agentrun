@@ -10,6 +10,15 @@ on:
 permissions:
   contents: read
 
+# Reaches every npm and npx in every job, nested ones too unless a script clears the env. A registry request that fails
+# before its response arrives (reset, refused, timed out, 5xx) is retried 5 times, 20 s then 2 min apart (~8 min), not
+# npm's 2 in ~70 s. npm never retries a download that drops midway: each `npm ci` (scripts/npm-ci-retry.mjs, also used
+# by scripts/build-console.mjs) retries once on a network error only.
+env:
+  npm_config_fetch_retries: '5'
+  npm_config_fetch_retry_mintimeout: '20000'
+  npm_config_fetch_retry_maxtimeout: '120000'
+
 # A new push to a pull request replaces its running checks. Merge-queue candidates and main keep every run: each head
 # needs its own verdict.
 concurrency:
@@ -31,8 +40,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 22.19 = the supported floor, 22.23 = release toolchain, 24.21 = the active LTS line.
-        node: ['22.19.0', '22.23.2', '24.21.0']
+        # 22.19 = the supported floor, 22.23 = release toolchain, 24.21 = the active LTS line. The merge queue runs the release
+        # toolchain only: every pull request and every push to main runs all three.
+        node: ${{ fromJSON(github.event_name == 'merge_group' && '["22.23.2"]' || '["22.19.0","22.23.2","24.21.0"]') }}
         shard: [checks, transport, browser, durable, core, viewer, rest, examples-1, examples-2, examples-3]
     steps:
       - uses: actions/checkout@v4
@@ -57,12 +67,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
           pdftoppm -v && gs --version && ffmpeg -version | head -1
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - name: The console, built before the server so the server's build copies it into its dist
         # verify-packages --console then checks the packed server carries it, its files scanned like every packed file.
         if: matrix.shard == 'checks'
         working-directory: apps/console
-        run: npm ci --ignore-scripts && npm run build
+        run: node ../../scripts/npm-ci-retry.mjs --ignore-scripts && npm run build
       - run: npm run build
       - if: matrix.shard == 'checks'
         run: npm run typecheck
@@ -82,16 +92,33 @@ jobs:
         run: node scripts/verify-packages.mjs --console
       - if: matrix.shard == 'checks' && matrix.node == '22.23.2'
         run: npm run verify:source
-      - if: matrix.shard == 'checks' && matrix.node == '22.19.0'
+      # TypeScript 5.4.5, not a Node version: in the merge queue it runs on the one Node there.
+      - if: matrix.shard == 'checks' && (matrix.node == '22.19.0' || github.event_name == 'merge_group')
         run: node scripts/check-typescript-floor.mjs
       - if: matrix.shard != 'checks'
-        run: node scripts/ci-shard.mjs ${{ matrix.shard }}
+        run: |
+          if [ -n "$LEAN_SWEEP_DIR" ]; then export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$GITHUB_WORKSPACE/spec/lean/sweep/capture-register.mjs"; fi
+          node scripts/ci-shard.mjs ${{ matrix.shard }}
         env:
           # The Claude Agent adapter's real-CLI test runs on the pinned CLI (the SDK's platform package, a dev dependency):
           # here a missing or different one fails, not skips.
           AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY: '1'
           # The Codex adapter's tool-off test runs on the pinned binary (a dev dependency): here a missing one fails, not skips.
           AGENTRUN_CODEX_REQUIRE_BINARY: '1'
+          # On 22.23.2 the core and example shards record every workflow their DSL, pi and example tests validate or run
+          # (spec/lean/sweep, preloaded above), for the lean job's validator sweep. Empty elsewhere: no hook.
+          LEAN_SWEEP_DIR: ${{ matrix.node == '22.23.2' && (matrix.shard == 'core' || startsWith(matrix.shard, 'examples-')) && format('{0}/lean-sweep', runner.temp) || '' }}
+      # The lean job reads these and fails on a missing one; this step never fails a test shard.
+      - name: Keep the workflows the tests validated, for the lean job
+        if: matrix.node == '22.23.2' && (matrix.shard == 'core' || startsWith(matrix.shard, 'examples-'))
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: lean-sweep-${{ matrix.shard }}
+          path: ${{ runner.temp }}/lean-sweep/*.json
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true
       - name: Retain package verification evidence
         if: always() && matrix.shard == 'checks'
         uses: actions/upload-artifact@v4
@@ -117,7 +144,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
           cache-dependency-path: apps/console/package-lock.json
-      - run: npm ci --ignore-scripts
+      - run: node ../../scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
@@ -126,7 +153,8 @@ jobs:
   verify:
     # The required checks keep their names: verify (<node>) passes when every test shard, the console and every pi leg
     # passed. It reads `needs`, not the jobs API, so an API error cannot fail a required check. A red 24.21 shard now fails
-    # verify (22.x) too, and so does a pi leg that failed, was cancelled or was skipped.
+    # verify (22.x) too, and so does a pi leg that failed, was cancelled or was skipped. In the merge queue the test shards
+    # run on 22.23.2 only and every verify (<node>) still runs: `needs.test.result` is the result of the shards that ran.
     name: verify (${{ matrix.node }})
     needs: [test, console, pi-1-2]
     if: always()
@@ -159,7 +187,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
         if: always()
@@ -182,7 +210,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/agentrun-pi,@parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
         if: always()
@@ -197,18 +225,21 @@ jobs:
     # while the workspace develops on 1.1.0 (verify). scripts/pi-leg.mjs picks the packages from their ranges, so a range
     # that starts to accept a version is tested on it in the same pull request, and fails the run if another version was
     # resolved. From 1.3 pi pins its own packages to exact versions, so each leg installs one whole family.
-    # Each leg runs as two jobs that both install and check the whole family: `first` runs the suites FIRST names and the
-    # clean consumer, `rest` every other suite, so each suite runs once and a new pi workspace runs in `rest`.
+    # Each leg runs as five jobs. `consumer` packs the packages and installs them in an empty directory with the family at
+    # the leg's pi. The other four install and check the whole family; each runs the suites its variable names, and `rest`
+    # every other one, so each suite runs once and a new pi workspace runs in `rest`.
     name: pi-1-2 (${{ matrix.pi }}, ${{ matrix.suites }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      FIRST: '@parcha/pi-transport,@parcha/agentrun-serve,@parcha/pi-git-remote'
+      FIRST: '@parcha/agentrun-serve'
+      TRANSPORT: '@parcha/pi-transport,@parcha/pi-git-remote'
+      BROWSER: '@parcha/pi-browser,@parcha/pi-durable-disk,@parcha/pi-durable-agent'
     strategy:
       fail-fast: false
       matrix:
         pi: ['1.2.0', '1.3.0']
-        suites: [first, rest]
+        suites: [consumer, first, transport, browser, rest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -224,14 +255,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
           pdftoppm -v && gs --version && ffmpeg -version | head -1
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - name: The clean consumer and the reference example at the leg's pi
         # The packages packed and installed together in an empty directory, with the pi family at this version: one
         # pi-durable and one chord there, and the reference job's record equal to the one fixed for this pi.
-        if: matrix.suites == 'first'
+        if: matrix.suites == 'consumer'
         run: node scripts/verify-packages.mjs --pi ${{ matrix.pi }}
-      - run: node scripts/pi-leg.mjs --pi ${{ matrix.pi }} --scratch --require-all ${{ matrix.suites == 'first' && '--tests' || '--tests-except' }} "$FIRST" --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
+      - name: The family at the leg's pi, and this job's suites on it
+        if: matrix.suites != 'consumer'
+        env:
+          LEG_PI: ${{ matrix.pi }}
+          LEG_SUITES: ${{ matrix.suites }}
+        run: |
+          case "$LEG_SUITES" in
+            first) tests=(--tests "$FIRST") ;;
+            transport) tests=(--tests "$TRANSPORT") ;;
+            browser) tests=(--tests "$BROWSER") ;;
+            rest) tests=(--tests-except "$FIRST,$TRANSPORT,$BROWSER") ;;
+            *) echo "::error::no suites named $LEG_SUITES"; exit 1 ;;
+          esac
+          node scripts/pi-leg.mjs --pi "$LEG_PI" --scratch --require-all "${tests[@]}" --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: The re-asked fold on this pi
         if: matrix.suites == 'first'
         # A real mid-stream kill and resume, recorded on the pi the leg installed: pi.live must still be version 1 and turn 0 asked twice.
@@ -260,7 +304,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - run: node scripts/pi-cross-version.mjs --from 1.1.0 --to 1.2.0 --npm "npx --yes npm@11.21.0"
 
@@ -278,7 +322,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-vision --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
         if: always()
@@ -308,7 +352,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build -w @parcha/pi-vision
       - run: npm run test:binaries -w @parcha/pi-vision
 
@@ -326,7 +370,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-transport --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
         if: always()
@@ -339,9 +383,10 @@ jobs:
   transport-docker:
     # @parcha/pi-transport's formatter and linter, and its box conformance suite on real Docker containers. They are not
     # part of the verify matrix: the suite needs a Docker daemon and an image, not three Node versions. A daemon that
-    # cannot start a box fails a test here instead of skipping it.
+    # cannot start a box fails a test here instead of skipping it. Then serve's boxed tools on the same daemon, advisory
+    # (a failure shows, and blocks nothing): a sandbox run's bash and file tools in a box with no network and no key.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -349,10 +394,21 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run lint -w @parcha/pi-transport
       - run: docker pull debian:bookworm-slim
       - run: npm run test:live:docker -w @parcha/pi-transport
+      - name: Build, for serve's boxed tools on Docker (advisory)
+        continue-on-error: true
+        run: npm run build
+      - name: Serve's boxed tools on Docker, no network and no key in the box, and the default box image built (advisory)
+        continue-on-error: true
+        working-directory: packages/serve
+        env:
+          AGENTRUN_SERVE_LIVE_DOCKER: '1'
+          AGENTRUN_SERVE_LIVE_DOCKER_BUILD: '1'
+        # The flag bounds the whole file, which builds the default box image (python, git, curl) once.
+        run: node --test --test-timeout=900000 test/boxed-tools.docker.test.mjs
 
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's
@@ -384,7 +440,7 @@ jobs:
         # exits with SIGABRT at startup. This is the runner's documented switch; the sandbox stays on for the tests.
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - run: npm run test:chrome -w @parcha/pi-browser
       # The assembled reference job on the same Chrome: its record and ledger must be the fixed ones (the receipt name and token counts are not).
@@ -399,7 +455,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-vision, pi-transport, pi-transport-docker, pi-durable-agent, pi-git-remote, pi-agent-learn, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-harness]
+        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-vision, pi-transport, pi-transport-docker, pi-durable-agent, pi-git-remote, pi-agent-learn, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-harness, agentrun-serve]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -407,7 +463,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - name: Run the stranger test
         # An explicit shell runs with pipefail; the default does not, and tee's status would hide a failing spec.
@@ -430,7 +486,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - name: The local run's tests
         working-directory: packages/pi-durable-disk
@@ -480,7 +536,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - name: Run the README's install line
         shell: bash
@@ -542,7 +598,11 @@ jobs:
   lean:
     # The Lean model of the workflow language (spec/lean): proofs, axiom audit, the model's
     # side of the conformance corpus, and the validator sweep. The TypeScript side of the
-    # conformance corpus runs in `npm test` above.
+    # conformance corpus runs in `npm test` above. The sweep's workflows come from the test
+    # shards on 22.23.2, so it waits for them; it runs when one failed too, and the sweep fails
+    # if a shard's captures are missing. verify does not need it.
+    needs: [test]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -577,11 +637,19 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - name: Build the TypeScript packages
+      - name: Build the DSL, whose validator gives TypeScript's verdicts
         working-directory: .
-        run: npm ci --ignore-scripts && npm run build
-      - name: Collect every workflow the test suites validate, with TypeScript's verdicts
+        run: node scripts/npm-ci-retry.mjs --ignore-scripts && npm run build -w @parcha/agentrun-dsl
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lean-sweep-*
+          path: ${{ runner.temp }}/lean-sweep
+      - name: Every workflow the test shards validated, with TypeScript's verdicts
         working-directory: .
-        run: node spec/lean/sweep/collect.mjs spec/lean/.lake/validator-corpus.json
+        env:
+          CAPTURES: ${{ runner.temp }}/lean-sweep
+        run: >-
+          node spec/lean/sweep/collect.mjs --captures "$CAPTURES/lean-sweep-core" --captures "$CAPTURES/lean-sweep-examples-1"
+          --captures "$CAPTURES/lean-sweep-examples-2" --captures "$CAPTURES/lean-sweep-examples-3" spec/lean/.lake/validator-corpus.json
       - name: The Lean validator accepts everything the TypeScript validator accepts
         run: lake exe validator-sweep .lake/validator-corpus.json

@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { UPSTREAM, UPSTREAM_FILE, PRISTINE_DIR } from './upstream-attribution.mjs';
 import { gitBlob, linesChanged, MATCHED } from './vendor-durable-harness.mjs';
+import { isMain } from './is-main.mjs';
 
 export const PORT_DIR = 'vendor/durable-harness/port';
 const PATCH_FIELDS = ['Patch', 'Reason', 'Upstream', 'Pins'];
@@ -413,7 +414,7 @@ export async function upgradeReport(dir, { sha, upstreamClone }) {
   return report;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const args = process.argv.slice(2);
   const usage = 'usage: port-durable-harness.mjs [--check | --drop <patch> [--cascade] [--out <dir>] | --pin <sha> --upstream <clone>] [<package dir>]';
   const refuse = (why) => { console.error(`${why}\n${usage}`); process.exit(2); };

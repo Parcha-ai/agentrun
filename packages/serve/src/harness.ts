@@ -9,7 +9,11 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
 
 /** One harness as capabilities lists it: whether this server runs it, and when not, why; and whether it takes a message
  *  mid-turn (`steer`), or queues it for the turn's end. */
-export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string };
+/** `default_model`: the model this server runs for the harness when a definition names none (`provider/model-id`), or
+ *  null when it runs none there; harnessOffers sets it. */
+export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string; default_model?: string | null };
+/** A harness as capabilities list it: an offer with its `default_model` resolved (harnessOffers), never left out. */
+export type HarnessCapability = HarnessOffer & { default_model: string | null };
 
 /** Whether a harness takes a message mid-turn: pi does; another harness's run queues it for the turn's end. */
 export const steersMidTurn = (id: string): boolean => id === DEFAULT_HARNESS;
@@ -23,21 +27,29 @@ export function harnessesOf(env: NodeJS.ProcessEnv): HarnessOffer[] {
   return HARNESSES.map((id) => (id === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV] ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), reason: `This server does not run ${id} yet.` }));
 }
 
-const offered = new WeakMap<object, Promise<HarnessOffer[]>>();
+const offered = new WeakMap<object, Promise<HarnessCapability[]>>();
 
 /** What this server offers of each harness, checked once per environment: each adapter's package, pins and endpoint,
  *  on a model of the harness's own provider (adapters.ts). Whether a revision's model fits its harness is that
  *  revision's (runnable.ts). */
-export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessOffer[]> {
+export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability[]> {
   let offers = offered.get(env);
   if (!offers) {
     offers = (async () => {
-      if (env[FAUX_HARNESS_ENV]) return harnessesOf(env);
-      const { harnessReason } = await import("./adapters.js");
-      return Promise.all(HARNESSES.map(async (id): Promise<HarnessOffer> => {
-        if (id === DEFAULT_HARNESS) return { id, available: true, steer: true };
-        const reason = await harnessReason(id, env, undefined);
-        return reason === undefined ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), reason };
+      const base = env[FAUX_HARNESS_ENV] ? harnessesOf(env) : await (async () => {
+        const { harnessReason } = await import("./adapters.js");
+        return Promise.all(HARNESSES.map(async (id): Promise<HarnessOffer> => {
+          if (id === DEFAULT_HARNESS) return { id, available: true, steer: true };
+          const reason = await harnessReason(id, env, undefined);
+          return reason === undefined ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), reason };
+        }));
+      })();
+      // Each harness's model when a definition names none, as a save and a run resolve it (runnable.ts): none for a
+      // harness that does not run here, or that no model here would run on.
+      const { harnessModel } = await import("./runnable.js");
+      return Promise.all(base.map(async (offer): Promise<HarnessCapability> => {
+        const resolved = offer.available ? await harnessModel(env, offer.id, undefined, true) : undefined;
+        return { ...offer, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null };
       }));
     })();
     offered.set(env, offers);

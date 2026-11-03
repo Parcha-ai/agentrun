@@ -1,6 +1,6 @@
 # @parcha/agentrun-decisions
 
-Held: this package is in the repository and is built and tested with the others, but is not on npm yet.
+Published to npm from the next release (`@latest`), with AgentRun Server, which uses it. Until then it installs from this repository.
 
 Third-party decision models for the AgentRun DSL's decision nodes (`judge`, `pick`, `sift`, a judged `route`, `ask` and a `verify` clause). Each is a `DecisionProvider`, the seam in `@parcha/agentrun-dsl`, and runs through `judgeFromProvider`, with no agent harness. Jev's provider is `jevProvider` in `@parcha/agentrun-jev`.
 

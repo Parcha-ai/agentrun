@@ -9,10 +9,16 @@ import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { isMain } from './is-main.mjs';
 
 const exec = promisify(execFile);
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const kinds = ['breaking', 'feature', 'fix', 'ci', 'docs'];
+// The packages on a version line of their own, published at their manifest's version and not the workspace's: @parcha/agentrun (the
+// `npx @parcha/agentrun` command) starts at 0.3.0, above the hosted-API SDK's 0.2.x that the same npm name published from another
+// repository. Its version moves when the files it ships do (`--check` fails a change that forgets), not with a release: a release
+// that finds the version published with other bytes stops. Bumping it is not a release commit.
+export const ownVersionPackages = ['agentrun'];
 const fragmentName = /^[a-z0-9][a-z0-9-]*\.md$/;
 
 /** The workspace package names (`@parcha/...`) by directory, read from the manifests under `root`. */
@@ -310,10 +316,12 @@ export async function fold(root, version, date, base) {
   return { folded: fragments.length, files: changed };
 }
 
-/** The workspace packages whose manifest version differs from the merge base's. A package the base does not have is new, not bumped. */
+/** The workspace packages whose manifest version differs from the merge base's. A package the base does not have is new, not bumped,
+ *  and one on its own version line (`ownVersionPackages`) is not a release's bump. */
 async function bumpedPackages(root, mergeBase) {
   const bumped = [];
   for (const directory of (await workspacePackages(root)).keys()) {
+    if (ownVersionPackages.includes(directory)) continue;
     const was = await gitShow(root, mergeBase, `packages/${directory}/package.json`);
     if (was === null) continue;
     const is = JSON.parse(await readFile(join(root, 'packages', directory, 'package.json'), 'utf8')).version;
@@ -333,6 +341,26 @@ export async function releaseRace(root, base) {
   return { release: bumped.length > 0, bumped, unfolded: bumped.length > 0 ? names : [] };
 }
 
+/** The packages on their own version line whose shipped files (the manifest, its `files`, a README, LICENSE or NOTICE) differ from
+ *  the merge base's while the version does not: the release would find that version published with other bytes and stop. */
+export async function staleOwnVersions(root, base) {
+  const mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim();
+  const stale = [];
+  for (const directory of ownVersionPackages) {
+    const was = await gitShow(root, mergeBase, `packages/${directory}/package.json`);
+    const now = await readOptional(join(root, 'packages', directory, 'package.json'));
+    if (was === null || now === null) continue;
+    const manifest = JSON.parse(now);
+    if (JSON.parse(was).version !== manifest.version) continue;
+    const shipped = path => path === 'package.json' || /^(README|LICENSE|LICENCE|NOTICE)(\.|$)/i.test(path)
+      || (manifest.files ?? []).some(entry => path === entry || path.startsWith(`${entry.replace(/\/$/, '')}/`));
+    const changed = (await git(root, ['diff', '--name-only', mergeBase, '--', `packages/${directory}`])).split('\n').filter(Boolean)
+      .map(path => path.slice(`packages/${directory}/`.length));
+    if (changed.some(shipped)) stale.push(directory);
+  }
+  return stale;
+}
+
 /** Whether a changelog's text has the section for `version`. */
 export const hasVersionSection = (text, version) => text.split('\n').some(line => isVersionHeading(line, version));
 
@@ -348,6 +376,8 @@ async function main() {
     assert.deepEqual(edited, [], `An Unreleased section is edited in ${edited.join(', ')}. Add a fragment in changes/ instead (see CONTRIBUTING.md); only the release fold edits it.`);
     const { unfolded } = await releaseRace(root, base);
     if (unfolded.length) throw new Error(`release commit carries unfolded fragments: ${unfolded.join(', ')}; refold on current main`);
+    const stale = await staleOwnVersions(root, base);
+    if (stale.length) throw new Error(`${stale.map(directory => `packages/${directory}`).join(', ')} changed the files it publishes and kept its version; bump the version in its package.json (it is published at its own version, and a release stops on a version already published with other bytes)`);
     console.log(`Changes: ${fragments.length} fragment(s) valid; no Unreleased section edited${isFold ? ' (the fold)' : ''}.`);
   } else if (args[0] === '--fold') {
     const version = args[1];
@@ -355,4 +385,4 @@ async function main() {
     console.log(`Folded ${result.folded} fragment(s) into ${result.files.join(', ') || 'no changelog'}.`);
   } else throw new Error('Usage: node scripts/changes.mjs --check [--base <commit>] | --fold <version> [--date YYYY-MM-DD] [--base <ref>]');
 }
-if (import.meta.main) main().catch(error => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });
+if (isMain(import.meta)) main().catch(error => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

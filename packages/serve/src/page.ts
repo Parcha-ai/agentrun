@@ -1,7 +1,8 @@
 // The console at "/" (apps/console, which this package's build copies into dist/console): its index.html and Vite's
 // hashed assets under /assets/, public, under one strict CSP. The console signs a person in itself. With accounts it
 // takes the owner's session cookie (owner.ts); without, the server's token as a cookie that the printed link (`/?token=`)
-// sets once. Either stands in for the Bearer header on /v2, and for a write only from this origin with a JSON body. The
+// sets once. Either stands in for the Bearer header on /v2, and for a write only from this origin with a JSON body, or
+// with any body on a route that takes bytes (a PUT marked `raw` in server.ts). The
 // store's read-only JSON (/api/*, pi-durable-agent's store page's data) answers the Bearer token or either cookie.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
@@ -53,7 +54,8 @@ function send(req: IncomingMessage, res: ServerResponse, status: number, type: s
 const refuse = (req: IncomingMessage, res: ServerResponse, error: ApiError) =>
   send(req, res, error.status, "application/json", JSON.stringify(error.body(String(res.getHeader("x-request-id") ?? ""))), error.headers);
 
-type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; console?: string | undefined };
+/** `takesBytes`: whether a request of `method` to `path` (under /v2) goes to a route whose body is bytes (server.ts). */
+type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; console?: string | undefined; takesBytes?: (method: string | undefined, path: string) => boolean };
 
 const redirect = (res: ServerResponse, location: string, headers: Record<string, string> = {}) => (res.writeHead(303, { ...SECURITY, location, "content-length": 0, ...headers }), void res.end());
 
@@ -66,7 +68,7 @@ async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir:
   const [root, real] = await Promise.all([realpath(dir).catch(() => null), realpath(join(dir, rel)).catch(() => null)]);
   if (!root || !real) {
     // A refusal (a wrong link token) stays a refusal on a server without its console: only a plain miss is a 404.
-    return rel === "index.html" ? send(req, res, status === 200 ? 404 : status, "text/plain; charset=utf-8", "This server was built without its console: build apps/console, then rebuild the server.\n") : missing();
+    return rel === "index.html" ? send(req, res, status === 200 ? 404 : status, "text/plain; charset=utf-8", "This server was built without its console: run npm ci && npm run build at the repository's root, which builds the console first, then start the server again.\n") : missing();
   }
   if (!real.startsWith(root + sep) || !(await stat(real)).isFile()) return missing();
   send(req, res, status, type, await readFile(real), { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store" });
@@ -105,13 +107,15 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
  * Answers the console's paths ("/" and its /assets/*, and the addresses that moved to "/") and the store's /api/*, and
  * returns true; returns false for every other path. On a /v2 path with no Authorization header, the browser's cookie
  * becomes the Bearer header for a GET or HEAD, and for any other method only when the request's Origin is this server's
- * own origin and its body is application/json.
+ * own origin and its body is application/json, or the request is a PUT to a route that takes bytes, with any content
+ * type.
  */
 export function answerPage(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): boolean {
   const held = server.owner ? signedIn(req, server.owner) : cookiesOf(req, cookieName(req)).some((value) => same(value, sessionOf(server.token)));
   if (raw.startsWith("/v2/")) {
     const safe = req.method === "GET" || req.method === "HEAD";
-    if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && isJson(req)))) req.headers.authorization = `Bearer ${server.token}`;
+    const bytes = req.method === "PUT" && server.takesBytes?.(req.method, raw.slice(3)) === true;
+    if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && (isJson(req) || bytes)))) req.headers.authorization = `Bearer ${server.token}`;
     return false;
   }
   if (raw !== "/" && !raw.startsWith("/assets/") && !raw.startsWith("/api/") && !MOVED.has(raw)) return false;

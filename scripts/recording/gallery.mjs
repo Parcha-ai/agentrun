@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from '../is-main.mjs';
 
 /** The release the asset is on: a tag no release workflow reads (they read `v*`). */
 export const RELEASE = 'gallery';
@@ -257,7 +258,7 @@ export function packGallery(dir, lock) {
 export const exampleFolders = (root = fileURLToPath(new URL('../../examples/', import.meta.url))) =>
   new Set(readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name));
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const [command, ...rest] = process.argv.slice(2);
   const examples = exampleFolders();
   const fail = (lines) => { for (const line of lines) console.error(line); process.exit(1); };

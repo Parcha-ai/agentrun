@@ -9,10 +9,13 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
+import { durableDecisions } from "@parcha/agentrun-pi/durable";
+import { CANARY } from "./fixtures/faux-jev.mjs";
 import { startServe } from "../dist/index.js";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const EFFORT_NAMES = ["AGENT_THINKING", "AGENTRUN_SERVE_EFFORT"];
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
@@ -76,14 +79,10 @@ test("a run its server's successor ends keeps the effort its process ran at, not
   const dir = await scratch(t);
   const data = join(dir, "agents");
   // The first server in a process of its own, at the host level high, so it can die as a crash kills it.
-  const first = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENT_THINKING: "high" } });
+  // A home of its own: a first start counts the sessions in its home for setup's offer, and this machine's are not the test's.
+  const first = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dir, AGENT_THINKING: "high" } });
   t.after(() => first.kill("SIGKILL"));
-  let out = "";
-  first.stdout.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_API_KEY=/.test(out); i++) {
-    assert.ok(i < 200, `the server did not start: ${out}`);
-    await sleep(50);
-  }
+  const out = await printed(first, /^AGENTRUN_API_KEY=/m);
   const api = client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], (await readFile(join(data, ".token"), "utf8")).trim());
   const go = join(dir, "go");
   const runId = await started(api, "later", {}, { input: { content: `Answer once ${go} exists.` } });
@@ -181,4 +180,43 @@ test("a tool name past what the store keeps is cut to fit: the run ends with its
   assert.ok(m, "the run keeps its metrics");
   assert.deepEqual(m.tools, { [`${"t".repeat(255)}…`]: { calls: 1, errors: 1 } }, "the made-up tool, cut; its call failed: no such tool");
   assert.equal(m.requests, 2);
+});
+
+/** A workflow of one judge on Jev: is the document a certificate of incorporation? */
+const judgeFlow = {
+  v: 2, name: "coi-check",
+  schemas: {
+    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+    Coi: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is `doc` a certificate of incorporation?" } } },
+  },
+  input: { schemaId: "In" },
+  output: { schemaId: "Coi", path: "coi" },
+  root: { node: "chain", steps: [{ node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" }] },
+};
+
+test("demo: a faux workflow run with one judge whose receipt carries usage counts that request and its tokens in its run metrics and in /v2/stats; one with no usage counts unmetered, never 0", async (t) => {
+  withEnv(t, { TYPESAFE_API_KEY: CANARY }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_JEV_NO_USAGE"]);
+  const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
+  assert.equal((await api("POST", "/agents", flowAgent("coi", judgeFlow))).status, 201);
+  const ask = async () => {
+    const { body } = await api("POST", "/agents/coi/runs", { input: { question: "State of Delaware. Certificate of Incorporation of Example Widgets, Inc." } });
+    await follow(api, body.run_id, ["completed"]);
+    return body.run_id;
+  };
+  const runId = await ask();
+  const [row] = durableDecisions(join(data, "runs", runId, "store", "run.sqlite"));
+  assert.deepEqual(row.usage, { input_tokens: 120, output_tokens: 0 }, "the receipt carries the judge's usage");
+  const m = metricsOf(data, runId);
+  assert.deepEqual([m.input, m.output, m.requests, m.unmetered], [120, 0, 1, 0], "its one request is the judge's, with its tokens");
+  const key = row.provider ? `${row.provider}/${row.model}` : row.model;
+  assert.deepEqual([m.models, m.model], [{ [key]: 1 }, key]);
+  const totals = (await api("GET", "/stats")).body.analytics.totals;
+  assert.deepEqual([totals.input, totals.tokens, totals.requests, totals.unmetered], [120, 120, 1, 0], "/v2/stats counts it");
+
+  // The provider reports no usage: the request counts, its tokens unknown, in no sum.
+  process.env.AGENTRUN_TEST_FAUX_JEV_NO_USAGE = "1";
+  const bare = metricsOf(data, await ask());
+  assert.deepEqual([bare.input, bare.output, bare.requests, bare.unmetered], [0, 0, 1, 1]);
+  const after = (await api("GET", "/stats")).body.analytics.totals;
+  assert.deepEqual([after.input, after.requests, after.unmetered], [120, 2, 1], "the second run adds a request and no tokens");
 });

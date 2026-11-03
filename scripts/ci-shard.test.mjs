@@ -4,7 +4,7 @@
 // suite the same way the limit does.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
@@ -20,6 +20,16 @@ const sleep = (ms, value) => new Promise((resolve) => { setTimeout(resolve, ms, 
 // Linux's state letter for `pid` from /proc (Z: exited, not yet reaped); undefined where there is no entry to read (no /proc,
 // or the process was reaped meanwhile).
 const state = (pid) => { try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').at(-1)[0]; } catch { return undefined; } };
+// The pid `file` holds once it holds a whole one, else null: a file read while it is being written can be empty.
+const pidIn = (file) => {
+  try { const text = readFileSync(file, 'utf8'); return /^\d+$/.test(text) ? Number(text) : null; } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+};
+// `pid`, once it is sure to name one other process: 0 or a negative pid signals a whole process group (this file's runner's
+// among them), 1 is init. Anything else fails the test and is never signalled.
+const killable = (pid) => {
+  assert.ok(Number.isInteger(pid) && pid > 1 && pid !== process.pid, `refusing to signal pid ${pid}: it does not name one other process`);
+  return pid;
+};
 // Whether `pid` has ended within 5 s, asked every 50 ms. A killed process whose parent died first is reparented and can still
 // answer kill(pid, 0) for a moment, while it exits or as a zombie until it is reaped.
 const ended = async (pid) => {
@@ -140,13 +150,14 @@ test('a cancel that reaches ci-shard stops its suite as the limit does: SIGTERM 
       import { spawn } from 'node:child_process';
       import test from 'node:test';
       test('starts a process that ignores SIGTERM, and waits', () => new Promise(() => {
-        spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.env.CI_SHARD_TEST_PID_FILE, String(process.pid)); setInterval(() => {}, 1000)"], { stdio: 'ignore' });
+        spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); const fs = require('node:fs'); const file = process.env.CI_SHARD_TEST_PID_FILE; fs.writeFileSync(file + '.tmp', String(process.pid)); fs.renameSync(file + '.tmp', file); setInterval(() => {}, 1000)"], { stdio: 'ignore' });
       }));
     `,
   });
   const run = start(t, root, 'rest', { CI_SHARD_TEST_PID_FILE: pidFile });
-  while (!existsSync(pidFile)) await sleep(50);
-  const pid = Number(readFileSync(pidFile, 'utf8'));
+  let pid = null;
+  while ((pid = pidIn(pidFile)) === null) await sleep(50);
+  killable(pid);
   t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } });
   const sent = Date.now();
   process.kill(run.pid, 'SIGTERM');

@@ -38,8 +38,16 @@ const runNode = createHarnessRunner(
   it never holds the provider key. The proxy forwards `POST /v1/responses` only, fixes the model, stores nothing at the
   provider, drops any tool that is not the session's, and asks the runner before every paid request, so the turn cap and
   the host's budget hold. Each response's usage comes back to the runner.
-- **A private, empty machine.** A session runs in its own directories with an empty working directory. Codex's
-  environment is an allowlist (`PATH`, `LANG`, `TZ`, its own homes and the proxy key); nothing else of the host's
+- **Web search, when asked.** The one exception to the above: `webSearch: "live"` sets `web_search = "live"` in Codex's
+  config; the proxy then passes exactly the hosted tool Codex sends for it (`{ type: "web_search", external_web_access:
+  true }`, recorded in `test/fixtures/responses-request-web-search-live.json`) and refuses any other web search tool.
+  Each search a response ran (`tool_usage.web_search.num_requests`) is added to its price at OpenAI's $0.01 a call; a
+  model with no known search price books an unknown cost. A request that offers web search has no input bound, so a cap
+  treats its input as unknown.
+- **A private machine.** A session runs in its own directories. Its working directory is the host's workspace when the
+  host names one (`io.cwd`, where the host's file tools write, an untrusted project to Codex), and otherwise an empty
+  directory of the session's. Codex keeps nothing there, and takes no instructions from an `AGENTS.md` in it
+  (`test/developer-messages.test.mjs`). Codex's environment is an allowlist (`PATH`, `LANG`, `TZ`, its own homes and the proxy key); nothing else of the host's
   reaches it, and its process group ends with the session.
 - **The host's skills, and no others.** `codexAdapter({ skills: [{ name, files }] })`: Codex lists each skill to the model
   by its name and description, and the model reads its `SKILL.md` and the files it names with `read_skill_file` (it has

@@ -1,11 +1,15 @@
-// monid's catalog on one key: the client against the tests' fake monid (fixtures/faux-monid.mjs), the three table tools in
-// capabilities and at a save, and a pi run whose model calls them by their wire names. No network, no real key.
+// monid's catalog on one key: the client against the tests' fake monid (fixtures/faux-monid.mjs), what a run charged and
+// the cap's check before one, the three table tools in capabilities and at a save, on every harness, and a pi run whose
+// model calls them by their wire names and whose cost books the charge (another harness's run: harness-run.test.mjs and
+// monid-saved-key.test.mjs). No network, no real key.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { wireName } from "../dist/catalog.js";
-import { CLIP, monidClient, monidText } from "../dist/monid.js";
+import { capBefore, capToolSpend, holdsInFlight, paidCall, spentIn, useSpend } from "../dist/cap.js";
+import { chargeOf, CLIP, monidClient, monidText } from "../dist/monid.js";
 import fakeMonid, { calls, KEY } from "./fixtures/faux-monid.mjs";
 import { agent, client, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -57,6 +61,114 @@ test("a refusal is an error in words: the wallet (402), the workspace's budget (
   assert.deepEqual([missing.status, missing.cost], [404, { value: 0, currency: "USD" }]);
   assert.match(missing.error, /No match found for the given query \(monid charges nothing/);
   assert.match((await run("/person/enrich", "not-a-secret")).error, /refused the key \(401\)/);
+});
+
+test("what a run charged: its cost; nothing when monid charged nothing; unknown, never $0, when it may have charged", async () => {
+  const charged = async (endpoint, extra = {}, signal) => chargeOf(await monid(extra).run({ provider: "faux", endpoint, input: { name: "Ada" } }, signal));
+  assert.deepEqual(await Promise.all(["/person/enrich", "/tweets", "/missing"].map((endpoint) => charged(endpoint))), [0.003, 0.012, 0], "reported: a micro-dollar charge in dollars, a provider's error at $0");
+  assert.deepEqual(await Promise.all(["/wallet", "/budget"].map((endpoint) => charged(endpoint))), [undefined, undefined], "refused as sent, or blocked: never ran");
+  assert.equal(await charged("/person/enrich", { key: "not-a-secret" }), undefined, "a wrong key runs nothing");
+  assert.deepEqual(await Promise.all(["/broken", "/late"].map((endpoint) => charged(endpoint))), [null, null], "FAILED and TIMED_OUT say no cost");
+  assert.equal(await charged("/slow", {}, AbortSignal.abort()), null, "stopped by its caller: it may have used some");
+  assert.equal(await charged("/person/enrich", { fetch: async () => { throw new Error("offline"); } }), null, "it may have gone ahead");
+});
+
+test("under a cap, a paid call is refused before it is sent unless the spend plus what it is held at fits, as a model request is; paid calls go one at a time; with no cap it runs", async (t) => {
+  let spent = 1.5;
+  const added = [];
+  let sent = 0;
+  const call = async () => (sent++, { status: "COMPLETED", cost: { value: 0.2, currency: "USD" } });
+  const quoted = (usd) => ({ usd, basis: "the price monid_inspect quoted" });
+  useSpend({ cap: 2, spent: () => spent, add: (usd) => void (added.push(usd), (spent += usd)) });
+  t.after(() => useSpend(undefined));
+  const refused = await paidCall("monid_run", call, chargeOf, quoted(0.7));
+  assert.match(refused.refused, /^spend_cap_reached: monid_run was not sent\. It could cost up to \$0\.7 \(the price monid_inspect quoted\), and with \$1\.500000 spent the run would pass its cap of \$2: the run is out of budget\.$/);
+  assert.equal(sent, 0, "refused, not sent");
+  assert.deepEqual([(await paidCall("monid_run", call, chargeOf, quoted(0.4))).result?.status, sent, added], ["COMPLETED", 1, [0.2]], "0.4 fits: it runs");
+  // Two at once: the first is checked (1.5 + 0.4), sent and charged (1.7) before the second is checked (1.7 + 0.4 > 2).
+  spent = 1.5;
+  const [first, second] = await Promise.all([paidCall("monid_run", call, chargeOf, quoted(0.4)), paidCall("monid_run", call, chargeOf, quoted(0.4))]);
+  assert.deepEqual([first.result?.status, sent, typeof second.refused], ["COMPLETED", 2, "string"]);
+  const allowance = await paidCall("monid_run", call, chargeOf, { usd: 1, basis: "no monid_inspect in this run quoted its price, so it is held at the $1 allowance; monid_inspect gives its quote" });
+  assert.match(allowance.refused, /held at the \$1 allowance; monid_inspect gives its quote/);
+  spent = null;
+  assert.match((await paidCall("monid_run", call, chargeOf, quoted(0))).refused, /What the run has spent is unknown, so its cap of \$2 cannot be kept/);
+  assert.equal(sent, 2, "no refusal was sent");
+  useSpend(undefined);
+  assert.equal((await paidCall("monid_run", call, chargeOf, quoted(100))).result?.status, "COMPLETED", "with no cap, it runs");
+});
+
+test("another harness's paid-call check holds each model request still in flight at its worst case until its cost is booked", () => {
+  const holds = holdsInFlight();
+  holds.admitted(0.4);
+  holds.started(1);
+  holds.admitted(0.25);
+  holds.started(2);
+  assert.equal(holds.total(), 0.65);
+  holds.ended(1);
+  assert.equal(holds.total(), 0.25);
+  holds.admitted(undefined);
+  holds.started(3);
+  holds.ended(2);
+  assert.equal(holds.total(), 0, "one admitted with no figure (no cap) holds nothing");
+});
+
+/** The run's store entries of `kind`. */
+const entriesOf = (data, runId, kind) => {
+  // The run's process writes the store meanwhile: a read that finds it locked tries again.
+  for (let tries = 0; ; tries++) {
+    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    try {
+      return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record))).filter((entry) => kind === undefined || entry.kind === kind);
+    } catch (error) {
+      if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
+    } finally {
+      db.close();
+    }
+  }
+};
+
+test("a run that times out after it was sent books an unknown charge: the run's cost is unknown, its next model request under the cap is refused, and so is what a restarted process reads", { timeout: 90_000 }, async (t) => {
+  withEnv(t, { MONID_API_KEY: KEY });
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
+  assert.equal((await api("POST", "/agents", agent("late", { harness: "claude-agent", instructions: "Run monid's /late on Ada.", tools: ["monid.run"] }))).status, 201);
+  const run = await api("POST", "/agents/late/runs", { input: { content: "hi" }, max_cost_usd: 5 });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const id = run.body.run_id;
+  await follow(api, id, ["failed"], { deadlineMs: 55_000 });
+  assert.deepEqual(entriesOf(data, id, "agentrun.tool_cost").map((entry) => entry.data.usd), [null], "TIMED_OUT says no cost: unknown, never $0");
+  const ended = (await api("GET", `/runs/${id}`)).body;
+  assert.deepEqual([ended.cost.usd, ended.error?.code], [null, "spend_cap_reached"]);
+  assert.match(ended.error.message, /spent is unknown/, "its next model request was refused");
+  // A restarted process starts from what the store says: unknown, so its first model request and any paid call refuse.
+  const root = entriesOf(data, id);
+  assert.equal(capToolSpend(root), null);
+  assert.equal(spentIn(join(data, "runs", id, "store", "run.sqlite")), null);
+  useSpend({ cap: 5, spent: () => capToolSpend(root), add: () => {} });
+  t.after(() => useSpend(undefined));
+  assert.match((await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })).refused, /spent is unknown/);
+  const guard = await capBefore(5, { id: "faux", api: "faux", provider: "faux", maxTokens: 10, contextWindow: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+  assert.match(guard.beforeRequest({ spentUsd: capToolSpend(root), inFlight: [], inputTokensMax: 1 }).refuse, /spent is unknown/);
+});
+
+test("/usage by meter during a monid run in flight: tokens are the run's model cost, and no tool charge is reported until the call settles", { timeout: 90_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const { api } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname, fauxMonid: FAUX_MONID });
+  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"] }))).status, 201);
+  const run = await api("POST", "/agents/slow/runs", { input: { content: "Run monid's /slow." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const id = run.body.run_id;
+  // Sent (its mark is written before), and the request that called it priced on the run's timeline.
+  const sent = async () => (await readFile(log, "utf8").catch(() => "")).includes('"path":"/v1/run"');
+  for (let i = 0; !(await sent()) || !((await api("GET", `/runs/${id}`)).body.cost.usd > 0); i++) {
+    assert.ok(i < 400, "the monid call is in flight after a priced request");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const cost = (await api("GET", `/runs/${id}`)).body.cost.usd;
+  const meters = (await api("GET", "/usage?group_by=meter")).body.lines.map((line) => [line.meter, line.usd, line.unpriced_runs]);
+  assert.deepEqual(meters, [["tokens", cost, 0]], "the model cost alone: never the held $1, never a negative token meter");
+  assert.ok((await api("POST", `/runs/${id}/cancel`, {})).status < 300);
 });
 
 test("a run its caller stops is asked to stop at monid and answers so; one that outlasts the wait is stopped too", async () => {
@@ -116,34 +228,43 @@ test("a run's answer over 60,000 characters is cut, the whole of it filed as evi
   assert.deepEqual(JSON.parse(await readFile(join(work, "evidence", "monid", `${huge.runId}.json`), "utf8")), huge);
 });
 
-test("capabilities list the three, on pi only: missing MONID_API_KEY on a keyless server, available with it", async (t) => {
+test("capabilities list the three, on every harness: missing MONID_API_KEY on a keyless server, available with it", async (t) => {
   assert.deepEqual(NAMES.map(wireName), ["monid_discover", "monid_inspect", "monid_run"], "the names pi registers");
   withEnv(t, {}, ["MONID_API_KEY"]);
   const listed = async () => (await client((await serve(t)).baseUrl)("GET", "/capabilities")).body.tools.filter((tool) => NAMES.includes(tool.name));
-  assert.deepEqual((await listed()).map((tool) => [tool.name, tool.available, tool.missing, tool.nodes, tool.calls, tool.harnesses]), NAMES.map((name) => [name, false, ["MONID_API_KEY"], false, false, ["pi"]]));
+  assert.deepEqual((await listed()).map((tool) => [tool.name, tool.available, tool.missing, tool.nodes, tool.calls, tool.harnesses]), NAMES.map((name) => [name, false, ["MONID_API_KEY"], false, false, ["pi", "claude-agent", "codex"]]));
   process.env.MONID_API_KEY = KEY;
   assert.deepEqual((await listed()).map((tool) => [tool.name, tool.available, tool.missing]), NAMES.map((name) => [name, true, undefined]));
 });
 
-test("a pi revision naming the three saves with a warning on a keyless server and its run is 409; on claude-agent they run on pi only", async (t) => {
+test("a revision naming the three saves with a warning on a keyless server and its run is 409, on pi and claude-agent alike; with the key the claude-agent one runs", { timeout: 60_000 }, async (t) => {
   withEnv(t, {}, ["MONID_API_KEY"]);
-  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
   const saved = await api("POST", "/agents", agent("finder", { tools: NAMES }));
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.deepEqual(saved.body.warnings.map((w) => [w.field, w.reason]), NAMES.map((_, i) => [`definition.tools[${i}]`, "not_set_up_here"]));
   const run = await api("POST", "/agents/finder/runs", { input: { content: "hi" } });
   assert.deepEqual([run.status, run.body.error.code, run.body.error.details.missing], [409, "agent_not_runnable", Object.fromEntries(NAMES.map((name) => [name, ["MONID_API_KEY"]]))]);
-  const claude = await api("POST", "/agents", agent("finder-claude", { harness: "claude-agent", tools: ["read", "monid.run"] }));
-  assert.equal(claude.status, 201, JSON.stringify(claude.body));
-  assert.match(claude.body.warnings.find((w) => w.field === "definition.tools[1]")?.message ?? "", /^monid\.run runs on pi here; on claude-agent it is not bound yet\.$/);
+  const claude = agent("finder-claude", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: ["read", "monid.run"] });
+  const keyless = await api("POST", "/agents", claude);
+  assert.equal(keyless.status, 201, JSON.stringify(keyless.body));
+  assert.deepEqual(keyless.body.warnings.map((w) => [w.field, w.message]), [["definition.tools[1]", "This server's environment does not set what the tool needs: the tool monid.run needs MONID_API_KEY."]], "the key, never that it runs on pi only");
   const refused = await api("POST", "/agents/finder-claude/runs", { input: { content: "hi" } });
-  assert.deepEqual([refused.status, refused.body.error.details.unbound], [409, ["monid.run"]]);
+  assert.deepEqual([refused.status, refused.body.error.details.unbound, refused.body.error.details.missing], [409, [], { "monid.run": ["MONID_API_KEY"] }]);
+  // A server reads its environment as it starts: the next one has the key.
+  process.env.MONID_API_KEY = KEY;
+  const keyed = (await serve(t, { fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID })).api;
+  assert.deepEqual([(await keyed("POST", "/agents", claude)).body.warnings], [[]]);
+  const ran = await keyed("POST", "/agents/finder-claude/runs", { input: { content: "hi" } });
+  assert.equal(ran.status, 202, JSON.stringify(ran.body));
+  const { rows } = await follow(keyed, ran.body.run_id, ["completed"], { deadlineMs: 55_000 });
+  assert.deepEqual(rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_status), ["success"], "monid_run ran on claude-agent");
 });
 
 test("a pi run's model finds, reads and runs a monid endpoint through monid_discover, monid_inspect and monid_run, on the key from its pipe", { timeout: 90_000 }, async (t) => {
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
-  const { api } = await serve(t, { fauxMonid: FAUX_MONID });
+  const { api, data } = await serve(t, { fauxMonid: FAUX_MONID });
   const saved = await api("POST", "/agents", agent("enricher", { tools: NAMES }));
   assert.deepEqual([saved.status, saved.body.warnings], [201, []]);
   const started = await api("POST", "/agents/enricher/runs", { input: { content: "Enrich with monid: Ada at Example." } });
@@ -157,4 +278,12 @@ test("a pi run's model finds, reads and runs a monid endpoint through monid_disc
   const rows = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body.rows;
   assert.deepEqual(rows.filter((row) => row.kind === "tool_use").map((row) => row.tool_name), ["monid_discover", "monid_inspect", "monid_run"]);
   assert.deepEqual(rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_status), ["success", "success", "success"]);
+  // The run's charge is booked once, on a line of its own, and is the run's cost: the faux model is $0.
+  assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.tool_name === "monid.run").map((row) => [row.summary, typeof row.tool_use_id]), [["Tool cost: monid charged $0.0030 for monid.run", "string"]]);
+  assert.equal((await api("GET", `/runs/${started.body.run_id}`)).body.cost.usd, 0.003);
+  // Marked before it was sent at the price its inspect quoted, then settled by its charge.
+  const db = new DatabaseSync(join(data, "runs", started.body.run_id, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  const paid = db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind.startsWith("agentrun.tool_"));
+  db.close();
+  assert.deepEqual(paid.map((entry) => [entry.kind, entry.data.heldUsd ?? entry.data.usd]), [["agentrun.tool_started", 0.003], ["agentrun.tool_cost", 0.003]]);
 });
