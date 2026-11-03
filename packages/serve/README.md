@@ -402,7 +402,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
 | `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 300 s when the call names no timeout | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)): `{url}` in, a Page out, `{ok, url, status, title, text, truncated?, original_chars?, html_chars?, converted?, links, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, offset?, next_offset?, links, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else keyless through Exa, or through Parallel where it is picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 | `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
@@ -421,20 +421,30 @@ A call tool that fails on its own (an unreadable PDF, a model's refusal) fails i
 `onItemFailure: "collect"` it fails that item, and the other items go on. A cancel or the node's deadline still
 stops the run.
 
-`web_fetch`'s direct fetch reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
-every address it resolves to is checked, and the connection is dialled at the address checked, so a loopback, private,
-link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`, `::ffff:127.0.0.1`
-and the like), a name such as `localhost`, a public name that resolves to one of them and a redirect to one are all
-refused, as is any scheme but http(s). A URL on a port other than 80 or 443 is refused before the guard is asked. A body
-is at most 5 MiB, a fetch at most 30 s, the text is cut at 60,000 characters and the links at 200, absolute http(s)
-only. An HTML page is read through pi-browser's `readPage`, which reads at most 1,000,000 characters of its HTML once
-its script, style, svg, noscript and template blocks and its comments are dropped: a page cut there has
-`truncated: true` and `html_chars`, its whole length in characters of HTML, and no `original_chars`, since its whole
-text was never read. `converted: "text"` says the text is the page's plain text, its conversion to markdown having run
-out of time. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
-reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node
-`via: "tool", tool: "web_fetch"` gets it as its output (`args: {url}`, `out` a schema of that shape). A call node naming
-a tool the table cannot run that way is refused before the run starts (`409`).
+`web_fetch`'s direct fetch reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is
+resolved, every address it resolves to is checked, and the connection is dialled at the address checked, so a
+loopback, private, link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`,
+`::ffff:127.0.0.1` and the like), a name such as `localhost`, a public name that resolves to one of them and a
+redirect to one are all refused, as is any scheme but http(s). A URL on a port other than 80 or 443, or longer than
+4,096 characters, is refused before the guard is asked. A body is at most 5 MiB and a fetch at most 30 s. A Page holds
+a part of the page's text: about `max_chars` characters from `offset` (20,000 by default, at least 200, at most
+50,000; a quote or a line break counts two, as the JSON answer holds it, and a part holds one character at least, so
+it always advances), its length as `chars`. A part that is not the whole page says so: `truncated` while more follows,
+`next_offset` where it begins, `original_chars` the page's whole length where it is known (Parallel's extract gives it
+only for a page shorter than it was asked for), and for an agent a line after the JSON says which characters these are
+and the call that reads on. The links, absolute http(s) only, come with the part at offset 0: at most 200, in 20,000
+characters. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
+reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via:
+"tool", tool: "web_fetch"` gets it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by
+default, `out` a schema of that shape). A call node naming a tool the table cannot run that way is refused before the
+run starts (`409`).
+
+On another harness, every host tool's result reaches the model within the host's bound of 120,000 characters
+(`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`): the kernel's tool bridge cuts a longer one, its start with a line
+saying where it was cut, and flags the call `truncated`. Each CLI adapter tells its CLI to pass a result that long to
+the model whole: the Claude Agent CLI would otherwise save a result past 50,000 characters to a file and tell the model
+to read it, which a run's confinement refuses, and Codex keeps only the ends of a result past 10,000 tokens. A
+`web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.
 
 ### Search and fetch
 

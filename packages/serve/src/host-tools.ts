@@ -29,9 +29,10 @@ import { WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 /** Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again. */
 export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [FETCH_PAGE_TOOL]: "safe", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never" };
 
-/** pi's limits on a tool's output (its DEFAULT_MAX_BYTES and DEFAULT_MAX_LINES), unless the tool names its own. */
-const MAX_BYTES = 50 * 1024;
-const MAX_LINES = 2000;
+/** pi's limits on a tool's output (its DEFAULT_MAX_BYTES and DEFAULT_MAX_LINES), unless the tool names its own: read's
+ *  head and bash's tail are held to them (the host-bounds test reads pi's own words for them). */
+export const MAX_BYTES = 50 * 1024;
+export const MAX_LINES = 2000;
 
 /** Whether `byte` continues a UTF-8 character (0b10xxxxxx), so a cut before it would split one. */
 const continues = (byte: number | undefined) => byte !== undefined && (byte & 0xc0) === 0x80;
