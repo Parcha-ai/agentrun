@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test as nodeTest } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
@@ -19,10 +19,11 @@ const alive = processAlive;
 
 /** A server in a process of its own, so a test can kill it the way a crash does and leave its runs behind. It is ready
  *  when it prints its banner, which it does once it listens: its address and key lines, whole. A server that exits first
- *  fails the test with what it said. No clock: a slow start, on a loaded machine, is still a start. */
-async function serverProcess(data) {
+ *  fails the test with what it said. No clock: a slow start, on a loaded machine, is still a start. `execArgv` and `env`
+ *  go to its node (a preloaded test hook, say). */
+async function serverProcess(data, { execArgv = [], env = {} } = {}) {
   // A home beside the data, not this machine's: a first start counts the sessions in its home for setup's offer.
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data) } });
+  const child = spawn(process.execPath, [...execArgv, CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data), ...env } });
   let out = "";
   let err = "";
   // Read to the end, so the server never blocks on a full pipe; its last lines say why, should it exit before it listens.
@@ -94,6 +95,42 @@ test("a run whose process died with its server is relaunched on its directory by
   // A launch that served removes its mark: the next server opens the run again once, never fails it as lost at launch.
   assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation, 2, "opened again once");
 });
+
+// A server that goes down while it copies what a learning run's agent learned: before the copy starts, or once it is
+// whole and pinned but its learning not yet saved. The run's input is saved before the copy, so the next server relaunches
+// it with its first message; a copy it finds unsaved goes, so the run starts again with nothing learned.
+const HOLD_SEED = new URL("./fixtures/hold-seed.mjs", import.meta.url).href;
+for (const [seam, learning] of [["beforePin", null], ["afterPin", { state: "dropped", reason: "seed_failed" }]]) {
+  test(`a server killed while a learning run's seed is copied (${seam}): the next one relaunches the run with its first message, and it completes with nothing learned`, async (t) => {
+    const data = join(await scratch(t), "agents");
+    const signal = join(await scratch(t), "held");
+    const first = await serverProcess(data, { execArgv: ["--import", HOLD_SEED], env: { AGENTRUN_TEST_HOLD_SEED: seam, AGENTRUN_TEST_HOLD_SIGNAL: signal } });
+    t.after(() => first.child.kill("SIGKILL"));
+    assert.equal((await first.api("POST", "/agents", agent("learner", { learning: true }))).status, 201);
+    // The start waits on the held copy, so it never answers: the run is found by its directory once the copy holds.
+    const starting = first.api("POST", "/agents/learner/runs", { input: { content: "Answer soon." } }).catch(() => undefined);
+    let runDir = "";
+    for (let i = 0; !(runDir = await readFile(signal, "utf8").catch(() => "")); i++) {
+      assert.ok(i < 1200, "the run's seed copy was reached");
+      await sleep(50);
+    }
+    first.child.kill("SIGKILL");
+    await new Promise((resolve) => first.child.once("exit", resolve));
+    await starting;
+    const runId = basename(runDir);
+    assert.equal(storeRun(data, runId).state, "running");
+    assert.equal(existsSync(join(runDir, "learning.json")), seam === "afterPin", "a pin only once the copy was whole");
+    const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    t.after(() => next.close());
+    const api = client(next.baseUrl, next.token);
+    await follow(api, runId, ["completed"]);
+    const read = (await api("GET", `/runs/${runId}`)).body;
+    assert.equal(read.result.final_answer, "Soon.", "its first message reached it");
+    assert.deepEqual(read.learning && { state: read.learning.state, reason: read.learning.reason }, learning);
+    assert.equal(existsSync(join(runDir, "learning.json")), false, "no pin");
+    assert.equal(existsSync(join(runDir, "work", ".learning")), false, "no copy of the notes");
+  });
+}
 
 test("a workflow run whose process died with its server is relaunched by the next one and completes from its journal", async (t) => {
   const { data, runId, pid } = await crashMidRun(t, undefined, { create: flowAgent("flow"), input: { question: "Answer soon." } });

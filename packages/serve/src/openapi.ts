@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { ERROR_STATUS } from "./errors.js";
 import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
+import { LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { BOXES, PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
@@ -506,6 +507,24 @@ const REVIEW: Json = {
   description: "Set when a workflow run escalated: it completed, and waits for a person to review it. Like every workflow run, it takes no messages (501 unsupported_here).",
   "x-agentrun-serve": "review/1",
 };
+const LEARNING_REASON = { enum: [...LEARNING_REASONS, null], description: `Set only when \`state\` is \`dropped\`, from a closed list: ${LEARNING_REASONS.map((reason) => `\`${reason}\``).join(", ")}, the agent's learning folder could not be read or made, or its notes copied, so the run started with nothing learned. A new reason is announced before it ships.` };
+const LEARNING_NULL = "Null for a run that does not learn: its agent's `learning` is not true, the server's learning was off when it started (`capabilities.features.learning`), or it is a workflow's or an imported run.";
+/** A run's learning (runs.ts): whether it started from what its agent learned. */
+const LEARNING = {
+  oneOf: [
+    closed({
+      state: { enum: [...LEARNING_STATES], description: "`seeded` when the run started from what its agent learned, `dropped` when it could not." },
+      reason: LEARNING_REASON,
+      detail: { type: ["string", "null"], description: "One plain sentence: never a secret or a value from the input." },
+      at: { type: "string", format: "date-time", description: "When the state last changed." },
+    }),
+    { type: "null" },
+  ],
+  description: `What the run learns from: a run of an agent whose \`learning\` is true starts from its agent's learning folder, the index of its notes in its instructions and the notes in \`.learning/\` in its working directory. ${LEARNING_NULL}`,
+  "x-agentrun-serve": "learning/1",
+};
+const LEARNING_SHORT = { oneOf: [closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON }), { type: "null" }], description: `The run's learning, in short (GET /runs/{run_id} has it whole). ${LEARNING_NULL}`, "x-agentrun-serve": "learning/1" };
+
 /** What this server's run answers carry beyond the contract's Run and RunSummary: added before they were marked, so
  *  `serve/1`. */
 const RUN_FIELDS: Record<string, Json> = {
@@ -534,6 +553,7 @@ const PENDING: Json = {
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Run: {
     ...RUN_FIELDS,
+    learning: LEARNING,
     review: REVIEW,
     pending: PENDING,
     imported_from: {
@@ -550,6 +570,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     ...RUN_FIELDS,
     effort: { $ref: "#/components/schemas/Effort", description: "The effort the run was started with, as the run shows it; absent when it was started with none.", "x-agentrun-serve": "effort/1" },
     error: { oneOf: [{ $ref: "#/components/schemas/RunError" }, { type: "null" }], description: "Set when `failed`, as the run's own.", "x-agentrun-serve": "serve/1" },
+    learning: LEARNING_SHORT,
     review: REVIEW,
     pending: PENDING,
     imported_from: {
@@ -584,6 +605,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent, this host's default (capabilities.places.default), and an answer shows none; a revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes).",
       "x-agentrun-serve": "place/1",
     },
+    learning: { type: "boolean", default: false, description: "Whether an agentic revision's runs learn: each starts from what its agent has learned, the index of its notes in its instructions under `# Learned` and the notes in `.learning/` in its working directory. Kept when a definition says so, true or false; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
   },
   AgentCreate: {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
@@ -675,6 +697,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "serve/1",
     },
     thinking: { type: "array", items: { type: "string" }, description: "The thinking levels an agentic revision may name.", "x-agentrun-serve": "serve/1" },
+    learning: { enum: [...LEARNING_MODES], description: "This server's learning switch (`--learning`): `on`, a run of an agent whose definition says `learning: true` starts from what its agent learned; `off`, no run this server starts does, whatever its agent says, and its `learning` is null.", "x-agentrun-serve": "learning/1" },
     tool_keys: {
       type: "object", additionalProperties: false, required: ["routes", "at_rest"],
       properties: { routes: { type: "boolean" }, at_rest: { enum: ["sealed", "unavailable"] } },
