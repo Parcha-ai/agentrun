@@ -56,8 +56,9 @@ if (process.env.PI_TRANSPORT_LIVE_JEV === "1") {
 			);
 			const target = process.env.PI_TRANSPORT_REPLAY_OUT;
 			if (target !== undefined) {
-				// OpenRouter's catalog prices Jev; TypeSafe's has no price, so that cost is unknown, not 0.
-				const costs = decided.flatMap((one) => (one.usage === undefined ? [] : [one.usage.costUsd]));
+				// OpenRouter's catalog prices Jev; TypeSafe's has no price. A decision with no usage (a timeout, an error)
+				// may still have been billed. Either way the recording's cost is unknown, not a partial sum or 0.
+				const costs = decided.map((one) => one.usage?.costUsd ?? null);
 				const costUsd = costs.includes(null) ? null : costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0);
 				const header: ReplayHeader = {
 					replaySet: "placement",
@@ -68,7 +69,7 @@ if (process.env.PI_TRANSPORT_LIVE_JEV === "1") {
 					costUsd,
 					...(costUsd === null
 						? {
-								note: "No price is configured for this classifier, so the cost of this recording is unknown, not 0.",
+								note: "The classifier has no price, or a decision has no usage, so the cost of this recording is unknown, not 0.",
 							}
 						: {}),
 				};
