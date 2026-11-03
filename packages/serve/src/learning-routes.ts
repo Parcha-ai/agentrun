@@ -41,9 +41,10 @@ const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
-type NoteView = { file: string; name: string; description: string; type: string; status: string; superseded_by: string | null; text: string };
+type NoteView = { file: string; name: string; description: string; type: string; status: string; superseded_by: string | null; text: string; etag: string };
 type Change = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
-type Note = LearnedNote & { text: string };
+/** A note on main: its text, and its blob id there, whose ETag its file's GET answers. */
+type Note = LearnedNote & { text: string; oid: string };
 export type Counts = { merged: number; dropped: Record<string, number>; in_progress: number };
 export { secretsShown, type Shown } from "./learning.js";
 
@@ -118,9 +119,9 @@ async function textsOf(home: string, repo: string, entries: Map<string, string>)
 async function readAt(home: string, repo: string, sha: string): Promise<{ index: string; notes: Map<string, Note> }> {
   const texts = await textsOf(home, repo, await entriesAt(home, repo, sha));
   const notes = new Map<string, Note>();
-  for (const [file, { text }] of texts) {
+  for (const [file, { oid, text }] of texts) {
     const note = file === INDEX_FILE ? [] : parseNoteFile(file, text);
-    if (!Array.isArray(note)) notes.set(file, { ...note, text });
+    if (!Array.isArray(note)) notes.set(file, { ...note, text, oid });
   }
   return { index: texts.get(INDEX_FILE)?.text ?? "", notes };
 }
@@ -194,8 +195,9 @@ async function notesAt(home: string, repo: string, sha: string): Promise<{ index
   return parsed;
 }
 
-/** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole. */
-const noteView = ({ file, name, description, type, status, superseded_by, text }: Note, shown: Shown): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text) });
+/** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole; with its
+ *  ETag, the one its file's GET answers, so an edit or a retire from the card names the version it shows. */
+const noteView = ({ file, name, description, type, status, superseded_by, text, oid }: Note, shown: Shown): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text), etag: etagOf(oid) });
 
 const cursorOf = (sha: string, offset: number) => Buffer.from(`${sha}.${offset}`).toString("base64url");
 /** A page of `all`, from `offset`, at most `limit`, each shown by `view` (so only the page's are cut of secrets). */
