@@ -1,11 +1,11 @@
-# @parcha/agentrun-codex
+# @parcha/agentrun-harness-codex
 
-Codex as an AgentRun harness: a DSL `agent` node runs on Codex through `@parcha/agentrun-adapters`, durable in AgentRun's
-own store, with the host's tools as its only tools. It is held: not on npm yet.
+Codex as an AgentRun harness: a DSL `agent` node runs on Codex through `@parcha/agentrun-kernel`, durable in AgentRun's
+own store, with the host's tools as its only tools.
 
 ```ts
-import { createHarnessRunner } from "@parcha/agentrun-adapters";
-import { codexAdapter } from "@parcha/agentrun-codex";
+import { createHarnessRunner } from "@parcha/agentrun-kernel";
+import { codexAdapter } from "@parcha/agentrun-harness-codex";
 
 const runNode = createHarnessRunner(
   codexAdapter({
@@ -38,15 +38,17 @@ const runNode = createHarnessRunner(
   it never holds the provider key. The proxy forwards `POST /v1/responses` only, fixes the model, stores nothing at the
   provider, drops any tool that is not the session's, and asks the runner before every paid request, so the turn cap and
   the host's budget hold. Each response's usage comes back to the runner.
-- **A private, empty machine.** A session runs in its own directories with an empty working directory. Codex's
-  environment is an allowlist (`PATH`, `LANG`, `TZ`, its own homes and the proxy key); nothing else of the host's
+- **A private machine.** A session runs in its own directories. Its working directory is the host's workspace when the
+  host names one (`io.cwd`, where the host's file tools write, an untrusted project to Codex), and otherwise an empty
+  directory of the session's. Codex keeps nothing there, and takes no instructions from an `AGENTS.md` in it
+  (`test/developer-messages.test.mjs`). Codex's environment is an allowlist (`PATH`, `LANG`, `TZ`, its own homes and the proxy key); nothing else of the host's
   reaches it, and its process group ends with the session.
 - **The host's skills, and no others.** `codexAdapter({ skills: [{ name, files }] })`: Codex lists each skill to the model
   by its name and description, and the model reads its `SKILL.md` and the files it names with `read_skill_file` (it has
   no shell). The skills are written into the session's `CODEX_HOME` at the start of every drive, where Codex lists a
   user's skills even in a turn with its built-ins off (it lists none from a working directory's `.agents/skills` there).
   Codex's bundled skills (imagegen, openai-docs, skill-creator, skill-installer, ...) are off in every session, with
-  skills or without. The skills are checked when the adapter is made, by `skillProblems` of `@parcha/agentrun-adapters`,
+  skills or without. The skills are checked when the adapter is made, by `skillProblems` of `@parcha/agentrun-kernel`,
   the Claude adapter's check: a lowercase name, a `SKILL.md` whose front matter names it and describes it, plain
   relative paths, 1 MiB in all. Codex itself skips a skill with no front matter or no description and lists one under
   its front matter's name, so each of those is refused here instead.

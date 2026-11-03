@@ -10,13 +10,14 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
 import { hasVersionSection, loadFragments, unreleasedSection } from './changes.mjs';
+import { isMain } from './is-main.mjs';
 
 const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
 // packages after them that depend on none of them or, as pi-durable-agent's ./workflow subpath does, on dsl and pi alone, serve (@parcha/agentrun-serve), which uses dsl, pi, pi-durable-disk and pi-durable-agent, and the reference host
 // (@parcha/agentrun-harness), which uses dsl, pi, pi-browser, pi-durable-disk and pi-vision, last. This list is the gate for a new package: a workspace package that is not private and not
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', 'pi-git-remote': '@parcha/pi-git-remote', 'pi-agent-learn': '@parcha/pi-agent-learn', learn: '@parcha/agentrun-learn', decisions: '@parcha/agentrun-decisions', 'run-adapters': '@parcha/agentrun-adapters', 'run-adapters-claude-agent': '@parcha/agentrun-claude-agent', 'run-adapters-codex': '@parcha/agentrun-codex', serve: '@parcha/agentrun-serve', harness: '@parcha/agentrun-harness' };
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', 'pi-git-remote': '@parcha/pi-git-remote', 'pi-agent-learn': '@parcha/pi-agent-learn', learn: '@parcha/agentrun-learn', decisions: '@parcha/agentrun-decisions', 'run-adapters': '@parcha/agentrun-kernel', 'run-adapters-claude-agent': '@parcha/agentrun-harness-claude', 'run-adapters-codex': '@parcha/agentrun-harness-codex', serve: '@parcha/agentrun-serve', harness: '@parcha/agentrun-harness' };
 export const listedPackages = Object.keys(releasePackageNames);
 // The clean consumer's runtime smoke in verify-packages, one key per installed package it runs: verify-packages asserts its
 // smoke against this set and the preflight requires a receipt that says exactly it, so the two cannot disagree.
@@ -175,7 +176,7 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   return { status: 'passed', tag, commit, license: workspace.license, registry: 'https://registry.npmjs.org/', distTag: 'beta', packages };
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   assert.equal(process.argv.length, 4, 'Usage: node scripts/release-preflight.mjs --tag v0.1.0-beta.1');
   assert.equal(process.argv[2], '--tag');

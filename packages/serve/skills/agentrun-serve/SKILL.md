@@ -66,8 +66,8 @@ levels, default model and console address. The other tools:
 | `runs_get` | A run's status, result or error, `pending` (its question, when it asked one) and `console_url`. |
 | `runs_events` | The run's steps, a page at a time (`after`, `limit`). |
 | `runs_files` | The files it wrote; with `path`, one file's text. |
-| `runs_respond` | Answers a run's question (`content`), or follows up after it completed. |
-| `runs_cancel` | Ends a run for good. |
+| `runs_respond` | Answers a run's question (`content`), or follows up after it completed or was stopped (a fresh turn with its history). |
+| `runs_cancel` | Ends a run for good: it takes no more messages (`409 not_continuable`); go on in a new run. |
 
 A refusal comes back as a tool error holding the server's `error`: `code`, `message`, and for a `422` each field to fix.
 

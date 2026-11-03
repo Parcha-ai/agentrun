@@ -91,6 +91,11 @@ export default function reply(context, faux) {
     const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
     return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
   }
+  // Searches the web once for what follows "Search the web for ", then answers with the search's answer.
+  if (first.includes("Search the web for ")) {
+    const query = first.slice(first.indexOf("Search the web for ") + "Search the web for ".length).replace(/\.$/, "");
+    return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 2 }), { stopReason: "toolUse" }) : faux.message(`Found: ${textOf(context.messages.at(-1))}`);
+  }
   // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
   if (first.includes("Enrich with monid")) {
     const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];
@@ -105,6 +110,14 @@ export default function reply(context, faux) {
   if (browse) return results === 0 ? faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" }) : faux.message(`Seen: ${textOf(context.messages.at(-1))}`);
   // A follow-up whose answer starts only after a minute: a stop before then cuts it before its first content.
   if (users.length > 1 && last === "Slowly, please.") return slow(faux, 60_000, "Done slowly.");
+  // "Write a file, then signal <file> and wait.": a write, then a request that makes <file> as it starts and answers only
+  // after a minute, so a stop cuts it after the tool round; a follow-up then answers at once.
+  const signalWait = /^Write a file, then signal (\S+) and wait\.$/.exec(first);
+  if (signalWait) {
+    if (users.length > 1) return faux.message("Went on.");
+    if (results === 0) return faux.message(faux.toolCall("write", { path: "a.md", content: "a" }), { stopReason: "toolUse" });
+    return import("node:fs").then(({ writeFileSync }) => (writeFileSync(signalWait[1], ""), slow(faux, 60_000, "Done slowly.")));
+  }
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   if (first.includes("Write the report")) {
     if (answered) return faux.message("I wrote report.md.");

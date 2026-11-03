@@ -9,7 +9,7 @@ import { openStoreReader } from "@parcha/pi-durable-agent";
 import { REQUEST_COST, REQUEST_STARTED, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
 import { spentIn } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
-import { processAlive } from "@parcha/agentrun-adapters/host";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { flowAgent, follow, scratch, serve, storeRun } from "./support.mjs";
 
 const FAUX_PRICED = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;

@@ -135,7 +135,7 @@ same ground with no key.
 | --- | --- |
 | Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
 | Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
-| Journal | In the run's store, from `@parcha/pi-durable-agent/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`. Read through `timelineOf` and `runMetricsOf` |
+| Journal | In the run's store, from `@parcha/pi-durable-agent/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
 | Run directory | `DIR/runs/<id>/`: `run.json` (`status`, `holder.pid`, `generation`), `serve.json`, `store/run.sqlite`, `work/`, `process.log` |
 | Adapters it calls | `adapterFor(harness, env, needs: AdapterNeeds)` gives an `AgentAdapter` (`check`, `open`) for a `SessionSpec`, driven by `createHarnessRunner`. There the cap is the runner's `beforeRequest`, asked by `startModelProxy` under a `ProviderPolicy`; on pi it wraps the models (`capModels`) |
 | Takes from the tool plane | `TOOLS` (`ToolEntry`), bound on pi as a `ToolBinding`; `hostTools()` gives claude-agent and codex `HostTool[]`, each with its `REPLAY` (`safe` or `never`) |
@@ -161,7 +161,7 @@ lines. Then:
   `On <message>: done.`.
 - claude-agent and codex run alone only inside the tests. `startServe({ fauxHarness })` puts every harness but pi on
   run-adapters' `fauxAdapter`; the CLI has no flag for it, and no environment variable turns it on. `claude-run` drives
-  the pinned Claude CLI against `fakeAnthropic`, and `codex-run` drives agentrun-codex's app-server stand-in. From
+  the pinned Claude CLI against `fakeAnthropic`, and `codex-run` drives agentrun-harness-codex's app-server stand-in. From
   `packages/serve`:
 
   ```sh
@@ -200,14 +200,13 @@ The journal is the `entries` table of the run's `store/run.sqlite`.
    once. Alone: the restart on pi through the CLI, and `recovery`; the crash in `harness-run` and `claude-run`, and in
    `codex-run`, which checks that no Codex process is left behind.
 6. **A multi-tool turn completes on claude-agent and codex.** Two tool calls in one model response end `completed`,
-   each call shown before its result under the answer that asked for it, none interrupted. Runnable alone once #1363
-   merges: `node --test test/harness-multi-tool.test.mjs` from `packages/serve`. Until then it hangs, the first of the
-   known open findings, and on a live model it is part of row 8.
+   each call shown before its result under the answer that asked for it, none interrupted. Alone:
+   `node --test test/harness-multi-tool.test.mjs` from `packages/serve`. On a live model it is part of row 8.
 
 ### Tool plane
 
 What a run's agent can call, on every harness, and the keys those tools use. Later changes extend this section as they
-land (web search and tool settings, monid on every harness, the per-tool permission gate).
+land (native and picked web search and tool settings, monid on every harness, the per-tool permission gate).
 
 **Seam.**
 - Takes from the kernel:
@@ -245,6 +244,8 @@ land (web search and tool settings, monid on every harness, the per-tool permiss
    with their replay class; a `write` cut off by a crash comes back interrupted, never re-run.
 5. A `monid.run` is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
    by name; an answer over 60,000 characters is filed under `work/evidence/monid/`.
+6. On pi, `web_search` searches Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server; a 429
+   is a tool error naming the rate limit, never a hang.
 
 ### Places (boxes, home, files)
 
@@ -397,10 +398,11 @@ _Written by the lane that owns this subsystem._
 
 ## Known open findings (2026-11-01; re-check each pass, do not suppress)
 
-- claude-agent and codex runs hang in `working` when the model makes two or more tool calls in one turn (4/4
-  reproductions). pi is unaffected.
-- The console's New agent with default tools is refused with 422, because `pdf_pages` and `llm` (call-only tools) are
-  ticked by default.
-- Tool keys list `web_search` and the `monid.*` tools as unlocked, but no such tool is bound.
+- Fixed by #1363, re-check with kernel check 6: claude-agent and codex runs hung in `working` when the model made two
+  or more tool calls in one turn (4/4 reproductions). pi was unaffected.
+- Fixed by #1357, re-check with console check 2: the console's New agent with default tools was refused with 422,
+  because `pdf_pages` and `llm` (call-only tools) were ticked by default.
+- Fixed by #1356, re-check with tool plane check 1: tool keys listed `web_search` and the `monid.*` tools as unlocked,
+  but no such tool was bound.
 - Not in the server yet: effort packs and output types, native web search, places and boxes, the kernel learning loop,
   and `output`/`place` on the run request.

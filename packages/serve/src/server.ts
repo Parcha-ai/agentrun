@@ -4,7 +4,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { extname, join, resolve } from "node:path";
+import { dirname, extname, join, posix, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
@@ -12,6 +12,7 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
+import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir } from "./files.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
@@ -31,7 +32,8 @@ import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
-import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
+import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
+import { openWorkFile, removeWorkFile, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
 import { type ServerLock, takeServerLock } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -46,6 +48,8 @@ const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
 const IDEMPOTENCY_TTL_S = 86_400;
 const FILE_LIST_CAP = 2_000;
+/** Why a home's PUT or DELETE is 501 where `capabilities.home.writes` is false (workspace.ts writesHeld). */
+const HOME_WRITES_OFF = "This server can't write a home's files safely here: a write needs /proc/self/fd, as on Linux, which this platform lacks. Reads and the list still work.";
 const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
 const TYPES: Record<string, string> = {
   txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8", csv: "text/csv; charset=utf-8", json: "application/json", jsonl: "application/x-ndjson",
@@ -98,6 +102,9 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export is the fetch the monid tools send through (the tests' fake), in
    *  place of monid's API. */
   fauxMonid?: string;
+  /** With `faux` only: a module whose default export is the fetch web_search sends through (the tests' fake MCP
+   *  server), in place of Exa's keyless endpoint. */
+  fauxExa?: string;
   /** A module scripting the faux harness (`script(spec)`): every harness but pi runs on it (harness.ts). */
   fauxHarness?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
@@ -149,8 +156,13 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 const SESSION_S = SESSION_MS / 1000;
 
-/** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off. */
-export type Route = { method: string; pattern: RegExp; name: string; capability?: string };
+/** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off;
+ *  `raw`, a route whose body is bytes and not JSON, which the page's session may send with any content type, still only
+ *  from the page's own origin (page.ts). Only a PUT carries it: a PUT is never a CORS-simple request, so a page of
+ *  another origin cannot send one without a preflight, which this server never answers. */
+export type Route =
+  | { method: string; pattern: RegExp; name: string; capability?: string; raw?: never }
+  | { method: "PUT"; pattern: RegExp; name: string; capability?: string; raw: true };
 export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/capabilities$/, name: "getCapabilities" },
   { method: "GET", pattern: /^\/openapi\.json$/, name: "getOpenapi" },
@@ -167,6 +179,10 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/home$/, name: "importHome", capability: "home.import" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/home\/files$/, name: "listHomeFiles" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "readHomeFile" },
+  { method: "PUT", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "writeHomeFile" },
+  { method: "DELETE", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "deleteHomeFile" },
   { method: "GET", pattern: /^\/runs$/, name: "listAllRuns" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/timeline$/, name: "getTimeline" },
@@ -182,8 +198,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
-  { method: "POST", pattern: /^\/files$/, name: "createFile", capability: "files.upload" },
-  { method: "PUT", pattern: /^\/files\/([^/]+)$/, name: "uploadFile", capability: "files.upload" },
+  { method: "POST", pattern: /^\/files$/, name: "createFile" },
+  { method: "PUT", pattern: /^\/files\/([^/]+)$/, name: "uploadFile", raw: true },
   { method: "POST", pattern: /^\/quotes$/, name: "createQuote", capability: "quotes" },
   { method: "GET", pattern: /^\/usage$/, name: "getUsage" },
   { method: "GET", pattern: /^\/stats$/, name: "getStats" },
@@ -199,6 +215,9 @@ export const ROUTES: readonly Route[] = [
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
 ];
+
+/** Whether the request to `path` (under /v2) is a PUT of a route marked `raw`. */
+export const takesBytes = (method: string | undefined, path: string): boolean => method === "PUT" && ROUTES.some((r) => r.raw === true && r.method === "PUT" && r.pattern.test(path));
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
 /** A workflow run's title: its agent's name and a few words of its input, never the input's JSON ("Batch review: 20
@@ -246,6 +265,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
      *  `models.default`, `models.strong`) with the tools it names of `node_tools`; a node that names no thinking level
      *  thinks at the run's effort, or medium. */
     workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS, ...(decisionsOf(env).some((offer) => offer.available) ? [DECISION_ADAPTER] : [])], decisions: { providers: decisionsOf(env) } },
+    /** Each agent's home (its files under `/agents/{id}/home/files`): on this server's disk, the paths in it only the host
+     *  writes, and the largest file a PUT takes (`limits.max_body_bytes`). */
+    home: { disk: "local", host_owned: [...HOME_HOST_OWNED], max_file_bytes: MAX_BODY, writes: writesHeld() },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
       /** This server's own routes, outside the contract: an archived agent or run is hidden from the lists (`?archived=true`
@@ -255,7 +277,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true },
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
-      files: { upload: false, read: true, range: false, during_run: true },
+      files: { upload: true, read: true, range: false, during_run: true },
       quotes: false,
       usage: { basis: "estimate", meters: ["tokens"] },
       efforts: [...EFFORTS],
@@ -276,8 +298,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     links: { openapi: "/v2/openapi.json" },
     limits: {
       max_body_bytes: MAX_BODY,
-      max_upload_bytes: null,
-      max_files_per_run: 0,
+      max_upload_bytes: MAX_UPLOAD_BYTES,
+      max_files_per_run: MAX_FILES_PER_RUN,
       max_message_chars: MAX_MESSAGE,
       max_concurrent_runs: maxRuns,
       timeline_max_wait_ms: MAX_WAIT_MS,
@@ -364,6 +386,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   const env = withSecrets({ ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
   const caps = await capabilities(env, maxRuns);
+  // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
+  const homeWrites = caps.home.writes;
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts). No run uses one yet: the log says which this server has.
   const boxes = await boxRegistry(env);
   log?.(logLine("boxes", boxesLog(boxes.offers(), enabledBoxes(env))));
@@ -371,9 +395,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const agents = new Agents(data);
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
   stops.push(() => webhooks.close());
+  const uploads = new Uploads(join(data, UPLOADS_DIR));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -401,9 +426,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
-  async function bodyOf(req: IncomingMessage): Promise<Json> {
-    const type = String(req.headers["content-type"] ?? "");
-    if (!type.startsWith("application/json")) throw new ApiError("unsupported_media_type", "the body must be application/json");
+  /** The body's bytes, at most MAX_BODY of them. */
+  async function bytesOf(req: IncomingMessage): Promise<Buffer> {
     const chunks: Buffer[] = [];
     let size = 0;
     // An oversized body is read to its end before the refusal, so the client gets the answer and not a reset.
@@ -412,9 +436,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (size <= MAX_BODY) chunks.push(chunk as Buffer);
     }
     if (size > MAX_BODY) throw new ApiError("payload_too_large", `the body is over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
+    return Buffer.concat(chunks);
+  }
+
+  async function bodyOf(req: IncomingMessage): Promise<Json> {
+    const type = String(req.headers["content-type"] ?? "");
+    if (!type.startsWith("application/json")) throw new ApiError("unsupported_media_type", "the body must be application/json");
+    const bytes = await bytesOf(req);
     let value: unknown;
     try {
-      value = JSON.parse(Buffer.concat(chunks).toString("utf8") || "null");
+      value = JSON.parse(bytes.toString("utf8") || "null");
     } catch {
       throw new ApiError("bad_request", "the body is not JSON");
     }
@@ -515,7 +546,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
       if (issues.length) throw invalid(issues);
       if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
-      if (Array.isArray(body.file_ids) && body.file_ids.length) throw unsupported("files.upload", "This server takes no uploads, so a run names no files.");
+      // Each a ready file, before anything starts: copied into the run's work/inputs/ once its directory is made.
+      const files = Array.isArray(body.file_ids) ? await uploads.readyFiles(body.file_ids) : [];
       const pinned = typeof body.revision === "string" ? await agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
       if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
       const { revision, version } = pinned;
@@ -525,7 +557,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (wrong.length) throw invalid(wrong);
       await runnable(revision);
       const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, input) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-      const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}) });
+      const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
     });
   }
@@ -597,42 +629,65 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- files ----------------------------------------------------------------------------------------------------------
 
-  /** The run's files, through no link (workspace.ts): each regular file's own size and time, a dot-name left out. */
-  async function walk(base: string): Promise<{ path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[]> {
-    const out: { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[] = [];
-    if (!(await lstat(base).catch(() => null))?.isDirectory()) return out;
-    // work/ unreadable as a whole lists nothing; what the walk could not read in it is left out.
+  type FileView = { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true };
+  const fileView = (path: string, st: { size: number; mtimeMs: number }): FileView => ({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null });
+
+  /** The files under `base` (a run's work/, an agent's home), through no link (workspace.ts): each regular file's own size
+   *  and time, a dot-name left out. `deep` when a directory below WALK_DEPTH was there and not entered. In a `home`, a
+   *  host-owned name at its top is the host's: named in `owned`, and nothing below it walked. */
+  async function walk(base: string, home = false): Promise<{ files: FileView[]; deep: boolean; owned: string[] }> {
+    const out: FileView[] = [];
+    const owned: string[] = [];
+    let deep = false;
+    if (!(await lstat(base).catch(() => null))?.isDirectory()) return { files: out, deep, owned };
+    // The directory unreadable as a whole lists nothing; what the walk could not read in it is left out.
     await walkWork(base, (path, st, readable) => {
-      if (st.isFile()) out.push({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null, ...(readable ? {} : { unreadable: true }) });
+      if (st.isFile()) out.push({ ...fileView(path, st), ...(readable ? {} : { unreadable: true }) });
+      else if (st.isDirectory() && path.split("/").length > WALK_DEPTH) deep = true;
       return out.length <= FILE_LIST_CAP;
-    }, { skip: (name) => name.startsWith(".") }).catch((error) => {
+    }, {
+      skip: (name, path) => {
+        if (name.startsWith(".")) return true;
+        if (!home || path !== name || !hostOwnedOf(name)) return false;
+        owned.push(name);
+        return true;
+      },
+    }).catch((error) => {
       if (!(error instanceof WorkRefused)) throw error;
     });
-    return out;
+    return { files: out, deep, owned };
   }
 
-  async function readFileRoute(req: IncomingMessage, res: ServerResponse, url: URL, run: Run, raw: string): Promise<void> {
-    let rel: string;
+  /** A file path as the URL sends it, each segment percent-decoded. */
+  function decodedPath(raw: string): string {
     try {
-      rel = raw.split("/").map(decodeURIComponent).join("/");
+      return raw.split("/").map(decodeURIComponent).join("/");
     } catch {
       throw new ApiError("invalid_file_path", "the path is not percent-encoded right");
     }
+  }
+
+  /** `rel`, refused unless it is a relative path of names; a segment that starts with . is `own`'s. */
+  function checkedPath(rel: string, own: string): string {
     const parts = rel.split("/");
     if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || parts.some((p) => p === "" || p === "." || p === "..")) throw new ApiError("invalid_file_path", "the path has an empty, . or .. segment, a backslash, a NUL or a leading /");
-    if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", "a path segment that starts with . is the run's own, not a file it wrote");
-    const work = join(run.dir, "work");
-    if (!(await lstat(work).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
+    if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", `a path segment that starts with . is ${own}`);
+    return rel;
+  }
+
+  /** The file `rel` under `root`, raw; `unreadable` says why one this server cannot read is private. */
+  async function sendFile(req: IncomingMessage, res: ServerResponse, url: URL, root: string, rel: string, unreadable: string): Promise<void> {
+    if (!(await lstat(root).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
     // Through no link, held from the open to the last byte (workspace.ts): a name swapped for one is refused, not followed.
-    const opened = await openWorkFile(work, rel).catch((error) => {
-      if (error instanceof WorkRefused && error.reason === "unreadable") throw new ApiError("system_file_forbidden", "This file was created private by a tool in the run's box: this server cannot read it.", { details: { reason: "unreadable" } });
+    const opened = await openWorkFile(root, rel).catch((error) => {
+      if (error instanceof WorkRefused && error.reason === "unreadable") throw new ApiError("system_file_forbidden", `This file was created private by ${unreadable}: this server cannot read it.`, { details: { reason: "unreadable" } });
       return null;
     });
     if (!opened) throw new ApiError("not_found", "no such file");
     const { handle, stats: st } = opened;
     const type = TYPES[extname(rel).slice(1).toLowerCase()] ?? "application/octet-stream";
     const download = url.searchParams.get("download") === "1" || !INLINE.has(type);
-    const name = parts.at(-1)!.replace(/[^\w.-]/g, "_");
+    const name = rel.split("/").at(-1)!.replace(/[^\w.-]/g, "_");
     res.writeHead(200, {
       "content-type": type,
       "content-length": st.size,
@@ -647,6 +702,54 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     await pipeline(handle.createReadStream(), res).catch(() => undefined);
     await handle.close().catch(() => undefined);
+  }
+
+  // ---- an agent's home --------------------------------------------------------------------------------------------------
+
+  /** The host-owned path of the home that `path` is at or under, if any: on the path as normalized, and in any case, as a
+   *  disk that folds case (macOS's, by default) reaches learning/ as Learning/ too. */
+  const hostOwnedOf = (path: string) => {
+    const at = posix.normalize(path).replace(/^\/+/, "").toLowerCase();
+    return HOME_HOST_OWNED.find((owned) => at === owned.toLowerCase() || at.startsWith(`${owned.toLowerCase()}/`));
+  };
+
+  /** A path in an agent's home as its routes take it, checked as a run's file path is, and at most 1024 characters with
+   *  no segment over 255 bytes. Anything at or under a host-owned path is refused first, read or written, so
+   *  `./learning/x`, `a/../LeArNiNg/x` and `Learning/x` are refused as learning/ is; and a write goes no deeper than the
+   *  list does. */
+  function homePath(raw: string, agentId: string, write: boolean): string {
+    const rel = decodedPath(raw);
+    const owned = hostOwnedOf(rel);
+    // Its notes are read through the learning API alone, which redacts them; never raw here.
+    if (owned) throw new ApiError("system_file_forbidden", write ? `${owned}/ is written by the server, not through the API` : `read it through /v2/agents/${agentId}/${owned}`, { details: { reason: "host_owned" } });
+    checkedPath(rel, "the server's own, not a file of the home");
+    if (rel.length > 1024 || rel.split("/").some((p) => Buffer.byteLength(p) > 255)) throw new ApiError("invalid_file_path", "the path is over 1024 characters, or a segment of it over 255 bytes");
+    if (write && rel.split("/").length - 1 > WALK_DEPTH) throw new ApiError("invalid_file_path", `a file is written at most ${WALK_DEPTH} directories deep, as deep as the list goes`);
+    return rel;
+  }
+
+  /** The agent's home, `homes/<its home key>/`: null while nothing was ever written to it, made with homes/ (0700) when
+   *  `make`. Neither is ever a link: a read finds no home there, and a write is refused. */
+  async function homeDir(agentId: string, make: boolean): Promise<string | null> {
+    const home = homeOf(data, agentId);
+    for (const dir of [join(data, HOMES_DIR), home]) {
+      // One made is synced into its parent, so a write in it that is answered survives a crash of the machine.
+      if (make && (await mkdir(dir, { mode: 0o700 }).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "EEXIST" ? false : Promise.reject(error))))) await syncDir(dirname(dir));
+      if ((await lstat(dir).catch(() => null))?.isDirectory()) continue;
+      if (make) throw new WorkRefused(dir, "link");
+      return null;
+    }
+    return home;
+  }
+
+  /** A write to the home or a removal from it refused (workspace.ts), as its answer. */
+  function homeRefusal(error: unknown): never {
+    if (!(error instanceof WorkRefused)) throw error;
+    if (error.reason === "link") throw new ApiError("system_file_forbidden", "A link is on the way to this path, or is the file: this server follows none.", { details: { reason: "link" } });
+    if (error.reason === "unreadable") throw new ApiError("system_file_forbidden", "This server may not enter a directory on the way to this path.", { details: { reason: "unreadable" } });
+    if (error.reason === "not_regular") throw new ApiError("invalid_file_path", "the path names a directory, or runs through a file");
+    if (error.reason === "unheld") throw new ApiError("unsupported_here", HOME_WRITES_OFF);
+    throw new ApiError("not_found", "no such file");
   }
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
@@ -884,8 +987,44 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "listRunFiles": {
         const run = await needRun(id);
-        const files = (await walk(join(run.dir, "work"))).sort((a, b) => a.path.localeCompare(b.path));
-        return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: files.length > FILE_LIST_CAP });
+        const { files, deep } = await walk(join(run.dir, "work"));
+        files.sort((a, b) => a.path.localeCompare(b.path));
+        return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP });
+      }
+      // An archived agent's home is read and written as any other's: as its definition is.
+      case "listHomeFiles": {
+        await needAgent(id);
+        const home = await homeDir(id, false);
+        const { files, deep, owned } = home ? await walk(home, true) : { files: [], deep: false, owned: [] };
+        // A host-owned path there is one entry by its name, and none of what is in it.
+        const listed = [...files, ...owned.map((path) => ({ path, host_owned: true as const }))].sort((a, b) => a.path.localeCompare(b.path));
+        return send(res, 200, { agent_id: id, files: listed.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || listed.length > FILE_LIST_CAP });
+      }
+      case "readHomeFile": {
+        await needAgent(id);
+        const rel = homePath(second!, id, false);
+        const home = await homeDir(id, false);
+        if (!home) throw new ApiError("not_found", "no such file");
+        return sendFile(req, res, url, home, rel, "another user");
+      }
+      case "writeHomeFile": {
+        await needAgent(id);
+        if (!homeWrites) throw new ApiError("unsupported_here", HOME_WRITES_OFF);
+        const rel = homePath(second!, id, true);
+        const bytes = await bytesOf(req);
+        // Each write lands whole (a temporary file renamed over the old one); of two at once, the last rename wins.
+        const st = await homeDir(id, true).then((home) => writeWorkFile(home!, rel, bytes)).catch(homeRefusal);
+        return send(res, 200, fileView(rel, st));
+      }
+      case "deleteHomeFile": {
+        await needAgent(id);
+        if (!homeWrites) throw new ApiError("unsupported_here", HOME_WRITES_OFF);
+        const rel = homePath(second!, id, true);
+        const home = await homeDir(id, false);
+        if (!home) throw new ApiError("not_found", "no such file");
+        await removeWorkFile(home, rel).catch(homeRefusal);
+        res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        return void res.end();
       }
       case "validateWorkflow": {
         const body = await bodyOf(req);
@@ -909,8 +1048,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "pauseRun":
       case "resumeRun":
         return send(res, 200, await runs.pause(await needRun(id), found.name === "pauseRun"));
-      case "readRunFile":
-        return readFileRoute(req, res, url, await needRun(id), second!);
+      case "readRunFile": {
+        const run = await needRun(id);
+        return sendFile(req, res, url, join(run.dir, "work"), checkedPath(decodedPath(second!), "the run's own, not a file it wrote"), "a tool in the run's box");
+      }
+      case "createFile": {
+        const body = await bodyOf(req);
+        const answer = await idempotent(req, "/files", body, async () => ({ status: 201, body: await uploads.reserve(body) }));
+        return send(res, answer.status, answer.body, answer.headers);
+      }
+      case "uploadFile":
+        return send(res, 200, await uploads.receive(id, req));
       case "getUsage":
         return send(res, 200, await usage(url));
       case "getStats": {
@@ -987,7 +1135,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (owner && (raw === "/v2/setup" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
-    if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, ...(owner ? { owner } : {}) })) return;
+    if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}) })) return;
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     route(req, res, url, raw.slice(3)).catch(fail);
   });

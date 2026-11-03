@@ -1,0 +1,12 @@
+{
+  "package": "@parcha/agentrun-kernel",
+  "install": [
+    "run-adapters",
+    "dsl"
+  ],
+  "companions": [
+    "@parcha/agentrun-dsl"
+  ],
+  "expect": "no-key path missing",
+  "reason": "@parcha/agentrun-kernel's README gives no command that runs with no key yet"
+}

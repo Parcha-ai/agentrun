@@ -68,7 +68,7 @@ test("GET /v2/stats counts by status, sums only known costs, leaves archived out
   const { analytics, ...counts } = stats.body;
   assert.deepEqual(counts, {
     agents: 5,
-    runs: { total: 6, active: 1, needs_input: 1, failed: 2, status_unknown: 0 },
+    runs: { total: 6, active: 1, needs_input: 1, failed: 1, needs_review: 1, status_unknown: 0 },
     per_agent: [
       { agent_id: "alpha", name: "Alpha", runs: 2 },
       { agent_id: "beta", name: "Beta", runs: 2 },
@@ -80,6 +80,7 @@ test("GET /v2/stats counts by status, sums only known costs, leaves archived out
     archived: { agents: 1, runs: 2 },
   });
   assert.deepEqual([analytics.totals.runs, analytics.totals.runs_with_metrics, analytics.totals.tokens], [6, 0, 0], "rows with no metrics: runs, none of them covered");
+  assert.deepEqual([analytics.totals.completed, analytics.totals.needs_review, analytics.totals.failed], [2, 1, 1], "the escalated run is completed, and needs review; never failed");
   assertRunningPartitioned(data, stats.body);
   const { doc, op, schema } = await statsSchema(baseUrl);
   assert.equal(op["x-agentrun-serve"], "stats/1");
@@ -122,7 +123,23 @@ async function measured(t) {
   return data;
 }
 
-const row = (runs, completed, failed, runs_with_metrics, tokens, cost_usd, unknown_cost_runs) => ({ runs, completed, failed, runs_with_metrics, tokens, cost_usd, unknown_cost_runs });
+const row = (runs, completed, failed, runs_with_metrics, tokens, cost_usd, unknown_cost_runs, needs_review = 0) => ({ runs, completed, needs_review, failed, runs_with_metrics, tokens, cost_usd, unknown_cost_runs });
+
+test("an escalated run is completed and needs review, never failed: in the counts, and in analytics with and without its filters", async (t) => {
+  const { data } = await seeded(t, [["alpha", "Alpha"], ["beta", "Beta"]], [
+    ["alpha", "completed", 0.1], ["alpha", "escalated", 0.1], ["alpha", "failed", 0.1],
+    ["beta", "completed", 0.1],
+  ]);
+  const { api } = await serve(t, { data });
+  const counts = (body) => [body.totals.completed, body.totals.needs_review, body.totals.failed];
+  const all = (await api("GET", "/stats")).body;
+  assert.deepEqual([all.runs.failed, all.runs.needs_review], [1, 1], "the failed run alone is failed; the escalated one needs review");
+  assert.deepEqual(counts(all.analytics), [3, 1, 1], "both completed runs and the escalated one are completed");
+  assert.deepEqual(counts((await api("GET", "/stats?agent=alpha")).body.analytics), [2, 1, 1], "one agent's");
+  const window = new URLSearchParams({ from: at(0), to: at(3) });
+  assert.deepEqual(counts((await api("GET", `/stats?${window}`)).body.analytics), [2, 1, 1], "a window of the first three");
+  assert.deepEqual((await api("GET", "/stats?agent=beta")).body.analytics.totals.needs_review, 0);
+});
 
 test("GET /v2/stats's analytics sums the runs' metrics by harness and effort, day and source, and meets the served document", async (t) => {
   const { api, baseUrl } = await serve(t, { data: await measured(t) });
@@ -205,7 +222,7 @@ test("a running run this server does not hold is status_unknown: never counted a
   db.prepare("INSERT INTO runs (id, agent_id, revision_id, state, started_at) VALUES ('elsewhere', 'alpha', ?, 'running', ?)").run(revisions.alpha, new Date().toISOString());
   db.close();
   const { body } = await api("GET", "/stats");
-  assert.deepEqual(body.runs, { total: 2, active: 0, needs_input: 0, failed: 0, status_unknown: 1 });
+  assert.deepEqual(body.runs, { total: 2, active: 0, needs_input: 0, failed: 0, needs_review: 0, status_unknown: 1 });
   assert.deepEqual(body.cost, { usd: 0.5, basis: "estimate", unknown_runs: 1 });
   assertRunningPartitioned(data, body);
   const { doc, schema } = await statsSchema(baseUrl);
@@ -234,7 +251,9 @@ test("GET /v2/stats over 1,000 runs across several agents answers within 500 ms,
     }
     t.diagnostic(`GET /v2/stats over 1,000 runs, 5 agents: first ${times[0].toFixed(1)} ms, slowest ${Math.max(...times).toFixed(1)} ms`);
     assert.ok(Math.max(...times) < 500, `slowest ${Math.max(...times).toFixed(1)} ms`);
-    assert.deepEqual(stats.body.runs, { total: 980, active: 0, needs_input: 0, failed: 500, status_unknown: 0 });
+    // The states cycle completed, failed, stopped, escalated; the archived runs (every 50th) are completed or stopped, so
+    // 250 failed and 250 escalated runs stay counted.
+    assert.deepEqual(stats.body.runs, { total: 980, active: 0, needs_input: 0, failed: 250, needs_review: 250, status_unknown: 0 });
     assert.deepEqual(stats.body.cost, { usd: 5, basis: "estimate", unknown_runs: 480 });
     assert.deepEqual(stats.body.per_agent.map((a) => a.runs), [180, 200, 200, 200, 200], "a1 lost its 20 archived runs");
     assert.deepEqual(stats.body.archived, { agents: 0, runs: 20 });
@@ -255,7 +274,7 @@ test("a held run still queued (launched, its work not started) counts as active;
     byAgent: [{ id: "a", name: "A", runs: 3 }],
     running: ["q", "w", "elsewhere"],
   };
-  assert.deepEqual(statsView(store, runs).runs, { total: 3, active: 2, needs_input: 0, failed: 0, status_unknown: 1 });
+  assert.deepEqual(statsView(store, runs).runs, { total: 3, active: 2, needs_input: 0, failed: 0, needs_review: 0, status_unknown: 1 });
 });
 
 test("a refused fetch is a failed call in a run's metrics and in GET /v2/stats, whose tool rows carry the name a person reads", { timeout: 60_000 }, async (t) => {

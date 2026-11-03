@@ -20,13 +20,12 @@ export const UNSUPPORTED: Readonly<Record<string, string>> = {
   "home.export": "This server does not export a home yet.",
   "home.import": "This server does not import a home yet.",
   "runs.kill": "This server does not kill a run's process yet.",
-  "files.upload": "This server takes no uploads yet.",
   quotes: "This server has no billing, so it gives no quotes.",
 };
 
 const ref = (name: string) => ({ $ref: `#/components/${name}` });
 const errors = (...codes: number[]) =>
-  Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 404: "NotFound", 409: "Conflict", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal" }[code]}`)]));
+  Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 403: "Forbidden", 404: "NotFound", 409: "Conflict", 413: "PayloadTooLarge", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal", 501: "Unsupported" }[code]}`)]));
 const json = (schema: unknown, description: string) => ({ description, content: { "application/json": { schema } } });
 /** GET /health's answer (host.ts Health). */
 const HEALTH = {
@@ -42,7 +41,9 @@ const closed = (properties: Json, description?: string) => ({ type: "object", ad
 const USD = { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." };
 /** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
 const GROUP = {
-  runs: COUNT, completed: COUNT, failed: { ...COUNT, description: "Failed or escalated." },
+  runs: COUNT, completed: { ...COUNT, description: "Completed, escalated runs included: one completed and waits for a person's review." },
+  needs_review: { ...COUNT, description: "Of `completed`, the escalated runs, which wait for a person's review.", "x-agentrun-serve": "stats/3" },
+  failed: { ...COUNT, description: "Failed: never an escalated run." },
   runs_with_metrics: { ...COUNT, description: "Of `runs`, those that ended with metrics: a running run, and a run whose end wrote none, has none." },
   tokens: { ...COUNT, description: "Input, cache read, cache write and output tokens, summed over `runs_with_metrics`." },
   cost_usd: USD, unknown_cost_runs: { ...COUNT, description: "Runs with no known cost: running, or ended without one." },
@@ -64,8 +65,8 @@ const ANALYTICS = closed({
 const STATS = closed({
   agents: { ...COUNT, description: "Agents not archived." },
   runs: closed(
-    { total: COUNT, active: COUNT, needs_input: COUNT, failed: COUNT, status_unknown: COUNT },
-    "Runs not archived. `total` counts them all; a completed or cancelled run is counted in `total` alone. `failed` includes escalated. Each running run is in exactly one of `active` (this server holds it, queued, working or paused), `needs_input` (it holds it, input_required) and `status_unknown` (it does not hold it, or holds it as ended before its end is written).",
+    { total: COUNT, active: COUNT, needs_input: COUNT, failed: COUNT, needs_review: { ...COUNT, "x-agentrun-serve": "stats/3" }, status_unknown: COUNT },
+    "Runs not archived. `total` counts them all; a completed or cancelled run is counted in `total` alone, but for an escalated one, which completed and waits for a person's review: it is in `needs_review`, never in `failed`. Each running run is in exactly one of `active` (this server holds it, queued, working or paused), `needs_input` (it holds it, input_required) and `status_unknown` (it does not hold it, or holds it as ended before its end is written).",
   ),
   per_agent: {
     type: "array", description: "Each agent not archived, by name then id, with how many of its runs are not archived; an agent with no runs is listed with 0.",
@@ -205,6 +206,40 @@ const archiving = (collection: string, noun: string, id: Json, answer: string): 
       },
     ]),
   );
+
+/** A file of an agent's home, listed as a run's file is (RunFile). */
+const HOME_FILE = {
+  type: "object", additionalProperties: false, required: ["path", "size_bytes", "modified_at"],
+  properties: {
+    path: { type: "string", description: "Relative to the agent's home, `/` between segments." },
+    size_bytes: { type: "integer", minimum: 0 },
+    modified_at: ref("schemas/Timestamp"),
+    content_type: { type: ["string", "null"] },
+    unreadable: { type: "boolean", const: true, description: "Present when this server cannot read the file (another user made it private): reading it answers 403 `system_file_forbidden` with `details.reason` `unreadable`." },
+  },
+};
+/** A host-owned path of the home that is there: one entry by its name, with nothing of what is in it. */
+const HOME_HOST_ENTRY = {
+  type: "object", additionalProperties: false, required: ["path", "host_owned"],
+  properties: {
+    path: { type: "string", description: "Its name at the top of the home, as it is on disk (`learning`)." },
+    host_owned: { type: "boolean", const: true, description: "A path of `capabilities.home.host_owned`: only the server writes it, and what is in it is read through `/v2/agents/{agent_id}/learning`, never listed or served here." },
+  },
+};
+const HOME_FILES = {
+  type: "object", additionalProperties: false, required: ["agent_id", "files", "complete", "truncated"],
+  properties: { agent_id: ref("schemas/Id"), files: { type: "array", items: { oneOf: [HOME_FILE, HOME_HOST_ENTRY] } }, complete: { type: "boolean", description: "Always true here: the home is on this server's disk." }, truncated: { type: "boolean", description: "The list stopped at the server's cap: its count of files, or a directory more than 16 deep." } },
+};
+/** Where an agent's home's files are listed; each file's own path is below it. */
+const HOME_FILES_AT = "/agents/{agent_id}/home/files";
+const HOME_PATH = {
+  name: "path", in: "path", required: true,
+  description: "A path relative to the agent's home. It may hold `/` between segments, sent as is; each segment is percent-encoded. The server matches the rest of the URL after `/files/`.",
+  schema: { type: "string", minLength: 1, maxLength: 1024 },
+};
+const RAW = { "application/octet-stream": { schema: { type: "string", contentMediaType: "application/octet-stream" } }, "*/*": { schema: { type: "string" } } };
+const HOME_PATHS = "A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`.";
+const HOME_WRITES = "A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`), as normalized and in any case, so `./Learning/x` too, is `403 system_file_forbidden` with `details.reason` `host_owned`. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's. Where \`capabilities.home.writes\` is false (no /proc/self/fd, as on macOS), the write or delete is \`501 unsupported_here\`.";
 
 /** This server's own routes, outside the contract. */
 /** One JSON-RPC 2.0 message, and the answer to a request (POST /mcp). */
@@ -363,6 +398,42 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: [KEY_ID],
       responses: { "204": { description: "Forgotten." }, ...errors(401, 409, 422, 429, 500) },
       "x-agentrun-serve": "toolkeys/1",
+    },
+  },
+  [HOME_FILES_AT]: {
+    get: {
+      operationId: "listHomeFiles", tags: ["agents"], summary: "Every file in the agent's home",
+      description: "The agent's home is a directory of its own on this server's disk, kept across its runs (runs do not see it yet). Every regular file in it, recursively, listed as a run's files are (`GET /runs/{run_id}/files`): reached through no link, a name that starts with `.` left out. A home never written to lists none. A path of `capabilities.home.host_owned` that is there (`learning`) is one entry, `{path, host_owned: true}`, with none of what is in it.",
+      parameters: [ref("parameters/AgentId")],
+      responses: { "200": json(HOME_FILES, "The files."), ...errors(401, 404, 429, 500) },
+      "x-agentrun-serve": "home/1",
+    },
+  },
+  [`${HOME_FILES_AT}/{path}`]: {
+    get: {
+      operationId: "readHomeFile", tags: ["agents"], summary: "One file of the agent's home, raw",
+      description: `Raw bytes with the file's content type, as a run's file is read (\`GET /runs/{run_id}/files/{path}\`): \`nosniff\`, a CSP on HTML, \`?download=1\` for an attachment. ${HOME_PATHS} A path at or under one of \`capabilities.home.host_owned\` (\`learning/\`), as normalized and in any case, is \`403 system_file_forbidden\` with \`details.reason\` \`host_owned\`: read it through \`/v2/agents/{agent_id}/learning\`. A link on the way is \`404 not_found\`.`,
+      parameters: [ref("parameters/AgentId"), HOME_PATH, { name: "download", in: "query", required: false, description: "`1` forces a download.", schema: { type: "integer", enum: [0, 1], default: 0 } }],
+      responses: {
+        "200": { description: "The whole file.", headers: { "Content-Disposition": ref("headers/ContentDisposition"), "X-Content-Type-Options": ref("headers/NoSniff") }, content: RAW },
+        ...errors(400, 401, 403, 404, 429, 500),
+      },
+      "x-agentrun-serve": "home/1",
+    },
+    put: {
+      operationId: "writeHomeFile", tags: ["agents"], summary: "Write one file of the agent's home",
+      description: `The raw body becomes the file, whole: written to a temporary file beside it and renamed over it (0600), the directories on the way made. Of two writes of one file at once, each lands whole and the last wins. A body over \`capabilities.home.max_file_bytes\` is \`413 payload_too_large\`. ${HOME_PATHS} ${HOME_WRITES}`,
+      parameters: [ref("parameters/AgentId"), HOME_PATH],
+      requestBody: { required: true, content: RAW },
+      responses: { "200": json(HOME_FILE, "The file, as the list shows it."), ...errors(400, 401, 403, 404, 413, 429, 500, 501) },
+      "x-agentrun-serve": "home/1",
+    },
+    delete: {
+      operationId: "deleteHomeFile", tags: ["agents"], summary: "Delete one file of the agent's home",
+      description: `Removes the file; a directory it leaves empty stays. A file that is not there is \`404 not_found\`. ${HOME_PATHS} ${HOME_WRITES}`,
+      parameters: [ref("parameters/AgentId"), HOME_PATH],
+      responses: { "204": { description: "The file is gone." }, ...errors(400, 401, 403, 404, 429, 500, 501) },
+      "x-agentrun-serve": "home/1",
     },
   },
   ...archiving("agents", "Agent", ref("parameters/AgentId"), "The agent, with archived_at."),
@@ -561,6 +632,17 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "serve/1",
     },
     links: { type: "object", additionalProperties: false, required: ["openapi"], properties: { openapi: { type: "string" } }, description: "This document's address.", "x-agentrun-serve": "serve/1" },
+    home: {
+      type: "object", additionalProperties: false, required: ["disk", "host_owned", "max_file_bytes", "writes"],
+      properties: {
+        disk: { enum: ["local"], description: "Where the homes are: this server's disk, under its data directory." },
+        host_owned: { type: "array", items: { type: "string" }, description: "The paths in a home only the server writes, never served here: each that is there is one entry of the list (`host_owned: true`), and a GET, PUT or DELETE at or under one, in any case, is 403 `system_file_forbidden`." },
+        max_file_bytes: { type: "integer", minimum: 1, description: "The largest file a PUT takes: `limits.max_body_bytes`. Over it, 413 `payload_too_large` naming `max_body_bytes`." },
+        writes: { type: "boolean", description: "Whether PUT and DELETE write a home's files here. True only where this server reaches its held directory handles through /proc/self/fd (Linux), probed once at start, the probe its confinement walks by; false elsewhere (macOS), where both answer 501 `unsupported_here` and nothing is written or removed. The list and reads work either way." },
+      },
+      description: "Each agent's home: a directory of its own (its id in lower case and 16 hex digits of the id's SHA-256, so ids that differ only in case never share one), kept across its runs, its files listed, read, written and deleted at `/agents/{agent_id}/home/files`.",
+      "x-agentrun-serve": "home/1",
+    },
     secrets: {
       type: "object", additionalProperties: false, required: ["names", "handoff", "condition", "limit"],
       properties: { names: { type: "array", items: { type: "string" } }, handoff: { enum: ["pipe"] }, condition: { type: "string" }, limit: { type: "string" } },
@@ -636,6 +718,11 @@ const ARCHIVED_DETAILS = {
   properties: { archived_at: { type: "string", format: "date-time", description: "When the agent was archived: unarchive it to run it." } },
 };
 const NOT_RUNNABLE_DETAILS = { oneOf: [BLOCKED_DETAILS, ARCHIVED_DETAILS] };
+/** What a file refused `403 system_file_forbidden` holds in `error.details` here, when it holds any (a dot-name holds none). */
+const FORBIDDEN_DETAILS = {
+  type: "object", additionalProperties: false, required: ["reason"],
+  properties: { reason: { enum: ["unreadable", "host_owned", "link"], description: "`unreadable`: another user made the file private. `host_owned`: a read, write or delete in an agent's home at or under a path only the server writes, in any case. `link`: a write or a delete in an agent's home through a link." } },
+};
 
 /** The contract as vendored, read once. */
 function contract(): Json {
@@ -719,7 +806,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     fields.push(...own.map((code) => `ErrorCode.${code}`));
   }
   const details = ((schemas.ErrorBody as Json).properties as Record<string, Json>).details!;
-  details["x-agentrun-serve-details"] = { agent_not_runnable: NOT_RUNNABLE_DETAILS };
+  details["x-agentrun-serve-details"] = { agent_not_runnable: NOT_RUNNABLE_DETAILS, system_file_forbidden: FORBIDDEN_DETAILS };
   const extensions: string[] = [];
   for (const [path, item] of Object.entries(EXTENSIONS)) {
     for (const [method, op] of Object.entries(item)) {

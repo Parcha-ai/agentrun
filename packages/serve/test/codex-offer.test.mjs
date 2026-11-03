@@ -1,5 +1,5 @@
 // What this server offers of codex, as GET /v2/capabilities answers it (harnessOffers): available only when the
-// installed Codex is the pinned build (@parcha/agentrun-codex's verifyCodex: the platform package's version, the
+// installed Codex is the pinned build (@parcha/agentrun-harness-codex's verifyCodex: the platform package's version, the
 // binary's sha256 and the version it reports) and a model key or gateway is set. A binary that is not the pinned build
 // is unavailable as that, with the install line, even with a key. No network: nothing here reaches a provider.
 //
@@ -42,5 +42,5 @@ test("a Codex that is not the pinned build is unavailable as that, with the inst
   const offer = await codexOf({ OPENAI_API_KEY: "fake-test-key" });
   assert.equal(offer.available, false, JSON.stringify(offer));
   assert.match(offer.reason, /is not the pinned build: its binary sha256 is [0-9a-f]{64}, not [0-9a-f]{64}/);
-  assert.match(offer.reason, /\(npm install @parcha\/agentrun-codex @openai\/codex@0\.164\.0\)$/);
+  assert.match(offer.reason, /\(npm install @parcha\/agentrun-harness-codex @openai\/codex@0\.164\.0\)$/);
 });
