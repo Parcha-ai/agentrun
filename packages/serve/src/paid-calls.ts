@@ -8,6 +8,7 @@
 // published price, an estimate: its price on a 2xx; nothing on a 4xx other than a 408 (Parallel refused it before any
 // work); and its price on a 408, a 5xx or a request that failed or was stopped after it was sent, which Parallel may
 // have billed, as the decision provider books Parallel's (@parcha/agentrun-decisions).
+// A request with no call to book it under, or to an endpoint with no price here, is never sent: it fails closed.
 // The call a request is booked under (its id, and how a record is written to the run's store) is set around the call:
 // around a tool's execute by `booking`, where the web tools are bound (tools.ts, host-tools.ts), and around a workflow
 // call node's effect by `bookedIn`, with the ledger the workflow's runner gives it (app.ts). The client deep inside a
@@ -78,19 +79,18 @@ type Sent = { response: Response } | { thrown: unknown } | { unmarked: string };
 
 /** `send`, one request to a paid provider at `fee`, under the run's cap and booked under the call it runs in: its
  *  response; it throws PaidRefused, in the cap's words, when the cap does not hold its price (or the run's spend is
- *  unknown) or its mark could not be written, and then nothing is sent. A request that throws throws, settled at its
+ *  unknown), when no call is set to book it under, or when its mark could not be written, and then nothing is sent. A request that throws throws, settled at its
  *  price. */
 export async function paidRequest(fee: Fee, send: () => Promise<Response>): Promise<Response> {
   const ledger = ledgers.getStore();
-  const label = { tool: fee.tool, charged_by: fee.by, call: ledger?.call ?? null };
+  if (!ledger) throw new PaidRefused(`${fee.name} was not sent: this request has no call to book it under`);
+  const label = { tool: fee.tool, charged_by: fee.by, call: ledger.call };
   const chargeOf = (sent: Sent) => ("unmarked" in sent ? undefined : "thrown" in sent || billed(sent.response.status) ? fee.usd : 0);
   const sent = async (): Promise<Sent> => {
-    if (ledger) {
-      try {
-        await ledger.record(TOOL_STARTED, { ...label, heldUsd: fee.usd });
-      } catch (error) {
-        return { unmarked: `${fee.name} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})` };
-      }
+    try {
+      await ledger.record(TOOL_STARTED, { ...label, heldUsd: fee.usd });
+    } catch (error) {
+      return { unmarked: `${fee.name} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})` };
     }
     let outcome: Sent;
     try {
@@ -99,7 +99,7 @@ export async function paidRequest(fee: Fee, send: () => Promise<Response>): Prom
       outcome = { thrown };
     }
     // Settled at what it may have charged, even when this cannot be written: the request was sent.
-    if (ledger) await ledger.record(TOOL_COST, { ...label, usd: chargeOf(outcome) ?? null }).catch(() => undefined);
+    await ledger.record(TOOL_COST, { ...label, usd: chargeOf(outcome) ?? null }).catch(() => undefined);
     return outcome;
   };
   const paid = await paidCall(fee.name, sent, chargeOf, { usd: fee.usd, basis: fee.basis });

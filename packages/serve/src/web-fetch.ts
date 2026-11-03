@@ -70,7 +70,8 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
       return response;
     };
     const fee = parallelFeeOf(url, body);
-    return fee ? paidRequest(fee, sent) : sent();
+    if (!fee) throw new PaidRefused(`Parallel's ${URL.parse(url)?.pathname ?? url} was not sent: it has no price here`);
+    return paidRequest(fee, sent);
   };
   return {
     live: () => !refused,
