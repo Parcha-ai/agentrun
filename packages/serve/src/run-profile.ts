@@ -6,11 +6,23 @@ import { constants, existsSync } from "node:fs";
 import { copyFile, mkdir, readdir } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import type { Revision } from "@parcha/pi-durable-agent";
-import { type InputIssue, invalid } from "./errors.js";
+import { ApiError, type InputIssue, invalid } from "./errors.js";
 import type { PinnedProfile } from "./mandate.js";
 import type { Effort } from "./model.js";
 import { packIssues, resolvePack, shippedPacks, type Pack } from "./packs.js";
 import { isObject, type Json, skillNames } from "./validate.js";
+
+/** A pack this server ships that names skills its build does not ship: this server's packaging error, a 500 that says it
+ *  is not retryable, since the same build answers a retry the same way. */
+class PackagingError extends ApiError {
+  constructor(pack: string, skills: string[]) {
+    super("internal", `This server's pack ${pack} names the skill${skills.length > 1 ? "s" : ""} ${skills.join(", ")}, which its build does not ship: a packaging error in this server, not in the request.`, { details: { pack, skills } });
+  }
+
+  override body(requestId: string): { error: Record<string, unknown> } {
+    return { error: { ...super.body(requestId).error, retryable: false } };
+  }
+}
 
 /** A run's resolved profile: what serve.json pins, and the shipped pack's skills it stages (each a directory). */
 export type RunProfile = { pinned: PinnedProfile; bundled: { name: string; dir: string }[] };
@@ -49,13 +61,17 @@ export function runProfileOf(body: Json, revision: Revision): RunProfile | undef
   // The caller's own skill wins: a skill the revision holds is never taken from the pack.
   const own = new Set(skillNames(Object.keys(revision.body.skills)));
   const bundled: RunProfile["bundled"] = [];
+  const unshipped: string[] = [];
   const field = body.profile === undefined ? "output" : "profile";
   for (const name of resolved.skills) {
     if (own.has(name)) continue;
     const dir = skillsDir === undefined ? undefined : join(skillsDir, name);
     if (dir && existsSync(join(dir, "SKILL.md"))) bundled.push({ name, dir });
-    else issues.push({ field, reason: "missing", message: `the profile ${pack.name} names the skill ${name}, which neither the agent's revision nor ${skillsDir === undefined ? "the profile" : "the pack"} holds: add ${name}/SKILL.md to the agent's skills` });
+    // A pack this server ships names a skill its build does not ship: this server's packaging, which no request fixes.
+    else if (skillsDir !== undefined) unshipped.push(name);
+    else issues.push({ field, reason: "missing", message: `the profile ${pack.name} names the skill ${name}, which neither the agent's revision nor the profile holds: add ${name}/SKILL.md to the agent's skills` });
   }
+  if (unshipped.length) throw new PackagingError(pack.name, unshipped);
   if (issues.length) throw invalid(issues);
   const { effort: row, thinking, skills, output } = resolved;
   const pinned: PinnedProfile = { name: pack.name, effort: row, ...(thinking ? { thinking } : {}), skills, ...(output ? { output } : {}) };

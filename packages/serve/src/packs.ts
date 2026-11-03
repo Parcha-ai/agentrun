@@ -171,12 +171,25 @@ export function resolvePack(pack: Pack, { effort = "medium", output }: PackAsk =
 
 /** A pack this server ships: the pack, and the directory its bundled skills are in (`<skillsDir>/<name>/SKILL.md`). */
 export type ShippedPack = { pack: Pack; skillsDir: string };
-const SHIPPED = new Map<string, ShippedPack>();
-SHIPPED.set("default", { pack: JSON.parse(readFileSync(new URL("./packs/default/pack.json", import.meta.url), "utf8")) as Pack, skillsDir: fileURLToPath(new URL("./packs/default/skills/", import.meta.url)) });
+let shipped: Map<string, ShippedPack> | undefined;
 
 /** The packs this server ships, by name: what a run's `profile` may name, and `default`, the pack an `output` alone uses
- *  when there is one. Capabilities list them. */
-export const shippedPacks = (): Map<string, ShippedPack> => SHIPPED;
+ *  when there is one. Capabilities list them. Read on first use, never as the module loads: a build with no pack
+ *  directory starts, ships no pack, and a run that asks for one is told so (runProfileOf's 422). */
+export const shippedPacks = (): Map<string, ShippedPack> => (shipped ??= readShipped());
+
+function readShipped(): Map<string, ShippedPack> {
+  const packs = new Map<string, ShippedPack>();
+  let text: string;
+  try {
+    text = readFileSync(new URL("./packs/default/pack.json", import.meta.url), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return packs;
+    throw error;
+  }
+  packs.set("default", { pack: JSON.parse(text) as Pack, skillsDir: fileURLToPath(new URL("./packs/default/skills/", import.meta.url)) });
+  return packs;
+}
 
 /** The pack serve ships, `default`: its pack.json, and the directory its skills are in (`<skills>/<name>/SKILL.md`). */
 export async function defaultPack(): Promise<{ pack: Pack; skills: string }> {
