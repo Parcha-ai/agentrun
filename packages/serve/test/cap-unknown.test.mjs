@@ -135,8 +135,15 @@ const mostOf = (events, open = [], i = 0) => {
 };
 
 test("read in order, the spend after a crash is never less than any reading of the marks allows, and exactly what was spent when no requests overlap", (t) => {
+  // mulberry32: a 32-bit state stepped with Math.imul, so every bit is exact. A product past 2^53 would lose its low
+  // bits, and rand(2) with them.
   let seed = 1377;
-  const rand = (n) => ((seed = (seed * 1103515245 + 12345) % 2147483648), seed % n);
+  const rand = (n) => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+    return Math.floor((((x ^ (x >>> 14)) >>> 0) / 4294967296) * n);
+  };
   const FIGURES = [0.1, 0.2, 0.3, 0.4, 0.5];
   // A run's requests as they went: each one opens with its start mark, and may close by an answer (at most its figure)
   // or a stop (its end mark); the process then crashes, cutting the rest. `serial`: each closes before the next opens.
@@ -145,6 +152,7 @@ test("read in order, the spend after a crash is never less than any reading of t
     const events = [];
     const open = [];
     let spent = 0;
+    let overlapping = 0;
     for (let step = 0, steps = 1 + rand(7); step < steps; step++) {
       const opening = open.length === 0 || (!serial && rand(2) === 0);
       if (opening) {
@@ -154,6 +162,8 @@ test("read in order, the spend after a crash is never less than any reading of t
         events.push(["start", figure]);
         continue;
       }
+      // A close while another request is open too: which one it closed is what the reading has to get right.
+      if (open.length > 1) overlapping += 1;
       const [figure] = open.splice(rand(open.length), 1);
       if (rand(2) === 0) {
         const cost = Math.round(figure * rand(5) * 25_000) / 100_000;
@@ -166,14 +176,21 @@ test("read in order, the spend after a crash is never less than any reading of t
         spent += figure;
       }
     }
-    return { entries, events, most: spent + open.reduce((sum, figure) => sum + figure, 0) };
+    return { entries, events, overlapping, most: spent + open.reduce((sum, figure) => sum + figure, 0) };
   };
+  const seen = { answers: 0, ends: 0, overlapping: 0 };
   for (let i = 0; i < 300; i++) {
-    const { entries, events, most: actual } = runOf(false);
+    const { entries, events, overlapping, most: actual } = runOf(false);
+    seen.answers += events.filter(([kind]) => kind === "answer").length;
+    seen.ends += events.filter(([kind]) => kind === "end").length;
+    seen.overlapping += overlapping;
     const got = spentIn(storeOf(t, entries));
     assert.ok(got >= mostOf(events) - 1e-9, `never less than the marks allow: ${got} for ${JSON.stringify(events)}`);
     assert.ok(got >= actual - 1e-9, `never less than what the run can have spent: ${got} < ${actual}`);
   }
+  // The walk covers what it checks: answers, end marks, and closes while requests overlap, each well past a handful.
+  t.diagnostic(`overlapping runs: ${seen.answers} answers, ${seen.ends} end marks, ${seen.overlapping} closes while requests overlap`);
+  for (const [what, count] of Object.entries(seen)) assert.ok(count >= 50, `the generator made only ${count} ${what}`);
   for (let i = 0; i < 300; i++) {
     const { entries, events, most } = runOf(true);
     assert.ok(Math.abs(spentIn(storeOf(t, entries)) - most) < 1e-9, `exact with no overlap: ${JSON.stringify(events)}`);
