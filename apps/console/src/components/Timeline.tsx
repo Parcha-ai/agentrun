@@ -70,7 +70,7 @@ function Row({ step, last }: { step: Step; last: boolean }) {
   const [open, setOpen] = useState(false);
   const running = row.kind === "tool_use" && row.tool_status === "running";
   const Icon = running ? LoaderCircle : ICON[row.kind] ?? Flag;
-  const detail = step.detail ?? (row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text);
+  const detail = step.above ? null : step.detail ?? (row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text);
   const interrupted = row.tool_status === "interrupted";
   const failed = row.tool_status === "failed" || interrupted || row.kind === "error";
   const missing = row.tool_status === "missing";
@@ -93,7 +93,7 @@ function Row({ step, last }: { step: Step; last: boolean }) {
               {step.ms !== undefined && <span className="font-mono text-[11px]">{took(step.ms)}</span>}
               {step.times && <span className="font-mono text-[11px]">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
-            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", missing && "text-muted-foreground")}>{title(row)}</span>
+            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", missing && "text-muted-foreground")}>{step.above ? "Asked you the question above." : title(row)}</span>
             {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
           </span>
           <span className="caps shrink-0 pt-0.5 text-[11px] text-muted-foreground">{clock(row.timestamp)}</span>
@@ -108,10 +108,11 @@ function Row({ step, last }: { step: Step; last: boolean }) {
 }
 
 /** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
- *  a question once; repeated failures once): newest last, older steps folded behind "N earlier steps". */
-export function Timeline({ rows, live, fold = 6 }: { rows: TimelineRow[]; live: boolean; fold?: number }) {
+ *  a question once; repeated failures once): newest last, older steps folded behind "N earlier steps". `asking`: the
+ *  waiting row of the question the page shows above while the run waits on it; its step points there. */
+export function Timeline({ rows, live, fold = 6, asking }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string }) {
   const [all, setAll] = useState(false);
-  const told = steps(rows);
+  const told = steps(rows).map((s) => (asking && s.row.id === asking ? { ...s, above: true } : s));
   const hidden = all ? 0 : Math.max(0, told.length - fold);
   const shown = told.slice(hidden);
   if (!rows.length) return <Working title={live ? "The run is starting" : "Nothing on the timeline"} note={live ? "Steps appear here as the agent works." : "This run recorded no steps."} spin={live} />;

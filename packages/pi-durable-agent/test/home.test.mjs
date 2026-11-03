@@ -22,8 +22,8 @@ const FULL = {
 
 const refused = (code, pattern) => (error) => error instanceof AgentHomeError && error.code === code && (!pattern || pattern.test(error.message));
 
-function child(source, onLine) {
-  const proc = spawn(process.execPath, ["--input-type=module", "-e", source], { stdio: ["ignore", "pipe", "pipe"] });
+function child(source, onLine, stdio = ["ignore", "pipe", "pipe"]) {
+  const proc = spawn(process.execPath, ["--input-type=module", "-e", source], { stdio });
   let out = "";
   proc.stdout.on("data", (chunk) => {
     out += chunk;
@@ -118,22 +118,29 @@ test("another process reopens the home and reads back everything this one wrote"
 test("a writer in another process holds the home, and the next writer waits for it", async () => {
   const dir = await scratch();
   const home = await createAgentHome(dir, { definition: DEFINITION });
+  const free = await createAgentHome(await scratch(), { definition: DEFINITION });
   let held;
   const ready = new Promise((resolve) => { held = resolve; });
-  const { done } = child(`
+  const { proc, done } = child(`
     const { DatabaseSync } = await import("node:sqlite");
     const db = new DatabaseSync(${JSON.stringify(path.join(dir, "owner.lock"))}, { timeout: 0 });
     db.exec("PRAGMA locking_mode = EXCLUSIVE");
     db.exec("BEGIN EXCLUSIVE");
     db.exec("COMMIT");
     console.log("held");
-    setTimeout(() => db.close(), 700);
-  `, held);
+    process.stdin.once("end", () => db.close()).resume();
+  `, held, ["pipe", "pipe", "pipe"]);
   await ready;
-  const started = Date.now();
-  await setAlias(home, "parcha", "exp_after_wait");
-  const waited = Date.now() - started;
-  await done;
-  assert.ok(waited >= 400, `the write waited for the other process (${waited} ms)`);
+  const events = [];
+  const write = setAlias(home, "parcha", "exp_after_wait").then(() => events.push("written"));
+  // Two writes to a home nobody holds, one after the other, finish while this one waits.
+  try {
+    for (const id of ["exp_free_1", "exp_free_2"]) await setAlias(free, "parcha", id);
+  } finally {
+    events.push("released");
+    proc.stdin.end(); // the child lets go and exits, whether or not the writes above threw
+  }
+  await Promise.all([write, done]);
+  assert.deepEqual(events, ["released", "written"], "the write settled only after the other process let go");
   assert.deepEqual((await readAgentHome(home)).aliases, { parcha: { externalId: "exp_after_wait" } });
 });
