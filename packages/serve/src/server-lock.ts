@@ -9,12 +9,20 @@
 //
 // pi-durable-disk forgets a command record written in another pid namespace only under the precondition this lock
 // keeps: two servers never hold one data root at once.
-import { chmodSync } from "node:fs";
+//
+// A server that stops keeps the lock until its runs' processes have drained and exited, which takes up to their drain
+// and a second. It says so in <data>/server.stopping (its pid, and when its stop is over at the latest), written as its
+// close begins and removed as it ends. A start that finds the lock held reads that file only then, and waits for a server
+// that is stopping instead of refusing it; a mark whose pid is gone or whose time has passed is no stop.
+import { chmodSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { sqliteBusy } from "./agents.js";
 
 export const SERVER_LOCK = "server.lock";
+/** The mark of a server that is stopping: `{ pid, until }`, `until` in epoch ms. */
+export const SERVER_STOPPING = "server.stopping";
 
 /** Another server holds the data root. Its message is the one line the CLI prints before it exits 1. */
 export class ServerLockHeldError extends Error {
@@ -63,4 +71,54 @@ export function takeServerLock(dataRoot: string, options: { chmod?: (file: strin
       db.close();
     },
   };
+}
+
+/** A server that is stopping, by its mark: its process, and when its stop is over at the latest (epoch ms). */
+export type Stopping = { pid: number; until: number };
+
+/** Marks the data root's server as stopping until `until`, as its close begins; the function returned removes the mark.
+ *  Written whole beside its name, then renamed over it, so a reader never sees half of one. */
+export function markStopping(dataRoot: string, until: number): () => void {
+  const file = join(dataRoot, SERVER_STOPPING);
+  const temp = `${file}.${process.pid}`;
+  writeFileSync(temp, JSON.stringify({ pid: process.pid, until }), { mode: 0o600 });
+  renameSync(temp, file);
+  return () => rmSync(file, { force: true });
+}
+
+/** The data root's stopping mark, when its process lives and its time is still ahead; none otherwise (no mark, one that
+ *  can't be read, or one a server left that died as it stopped). */
+export function stoppingOf(dataRoot: string, now = Date.now()): Stopping | undefined {
+  let mark: unknown;
+  try {
+    mark = JSON.parse(readFileSync(join(dataRoot, SERVER_STOPPING), "utf8"));
+  } catch {
+    return undefined;
+  }
+  const { pid, until } = (mark ?? {}) as { pid?: unknown; until?: unknown };
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 || typeof until !== "number" || !(until > now)) return undefined;
+  return processAlive(pid) ? { pid, until } : undefined;
+}
+
+/** Takes the data root's server lock, as takeServerLock. When another server holds it and is stopping (its mark), waits
+ *  for that server, up to its mark's `until`, retrying every `everyMs`, and tells `waiting` once as it starts to. A
+ *  server that is not stopping is refused at once with ServerLockHeldError, as is one that still holds the lock at its
+ *  `until`. */
+export async function takeServerLockAfterStop(dataRoot: string, options: { waiting?: (stopping: Stopping) => void; everyMs?: number } = {}): Promise<ServerLock> {
+  try {
+    return takeServerLock(dataRoot);
+  } catch (error) {
+    if (!(error instanceof ServerLockHeldError)) throw error;
+    const stopping = stoppingOf(dataRoot);
+    if (!stopping) throw error;
+    options.waiting?.(stopping);
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, options.everyMs ?? 250));
+      try {
+        return takeServerLock(dataRoot);
+      } catch (again) {
+        if (!(again instanceof ServerLockHeldError) || Date.now() >= stopping.until) throw again;
+      }
+    }
+  }
 }
