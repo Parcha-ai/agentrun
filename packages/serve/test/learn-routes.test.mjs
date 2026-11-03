@@ -79,7 +79,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   assert.equal(view.main, main1);
   assert.equal(view.index, `${line("check-units.md", "Check units", "Convert every amount to one unit before comparing")}\n${line("quote-sources.md", "Quote sources", "Name the page each figure came from")}\n`);
   assert.deepEqual(view.notes.items.map((n) => [n.file, n.status, n.type, n.superseded_by]), [["check-units.md", "active", "reference", null], ["quote-sources.md", "active", "reference", null]]);
-  assert.deepEqual(view.notes.items[0], { file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing", type: "reference", status: "active", superseded_by: null, text: UNITS });
+  assert.deepEqual(view.notes.items[0], { file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing", type: "reference", status: "active", superseded_by: null, text: UNITS, etag: `"${git(repoOf(data, id), ["rev-parse", "main:check-units.md"])}"` });
   assert.deepEqual(view.log, { items: [{ by: { run: one }, commit: main1, at: view.log.items[0].at, reason: "Each note is general and new.", files: ["MEMORY.md", "check-units.md", "quote-sources.md"] }], total: 1, next_cursor: null });
   assert.deepEqual(view.counts, { merged: 1, dropped: { grader: 1 }, in_progress: 0 });
 
@@ -323,6 +323,35 @@ test("a restarted server counts an agent's runs that tried to learn from the lea
   } finally {
     chmodSync(runs, 0o700);
   }
+});
+
+test("each note in the view and in its pages carries its ETag, the one its file's GET answers: a retire or an edit by it changes exactly the version shown, and a card shown before a change is 412", { timeout: 60_000 }, async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  await made(api, agent("carded"));
+  const files = "/agents/carded/learning/files";
+  for (const [file, text] of [["check-units.md", UNITS], ["quote-sources.md", SOURCES]]) assert.equal((await api("PUT", `${files}/${file}`, { text }, { "if-none-match": "*" })).status, 201);
+  const etags = async () => Object.fromEntries(await Promise.all(["check-units.md", "quote-sources.md"].map(async (file) => [file, (await api("GET", `${files}/${file}`)).headers.get("etag")])));
+  const cards = (items) => Object.fromEntries(items.map((item) => [item.file, item.etag]));
+  const view = (await api("GET", "/agents/carded/learning")).body;
+  const read = await etags();
+  assert.match(read["check-units.md"], /^"[0-9a-f]{40,64}"$/);
+  assert.deepEqual(cards(view.notes.items), read, "the view's cards");
+  const page = (await api("GET", "/agents/carded/learning/notes?limit=1")).body;
+  const next = (await api("GET", `/agents/carded/learning/notes?limit=1&cursor=${page.next_cursor}`)).body;
+  assert.deepEqual(cards([...page.items, ...next.items]), read, "and the pages'");
+  for (const body of [view, page]) assert.deepEqual(schemaProblems(doc, doc.paths["/agents/{agent_id}/learning"].get.responses["200"].content["application/json"].schema.properties.notes, body.notes ?? body), []);
+
+  // An edit by the card's ETag lands, and the card the view now shows carries the new one.
+  const edited = await api("PUT", `${files}/check-units.md`, { text: EDITED }, { "if-match": view.notes.items.find((item) => item.file === "check-units.md").etag });
+  assert.equal(edited.status, 200);
+  const after = cards((await api("GET", "/agents/carded/learning")).body.notes.items);
+  assert.equal(after["check-units.md"], edited.headers.get("etag"));
+  // The card shown before the edit is stale: a retire by it is 412, and nothing changes.
+  assert.equal((await api("POST", `${files}/check-units.md/retire`, undefined, { "if-match": view.notes.items.find((item) => item.file === "check-units.md").etag })).status, 412);
+  // A retire by the card's ETag lands.
+  assert.equal((await api("POST", `${files}/quote-sources.md/retire`, undefined, { "if-match": after["quote-sources.md"] })).status, 200);
+  assert.deepEqual((await api("GET", "/agents/carded/learning")).body.notes.items.map((item) => [item.file, item.status]), [["check-units.md", "active"], ["quote-sources.md", "retired"]]);
 });
 
 test("a commit's notes are read once: a later page and the view at the same main read no note again, and a log page reads only its own commits", { timeout: 60_000 }, async (t) => {
