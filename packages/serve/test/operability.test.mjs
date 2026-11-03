@@ -108,7 +108,7 @@ test("the stored token is printed on the boot that made it, and on no later one"
   assert.equal(second.seen.out.includes(token) || second.seen.out.includes(token.slice(0, 12)), false, "the second boot prints no token value");
 });
 
-const LINE = /^at=\S+ event=(boxes|request|auth_failed|run_started|run_ended)( [a-z_]+=("[^"]*"|\S+))*$/;
+const LINE = /^at=\S+ event=(boxes|harness_offers|request|auth_failed|run_started|run_ended)( [a-z_]+=("[^"]*"|\S+))*$/;
 const fields = (line) => Object.fromEntries([...line.matchAll(/([a-z_]+)=("[^"]*"|\S+)/g)].map(([, k, v]) => [k, v.replace(/^"|"$/g, "")]));
 
 test("one log line per request (method, path without its query, status, ms), per run start and end, and per refused credential; never a token", async (t) => {
@@ -140,7 +140,7 @@ test("one log line per request (method, path without its query, status, ms), per
   assert.deepEqual(of("boxes").map((b) => [b.available, b.unavailable]), [["none", BOX_IDS.join(",")]]);
 });
 
-test("AGENTRUN_LOG=quiet turns the request lines off; the boxes, run and refused-credential lines stay", async (t) => {
+test("AGENTRUN_LOG=quiet turns the request lines off; the boxes, harness offers, run and refused-credential lines stay", async (t) => {
   withEnv(t, { AGENTRUN_LOG: "quiet" });
   const lines = [];
   const server = await startServe({ data: join(await scratch(t), "agents"), port: 0, faux: FAUX, log: (line) => lines.push(line) });
@@ -150,7 +150,7 @@ test("AGENTRUN_LOG=quiet turns the request lines off; the boxes, run and refused
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
   await follow(api, run.run_id, ["completed"]);
   await client(server.baseUrl)("GET", "/runs");
-  assert.deepEqual(lines.map((line) => fields(line).event), ["boxes", "run_started", "run_ended", "auth_failed"]);
+  assert.deepEqual(lines.map((line) => fields(line).event), ["boxes", "harness_offers", "run_started", "run_ended", "auth_failed"]);
 });
 
 test("the bin writes the log lines to stdout", { timeout: 60_000 }, async (t) => {

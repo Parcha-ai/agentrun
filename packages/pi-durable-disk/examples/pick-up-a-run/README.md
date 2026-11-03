@@ -18,7 +18,7 @@ This is the README's [Try it](../../README.md#try-it-no-disk-no-key), as one fil
 of the version you installed):
 
 ```sh
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 # save main.ts from this directory as pick-up.mts (.mts: an ES module, whatever your package.json says), then
 node pick-up.mts
 ```

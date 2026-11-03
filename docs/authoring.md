@@ -53,7 +53,7 @@ mkdir my-workflow
 cd my-workflow
 npm init -y
 npm pkg set type=module
-npm install --ignore-scripts @parcha/agentrun-dsl@beta
+npm install --ignore-scripts @parcha/agentrun-dsl@latest
 node --input-type=module -e 'import { runTriageDemo } from "@parcha/agentrun-dsl/demo"; console.log((await runTriageDemo("billing")).result.output)'
 ```
 
