@@ -6,7 +6,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { useSpend } from "../dist/cap.js";
 import { parallelExtract, webFetch } from "../dist/web-fetch.js";
 import { PARALLEL_SEARCH_URL, webSearch } from "../dist/web-search.js";
 import { exaSearch } from "../dist/exa-keyless.js";
@@ -18,6 +20,18 @@ import { network } from "./fixtures/fake-network.mjs";
 import { FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
+const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
+/** The cap's refusal of a paid call to Parallel, as cap.ts' paidCall words it. */
+const capRefusal = (what, price, basis, spent, cap) => `spend_cap_reached: ${what} was not sent. It could cost up to $${price} (${basis}), and with $${spent.toFixed(6)} spent the run would pass its cap of $${cap}: the run is out of budget.`;
+/** A run's paid tool records, from its store: each mark and charge with its tool, call and figure. */
+function paidRecords(data, runId) {
+  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  try {
+    return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind.startsWith("agentrun.tool_")).map((entry) => ({ kind: entry.kind, ...entry.data }));
+  } finally {
+    db.close();
+  }
+}
 const MODE = "AGENTRUN_TEST_FAUX_PARALLEL_SEARCH";
 const EXTRACT_MODE = "AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT";
 
@@ -90,6 +104,85 @@ test("a 401 or 403 stops Parallel for the rest of the run, for both web tools: n
   await webFetch("http://public.example/", { ...network(), parallel: client });
   assert.match((await webSearch({ query: "widgets" }, client)).error, /refused this run's key/);
   assert.deepEqual(sent.map((call) => new URL(call.url).pathname), ["/v1/extract"]);
+});
+
+test("under a spend cap, a search through Parallel is a paid call: sent only when what the run spent and holds plus its price fits the cap, then counted; else refused in the cap's words and never sent", async (t) => {
+  withEnv(t, {}, [MODE]);
+  t.after(() => useSpend(undefined));
+  const { sent, send } = parallel();
+  const client = parallelExtract(CANARY, send);
+  const added = [];
+  const capped = (cap, spent) => useSpend({ cap, spent: () => spent, add: (usd) => added.push(usd) });
+  // Parallel's fast search: $0.001 for up to 10 results, and $0.001 for each one past them.
+  capped(0.0015, 0.0005);
+  assert.equal((await webSearch({ query: "widgets", n: 2 }, client)).provider, "parallel", "spent and held $0.0005, plus $0.001, is the cap: sent");
+  capped(0.0015, 0.00051);
+  assert.deepEqual(await webSearch({ query: "widgets", n: 2 }, client), { error: capRefusal("Parallel's search", 0.001, "Parallel's list price for a fast search", 0.00051, 0.0015) });
+  capped(0.0155, 0);
+  assert.deepEqual(await webSearch({ query: "widgets", n: 25 }, client), { error: capRefusal("Parallel's search", 0.016, "Parallel's list price for a fast search of 25 results", 0, 0.0155) }, "25 results: $0.001 and 15 more at $0.001");
+  capped(0.016, 0);
+  assert.equal((await webSearch({ query: "widgets", n: 25 }, client)).results.length, 25);
+  capped(1, null);
+  assert.match((await webSearch({ query: "widgets" }, client)).error, /^spend_cap_reached: Parallel's search was not sent\. What the run has spent is unknown/);
+  assert.deepEqual([sent.length, added], [2, [0.001, 0.016]], "only the two that fit were sent, each counted at its price");
+  useSpend(undefined);
+  assert.equal((await webSearch({ query: "widgets" }, client)).provider, "parallel", "no cap: it just runs");
+});
+
+test("under a spend cap, a page read through Parallel's extract is a paid call: past the cap nothing is sent to Parallel, and the page is the guarded direct fetch, saying why", async (t) => {
+  withEnv(t, {}, [EXTRACT_MODE]);
+  t.after(() => useSpend(undefined));
+  const { sent, send } = parallel();
+  const client = parallelExtract(CANARY, send);
+  const added = [];
+  useSpend({ cap: 0.001, spent: () => 0, add: (usd) => added.push(usd) });
+  const read = await webFetch("http://public.example/", { ...network(), parallel: client });
+  assert.deepEqual([read.via, added], ["parallel", [0.001]], "$1 per 1,000 URLs: a URL is $0.001");
+  useSpend({ cap: 0.001, spent: () => 0.0005, add: (usd) => added.push(usd) });
+  const web = network();
+  const direct = await webFetch("http://public.example/", { ...web, parallel: client });
+  assert.deepEqual([direct.via, direct.title, direct.parallel], ["direct", "Public page", capRefusal("Parallel's extract", 0.001, "Parallel's list price for one URL", 0.0005, 0.001)]);
+  assert.deepEqual([sent.length, added, web.dialled], [1, [0.001], ["http://public.example/"]], "Parallel was not asked; the host was");
+});
+
+test("a pi run's search and page read through Parallel are booked as its tool costs: each marked at its price before it is sent and settled after, a line of its own on the timeline, in the run's cost and under /usage's tools meter", { timeout: 60_000 }, async (t) => {
+  const seen = await calls(t, true);
+  withEnv(t, {}, [EXTRACT_MODE]);
+  const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL, fauxWeb: FAUX_WEB });
+  const parallel = { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } };
+  assert.equal((await api("POST", "/agents", { definition: { id: "booked", name: "booked", instructions: "Research.", tools: ["web_search", "web_fetch", "write"], tool_settings: parallel } })).status, 201);
+  const started = await api("POST", "/agents/booked/runs", { input: { content: "Research widgets on the web and write report.md." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  const { rows } = await follow(api, runId, ["completed"]);
+  assert.deepEqual((await seen()).map((call) => [call.path, call.authorized]), [["/v1/search", true], ["/v1/extract", true]]);
+  const ids = Object.fromEntries(rows.filter((row) => row.kind === "tool_use").map((row) => [row.tool_name, row.tool_use_id]));
+  assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.summary.startsWith("Tool cost")).map((row) => [row.summary, row.tool_name, row.tool_use_id]), [
+    ["Tool cost: parallel charged $0.0010 for web_search", "web_search", ids.web_search],
+    ["Tool cost: parallel charged $0.0010 for web_fetch", "web_fetch", ids.web_fetch],
+  ]);
+  assert.deepEqual(paidRecords(data, runId), [
+    { kind: "agentrun.tool_started", tool: "web_search", charged_by: "parallel", call: ids.web_search, heldUsd: 0.001 },
+    { kind: "agentrun.tool_cost", tool: "web_search", charged_by: "parallel", call: ids.web_search, usd: 0.001 },
+    { kind: "agentrun.tool_started", tool: "web_fetch", charged_by: "parallel", call: ids.web_fetch, heldUsd: 0.001 },
+    { kind: "agentrun.tool_cost", tool: "web_fetch", charged_by: "parallel", call: ids.web_fetch, usd: 0.001 },
+  ]);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002, "the faux model is $0: the run's cost is Parallel's two fees");
+  const meters = (await api("GET", "/usage?group_by=meter")).body.lines.map((line) => [line.meter, line.usd, line.unpriced_runs]);
+  assert.deepEqual(meters.find(([meter]) => meter === "tools"), ["tools", 0.002, 0]);
+});
+
+test("a capped pi run's search through Parallel that its cap cannot hold is refused before it is sent, in the cap's words: nothing reaches Parallel and nothing is booked", { timeout: 60_000 }, async (t) => {
+  const seen = await calls(t, true);
+  const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL });
+  assert.equal((await api("POST", "/agents", { definition: { id: "capped", name: "capped", instructions: "Search.", tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } } })).status, 201);
+  const started = await api("POST", "/agents/capped/runs", { input: { content: "Search the web for widgets delaware" }, max_cost_usd: 0.0009 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const { rows } = await follow(api, started.body.run_id, ["completed"]);
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "web_search");
+  assert.deepEqual([result.tool_status, result.tool_result_preview], ["failed", JSON.stringify({ error: capRefusal("Parallel's search", 0.001, "Parallel's list price for a fast search", 0, 0.0009) })]);
+  assert.deepEqual(await seen(), [], "no request reached Parallel");
+  assert.deepEqual(paidRecords(data, started.body.run_id), [], "nothing marked or charged");
 });
 
 /** The server's environment for test `t`, Parallel's key when `key`, and the fake Parallel's calls as each answer gives them back. */
