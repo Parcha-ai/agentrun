@@ -269,7 +269,7 @@ function createMeter() {
   }
 
   /** The usage row's count and cost; undefined while there is nothing to count. `settled`: nothing is running. */
-  function usage(settled: boolean): { usd: number | null; requests: number } | undefined {
+  function usage(settled: boolean): { usd: number | null; requests: number; at_most_usd?: number } | undefined {
     // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
     // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
     // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
@@ -584,10 +584,11 @@ function createProjector(options: TimelineOptions) {
   function usage(): TimelineEvent | undefined {
     const counted = meter.usage(options.settled === true);
     if (!counted || root === undefined) return undefined;
-    const { usd, requests } = counted;
+    const { usd, requests, at_most_usd } = counted;
     return make("usage", root, `${root}:usage`, {
       summary: `Cost so far: ${usd === null ? "unknown" : dollars(usd)} over ${requests} model request${requests === 1 ? "" : "s"}`,
-      usage: { usd, requests },
+      // The row is exactly the contract's TimelineUsage and its costbound/1 field: no other of the meter's reaches it.
+      usage: { usd, requests, ...(at_most_usd !== undefined ? { at_most_usd } : {}) },
     });
   }
 
