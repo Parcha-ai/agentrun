@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { keeper } from "./idempotency";
 import { TEMPLATES, templateHarness, templateOffer, tryTemplate } from "./templates";
 import { toolOffers } from "./agentForm";
 
@@ -58,5 +59,22 @@ describe("tryTemplate", () => {
     const archived = fake([{ agent_id: "hello-0", definition: { name: "Hello, AgentRun" }, archived_at: "2026-11-01T00:00:00Z" }]);
     await tryTemplate(archived.v2 as never, TEMPLATES[0]!, "pi");
     expect(archived.calls[0]).toBe("create Hello, AgentRun on pi with write");
+  });
+  // A start whose answer was lost may have started the run: Try it again sends the same key, so the server answers with
+  // that run rather than start a second one. Once a start lands, the next click is a new run.
+  it("keeps the start's key across a lost answer, and a new one once a start lands", async () => {
+    const keys: string[] = [];
+    let lose = true;
+    const v2 = {
+      listAgents: async () => ({ agents: [{ agent_id: "hello-1", definition: { name: "Hello, AgentRun" }, archived_at: null }], next_cursor: null }),
+      createAgent: async () => ({ agent_id: "never" }),
+      startRun: async (_id: string, _body: unknown, key: string) => { keys.push(key); if (lose) { lose = false; throw new TypeError("Failed to fetch"); } return { run: { run_id: "run-1" }, status: 202 }; },
+    };
+    const held = keeper();
+    await expect(tryTemplate(v2 as never, TEMPLATES[0]!, "pi", held)).rejects.toThrow("Failed to fetch");
+    expect(await tryTemplate(v2 as never, TEMPLATES[0]!, "pi", held)).toBe("run-1");
+    expect(await tryTemplate(v2 as never, TEMPLATES[0]!, "pi", held)).toBe("run-1");
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[1]);
   });
 });

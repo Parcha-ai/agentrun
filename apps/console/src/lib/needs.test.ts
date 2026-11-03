@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { choicesOf, failureGroups, hasOwnRun, mergeNeeds, rerunBody } from "./needs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { choicesOf, failureGroups, hasOwnRun, mergeNeeds, pollSettled, rerunBody } from "./needs";
 import type { Run } from "./v2";
 
 const run = (id: string, over: Partial<Run> = {}): Run => ({
@@ -88,5 +88,50 @@ describe("mergeNeeds", () => {
     expect(next.needs.live).toEqual([]);
     expect(next.problem).toBe("The failed runs could not be read: Failed to fetch");
     expect(mergeNeeds(null, [ok([]), ok([]), ok([])]).problem).toBeNull();
+  });
+});
+
+// A run given files names them on a line after its first message (serve's "Files for this run: …"). A run started again
+// takes only a message, and its files' ids aren't on the run's read, so the files can't come along: refused, by name.
+describe("rerunBody, a run that was given files", () => {
+  const base = run("r1", { title: "Summarize the report" });
+  it("refuses it, saying why, rather than start it without its files", () => {
+    const r = rerunBody(base, "Summarize the report.\n\nFiles for this run: inputs/report.pdf (12.0 KB), inputs/notes.md (1.2 KB).");
+    expect(r).toHaveProperty("refusal");
+    expect((r as { refusal: string }).refusal).toMatch(/was given files/);
+  });
+  it("starts one whose message only mentions files, with no line of its own", () => {
+    expect(rerunBody(base, "Files for this run: none. Just say hi.")).toEqual({ body: { input: { content: "Files for this run: none. Just say hi." } } });
+  });
+});
+
+// The strip reads every 10 s, but never two reads at once: the next starts only once the last has settled, so an older
+// read can't land after a newer one and put back what it said.
+describe("pollSettled", () => {
+  afterEach(() => { vi.useRealTimers(); });
+  it("starts the next read only after the last has settled, then waits the interval; stop stops it", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    let release: (() => void) | undefined;
+    const read = () => { calls++; return new Promise<void>((r) => { release = r; }); };
+    const stop = pollSettled(read, 10_000);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(calls).toBe(1);
+    release!(); await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(calls).toBe(2);
+    stop(); release!(); await vi.advanceTimersByTimeAsync(60_000);
+    expect(calls).toBe(2);
+  });
+  it("goes on after a read that failed", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const stop = pollSettled(() => { calls++; return Promise.reject(new Error("offline")); }, 10_000);
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect(calls).toBe(2);
+    stop();
   });
 });

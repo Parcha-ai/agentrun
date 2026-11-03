@@ -1,6 +1,6 @@
 import { allPages, type Client } from "./client";
 import { type ToolOffer, toolsFor } from "./agentForm";
-import { uuid } from "./idempotency";
+import { keeper } from "./idempotency";
 
 // Mission Control's first-run templates: one click makes the agent (once) and runs it, so a first look at the console
 // is an agent at work in seconds. Each shows the product doing something different, and needs no key beyond a model.
@@ -51,11 +51,14 @@ export function templateOffer(t: Template, harness: string, offers: readonly Too
 }
 
 /** One click: the template's agent is made the first time (an archived one doesn't count), each click starts a run of
- *  it with the template's input, and the answer is the run's id. */
-export async function tryTemplate(v2: Pick<Client, "listAgents" | "createAgent" | "startRun">, t: Template, harness: string): Promise<string> {
+ *  it with the template's input, and the answer is the run's id. `keys` holds the start's Idempotency-Key until a start
+ *  lands, so a click after a lost answer is the same start (the server answers with that run), never a second one. */
+export async function tryTemplate(v2: Pick<Client, "listAgents" | "createAgent" | "startRun">, t: Template, harness: string, keys = keeper()): Promise<string> {
   const agents = await allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents);
   const existing = agents.find((a) => a.definition.name === t.name && !a.archived_at);
   const agentId = existing?.agent_id ?? (await v2.createAgent({ definition: { version: 1, name: t.name, description: t.description, instructions: t.instructions, harness, tools: t.tools, skills: [] } })).agent_id;
-  const { run } = await v2.startRun(agentId, { input: { content: t.input } }, uuid());
+  const body = { input: { content: t.input } };
+  const { run } = await v2.startRun(agentId, body, keys.keyFor(t.name, body));
+  keys.done();
   return run.run_id;
 }

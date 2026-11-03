@@ -20,7 +20,7 @@ import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/aut
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
 import { appendRuns, keeper, sendOnce, uuid } from "@/lib/idempotency";
-import { hasOwnRun, mergeNeeds, type Needs, rerunBody } from "@/lib/needs";
+import { hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
 import { type Problem, problem } from "@/lib/problem";
 import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
 import { toolChoices } from "@/lib/toolSettings";
@@ -247,10 +247,12 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length ? ["tools" as const] : [])];
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
+  // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
+  const templateKeys = useRef(keeper()).current;
   const tryIt = async (t: Template) => {
     const harness = templateHarness(editorCaps.harnesses);
     if (!harness) return "This server has no model to run it on yet.";
-    try { const id = await tryTemplate(v2, t, harness); go(`#/runs/${encodeURIComponent(id)}`); return null; } catch (e) { return problemOf(e); }
+    try { const id = await tryTemplate(v2, t, harness, templateKeys); go(`#/runs/${encodeURIComponent(id)}`); return null; } catch (e) { return problemOf(e); }
   };
   // How many runs came from an import (the start-here panel says so); `imported` is the import in progress.
   const importedRuns = (mission?.analytics.by_source ?? []).filter((g) => g.source !== "live").reduce((n, g) => n + g.runs, 0);
@@ -310,9 +312,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
           return { asking: next.asking.filter((r) => r.pending), failed: next.failed.filter((r) => Date.parse(r.ended_at ?? r.created_at) > day), live: next.live };
         });
       });
-    void read();
-    const t = setInterval(() => void read(), 10_000);
-    return () => { live = false; clearInterval(t); };
+    // Never two reads at once: the next starts 10 s after the last has settled, so an older one can't land last.
+    const stop = pollSettled(read, 10_000);
+    return () => { live = false; stop(); };
   }, [v2, where.section, needsTry]);
   const answerKeys = useRef(keeper()).current;
   // After an action the strip reads again in a moment, so an answered question or a run started again leaves it.

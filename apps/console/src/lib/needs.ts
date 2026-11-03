@@ -62,8 +62,21 @@ export function rerunBody(run: Run, firstMessage: string | null | undefined): { 
   if (run.kind === "workflow") return { refusal: `"${run.title}" is a workflow run: start it again from its agent's page` };
   if (!firstMessage) return { refusal: `"${run.title}": its first message could not be read` };
   if (firstMessage.length >= TIMELINE_TEXT_CAP && firstMessage.endsWith("...")) return { refusal: `"${run.title}": its first message is longer than the timeline keeps; start it again from its agent's page` };
+  // A run given files has a line after its first message naming them (serve's run manifest). A run started again takes
+  // only a message, and the run's read doesn't carry its files' ids, so it would start without them: refused instead.
+  if (/\n\nFiles for this run: [^\n]*$/.test(firstMessage)) return { refusal: `"${run.title}" was given files, which a run started again can't take along: start it again from its agent's page with them` };
   const cap = run.cost?.cap_usd;
   return { body: { input: { content: firstMessage }, ...(run.effort ? { effort: run.effort } : {}), ...(typeof cap === "number" ? { max_cost_usd: cap } : {}) } };
+}
+
+/** Calls `read` now, and again `every` ms after each read has settled (landed or failed), never two at once: an older
+ *  read can't land after a newer one. The answer stops it; a read in flight then lands into nothing more. */
+export function pollSettled(read: () => Promise<unknown>, every: number): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const next = () => { if (!stopped) void read().catch(() => {}).finally(() => { if (!stopped) timer = setTimeout(next, every); }); };
+  next();
+  return () => { stopped = true; clearTimeout(timer); };
 }
 
 export type Needs = { asking: Run[]; failed: Run[]; live: Run[] };
