@@ -13,7 +13,6 @@ import { normalize, random, randomOperation, waitNotRunning } from "./box-env-su
 
 const SEEDS = Number(process.env.PI_TRANSPORT_LIVE_SEEDS ?? 20);
 const STEPS = 25;
-const SAMPLES = 20;
 const MAX_LIFETIME_MS = 29 * 60_000;
 const TEST_TIMEOUT_MS = 300_000;
 const DIFFERENTIAL_TIMEOUT_MS = 28 * 60_000;
@@ -41,10 +40,6 @@ async function running(env: ExecutionEnv, tag: readonly [string, string]): Promi
 	};
 	getOrThrow(await env.exec(["sh", "-c", script, "sh", ...tag], { onOutput: collect }, context));
 	return found.trim() !== "";
-}
-
-function p50(samples: number[]): number {
-	return [...samples].sort((a, b) => a - b)[Math.floor(samples.length / 2)] ?? Number.NaN;
 }
 
 // Needs a Daytona organization, so it runs only when asked: `PI_TRANSPORT_LIVE_DAYTONA=1 npm run test:live`. The
@@ -179,38 +174,6 @@ if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 				const ran = await env.exec(["true"], undefined, context);
 				expect(ran.ok ? "" : ran.error.code).toBe("unknown");
 				expect(ran.ok ? "" : ran.error.message).toMatch(/is gone/);
-			});
-		});
-
-		it("measures what one file operation and one short command cost", async () => {
-			await withBox(async (box) => {
-				const env = boxEnv(box);
-				const timed = async (run: () => Promise<unknown>) => {
-					const samples: number[] = [];
-					for (let index = 0; index < SAMPLES; index++) {
-						const at = performance.now();
-						await run();
-						samples.push(performance.now() - at);
-					}
-					return Math.round(p50(samples));
-				};
-				getOrThrow(await env.writeFile("cost.txt", "x".repeat(1024), context));
-				const cost = {
-					samples: SAMPLES,
-					writeFile1KiBp50Ms: await timed(async () =>
-						getOrThrow(await env.writeFile("cost.txt", "x".repeat(1024), context)),
-					),
-					readTextFile1KiBp50Ms: await timed(async () => getOrThrow(await env.readTextFile("cost.txt", context))),
-					fileInfop50Ms: await timed(async () => getOrThrow(await env.fileInfo("cost.txt", context))),
-					execTrueP50Ms: await timed(async () => getOrThrow(await env.exec(["true"], undefined, context))),
-					execEchoShellP50Ms: await timed(async () => getOrThrow(await env.exec("echo hi", undefined, context))),
-					boxExecTrueP50Ms: await timed(async () => {
-						const process = getOrThrow(await box.exec(["true"], undefined, context));
-						await process.stdin.close();
-						await process.wait();
-					}),
-				};
-				console.log(`box env cost: ${JSON.stringify(cost)}`);
 			});
 		});
 

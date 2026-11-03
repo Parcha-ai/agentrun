@@ -283,22 +283,40 @@ registerBoxConformance(
 );
 
 describe("daytona boxes", () => {
-	it("sends the key as a bearer token on every request and never in a box", async () => {
+	it("sends the key as a bearer token on every request and never in a box, and takes nothing from the process environment", async () => {
 		fake.requests.length = 0;
-		// A foreign client on the same port is not the provider's request and must not count.
-		await fetch(`${fake.url}/`);
-		await withBox(async (box) => {
-			const started = await box.exec(["env"], undefined, context);
-			if (!started.ok) throw started.error;
-			const finished = await finish(started.value);
-			if (!finished.ok) throw finished.error;
-			expect(decoder.decode(finished.value.stdout)).not.toContain(API_KEY);
-		});
+		// Daytona's own settings in this process's environment: the provider takes its options only, so none may show.
+		const planted = {
+			DAYTONA_API_KEY: "planted-env-key",
+			DAYTONA_API_URL: "http://127.0.0.1:9/planted-env-url",
+			DAYTONA_TARGET: "planted-env-target",
+		};
+		const saved = Object.fromEntries(Object.keys(planted).map((name) => [name, process.env[name]]));
+		Object.assign(process.env, planted);
+		try {
+			// A foreign client on the same port is not the provider's request and must not count.
+			await fetch(`${fake.url}/`);
+			await withBox(async (box) => {
+				const started = await box.exec(["env"], undefined, context);
+				if (!started.ok) throw started.error;
+				const finished = await finish(started.value);
+				if (!finished.ok) throw finished.error;
+				expect(decoder.decode(finished.value.stdout)).not.toContain(API_KEY);
+				expect(decoder.decode(finished.value.stdout)).not.toContain("planted-env");
+			});
+		} finally {
+			for (const [name, value] of Object.entries(saved)) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
+		// Every request reached the option's URL: one sent to the planted one would have gone nowhere.
 		expect(fake.requests.length).toBeGreaterThan(0);
 		// Name the request, so a failure says which one it was.
 		const describeRequest = (r: { method: string; path: string }) => `${r.method} ${r.path}`;
 		expect(fake.requests.filter((r) => r.auth !== `Bearer ${API_KEY}`).map(describeRequest)).toEqual([]);
 		expect(fake.requests.filter((r) => r.body.includes(API_KEY)).map(describeRequest)).toEqual([]);
+		expect(fake.requests.filter((r) => JSON.stringify(r).includes("planted-env")).map(describeRequest)).toEqual([]);
 	});
 
 	it("labels the box, bounds its life and sets no resources", async () => {
@@ -779,10 +797,5 @@ describe("daytona boxes", () => {
 			const dir = await box.download(["a"], context);
 			expect(dir.ok ? "ok" : dir.error.code).toBe("invalid");
 		});
-	});
-
-	it("never reads the process environment", () => {
-		const source = readFileSync(new URL("../src/box/daytona.ts", import.meta.url), "utf8");
-		expect(source).not.toMatch(/process\.env/);
 	});
 });
