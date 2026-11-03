@@ -165,8 +165,11 @@ test("a box's limits: each setting's default when it is unset or empty, its valu
   assert.deepEqual(boxLimitsOf({}, 8), defaults);
   assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "", AGENTRUN_BOX_MEMORY: "", AGENTRUN_BOX_PIDS: "" }, 8), defaults);
   assert.deepEqual(boxLimitsOf({}, 1), { ...defaults, cpus: 1 }, "a one-CPU machine: Docker refuses --cpus 2 there");
-  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "4" }, 1), { ...defaults, cpus: 4 }, "a value given is the operator's, never lowered");
+  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "4" }, 4), { ...defaults, cpus: 4 }, "all of this machine's CPUs");
+  assert.throws(() => boxLimitsOf({ AGENTRUN_BOX_CPUS: "4" }, 2), /^Error: AGENTRUN_BOX_CPUS is a number of CPUs above 0 and at most this machine's 2, such as 2 or 1.5, or none for no limit; it is "4"$/, "Docker refuses more CPUs than it has: the start does, not a run's first box");
   assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "0.5", AGENTRUN_BOX_MEMORY: "8G", AGENTRUN_BOX_PIDS: "4096" }, 8), { cpus: 0.5, memory: "8G", pidsLimit: 4096 });
+  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_MEMORY: "6m" }, 8), { ...defaults, memory: "6m" }, "Docker's least memory");
+  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_MEMORY: "0.5g" }, 8), { ...defaults, memory: "0.5g" });
   assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "none", AGENTRUN_BOX_MEMORY: "none", AGENTRUN_BOX_PIDS: "none" }, 8), {});
 });
 
@@ -186,9 +189,12 @@ test("a box limit setting that is no limit refuses the start, naming the setting
       delete process.env[name];
     }
   };
-  for (const value of ["0", "-1", "two", "1,5", "Infinity"]) assert.equal(await refused("AGENTRUN_BOX_CPUS", value), `AGENTRUN_BOX_CPUS is a number of CPUs above 0, such as 2 or 1.5, or none for no limit; it is ${JSON.stringify(value)}`);
-  for (const value of ["4096", "0g", "4 g", "4x", "-1g"]) assert.equal(await refused("AGENTRUN_BOX_MEMORY", value), `AGENTRUN_BOX_MEMORY is a size above 0 with its unit (b, k, m or g), such as 512m or 4g, or none for no limit; it is ${JSON.stringify(value)}`);
-  for (const value of ["0", "1.5", "lots", "-5"]) assert.equal(await refused("AGENTRUN_BOX_PIDS", value), `AGENTRUN_BOX_PIDS is a whole number above 0, such as 1024, or none for no limit; it is ${JSON.stringify(value)}`);
+  const here = availableParallelism();
+  for (const value of ["0", "-1", "two", "1,5", "Infinity", String(here + 1)]) assert.equal(await refused("AGENTRUN_BOX_CPUS", value), `AGENTRUN_BOX_CPUS is a number of CPUs above 0 and at most this machine's ${here}, such as 2 or 1.5, or none for no limit; it is ${JSON.stringify(value)}`);
+  // A size counts in bytes, as Docker reads it: a fraction of a byte, one past the largest safe count, or less than Docker's
+  // least memory would fail every run's first box, so the start refuses it.
+  for (const value of ["4096", "0g", "4 g", "4x", "-1g", "0.1b", "9007199254740991g", "1m", "6143k"]) assert.equal(await refused("AGENTRUN_BOX_MEMORY", value), `AGENTRUN_BOX_MEMORY is a size of at least 6m with its unit (b, k, m or g), such as 512m or 4g, or none for no limit; it is ${JSON.stringify(value)}`);
+  for (const value of ["0", "1.5", "lots", "-5", "9007199254740993"]) assert.equal(await refused("AGENTRUN_BOX_PIDS", value), `AGENTRUN_BOX_PIDS is a whole number above 0, such as 1024, or none for no limit; it is ${JSON.stringify(value)}`);
 });
 
 test("fake docker: a run's box is found by its label and taken over, its left commands killed first, with no create", { timeout: 90_000 }, async (t) => {

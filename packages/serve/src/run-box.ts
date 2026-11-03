@@ -42,21 +42,32 @@ export const DEFAULT_BOX_PIDS = 1024;
 /** A Docker box's limits, as pi-transport's Docker provider takes them; an absent one is no limit. */
 export type BoxLimits = { cpus?: number; memory?: string; pidsLimit?: number };
 
+const MIB = 1024 * 1024;
+/** A size's units as Docker reads them, each 1024 of the one before. */
+const SIZE_UNITS: Readonly<Record<string, number>> = { b: 1, k: 1024, m: MIB, g: 1024 * MIB };
+/** The least memory Docker gives a container. */
+const MIN_BOX_MEMORY = 6 * MIB;
+
 /** A Docker box's limits from `env`: each setting's value, `none` for no limit, or its default when unset or empty (the
- *  CPUs' lowered to `cpusHere`, this machine's count). A value that is none of these throws, naming its setting: the start
- *  checks them (startServe), so a run never meets one. */
+ *  CPUs' lowered to `cpusHere`, this machine's count). A value Docker would refuse at a box's create (more CPUs than this
+ *  machine has, less memory than Docker gives) is refused here, with any value that is not one, naming its setting: the
+ *  start checks them (startServe), so no run meets one. */
 export function boxLimitsOf(env: NodeJS.ProcessEnv, cpusHere = availableParallelism()): BoxLimits {
-  const read = (name: string, form: RegExp, what: string): string | undefined | null => {
+  const read = (name: string, what: string, takes: (value: string) => boolean): string | undefined | null => {
     const value = env[name];
     if (!value) return undefined;
     if (value === "none") return null;
-    const amount = Number.parseFloat(value);
-    if (!form.test(value) || !(amount > 0 && Number.isSafeInteger(Math.ceil(amount)))) throw new Error(`${name} is ${what}, or none for no limit; it is ${JSON.stringify(value)}`);
+    if (!takes(value)) throw new Error(`${name} is ${what}, or none for no limit; it is ${JSON.stringify(value)}`);
     return value;
   };
-  const cpus = read(BOX_CPUS_ENV, /^\d+(\.\d+)?$/, "a number of CPUs above 0, such as 2 or 1.5");
-  const memory = read(BOX_MEMORY_ENV, /^\d+(\.\d+)?[bkmg]$/i, "a size above 0 with its unit (b, k, m or g), such as 512m or 4g");
-  const pids = read(BOX_PIDS_ENV, /^\d+$/, "a whole number above 0, such as 1024");
+  const cpus = read(BOX_CPUS_ENV, `a number of CPUs above 0 and at most this machine's ${cpusHere}, such as 2 or 1.5`, (value) => /^\d+(\.\d+)?$/.test(value) && Number(value) > 0 && Number(value) <= cpusHere);
+  const memory = read(BOX_MEMORY_ENV, "a size of at least 6m with its unit (b, k, m or g), such as 512m or 4g", (value) => {
+    const size = /^(\d+(?:\.\d+)?)([bkmg])$/i.exec(value);
+    // Its bytes as Docker reads them, and pi-transport's Docker provider: the number times the unit, the fraction dropped.
+    const bytes = size ? Math.floor(Number(size[1]) * SIZE_UNITS[size[2].toLowerCase()]) : 0;
+    return Number.isSafeInteger(bytes) && bytes >= MIN_BOX_MEMORY;
+  });
+  const pids = read(BOX_PIDS_ENV, "a whole number above 0, such as 1024", (value) => /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0);
   return {
     ...(cpus === null ? {} : { cpus: cpus === undefined ? Math.min(DEFAULT_BOX_CPUS, cpusHere) : Number(cpus) }),
     ...(memory === null ? {} : { memory: memory ?? DEFAULT_BOX_MEMORY }),
