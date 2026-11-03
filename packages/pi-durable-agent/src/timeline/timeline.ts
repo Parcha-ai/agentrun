@@ -343,6 +343,9 @@ function createProjector(options: TimelineOptions) {
   const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, shown(args), result, options.labels);
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
+  // Results stored before their call (a harness bridge once wrote a result before the answer holding its call), by
+  // `conversation:id`: the call, when it comes, takes its result and is done.
+  const early = new Map<string, { row: TimelineEvent; view: ToolResultView }>();
   const previous = new Map<number, string>();
   // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
   // the person's next message, not a steer.
@@ -462,8 +465,20 @@ function createProjector(options: TimelineOptions) {
             add(make("phase", conv, `${base}:${index}:session`, { summary: "Opened a live browser session" }));
           }
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
-          calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: false });
+          const before = early.get(`${conv}:${id}`);
+          calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: before !== undefined });
           add(use);
+          // Its result came first: it is this call's, so it reads with the call's label and sits right after it.
+          if (before) {
+            early.delete(`${conv}:${id}`);
+            const named = label(name, args, before.view);
+            use.summary = clean(named, caps.summary);
+            const fresh = resultRow(conv, before.row.id, { name, callId: id, round }, named, before.view);
+            Object.assign(before.row, { summary: fresh.summary, tool_name: fresh.tool_name, tool_status: fresh.tool_status, seq: (use.seq ?? 0) + 0.5, ...(round === undefined ? {} : { round }) });
+            rows.splice(rows.indexOf(before.row), 1);
+            rows.splice(rows.indexOf(use) + 1, 0, before.row);
+            touch(before.row);
+          }
         });
       }
     } else if (entry.kind === "pi.tool-result" && message) {
@@ -484,7 +499,9 @@ function createProjector(options: TimelineOptions) {
         call.use.summary = clean(named, caps.summary);
         touch(call.use);
       }
-      add(resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view));
+      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view);
+      if (!call && id) early.set(`${conv}:${id}`, { row, view });
+      add(row);
       if (!view.isError) {
         const answer = str(args.answer);
         if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: firstLine(answer), text: answer }));
@@ -624,6 +641,8 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
   // Each call by `conversation:id`, its tool's name as kept and as called, and whether a result closed it, as the timeline
   // pairs them.
   const calls = new Map<string, { name: string; called: string; done: boolean }>();
+  // Results counted before their call was seen (stored first): that call is done, and counts once.
+  const early = new Set<string>();
   const tools = new Map<string, ToolMetrics>();
   // Each tool's place by its first call, or its first result with no call: a tie for the last kept place goes by it.
   const order = new Map<string, number>();
@@ -648,12 +667,13 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
         const [id, name] = [str(block.id), str(block.name)];
         if (block.type !== "toolCall" || !id || !name) continue;
         const key = metricName(name);
-        calls.set(`${conv}:${id}`, { name: key, called: name, done: false });
+        calls.set(`${conv}:${id}`, { name: key, called: name, done: early.delete(`${conv}:${id}`) });
         see(key);
       }
     } else if (entry.kind === "pi.tool-result" && message) {
       const call = calls.get(`${conv}:${str(message.toolCallId) ?? ""}`);
       if (call) call.done = true;
+      else if (str(message.toolCallId)) early.add(`${conv}:${str(message.toolCallId)}`);
       const named = str(message.toolName);
       // Failed as the call's row reads it (callFailed): an error, or a result its tool reads as failed (a refused fetch).
       const called = call?.called ?? named ?? "";
