@@ -115,6 +115,9 @@ type RunMeta = {
   end_notice?: { ended_at: string; queued?: true };
   /** Where the run's learning stands (learning.ts); absent for a run that does not learn. */
   learning?: Learning;
+  /** The newest wait whose run.needs_input is in the webhook outbox on disk, by its mark (waitMark): a server that adopts
+   *  the run queues a wait it stands at that this does not name, one reached while no server was up. */
+  wait_notice?: { marker: string };
 };
 /** A run's learning as a list shows it: its state and reason. */
 const shortLearning = (learning: Learning | null) => (learning ? { state: learning.state, reason: learning.reason } : null);
@@ -304,12 +307,15 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
 const UNREAD = "unread";
 /** What a run's `moment` becomes (`keep`) as its status is recorded, and whether that is a notice. A run not yet read
  *  (undefined) keeps none. A live run adopted with no rows (UNREAD) takes where its first snapshot stands, silently; an
- *  end it comes to is always new, and noticed. */
+ *  end it comes to is always new, and noticed. A wait is also a notice while the run's record does not name it (mark). */
 export function nextMoment(seen: string | undefined, moment: string, rows: number): { keep: string | undefined; notify: boolean } {
   if (seen === undefined) return { keep: undefined, notify: false };
   if (seen === UNREAD && (moment === "other" || moment === "input_required")) return { keep: rows ? moment : UNREAD, notify: false };
   return { keep: moment, notify: moment !== seen && moment !== "other" };
 }
+
+/** A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on). */
+const waitMark = (run: Run): string => (stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "";
 
 /** Where a run's status stands for its notices: input_required, an end once it is in the agent store, else other. */
 const momentOf = (run: Run): string => {
@@ -532,6 +538,8 @@ export class Runs {
     }
     this.refresh(run);
     run.moment = run.kind === "agentic" && run.orphan !== undefined && !run.rows.length ? UNREAD : momentOf(run);
+    // A wait it stands at that its record does not name (reached while no server was up): queued now (mark).
+    if (run.moment === "input_required") this.mark(run);
     return run;
   }
 
@@ -765,21 +773,28 @@ export class Runs {
   private mark(run: Run): void {
     const { status, state } = statusOf(run);
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
+    const seen = run.moment;
     const moment = momentOf(run);
-    const { keep, notify } = nextMoment(run.moment, moment, run.rows.length);
+    const { keep, notify } = nextMoment(seen, moment, run.rows.length);
     run.moment = keep;
-    if (!notify || !this.options.notify) return;
     const waits = moment === "input_required";
+    const at = waits ? waitMark(run) : (run.endedAt ?? "");
+    // A wait is a notice until its record says the outbox holds it, whatever this server saw of it: one the run reached
+    // while no server was up is queued by the server that adopts it (a run read for the first time notices nothing yet).
+    const unrecorded = waits && seen !== undefined && run.meta.wait_notice?.marker !== at;
+    if (!(notify || unrecorded) || !this.options.notify) return;
     try {
-      // A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on).
-      const at = waits ? ((stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "") : (run.endedAt ?? "");
       // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
       const pending = waits ? { pending: { kind: state === "waiting" ? ("question" as const) : ("stopped" as const) } } : {};
       const emitted = this.options.notify(waits ? "run.needs_input" : "run.ended", { run_id: run.id, agent_id: run.agentId, status, title: run.meta.title, ...pending }, at);
       // Recorded only once the outbox holds it on disk (or nothing is to be sent): a record of a notice the outbox lost
       // (its write failed, then a kill) would keep the next server from queuing it again.
+      const landed = emitted === "queued" || emitted === "off";
       const end = run.meta.end_notice;
-      if (!waits && end && end.ended_at === at && !end.queued && (emitted === "queued" || emitted === "off")) {
+      if (waits && landed) {
+        run.meta.wait_notice = { marker: at };
+        this.recordMeta(run);
+      } else if (!waits && end && end.ended_at === at && !end.queued && landed) {
         run.meta.end_notice = { ended_at: at, queued: true };
         this.recordMeta(run);
       }

@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { createRequire } from "node:module";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -805,4 +805,98 @@ test("a run.ended whose outbox write failed is not recorded as queued, so after 
   await until(() => ofType(hook.got, "run.ended").length === 2, "sent again, under the same id");
   const ids = new Set(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]));
   assert.equal(ids.size, 1, "one end, one webhook-id");
+});
+
+// ---- a wait's run.needs_input is a notice until the run's record says the outbox holds it, so a server that adopts the
+// run queues a wait no server queued, under its one webhook-id.
+
+const waitNotice = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8")).wait_notice;
+
+test("a run that comes to wait for its person while no server is up gives its run.needs_input from the server that adopts it, once", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const gate = join(await scratch(t), "ask");
+  const first = await serverProcess(t, data);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(first.api, "asks-late", `Pick a region once ${gate} exists.`, { tools: ["ask_person"] });
+  await follow(first.api, run.run_id, ["working"]);
+  await killed(first.child);
+  const { holder } = JSON.parse(readFileSync(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  assert.ok(processAlive(holder.pid), "its process outlived the server");
+  writeFileSync(gate, "");
+  // The run's process asks with no server up: its store has the question once its timeline does.
+  await sleep(1_500);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  await follow(api, run.run_id, ["input_required"]);
+  await until(() => ofType(hook.got, "run.needs_input").length === 1, "its wait's notice, from the server that adopted it", 10_000);
+  await until(() => waitNotice(data, run.run_id), "recorded as queued");
+  await sleep(500);
+  assert.equal(ofType(hook.got, "run.needs_input").length, 1, "once");
+  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" })).status, 202);
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its end's notice");
+});
+
+test("a run.needs_input whose outbox write failed is not recorded, so after a kill the server that adopts the run queues it again, under the same id", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await serverProcess(t, data);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const blocked = join(data, "webhook-outbox.json.tmp");
+  mkdirSync(blocked);
+  const run = await startRun(first.api, "asks-unsaved", "Pick a region.", { tools: ["ask_person"] });
+  await until(() => ofType(hook.got, "run.needs_input").length === 1, "its try, from memory");
+  assert.equal(waitNotice(data, run.run_id), undefined, "not recorded: the outbox never held it on disk");
+  await killed(first.child);
+  const { holder } = JSON.parse(readFileSync(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  rmdirSync(blocked);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => waitNotice(data, run.run_id), "queued and recorded by the server that adopted it");
+  await until(() => ofType(hook.got, "run.needs_input").length === 2, "sent again");
+  const ids = new Set(ofType(hook.got, "run.needs_input").map((r) => r.headers["webhook-id"]));
+  assert.equal(ids.size, 1, "one wait, one webhook-id");
+});
+
+test("a save of a run's serve.json in flight when its notice's record is written loses neither: the record is there once both land", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  // Each async write of a serve.json (its rename into place) waits while `held` does: the launch's save is in flight
+  // when the run's wait is recorded, which is written at once, through a file of its own.
+  const fsp = createRequire(import.meta.url)("node:fs/promises");
+  const rename = fsp.rename;
+  let held;
+  let let_go;
+  let writes = 0;
+  fsp.rename = async (from, to) => {
+    // The start's own write of serve.json goes through; the launch's save, and any after it, wait.
+    if (held && String(to).endsWith("serve.json") && ++writes > 1) await held;
+    return rename(from, to);
+  };
+  syncBuiltinESMExports();
+  t.after(() => {
+    fsp.rename = rename;
+    syncBuiltinESMExports();
+  });
+  const { api, data } = await serve(t);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  assert.equal((await api("POST", "/agents", { definition: { id: "asks-at-once", version: 1, name: "asks-at-once", instructions: "Answer.", skills: [], tools: ["ask_person"] } })).status, 201);
+  held = new Promise((resolve) => (let_go = resolve));
+  const started = await api("POST", "/agents/asks-at-once/runs", { input: { content: "Pick a region." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const id = started.body.run_id;
+  await until(() => ofType(hook.got, "run.needs_input").length === 1, "its wait's notice");
+  await until(() => waitNotice(data, id), "its record, written at once while the launch's save waits");
+  let_go();
+  held = undefined;
+  await sleep(500);
+  const meta = JSON.parse(readFileSync(join(data, "runs", id, "serve.json"), "utf8"));
+  assert.ok(meta.wait_notice, `the record survived the save that landed after it: ${JSON.stringify(meta)}`);
+  assert.ok(meta.launch_thinking, "and that save's own field is there");
 });

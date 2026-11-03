@@ -377,7 +377,10 @@ A run's end and its `run.ended` are one durable step. The server chooses the end
 both come from it. `run.ended` is queued only once the agent store has the end, so a receiver that reads the run back
 on its message (`GET /v2/runs/{id}`) reads it ended; while the store refuses the end (a full disk, a busy store),
 nothing is sent, until a later try of the write or the next server stores it. A server killed between the two queues
-nothing, and the next one queues it at its start, under the same `webhook-id`, for an end within the last day.
+nothing, and the next one queues it at its start, under the same `webhook-id`, for an end within the last day. A
+`run.needs_input` is recorded with the run once the outbox holds it on disk; a server that takes over a run queues a
+wait it stands at that the record does not name (one the run came to while no server was up), under its one
+`webhook-id`.
 
 ```json
 { "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",
