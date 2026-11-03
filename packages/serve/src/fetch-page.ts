@@ -32,8 +32,8 @@ export const TEXT_CAP = 50_000;
 export const PAGE_CHARS = 20_000;
 export const MAX_CHARS_MIN = 200;
 /** The most of a page's text web_fetch reads, from either provider: its first million characters, as much as
- *  pi-browser's readPage keeps of a page (READ_MAX_CHARS). Parallel is asked for that much once (web-fetch.ts); a part
- *  reads within it, and an offset at or past it is refused. */
+ *  pi-browser's readPage keeps of a page (READ_MAX_CHARS). A part reads within it, Parallel is never asked for more of a
+ *  page than that and one character (web-fetch.ts), and an offset at or past it is refused. */
 export const PAGE_READ_MAX_CHARS = 1_000_000;
 /** A page's links, with its first part only: at most LINKS_CAP of them, in at most LINKS_CHARS characters of the answer. */
 export const LINKS_CAP = 200;
