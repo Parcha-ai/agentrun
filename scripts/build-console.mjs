@@ -63,7 +63,11 @@ export function consoleDepsInstalled(root) {
 export function buildConsole(root, { run = npm, log = (line) => console.log(line) } = {}) {
   if (consoleIsCurrent(root)) { log('The console is current (apps/console/dist matches its sources): not built again.'); return 'current'; }
   const app = join(root, 'apps', 'console');
-  if (!consoleDepsInstalled(root)) run(['ci', '--ignore-scripts', '--no-audit', '--no-fund'], app);
+  if (!consoleDepsInstalled(root)) {
+    const install = () => run(['ci', '--ignore-scripts', '--no-audit', '--no-fund'], app);
+    // npm does not retry a download that drops midway; npm ci starts from an empty node_modules, so a second run is clean.
+    try { install(); } catch (error) { log(`warning: ${error.message}; running it once more`); install(); }
+  }
   run(['run', 'build'], app);
   if (!consoleIsCurrent(root)) throw new Error('apps/console built, but its dist does not record the inputs it was built from');
   return 'built';

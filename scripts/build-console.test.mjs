@@ -24,7 +24,7 @@ function repo(t) {
     if (args[0] === 'ci') { const { packages } = JSON.parse(readFileSync(join(cwd, 'package-lock.json'), 'utf8')); put('apps/console/node_modules/.package-lock.json', JSON.stringify({ packages: { 'node_modules/vite': packages['node_modules/vite'] } })); }
     if (args.join(' ') === 'run build') { mkdirSync(join(cwd, 'dist'), { recursive: true }); writeFileSync(join(cwd, 'dist', 'index.html'), 'built\n'); stampConsole(root); }
   };
-  return { root, put, lock, asked, build: () => buildConsole(root, { run, log: () => {} }) };
+  return { root, put, lock, asked, run, build: () => buildConsole(root, { run, log: () => {} }) };
 }
 
 test('a fresh checkout installs and builds the console; built again from the same sources, it is skipped', (t) => {
@@ -73,4 +73,27 @@ test('dependencies npm installed by itself, as a source check does before going 
   assert.deepEqual(r.asked, ['run build']);
   r.put('apps/console/node_modules/.package-lock.json', JSON.stringify({ packages: { 'node_modules/vite': { version: '5.4.20' } } }));
   assert.equal(consoleDepsInstalled(r.root), false, 'a version the lockfile does not name');
+});
+
+test('an npm ci that fails runs once more, with a warning; a second failure stops the build', (t) => {
+  const r = repo(t);
+  const lines = [];
+  let failures = 1;
+  const flaky = (args, cwd) => {
+    if (args[0] === 'ci' && failures-- > 0) { r.asked.push(args.join(' ')); throw new Error(`npm ${args.join(' ')} in ${cwd} exited 1`); }
+    r.run(args, cwd);
+  };
+  assert.equal(buildConsole(r.root, { run: flaky, log: (line) => lines.push(line) }), 'built');
+  assert.deepEqual(r.asked, ['ci --ignore-scripts --no-audit --no-fund', 'ci --ignore-scripts --no-audit --no-fund', 'run build']);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^warning: npm ci --ignore-scripts --no-audit --no-fund in .* exited 1; running it once more$/);
+
+  const s = repo(t);
+  failures = 2;
+  const down = (args, cwd) => {
+    if (args[0] === 'ci' && failures-- > 0) { s.asked.push(args.join(' ')); throw new Error(`npm ${args.join(' ')} in ${cwd} exited 1`); }
+    s.run(args, cwd);
+  };
+  assert.throws(() => buildConsole(s.root, { run: down, log: () => {} }), /npm ci --ignore-scripts --no-audit --no-fund in .* exited 1/);
+  assert.deepEqual(s.asked, ['ci --ignore-scripts --no-audit --no-fund', 'ci --ignore-scripts --no-audit --no-fund'], 'not three tries, and no build');
 });
