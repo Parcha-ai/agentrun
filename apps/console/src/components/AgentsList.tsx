@@ -60,15 +60,18 @@ function AgentCard({ agent: a, actions, permissions }: { agent: Agent; actions: 
           <span className="mt-1.5 line-clamp-2 block font-mono text-[12px] leading-relaxed text-muted-foreground">{a.definition.description || (a.kind === "workflow" ? workflowShape(a.definition.workflow) : "No description.")}</span>
         </span>
       </button>
-      <div className="mt-auto flex items-center gap-2 pt-4">
-        <span className="caps border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.revisions} {a.revisions === 1 ? "revision" : "revisions"}</span>
-        {a.runs && <span className="caps border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</span>}
-        <span className="flex-1" />
-        {permissions.update !== false && <Button size="icon" variant="outline" aria-label={`Edit ${a.definition.name}`} onClick={() => actions.onEdit?.(a.agent_id)}><Pencil aria-hidden /></Button>}
-        <Button size="icon" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden /></Button>
-        {permissions.archive !== false && <Button size="icon" variant="outline" aria-label={`${archived ? "Unarchive" : "Archive"} ${a.definition.name}`} onClick={() => actions.onArchive?.(a.agent_id, !archived)}>
-          {archived ? <ArchiveRestore aria-hidden /> : <Archive aria-hidden />}
-        </Button>}
+      <div className="mt-auto flex flex-col gap-3 pt-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="caps shrink-0 whitespace-nowrap border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.revisions} {a.revisions === 1 ? "revision" : "revisions"}</span>
+          {a.runs && <span className="caps shrink-0 whitespace-nowrap border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</span>}
+        </div>
+        <div className="flex shrink-0 items-center gap-2 self-end">
+          {permissions.update !== false && <Button size="icon" variant="outline" aria-label={`Edit ${a.definition.name}`} onClick={() => actions.onEdit?.(a.agent_id)}><Pencil aria-hidden /></Button>}
+          <Button size="icon" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden /></Button>
+          {permissions.archive !== false && <Button size="icon" variant="outline" aria-label={`${archived ? "Unarchive" : "Archive"} ${a.definition.name}`} onClick={() => actions.onArchive?.(a.agent_id, !archived)}>
+            {archived ? <ArchiveRestore aria-hidden /> : <Archive aria-hidden />}
+          </Button>}
+        </div>
       </div>
     </li>
   );

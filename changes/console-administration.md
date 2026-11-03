@@ -7,3 +7,5 @@ The standalone console exposes a reusable React provider and native typed client
 Run summaries report result and file availability, with unknown values explicit. Imported and archived histories expose their supported native actions, and coding-agent handoffs retain the configured API endpoint.
 
 Sidebar selections use orange text and a subtle background.
+
+Agent-card stat labels stay on one line, with card actions grouped on a separate row.
