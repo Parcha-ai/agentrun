@@ -287,7 +287,7 @@ describe("daytona boxes", () => {
 		fake.requests.length = 0;
 		// Daytona's own settings in this process's environment: the provider takes its options only, so none may show.
 		const planted = {
-			DAYTONA_API_KEY: "planted-env-key",
+			DAYTONA_API_KEY: "not-a-secret",
 			DAYTONA_API_URL: "http://127.0.0.1:9/planted-env-url",
 			DAYTONA_TARGET: "planted-env-target",
 		};
@@ -302,7 +302,8 @@ describe("daytona boxes", () => {
 				const finished = await finish(started.value);
 				if (!finished.ok) throw finished.error;
 				expect(decoder.decode(finished.value.stdout)).not.toContain(API_KEY);
-				expect(decoder.decode(finished.value.stdout)).not.toContain("planted-env");
+				const seen = decoder.decode(finished.value.stdout);
+				expect(Object.values(planted).filter((value) => seen.includes(value))).toEqual([]);
 			});
 		} finally {
 			for (const [name, value] of Object.entries(saved)) {
@@ -316,12 +317,13 @@ describe("daytona boxes", () => {
 		const describeRequest = (r: { method: string; path: string }) => `${r.method} ${r.path}`;
 		expect(fake.requests.filter((r) => r.auth !== `Bearer ${API_KEY}`).map(describeRequest)).toEqual([]);
 		expect(fake.requests.filter((r) => r.body.includes(API_KEY)).map(describeRequest)).toEqual([]);
-		expect(fake.requests.filter((r) => JSON.stringify(r).includes("planted-env")).map(describeRequest)).toEqual([]);
+		const carries = (sent: unknown) => Object.values(planted).some((value) => JSON.stringify(sent).includes(value));
+		expect(fake.requests.filter(carries).map(describeRequest)).toEqual([]);
 	});
 
 	it("goes to the built-in URL when given none, whatever the process environment says", async () => {
 		const planted = {
-			DAYTONA_API_KEY: "planted-env-key",
+			DAYTONA_API_KEY: "not-a-secret",
 			DAYTONA_API_URL: "http://127.0.0.1:9/planted-env-url",
 			DAYTONA_TARGET: "planted-env-target",
 		};
@@ -355,7 +357,8 @@ describe("daytona boxes", () => {
 		expect(sent.length).toBeGreaterThan(0);
 		expect(sent.filter((one) => !one.url.startsWith(`${BUILT_IN}/`)).map((one) => one.url)).toEqual([]);
 		expect(sent.filter((one) => one.auth !== `Bearer ${API_KEY}`).map((one) => one.url)).toEqual([]);
-		expect(sent.filter((one) => JSON.stringify(one).includes("planted-env")).map((one) => one.url)).toEqual([]);
+		const carries = (one: unknown) => Object.values(planted).some((value) => JSON.stringify(one).includes(value));
+		expect(sent.filter(carries).map((one) => one.url)).toEqual([]);
 	});
 
 	it("labels the box, bounds its life and sets no resources", async () => {
