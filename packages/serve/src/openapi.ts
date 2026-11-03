@@ -1088,6 +1088,13 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // What this server changes in a contract operation, by the addition that made it.
   update["x-agentrun-serve-changed"] = { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" };
   const changed = ["PUT /agents/{agent_id}/definition"];
+  // A workflow run's decisions are rows of its timeline here (decision-rows.ts), of a kind the contract does not list.
+  const timelineKind = schemas.TimelineKind as Json & { enum?: string[] };
+  if (Array.isArray(timelineKind.enum) && !timelineKind.enum.includes("decision")) {
+    timelineKind.enum = [...timelineKind.enum, "decision"];
+    timelineKind["x-agentrun-serve"] = "decision-rows/1";
+    fields.push("TimelineKind.decision");
+  }
   // A timeline page of at most `limit` rows: the contract's pages hold up to 500, more than a small client reads at once.
   const timeline = (doc.paths["/runs/{run_id}/timeline"] as Json).get as Json;
   timeline.parameters = [...(timeline.parameters as Json[]), { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } }];
@@ -1124,7 +1131,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     const schema = schemas[name] as Json & { enum?: string[] };
     if (!Array.isArray(schema.enum) || schema.enum.includes(value)) continue;
     schema.enum = [...schema.enum, value];
-    schema["x-agentrun-serve"] = "learning/1";
+    // A schema two additions widen keeps the first one's mark; each value's own mark is in info's fields.
+    schema["x-agentrun-serve"] ??= "learning/1";
     fields.push(`${name}.${value}`);
   }
   // This server's own error codes (errors.ts), beside the contract's closed list.

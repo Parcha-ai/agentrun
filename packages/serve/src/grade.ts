@@ -23,7 +23,6 @@ import { FAUX_HARNESS_ENV } from "./harness.js";
 import { agentFolder, checkOut, git, line, mainOf, NO_TOKENS, type Proposal, readBlobs, type Tokens, withAgentRepo } from "./learning.js";
 import { type Complete, completer } from "./llm.js";
 import { runModels, thinkingOf } from "./model.js";
-import { authContextOf } from "./secrets.js";
 
 /** How long one note's screen and the grader may take (the grader's unless the server names another), and the most the
  *  grader may write. */
@@ -138,9 +137,23 @@ type PiUsage = { input: number; output: number; cacheRead?: number; cacheWrite?:
 const tokensOf = (usage: PiUsage | undefined): Tokens | null =>
   usage && [usage.input, usage.output, usage.cacheRead ?? 0, usage.cacheWrite ?? 0].every((n) => Number.isSafeInteger(n) && n >= 0) ? { input: usage.input, cache_read: usage.cacheRead ?? 0, cache_write: usage.cacheWrite ?? 0, output: usage.output } : null;
 type PiModels = { getModel(provider: string, id: string): unknown; completeSimple(...args: unknown[]): Promise<{ usage?: PiUsage }> };
+/** claude-agent's provider, as claudeProvider returns it. Without `auth`, it takes x-api-key, as the adapter does. */
+export type RunProvider = ReturnType<typeof claudeProvider> & { auth?: "x-api-key" | "bearer" };
+
+/** The variable pi-ai's anthropic provider reads for each auth mode: it sends the first as `authorization: Bearer`, the
+ *  second as `x-api-key`. */
+const BEARER_VARIABLE = "ANTHROPIC_AUTH_TOKEN";
+const X_API_KEY_VARIABLE = "ANTHROPIC_API_KEY";
+
+/** pi-ai's auth context for a grade on `provider`, the run's: its credential under the one variable pi-ai reads for its
+ *  auth mode, and no other variable of serve's env. */
+export function graderAuth(provider: RunProvider) {
+  const name = provider.auth === "bearer" ? BEARER_VARIABLE : X_API_KEY_VARIABLE;
+  return { env: async (asked: string) => (asked === name ? (await provider.credential()) || undefined : undefined), fileExists: async () => false };
+}
 
 /** One completion on the agent's own model, as its run's process picks it (app.ts): claude-agent's from pi-ai's catalog,
- *  sent where the run's own requests go (claudeProvider), any other harness's by runModels (the gateway, pi-ai's
+ *  sent where and as the run's own requests go (claudeProvider), any other harness's by runModels (the gateway, pi-ai's
  *  providers, or the faux module), at its revision's thinking; counted in `cost` (a call that fails has an unknown cost). */
 async function agentModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost): Promise<Complete> {
   let chosen;
@@ -148,11 +161,11 @@ async function agentModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost)
     const choice = claudeModel(env, agent.model);
     if ("why" in choice) throw new Error(choice.why);
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-    // The catalog prices the model; its address is ANTHROPIC_BASE_URL's when set, as the run's, never the catalog's
-    // api.anthropic.com, so a gateway's key goes to that gateway alone.
-    const { origin } = claudeProvider(env, choice.model);
-    const catalog = builtinModels({ authContext: authContextOf(env) }) as unknown as PiModels;
-    const at = (found: unknown) => (found && typeof found === "object" ? { ...found, baseUrl: origin } : found);
+    // The grader asks where the run's requests go, with the run's credential and auth mode: one claudeProvider call for
+    // both. The catalog only prices the model.
+    const sent: RunProvider = claudeProvider(env, choice.model);
+    const catalog = builtinModels({ authContext: graderAuth(sent) }) as unknown as PiModels;
+    const at = (found: unknown) => (found && typeof found === "object" ? { ...found, baseUrl: sent.origin } : found);
     chosen = { models: { getModel: (provider: string, id: string) => at(catalog.getModel(provider, id)), completeSimple: (...call: unknown[]) => catalog.completeSimple(...call) }, model: choice.model };
   } else chosen = await runModels(env, agent.model);
   const models = chosen.models as unknown as PiModels;
