@@ -21,7 +21,7 @@ import { bookedIn, booking, type Ledger } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import { fetchFor, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { capabilityOf, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, PROVIDERS, resolvesView, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, PROVIDERS, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 export const ASK_TOOL = "ask_person";
@@ -298,14 +298,15 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
  *  is not unavailable, and missing PARALLEL_API_KEY where Parallel is picked without it. An unavailable tool says why
  *  (`reason`). */
 export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}) => {
-  const resolves = resolvesView(env, settings);
+  const views = explainsView(env, settings);
   return Object.entries(TOOLS).map(([name, entry]) => {
-    const plane = (PICKABLE as readonly string[]).includes(name) ? resolves[name as Pickable] : undefined;
+    const view = (PICKABLE as readonly string[]).includes(name) ? views[name as Pickable] : undefined;
+    const plane = view?.resolves;
     const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
     const available = plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0;
     // Unavailable says why: on a tool a user picks a provider for, the resolutions' own words (`web_search is turned off in
     // settings`), else the variables it needs.
     const reason = available ? undefined : plane ? [...new Set(Object.values(plane).filter(isUnavailable).map((resolution) => resolution.slice("unavailable: ".length)))].join("; ") : `Needs ${missing.join(", ")}`;
-    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: settings[name as Pickable]?.provider ?? PROVIDERS[name as Pickable][0], default_provider: PROVIDERS[name as Pickable][0], resolves: plane } : {}) };
+    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: settings[name as Pickable]?.provider ?? PROVIDERS[name as Pickable][0], default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
 };
