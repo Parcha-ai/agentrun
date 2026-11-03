@@ -30,6 +30,9 @@ export const HELD_FIELD = "heldUsd";
 /** The field of the start mark (REQUEST_STARTED) written for a request this cap refused: it never left, and pi's error
  *  entry for it answers this mark, never an earlier request's. */
 export const CAP_REFUSED_FIELD = "capRefused";
+/** How pi's error for a request whose start mark could not be written begins (request-start.ts builds it from this): the
+ *  request never left, so the entry answers none, and spentIn leaves it out by this. */
+export const MARK_NOT_WRITTEN = "the model request was not sent: its mark could not be written";
 
 /** The run's cap from its process's environment; absent for a run without one. */
 export function capOf(env: NodeJS.ProcessEnv): number | undefined {
@@ -44,6 +47,13 @@ export function capOf(env: NodeJS.ProcessEnv): number | undefined {
 const refusedHere = (entry: EntryLike): boolean => {
   const message = entry.kind === "pi.assistant" ? (entry.model?.[0] as { stopReason?: unknown; errorMessage?: unknown } | undefined) : undefined;
   return message?.stopReason === "error" && typeof message.errorMessage === "string" && message.errorMessage.startsWith(`${SPEND_CAP_REACHED}:`);
+};
+
+/** Whether `entry` is pi's error for a request whose start mark could not be written (request-start.ts, MARK_NOT_WRITTEN):
+ *  it never left and has no mark of its own, so it answers no request, and read as an answer it would close another's. */
+const notSentHere = (entry: EntryLike): boolean => {
+  const message = entry.kind === "pi.assistant" ? (entry.model?.[0] as { stopReason?: unknown; errorMessage?: unknown } | undefined) : undefined;
+  return message?.stopReason === "error" && typeof message.errorMessage === "string" && message.errorMessage.startsWith(MARK_NOT_WRITTEN);
 };
 
 /** The cost an entry adds to what a run spent, as the timeline counts it: a pi answer's total (none for one stopped before
@@ -122,8 +132,10 @@ export function spentIn(storeFile: string): number | null {
       const entry = JSON.parse(String((row as { record: string }).record)) as EntryLike;
       const data = (entry.data ?? {}) as Record<string, unknown>;
       // A request this cap refused never left, and costs nothing: its mark and pi's error entry for it (an older store
-      // has the entry alone, which the timeline would count as answering an earlier request a crash cut).
-      if (refusedHere(entry) || (entry.kind === REQUEST_STARTED && data[CAP_REFUSED_FIELD] === true)) continue;
+      // has the entry alone, which the timeline would count as answering an earlier request a crash cut). Nor did one
+      // whose start mark could not be written, whose error entry has no mark at all. A cancel's refusal is its mark
+      // (REQUEST_REFUSED) and pi's error for it, which close nothing together (openFigures, and the timeline).
+      if (refusedHere(entry) || notSentHere(entry) || (entry.kind === REQUEST_STARTED && data[CAP_REFUSED_FIELD] === true)) continue;
       if (entry.kind === REQUEST_STARTED) marked = true;
       // pi's entry for a marked request stopped before its end (what had streamed of it): the request is counted by its
       // marks instead, at the figure its end holds, or cut. Before the first mark (an older run) it stays unknown.
