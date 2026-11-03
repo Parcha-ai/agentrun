@@ -8,14 +8,15 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { verifyPublished, waitForRegistryVersions, registryBackoffMs, installRegistryConsumer, PACKUMENT_ACCEPT } from './verify-published.mjs';
-import { releasePackageNames, releasePackages } from './release-preflight.mjs';
+import { ownVersionPackages, releasePackageNames, releasePackages } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 const bytes = Buffer.from('verified package fixture bytes');
 const version = '0.1.0-beta.1';
-const packages = releasePackages.map(directory => ({ directory, name: releasePackageNames[directory], version,
+const packages = releasePackages.map(directory => ({ directory, name: releasePackageNames[directory], version: ownVersionPackages.includes(directory) ? '0.3.0' : version,
   sha256: createHash('sha256').update(bytes).digest('hex'), integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` }));
-const metadata = { name: packages[0].name, version, dist: { integrity: packages[0].integrity, tarball: 'https://registry.npmjs.org/example.tgz' } };
+const dsl = packages.find(pkg => pkg.directory === 'dsl');
+const metadata = { name: dsl.name, version, dist: { integrity: dsl.integrity, tarball: 'https://registry.npmjs.org/example.tgz' } };
 const wait = async () => {};
 async function fixture(fn) {
   const root = await mkdtemp(join(tmpdir(), 'agentrun-published-test-'));
@@ -31,7 +32,7 @@ const found = async url => String(url).endsWith('.tgz') ? new Response(bytes) : 
 test('partial release can resume only when the existing version matches exact verified bytes', () => fixture(async (root, receipt) => {
   const result = await verifyPublished(root, 'dsl', { allowAbsent: true, fetchImpl: found, wait });
   assert.equal(result.status, 'passed');
-  assert.equal(result.packages[0].sha256, packages[0].sha256);
+  assert.equal(result.packages[0].sha256, dsl.sha256);
   assert.equal((await receipt()).stale, undefined);
 }));
 test('only an authoritative 404 marks a version absent', () => fixture(async (root, receipt) => {
@@ -68,6 +69,19 @@ test('permanent registry errors fail once and clear an old success receipt', () 
   }), /HTTP 403/);
   assert.equal(calls, 1);
   assert.equal((await receipt()).status, 'failed');
+}));
+test('a package on its own version line carries a plain version and every other the workspace beta; a plan that mixes them up is refused', () => fixture(async root => {
+  const own = packages.find(pkg => pkg.directory === 'agentrun');
+  const ownMetadata = { name: own.name, version: own.version, dist: { integrity: own.integrity, tarball: 'https://registry.npmjs.org/example.tgz' } };
+  const result = await verifyPublished(root, 'agentrun', { allowAbsent: true, wait, fetchImpl: async url => String(url).endsWith('.tgz') ? new Response(bytes) : Response.json(ownMetadata) });
+  assert.deepEqual(result.packages.map(pkg => [pkg.name, pkg.version, pkg.status]), [['@parcha/agentrun', '0.3.0', 'matched']]);
+  const plan = { status: 'passed', tag: `v${version}`, registry: 'https://registry.npmjs.org/' };
+  const refuse = async swapped => {
+    await writeFile(join(root, '.release/release-plan.json'), JSON.stringify({ ...plan, packages: packages.map(pkg => swapped[pkg.directory] ? { ...pkg, version: swapped[pkg.directory] } : pkg) }));
+    await assert.rejects(verifyPublished(root, 'dsl', { allowAbsent: true, wait, fetchImpl: async () => { throw new Error('must not fetch'); } }), /is not on its version line/);
+  };
+  await refuse({ agentrun: version });
+  await refuse({ dsl: '0.3.0' });
 }));
 test('invalid release plans also replace prior successful verification evidence', () => fixture(async (root, receipt) => {
   await writeFile(join(root, '.release/release-plan.json'), '{}');
@@ -166,7 +180,7 @@ test('packument authentication errors fail at once; network errors and 5xx are w
   await assert.rejects(waitForRegistryVersions(registry, packages, {
     wait: async () => { assert.fail('a permanent failure must not wait'); },
     fetchImpl: async () => new Response(null, { status: 403 }),
-  }), /full packument of @parcha\/agentrun-dsl: HTTP 403/);
+  }), new RegExp(`full packument of ${packages[0].name}: HTTP 403`));
   let calls = 0;
   const result = await waitForRegistryVersions(registry, packages, {
     wait: async () => {},
