@@ -8,7 +8,8 @@
 // call) a 200 whose tool result is marked isError and `ai.exa/rateLimited`, its text telling the user to put an API key
 // in their MCP URL. Either is tried once more, a new exchange after a jittered 1 to 3 s or the Retry-After Exa names when
 // it is 5 s or less (past that, as with its daily limit, the limit does not lift within a search, and it is not tried
-// again); still limited, the search answers RATE_LIMITED, in our words, never Exa's. A 403 is a connection keyless use
+// again); still limited, the search answers RATE_LIMITED, in our words, never Exa's. Any other failure Exa answers is
+// ours too, quoting only the first sentence of Exa's (exaSaid). A 403 is a connection keyless use
 // refuses (Exa takes it over IPv4, straight to the endpoint), never tried again. Both say which limit they met
 // (ExaLimited), for the caller's fallback. A search ends at 60 s, its retry and wait included. No key is sent, ever.
 // Exa is dialled over IPv4 alone (ipv4Fetch): its name looked up for family 4 and the connection made to that address,
@@ -36,6 +37,16 @@ const MAX_BYTES = 1 << 20;
 /** What a search answers when Exa's free limit holds after the one retry. Exa's own words name a fix (an API key in
  *  its MCP URL) that means nothing to a person here, so they are never passed on. */
 export const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute, or add a Parallel key in Settings → Tool keys to search with a key.";
+/** The most of Exa's own words a failure quotes: the first sentence of its first line, cut on a word. */
+const SAID_MAX = 120;
+/** A failure Exa answered, in our words: the first sentence of its text, short and quoted. Its later lines (a fix for its
+ *  MCP URL, a timestamp) are never passed on, so a deployment that does not mark its free limit says no setup text. */
+function exaSaid(text: string): string {
+  const line = text.split("\n").map((part) => part.trim()).find(Boolean) ?? "";
+  const sentence = /^.*?[.!?](?=\s|$)/.exec(line)?.[0] ?? line;
+  const short = sentence.length <= SAID_MAX ? sentence : `${sentence.slice(0, SAID_MAX - 1).replace(/\s+\S*$/, "")}…`;
+  return short ? `Free web search failed. Exa said: "${short}"` : "Free web search failed: Exa gave no answer";
+}
 /** The `_meta` key Exa's MCP server marks a tool result reporting its free limit with (isError as well). */
 const RATE_LIMITED_META = "ai.exa/rateLimited";
 /** The longest Retry-After waited out before the one retry. */
@@ -182,12 +193,12 @@ async function exchange(query: string, n: number, dial: typeof fetch, deadline: 
   const late = await refused(called, "the search");
   if (late) return late;
   const answer = await answerOf(called, 2);
-  if (answer?.error) return { error: `Exa's search failed: ${String(answer.error.message ?? "no detail").slice(0, 300)}` };
+  if (answer?.error) return { error: exaSaid(typeof answer.error.message === "string" ? answer.error.message : "") };
   const meta = answer?.result?._meta;
   if (answer?.result?.isError === true && typeof meta === "object" && meta !== null && (meta as Record<string, unknown>)[RATE_LIMITED_META] === true) return { error: RATE_LIMITED, limit: "rate_limited" };
   const content = Array.isArray(answer?.result?.content) ? (answer.result.content as { type?: unknown; text?: unknown }[]) : undefined;
   const said = content?.flatMap((part) => (part.type === "text" && typeof part.text === "string" ? [part.text] : [])).join("\n") ?? "";
-  if (!content || answer?.result?.isError === true) return { error: `Exa's search failed: ${said.slice(0, 300) || "no answer"}` };
+  if (!content || answer?.result?.isError === true) return { error: exaSaid(said) };
   const hits = said.split(/\n-{3,}\n/).flatMap((section) => hitOf(section) ?? []);
   return { provider: "exa-keyless", query, results: hits.slice(0, n) };
 }
