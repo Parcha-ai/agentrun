@@ -934,7 +934,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     const schema = schemas[name] as Json & { enum?: string[] };
     if (!Array.isArray(schema.enum) || schema.enum.includes(value)) continue;
     schema.enum = [...schema.enum, value];
-    schema["x-agentrun-serve"] = "learning/1";
+    // A schema two additions widen keeps the first one's mark; each value's own mark is in info's fields.
+    schema["x-agentrun-serve"] ??= "learning/1";
     fields.push(`${name}.${value}`);
   }
   // This server's own error codes (errors.ts), beside the contract's closed list.

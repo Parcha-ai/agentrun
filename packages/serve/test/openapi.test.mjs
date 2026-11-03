@@ -311,7 +311,7 @@ test("learning is this server's own addition, learning/1: the definition's switc
     assert.ok(doc.info["x-agentrun-serve"].fields.includes(`${schema}.${field}`), `info lists ${schema}.${field}`);
   }
   for (const [schema, value] of [["TimelineKind", "learning"], ["Meter", "learning"]]) {
-    assert.ok(schemas[schema].enum.includes(value) && schemas[schema]["x-agentrun-serve"] === "learning/1", `${schema} holds ${value}`);
+    assert.ok(schemas[schema].enum.includes(value), `${schema} holds ${value}`);
     assert.ok(doc.info["x-agentrun-serve"].fields.includes(`${schema}.${value}`), `info lists ${schema}.${value}`);
   }
   const whole = schemas.Run.properties.learning.oneOf[0].properties;
