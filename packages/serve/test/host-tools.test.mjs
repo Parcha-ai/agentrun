@@ -8,6 +8,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { claudeAgentAdapter } from "@parcha/agentrun-harness-claude";
 import { codexAdapter } from "@parcha/agentrun-harness-codex";
 import { hostTools, workspaceRelative } from "../dist/host-tools.js";
+import { rowPaths } from "../dist/workspace-paths.js";
 import { withEnv } from "./support.mjs";
 
 /** The run a host tool is built for: only its work directory is read, and nothing here calls a tool. */
@@ -136,4 +137,32 @@ test("an error, a refusal and a write's result name a path in the run's director
     ["/elsewhere/x.md: outside the workspace", "/elsewhere/x.md: outside the workspace"],
   ];
   for (const [given, said] of cases) assert.equal(workspaceRelative(given, [work, real]), said, given);
+});
+
+test("a row's file path is named as a whole path: in the run's directory relative to its work/ (spaces, punctuation, a sibling whose name starts with work's, ..), and anywhere else exactly as given", () => {
+  const named = rowPaths("/data/runs/r1");
+  const cases = [
+    ["/data/runs/r1/work/hello.md", "hello.md"],
+    ["/data/runs/r1/work/notes/a b, c (1).md", "notes/a b, c (1).md"],
+    ["/data/runs/r1/work", "."],
+    ["/data/runs/r1/work/", "."],
+    // Siblings of work/ in the run's directory, whose names start with work's: never read as work/ itself.
+    ["/data/runs/r1/work 2024/a.md", "../work 2024/a.md"],
+    ["/data/runs/r1/work2/a.md", "../work2/a.md"],
+    ["/data/runs/r1/work.bak", "../work.bak"],
+    // .. resolved, in and out of the run's directory.
+    ["/data/runs/r1/work/../escape.md", "../escape.md"],
+    ["/data/runs/r1/work/sub/../a.md", "a.md"],
+    ["/data/runs/r1", ".."],
+    ["/data/runs/r1/work/../../r2/work/a.md", "/data/runs/r1/work/../../r2/work/a.md"],
+    // Outside the run's directory, or not absolute: as given.
+    ["/data/runs/r10/work/a.md", "/data/runs/r10/work/a.md"],
+    ["/data/runs/r1x", "/data/runs/r1x"],
+    ["/elsewhere/x.md", "/elsewhere/x.md"],
+    ["hello.md", "hello.md"],
+    ["../outside.md", "../outside.md"],
+  ];
+  for (const [given, shown] of cases) assert.equal(named(given), shown, given);
+  // A run directory that is not absolute names nothing differently.
+  assert.equal(rowPaths("runs/r1")("/data/runs/r1/work/a.md"), "/data/runs/r1/work/a.md");
 });
