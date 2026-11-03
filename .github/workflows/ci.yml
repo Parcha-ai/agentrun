@@ -10,8 +10,9 @@ on:
 permissions:
   contents: read
 
-# Reaches every npm and npx in every job, nested ones included. A registry request that fails before its response arrives
-# (reset, refused, timed out, 5xx) is retried 5 times, waiting 20 s then 2 min each (~8 min), not npm's 2 in ~70 s.
+# Reaches every npm and npx in every job, nested ones too unless a script clears the env. A registry request that fails
+# before its response arrives (reset, refused, timed out, 5xx) is retried 5 times, 20 s then 2 min apart (~8 min), not
+# npm's 2 in ~70 s.
 env:
   npm_config_fetch_retries: '5'
   npm_config_fetch_retry_mintimeout: '20000'
