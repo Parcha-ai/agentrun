@@ -4,6 +4,9 @@ import { bounded, cost, when } from "@/lib/format";
 import type { MissionView } from "@/lib/mission";
 import { cn } from "@/lib/utils";
 import { AnalyticsFilter, MissionAnalytics } from "@/components/MissionAnalytics";
+import { ProblemCard } from "@/components/Problem";
+import { MissionSkeleton } from "@/components/Skeleton";
+import type { Problem } from "@/lib/problem";
 import { RANGES, type StatsRange } from "@/lib/mission";
 import { elapsed } from "@/lib/runGraph";
 
@@ -15,14 +18,9 @@ export type AnalyticsScope = { range: StatsRange; onRange: (range: StatsRange) =
  *  or failed (each count a link to its list), what they cost (said with its basis, never $0 for a cost not known), runs
  *  per agent, and the latest runs with their agent, duration and cost, with the runs' tokens, time, success and tools
  *  over the range picked (MissionAnalytics). Before the owner's first run, `startHere` takes the place of all of it. */
-export function MissionControl({ view, error, onRetry, scope, needsYou, startHere }: { view: MissionView | null; error?: string | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; startHere?: React.ReactNode }) {
-  if (error) return (
-    <div className="m-8 border p-4" role="alert">
-      <p className="font-mono text-[13px] text-destructive-text">Mission Control could not be read: {error}</p>
-      {onRetry && <button type="button" onClick={onRetry} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>}
-    </div>
-  );
-  if (!view) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
+export function MissionControl({ view, error, onRetry, scope, needsYou, startHere }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; startHere?: React.ReactNode }) {
+  if (error) return <ProblemCard problem={error} onRetry={onRetry} />;
+  if (!view) return <MissionSkeleton />;
   if (startHere) return (
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-[1600px] space-y-6 px-6 py-8">
