@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as timeline from "../dist/timeline/index.js";
 
-const { callFailed, foldLabel, labelOf, nameOf } = timeline;
+const { callFailed, foldLabel, labelOf, nameOf, registerLabel } = timeline;
 const refused = JSON.stringify({ ok: false, url: "http://127.0.0.1/", refused: "refused: 127.0.0.1 is not a public host" });
 const args = { url: "https://example.com/pricing" };
 const calls = [{ input: "https://example.com/a", output: null }, { input: "https://example.org/b", output: null }];
@@ -26,4 +26,10 @@ test("an MCP tool no one registered keeps the name it was called by", () => {
     assert.equal(nameOf(name), name);
     assert.equal(labelOf(name, {}), `Using tool: ${name}`);
   }
+});
+
+test("a registered tool with no display name is named by itself, never by its MCP wrapping", () => {
+  registerLabel("probe_tool", () => "Probed");
+  assert.equal(nameOf("mcp__hands__probe_tool"), "probe_tool");
+  assert.equal(labelOf("mcp__hands__probe_tool", {}), "Probed");
 });

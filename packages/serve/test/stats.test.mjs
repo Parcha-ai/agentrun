@@ -10,9 +10,7 @@ import { test } from "node:test";
 import { openStore, openStoreReader } from "@parcha/pi-durable-agent";
 import { schemaProblems } from "./schema-support.mjs";
 import { follow, scratch, serve, startRun } from "./support.mjs";
-import * as stats from "../dist/stats.js";
-
-const { statsView } = stats;
+import { statsView } from "../dist/stats.js";
 
 const at = (i) => new Date(Date.UTC(2026, 0, 1) + i * 1000).toISOString();
 
@@ -291,29 +289,4 @@ test("a refused fetch is a failed call in a run's metrics and in GET /v2/stats, 
   assert.deepEqual(body.analytics.tools, [{ tool: "web_fetch", label: "Fetch web pages", calls: 1, errors: 1 }], "and so do the run's metrics, under the tool's own name");
   const { doc, schema } = await statsSchema(baseUrl);
   assert.deepEqual(schemaProblems(doc, schema, body), []);
-});
-
-test("a registered tool's calls by an MCP name of it count as its own: one row a tool in the analytics, the most calls first", () => {
-  const none = { runs: 0, completed: 0, needsReview: 0, failed: 0, runsWithMetrics: 0, tokens: 0, costUsd: null, unknownCostRuns: 0 };
-  const analytics = {
-    totals: { ...none, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, requests: 0, unmetered: 0 },
-    time: { endedRuns: 0, wallMs: 0, activeRuns: 0, activeMs: 0 },
-    byHarnessEffort: [],
-    byDay: [],
-    bySource: [],
-    // As the store gives them: by the name each was called by, the most calls first.
-    tools: [
-      { tool: "web_fetch", calls: 29, errors: 14 },
-      { tool: "write", calls: 25, errors: 0 },
-      { tool: "mcp__hands://web_fetch", calls: 2, errors: 2 },
-      { tool: "mcp__hands__read", calls: 13, errors: 13 },
-      { tool: "mcp__github__create_issue", calls: 1, errors: 0 },
-    ],
-  };
-  assert.deepEqual(stats.analyticsView(analytics, {}).tools, [
-    { tool: "web_fetch", label: "Fetch web pages", calls: 31, errors: 16 },
-    { tool: "write", label: "Write files", calls: 25, errors: 0 },
-    { tool: "read", label: "Read files", calls: 13, errors: 13 },
-    { tool: "mcp__github__create_issue", label: "mcp__github__create_issue", calls: 1, errors: 0 },
-  ]);
 });

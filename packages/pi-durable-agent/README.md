@@ -598,7 +598,7 @@ many have metrics, their tokens and token kinds, requests and unmetered requests
 `time` (ended minus started over the ended runs, and `activeMs` over those whose metrics have one),
 `byHarnessEffort` (the revision's harness, `pi` when it names none and `workflow` for a workflow revision, then
 the metrics' effort, null when unset), `byDay` (the UTC date a run started), `bySource` (`live`, or the source an imported
-run came from) and `tools` (the 20 with the most calls, by name on a tie, with their errors). Each group has `runs` beside
+run came from) and `tools` (the 20 with the most calls, by name on a tie, with their errors; a call by an MCP name of a registered tool counts as that tool's, as `toolOf` reads it). Each group has `runs` beside
 `runsWithMetrics`, so a run with no metrics counts as a run and never as 0 tokens; a running run's metrics are its last
 end's, so it counts as one without them. It reads `run_metrics`, `run_tool_metrics`, `runs` and `revisions` alone, in one
 snapshot; a store without the metrics tables answers its runs with no metrics.

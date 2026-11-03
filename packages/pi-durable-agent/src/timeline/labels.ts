@@ -32,9 +32,12 @@ export const toolOf = (tool: string): string => {
   return bare !== undefined && labels.has(bare) ? bare : tool;
 };
 
-/** What a tool is called where its calls are counted, in plain words: its registered name (an MCP name of a registered
- *  tool, that tool's), else the name it was called by. */
-export const nameOf = (tool: string): string => names.get(toolOf(tool)) ?? tool;
+/** What a tool is called where its calls are counted, in plain words: its registered name, else the tool's own name (an
+ *  MCP name of a registered tool, that tool's), else the name it was called by. */
+export const nameOf = (tool: string): string => {
+  const own = toolOf(tool);
+  return names.get(own) ?? own;
+};
 
 /** A finished call's outcome, when its own result says more than that the call returned: a tool that answers a refusal
  *  or a failure as its result, not as an error (a fetch's `{ok: false, refused}`), reads as refused or failed. */

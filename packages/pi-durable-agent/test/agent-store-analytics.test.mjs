@@ -148,3 +148,19 @@ test("a store written before the metrics and import tables answers its runs with
     tools: [],
   });
 });
+
+test("analytics count a call by an MCP name of a registered tool as that tool's before the 20 busiest are picked", async () => {
+  const dir = await scratch();
+  const store = openStore(dir);
+  store.createAgent({ name: "chat", id: "chat" });
+  await store.commitRevision("chat", A, { setCurrent: true });
+  // Twenty tools of 2 calls, web_fetch's 2 under its own name, and 1 more under a name a model wrote (mcp__hands://).
+  const tools = { ...Object.fromEntries("abcdefghijklmnopqrst".split("").map((name) => [name, { calls: 2, errors: 0 }])), web_fetch: { calls: 2, errors: 1 }, "mcp__hands://web_fetch": { calls: 1, errors: 1 } };
+  const { runId } = await store.startRun({ agent: "chat" });
+  store.carryBack(runId, { state: "completed", metrics: metrics(1, 0, 0, 1, 1, 0, tools) });
+  const top = store.analytics().tools;
+  store.close();
+  assert.equal(top.length, 20);
+  assert.deepEqual(top[0], { tool: "web_fetch", calls: 3, errors: 2 }, "its 3 calls, first; by name alone it was 21st and out");
+  assert.ok(!top.some((t) => t.tool.startsWith("mcp__")), "no wrapped name");
+});

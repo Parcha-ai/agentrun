@@ -9,6 +9,7 @@ import type { PromptVariant } from "./kinds.js";
 import { canonical } from "./kinds.js";
 import { seedRun } from "./runs.js";
 import { AgentHomeError } from "./store.js";
+import { toolOf } from "./timeline/labels.js";
 import type { RunMetrics } from "./timeline/timeline.js";
 
 // An agent store is one folder: `store.sqlite` (plain tables, and the truth) and `runs/<run id>/`, each run's own pi-durable store and
@@ -81,7 +82,8 @@ export type StoreAnalytics = {
   byDay: Array<AnalyticsGroup & { day: string }>;
   /** `live`, run here, or the source an imported run came from: `live` first. */
   bySource: Array<AnalyticsGroup & { source: "live" | ImportSource }>;
-  /** The 20 tools with the most calls (by name on a tie), each with how many failed. */
+  /** The 20 tools with the most calls (by name on a tie), each with how many failed; a call by an MCP name of a
+   *  registered tool counted as that tool's (toolOf). */
   tools: Array<{ tool: string; calls: number; errors: number }>;
 };
 export type AnalyticsFilter = { from?: string; to?: string; agent?: string };
@@ -409,6 +411,8 @@ export class AgentStoreReader {
       costUsd: n(g.known) > 0 ? Number(g.cost_usd) : null, unknownCostRuns: n(g.runs) - n(g.known),
     });
     const all = (sql: string) => this.db.prepare(`${scope} ${sql}`).all(params) as Array<Record<string, unknown>>;
+    // A call by an MCP name of a registered tool counts as that tool's (toolOf), before the 20 busiest are picked.
+    this.db.function("tool_of", (name) => toolOf(String(name)));
     this.db.exec("BEGIN");
     try {
       const t = all(`SELECT ${group}, SUM(input) AS input, SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write, SUM(output) AS output, SUM(requests) AS requests, SUM(unmetered) AS unmetered,
@@ -421,7 +425,7 @@ export class AgentStoreReader {
         byDay: all(`SELECT substr(started_at, 1, 10) AS day, ${group} FROM scope GROUP BY day ORDER BY day`).map((g) => ({ day: g.day as string, ...counted(g) })),
         bySource: all(`SELECT source, ${group} FROM scope GROUP BY source ORDER BY source <> 'live', source`).map((g) => ({ source: g.source as "live" | ImportSource, ...counted(g) })),
         tools: this.metrics
-          ? all(`SELECT t.tool, SUM(t.calls) AS calls, SUM(t.errors) AS errors FROM run_tool_metrics t JOIN scope s ON s.id = t.run_id WHERE s.metered GROUP BY t.tool ORDER BY calls DESC, t.tool LIMIT 20`)
+          ? all(`SELECT tool_of(t.tool) AS tool, SUM(t.calls) AS calls, SUM(t.errors) AS errors FROM run_tool_metrics t JOIN scope s ON s.id = t.run_id WHERE s.metered GROUP BY tool_of(t.tool) ORDER BY calls DESC, tool LIMIT 20`)
             .map((r) => ({ tool: r.tool as string, calls: n(r.calls), errors: n(r.errors) }))
           : [],
       };
