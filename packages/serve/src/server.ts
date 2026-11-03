@@ -18,7 +18,7 @@ import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir, writeDurable } from "./files.js";
-import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, ownedByIdentity } from "./home-path.js";
+import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
@@ -27,7 +27,7 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { type LearningMode, learningOf } from "./learning.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
-import { type Place, placesOf, resolvePlace } from "./place.js";
+import { boxesLine, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { boxLimitsOf, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
@@ -166,7 +166,8 @@ export type ServeOptions = {
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
 /** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one). */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; close(): Promise<void> };
+/** `boxesLine`: what the start's banner says of the boxes, in words (place.ts boxesLine). */
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; boxesLine: string; close(): Promise<void> };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -248,6 +249,10 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
 ];
 
+/** Where agent `agentId`'s host-owned path is read on this server: its route, when ROUTES has one (the learning API, for
+ *  learning/). */
+const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
+
 /** Whether the request to `path` (under /v2) is a PUT of a route marked `raw`. */
 export const takesBytes = (method: string | undefined, path: string): boolean => method === "PUT" && ROUTES.some((r) => r.raw === true && r.method === "PUT" && r.pattern.test(path));
 
@@ -314,7 +319,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a
      *  web tool, what it resolves to on each harness under this server's tool settings; `key`, the tool key that unlocks
      *  it (tool-keys.ts), when one does. */
-    tools: toolsView(env, toolSettings).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
+    tools: toolsView(env, toolSettings, noBoxReason(boxes)).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
     /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
     secrets: {
       names: [...SECRET_NAMES],
@@ -906,7 +911,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  the name check holds for the spellings it knows, and this for any other a disk takes. */
   async function notHostOwned(home: string, rel: string, agentId: string, write: boolean): Promise<void> {
     const owned = await ownedByIdentity(home, rel);
-    if (owned) throw hostOwnedRefusal(owned, agentId, write);
+    if (owned) throw hostOwnedRefusal(owned, agentId, write, ownedReadAt(agentId));
   }
 
   /** A write to the home or a removal from it refused (workspace.ts), as its answer. */
@@ -1227,7 +1232,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "readHomeFile": {
         await needAgent(id);
-        const rel = homePath(second!, id, false);
+        const rel = homePath(second!, id, false, ownedReadAt(id));
         const home = await homeDir(id, false);
         if (!home) throw new ApiError("not_found", "no such file");
         await notHostOwned(home, rel, id, false);
@@ -1408,6 +1413,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenFile,
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
+    boxesLine: boxesLine(boxOffers, enabledBoxes(env)),
     async close() {
       // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
       // after close.

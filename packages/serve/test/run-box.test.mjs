@@ -21,8 +21,9 @@ const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const WORK = "/run/agentrun/run/work";
-/** A value planted in the server's environment, which the box must not hold. */
-const PLANTED = ["planted", "foo", "sentinel"].join("-");
+/** Values planted in the server's environment, which the box must not hold: an unnamed key, OpenAI's, and the four keys
+ *  a tester runs everything with (OpenRouter's, Monid's, Parallel's and Browserbase's), each searched for by value. */
+const PLANTED = Object.fromEntries(["FOO", "OPENAI", "OPENROUTER", "MONID", "PARALLEL", "BROWSERBASE"].map((name) => [`${name}_API_KEY`, ["planted", name.toLowerCase(), "sentinel"].join("-")]));
 
 /** A fake docker first on PATH, with docker listed in AGENTRUN_BOXES, for test `t`. */
 async function fakeDocker(t, vars = {}) {
@@ -112,7 +113,7 @@ test("a mount source is refused when it is, or runs through, a link below the da
 });
 
 test("fake docker: one create per run, with no network, serve's user, work/ alone at its target, the run's labels and the fixed environment as NAME=value; a setting or a request field cannot open the network; destroyed at the run's end", { timeout: 120_000 }, async (t) => {
-  const docker = await fakeDocker(t, { AGENTRUN_DOCKER_IMAGE: "registry.example/agentrun-box:1", AGENTRUN_DOCKER_NETWORK: "host", AGENTRUN_BOX_NETWORK: "open", FOO_API_KEY: PLANTED });
+  const docker = await fakeDocker(t, { AGENTRUN_DOCKER_IMAGE: "registry.example/agentrun-box:1", AGENTRUN_DOCKER_NETWORK: "host", AGENTRUN_BOX_NETWORK: "open", ...PLANTED });
   const { api, data } = await serve(t, { faux: PROBE });
   assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker"), { id: "docker", available: true });
   await boxedAgent(api);
@@ -131,7 +132,7 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   assert.match(said[3].text, /\/run\/agentrun\/run\/work\/missing\.md/, "an error names the box's path");
   assert.ok(!said[3].text.includes(realpathSync(data)), "never the data root");
   assert.equal(said[1].text, "hi");
-  assert.ok(!said[2].text.includes(PLANTED), "the run's environment is not the box's");
+  for (const [name, value] of Object.entries(PLANTED)) assert.ok(!said[2].text.includes(value), `${name}: the run's environment is not the box's`);
   assert.equal(readFileSync(join(data, "runs", runId, "work", "out.txt"), "utf8"), "hi");
   const runs = docker.runs();
   assert.equal(runs.length, 1, "one box for the run's calls");

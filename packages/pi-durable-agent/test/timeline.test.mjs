@@ -61,6 +61,38 @@ test("prose before calls is a text_block; a final stop answer is the final_answe
   assert.deepEqual(rows.filter((r) => /text|final/.test(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "Opening the portal."], ["final_answer", "Done."]]);
 });
 
+test("a host may name a call's file path its own way (path option): the tool rows and the Saved row use it, the input preview and the entries keep the call's own", () => {
+  const work = "/data/runs/r1/work";
+  const entries = () => [assistant([call("w", "write", { path: `${work}/hello.md`, content: "hi" })]), result("w", "write", "Successfully wrote to hello.md"), assistant([{ type: "text", text: "Done." }])];
+  const path = (p) => (p.startsWith(`${work}/`) ? p.slice(work.length + 1) : p);
+  const given = entries();
+  const rows = timelineOf(given, { path });
+  assert.deepEqual(rows.filter((r) => ["tool_use", "tool_result", "phase"].includes(r.kind)).map((r) => [r.kind, r.summary, r.path ?? null]), [["tool_use", "Wrote hello.md", null], ["tool_result", "Wrote hello.md: ok", null], ["phase", "Saved hello.md", "hello.md"]]);
+  assert.match(rows.find((r) => r.kind === "tool_use").tool_input_preview, /\/data\/runs\/r1\/work\/hello\.md/, "the preview is the call's own input");
+  assert.equal(given[0].model[0].content[0].arguments.path, `${work}/hello.md`, "the entry is not changed");
+  // The live view takes the same option.
+  const reducer = timelineReducer({ path });
+  reducer.apply(entries().map((entry) => ({ type: "entry_appended", entry })));
+  assert.deepEqual(reducer.rows().filter((r) => r.kind === "phase").map((r) => r.summary), ["Saved hello.md"]);
+  // Without it, rows name the path as the call gave it.
+  assert.deepEqual(timelineOf(entries()).filter((r) => r.kind === "tool_use").map((r) => r.summary), [`Wrote ${work}/hello.md`]);
+});
+
+test("folded calls take the host's path option too: two reads by absolute path read \"Read 2 files: a.md, b.md\"; without it, as before", () => {
+  const work = "/data/runs/r1/work";
+  const path = (p) => (p.startsWith(`${work}/`) ? p.slice(work.length + 1) : p);
+  const entries = () => [
+    assistant([call("r1", "read", { path: `${work}/a.md` }), call("r2", "read", { path: `${work}/b.md` })]),
+    result("r1", "read", "a"), result("r2", "read", "b"),
+    assistant([{ type: "text", text: "Read both." }]),
+  ];
+  const folded = (rows, options) => lines(rows, options).find((line) => /Read 2 files/.test(line)) ?? "";
+  assert.match(folded(timelineOf(entries(), { path }), { path }), /Read 2 files: a\.md, b\.md/);
+  assert.ok(folded(timelineOf(entries())).includes(`Read 2 files: ${work}/a.md, ${work}/b.md`), folded(timelineOf(entries())));
+  // The preview stays the call's own.
+  assert.equal(timelineOf(entries(), { path }).find((r) => r.kind === "tool_use").tool_input_preview, `${work}/a.md`);
+});
+
 test("a round of three browser_read folds to one line and shows its failure", () => {
   const rows = timelineOf([
     assistant([call("a", "browser_read"), call("b", "browser_read"), call("c", "browser_read")], 0),
@@ -627,6 +659,27 @@ test("previews keep a URL's origin, path and query keys; values, fragment and us
   assert.equal(results[2].summary, "Ran `curl -s 'http://localhost:8080/v1?key=\u2026' | head` failed: refused https://z.example/e?auth=\u2026 by the server");
   const all = JSON.stringify(rows.filter((row) => row.kind !== "user_message"));
   for (const secret of ["SECRET1", "SECRET2", "SECRET3", "SECRET4", "SECRET5", "SECRET6", "frag-secret", userinfo("pw")]) assert.ok(!all.includes(secret), `a row holds ${secret}`);
+});
+
+test("a failed call answered only by the harness's diagnostics block is summarized by its error, not by the block's tag", () => {
+  const rows = timelineOf([
+    assistant([
+      call("a", "bash", { command: "true" }),
+      call("b", "bash", { command: "ls" }),
+      call("c", "read", { path: "a.md" }),
+      call("d", "bash", { command: "make" }),
+    ], 0),
+    result("a", "bash", "<harness>\n[error] Tool bash is not available\n</harness>", 1, { isError: true }),
+    result("b", "bash", "<harness>\n[warning] Output truncated: 3 lines, 9 bytes dropped\n[error] Tool call blocked: refused by the permission gate\n</harness>", 1, { isError: true }),
+    result("c", "read", "<harness>\n[error]\n</harness>", 1, { isError: true }),
+    result("d", "bash", "make: *** No rule to make target\n<harness>\n[error] Command exited with code 2\n</harness>", 1, { isError: true }),
+  ]);
+  const summary = (id) => rows.find((row) => row.tool_use_id === id && row.kind === "tool_result").summary;
+  assert.equal(summary("a"), "Ran `true` failed: Tool bash is not available");
+  assert.equal(summary("b"), "Ran `ls` failed: Tool call blocked: refused by the permission gate", "the error, before any warning");
+  assert.equal(summary("c"), "Read a.md failed: no detail");
+  assert.equal(summary("d"), "Ran `make` failed: make: *** No rule to make target", "a result with output keeps its first line");
+  assert.equal(rows.find((row) => row.tool_use_id === "a" && row.kind === "tool_result").tool_result_preview, "<harness>\n[error] Tool bash is not available\n</harness>", "the preview is the result as it is");
 });
 
 test("a saved file's phase row carries its path", () => {
