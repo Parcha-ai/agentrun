@@ -3,14 +3,15 @@
 // end and once more before the run's end is recorded, then destroys it. The run's process holds no key: its Daytona calls
 // go through the server's box relay, which sends on only the calls a run's tools make of that run's own box.
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BOX_RELAY_FILE, relayFetch, startBoxRelay } from "../dist/box-relay.js";
-import { BOX_ENV, BOX_SYNC_FILE } from "../dist/run-box.js";
+import { BOX_ENV, BOX_SYNC_FILE, runBox } from "../dist/run-box.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { daytonaSandboxes, tarOf } from "./fixtures/fake-daytona.mjs";
 import { startServe } from "../dist/index.js";
@@ -273,6 +274,24 @@ test("a start pulls and destroys the box of a run that ended while its box was l
   await until(() => fake.sandboxes.size === 0, "the start's sweep");
   assert.equal(readFileSync(join(data, "runs", run.run_id, "work", "late.txt"), "utf8"), "late");
   assert.deepEqual(await fileList(second.api, run.run_id), ["late.txt", "out.txt"]);
+});
+
+test("a file the server files before a run's process opens a box a process before it made is copied in at the open", { timeout: 60_000 }, async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY });
+  const root = await scratch(t);
+  await writeFile(join(root, ".door-token"), "door-token-of-the-test\n");
+  // The box a run's earlier process made and the server seeded: its mark names it, so the open does not seed it again.
+  const made = await (await fetch(`${fake.url}/sandbox`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ labels: { "agentrun.run": "run-again", "agentrun.box": "run", "pi-transport": "1", "pi-transport.workspace": "/run/agentrun/run/work" } }) })).json();
+  mkdirSync(fake.pathOf(made.id, "run/agentrun/run/work"), { recursive: true });
+  const relay = await startBoxRelay({ root, token: "door-token-of-the-test", apiUrl: fake.url, apiKey: KEY, serves: (id) => id === "run-again", ensure: async () => ({ id: made.id, made: false }) });
+  t.after(() => relay.close());
+  const runDir = join(root, "runs", "run-again");
+  const box = runBox({ relay: root }, { id: "run-again", root, dir: runDir, place: DAYTONA });
+  // The new process's first act: a host tool files a long answer, before any coding call opened the box.
+  await box.mirror("evidence/monid/answer.json", '{"whole":"answer"}');
+  await box.env(BACKGROUND_CONTEXT);
+  await until(() => existsSync(fake.pathOf(made.id, "run/agentrun/run/work/evidence/monid/answer.json")), "the filed answer in the box");
+  assert.equal(readFileSync(fake.pathOf(made.id, "run/agentrun/run/work/evidence/monid/answer.json"), "utf8"), '{"whole":"answer"}');
 });
 
 test("the relay: the door token only; a run it holds only; only that run's own sandbox, for a read and its toolbox's programs and files; the key goes nowhere else", async (t) => {
