@@ -17,7 +17,7 @@
 // timeline (runs.ts withOverCap).
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
-import { providerInputOverhead } from "@parcha/agentrun-adapters/host";
+import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
 import { type EntryLike, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 

@@ -5,16 +5,16 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { openDrive } from '@parcha/agentrun-adapters/kernel';
-import * as shared from '@parcha/agentrun-adapters/process';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { openDrive } from '@parcha/agentrun-kernel/kernel';
+import * as shared from '@parcha/agentrun-kernel/process';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { EXPECTED_NO_CALLS_NOTE, EXPECTED_SYSTEM_NOTE, fiveStatusesState } from './recovery-fixture.mjs';
 
 test("the shared process layer's errors name this package", async () => {
   const drive = await openDrive({ writer: await memorySessionStore().open('run-1'), signal: new AbortController().signal });
   const tool = { name: 'pay', description: 'Pay.', inputSchema: { type: 'object' }, replay: 'safe', execute: async () => 'paid' };
-  await assert.rejects(shared.toolBridge(drive, [tool]).call('pay', {}, ''), /^TypeError: agentrun-adapters: a call to pay has no call id/);
-  await assert.rejects(new shared.BuiltinCalls(drive, { live: false }).begin({ callId: '', name: 'Bash', input: {}, replay: 'safe' }), /^TypeError: agentrun-adapters: a built-in Bash call has no call id/);
+  await assert.rejects(shared.toolBridge(drive, [tool]).call('pay', {}, ''), /^TypeError: agentrun-kernel: a call to pay has no call id/);
+  await assert.rejects(new shared.BuiltinCalls(drive, { live: false }).begin({ callId: '', name: 'Bash', input: {}, replay: 'safe' }), /^TypeError: agentrun-kernel: a built-in Bash call has no call id/);
   const dir = await mkdtemp(join(tmpdir(), 'agentrun-tail-'));
   try {
     const file = join(dir, 'session.jsonl');
@@ -22,7 +22,7 @@ test("the shared process layer's errors name this package", async () => {
     const tail = new shared.FileTail(file);
     assert.equal(tail.read().length, 2);
     await writeFile(file, '{"a":1}\n');
-    assert.throws(() => tail.read(), /^Error: agentrun-adapters: .* shrank from /);
+    assert.throws(() => tail.read(), /^Error: agentrun-kernel: .* shrank from /);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

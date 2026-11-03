@@ -7,7 +7,7 @@
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
-import type { HostTool } from "@parcha/agentrun-adapters";
+import type { HostTool } from "@parcha/agentrun-kernel";
 import { ArchilCodingTools, type DurableRun } from "@parcha/pi-durable-disk";
 import { FETCH_PAGE_TOOL } from "./fetch-page.js";
 import { WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";

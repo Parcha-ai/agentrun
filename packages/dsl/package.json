@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
-    "agentrun": "./dist/cli.js"
+    "agentrun-dsl": "./dist/cli.js"
   },
   "exports": {
     ".": {

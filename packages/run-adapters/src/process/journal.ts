@@ -220,7 +220,7 @@ export class NativeJournal {
     const batch: JournalBatch = { v: 1, n, streams };
     const writer = this.writer;
     const out = await this.ctx.effect(journalKey(n), { name: JOURNAL, replay: 'safe', input: batch }, async () => ({ n, records: queued.length, writer }));
-    if ((out as { writer?: unknown } | undefined)?.writer !== writer) throw new Restart(`agentrun-adapters: journal batch ${n} was written by another drive`);
+    if ((out as { writer?: unknown } | undefined)?.writer !== writer) throw new Restart(`agentrun-kernel: journal batch ${n} was written by another drive`);
     this.n = n + 1;
   }
 
@@ -230,7 +230,7 @@ export class NativeJournal {
     // The transcript is what UIs read from the fold: it always stays inline.
     if (q.stream === TRANSCRIPT) return { ...id, data: q.data };
     const text = JSON.stringify(q.data);
-    if (text === undefined) throw new TypeError(`agentrun-adapters: journal record on ${q.stream} is not JSON`);
+    if (text === undefined) throw new TypeError(`agentrun-kernel: journal record on ${q.stream} is not JSON`);
     const bytes = encoder.encode(text).length;
     if (bytes <= this.inlineMax) return { ...id, data: q.data };
     const hash = await sha256Hex(text);
@@ -259,7 +259,7 @@ export async function readJournal<T = unknown>(
   return records.map((r) => {
     if (!r.blob) return r;
     const text = blobs.get(r.blob);
-    if (text === undefined) throw new Fatal(`agentrun-adapters: journal blob ${r.blob} (${r.stream} #${r.seq}) is missing from ${blobStreamName(ctx.runId)}`);
+    if (text === undefined) throw new Fatal(`agentrun-kernel: journal blob ${r.blob} (${r.stream} #${r.seq}) is missing from ${blobStreamName(ctx.runId)}`);
     return { ...r, data: JSON.parse(text) as T };
   });
 }
