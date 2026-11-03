@@ -75,21 +75,23 @@ export async function checkKey(row: { id: string; label: string }, key: string, 
   if (!check) return notChecked(`${row.label} has no call that costs nothing to check a key with`);
   if (!fetcher) return notChecked(`This server runs on faux providers and has no fake ${row.label} to check the key with`);
   const { url, ...init } = check(key, env);
-  let status: number;
-  let text = "";
+  let res: Response;
   try {
-    const res = await fetcher(url, { ...init, signal: AbortSignal.timeout(ms) });
-    status = res.status;
-    if (res.ok) await res.body?.cancel();
-    else text = await res.text();
+    res = await fetcher(url, { ...init, signal: AbortSignal.timeout(ms) });
   } catch (error) {
     if ((error as Error)?.name === "TimeoutError") return notChecked(`${row.label} did not answer in ${ms / 1000} s`);
     const cause = (error as { cause?: { code?: unknown } })?.cause?.code;
     const why = quoted(typeof cause === "string" ? cause : String((error as Error)?.message ?? error), key);
     return notChecked(`${row.label} could not be reached${why ? ` (${why})` : ""}`);
   }
-  if (status >= 200 && status < 300) return { state: "accepted", at };
-  const said = quoted(text, key);
+  const { status } = res;
+  if (status >= 200 && status < 300) {
+    await res.body?.cancel().catch(() => undefined);
+    return { state: "accepted", at };
+  }
+  // The status decides. The provider's words only add to it: quoted when its body reads in time, else not at all, so a
+  // 401 whose body is cut off or stalls past the deadline still refuses the key.
+  const said = quoted(await res.text().catch(() => ""), key);
   if (status === 401) return { state: "refused", message: `${row.label} refused this key (401${said ? `: ${said}` : ""})` };
   if (status === 403) return notChecked(`${row.label} would not answer the check (403${said ? `: ${said}` : ""}); the key may still work for its tools`);
   return notChecked(`${row.label} answered ${status}${said ? ` (${said})` : ""}`);
