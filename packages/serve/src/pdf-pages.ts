@@ -1,11 +1,13 @@
 // pdf_pages: a document's first pages as PNG files in the run's work directory, and its text, for a workflow's call node
 // `via: "tool"`. The document is a file name under the server's documents directory (`--documents`,
 // AGENTRUN_SERVE_DOCUMENTS) or the run's work directory, confined to it. Pages are drawn by poppler's pdftoppm into
-// `work/pages/<doc-stem>/<dpi>/<n>.png`, at the asked dpi lowered so a page's long side stays within MAX_PAGE_PX (Jev's
-// image limit); the dpi used is in the answer and the path, so a draw at another dpi never replaces an image an earlier
-// receipt points to. A PNG or JPEG passes through as its one page, scaled down with ffmpeg when a side is over the cap. The image refs it answers are work-relative, the
-// form a decision node's `images` takes.
+// `work/pages/<stem>/<dpi>/<n>.png`, the stem the document's own (pagesStem), at the asked dpi lowered so a page's long
+// side stays within MAX_PAGE_PX (Jev's image limit); the dpi used is in the answer and the path, so a draw at another
+// dpi never replaces an image an earlier receipt points to. A PNG or JPEG passes through as its one page, scaled down
+// with ffmpeg when a side is over the cap. The image refs it answers are work-relative, the form a decision node's
+// `images` takes.
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -38,16 +40,35 @@ async function confined(base: string, path: string): Promise<string | undefined>
   return (await stat(real)).isFile() ? real : undefined;
 }
 
-/** Where a document named `path` is: the documents directory first, then the run's work directory. */
-export async function documentPath(path: unknown, where: { work: string; documents?: string | undefined }): Promise<string> {
+type Located = { file: string; base: "documents" | "work"; rel: string };
+
+/** Where a document named `path` is, the documents directory first, then the run's work directory: the file, which of
+ *  the two holds it, and its path below that one, links resolved (`confined`'s check, so never outside it). */
+async function locate(path: unknown, where: { work: string; documents?: string | undefined }): Promise<Located> {
   if (typeof path !== "string" || !path.trim()) throw new Error("pdf_pages: path is a file name");
   if (isAbsolute(path)) throw new Error(`pdf_pages: path ${path} is absolute; name a file under the documents or the run's work directory`);
-  for (const base of [where.documents, where.work]) {
-    if (!base) continue;
-    const found = await confined(base, path);
-    if (found) return found;
+  for (const [base, dir] of [["documents", where.documents], ["work", where.work]] as const) {
+    if (!dir) continue;
+    const found = await confined(dir, path);
+    if (found) return { file: found, base, rel: relative(await realpath(dir), found) };
   }
   throw new Error(`pdf_pages: no file ${path} under the documents${where.documents ? "" : " (this server has no --documents)"} or the run's work directory`);
+}
+
+/** Where a document named `path` is: the documents directory first, then the run's work directory. */
+export async function documentPath(path: unknown, where: { work: string; documents?: string | undefined }): Promise<string> {
+  return (await locate(path, where)).file;
+}
+
+/** The one directory name a document's pages are drawn under, in `work/pages/`: its path below the documents (or work)
+ *  directory without the extension, each run of other characters than letters, digits, `.`, `_` and `-` (a `/` too)
+ *  made `_`, cut to its last 48 characters with no leading dot, then `-` and 12 hex characters of the sha256 of which
+ *  directory and that path. So two documents of one file name in different folders never share a page, the same file
+ *  always draws under the same name (through a link too), and the name is never a separator, `.` or `..`. */
+export function pagesStem({ base, rel }: Pick<Located, "base" | "rel">): string {
+  const path = rel.split(sep).join("/");
+  const readable = path.slice(0, path.length - extname(path).length).replace(/[^A-Za-z0-9._-]+/g, "_").slice(-48).replace(/^\.+/, "") || "doc";
+  return `${readable}-${createHash("sha256").update(`${base}:${path}`).digest("hex").slice(0, 12)}`;
 }
 
 const integer = (value: unknown, fallback: number, min: number, max: number, name: string) => {
@@ -58,12 +79,13 @@ const integer = (value: unknown, fallback: number, min: number, max: number, nam
 
 /** The pages and text of the document `args.path`, drawn into `where.work`. */
 export async function pdfPages(args: Record<string, unknown>, where: { work: string; documents?: string | undefined; signal?: AbortSignal }): Promise<PdfPages> {
-  const file = await documentPath(args.path, where);
+  const located = await locate(args.path, where);
+  const file = located.file;
   const maxPages = integer(args.maxPages, 3, 1, MAX_PAGES, "maxPages");
   const dpi = integer(args.dpi, 110, 36, 300, "dpi");
   const name = basename(file);
   const ext = extname(name).toLowerCase();
-  const stem = basename(name, extname(name)).replace(/[^A-Za-z0-9._-]+/g, "_") || "doc";
+  const stem = pagesStem(located);
   const signal = where.signal;
   if ([".png", ".jpg", ".jpeg"].includes(ext)) {
     const dir = join(where.work, "pages", stem);

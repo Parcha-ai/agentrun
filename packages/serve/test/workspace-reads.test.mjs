@@ -52,20 +52,6 @@ function swapOnCheck(t, work, name, target) {
   return () => fired;
 }
 
-test("the file view refuses a link the agent planted, to a file or a directory of the server's, and lists neither", { timeout: 60_000 }, async (t) => {
-  const server = await served(t);
-  await symlink(server.secret, join(server.work, "x"));
-  await symlink(server.data, join(server.work, "d"));
-  await writeFile(join(server.work, "ok.txt"), "fine");
-  for (const path of ["/x", "/d/server-own.txt"]) {
-    const res = await get(server, path);
-    assert.equal(res.status, 404, path);
-    assert.ok(!holds(res), `no byte of the target: ${path}`);
-  }
-  const list = await get(server, "");
-  assert.deepEqual(list.body.files.map((f) => f.path), ["ok.txt"], "only the regular file is listed");
-});
-
 test("the file view refuses a file hard-linked into work/, and does not list it", { timeout: 60_000 }, async (t) => {
   const server = await served(t);
   await link(server.secret, join(server.work, "h"));
@@ -117,19 +103,6 @@ test("a skill's SKILL.md swapped for a link after its check is refused", async (
   assert.equal(fired(), 1, "the read was checked by the confinement");
 });
 
-test("openWorkFile and walkWork read only regular files with one link, reached through no link", async (t) => {
-  const server = await served(t);
-  await writeFile(join(server.work, "one.txt"), "1");
-  await mkdir(join(server.work, "in"));
-  await symlink(join(server.work, "one.txt"), join(server.work, "in", "back"));
-  const { handle } = await openWorkFile(server.work, "one.txt");
-  await handle.close();
-  await assert.rejects(openWorkFile(server.work, "in/back"), /in\/back/, "a link to a file inside work/ is still a link");
-  const seen = [];
-  await walkWork(server.work, (path) => void seen.push(path));
-  assert.deepEqual(seen.sort(), ["in", "one.txt"]);
-});
-
 test("serve can require that the kernel refuses hard links to files the linker cannot write", () => {
   assert.doesNotThrow(() => assertHardlinkProtection(() => "1\n"));
   assert.throws(() => assertHardlinkProtection(() => "0\n"), /protected_hardlinks is 0/);
@@ -144,14 +117,17 @@ test("each entry left out says why: a link, not a regular file, another hard lin
   await symlink(server.secret, join(server.work, "ln"));
   await link(server.secret, join(server.work, "hard"));
   execFileSync("mkfifo", [join(server.work, "pipe")]);
+  // A link to a file inside work/ is still a link.
+  await mkdir(join(server.work, "in"));
+  await symlink(join(server.work, "small.txt"), join(server.work, "in", "back"));
   const refused = [];
   const seen = [];
   await walkWork(server.work, (path) => void seen.push(path), { refused: (path, reason) => void refused.push([path, reason]) });
-  assert.deepEqual(seen, ["small.txt"]);
-  assert.deepEqual(refused.sort(), [["hard", "hard_link"], ["ln", "link"], ["pipe", "not_regular"]]);
+  assert.deepEqual(seen.sort(), ["in", "small.txt"]);
+  assert.deepEqual(refused.sort(), [["hard", "hard_link"], ["in/back", "link"], ["ln", "link"], ["pipe", "not_regular"]]);
   assert.equal((await readWorkBytes(server.work, "small.txt", { maxBytes: 5 })).toString(), "12345");
   await assert.rejects(readWorkBytes(server.work, "small.txt", { maxBytes: 4 }), (error) => error.reason === "over_cap");
-  for (const [path, reason] of [["ln", "link"], ["hard", "hard_link"], ["pipe", "not_regular"], ["absent", "missing"]]) {
+  for (const [path, reason] of [["ln", "link"], ["in/back", "link"], ["hard", "hard_link"], ["pipe", "not_regular"], ["absent", "missing"]]) {
     await assert.rejects(openWorkFile(server.work, path), (error) => error.reason === reason, `${path}: ${reason}`);
   }
 });
@@ -256,14 +232,6 @@ test("work/ itself unreadable is no working copy: the walk throws, never reads a
   } finally {
     await chmod(server.work, 0o700);
   }
-});
-
-test("a capped read refuses a file grown past its cap without reading it whole", async (t) => {
-  const { readWorkBytes } = await import("../dist/workspace.js");
-  const server = await served(t);
-  await writeFile(join(server.work, "big.bin"), Buffer.alloc(64, 1));
-  await assert.rejects(readWorkBytes(server.work, "big.bin", { maxBytes: 63 }), (error) => error.reason === "over_cap");
-  assert.equal((await readWorkBytes(server.work, "big.bin", { maxBytes: 64 })).length, 64);
 });
 
 /** Sets one test seam for this test only. */

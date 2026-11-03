@@ -13,13 +13,13 @@ npm install -g @earendil-works/pi-coding-agent@1.3.0
 Then, in your project:
 
 ```sh
-pi install npm:@parcha/agentrun-pi@beta -l
+pi install npm:@parcha/agentrun-pi@latest -l
 pi --offline
 ```
 
 `pi --offline` opens Pi's terminal interface, so run it in an interactive terminal; with no terminal attached it prints nothing and exits. `-l` writes project settings in `.pi/settings.json`. Omit it to install for all your Pi sessions. `--offline` skips startup downloads; it does not disable model calls. No AgentRun checkout or build is needed.
 
-If `pi install ... -l` stops with `Project is not trusted. Use --approve to modify local package config.`, the project is not yet trusted in Pi. Add `--approve` to the install line: `pi install npm:@parcha/agentrun-pi@beta -l --approve`.
+If `pi install ... -l` stops with `Project is not trusted. Use --approve to modify local package config.`, the project is not yet trusted in Pi. Add `--approve` to the install line: `pi install npm:@parcha/agentrun-pi@latest -l --approve`.
 
 Pi starts with `read`, `bash`, `edit` and `write` active. AgentRun's read-only tools are `read`, `grep`, `find` and `ls`, and a workflow can use only the tools that are active. To use all four read-only tools, start Pi with `pi --tools read,grep,find,ls,agentrun`. Keep `agentrun` in the list. Without it, Pi disables the AgentRun tool, and the session shows a warning with the line to use. A workflow that needs a tool which is not active is refused, and the refusal names that tool.
 
@@ -38,10 +38,10 @@ Try the bundled example inside Pi:
 No Pi session at hand? The same scripted workflow runs from a shell, with no key and no network:
 
 ```sh
-npx @parcha/agentrun-pi@beta demo
+npx @parcha/agentrun-pi@latest demo
 ```
 
-It prints each sub-question with its answer, then `Status: complete`, the answer and the scripted call counts, and exits 0. `npx @parcha/agentrun-pi@beta demo empty` runs the missing-evidence path and prints `Status: escalated`.
+It prints each sub-question with its answer, then `Status: complete`, the answer and the scripted call counts, and exits 0. `npx @parcha/agentrun-pi@latest demo empty` runs the missing-evidence path and prints `Status: escalated`.
 
 The demo shows the workflow graph, progress, and a completed result with call counts. It uses scripted responses over fictional sources. It makes no model calls and does not test model quality. Run `/agentrun status` to check the loaded skill and Pi host version. Status names the supported range, 1.0.4 to below 1.4, and flags a host outside it without blocking it. Missing Pi or Jev access does not prevent the scripted demo. To repeat it, run `/agentrun run` or `/agentrun demo`. A scripted demo stays scripted on rerun, including its missing-evidence path. Use `/agentrun demo live` to switch to real Pi and Jev calls. Workflows authored by Pi use real adapters.
 
@@ -256,7 +256,7 @@ The host owns `checkAgainstYourFixtures`: return diagnostics, or `[]` to accept.
 
 With `rubricSections`, every supplied section must appear on every generated LLM node, including child workflows. The author conservatively rejects Jev nodes, semantic `ask` predicates, and `verify` clauses under that policy; those need a separately reviewed question contract. Schema properties named `node`, `verify`, or `predicate` remain ordinary data. Supply the authoritative rubric as `deps.sop` when executing the candidate.
 
-The package also installs a command line, `agentrun-pi`. Try it from an empty directory after `npm install @parcha/agentrun-pi@beta`:
+The package also installs a command line, `agentrun-pi`. Try it from an empty directory after `npm install @parcha/agentrun-pi@latest`:
 
 ```sh
 npx agentrun-pi --help

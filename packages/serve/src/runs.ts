@@ -36,6 +36,7 @@ import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
+import { firstMessage } from "./run-manifest.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, storedPlace } from "./place.js";
@@ -183,6 +184,10 @@ export type Run = {
   cancel: boolean;
   /** Set when the run has answered or failed and is being let go; the outcome it gets. */
   finishing?: Status;
+  /** A stop on its way: from its mark to its abort's answer, or a server's abort of a saved stop's turn that outlived the
+   *  server before it (finishStop). The abort withdraws every input queued behind that turn, so a message meanwhile waits
+   *  for it (stopAnswered). */
+  stopping?: true;
   endedAt?: string;
   outcome?: Status;
   error?: RunError;
@@ -190,8 +195,9 @@ export type Run = {
   costUsd?: number | null;
   /** A workflow run's decisions' cost, from its receipts once its end is read: null when one is unknown. */
   decisionCost?: number | null;
-  /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). */
-  decisions?: Record<string, unknown>[];
+  /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). Null
+   *  when they cannot be read: its timeline's usage row then reads unknown. */
+  decisions?: Record<string, unknown>[] | null;
   /** How many of a workflow run's llm calls' answers its node log held when its rows were last read: their cost is in its
    *  rows (each a REQUEST_COST entry, committed before its answer is logged), so its graph counts only the later ones. */
   llmRead?: number;
@@ -492,6 +498,10 @@ export class Runs {
   private learningOff?: string;
   constructor(private readonly options: RunsOptions) {}
 
+  /** A test's seam (startServe's `beforeAbort`): awaited by a stop between its mark and its abort, so a test can hold a
+   *  stop in flight there. */
+  beforeAbort?: (runId: string) => Promise<void> | void;
+
   private get store() {
     return this.options.agents.store;
   }
@@ -630,8 +640,9 @@ export class Runs {
     const entries = read.flatMap((r) => (run.kind === "workflow" || r.conversation === root ? [r.entry] : []));
     if (run.kind === "workflow") {
       const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
-      // Decisions it cannot read add no rows: the run's cost read says unknown (readDecisionCost).
-      try { run.decisions = durableDecisions(file); } catch { run.decisions = undefined; }
+      // Decisions it cannot read add no rows, and leave the served usage row's total unknown, as the run's cost read
+      // does (readDecisionCost): never its model nodes' total alone.
+      try { run.decisions = durableDecisions(file); } catch { run.decisions = null; }
       run.llmRead = (await readNodeLog(run.dir)).filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done").length;
     }
     // Its decision requests count with its model requests: each receipt's tokens, or unmetered without them.
@@ -651,7 +662,7 @@ export class Runs {
     for (const row of arrived) run.users.add(row.id);
     run.submitted = Math.max(0, run.submitted - arrived.length);
     // The decisions' rows are the served view's only: the run's own rows, which its cost is read from, stay its model nodes'.
-    if (run.log.sync(run.decisions?.length ? withDecisions(run.rows, run.decisions) : run.rows, keep)) run.updatedAt = new Date().toISOString();
+    if (run.log.sync(run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions), keep)) run.updatedAt = new Date().toISOString();
     this.refresh(run);
   }
 
@@ -893,7 +904,12 @@ export class Runs {
         this.take(run, rows, keepCommitted(run.live, rows, reducer.isLive));
         if (event === "snapshot" && run.finishStop) {
           run.finishStop = false;
-          if (run.working && stopped(run) && run.submitted === 0) void this.abortTurn(run);
+          if (run.working && stopped(run) && run.submitted === 0) {
+            // The run reads stopped already, so a message sent now would go in behind the turn this abort ends, and be
+            // withdrawn with it: it waits for the abort, as for a stop in flight.
+            run.stopping = true;
+            void this.abortTurn(run).catch(() => undefined).finally(() => (run.stopping = undefined));
+          }
         }
       }
     }
@@ -1103,7 +1119,8 @@ export class Runs {
     if (run.kind !== "agentic" || usersOf(run.rows) > 0 || typeof first !== "string") return;
     run.submitted = 1;
     this.refresh(run);
-    void this.submit(run, first, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
+    // As it was first sent: the run never took it, so its work/inputs/ is as its start left it.
+    void firstMessage(first, join(run.dir, "work")).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS)).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
   }
 
   /** After the run's process exited, or was found gone: its rows from its released store, then, when it is over, its
@@ -1437,7 +1454,8 @@ export class Runs {
     }
     this.launch(run);
     if (revision.kind === "workflow") return run;
-    void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => {
+    // The first message names the files given to the run (run-manifest.ts), on every harness.
+    void firstMessage(options.input.content as string, started.workspace).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS)).catch((error: Error) => {
       run.submitted = 0;
       // The run ended before its first message reached it (a process that crashed at its start): how it ended stands.
       if (run.outcome || run.finishing || run.cancel) return;
@@ -1488,16 +1506,26 @@ export class Runs {
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
-    // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
-    // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
-    if (run.finishing && !run.outcome) await this.endWritten(run);
-    if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
+    let steers: boolean;
+    // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
+    // to the count below nothing awaits, so no stop can begin in between.
+    do {
+      // A stop in flight is answered first. Sent between its mark and its abort, a message would read the run stopped, go
+      // to the turn the abort is cutting, and be dropped with it, its row never coming.
+      if (run.stopping) await this.stopAnswered(run);
+      // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
+      // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
+      if (run.finishing && !run.outcome) await this.endWritten(run);
+      if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
+      // Its harness, read from the agent store at the run's first message.
+      steers = await this.steers(run);
+    } while (run.stopping);
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
     // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
     // the same run, which the contract calls follow_up, never a steer it does not do.
     const working = status === "queued" || (status === "working" && state === "working");
-    const mode = working ? ((await this.steers(run)) ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
+    const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
     run.submitted++;
     this.refresh(run);
@@ -1509,6 +1537,13 @@ export class Runs {
       throw error;
     }
     return { mode, messageId };
+  }
+
+  /** Waits, up to a request's deadline, for a stop in flight to answer. */
+  private async stopAnswered(run: Run): Promise<void> {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.stopping; await sleep(50)) {
+      if (Date.now() > deadline) throw new ApiError("unavailable", "The run is being stopped; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+    }
   }
 
   /** Waits, up to a request's deadline, for the end of a run that is finishing to be written. */
@@ -1572,12 +1607,23 @@ export class Runs {
     if (run.kind !== "workflow") await this.caughtUp(run);
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
+    run.stopping = true;
+    try {
+      return await this.stopTurn(run);
+    } finally {
+      run.stopping = undefined;
+    }
+  }
+
+  /** stop()'s mark and abort, once it took the stop. */
+  private async stopTurn(run: Run): Promise<boolean> {
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.
     const before = { stopped_at: run.meta.stopped_at, stopped_after: run.meta.stopped_after };
     delete run.meta.stopped_at;
     delete run.meta.stopped_after;
     Object.assign(run.meta, stopMark(run.rows));
     await this.saveMeta(run).catch((error: Error) => warn(run.id, `its stop is not saved, so a restart will not keep it: ${error.message}`));
+    await this.beforeAbort?.(run.id);
     const answer = await this.toDoor(run, "/abort", {}).catch(() => null);
     if (!answer || answer.status >= 400) {
       if (before.stopped_at === undefined) delete run.meta.stopped_at;
