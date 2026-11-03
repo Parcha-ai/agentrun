@@ -3,7 +3,7 @@
 // command on this machine, the container's mount targets mapped to their sources and its `--env` its whole environment
 // (with a TMPDIR of its own), so pi-transport's box environment works over it. Like Docker's, a killed `exec` client
 // leaves its command running. With `fail-run` in the state directory, `run` leaves a running container behind and fails,
-// as a client cut off while the daemon made the container would.
+// as a client cut off while the daemon made the container would. With `rm-hold` there, an `rm` waits until it is gone.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -80,11 +80,17 @@ switch (args[0]) {
   }
   case "rm": {
     const id = args.at(-1);
-    if (!read(id)) fail(`Error response from daemon: No such container: ${id}`);
-    rmSync(file(id));
-    done(`${id}\n`);
+    // A slow remove, as Docker's can be (a box's processes stopped first): it holds while `rm-hold` is there.
+    const remove = () => {
+      if (existsSync(join(state, "rm-hold"))) return void setTimeout(remove, 25);
+      if (!read(id)) fail(`Error response from daemon: No such container: ${id}`);
+      rmSync(file(id));
+      done(`${id}\n`);
+    };
+    remove();
     break;
   }
+
   case "exec": {
     let i = 1;
     let workdir;

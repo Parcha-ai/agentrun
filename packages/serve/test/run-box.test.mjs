@@ -11,7 +11,7 @@ import { mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { boxMounts, mountSource } from "../dist/run-box.js";
+import { BOX_NONE_FILE, boxMounts, mountSource } from "../dist/run-box.js";
 import { startServe } from "../dist/index.js";
 import { client, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -156,6 +156,10 @@ test("fake docker: a run's box is found by its label and taken over, its left co
   const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: WORK, isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run" };
   await mkdir(join(docker.state, "containers"), { recursive: true });
   await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, env: ["LANG=C.UTF-8", "HOME=/tmp"], mounts: [{ source: work, target: WORK }], workdir: WORK }));
+  // That process removed the server's `box-none` before its create: this one looks by the label. (A run a server before
+  // that file started has none either, and is looked for the same way.)
+  assert.equal(existsSync(join(data, "runs", runId, BOX_NONE_FILE)), true, "a new sandbox run starts with box-none");
+  await rm(join(data, "runs", runId, BOX_NONE_FILE));
   await writeFile(go, "");
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error]), [["bash", false]]);
@@ -164,6 +168,75 @@ test("fake docker: a run's box is found by its label and taken over, its left co
   const execs = docker.calls().filter((args) => args[0] === "exec");
   assert.ok(execs[0].join(" ").includes(".pi-transport") && execs[0].join(" ").includes("kill -KILL"), "the first command kills what the earlier process left");
   await until(() => docker.removed().includes(id) && docker.gone(id), "the destroy at the run's end");
+});
+
+test("fake docker: a new run's first box is made without looking for one: no `docker ps` for its label and no inspect before its create, which removes the server's box-none so a later process looks", { timeout: 90_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE });
+  await boxedAgent(api);
+  const runId = await probe(api, [{ tool: "bash", args: { command: "printf fresh > out.txt" } }]);
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error]), [["bash", false]]);
+  const calls = docker.calls();
+  const create = calls.findIndex((args) => args[0] === "run");
+  assert.ok(create >= 0, "a box was made");
+  const before = calls.slice(0, create);
+  assert.deepEqual(before.filter((args) => args[0] === "ps" && args.includes(`label=agentrun.run=${runId}`)), [], "no listing by the run's label");
+  assert.deepEqual(before.filter((args) => args[0] === "inspect"), [], "no inspect");
+  assert.equal(existsSync(join(data, "runs", runId, BOX_NONE_FILE)), false, "box-none is gone once the run made a box");
+  assert.equal(docker.runs().length, 1);
+});
+
+/** An agent whose run makes its box, then asks a person and waits; and the run, once it waits. */
+async function waitingRun(api) {
+  const made = await api("POST", "/agents", { definition: { id: "asking", name: "asking", instructions: "Probe.", place: SANDBOX, tools: ["bash", "ask_person"] } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const run = await api("POST", "/agents/asking/runs", { input: { content: JSON.stringify({ probe: [{ tool: "bash", args: { command: "true" } }, { tool: "ask_person", args: { question: "Go on?" } }] }) } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["input_required"], { deadlineMs: 60_000 });
+  return run.body.run_id;
+}
+/** Whether `promise` is still pending after `ms`. */
+const pendingAfter = (promise, ms) => Promise.race([promise.then(() => false, () => false), new Promise((resolve) => setTimeout(() => resolve(true), ms))]);
+
+test("fake docker: archiving a run that waits answers before its box is destroyed, and an unarchive waits for that destroy, so no new work starts in a box being removed", { timeout: 90_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api } = await serve(t, { faux: PROBE });
+  const runId = await waitingRun(api);
+  const [box] = await docker.containers();
+  assert.ok(box, "the run holds its box while it waits");
+  await writeFile(join(docker.state, "rm-hold"), "");
+  const started = Date.now();
+  const archived = await api("POST", `/runs/${runId}/archive`);
+  assert.equal(archived.status, 200, JSON.stringify(archived.body));
+  assert.ok(archived.body.archived_at, "the answer is the archived run");
+  assert.ok((await docker.containers()).some((c) => c.Id === box.Id), "answered while the box's destroy is still held");
+  assert.ok(Date.now() - started < 5_000, `answered in ${Date.now() - started} ms, not after the destroy`);
+  await until(() => docker.removed().includes(box.Id), "the destroy's call");
+  const unarchive = api("POST", `/runs/${runId}/unarchive`);
+  assert.equal(await pendingAfter(unarchive, 600), true, "the unarchive waits while the destroy is held");
+  await rm(join(docker.state, "rm-hold"));
+  const unarchived = await unarchive;
+  assert.equal(unarchived.status, 200, JSON.stringify(unarchived.body));
+  assert.equal(unarchived.body.archived_at, null);
+  assert.ok(!(await docker.containers()).some((c) => c.Id === box.Id), "the box was gone before the run took messages again");
+});
+
+test("fake docker: the server's close waits for a box destroy an archive began", { timeout: 90_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const data = join(await scratch(t), "agents");
+  const server = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  const api = client(server.baseUrl, server.token);
+  await waitingRun(api);
+  const [box] = await docker.containers();
+  await writeFile(join(docker.state, "rm-hold"), "");
+  assert.equal((await api("POST", `/runs/${(await api("GET", "/runs")).body.runs[0].run_id}/archive`)).status, 200);
+  await until(() => docker.removed().includes(box.Id), "the destroy's call");
+  const closing = server.close();
+  assert.equal(await pendingAfter(closing, 600), true, "the close waits while the destroy is held");
+  await rm(join(docker.state, "rm-hold"));
+  await closing;
+  assert.ok(!(await docker.containers()).some((c) => c.Id === box.Id), "the box is gone once the close has ended");
 });
 
 test("fake docker: a bash timeout kills the command's group in the box, though the killed docker exec client left it running", { timeout: 90_000 }, async (t) => {

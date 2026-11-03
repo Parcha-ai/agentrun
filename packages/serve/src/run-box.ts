@@ -1,10 +1,12 @@
 // A sandbox run's box: one per run, made on its first tool call and labelled with the run's id, so the label is the
 // record. A run's process that starts again finds it by that label and first kills the commands the process before it
-// left running. Serve destroys it at every settle (a cancel included) and at archive, and its start sweeps the boxes of
-// runs that have ended. A box gets the run's work/ only, bound at BOX_WORK, a fixed environment (never this process's,
+// left running; a run the server started knowing it has none (BOX_NONE_FILE in its directory) makes its first box
+// without looking.
+// Serve destroys it at every settle (a cancel included) and at archive, and its start sweeps the boxes of runs that have
+// ended. A box gets the run's work/ only, bound at BOX_WORK, a fixed environment (never this process's,
 // so no key or token enters it), no network, and this server's user. pi-transport is an optional peer of this package:
 // it is loaded only for a run whose place is a box.
-import { lstat, realpath } from "node:fs/promises";
+import { access, lstat, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
@@ -19,6 +21,11 @@ export const RUN_LABEL = "agentrun.run";
 export const KIND_LABEL = "agentrun.box";
 /** The whole environment of a box's programs: a constant, never this process's. */
 export const BOX_ENV: Readonly<Record<string, string>> = Object.freeze({ LANG: "C.UTF-8", HOME: "/tmp" });
+/** Written in a sandbox run's directory by the server that starts it (runs.ts), which knows it has no box: its first
+ *  create skips the listing by label (a `docker ps`, and an inspect per box it lists), and removes the file before it, so
+ *  a process of the run that starts again lists its boxes as before. A run without it, one a server before this file
+ *  started among them, always lists first. */
+export const BOX_NONE_FILE = "box-none";
 /** How long a box lives whatever happens to the server: a bound on a leaked box, never its clean end. */
 export const BOX_LIFETIME_MS = 24 * 60 * 60_000;
 /** A bash command's timeout when the model names none. */
@@ -76,12 +83,15 @@ export function runBox(provider: () => Promise<BoxProvider>, run: { id: string; 
   const open = async (context: Context): Promise<ExecutionEnv> => {
     const boxes = await provider();
     const { boxEnv, endLeftCommands } = await import("@parcha/pi-transport/hands");
-    let box = await attachRunBox(boxes, run.id, context);
+    const none = join(run.dir, BOX_NONE_FILE);
+    let box = (await access(none).then(() => true, () => false)) ? undefined : await attachRunBox(boxes, run.id, context);
     if (box) {
       // A process before this one left it: what it still runs is killed first, since its calls were answered interrupted.
       const ended = await endLeftCommands(box, context);
       if (!ended.ok) throw new Error(`the run's box could not be taken over: ${ended.error.message}`);
     } else {
+      // Before the create: a process that dies during it leaves no file, so the next one looks for what it made.
+      await rm(none, { force: true });
       const spec: BoxSpec = {
         env: BOX_ENV, workspace: agentWorkDir(run.dir, run.place), mounts: await boxMounts(run.root, run.dir, run.place),
         labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run" }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,

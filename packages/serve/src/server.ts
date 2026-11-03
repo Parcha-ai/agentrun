@@ -1155,6 +1155,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await needAgent(id);
         await agents.setArchived("agent", id, found.name === "archiveAgent");
         if (found.name === "archiveAgent") await runs.archived();
+        else await runs.unarchived((run) => run.agentId === id);
         const entry = await needAgent(id);
         return send(res, 200, agentView(entry), { etag: etagOf(entry) });
       }
@@ -1207,6 +1208,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const run = await needRun(id);
         await agents.setArchived("run", run.id, found.name === "archiveRun");
         if (found.name === "archiveRun") await runs.archived();
+        else await runs.unarchived((r) => r.id === run.id);
         return send(res, 200, await runs.view(run));
       }
       case "listRunFiles": {

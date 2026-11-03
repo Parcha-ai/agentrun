@@ -280,10 +280,14 @@ go through `work/` by path.
   command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
   shell in `work/`.
 - The container is labelled `agentrun.run=<run id>`, and the label is its only record. A run's process that starts again
-  after a crash finds it by the label and first kills the commands the dead process left running. It is destroyed when
-  the run ends (completed, failed or cancelled: a follow-up after a completed run gets a fresh one, with the same
-  `work/`) and when the run is archived. A start destroys every such container whose run has ended or is archived; one
-  of a run this data directory does not know is left to its 24-hour lifetime.
+  after a crash finds it by the label and first kills the commands the dead process left running. A new run makes its
+  first without looking (no `docker ps`, no inspect): the server that starts it writes a `box-none` file in its
+  directory, which the run removes before that create, so any later process of the run looks by the label, as does any
+  run a server before this one started. It is destroyed when the run ends (completed, failed or cancelled: a follow-up
+  after a completed run gets a fresh one, with the same `work/`) and when the run is archived, after the archive has
+  answered; an unarchive waits for that destroy, so no new work starts in a box being removed. A start destroys every
+  such container whose run has ended or is archived; one of a run this data directory does not know is left to its
+  24-hour lifetime.
 
 ### The box's image
 

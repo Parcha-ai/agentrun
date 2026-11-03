@@ -41,7 +41,7 @@ import { firstMessage } from "./run-manifest.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, storedPlace } from "./place.js";
-import { destroyRunBoxes, FAUX_BOX_ENV, sweepRunBoxes } from "./run-box.js";
+import { BOX_NONE_FILE, destroyRunBoxes, FAUX_BOX_ENV, sweepRunBoxes } from "./run-box.js";
 import type { BoxProvider } from "@parcha/pi-transport";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 
@@ -212,6 +212,8 @@ export type Run = {
   preparing?: Promise<void>;
   settled: boolean;
   settling?: Promise<void>;
+  /** The destroy of its box an archive began, on the settle chain: an unarchive waits for it. */
+  boxDrop?: Promise<void>;
   /** The newest write of its serve.json: one at a time, in order. */
   saving?: Promise<void>;
   /** Settles of this run not yet done: while any is, nothing starts its process again. */
@@ -807,9 +809,17 @@ export class Runs {
       if (!run) continue;
       // A run's box goes at its archive, its process live or not (an ended run's went at its end): an archived run takes
       // no message, and a call it still makes gets a fresh box, which its end or the next start's sweep destroys.
-      if (!run.outcome) await this.dropBox(run);
+      // Destroyed on the run's settle chain, never in the archive's answer: a settle after it, and the server's close, wait
+      // for it.
+      if (!run.outcome) run.settling = run.boxDrop = (run.settling ?? Promise.resolve()).then(() => this.dropBox(run));
       await this.teardown(run);
     }
+  }
+
+  /** After an unarchive: the box destroys an archive of these runs began are waited for, so a run that takes messages
+   *  again never has its box removed under new work. */
+  async unarchived(pick: (run: { id: string; agentId: string }) => boolean): Promise<void> {
+    await Promise.all([...this.runs.values()].filter((run) => run.boxDrop && pick(run)).map((run) => run.boxDrop));
   }
 
   async recover(): Promise<void> {
@@ -1393,6 +1403,8 @@ export class Runs {
   private async setUp(runId: string, dir: string, meta: RunMeta): Promise<void> {
     try {
       await writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`);
+      // A new run has no box: its first create need not look for one (run-box.ts).
+      if (meta.place?.mode === "sandbox") await writeWhole(join(dir, BOX_NONE_FILE), `${new Date().toISOString()}\n`);
     } catch (error) {
       const summary = `The run could not be set up: ${(error as Error).message}`;
       await this.options.agents.request(() => this.store.carryBack(runId, { state: "failed", summary })).catch((undo: Error) => warn(runId, `not ended after its setup failed: ${undo.message}`));
