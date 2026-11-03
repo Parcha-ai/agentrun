@@ -78,11 +78,14 @@ export function dropInert(html: string): string {
 }
 
 /** `html` cut to at most `max` characters, after the last tag that ends before the cut, so no tag is left half; at
- *  `max` itself when that tag ends more than 64 KiB before it (a page of one long text). */
+ *  `max` itself when that tag ends more than 64 KiB before it (a page of one long text), or one before it when `max`
+ *  falls between the two halves of a character written as a surrogate pair, so no half of one is left. */
 export function cutHtml(html: string, max: number): string {
   if (html.length <= max) return html;
   const gt = html.lastIndexOf(">", max - 1);
-  return html.slice(0, gt >= 0 && max - gt <= 65_536 ? gt + 1 : max);
+  let at = gt >= 0 && max - gt <= 65_536 ? gt + 1 : max;
+  if ((html.charCodeAt(at - 1) & 0xfc00) === 0xd800 && (html.charCodeAt(at) & 0xfc00) === 0xdc00) at -= 1;
+  return html.slice(0, at);
 }
 
 /** Tags whose start and end each begin a paragraph of the plain text; LINES, a line; CELLS, a cell of a row. */
