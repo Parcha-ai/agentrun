@@ -1204,11 +1204,12 @@ test("a run still waiting on the same question a day later, its message gone fro
   await until(() => hook.got.length >= 1, "the other run's end");
   await sleep(300);
   assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).type), ["run.ended"], "the same wait is not sent again");
-  // A new question of the run is a wait of its own; its end clears the wait.
+  // A new question of the run is a wait of its own, and replaces the last; then the run ends.
   webhooks.emit("run.needs_input", waiting, "row_12");
-  webhooks.emit("run.ended", { ...waiting, status: "completed", pending: undefined }, new Date().toISOString());
+  const end = new Date().toISOString();
+  webhooks.emit("run.ended", { ...waiting, status: "completed", pending: undefined }, end);
   await until(() => hook.got.length >= 3, "the new wait and the end");
   await sleep(300);
   assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).type), ["run.ended", "run.needs_input", "run.ended"]);
-  assert.equal(ledgerOf(dir).waiting.wait, undefined, "an end moves the run past its wait");
+  assert.deepEqual(ledgerOf(dir).waiting, { wait: "row_12", ended: end }, "the newest wait, and the end past it");
 });

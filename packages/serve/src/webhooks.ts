@@ -49,8 +49,9 @@ export type Emitted = "queued" | "unsaved" | "off" | "closed";
 export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "stopped" } };
 type Config = { url: string; secret: string; updated_at: string; disabled?: { at: string; reason: string } };
 type Message = { id: string; type: MessageType; body: string; created_at: string; status: "pending" | "delivered" | "failed"; attempts: number; next_at: number | null };
-/** What the outbox queued of one run: the end (its time) and the wait (its mark, and when it was queued). */
-type Noticed = { ended?: string; wait?: string; wait_at?: string };
+/** What the outbox queued of one run: its end (its time), and the wait it stands at (its mark), kept until the run moves
+ *  past it: a new wait replaces it, and it goes with the end that came after it, once that end is no longer due. */
+type Noticed = { ended?: string; wait?: string };
 export type Attempt = { webhook_id: string; type: MessageType; at: string; status_code: number | null; latency_ms: number; error: string | null; retry_at: string | null; redelivery: boolean };
 /** Whether the secret signs here: sealed, or not, for no seal key now or one it does not open under. */
 type Signing = "sealed" | "seal_key_missing" | "unreadable";
@@ -156,12 +157,13 @@ export class Webhooks {
     const config = this.config();
     if (!config || config.disabled) {
       // A wait seen while nothing is to be sent is noted here, never written for it: told again, it reads no file.
-      if (!ends) this.notices[run.run_id] = { ...seen, wait: marker, wait_at: new Date().toISOString() };
+      if (!ends) this.notices[run.run_id] = { wait: marker };
       return "off";
     }
     if (ends && !this.due(marker, config)) return "queued";
     const id = `msg_${createHash("sha256").update(`${run.run_id}\n${type}\n${marker}`).digest("hex").slice(0, 32)}`;
-    this.notices[run.run_id] = { ...seen, ...(ends ? { ended: marker } : { wait: marker, wait_at: new Date().toISOString() }) };
+    // A new wait replaces the last; one after an end is a continued run's, past that end, which the store no longer holds.
+    this.notices[run.run_id] = ends ? { ...seen, ended: marker } : { wait: marker };
     this.prune(config);
     // One an earlier server queued before it kept a ledger: recorded now, and still sent once.
     if (this.messages.some((m) => m.id === id)) this.writeOutbox();
@@ -249,15 +251,11 @@ export class Webhooks {
     return !Number.isFinite(at) || at >= Math.max(this.since, Date.parse(config.updated_at), Date.now() - END_NOTICE_WINDOW_MS);
   }
 
-  /** The ledger without what no start looks for: an end no longer due, a wait queued more than a day ago. */
+  /** The ledger without what no start looks for: a run whose end is no longer due goes, with the wait it ended past. A
+   *  wait with no end after it stays while the run stands at it, however long: never pruned by age, so the same question
+   *  is never asked again. */
   private prune(config: Config): void {
-    const day = Date.now() - END_NOTICE_WINDOW_MS;
-    for (const [id, noticed] of Object.entries(this.notices)) {
-      const ended = noticed.ended && this.due(noticed.ended, config) ? { ended: noticed.ended } : {};
-      const wait = noticed.wait && noticed.wait_at && Date.parse(noticed.wait_at) >= day ? { wait: noticed.wait, wait_at: noticed.wait_at } : {};
-      if ("ended" in ended || "wait" in wait) this.notices[id] = { ...ended, ...wait };
-      else delete this.notices[id];
-    }
+    for (const [id, noticed] of Object.entries(this.notices)) if (noticed.ended && !this.due(noticed.ended, config)) delete this.notices[id];
   }
 
   /** When this data directory's ledger began: read, or written now, once and durably, at the first start of a server

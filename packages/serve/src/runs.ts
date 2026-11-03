@@ -484,10 +484,11 @@ export class Runs {
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
+    // An ended run is ended before its rows are read, so they never make it a wait: a last row that asks is no notice.
+    if (row.state !== "running") run.outcome = STATUS_OF[row.state];
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
     if (row.state !== "running" || !this.doorOf(record)) await this.storeWhenFree(run);
     if (row.state !== "running") {
-      run.outcome = STATUS_OF[row.state];
       run.endedAt = row.endedAt;
       // An ended run the store kept no cost for has an unknown cost, never $0.
       run.costUsd = row.costUsd ?? null;
