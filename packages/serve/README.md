@@ -844,9 +844,11 @@ name, supersedes}]`, the notes its merge added, once `merged`. A name and a file
 are now, a file holding one `[redacted]`.
 
 Each run's learning end is written once to the learning ledger, `DATA/learning-usage.jsonl`, one line `{run, agent,
-state, reason, at, cost, tokens, seed_notes}` (`cost` and `tokens` the grade's, null when unknown, 0 when nothing was
-graded; `seed_notes` how many notes the run started from), after its `serve.json` holds it; a server that went between
-the two writes it at its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
+state, reason, at, cost, tokens, seed_notes, answered_at, job_cost_usd, look_back_usd}` (`cost` and `tokens` the
+grade's, null when unknown, 0 when nothing was graded; `seed_notes` how many notes the run started from; once it looked
+back, `answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then; `look_back_usd` what
+looking back cost, 0 when it did not), after its `serve.json` holds it; a server that went between the two writes it at
+its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
 `agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
 `learning` meter on `GET /usage` reads the same lines.
 
@@ -862,9 +864,10 @@ with the token, an archived agent's too:
   runs the server holds, never a run's files; and `impact` (`learning/2`), what learning changed: the agent's completed
   runs that started from at least one active note against those that started before its first note (the earlier of its
   first merge and the start of its first run that started from a note, so a person's first note counts), each side's
-  `runs`, `median_duration_s` (ended less started, as each run's row holds it) and `median_cost_usd` (of the runs whose
-  cost is known, else null), from the same rows and ledger; null unless both sides count 2 runs. An agent with no
-  folder answers `main: null`, empty pages and `impact: null`.
+  `runs`; `median_duration_s`, the time to the answer (the run's start to its job's end, before it looks back);
+  `median_cost_usd`, the job's own cost without its look-back, over the `cost_runs` whose cost is known; and
+  `median_learning_usd`, what learning itself cost a run (its look-back and its grade). From the same rows and ledger;
+  null unless both sides count 2 runs. An agent with no folder answers `main: null`, empty pages and `impact: null`.
   `GET .../learning/notes?cursor=&limit=&status=` and `GET .../learning/log?cursor=&limit=` page on, up to 200 at a
   time; a cursor reads the same commit its first page did.
 - `GET .../learning/files/{file}`: one note (or `MEMORY.md`) on `main` as `text/markdown`, with its `ETag`, the note's

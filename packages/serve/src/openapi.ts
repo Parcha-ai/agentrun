@@ -256,8 +256,10 @@ const LEARNING_COUNTS = closed({
 /** One side of an agent's impact (learning-run.ts learningImpact). */
 const IMPACT_SIDE = (side: "before" | "after") => closed({
   runs: { ...COUNT, description: side === "before" ? "The completed runs that started before the agent's first note." : "The completed runs that started from at least one active note." },
-  median_duration_s: { type: "number", minimum: 0, description: "Their median run time, ended less started as each run's row holds it (its end-of-run turn included), in seconds to a tenth." },
-  median_cost_usd: { type: ["number", "null"], minimum: 0, description: "The median cost of those whose cost is known, rounded to 1e-6; null when none is." },
+  median_duration_s: { type: "number", minimum: 0, description: "Their median time to the answer, in seconds to a tenth: from the run's start to the moment its job's answer was final, before it looks back (a run that does not look back: to its end)." },
+  median_cost_usd: { type: ["number", "null"], minimum: 0, description: "The median of the job's own cost, without its end-of-run turn, over the `cost_runs` whose cost is known, rounded to 1e-6; null when none is." },
+  cost_runs: { ...COUNT, description: "Of `runs`, those whose job's cost is known: the ones `median_cost_usd` is the median of." },
+  median_learning_usd: { type: ["number", "null"], minimum: 0, description: "The median of what learning itself cost a run, its end-of-run turn and its grade (the grade's is on GET /usage's `learning` meter), over the runs that learn whose learning cost is known, rounded to 1e-6; null when none is (a side of runs with learning off)." },
 });
 const AGENT_LEARNING = closed({
   agent: { type: "string" },

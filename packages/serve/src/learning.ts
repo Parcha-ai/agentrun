@@ -67,7 +67,13 @@ export type Learning = {
   used?: NoteUsed[]; learned?: NoteLearned[];
   /** How many active notes the run started from: its seed's, set as it is seeded (none for a seed that failed). */
   seed_notes?: number;
+  /** Once it asked its end-of-run turn: when its job's answer was final (before it looked back), and what the run had
+   *  cost by then (null when unknown); once that turn ended, what the turn itself cost (null when unknown). */
+  answered_at?: string; job_cost_usd?: number | null; look_back_usd?: number | null;
 };
+/** What a run's learning keeps whatever its learning does after: what it read, how many notes it started from, and its
+ *  answer's time and its costs (learning-run.ts setLearning). */
+export const KEPT_LEARNING = ["used", "seed_notes", "answered_at", "job_cost_usd", "look_back_usd"] as const;
 
 /** What a text or a name that leaves shows of the host's secrets now: none (secretsShown). */
 export type Shown = { text: (text: string) => string; name: (name: string) => string; holds: (text: string) => boolean };
