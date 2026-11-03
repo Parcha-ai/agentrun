@@ -2,7 +2,7 @@
 // first words, else where the session ran. Never a CLI's slash-command markup, its output or its preamble, which real
 // sessions open with (/clear, /model, /init, /resume).
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { openStore } from "@parcha/pi-durable-agent";
@@ -94,7 +94,7 @@ test("personsWords keeps the person's words around a command and drops only the 
   assert.equal(personsWords(stdout("ok")), undefined);
   assert.equal(personsWords(CAVEAT), undefined);
   assert.equal(personsWords("<thinking>is mine</thinking>"), "<thinking>is mine</thinking>");
-  assert.equal(personsWords("  Rotate   the\n keys.  "), "Rotate the keys.");
+  assert.equal(personsWords("  Rotate   the\n keys.  "), "Rotate   the\n keys.", "as written, so a cut still matches what is in it");
 });
 
 test("a title is cut before it is clipped: a key across its 120th character leaves no piece of itself", async (t) => {
@@ -105,4 +105,30 @@ test("a title is cut before it is clipped: a key across its 120th character leav
   assert.match(kept, /^Rotate the deploy key x{90} /, "Claude Code's title, clipped");
   assert.ok(kept.length <= 120);
   assert.ok(!kept.includes(key.slice(0, 5)), `no piece of the key: ${kept.slice(100)}`);
+});
+
+test("a title is cut as its source wrote it, then put on one line: a passphrase with two spaces in it is cut from the first words and from Claude Code's title", async (t) => {
+  const phrase = "correct  horse\tbattery staple 7f3e9d";
+  const got = await titles(
+    t,
+    (home, project) => {
+      claude(home, project, 13, [`Deploy  with ${phrase}  now.`]);
+      claude(home, project, 14, [{ type: "ai-title", aiTitle: `Rotate  ${phrase}` }, "Rotate it."]);
+    },
+    { env: { ...ENV, DEPLOY_SECRET: phrase } },
+  );
+  assert.deepEqual(got, { [sessionId(13)]: "Deploy with [redacted] now.", [sessionId(14)]: "Rotate [redacted]" });
+});
+
+test("a moved session's copy that adds only a /rename to the turns it copies titles the run, the file written last's title, in either folder order", async (t) => {
+  for (const moved of ["-a-moved", "~z-moved"]) {
+    const got = await titles(t, (home, project) => {
+      const file = claude(home, project, 15, [{ type: "ai-title", aiTitle: "Invoice export" }, "Export the invoices."]);
+      const copied = readFileSync(file, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+      const copy = writeSession(join(home, ".claude", "projects", moved, `${sessionId(15)}.jsonl`), [...copied, { type: "custom-title", customTitle: "Q4 invoices", sessionId: sessionId(15) }]);
+      const later = new Date(Date.now() - 30 * 60_000);
+      utimesSync(copy, later, later);
+    });
+    assert.deepEqual(got, { [sessionId(15)]: "Q4 invoices" }, moved);
+  }
 });
