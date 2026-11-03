@@ -383,9 +383,10 @@ jobs:
   transport-docker:
     # @parcha/pi-transport's formatter and linter, and its box conformance suite on real Docker containers. They are not
     # part of the verify matrix: the suite needs a Docker daemon and an image, not three Node versions. A daemon that
-    # cannot start a box fails a test here instead of skipping it.
+    # cannot start a box fails a test here instead of skipping it. Then serve's boxed tools on the same daemon, advisory
+    # (a failure shows, and blocks nothing): a sandbox run's bash and file tools in a box with no network and no key.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -397,6 +398,17 @@ jobs:
       - run: npm run lint -w @parcha/pi-transport
       - run: docker pull debian:bookworm-slim
       - run: npm run test:live:docker -w @parcha/pi-transport
+      - name: Build, for serve's boxed tools on Docker (advisory)
+        continue-on-error: true
+        run: npm run build
+      - name: Serve's boxed tools on Docker, no network and no key in the box, and the default box image built (advisory)
+        continue-on-error: true
+        working-directory: packages/serve
+        env:
+          AGENTRUN_SERVE_LIVE_DOCKER: '1'
+          AGENTRUN_SERVE_LIVE_DOCKER_BUILD: '1'
+        # The flag bounds the whole file, which builds the default box image (python, git, curl) once.
+        run: node --test --test-timeout=900000 test/boxed-tools.docker.test.mjs
 
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's

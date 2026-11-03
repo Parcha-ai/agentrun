@@ -13,12 +13,16 @@ Where agent commands run as the host's user, receipts, the journal and the recor
 
 ## Run a demo from an install, with no key
 
+It is held: it is built, tested and verified with the other packages and is not on npm yet, so it is used from this
+repository. In a built checkout, `npm pack -w @parcha/agentrun-harness` writes `parcha-agentrun-harness-<version>.tgz`;
+install that file's path in your project:
+
 ```sh
-npm install @parcha/agentrun-harness@beta
+npm install /path/to/parcha-agentrun-harness-<version>.tgz
 ```
 
 npm installs the pi peers it needs (`@earendil-works/pi-ai`, `pi-durable`, `chord`, `pi-codemode` and `typebox`).
-`@parcha/pi-transport` is optional: only a demo that declares `boxes` needs it (`npm install @parcha/pi-transport@beta`).
+`@parcha/pi-transport` is optional: only a demo that declares `boxes` needs it (`npm install @parcha/pi-transport@latest`).
 
 Save this as `demo.mjs`:
 

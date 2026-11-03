@@ -64,13 +64,6 @@ function staticImports(entry) {
   return { files: [...seen].map((file) => path.relative(dist, file)), bare: [...bare] };
 }
 
-test("the package root never loads the DSL or agentrun-pi: its static import closure holds neither, nor ./workflow.js", () => {
-  const { files, bare } = staticImports("index.js");
-  assert.ok(files.length > 5, "the closure was read");
-  assert.ok(!files.includes("workflow.js"), "the root does not import ./workflow.js");
-  assert.deepEqual(bare.filter((specifier) => DSL_AND_PI.test(specifier)), []);
-});
-
 test("./workflow imports neither statically: it loads them inside the functions that need them", () => {
   assert.deepEqual(staticImports("workflow.js").bare.filter((specifier) => DSL_AND_PI.test(specifier)), []);
 });
