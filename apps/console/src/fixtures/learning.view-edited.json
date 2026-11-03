@@ -9,7 +9,7 @@
   },
   "body": {
     "agent": "refund-finder",
-    "main": "b6555c993599d8f5c2638a7f8f9f97a5e5cc09c6",
+    "main": "e763d05a3f092b555bf0a4b529aa255c013a2bfb",
     "index": "- [Keep the summary to three lines](keep-it-to-three-lines.md) — The answer is the URL, the window and who pays shipping; nothing else\n- [Try /policies/refund-policy first](try-policies-refund-policy-first.md) — Open /policies/refund-policy before any other page; fall back to /pages/returns\n",
     "notes": {
       "items": [
@@ -53,8 +53,8 @@
           "by": {
             "user": true
           },
-          "commit": "b6555c993599d8f5c2638a7f8f9f97a5e5cc09c6",
-          "at": "2026-11-03T18:29:39.000Z",
+          "commit": "e763d05a3f092b555bf0a4b529aa255c013a2bfb",
+          "at": "2026-11-03T18:51:06.000Z",
           "reason": "edited by a person: try-policies-refund-policy-first.md",
           "files": [
             "try-policies-refund-policy-first.md"
@@ -64,8 +64,8 @@
           "by": {
             "user": true
           },
-          "commit": "7344cead1648826b764cbcab57f3e78e8320d549",
-          "at": "2026-11-03T18:29:39.000Z",
+          "commit": "b53d369c4f4b53f0e30453453f2c0a79c322da27",
+          "at": "2026-11-03T18:51:06.000Z",
           "reason": "edited by a person: try-policies-refund-policy-first.md",
           "files": [
             "try-policies-refund-policy-first.md"
@@ -75,8 +75,8 @@
           "by": {
             "user": true
           },
-          "commit": "076bd311c50ab69bac5b37cea664a894295c3241",
-          "at": "2026-11-03T18:28:52.000Z",
+          "commit": "76f6fa613426536090c2eda8e85a5a82cb7768cd",
+          "at": "2026-11-03T18:50:29.000Z",
           "reason": "created by a person: keep-it-to-three-lines.md",
           "files": [
             "MEMORY.md",
@@ -85,10 +85,10 @@
         },
         {
           "by": {
-            "run": "01a1a2ab-c2d2-7aac-9b9b-b763a67625b0"
+            "run": "01a1a2bf-8ddd-71cc-b780-5e9b78b9f063"
           },
-          "commit": "751d2f8555a3ca70b3b870f17597518114d419a3",
-          "at": "2026-11-03T18:28:52.000Z",
+          "commit": "3f6f417d8b20278f81d59fe8065028e300f7e780",
+          "at": "2026-11-03T18:50:29.000Z",
           "reason": "General and new: it holds for other shops too, and no note says it yet.",
           "files": [
             "MEMORY.md",
@@ -98,10 +98,10 @@
         },
         {
           "by": {
-            "run": "01a1a2ab-9451-7361-8b50-130b3584a9cb"
+            "run": "01a1a2bf-600d-7a8b-b32a-0db5b1d7559c"
           },
-          "commit": "76fc0a556b786adf383c45824122623c6bc46df6",
-          "at": "2026-11-03T18:28:47.000Z",
+          "commit": "8b7ca3c87e815024dfd41684253c8ccd98c1f4d6",
+          "at": "2026-11-03T18:50:24.000Z",
           "reason": "General and new: it holds for other shops too, and no note says it yet.",
           "files": [
             "MEMORY.md",
@@ -130,7 +130,7 @@
       },
       "after": {
         "runs": 4,
-        "median_duration_s": 3,
+        "median_duration_s": 2.9,
         "median_cost_usd": 0.008628,
         "cost_runs": 4,
         "median_learning_usd": 0.006073

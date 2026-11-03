@@ -112,10 +112,11 @@ describe("plain words for the machine's", () => {
     expect(shortTitle("A short one")).toBe("A short one");
     expect(shortTitle("x".repeat(80)).length).toBeLessThanOrEqual(40);
   });
-  it("the timeline's learning rows: Learning, and the server's look-back message as Looking back, each without its chip", () => {
+  it("the timeline's learning rows: the end and the server's look-back message both read Learning, each without its chip", () => {
     const row = { id: "1", seq: 1, summary: "", text: null, timestamp: "2026-11-03T16:00:00Z", tool_name: null };
     expect(learningLabel({ ...row, kind: "learning", agent_label: "learning", summary: "Learned: Try it first" })).toMatchObject({ kind: "Learning", agent_label: null, summary: "Learned: Try it first" });
-    expect(learningLabel({ ...row, kind: "user_message", agent_label: "learning", summary: "Learning: The task is done." })).toMatchObject({ kind: "Looking back", agent_label: null, summary: "The task is done." });
+    expect(learningLabel({ ...row, kind: "user_message", agent_label: "learning", summary: "Looking back on this run." })).toMatchObject({ kind: "Learning", agent_label: null, summary: "Looking back on this run." });
+    expect(learningLabel({ ...row, kind: "user_message", agent_label: "learning", summary: "Learning: The task is done." })).toMatchObject({ kind: "Learning", summary: "The task is done." });
     const other = { ...row, kind: "tool_use", agent_label: "learning", summary: "Wrote .learning/a.md" };
     expect(learningLabel(other)).toBe(other);
   });

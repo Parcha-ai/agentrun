@@ -254,12 +254,13 @@ export function shortTitle(title: string, max = 40): string {
   return `${head.trimEnd()}…${end.trimStart()}`;
 }
 
-/** A timeline row as the console labels a run's learning: the row that says how it ended reads "Learning", and the
- *  message the server sends to start the look back reads "Looking back" (it is not the person's), each without the chip
- *  that would say it again. Every other row is as it was. The timeline calls it once a row. */
+/** A timeline row as the console labels a run's learning: the row that says how it ended, and the message that starts
+ *  the look back ("Looking back on this run.", the server's own words; it is not the person's), each read "Learning",
+ *  without the chip that would say it again. An older server's look-back row, which carried the prompt, loses its
+ *  "Learning: " prefix. Every other row is as it was. The timeline calls it once a row. */
 export function learningLabel(row: TimelineRow): TimelineRow {
   if (row.kind === "learning") return { ...row, kind: "Learning", agent_label: null };
-  if (row.kind === "user_message" && row.agent_label === "learning") return { ...row, kind: "Looking back", agent_label: null, summary: row.summary.replace(/^Learning:\s*/, "") };
+  if (row.kind === "user_message" && row.agent_label === "learning") return { ...row, kind: "Learning", agent_label: null, summary: row.summary.replace(/^Learning:\s*/, "") };
   return row;
 }
 
