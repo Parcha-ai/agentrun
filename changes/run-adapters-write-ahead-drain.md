@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-adapters, @parcha/agentrun-claude-agent
+packages: @parcha/agentrun-kernel, @parcha/agentrun-harness-claude
 kind: feature
 ---
 A call's `tool_end` reaches the host only once its outcome is in the session's records, with the text recorded as `result`, and `createHarnessRunner(...).stop({ drainMs })` pauses every node a runner is running: no new turn, tool call or paid request starts, and the calls in flight run on until their outcomes are recorded, for at most `drainMs`, before the node fails `aborted`. Run again with the same step, the node resumes from its records, and a call that finished during the pause is never run or paid for again.

@@ -20,6 +20,9 @@ const PROCESS_TABLE = fileURLToPath(new URL("../src/process-table.ts", import.me
 const MACOS = fileURLToPath(new URL("./_macos.ts", import.meta.url));
 /** A command record's file (`<pid>-<start>.json`), not the recorder's mark (`mark-<token>.json`). */
 const isRecord = (name: string) => /^\d+-\d+\.json$/.test(name);
+// The scripted tables' pids are 9_00x_xxx, past any pid Linux (2^22) or macOS (99999) hands out, so none is this process
+// or its group, which the reaper never signals.
+assert.ok(process.pid < 9_000_000, `this process's pid ${process.pid} could be one of the scripted tables' pids`);
 
 /** A command the way a recorded environment starts one: the leader of its own group, carrying `token` as its mark, here with a member that is its own child. */
 function command(token?: string): ChildProcess {
@@ -260,17 +263,17 @@ describe("command records, from a scripted /proc", () => {
     try {
       mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
       writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
-      mkdirSync(join(proc, "4242"));
-      writeFileSync(join(proc, "4242", "stat"), `4242 (stuck (in D)) ${fields("D", 4242, 77)}\n`);
+      mkdirSync(join(proc, "9004242"));
+      writeFileSync(join(proc, "9004242", "stat"), `9004242 (stuck (in D)) ${fields("D", 9004242, 77)}\n`);
       mkdirSync(records);
-      const leader = { pid: 4242, start: 77 };
-      writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader, members: [leader, { pid: 4243, start: 78 }] }));
+      const leader = { pid: 9004242, start: 77 };
+      writeFileSync(join(records, "9004242-77.json"), JSON.stringify({ boot: "fake-boot", leader, members: [leader, { pid: 9004243, start: 78 }] }));
       const signals: [number, string][] = [];
       const kill = (target: number, signal: NodeJS.Signals) => void signals.push([target, signal]);
       assert.deepEqual(await reapCommands(records, { proc, kill, timeoutMs: 100 }), { signalled: 1, survivors: [leader] });
-      assert.deepEqual(signals, [[-4242, "SIGKILL"]], "the leader's group once (the leader listed as a member too goes with it); 4243 is gone already");
-      assert.deepEqual(JSON.parse(readFileSync(join(records, "4242-77.json"), "utf8")), { boot: "fake-boot", leader, members: [] }, "rewritten with what is alive");
-      rmSync(join(proc, "4242"), { recursive: true }); // it died after the deadline
+      assert.deepEqual(signals, [[-9004242, "SIGKILL"]], "the leader's group once (the leader listed as a member too goes with it); 9004243 is gone already");
+      assert.deepEqual(JSON.parse(readFileSync(join(records, "9004242-77.json"), "utf8")), { boot: "fake-boot", leader, members: [] }, "rewritten with what is alive");
+      rmSync(join(proc, "9004242"), { recursive: true }); // it died after the deadline
       assert.deepEqual(await reapCommands(records, { proc, kill, timeoutMs: 100 }), { signalled: 0, survivors: [] });
       assert.equal(existsSync(records), false, "the next open clears it once nothing in it is alive");
     } finally {
@@ -288,19 +291,19 @@ describe("command records, from a scripted /proc", () => {
     try {
       mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
       writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
-      mkdirSync(join(proc, "4242"));
-      writeFileSync(join(proc, "4242", "stat"), stat(4242, "sh", 4242, 77));
-      mkdirSync(join(proc, "4250"));
-      writeFileSync(join(proc, "4250", "stat"), stat(4250, "sleep", 4242, 80));
+      mkdirSync(join(proc, "9004242"));
+      writeFileSync(join(proc, "9004242", "stat"), stat(9004242, "sh", 9004242, 77));
+      mkdirSync(join(proc, "9004250"));
+      writeFileSync(join(proc, "9004250", "stat"), stat(9004250, "sleep", 9004242, 80));
       mkdirSync(records);
-      writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 4242, start: 77 }, members: [] }));
+      writeFileSync(join(records, "9004242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 9004242, start: 77 }, members: [] }));
       const kill = (target: number) => {
-        if (target !== -4242) return;
-        rmSync(join(proc, "4242"), { recursive: true }); // the leader dies at once
-        setTimeout(() => rmSync(join(proc, "4250"), { recursive: true }), 100); // its child a little later
+        if (target !== -9004242) return;
+        rmSync(join(proc, "9004242"), { recursive: true }); // the leader dies at once
+        setTimeout(() => rmSync(join(proc, "9004250"), { recursive: true }), 100); // its child a little later
       };
       const reaped = await reapCommands(records, { proc, kill });
-      assert.equal(existsSync(join(proc, "4250")), false, "it said the group was gone while a process of it was still alive");
+      assert.equal(existsSync(join(proc, "9004250")), false, "it said the group was gone while a process of it was still alive");
       assert.deepEqual(reaped, { signalled: 1, survivors: [] });
       assert.equal(existsSync(records), false, "and cleared the record once nothing in the group was alive");
     } finally {
@@ -316,18 +319,18 @@ describe("command records, from a scripted /proc", () => {
     try {
       mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
       writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
-      mkdirSync(join(proc, "4242"));
-      writeFileSync(join(proc, "4242", "stat"), stat(4242, "sh", "S", 4242, 77));
-      mkdirSync(join(proc, "4250"));
-      writeFileSync(join(proc, "4250", "stat"), stat(4250, "tar", "D", 4242, 80)); // in an uninterruptible wait
-      mkdirSync(join(proc, "4260"));
-      writeFileSync(join(proc, "4260", "stat"), stat(4260, "other", "S", 4260, 90)); // another group: never a target
+      mkdirSync(join(proc, "9004242"));
+      writeFileSync(join(proc, "9004242", "stat"), stat(9004242, "sh", "S", 9004242, 77));
+      mkdirSync(join(proc, "9004250"));
+      writeFileSync(join(proc, "9004250", "stat"), stat(9004250, "tar", "D", 9004242, 80)); // in an uninterruptible wait
+      mkdirSync(join(proc, "9004260"));
+      writeFileSync(join(proc, "9004260", "stat"), stat(9004260, "other", "S", 9004260, 90)); // another group: never a target
       mkdirSync(records);
-      writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 4242, start: 77 }, members: [] }));
-      const kill = (target: number) => { if (target === -4242) rmSync(join(proc, "4242"), { recursive: true }); };
-      assert.deepEqual(await reapCommands(records, { proc, kill, timeoutMs: 100 }), { signalled: 1, survivors: [{ pid: 4250, start: 80 }] });
-      assert.deepEqual(JSON.parse(readFileSync(join(records, "4242-77.json"), "utf8")), { boot: "fake-boot", leader: null, members: [{ pid: 4250, start: 80 }] }, "recorded, so the next open tries again");
-      rmSync(join(proc, "4250"), { recursive: true }); // it died after the deadline
+      writeFileSync(join(records, "9004242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 9004242, start: 77 }, members: [] }));
+      const kill = (target: number) => { if (target === -9004242) rmSync(join(proc, "9004242"), { recursive: true }); };
+      assert.deepEqual(await reapCommands(records, { proc, kill, timeoutMs: 100 }), { signalled: 1, survivors: [{ pid: 9004250, start: 80 }] });
+      assert.deepEqual(JSON.parse(readFileSync(join(records, "9004242-77.json"), "utf8")), { boot: "fake-boot", leader: null, members: [{ pid: 9004250, start: 80 }] }, "recorded, so the next open tries again");
+      rmSync(join(proc, "9004250"), { recursive: true }); // it died after the deadline
       assert.deepEqual(await reapCommands(records, { proc, kill, timeoutMs: 100 }), { signalled: 0, survivors: [] });
       assert.equal(existsSync(records), false);
     } finally {
@@ -336,7 +339,7 @@ describe("command records, from a scripted /proc", () => {
   });
 
   it("a group id handed to an unrelated group after the kill is never taken for the killed group: its processes are no targets", async () => {
-    // The killed leader 4242 is gone at once, and its pid now leads an unrelated group with a child of its own, 4270. That
+    // The killed leader 9004242 is gone at once, and its pid now leads an unrelated group with a child of its own, 9004270. That
     // group's processes are not the record's: neither waited for, nor kept as targets for the next open's SIGKILL.
     const dir = scratchRoot("commands-group-reused");
     const proc = join(dir.root, "proc");
@@ -345,15 +348,15 @@ describe("command records, from a scripted /proc", () => {
     try {
       mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
       writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
-      mkdirSync(join(proc, "4242"));
-      writeFileSync(join(proc, "4242", "stat"), stat(4242, "sh", 4242, 77));
+      mkdirSync(join(proc, "9004242"));
+      writeFileSync(join(proc, "9004242", "stat"), stat(9004242, "sh", 9004242, 77));
       mkdirSync(records);
-      writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 4242, start: 77 }, members: [] }));
+      writeFileSync(join(records, "9004242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 9004242, start: 77 }, members: [] }));
       const kill = (target: number) => {
-        if (target !== -4242) return;
-        writeFileSync(join(proc, "4242", "stat"), stat(4242, "other", 4242, 300)); // the pid, handed out again
-        mkdirSync(join(proc, "4270"));
-        writeFileSync(join(proc, "4270", "stat"), stat(4270, "child", 4242, 301));
+        if (target !== -9004242) return;
+        writeFileSync(join(proc, "9004242", "stat"), stat(9004242, "other", 9004242, 300)); // the pid, handed out again
+        mkdirSync(join(proc, "9004270"));
+        writeFileSync(join(proc, "9004270", "stat"), stat(9004270, "child", 9004242, 301));
       };
       assert.deepEqual(await reapCommands(records, { proc, kill, timeoutMs: 100 }), { signalled: 1, survivors: [] }, "the unrelated group's child is no survivor");
       assert.equal(existsSync(records), false, "and nothing of it is kept for the next open");
@@ -363,16 +366,16 @@ describe("command records, from a scripted /proc", () => {
   });
 
   it("a leader that stops being the recorded process while its group is read is not killed, and nothing listed is kept", async () => {
-    // Between the first look at 4242 and the look before its kill, its pid is handed to another process (its start
+    // Between the first look at 9004242 and the look before its kill, its pid is handed to another process (its start
     // changes): the group read in between may hold that process's group, so the group is neither killed nor kept.
     let leaderLooks = 0;
     const table: ProcessTable = {
       walkMs: 100,
       bootId: () => "fake-boot",
       snapshot: () => ({
-        info: (pid) => (pid === 4242 ? { ppid: 1, pgrp: 4242, start: ++leaderLooks === 1 ? 77 : 300 } : pid === 4270 ? { ppid: 4242, pgrp: 4242, start: 301 } : undefined),
+        info: (pid) => (pid === 9004242 ? { ppid: 1, pgrp: 9004242, start: ++leaderLooks === 1 ? 77 : 300 } : pid === 9004270 ? { ppid: 9004242, pgrp: 9004242, start: 301 } : undefined),
         children: () => [],
-        group: (pgrp) => (pgrp === 4242 ? [4242, 4270] : []),
+        group: (pgrp) => (pgrp === 9004242 ? [9004242, 9004270] : []),
         marked: () => false,
         withMark: () => [],
         commandLine: () => "?",
@@ -382,7 +385,7 @@ describe("command records, from a scripted /proc", () => {
     const records = join(dir.root, "commands");
     try {
       mkdirSync(records);
-      writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 4242, start: 77 }, members: [] }));
+      writeFileSync(join(records, "9004242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 9004242, start: 77 }, members: [] }));
       const signals: number[] = [];
       assert.deepEqual(await reapCommands(records, { table, kill: (target) => void signals.push(target), timeoutMs: 100 }), { signalled: 0, survivors: [] });
       assert.deepEqual(signals, [], "no SIGKILL to a group its leader no longer holds");
@@ -392,8 +395,8 @@ describe("command records, from a scripted /proc", () => {
   });
 
   it("a recorded command is never dropped on an empty read of its environment (inside an exec); it leaves its record once it is a zombie", () => {
-    // Through /proc: 4200 is the instance, 4300 its command leading its own group. The first walk reads the mark and
-    // records 4300; the next reads an empty environment (an exec) and must keep the record; once 4300 is a zombie (its
+    // Through /proc: 9004200 is the instance, 9004300 its command leading its own group. The first walk reads the mark and
+    // records 9004300; the next reads an empty environment (an exec) and must keep the record; once 9004300 is a zombie (its
     // state read first), the record goes.
     const dir = scratchRoot("commands-recorded-empty-read");
     const proc = join(dir.root, "proc");
@@ -404,23 +407,23 @@ describe("command records, from a scripted /proc", () => {
     try {
       mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
       writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
-      mkdirSync(join(proc, "4200/task/4200"), { recursive: true });
-      writeFileSync(join(proc, "4200/stat"), stat(4200, "S", 1, 4200, 10));
-      writeFileSync(join(proc, "4200/task/4200/children"), "4300 ");
-      mkdirSync(join(proc, "4300"));
-      const recorder = new CommandRecorder(records, { proc, instance: 4200 });
+      mkdirSync(join(proc, "9004200/task/9004200"), { recursive: true });
+      writeFileSync(join(proc, "9004200/stat"), stat(9004200, "S", 1, 9004200, 10));
+      writeFileSync(join(proc, "9004200/task/9004200/children"), "9004300 ");
+      mkdirSync(join(proc, "9004300"));
+      const recorder = new CommandRecorder(records, { proc, instance: 9004200 });
       const at = (state: string, environ: string) => {
-        writeFileSync(join(proc, "4300/stat"), stat(4300, state, 4200, 4300, 77));
-        writeFileSync(join(proc, "4300/status"), status(state));
-        writeFileSync(join(proc, "4300/environ"), environ);
+        writeFileSync(join(proc, "9004300/stat"), stat(9004300, state, 9004200, 9004300, 77));
+        writeFileSync(join(proc, "9004300/status"), status(state));
+        writeFileSync(join(proc, "9004300/environ"), environ);
       };
       at("S", `PATH=/usr/bin\0${COMMANDS_MARK}=${recorder.token}\0`);
       recorder.scan();
-      assert.deepEqual(readdirSync(records).filter(isRecord), ["4300-77.json"], "recorded from its mark");
+      assert.deepEqual(readdirSync(records).filter(isRecord), ["9004300-77.json"], "recorded from its mark");
       at("S", "");
       recorder.scan();
       recorder.scan();
-      assert.deepEqual(readdirSync(records).filter(isRecord), ["4300-77.json"], "an empty read keeps a recorded command");
+      assert.deepEqual(readdirSync(records).filter(isRecord), ["9004300-77.json"], "an empty read keeps a recorded command");
       at("Z", "");
       recorder.scan();
       recorder.close();
@@ -431,7 +434,7 @@ describe("command records, from a scripted /proc", () => {
   });
 
   it("a recorded pid the kernel gave to another process (its start time differs) is gone: the walk drops its record, and a reap never signals the stranger", async () => {
-    // 4300 is recorded with start 77, exits, and its number goes to a new process (start 99) whose environment reads
+    // 9004300 is recorded with start 77, exits, and its number goes to a new process (start 99) whose environment reads
     // non-empty and lacks the word. Only the start time tells the two apart.
     const dir = scratchRoot("commands-recorded-pid-reused");
     const proc = join(dir.root, "proc");
@@ -441,25 +444,25 @@ describe("command records, from a scripted /proc", () => {
     try {
       mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
       writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
-      mkdirSync(join(proc, "4200/task/4200"), { recursive: true });
-      writeFileSync(join(proc, "4200/stat"), stat(4200, 1, 4200, 10));
-      writeFileSync(join(proc, "4200/task/4200/children"), "4300 ");
-      mkdirSync(join(proc, "4300"));
-      writeFileSync(join(proc, "4300/status"), `Name:\tcmd\nState:\tS (x)\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
-      const recorder = new CommandRecorder(records, { proc, instance: 4200 });
-      writeFileSync(join(proc, "4300/stat"), stat(4300, 4200, 4300, 77));
-      writeFileSync(join(proc, "4300/environ"), `PATH=/usr/bin\0${COMMANDS_MARK}=${recorder.token}\0`);
+      mkdirSync(join(proc, "9004200/task/9004200"), { recursive: true });
+      writeFileSync(join(proc, "9004200/stat"), stat(9004200, 1, 9004200, 10));
+      writeFileSync(join(proc, "9004200/task/9004200/children"), "9004300 ");
+      mkdirSync(join(proc, "9004300"));
+      writeFileSync(join(proc, "9004300/status"), `Name:\tcmd\nState:\tS (x)\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
+      const recorder = new CommandRecorder(records, { proc, instance: 9004200 });
+      writeFileSync(join(proc, "9004300/stat"), stat(9004300, 9004200, 9004300, 77));
+      writeFileSync(join(proc, "9004300/environ"), `PATH=/usr/bin\0${COMMANDS_MARK}=${recorder.token}\0`);
       recorder.scan();
-      assert.deepEqual(readdirSync(records).filter(isRecord), ["4300-77.json"]);
-      const recorded = readFileSync(join(records, "4300-77.json"), "utf8");
+      assert.deepEqual(readdirSync(records).filter(isRecord), ["9004300-77.json"]);
+      const recorded = readFileSync(join(records, "9004300-77.json"), "utf8");
       // The stranger: the same pid, leading its own group, started later, its environment without the word.
-      writeFileSync(join(proc, "4300/stat"), stat(4300, 4200, 4300, 99));
-      writeFileSync(join(proc, "4300/environ"), "PATH=/usr/bin\0HOME=/tmp\0");
+      writeFileSync(join(proc, "9004300/stat"), stat(9004300, 9004200, 9004300, 99));
+      writeFileSync(join(proc, "9004300/environ"), "PATH=/usr/bin\0HOME=/tmp\0");
       recorder.scan();
       recorder.close();
       assert.deepEqual(readdirSync(records).filter(isRecord), [], "the walk drops a record whose pid now has another start time");
-      // An instance killed before that walk leaves the record behind: the reap at the next open must not signal 4300.
-      writeFileSync(join(records, "4300-77.json"), recorded);
+      // An instance killed before that walk leaves the record behind: the reap at the next open must not signal 9004300.
+      writeFileSync(join(records, "9004300-77.json"), recorded);
       const signals: number[] = [];
       assert.deepEqual(await reapCommands(records, { proc, kill: (target) => void signals.push(target), timeoutMs: 50 }), { signalled: 0, survivors: [] });
       assert.deepEqual(signals, [], "no SIGKILL to the process that took the recorded pid");
@@ -469,7 +472,7 @@ describe("command records, from a scripted /proc", () => {
   });
 
   describe("a record written in another pid namespace", () => {
-    // The reader's /proc: its namespace pid:[200], its PID 1 started at tick 1000, and a process 4300 (start 77, leading
+    // The reader's /proc: its namespace pid:[200], its PID 1 started at tick 1000, and a process 9004300 (start 77, leading
     // its group) that a record from another namespace names by the same number and start: it must never be signalled.
     // Records come from pid:[100].
     const READER = "pid:[200]";
@@ -486,12 +489,12 @@ describe("command records, from a scripted /proc", () => {
       writeFileSync(join(proc, "uptime"), "20.00 40.00\n");
       mkdirSync(join(proc, "1"));
       writeFileSync(join(proc, "1/stat"), stat(1, 1, 1000));
-      mkdirSync(join(proc, "4300"));
-      writeFileSync(join(proc, "4300/stat"), stat(4300, 4300, 77));
+      mkdirSync(join(proc, "9004300"));
+      writeFileSync(join(proc, "9004300/stat"), stat(9004300, 9004300, 77));
       mkdirSync(records);
       const record = (fields: Record<string, unknown>) => {
-        const file = join(records, "4300-77.json");
-        writeFileSync(file, JSON.stringify({ boot: "fake-boot", leader: { pid: 4300, start: 77 }, members: [], pidns: WRITER, ...fields }));
+        const file = join(records, "9004300-77.json");
+        writeFileSync(file, JSON.stringify({ boot: "fake-boot", leader: { pid: 9004300, start: 77 }, members: [], pidns: WRITER, ...fields }));
         return file;
       };
       const signals: number[] = [];
@@ -564,19 +567,19 @@ describe("command records, from a scripted /proc", () => {
       const { dir, proc, records } = setup("commands-ns-stamp");
       try {
         rmSync(records, { recursive: true });
-        mkdirSync(join(proc, "4200/task/4200"), { recursive: true });
-        writeFileSync(join(proc, "4200/stat"), `4200 (cmd) ${["S", "1", "4200", ...Array(16).fill("0"), "10"].join(" ")}\n`);
-        writeFileSync(join(proc, "4200/task/4200/children"), "4300 ");
+        mkdirSync(join(proc, "9004200/task/9004200"), { recursive: true });
+        writeFileSync(join(proc, "9004200/stat"), `9004200 (cmd) ${["S", "1", "9004200", ...Array(16).fill("0"), "10"].join(" ")}\n`);
+        writeFileSync(join(proc, "9004200/task/9004200/children"), "9004300 ");
         const uid = process.getuid!();
-        writeFileSync(join(proc, "4300/status"), `Name:\tcmd\nState:\tS (x)\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
-        const recorder = new CommandRecorder(records, { proc, instance: 4200 });
-        writeFileSync(join(proc, "4300/stat"), `4300 (cmd) ${["S", "4200", "4300", ...Array(16).fill("0"), "77"].join(" ")}\n`);
-        writeFileSync(join(proc, "4300/environ"), `${COMMANDS_MARK}=${recorder.token}\0`);
+        writeFileSync(join(proc, "9004300/status"), `Name:\tcmd\nState:\tS (x)\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
+        const recorder = new CommandRecorder(records, { proc, instance: 9004200 });
+        writeFileSync(join(proc, "9004300/stat"), `9004300 (cmd) ${["S", "9004200", "9004300", ...Array(16).fill("0"), "77"].join(" ")}\n`);
+        writeFileSync(join(proc, "9004300/environ"), `${COMMANDS_MARK}=${recorder.token}\0`);
         recorder.started();
         recorder.scan();
         recorder.close();
         const mark = JSON.parse(readFileSync(join(records, `mark-${recorder.token}.json`), "utf8"));
-        const written = JSON.parse(readFileSync(join(records, "4300-77.json"), "utf8"));
+        const written = JSON.parse(readFileSync(join(records, "9004300-77.json"), "utf8"));
         for (const r of [mark, written]) {
           assert.equal(r.pidns, READER);
           assert.equal(r.ticks, 2000, "/proc/uptime's 20.00 s at USER_HZ 100");
@@ -594,19 +597,19 @@ describe("command records, from a scripted /proc", () => {
     try {
       mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
       writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
-      mkdirSync(join(proc, "4242"));
-      writeFileSync(join(proc, "4242", "stat"), `4242 (stuck) ${["D", "1", "4242", ...Array(16).fill("0"), "77"].join(" ")}\n`);
-      writeFileSync(join(proc, "4242", "cmdline"), "tar\0-xf\0/mnt/slow/archive.tar\0");
+      mkdirSync(join(proc, "9004242"));
+      writeFileSync(join(proc, "9004242", "stat"), `9004242 (stuck) ${["D", "1", "9004242", ...Array(16).fill("0"), "77"].join(" ")}\n`);
+      writeFileSync(join(proc, "9004242", "cmdline"), "tar\0-xf\0/mnt/slow/archive.tar\0");
       mkdirSync(records);
-      writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 4242, start: 77 }, members: [] }));
+      writeFileSync(join(records, "9004242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 9004242, start: 77 }, members: [] }));
       await assert.rejects(reapOrRefuse(records, { proc, kill: () => {}, timeoutMs: 50 }), (error: unknown) => {
         assert.ok(error instanceof HeldError && error.holder === "commands" && error.code === "COMMANDS_ALIVE" && error.exitCode === 76);
-        assert.match(error.message, /pid 4242 \(tar -xf \/mnt\/slow\/archive\.tar\)/, "names each survivor and its command line");
-        assert.match(error.message, /End them \(kill -9 4242, as their owner, or wait for them\) and open the run again/, "says what to do");
+        assert.match(error.message, /pid 9004242 \(tar -xf \/mnt\/slow\/archive\.tar\)/, "names each survivor and its command line");
+        assert.match(error.message, /End them \(kill -9 9004242, as their owner, or wait for them\) and open the run again/, "says what to do");
         return true;
       });
-      assert.ok(existsSync(join(records, "4242-77.json")), "its record stays for the next open");
-      rmSync(join(proc, "4242"), { recursive: true });
+      assert.ok(existsSync(join(records, "9004242-77.json")), "its record stays for the next open");
+      rmSync(join(proc, "9004242"), { recursive: true });
       assert.deepEqual(await reapOrRefuse(records, { proc, kill: () => {} }), { signalled: 0, survivors: [] });
     } finally {
       dir.remove();
@@ -620,17 +623,18 @@ describe("command records, from a scripted /proc", () => {
     try {
       mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
       writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
-      mkdirSync(join(proc, "4242"));
-      writeFileSync(join(proc, "4242", "stat"), `4242 (tar) ${["D", "1", "4242", ...Array(16).fill("0"), "77"].join(" ")}\n`);
-      writeFileSync(join(proc, "4242", "cmdline"), "tar\0-xf\0/mnt/slow/archive.tar\0");
+      mkdirSync(join(proc, "9004242"));
+      writeFileSync(join(proc, "9004242", "stat"), `9004242 (tar) ${["D", "1", "9004242", ...Array(16).fill("0"), "77"].join(" ")}\n`);
+      writeFileSync(join(proc, "9004242", "cmdline"), "tar\0-xf\0/mnt/slow/archive.tar\0");
       mkdirSync(records, { recursive: true });
-      writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 4242, start: 77 }, members: [] }));
+      writeFileSync(join(records, "9004242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 9004242, start: 77 }, members: [] }));
       const refusal = await reapOrRefuse(records, { proc, kill: () => {}, timeoutMs: 50 }).then(
         () => assert.fail("the open was not refused"),
         (error: unknown) => (error as Error).message,
       );
       const readme = readFileSync(new URL("../docs/reference.md", import.meta.url), "utf8");
-      const quoted = refusal.replaceAll(records, "<root>/commands");
+      // The reference shows pid 4242, a pid a reader recognises; the scripted one is past any real pid.
+      const quoted = refusal.replaceAll(records, "<root>/commands").replaceAll("9004242", "4242");
       assert.ok(readme.includes(`\n${quoted}\n`), `the reference's refusal is not the one the open writes:\n${quoted}`);
     } finally {
       dir.remove();
@@ -698,34 +702,34 @@ describe("command records, from a scripted ps (macOS)", () => {
   it("a mark is read from a process's environment only: a token in its arguments is none, and a process that exec'd between the two reads proves nothing, so a listing of marks will not pass it as unmarked", () => {
     const token = randomUUID();
     const word = `${COMMANDS_MARK}=${token}`;
-    const rows = [[4400, 1, 4400, 5], [4401, 1, 4401, 6], [4402, 1, 4402, 7]];
+    const rows = [[9004400, 1, 9004400, 5], [9004401, 1, 9004401, 6], [9004402, 1, 9004402, 7]];
     const environments: Record<number, string> = {
       // Its arguments name the token; its environment does not.
-      4400: `/bin/echo ${word} LANG=C\n`,
+      9004400: `/bin/echo ${word} LANG=C\n`,
       // It exec'd between the two reads: its arguments were `sh -c held`, the -E line is the new program's.
-      4401: `sleep 600 ${word} LANG=C\n`,
+      9004401: `sleep 600 ${word} LANG=C\n`,
       // Its environment holds the mark.
-      4402: `sleep 600 LANG=C ${word}\n`,
+      9004402: `sleep 600 LANG=C ${word}\n`,
     };
-    const table = psTable(scriptedPs(() => rows, environments, { argv: { 4400: `/bin/echo ${word}`, 4401: "sh -c held" } }));
+    const table = psTable(scriptedPs(() => rows, environments, { argv: { 9004400: `/bin/echo ${word}`, 9004401: "sh -c held" } }));
     const look = table.snapshot();
-    assert.deepEqual([4400, 4401, 4402].map((pid) => look.marked(pid, COMMANDS_MARK, token)), [false, false, true]);
-    // 4401's arguments never open its -E line, which holds the mark's word: whether it carries the mark is unknown, and
+    assert.deepEqual([9004400, 9004401, 9004402].map((pid) => look.marked(pid, COMMANDS_MARK, token)), [false, false, true]);
+    // 9004401's arguments never open its -E line, which holds the mark's word: whether it carries the mark is unknown, and
     // unknown is never unmarked.
-    assert.throws(() => look.withMark(COMMANDS_MARK, token), /cannot tell whether pid 4401 carries the mark/);
-    const settled = psTable(scriptedPs(() => rows.filter(([pid]) => pid !== 4401), environments, { argv: { 4400: `/bin/echo ${word}` } }));
-    assert.deepEqual(settled.snapshot().withMark(COMMANDS_MARK, token), [4402]);
+    assert.throws(() => look.withMark(COMMANDS_MARK, token), /cannot tell whether pid 9004401 carries the mark/);
+    const settled = psTable(scriptedPs(() => rows.filter(([pid]) => pid !== 9004401), environments, { argv: { 9004400: `/bin/echo ${word}` } }));
+    assert.deepEqual(settled.snapshot().withMark(COMMANDS_MARK, token), [9004402]);
   });
 
   it("a process that exec'd between the reads into arguments that extend its old ones is not marked by the words it added", () => {
     const token = randomUUID();
     const word = `${COMMANDS_MARK}=${token}`;
-    const rows = [[4500, 1, 4500, 5]];
+    const rows = [[9004500, 1, 9004500, 5]];
     // Its arguments were `sh -c held`; it exec'd into `sh -c held <mark>`, which the old arguments open, and the -E line is
     // the new program's. Only the arguments read after the -E line show the exec.
-    const environments: Record<number, string> = { 4500: `sh -c held ${word} LANG=C\n` };
-    const argv = { 4500: ["sh -c held", `sh -c held ${word}`] };
-    assert.equal(psTable(scriptedPs(() => rows, environments, { argv })).snapshot().marked(4500, COMMANDS_MARK, token), false);
+    const environments: Record<number, string> = { 9004500: `sh -c held ${word} LANG=C\n` };
+    const argv = { 9004500: ["sh -c held", `sh -c held ${word}`] };
+    assert.equal(psTable(scriptedPs(() => rows, environments, { argv })).snapshot().marked(9004500, COMMANDS_MARK, token), false);
     assert.deepEqual(psTable(scriptedPs(() => rows, environments, { argv })).snapshot().withMark(COMMANDS_MARK, token), []);
   });
 
@@ -744,20 +748,20 @@ describe("command records, from a scripted ps (macOS)", () => {
     const records = join(dir.root, "commands");
     const token = randomUUID();
     const word = `${COMMANDS_MARK}=${token}`;
-    // 4600 carries the mark in its environment, but exec's between every two reads of its arguments: the -E line
-    // cannot be split into its arguments and its environment. 4700 is a record whose process is gone.
-    const argv = { 4600: Array.from({ length: 30 }, (_, i) => (i % 2 === 0 ? "sh -c a" : "sh -c b")) };
-    const { run, counted } = countingEnvironments(scriptedPs(() => [[4600, 1, 4600, 5]], { 4600: `sh -c a LANG=C ${word}\n` }, { argv }));
+    // 9004600 carries the mark in its environment, but exec's between every two reads of its arguments: the -E line
+    // cannot be split into its arguments and its environment. 9004700 is a record whose process is gone.
+    const argv = { 9004600: Array.from({ length: 30 }, (_, i) => (i % 2 === 0 ? "sh -c a" : "sh -c b")) };
+    const { run, counted } = countingEnvironments(scriptedPs(() => [[9004600, 1, 9004600, 5]], { 9004600: `sh -c a LANG=C ${word}\n` }, { argv }));
     try {
       mkdirSync(records);
       writeFileSync(join(records, `mark-${token}.json`), JSON.stringify({ boot: "boot-1", token }));
-      writeFileSync(join(records, "4700-9.json"), JSON.stringify({ boot: "boot-1", leader: { pid: 4700, start: startAt(9) }, members: [] }));
+      writeFileSync(join(records, "9004700-9.json"), JSON.stringify({ boot: "boot-1", leader: { pid: 9004700, start: startAt(9) }, members: [] }));
       let signals = 0;
-      await assert.rejects(reapOrRefuse(records, { table: psTable(run), kill: () => void signals++ }), /cannot tell whether pid 4600 carries the mark: its arguments changed in each of 3 reads/);
+      await assert.rejects(reapOrRefuse(records, { table: psTable(run), kill: () => void signals++ }), /cannot tell whether pid 9004600 carries the mark: its arguments changed in each of 3 reads/);
       assert.equal(signals, 0, "nothing signalled: a process that cannot be read is never taken for one of ours");
       assert.equal(counted.reads, 3, "read three times, then given up");
       assert.ok(existsSync(join(records, `mark-${token}.json`)), "the mark stays for the next open");
-      assert.ok(existsSync(join(records, "4700-9.json")), "and so do the records");
+      assert.ok(existsSync(join(records, "9004700-9.json")), "and so do the records");
     } finally {
       dir.remove();
     }
@@ -767,16 +771,16 @@ describe("command records, from a scripted ps (macOS)", () => {
     const token = randomUUID();
     const word = `${COMMANDS_MARK}=${token}`;
     // Its first two reads straddle an exec; from then on it reads the same.
-    const argv = { 4610: ["sh -c a", "sleep 600"] };
-    const { run, counted } = countingEnvironments(scriptedPs(() => [[4610, 1, 4610, 5]], { 4610: `sleep 600 LANG=C ${word}\n` }, { argv }));
-    assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [4610]);
+    const argv = { 9004610: ["sh -c a", "sleep 600"] };
+    const { run, counted } = countingEnvironments(scriptedPs(() => [[9004610, 1, 9004610, 5]], { 9004610: `sleep 600 LANG=C ${word}\n` }, { argv }));
+    assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [9004610]);
     assert.equal(counted.reads, 2);
   });
 
   it("a process that keeps changing its arguments but whose environment listing holds no mark holds nothing up", () => {
     const token = randomUUID();
-    const argv = { 4620: Array.from({ length: 30 }, (_, i) => (i % 2 === 0 ? "worker: idle" : "worker: busy")) };
-    const { run, counted } = countingEnvironments(scriptedPs(() => [[4620, 1, 4620, 5]], { 4620: "worker: idle LANG=C\n" }, { argv }));
+    const argv = { 9004620: Array.from({ length: 30 }, (_, i) => (i % 2 === 0 ? "worker: idle" : "worker: busy")) };
+    const { run, counted } = countingEnvironments(scriptedPs(() => [[9004620, 1, 9004620, 5]], { 9004620: "worker: idle LANG=C\n" }, { argv }));
     assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), []);
     assert.equal(counted.reads, 1);
   });
@@ -785,9 +789,9 @@ describe("command records, from a scripted ps (macOS)", () => {
     const token = randomUUID();
     const word = `${COMMANDS_MARK}=${token}`;
     // Its first -E line holds its arguments alone; its second, its environment too.
-    const envReads = { 4900: ["sleep 600", `sleep 600 LANG=C ${word}`] };
-    const { run, counted } = countingEnvironments(scriptedPs(() => [[4900, 1, 4900, 5]], { 4900: `sleep 600 LANG=C ${word}\n` }, { argv: { 4900: "sleep 600" }, envReads }));
-    assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [4900]);
+    const envReads = { 9004900: ["sleep 600", `sleep 600 LANG=C ${word}`] };
+    const { run, counted } = countingEnvironments(scriptedPs(() => [[9004900, 1, 9004900, 5]], { 9004900: `sleep 600 LANG=C ${word}\n` }, { argv: { 9004900: "sleep 600" }, envReads }));
+    assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [9004900]);
     assert.equal(counted.reads, 2);
   });
 
@@ -796,11 +800,11 @@ describe("command records, from a scripted ps (macOS)", () => {
     const word = `${COMMANDS_MARK}=${token}`;
     // Its arguments read `sh -c held` before the -E listing and `sleep 600` after it; its first -E line holds the new
     // arguments alone, its second its environment too.
-    const options = { argv: { 4910: ["sh -c held", "sleep 600"] }, envReads: { 4910: ["sleep 600", `sleep 600 LANG=C ${word}`] } };
-    const own = countingEnvironments(scriptedPs(() => [[4910, 1, 4910, 5]], { 4910: `sleep 600 LANG=C ${word}\n` }, options));
-    assert.deepEqual(psTable(own.run).snapshot().withMark(COMMANDS_MARK, token), [4910]);
+    const options = { argv: { 9004910: ["sh -c held", "sleep 600"] }, envReads: { 9004910: ["sleep 600", `sleep 600 LANG=C ${word}`] } };
+    const own = countingEnvironments(scriptedPs(() => [[9004910, 1, 9004910, 5]], { 9004910: `sleep 600 LANG=C ${word}\n` }, options));
+    assert.deepEqual(psTable(own.run).snapshot().withMark(COMMANDS_MARK, token), [9004910]);
     assert.equal(own.counted.reads, 2);
-    const other = countingEnvironments(scriptedPs(() => [[4910, 1, 4910, 5]], { 4910: `sleep 600 LANG=C ${word}\n` }, { ...options, ruids: { 4910: process.getuid!() + 1 } }));
+    const other = countingEnvironments(scriptedPs(() => [[9004910, 1, 9004910, 5]], { 9004910: `sleep 600 LANG=C ${word}\n` }, { ...options, ruids: { 9004910: process.getuid!() + 1 } }));
     assert.deepEqual(psTable(other.run).snapshot().withMark(COMMANDS_MARK, token), []);
     assert.equal(other.counted.reads, 1);
   });
@@ -812,13 +816,13 @@ describe("command records, from a scripted ps (macOS)", () => {
     // yet; from the second read on the line is stable and shows the mark.
     for (const [pid, argv, first] of [
       // `worker` re-execs as `worker --child`, and its first -E line is the longer reading alone.
-      [4940, ["worker", "worker --child"], "worker --child"],
+      [9004940, ["worker", "worker --child"], "worker --child"],
       // The added argument looks like an environment word.
-      [4941, ["worker", "worker FOO=1"], "worker FOO=1"],
+      [9004941, ["worker", "worker FOO=1"], "worker FOO=1"],
       // The line holds a third reading, which ends in more arguments after the longer one.
-      [4942, ["worker", "worker x", "worker x --child"], "worker x --child"],
+      [9004942, ["worker", "worker x", "worker x --child"], "worker x --child"],
       // The reverse order: the longer reading first, and the line is that reading.
-      [4943, ["worker --child", "worker"], "worker --child"],
+      [9004943, ["worker --child", "worker"], "worker --child"],
     ] as const) {
       const last = argv[argv.length - 1]!;
       const options = { argv: { [pid]: [...argv] }, envReads: { [pid]: [first, `${last} LANG=C ${word}`] } };
@@ -833,41 +837,41 @@ describe("command records, from a scripted ps (macOS)", () => {
     const word = `${COMMANDS_MARK}=${token}`;
     // Its arguments read `sh -c a` before the -E listing and `sh -c b` after it, while the -E line already shows a third
     // program with an environment; from the second read on it reads `sleep 600` throughout, with the mark.
-    const options = { argv: { 4930: ["sh -c a", "sh -c b", "sleep 600"] }, envReads: { 4930: ["sleep 600 LANG=C", `sleep 600 LANG=C ${word}`] } };
-    const { run, counted } = countingEnvironments(scriptedPs(() => [[4930, 1, 4930, 5]], { 4930: `sleep 600 LANG=C ${word}\n` }, options));
-    assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [4930]);
+    const options = { argv: { 9004930: ["sh -c a", "sh -c b", "sleep 600"] }, envReads: { 9004930: ["sleep 600 LANG=C", `sleep 600 LANG=C ${word}`] } };
+    const { run, counted } = countingEnvironments(scriptedPs(() => [[9004930, 1, 9004930, 5]], { 9004930: `sleep 600 LANG=C ${word}\n` }, options));
+    assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [9004930]);
     assert.equal(counted.reads, 2);
   });
 
   it("a -E line of this uid that stays without an environment is unmarked after the window; another uid's is read once", () => {
     const token = randomUUID();
-    const rows = () => [[4910, 1, 4910, 5], [4911, 1, 4911, 6]];
-    const lines = { 4910: "worker\n", 4911: "daemon\n" };
-    const own = countingEnvironments(scriptedPs(rows, lines, { ruids: { 4911: process.getuid!() + 1 } }));
+    const rows = () => [[9004910, 1, 9004910, 5], [9004911, 1, 9004911, 6]];
+    const lines = { 9004910: "worker\n", 9004911: "daemon\n" };
+    const own = countingEnvironments(scriptedPs(rows, lines, { ruids: { 9004911: process.getuid!() + 1 } }));
     const start = Date.now();
     assert.deepEqual(psTable(own.run).snapshot().withMark(COMMANDS_MARK, token), []);
     assert.ok(Date.now() - start < 500);
-    assert.equal(own.counted.reads, 6, "the first listing and the five of the window, for 4910 alone");
-    const other = countingEnvironments(scriptedPs(() => [[4911, 1, 4911, 6]], { 4911: "daemon\n" }, { ruids: { 4911: process.getuid!() + 1 } }));
+    assert.equal(own.counted.reads, 6, "the first listing and the five of the window, for 9004910 alone");
+    const other = countingEnvironments(scriptedPs(() => [[9004911, 1, 9004911, 6]], { 9004911: "daemon\n" }, { ruids: { 9004911: process.getuid!() + 1 } }));
     assert.deepEqual(psTable(other.run).snapshot().withMark(COMMANDS_MARK, token), []);
     assert.equal(other.counted.reads, 1, "another uid's no-environment line is not read again");
   });
 
   it("the recorder's read (marked) of a -E line of this uid with no environment is one read, never the window: its next walk reads it again", () => {
     const counted = { reads: 0 };
-    const ps = scriptedPs(() => [[4920, 1, 4920, 5]], { 4920: "worker\n" });
+    const ps = scriptedPs(() => [[9004920, 1, 9004920, 5]], { 9004920: "worker\n" });
     const run: CommandRunner = (file, args) => {
       if (args.includes("-E") && args.includes("-p")) counted.reads++;
       return ps(file, args);
     };
-    assert.equal(psTable(run).snapshot().marked(4920, COMMANDS_MARK, randomUUID()), false);
+    assert.equal(psTable(run).snapshot().marked(9004920, COMMANDS_MARK, randomUUID()), false);
     assert.equal(counted.reads, 1);
   });
 
   it("a listing of marks that fails stops the reap and keeps the mark: no command is taken for gone on a failed read", async () => {
     const dir = scratchRoot("commands-ps-mark-fails");
     const records = join(dir.root, "commands");
-    const table = psTable(scriptedPs(() => [[4300, 1, 4300, 5]], {}, { failMarks: true }));
+    const table = psTable(scriptedPs(() => [[9004300, 1, 9004300, 5]], {}, { failMarks: true }));
     const token = randomUUID();
     try {
       mkdirSync(records);
@@ -884,18 +888,18 @@ describe("command records, from a scripted ps (macOS)", () => {
   it("a live child left in a killed group, never recorded, is waited for, and kept as a survivor at the deadline", async () => {
     const dir = scratchRoot("commands-ps-live-member");
     const records = join(dir.root, "commands");
-    // 4300 leads the killed group; 4301, its child in it and never recorded, outlives it.
+    // 9004300 leads the killed group; 9004301, its child in it and never recorded, outlives it.
     let rows = [
-      [4300, 1, 4300, 5],
-      [4301, 4300, 4300, 6],
+      [9004300, 1, 9004300, 5],
+      [9004301, 9004300, 9004300, 6],
     ];
     const table = psTable(scriptedPs(() => rows));
     try {
       mkdirSync(records);
-      writeFileSync(join(records, `4300-${startAt(5)}.json`), JSON.stringify({ boot: "boot-1", leader: { pid: 4300, start: startAt(5) }, members: [] }));
-      const kill = (target: number) => { if (target === -4300) rows = rows.filter(([pid]) => pid !== 4300); };
-      assert.deepEqual(await reapCommands(records, { table, kill, timeoutMs: 100 }), { signalled: 1, survivors: [{ pid: 4301, start: startAt(6) }] });
-      assert.deepEqual(JSON.parse(readFileSync(join(records, `4300-${startAt(5)}.json`), "utf8")), { boot: "boot-1", leader: null, members: [{ pid: 4301, start: startAt(6) }] }, "kept for the next open");
+      writeFileSync(join(records, `9004300-${startAt(5)}.json`), JSON.stringify({ boot: "boot-1", leader: { pid: 9004300, start: startAt(5) }, members: [] }));
+      const kill = (target: number) => { if (target === -9004300) rows = rows.filter(([pid]) => pid !== 9004300); };
+      assert.deepEqual(await reapCommands(records, { table, kill, timeoutMs: 100 }), { signalled: 1, survivors: [{ pid: 9004301, start: startAt(6) }] });
+      assert.deepEqual(JSON.parse(readFileSync(join(records, `9004300-${startAt(5)}.json`), "utf8")), { boot: "boot-1", leader: null, members: [{ pid: 9004301, start: startAt(6) }] }, "kept for the next open");
       rows = []; // it died after the deadline
       assert.deepEqual(await reapCommands(records, { table, kill, timeoutMs: 100 }), { signalled: 0, survivors: [] });
       assert.equal(existsSync(records), false);
@@ -907,16 +911,16 @@ describe("command records, from a scripted ps (macOS)", () => {
   it("a zombie left in a killed group is not waited for: the listing marks it Z, and it is not running", async () => {
     const dir = scratchRoot("commands-ps-zombie");
     const records = join(dir.root, "commands");
-    // 4300 leads the killed group; 4301, in it and never recorded, is already a zombie its parent has not reaped.
+    // 9004300 leads the killed group; 9004301, in it and never recorded, is already a zombie its parent has not reaped.
     let rows = [
-      [4300, 1, 4300, 5],
-      [4301, 1, 4300, 6],
+      [9004300, 1, 9004300, 5],
+      [9004301, 1, 9004300, 6],
     ];
-    const table = psTable(scriptedPs(() => rows, {}, { states: { 4301: "Z" } }));
+    const table = psTable(scriptedPs(() => rows, {}, { states: { 9004301: "Z" } }));
     try {
       mkdirSync(records);
-      writeFileSync(join(records, `4300-${startAt(5)}.json`), JSON.stringify({ boot: "boot-1", leader: { pid: 4300, start: startAt(5) }, members: [] }));
-      const kill = (target: number) => { if (target === -4300) rows = rows.filter(([pid]) => pid !== 4300); };
+      writeFileSync(join(records, `9004300-${startAt(5)}.json`), JSON.stringify({ boot: "boot-1", leader: { pid: 9004300, start: startAt(5) }, members: [] }));
+      const kill = (target: number) => { if (target === -9004300) rows = rows.filter(([pid]) => pid !== 9004300); };
       assert.deepEqual(await reapCommands(records, { table, kill, timeoutMs: 100 }), { signalled: 1, survivors: [] }, "the zombie is not a survivor");
       assert.equal(existsSync(records), false, "and the record is cleared");
     } finally {
@@ -927,25 +931,25 @@ describe("command records, from a scripted ps (macOS)", () => {
   it("records a marked command's group from the listing, and the next open kills the group and clears the records", async () => {
     const dir = scratchRoot("commands-ps");
     const records = join(dir.root, "commands");
-    // 4200 is the instance; 4300 its command, leading a group with 4301 in it; 4350 another group's leader, unmarked.
+    // 9004200 is the instance; 9004300 its command, leading a group with 9004301 in it; 9004350 another group's leader, unmarked.
     let rows = [
-      [4200, 1, 4200, 0],
-      [4300, 4200, 4300, 5],
-      [4301, 4300, 4300, 6],
-      [4350, 4200, 4350, 7],
+      [9004200, 1, 9004200, 0],
+      [9004300, 9004200, 9004300, 5],
+      [9004301, 9004300, 9004300, 6],
+      [9004350, 9004200, 9004350, 7],
     ];
-    const environments: Record<number, string> = { 4350: "/bin/sh HOME=/Users/a\n" };
+    const environments: Record<number, string> = { 9004350: "/bin/sh HOME=/Users/a\n" };
     const table = psTable(scriptedPs(() => rows, environments));
     try {
-      const recorder = new CommandRecorder(records, { table, instance: 4200 });
-      environments[4300] = `/bin/sh -c work HOME=/Users/a ${COMMANDS_MARK}=${recorder.token}\n`;
+      const recorder = new CommandRecorder(records, { table, instance: 9004200 });
+      environments[9004300] = `/bin/sh -c work HOME=/Users/a ${COMMANDS_MARK}=${recorder.token}\n`;
       recorder.scan();
       recorder.close();
-      assert.deepEqual(readdirSync(records), [`4300-${startAt(5)}.json`], "only the marked command's group");
-      assert.deepEqual(JSON.parse(readFileSync(join(records, `4300-${startAt(5)}.json`), "utf8")), {
+      assert.deepEqual(readdirSync(records), [`9004300-${startAt(5)}.json`], "only the marked command's group");
+      assert.deepEqual(JSON.parse(readFileSync(join(records, `9004300-${startAt(5)}.json`), "utf8")), {
         boot: "boot-1",
-        leader: { pid: 4300, start: startAt(5) },
-        members: [{ pid: 4301, start: startAt(6) }],
+        leader: { pid: 9004300, start: startAt(5) },
+        members: [{ pid: 9004301, start: startAt(6) }],
       });
       const signals: number[] = [];
       const kill = (target: number) => {
@@ -953,7 +957,7 @@ describe("command records, from a scripted ps (macOS)", () => {
         rows = rows.filter(([pid, , pgrp]) => (target < 0 ? pgrp !== -target : pid !== target));
       };
       assert.deepEqual(await reapCommands(records, { table, kill, timeoutMs: 1_000 }), { signalled: 2, survivors: [] });
-      assert.deepEqual(signals, [-4300, 4301], "the group, and the member the listing before the kill showed alive");
+      assert.deepEqual(signals, [-9004300, 9004301], "the group, and the member the listing before the kill showed alive");
       assert.equal(existsSync(records), false, "the records are cleared");
     } finally {
       dir.remove();
@@ -963,18 +967,18 @@ describe("command records, from a scripted ps (macOS)", () => {
   it("an open that cannot list the processes fails and keeps the records; a walk that cannot says so once", async () => {
     const dir = scratchRoot("commands-ps-fails");
     const records = join(dir.root, "commands");
-    const rows = [[4200, 1, 4200, 0], [4300, 4200, 4300, 5]];
+    const rows = [[9004200, 1, 9004200, 0], [9004300, 9004200, 9004300, 5]];
     try {
       mkdirSync(records);
-      const file = join(records, `4300-${startAt(5)}.json`);
-      writeFileSync(file, JSON.stringify({ boot: "boot-1", leader: { pid: 4300, start: startAt(5) }, members: [] }));
+      const file = join(records, `9004300-${startAt(5)}.json`);
+      writeFileSync(file, JSON.stringify({ boot: "boot-1", leader: { pid: 9004300, start: startAt(5) }, members: [] }));
       const failing = psTable(scriptedPs(() => rows, {}, { failListing: true }));
       const signals: number[] = [];
       await assert.rejects(reapOrRefuse(records, { table: failing, kill: (target) => void signals.push(target) }), /cannot list processes/);
       assert.deepEqual(signals, []);
       assert.ok(existsSync(file), "nothing is taken for gone: the record stays for the next open");
       const errors: unknown[] = [];
-      const recorder = new CommandRecorder(join(dir.root, "other"), { table: failing, instance: 4200, onError: (error) => void errors.push(error) });
+      const recorder = new CommandRecorder(join(dir.root, "other"), { table: failing, instance: 9004200, onError: (error) => void errors.push(error) });
       recorder.scan();
       recorder.scan();
       assert.equal(errors.length, 1);
@@ -986,12 +990,12 @@ describe("command records, from a scripted ps (macOS)", () => {
   it("never signals the reaping process's group or pid 1, whatever a record names", async () => {
     const dir = scratchRoot("commands-ps-guard");
     const records = join(dir.root, "commands");
-    // This process leads no group of its own here: it is in 4400's, which a record names as its leader.
-    const rows = [[1, 0, 1, 0], [4400, 1, 4400, 1], [process.pid, 4400, 4400, 2]];
+    // This process leads no group of its own here: it is in 9004400's, which a record names as its leader.
+    const rows = [[1, 0, 1, 0], [9004400, 1, 9004400, 1], [process.pid, 9004400, 9004400, 2]];
     try {
       mkdirSync(records);
-      const leader = { pid: 4400, start: startAt(1) };
-      writeFileSync(join(records, `4400-${leader.start}.json`), JSON.stringify({ boot: "boot-1", leader, members: [{ pid: 1, start: startAt(0) }] }));
+      const leader = { pid: 9004400, start: startAt(1) };
+      writeFileSync(join(records, `9004400-${leader.start}.json`), JSON.stringify({ boot: "boot-1", leader, members: [{ pid: 1, start: startAt(0) }] }));
       const signals: number[] = [];
       const reaped = await reapCommands(records, { table: psTable(scriptedPs(() => rows)), kill: (target) => void signals.push(target), timeoutMs: 50 });
       assert.deepEqual(signals, [], "no signal at all");

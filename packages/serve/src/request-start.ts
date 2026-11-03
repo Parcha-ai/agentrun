@@ -30,7 +30,7 @@ export const cancelledIn = (root: string) => () => existsSync(join(root, RUN_CAN
 /** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). Once
  *  `cancelled` says the run was cancelled, no request is sent: each is refused here, before it is marked, or after its
  *  mark when the cancel came while the mark waited, and then its start is withdrawn (an end mark, `unsent`). */
-export async function markRequests<M extends Models>(models: M, cancelled: () => boolean = () => false, { refusalWaitMs = 60_000 }: { refusalWaitMs?: number } = {}): Promise<{ models: M; open(run: DurableRun): void; refused(): Promise<void> }> {
+export async function markRequests<M extends Models>(models: M, cancelled: () => boolean = () => false): Promise<{ models: M; open(run: DurableRun): void; refused(): Promise<void> }> {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   let open!: (run: DurableRun) => void;
   // A request a resumed turn sends before the app's open waits for it: the mark needs the run's store.
@@ -53,13 +53,13 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
   };
   /** A cancelled run's request, never sent. It waits for the cancel to reach the run (the request's abort), and then ends
    *  as aborted, as a request the cancel cut does: the turn, or a workflow's node, stops, never failing on the refusal.
-   *  serve's cancel aborts a live run's turn and then stops its process, so the wait is short. `refusalWaitMs` is a
+   *  serve's cancel aborts a live run's turn and then stops its process, so the wait is short. Its bound, a minute, is a
    *  backstop for a process the cancel never reaches (an orphan of a server that died in between): it then ends as an
    *  error, and `markRefusal` lets the timeline skip pi's entry for it. */
   const refuse = async (model: Model<Api>, what: string, signal: AbortSignal | undefined, markRefusal: boolean): Promise<AssistantMessage> => {
     if (signal && !signal.aborted) {
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, refusalWaitMs);
+        const timer = setTimeout(resolve, 60_000);
         signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
       });
     }

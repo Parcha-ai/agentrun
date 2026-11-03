@@ -28,7 +28,7 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
  *  GET lists only those this server binds (unlockedBy), so a name here the server does not bind is never promised, and
  *  one shows by itself once the server binds it. */
 export const TOOL_KEYS = [
-  { id: "parallel", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "web_search", "decisions.parallel"] },
+  { id: "parallel", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "decisions.parallel"] },
   { id: "monid", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid.discover", "monid.inspect", "monid.run"] },
   { id: "browserbase", label: "Browserbase", fields: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], unlocks: ["browser"] },
 ] as const;

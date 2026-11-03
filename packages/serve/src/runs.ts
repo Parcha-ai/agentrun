@@ -11,13 +11,14 @@ import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { processAlive } from "@parcha/agentrun-adapters/host";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsOf, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
+import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
@@ -31,6 +32,7 @@ import { EFFORT_ENV, FAUX_ENV, thinkingOf, withoutFaux } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
+import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
@@ -49,6 +51,8 @@ const DRAIN = "30s";
 const PROCESS_LOG = "process.log";
 /** How long a request waits for a run's door: its process coming up, or a settle in progress. */
 const READY_TIMEOUT_MS = 45_000;
+/** The reducer's live "Run started" and "Run finished" rows: a turn's edges, which no store entry makes on any harness,
+ *  so a run's settled timeline never has them. Never served, live or settled, so no row a reader saw goes at the end. */
 const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
@@ -101,7 +105,11 @@ type RunMeta = {
   /** What its newest process took its thinking level from (app.ts's thinkingOf), as its environment had them: `effort`,
    *  the run's effort, and `host`, the host's AGENT_THINKING. Absent for a process an older server started. */
   launch_thinking?: { effort?: string; host?: string };
+  /** Where the run's learning stands (learning.ts); absent for a run that does not learn. */
+  learning?: Learning;
 };
+/** A run's learning as a list shows it: its state and reason. */
+const shortLearning = (learning: Learning | null) => (learning ? { state: learning.state, reason: learning.reason } : null);
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */
@@ -180,6 +188,9 @@ export type Run = {
   relaunches: number;
   /** Its newest launch has not reported back: its mark (RUN_LAUNCHING) is on disk. */
   launching?: boolean;
+  /** Its files being copied into its work/ before its first launch, until they are: nothing launches it meanwhile (a
+   *  request that would waits for it), and nothing but a cancel settles it. */
+  preparing?: Promise<void>;
   settled: boolean;
   settling?: Promise<void>;
   /** The newest write of its serve.json: one at a time, in order. */
@@ -187,10 +198,14 @@ export type Run = {
   /** Settles of this run not yet done: while any is, nothing starts its process again. */
   settles: number;
   updatedAt: string;
+  /** Where its status stood for its notices (`notify`): input_required, an end once carried back, or `other`. Unset
+   *  until this server has first read the run, so a run it adopts notices nothing of where it already stood; UNREAD for
+   *  an agentic run adopted live, whose rows come with its first snapshot. */
+  moment?: string;
 };
 
 const ASKED = "Asked you: ";
-registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`);
+registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`, undefined, { name: "Ask you a question" });
 // ask_person ends its turn (tools.ts): the person's reply is their next message, never a steer.
 registerTurnEnding(ASK_TOOL);
 
@@ -221,6 +236,14 @@ function noteAnswer(run: Run, entries: readonly unknown[]): void {
 }
 
 const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id));
+/** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
+ *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
+ *  status reads, never from a scan of its timeline. */
+export type Pending = { kind: "question"; question: string; asked_at: string } | null;
+const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
+  const last = meaningful(rows);
+  return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
+};
 const answerOf = (rows: readonly TimelineEvent[]) => {
   const last = meaningful(rows);
   return last?.kind === "final_answer" || last?.kind === "text_block" ? last : undefined;
@@ -277,6 +300,23 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
   return (id) => !live.has(id) && !isLive(id);
 }
 
+/** A live run adopted with no rows yet: where it stands is read from its first snapshot, notifying nothing. */
+const UNREAD = "unread";
+/** What a run's `moment` becomes (`keep`) as its status is recorded, and whether that is a notice. A run not yet read
+ *  (undefined) keeps none. A live run adopted with no rows (UNREAD) takes where its first snapshot stands, silently; an
+ *  end it comes to is always new, and noticed. */
+export function nextMoment(seen: string | undefined, moment: string, rows: number): { keep: string | undefined; notify: boolean } {
+  if (seen === undefined) return { keep: undefined, notify: false };
+  if (seen === UNREAD && (moment === "other" || moment === "input_required")) return { keep: rows ? moment : UNREAD, notify: false };
+  return { keep: moment, notify: moment !== seen && moment !== "other" };
+}
+
+/** Where a run's status stands for its notices: input_required, an end once carried back, else other. */
+const momentOf = (run: Run): string => {
+  const { status } = statusOf(run);
+  return status === "input_required" || (TERMINAL.has(status) && run.settled) ? status : "other";
+};
+
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {
   if (run.outcome) return { status: run.outcome, state: "idle" };
@@ -298,11 +338,17 @@ export function statusOf(run: Run): { status: Status; state: State } {
 
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
+/** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. */
+export type StartOptions = { input: Json; title: string; effort?: string; maxCostUsd?: number; inputs?: (work: string) => Promise<unknown> };
+
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxExa?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; learning?: LearningMode; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify };
+/** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
+ *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
+export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => void;
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
@@ -400,6 +446,8 @@ export class Runs {
   private starting = 0;
   /** The start sweep of the boxes runs left: once, before any run opens a box (sweepOnce). */
   private swept?: Promise<void>;
+  /** Why this host keeps no learning folder, said once. */
+  private learningOff?: string;
   constructor(private readonly options: RunsOptions) {}
 
   private get store() {
@@ -448,7 +496,15 @@ export class Runs {
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
+      ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
     };
+    // A server that went down while it copied what the run's agent learned saved the run's input and no learning, and
+    // left the copy half made, or whole with its pin: the copy goes, so the run starts again with nothing learned.
+    if (row.state === "running" && stored && !meta.learning && (await dropSeed(dir, join(dir, "work")))) {
+      meta.learning = { state: "dropped", reason: "seed_failed", detail: "The server stopped while it copied what the agent learned into the run, so the run started with nothing learned.", at: new Date().toISOString() };
+      await writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`);
+      warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
+    }
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, known?.revision);
     this.runs.set(row.id, run);
@@ -473,6 +529,7 @@ export class Runs {
       this.adoptProcess(run, record);
     }
     this.refresh(run);
+    run.moment = run.kind === "agentic" && run.orphan !== undefined && !run.rows.length ? UNREAD : momentOf(run);
     return run;
   }
 
@@ -528,13 +585,14 @@ export class Runs {
     }
     const root = read.reduce((min, r) => Math.min(min, r.conversation), Infinity);
     const entries = read.flatMap((r) => (run.kind === "workflow" || r.conversation === root ? [r.entry] : []));
-    if (atEnd) run.metrics = runMetricsOf(read.map((r) => r.entry) as never);
     if (run.kind === "workflow") {
       const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
       // Decisions it cannot read add no rows: the run's cost read says unknown (readDecisionCost).
       try { run.decisions = durableDecisions(file); } catch { run.decisions = undefined; }
       run.llmRead = (await readNodeLog(run.dir)).filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done").length;
     }
+    // Its decision requests count with its model requests: each receipt's tokens, or unmetered without them.
+    if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteAnswer(run, entries);
     this.take(run, timelineOf(entries as never, { settled: true }));
@@ -543,7 +601,7 @@ export class Runs {
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
   /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
   private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
-    run.rows = withAsks(rows);
+    run.rows = withAsks(rows.filter((r) => !QUIET.test(r.id)));
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
@@ -688,6 +746,20 @@ export class Runs {
   private mark(run: Run): void {
     const { status, state } = statusOf(run);
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
+    const moment = momentOf(run);
+    const { keep, notify } = nextMoment(run.moment, moment, run.rows.length);
+    run.moment = keep;
+    if (!notify || !this.options.notify) return;
+    const waits = moment === "input_required";
+    try {
+      // A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on).
+      const at = waits ? ((stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "") : (run.endedAt ?? "");
+      // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
+      const pending = waits ? { pending: { kind: state === "waiting" ? ("question" as const) : ("stopped" as const) } } : {};
+      this.options.notify(waits ? "run.needs_input" : "run.ended", { run_id: run.id, agent_id: run.agentId, status, title: run.meta.title, ...pending }, at);
+    } catch (error) {
+      warn(run.id, `its notice was not queued: ${(error as Error).message}`);
+    }
   }
 
   // ---- the door -------------------------------------------------------------------------------------------------------
@@ -765,6 +837,14 @@ export class Runs {
     const deadline = Date.now() + timeoutMs;
     // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
     await this.sweepOnce();
+    // And for its files, which its start copies before it launches it: within the time left.
+    const copying = run.preparing;
+    if (copying) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([copying, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, deadline - Date.now()))))]);
+      clearTimeout(timer);
+      if (run.preparing === copying) throw new ApiError("unavailable", "the run's files are still being copied into its workspace", { retry_after_ms: 1000 }, { "retry-after": "1" });
+    }
     for (let launched = false; ; await sleep(100)) {
       const record = await this.record(run);
       // Checked after the read: a settle may end the run while it is read, and nothing starts a run that ended.
@@ -833,7 +913,7 @@ export class Runs {
   }
 
   private launch(run: Run): void {
-    if (run.child || this.closing || run.cancel || run.outcome || run.finishing) return;
+    if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing) return;
     // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts).
     const secrets = handover(RUN_SECRETS);
     const env: NodeJS.ProcessEnv = {
@@ -843,6 +923,7 @@ export class Runs {
       ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}), ...(this.options.fauxParallel ? { [FAUX_PARALLEL_ENV]: this.options.fauxParallel } : {}), ...(this.options.fauxOpenrouter ? { [FAUX_OPENROUTER_ENV]: this.options.fauxOpenrouter } : {}) } : {}),
       ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
       ...(this.options.faux && this.options.fauxMonid ? { [FAUX_MONID_ENV]: this.options.fauxMonid } : {}),
+      ...(this.options.faux && this.options.fauxExa ? { [FAUX_EXA_ENV]: this.options.fauxExa } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
       ...(this.options.documents ? { [DOCUMENTS_ENV]: this.options.documents } : {}),
     };
@@ -954,6 +1035,9 @@ export class Runs {
   /** `exited`: the process this server supervised exited. Exiting on an error before it released fails the run; going
    *  any other way before the run ended (killed, or found gone at a start) opens it again. */
   private async settleOnce(run: Run, code: number | null, exited: boolean): Promise<void> {
+    // A run whose files are still being copied has had no process yet: its start launches it, and only a cancel ends it
+    // first (a recovery that lists it meanwhile must not fail it for its launch mark).
+    if (run.preparing && !run.cancel) return;
     run.feed?.abort();
     run.feed = undefined;
     run.working = false;
@@ -1163,7 +1247,8 @@ export class Runs {
     this.starting++;
   }
 
-  async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  /** `inputs` copies the run's files into its work/ (uploads.ts), after the store made it and before its process starts. */
+  async create(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
     await this.sweepOnce();
     await this.takePlace();
     try {
@@ -1176,21 +1261,80 @@ export class Runs {
     }
   }
 
-  private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  /** What a run of `agentId` starts from: its learning folder's main (learning.ts), the folder made first when it is
+   *  absent; else why it starts with nothing learned. A learning fault never refuses a run: a host without the git
+   *  learning needs is said once, and a folder that cannot be made or read once per run. */
+  private async seedFor(agentId: string): Promise<{ seed: Seed } | { failed: string }> {
+    const blocked = await learningBlocker(process.env);
+    if (blocked) {
+      if (this.learningOff !== blocked) process.stderr.write(`agentrun-serve: runs start with nothing learned: ${blocked}\n`);
+      this.learningOff = blocked;
+      return { failed: "This host has no git that learning can use, so the run started with nothing learned." };
+    }
+    return seedOf(this.options.agents.dir, agentId).then((seed) => ({ seed }), (error: Error) => {
+      process.stderr.write(`agentrun-serve: the agent ${agentId}'s learning folder could not be read, so its run starts with nothing learned: ${error.message}\n`);
+      return { failed: "The agent's learning folder could not be read, so the run started with nothing learned." };
+    });
+  }
+
+  /** Writes the serve.json of a run being set up. When it fails, the store has the run as running and no process will
+   *  run it: it ends failed here, never left for a later start to open with half its files. */
+  private async setUp(runId: string, dir: string, meta: RunMeta): Promise<void> {
+    try {
+      await writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`);
+    } catch (error) {
+      const summary = `The run could not be set up: ${(error as Error).message}`;
+      await this.options.agents.request(() => this.store.carryBack(runId, { state: "failed", summary })).catch((undo: Error) => warn(runId, `not ended after its setup failed: ${undo.message}`));
+      throw error;
+    }
+  }
+
+  private async start(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
+    // A run learns when the server's switch (`--learning`) is on and its agent's definition says `learning: true`. Its
+    // seed is read before the run is made, so the folder is read once whatever the run's setup does.
+    const learns = this.options.learning !== "off" && revision.kind === "agentic" && revision.body.learning === true;
+    const seeded = learns ? await this.seedFor(entry.agent.id) : undefined;
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
+    const at = new Date().toISOString();
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
-      created_at: new Date().toISOString(),
+      created_at: at,
       input: options.input,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
     };
-    await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
+    // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
+    // next one relaunches with its first message.
+    await this.setUp(started.runId, started.dir, meta);
+    if (seeded) {
+      let failed = "failed" in seeded ? seeded.failed : undefined;
+      if ("seed" in seeded) {
+        try {
+          await pinSeed(started.dir, started.workspace, seeded.seed);
+          for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
+        } catch (error) {
+          warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
+          failed = "What the agent learned could not be copied into the run, so it started with nothing learned.";
+        }
+      }
+      // Then its learning, once the copy is whole or gone. A server that goes down during the copy leaves none saved,
+      // and the next one takes the copy back (load).
+      meta.learning = failed === undefined ? { state: "seeded", reason: null, detail: null, at } : { state: "dropped", reason: "seed_failed", detail: failed, at };
+      await this.setUp(started.runId, started.dir, meta);
+    }
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
+    run.moment = "other";
     this.runs.set(run.id, run);
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;
     this.refresh(run);
+    if (options.inputs) {
+      // Listed from here, so a request may reach it while it copies: `preparing` holds it until its files are in.
+      const prepared = this.prepare(run, started.workspace, options.inputs).finally(() => void (run.preparing = undefined));
+      // Never rejected: a request waiting on it reads how the start ended from the run; the start's own error is the create's.
+      run.preparing = prepared.then(() => undefined, () => undefined);
+      if (!(await prepared)) return run;
+    }
     this.launch(run);
     if (revision.kind === "workflow") return run;
     void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => {
@@ -1202,6 +1346,31 @@ export class Runs {
       else if (!run.cancel) void this.settle(run, 1, true);
     });
     return run;
+  }
+
+  /** Copies the run's files into its work/ under the launch mark: a server that goes down while it copies leaves the
+   *  mark, and the next start fails the run rather than run it on part of its files. Copied whole, the mark goes, and the
+   *  launch makes its own. False when the copy failed, and the run ended so (or was cancelled meanwhile). */
+  private async prepare(run: Run, work: string, inputs: (work: string) => Promise<unknown>): Promise<boolean> {
+    try {
+      // The mark itself may fail (a full disk): the run ends as when the copy does.
+      this.markLaunching(run);
+      await inputs(work);
+    } catch (error) {
+      run.submitted = 0;
+      // Cancelled while it copied: it ends so.
+      if (!(run.outcome || run.cancel)) {
+        run.error = { code: "run_failed", message: `The run's files could not be copied into its workspace: ${(error as Error).message}`, retryable: false };
+        await this.carryBack(run, "failed");
+      }
+      // The mark goes only once the store has the run's end: a server that goes down before then finds it, and fails the
+      // run rather than launch it on part of its files.
+      const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
+      if (row && row.state !== "running") this.reportedBack(run);
+      return false;
+    }
+    this.reportedBack(run);
+    return true;
   }
 
   private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number): Promise<void> {
@@ -1283,10 +1452,23 @@ export class Runs {
     }
   }
 
+  /** Waits, up to a request's deadline, until a live run's rows show every message sent to it, and any rows at all: its
+   *  record has caught up with its process. Its end, a cancel or its process going ends the wait. */
+  private async caughtUp(run: Run): Promise<void> {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.submitted > 0 || !run.rows.length; await sleep(100)) {
+      if (!this.live(run) || run.finishing || run.outcome || run.cancel || Date.now() > deadline) return;
+    }
+  }
+
   /** Abort the turn that is running; the run stays open, `input_required` and idle. A workflow run has no turn to stop. */
   async stop(run: Run): Promise<boolean> {
     // The contract's stop has no refusal: an imported run answers as any ended one, stopped false, and nothing moves.
     if (run.imported) return false;
+    // A message sent to the run shows in its rows only once its door's events bring it: until then the run reads queued
+    // (state working), or holds a message not shown, however far its process is into the turn. The stop waits for its
+    // rows first, so the mark it saves (the person's last message) covers the message the turn answers; then it stops
+    // the turn as it stops any working run.
+    if (run.kind !== "workflow") await this.caughtUp(run);
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.
@@ -1312,7 +1494,9 @@ export class Runs {
   async cancel(run: Run): Promise<boolean> {
     // As stop: already terminal, and no cancel mark is written.
     if (run.imported) return false;
-    if (run.outcome) return false;
+    // Finishing is already ending with its outcome (an answer, a failure, the cap): a cancel now would turn a run that
+    // answered into a cancelled one, since the settle reads the cancel first.
+    if (run.outcome || run.finishing) return false;
     run.cancel = true;
     // First, so no request leaves after the cancel landed, whether or not the process can be reached yet.
     await writeWhole(join(run.dir, RUN_CANCELLED), "").catch((error: Error) => warn(run.id, `its cancel mark is not written: ${error.message}`));
@@ -1429,16 +1613,18 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
+      pending: status === "input_required" && state === "waiting" ? pendingOf(run.rows) : null,
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
+      learning: run.meta.learning ?? null,
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
     };
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning: shortLearning(learning) };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -1457,12 +1643,16 @@ export class Runs {
     return {
       run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, revision: row.revision, kind: row.kind, sha: null,
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
+      ...(typeof meta?.effort === "string" ? { effort: meta.effort } : {}),
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
       review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
       cost: { usd: row.costUsd ?? null, ...(row.costUsd === undefined && row.atMostUsd !== undefined ? { at_most_usd: row.atMostUsd } : {}), basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
       archived_at: row.archivedAt ?? null,
+      // A run read from its row alone has ended: it waits on nothing.
+      pending: null,
       imported_from: row.importedFrom ?? null,
+      learning: shortLearning(isObject(meta?.learning) ? meta.learning : null),
     };
   }
 

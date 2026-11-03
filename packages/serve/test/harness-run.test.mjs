@@ -3,12 +3,13 @@
 // one resumes the session.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
 
@@ -73,12 +74,7 @@ const server = await startServe({ data: ${JSON.stringify(data)}, port: 0, faux: 
 process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token }) + "\\n");`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => child.kill("SIGKILL"));
-  let out = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !out.includes("\n"); i++) {
-    assert.ok(i < 200, `the server did not start: ${out}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  const out = await printed(child, /\n/);
   const { base, token } = JSON.parse(out.slice(0, out.indexOf("\n")));
   const first = client(base, token);
   const go = join(await scratch(t), "go");
@@ -287,6 +283,19 @@ test("pi's confinement holds for another harness's read: a link out of the works
   assert.doesNotMatch(read[0], /not for the agent/);
 });
 
+test("another harness's file tools name the workspace's paths relative to it: a path out of it, a missing file and a write, with no result naming the server's data directory", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "edges", "Touch the edges.", "claude-agent", ["read", "write"]);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const results = rows.filter((r) => r.kind === "tool_result").map((r) => [r.tool_name, r.tool_status, r.tool_result_preview ?? ""]);
+  assert.deepEqual(results.map(([name, status]) => [name, status]), [["write", "failed"], ["read", "failed"], ["write", "success"]], JSON.stringify(results));
+  assert.match(results[0][2], /^\.\.\/escape\.md: outside the workspace(?: \(it resolves to \.\.\/escape\.md\))?$/, "the refusal names the path beside the workspace, not where it is");
+  assert.match(results[1][2], /^ENOENT: no such file or directory, \w+ 'missing\.md'$/);
+  assert.equal(results[2][2], "Successfully wrote to sub/ok.md");
+  assert.equal(await readFile(join(data, "runs", runId, "work", "sub", "ok.md"), "utf8"), "in");
+  for (const root of new Set([data, realpathSync(data)])) assert.deepEqual(results.filter(([, , text]) => text.includes(root)), [], `no result names ${root}`);
+});
+
 test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");
@@ -304,6 +313,20 @@ test("a capped run with a request cut by a crash goes on: the cut request counts
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 55_000 });
   const ended = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([ended.status, ended.result?.final_answer], ["completed", "After the cut."], JSON.stringify(ended.error));
+  assert.equal(ended.cost.usd, null, "the cut request's own price never came in: the shown cost is unknown");
+  // What the cap held for each request, on its record: the model's $0 worst case, so the cut one counts at $0.
+  for (let tries = 0; ; tries++) {
+    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    try {
+      const held = db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data.heldUsd);
+      assert.deepEqual(held, [0, 0, 0], "the first, the cut one, and the one after it, each held at $0");
+      break;
+    } catch (error) {
+      if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
+    } finally {
+      db.close();
+    }
+  }
 });
 
 // Three runs in turn, each followed for up to 55 s.

@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-serve, @parcha/pi-durable-agent, @parcha/agentrun-adapters
+packages: @parcha/agentrun-serve, @parcha/pi-durable-agent, @parcha/agentrun-kernel
 kind: feature
 ---
 A run whose cost is unknown because requests were cut (a crash) or stopped before their end (a stop, a cancel, a drain) now says the most it can be, with or without a spend cap, when its model has a price: `cost.at_most_usd`, the known costs plus those worst cases, beside `usd: null`, on the run, the run list, the timeline page and its usage row. Each request carries its worst case (its input bound and output ceiling at the model's price) to its marks; with no cap it is only measured, never refused. A model with no price, or anything else unknown, leaves no bound. `GET /stats` counts such runs apart, in `cost.bounded_unknown` and `analytics.totals.bounded_unknown` (`runs`, `at_most_usd`), never in the known sum.

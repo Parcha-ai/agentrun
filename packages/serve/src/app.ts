@@ -22,6 +22,7 @@ import { readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, claudeSkillCheck, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
+import { withLearned } from "./learning.js";
 import { completer } from "./llm.js";
 import { imageLoader } from "./pdf-pages.js";
 import { type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
@@ -77,16 +78,20 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   const registry = createRegistry();
   registry.install(CodingTools);
+  // What the run's agent learned goes into its instructions, the one path for every harness (learning.ts).
+  const learned = revision.kind === "agentic" ? await withLearned(where.root, revision.body.instructions) : "";
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
     const harness = revision.body.harness;
     // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
     // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts).
     const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
-    const { system: instructions, native } = await systemOf(revision.body.instructions, Object.keys(revision.body.skills), where.work, check);
+    const { system: instructions, native } = await systemOf(learned, Object.keys(revision.body.skills), where.work, check);
     const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
-    // The harness's own files (its homes, its working state) go in a private directory beside the workspace, never in it.
+    // The harness's own files (its homes, its state) go in a private directory beside the workspace, never in it. It works
+    // in the workspace itself (where.work), the directory the run's file tools confine to: a path the model builds from
+    // its working directory is then one they take.
     const dir = join(where.root, "harness");
     await mkdir(dir, { recursive: true, mode: 0o700 });
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
@@ -97,7 +102,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // With no cap, a guard that refuses nothing and only measures each request's worst case for the run's marks.
     const guard = cap === undefined ? await measureBefore(runModel, { listed }) : await capBefore(cap, runModel, { listed });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
-    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root));
+    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work);
     return { models: {}, registry: createRegistry(), door, onOpen } as unknown as AppOptions;
   }
   // Each tool the revision names is bound once, from the table: its extensions installed here, its documents written in
@@ -131,7 +136,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work);
+    const instructions = await promptOf(learned, Object.keys(revision.body.skills), where.work);
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => marked.open(durable) } as unknown as AppOptions;
   }
   const meta = await readJson(join(where.root, RUN_META));
