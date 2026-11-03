@@ -18,10 +18,12 @@ export const STORE_FILE = "store.sqlite";
 export type RevisionKind = "agentic" | "workflow";
 /** `harness`: the harness that runs the revision, an id its host knows (absent: the host's default). `place`: where its
  *  runs execute, a mode and the box it uses, ids its host knows (absent: the host's default). `learning`: whether an
- *  agentic revision's runs learn, kept when a definition says so either way (absent: the host's default). */
+ *  agentic revision's runs learn, kept when a definition says so either way (absent: the host's default).
+ *  `toolSettings`: the revision's own settings of a capability its host lets a user set (capability to its settings,
+ *  such as its provider: names and values its host checks; absent: the host's own). */
 export type RevisionPlace = { mode: string; box?: string };
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean };
-export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>> };
+export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>> };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });
 /** `archivedAt`: when it was archived, while it is: hidden from lists, kept with its history. */
@@ -86,8 +88,8 @@ export type StoreAnalytics = {
 };
 export type AnalyticsFilter = { from?: string; to?: string; agent?: string };
 export type NewRevision =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; note?: string }
-  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; note?: string };
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; note?: string }
+  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; note?: string };
 export type StartedRun = { runId: string; dir: string; storePath: string; workspace: string; agentId: string; revision: Revision };
 
 const SCHEMA = `
@@ -234,6 +236,8 @@ function revisionOf(row: Record<string, unknown>): Revision {
 /** An id a host knows: a harness, a place's mode, a box. */
 const HOST_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const hostId = (value: unknown): value is string => typeof value === "string" && HOST_ID.test(value);
+/** A capability's, a setting's or a value's name in `toolSettings`: lowercase letters, digits, dashes and underscores. */
+const PICK_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
 function placeOf(place: unknown): RevisionPlace {
@@ -253,7 +257,12 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
   const tools = input.tools ?? [];
   if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string" && t !== "") || new Set(tools).size !== tools.length) throw invalid("the tools are not a list of distinct non-empty names");
   if (input.harness !== undefined && !hostId(input.harness)) throw invalid("the harness is not a harness id (lowercase letters, digits and dashes)");
-  const host = { ...(input.harness !== undefined ? { harness: input.harness } : {}), ...(input.place !== undefined ? { place: placeOf(input.place) } : {}) };
+  const set = input.toolSettings;
+  const named = (value: unknown, check: (inner: unknown) => boolean) => isObject(value) && Object.entries(value).every(([name, inner]) => PICK_NAME.test(name) && check(inner));
+  if (set !== undefined && !named(set, (setting) => named(setting, (value) => typeof value === "string" && PICK_NAME.test(value)))) throw invalid("the tool settings are not capability names to settings of names");
+  // Sorted, and none when empty: two revisions with the same settings are one.
+  const sorted = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)));
+  const host = { ...(input.harness !== undefined ? { harness: input.harness } : {}), ...(input.place !== undefined ? { place: placeOf(input.place) } : {}), ...(set && Object.keys(set).length ? { toolSettings: Object.fromEntries(Object.entries(sorted(set)).map(([name, setting]) => [name, sorted(setting as Record<string, unknown>)])) as Record<string, Record<string, string>> } : {}) };
   if (input.kind === "agentic") {
     if (typeof input.instructions !== "string") throw invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) throw invalid(`the ${field} is not a non-empty string`);

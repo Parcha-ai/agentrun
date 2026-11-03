@@ -6,7 +6,9 @@
 // pi's compaction summary is a paid request too (`completeSimple`), and pi books its usage in its own usage document,
 // never as an entry the run's timeline sums. So it is marked the same way (`request: "compaction"`), and its answer's
 // cost is written as REQUEST_COST: the run's total, and /usage with it, include it, and one cut before its answer reads
-// unknown. Both are wrapped here: `streamSimple` for the generation's requests, `completeSimple` for the summary.
+// unknown. Both are wrapped here: `streamSimple` for the generation's requests, `completeSimple` for the summary. A
+// tool's own request on the run's models (web_search's, hosted-search.ts) is a side request the same way, under its own
+// label (sideRequests), and its cost is its tokens' plus the fee its tool names.
 //
 // Under a cap (cap.ts), each request comes with the worst case the cap held for it, and its start mark carries that
 // figure (`heldUsd`), as does the end mark of one stopped before its end (or a summary that failed): the cap counts a
@@ -20,8 +22,9 @@ import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-wo
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
-import { CAP_REFUSED_FIELD, HELD_FIELD, HELD_USD } from "./cap.js";
+import { CAP_REFUSED_FIELD, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, sideRequests } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
+
 
 /** Whether the run in `root` (its directory) was cancelled: the mark serve's cancel writes there first. */
 export const cancelledIn = (root: string) => () => existsSync(join(root, RUN_CANCELLED));
@@ -77,7 +80,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       try {
         await mark(REQUEST_STARTED, heldOf(options));
       } catch (error) {
-        const message = failed(model, `the model request was not sent: its mark could not be written (${reason(error)})`);
+        const message = failed(model, `${MARK_NOT_WRITTEN} (${reason(error)})`);
         outer.push({ type: "error", reason: "error", error: message });
         outer.end(message);
         return;
@@ -108,18 +111,20 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     })();
     return outer;
   };
-  const COMPACTION = { request: "compaction" };
   const completeSimple = async (model: Model<Api>, context: Context, options?: Parameters<Models["completeSimple"]>[2]): Promise<AssistantMessage> => {
+    const side = sideRequests.get(context);
+    const COMPACTION = { request: side?.label ?? "compaction" };
+    const what = side ? `${side.label} request` : "summary request";
     // A cancelled run sends no summary either; pi writes no entry for a failed summary, so nothing needs marking.
-    if (cancelled()) return refuse(model, "summary request", options?.signal, false);
+    if (cancelled()) return refuse(model, what, options?.signal, false);
     try {
       await mark(REQUEST_STARTED, { ...COMPACTION, ...heldOf(options) });
     } catch (error) {
-      return failed(model, `the model request was not sent: its mark could not be written (${reason(error)})`);
+      return failed(model, `${MARK_NOT_WRITTEN} (${reason(error)})`);
     }
     if (cancelled()) {
       await mark(REQUEST_ENDED, { ...COMPACTION, unsent: true }).catch(() => undefined);
-      return refuse(model, "summary request", options?.signal, false);
+      return refuse(model, what, options?.signal, false);
     }
     let result: AssistantMessage;
     try {
@@ -133,7 +138,9 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     if (result.stopReason === "aborted") await mark(REQUEST_ENDED, { ...COMPACTION, ...heldOf(options) }).catch(() => undefined);
     else {
       const total = result.usage?.cost?.total;
-      const usd = typeof total === "number" ? total : null;
+      // A side request's fee is its cost too, on the answer as well: the cap counts the answer's total (cap.ts).
+      const usd = typeof total === "number" ? total + (side?.feeUsd() ?? 0) : null;
+      if (side && usd !== null) result.usage.cost.total = usd;
       // Its tokens, in pi's shape, when pi counted any: zeros are no count.
       const u = result.usage;
       const usage = u && u.input + u.output + u.cacheRead + u.cacheWrite > 0 ? { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite } : undefined;

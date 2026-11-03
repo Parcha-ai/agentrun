@@ -14,20 +14,26 @@
 // A request the session booked but the root has no entry for (the process died before the boundary) gets one at the
 // next open, with its cost and no content.
 //
+// A paid host tool's charge (monid.run's) is written on the root by the tool (monid.ts), as a TOOL_COST the timeline
+// adds to the run's cost. Under a cap it joins what the cap reads as spent: the session's booked requests, plus the
+// charges written by earlier processes (read at the open) and this one's.
+//
 // A message the door accepts is on the root before the door says so, and its end (sent to the session, or dropped by a
 // stop) after: one that waited for a turn's end when the process died is sent at the next open. Its end is written once
 // the session has it, so a process that dies between the two sends it again rather than never.
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
-import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
+import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
 import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
-import type { CapGuard } from "./cap.js";
+import { type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
-import { parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
-import { REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { handsParallel, planeOf } from "./tool-plane.js";
+import { parallelOf } from "./web-fetch.js";
+import { WEB_SEARCH_TOOL } from "./web-search.js";
+import { REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
 export const BOOKED = "adapter.request";
@@ -93,11 +99,12 @@ export interface AdapterRun {
   onOpen(run: DurableRun): Promise<void>;
 }
 
-/** The door and the open of a run whose session is `spec` on `adapter`, with the file tools `tools` names (built at the
- *  open, over the run's environment). `budgetUsd`: the run's spend cap. `cancelled`: whether the run was cancelled
- *  (request-start.ts `cancelledIn`): once it says so, no model request leaves, as on pi. `cwd`: the run's workspace, the
- *  directory its file tools confine to, where the harness works too (the adapter's io.cwd), so a path the model builds
- *  from its working directory is one the tools take. */
+/** The door and the open of a run whose session is `spec` on `adapter`, with the host tools `tools` names (built at the
+ *  open, over the run's environment; its coding tools from `coding`, the run's coding source, host-tools.ts).
+ *  `budgetUsd`: the run's spend cap. `cancelled`: whether the run was cancelled (request-start.ts `cancelledIn`): once it
+ *  says so, no model request leaves, as on pi. `cwd`: the run's workspace, the directory its file tools confine to, where
+ *  the harness works too (the adapter's io.cwd), so a path the model builds from its working directory is one the tools
+ *  take (in a box, coding-tools.ts names it at the box's work dir). */
 export function adapterRun(
   make: (confine?: ConfineChild) => Promise<AgentAdapter>,
   harness: string,
@@ -109,14 +116,25 @@ export function adapterRun(
   cap?: CapGuard,
   cancelled: () => boolean = () => false,
   cwd?: string,
+  coding?: readonly ToolRegistration[],
 ): AdapterRun {
-  // web_fetch's Parallel key, read as the run's app loads, before its process starts one of its own (web-fetch.ts).
-  if (tools.includes(WEB_FETCH_TOOL)) parallelOf(process.env);
+  const plane = planeOf(process.env);
+  // The web tools' Parallel key, when one resolves to Parallel, read as the run's app loads, before its process starts
+  // one of its own (web-fetch.ts).
+  if (handsParallel(plane)) parallelOf(process.env);
+  // web_search resolved native is the harness's own search (adapters.ts turns it on, with its input allowance): no host
+  // tool of the name.
+  if (plane.web_search === "native") tools = tools.filter((name) => name !== WEB_SEARCH_TOOL);
   // The run's cap, or its cancel, refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
   const CANCELLED = "the run was cancelled: the model request was not sent";
+  // What the run's paid tools charged, in earlier processes (read at the open) and this one: null once one is unknown.
+  let charged: number | null = 0;
+  // Each admitted request's worst case until its cost is booked: the booking's spend counts it only then.
+  const inFlight = holdsInFlight();
+  const plus = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
-    const answer = cancelled() ? { refuse: CANCELLED } : cap?.beforeRequest(request);
+    const answer = cancelled() ? { refuse: CANCELLED } : cap?.beforeRequest({ ...request, spentUsd: plus(request.spentUsd, charged) });
     if (answer) {
       refused = answer.refuse;
       return answer;
@@ -124,6 +142,7 @@ export function adapterRun(
     // Admitted: the worst case the cap holds for it, which the runner records, and counts it at if its cost never
     // comes in.
     const hold = cap?.worstOf?.(request);
+    inFlight.admitted(hold);
     return hold === undefined ? undefined : { holdUsd: hold };
   };
   /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
@@ -179,21 +198,25 @@ export function adapterRun(
 
   const commit = <T>(change: (tx: Tx) => Promise<T>) => run!.harness.commit(change, context);
 
+  /** A cost for a request already written: one written at unknown cost (below) gets its cost now, as an entry of its
+   *  own, so the run's spend counts it, once; any other is a duplicate. */
+  const priceLate = async (late: Pending) => {
+    if (!unpriced.has(late.request) || priced.has(late.request)) return;
+    const tokens = tokensOf(late.usage);
+    await commit(async (tx) => {
+      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request, usd: late.usage.usd ?? null, ...(tokens ? { usage: tokens } : {}) } });
+    });
+    priced.add(late.request);
+  };
+  const writtenAt = () => costed.findIndex((c) => written.has(c.request));
+
   /** Writes what the current request has: its entry with the content so far and the oldest cost not yet written.
    *  Content with no cost yet waits for one, but at a turn's end (`final`) it is written as a request of unknown cost. */
   const flush = (final = false): Promise<void> =>
     later(async () => {
-      // A cost for a request already written: one written at unknown cost (below) gets its cost now, as an entry of its
-      // own, so the run's spend and its cap count it; any other is a duplicate.
-      while (costed.length && written.has(costed[0]!.request)) {
-        const late = costed.shift()!;
-        if (!unpriced.has(late.request) || priced.has(late.request)) continue;
-        const tokens = tokensOf(late.usage);
-        await commit(async (tx) => {
-          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request, usd: late.usage.usd ?? null, ...(tokens ? { usage: tokens } : {}) } });
-        });
-        priced.add(late.request);
-      }
+      // Each cost for a request already written, wherever it sits: a response is booked when its stream closes, so a
+      // late cost can come in after a later request's.
+      for (let at = writtenAt(); at >= 0; at = writtenAt()) await priceLate(costed.splice(at, 1)[0]!);
       if (!text && !calls.length && !costed.length) return;
       if (!costed.length && !final) return;
       const request = costed.shift();
@@ -215,10 +238,14 @@ export function adapterRun(
       if (marked !== undefined) written.add(marked);
       if (request) priced.add(request.request);
       else if (marked !== undefined) unpriced.add(marked);
-      // More costs than content: each later one still gets its own entry, cost only.
+      // More costs than content: each later one still gets its own entry, cost only. One that came in meanwhile for a
+      // request already written is a late cost, or a duplicate.
       while (costed.length) {
         const next = costed.shift()!;
-        if (written.has(next.request)) continue;
+        if (written.has(next.request)) {
+          await priceLate(next);
+          continue;
+        }
         answered.add(next.request);
         await commit(async (tx) => {
           await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(next.request), next, "", []) as never] });
@@ -231,6 +258,7 @@ export function adapterRun(
 
   const onModel = (event: ModelPortEvent) => {
     if (event.type === "request_start") {
+      inFlight.started(event.turn);
       current = event.turn;
       open.add(event.turn);
       models.set(event.turn, event.model);
@@ -241,11 +269,13 @@ export function adapterRun(
       later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn } })))).catch(() => undefined);
     } else {
       open.delete(event.turn);
+      inFlight.ended(event.turn);
       costed.push({ request: event.turn, usage: event.usage });
       booked();
-      // A cost that came in after its answer was written goes in now, not at some later flush. If that write fails, the
-      // next open writes it from the session's booking, once.
-      if (written.has(event.turn)) flush().catch(() => undefined);
+      // A cost that came in after its answer was written goes in now, not at some later flush, and so does one that came
+      // in with no turn running, which no turn's flush would write. If that write fails, the next open writes it from
+      // the session's booking, once.
+      if (written.has(event.turn) || turn === undefined) flush().catch(() => undefined);
     }
   };
 
@@ -336,10 +366,15 @@ export function adapterRun(
           const why = refused ?? halted?.message ?? (failed === undefined ? undefined : `${harness}: ${failed}`);
           refused = undefined;
           if (why !== undefined) await commit(async (tx) => void (await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] })));
+          // A cost that came in while this turn ended, after its flush: written now, while the run still reads busy, so a
+          // message that comes in meanwhile waits its place below and goes on as the next turn of this busy period.
+          if (costed.length) await flush().catch(() => undefined);
         }
         const next = queue.shift();
         start = next === undefined ? undefined : sendOf(next);
       }
+      // Nothing from here to run_end waits: a message that comes in once the run reads idle starts the next busy period,
+      // after this run_end. A cost that comes in from now on is written as it comes in (onModel).
       turn = undefined;
       emit?.({ type: "run_end" });
     })();
@@ -386,10 +421,12 @@ export function adapterRun(
       // The requests already written on the root, and the messages accepted and never sent, from any earlier process.
       const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
       const accepted = new Map<string, Message>();
+      const paid: { kind: string; data?: unknown }[] = [];
       for (let cursor: Cursor | undefined; root; ) {
         const page = await root.entries({ order: "ascending" }, 500, cursor, context);
         for (const entry of page.items) {
           const data = entry.data as { key?: unknown; request?: unknown; unpriced?: unknown; id?: unknown; content?: unknown } | undefined;
+          if (entry.kind === TOOL_COST || entry.kind === TOOL_STARTED) paid.push(entry);
           if (data?.key !== spec.key) continue;
           if (entry.kind === BOOKED && typeof data.request === "number") {
             written.add(data.request);
@@ -401,6 +438,8 @@ export function adapterRun(
         if (page.next === undefined) break;
         cursor = page.next;
       }
+      // What the paid tools charged in earlier processes, as the cap counts it: a call a crash cut at its held figure.
+      charged = capToolSpend(paid);
       // The prefix pi's commands start under in this run, from pi-durable-disk's own builder: the harness's process too.
       const env = (await durable.env({ conversationId: ROOT_CONVERSATION_ID, read: undefined as never }, context)) as unknown as { confinePrefix?(): string[] };
       if (typeof env.confinePrefix !== "function") throw new Error("the run's environment gives no confinement for the harness's process");
@@ -427,11 +466,21 @@ export function adapterRun(
       });
       // A request a crash cut off is booked once, unknown, before anything is sent.
       await booking.bookCut();
+      // A paid tool's check before it spends: the session's requests, each booked once the proxy has answered (waited
+      // for, as at a turn's end), one still in flight at the worst case the cap held for it (as pi's spend counts it),
+      // with the run's charges; its charge joins them.
+      if (budgetUsd !== undefined) {
+        useSpend({
+          cap: budgetUsd,
+          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(plus(booking.spentUsd(), charged), inFlight.total())),
+          add: (usd) => void (charged = plus(charged, usd)),
+        });
+      }
       // Each request the session booked and the root has no entry for: its cost, with no content.
       // Each request the session booked and the root does not have, or has at unknown cost only: written now, once.
       for (const [request, usage] of inSession(await writer.read()).booked) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
-      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       queue.push(...accepted.values());
       openedDone();
       if (session.state === "open_turn") runTurns(() => session!.recover());
