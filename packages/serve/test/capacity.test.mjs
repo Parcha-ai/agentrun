@@ -54,6 +54,7 @@ test("over the cap, a new run is 429 rate_limited with retry-after and nothing s
   assert.deepEqual([refused.status, refused.body.error.code, refused.body.error.retryable], [429, "rate_limited", true], JSON.stringify(refused.body));
   assert.match(refused.headers.get("retry-after") ?? "", /^\d+$/);
   assert.equal(refused.body.error.details.max_concurrent_runs, 2);
+  assert.equal(refused.body.error.message, "This server runs at most 2 runs at once; start this one when another ends.", "the cap's field name is in details, not in the words a person reads");
   assert.equal((await api("GET", "/runs")).body.runs.length, 2, "nothing more started");
   // One ends: there is room again.
   await writeFile(join(data, "go-0"), "");

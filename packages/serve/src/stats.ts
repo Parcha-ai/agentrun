@@ -82,6 +82,7 @@ export function analyticsView(a: StoreAnalytics, filter: AnalyticsFilter) {
     by_day: a.byDay.map((g) => ({ day: g.day, ...group(g) })),
     by_source: a.bySource.map((g) => ({ source: g.source, ...group(g) })),
     // Each tool by the name it was called (`tool`) and what a person calls it (`label`, the timeline's registry).
+    // A call by an MCP name of a registered tool is counted as that tool's by the store (toolOf).
     tools: a.tools.map((t) => ({ tool: t.tool, label: nameOf(t.tool), calls: t.calls, errors: t.errors })),
   };
 }

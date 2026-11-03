@@ -750,7 +750,8 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       store.createAgent({
         id: project.agentId,
         name: text(project.name),
-        description: text(project.cwd),
+        // The folder by its name, as the agent is: never the absolute path, which no card or page shows.
+        description: text(`Sessions imported from ${project.name}`),
       });
     const files = await projectFiles(project.cwd, report.skipped);
     const byStart = [...project.sessions].sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? ""));
