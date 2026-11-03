@@ -89,6 +89,23 @@ test("capabilities' models.ready and needs: a key when none names a model or the
   assert.deepEqual(await models({ AGENTRUN_SERVE_FAUX: FAUX }), { ready: true, needs: null });
 });
 
+// The server remakes its capabilities from parts after each write (startHolding): whether a revision that names no model
+// runs (models.needs) is one, made from env alone and remade with it at each key write. So the next read after a model
+// key's PUT or DELETE says so, with no restart, and a tool-settings write in between (which remakes the caps from the
+// parts held) keeps it.
+test("a model key's PUT or DELETE changes capabilities' models.needs on the next read, with no restart, and a tool-settings write keeps it", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, MODEL_VARS);
+  const { api } = await serve(t, { faux: undefined });
+  const ready = async () => { const { ready, needs } = (await api("GET", "/capabilities")).body.models; return [ready, needs]; };
+  assert.deepEqual(await ready(), [false, "key"]);
+  assert.equal((await api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: made() } })).status, 204);
+  assert.deepEqual(await ready(), [true, null], "saved: a revision that names no model runs, with no restart");
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "auto" } })).status, 200);
+  assert.deepEqual(await ready(), [true, null], "a tool-settings write keeps it");
+  assert.equal((await api("DELETE", "/settings/tool-keys/openrouter")).status, 204);
+  assert.deepEqual(await ready(), [false, "key"], "deleted: none again");
+});
+
 test("a model key saved with no restart: a server with none says no model runs and refuses the run; saved, a revision that names no model runs on its default; the key is in no answer, log or file", { timeout: 60_000 }, async (t) => {
   const endpoint = await responsesEndpoint(t, "42", 10);
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENT_MODEL_BASE_URL: endpoint.url }, MODEL_VARS);
