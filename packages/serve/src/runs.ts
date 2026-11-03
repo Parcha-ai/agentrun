@@ -20,6 +20,7 @@ import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from ".
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
 import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
+import { rowPaths } from "./workspace-paths.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV, toolingOf, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
@@ -649,7 +650,7 @@ export class Runs {
     if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteAnswer(run, entries);
-    this.take(run, timelineOf(entries as never, { settled: true }));
+    this.take(run, timelineOf(entries as never, { settled: true, path: rowPaths(run.dir) }));
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
@@ -870,7 +871,8 @@ export class Runs {
   }
 
   private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {
-    const reducer = timelineReducer();
+    // A file a call names by its absolute path in the run's workspace (a harness's CLI sends one) reads by its name there.
+    const reducer = timelineReducer({ path: rowPaths(run.dir) });
     const up = await fetch(new URL("/events", door), { signal, headers: { ...this.headers(), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
     const decoder = new TextDecoder();

@@ -16,8 +16,8 @@ const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pat
 async function upload(server, path, bytes) {
   const made = await server.api("POST", "/files", { path, size_bytes: bytes.length });
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  // `upload.url` is relative to /v2.
-  const sent = await fetch(`${server.baseUrl}${made.body.upload.url}`, { method: "PUT", headers: { authorization: `Bearer ${server.token}`, "content-type": "application/octet-stream" }, body: bytes });
+  // `upload.url` is a path from the server's root.
+  const sent = await fetch(`${server.url}${made.body.upload.url}`, { method: "PUT", headers: { authorization: `Bearer ${server.token}`, "content-type": "application/octet-stream" }, body: bytes });
   const ready = await sent.json();
   assert.equal(sent.status, 200, JSON.stringify(ready));
   return ready.file_id;
