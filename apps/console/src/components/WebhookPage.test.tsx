@@ -11,7 +11,7 @@ import type { Webhook, WebhookAttempt } from "@/lib/v2";
 
 /** An obvious fake: not a secret anywhere. */
 const SECRET = "whsec_bm90LWEtcmVhbC1zZWNyZXQtMDEyMzQ1Njc4OWFi";
-const SET: Webhook = { configured: true, url: "https://hooks.example.test/agentrun", signing: "sealed", disabled: null, updated_at: "2026-11-03T12:00:00.000Z" };
+const SET: Extract<Webhook, { configured: true }> = { configured: true, url: "https://hooks.example.test/agentrun", signing: "sealed", disabled: null, updated_at: "2026-11-03T12:00:00.000Z" };
 const attempt = (extra: Partial<WebhookAttempt>): WebhookAttempt => ({ webhook_id: "msg_0123456789abcdef0123456789abcdef", type: "run.ended", at: "2026-11-03T12:01:00.000Z", status_code: 200, latency_ms: 42, error: null, retry_at: null, redelivery: false, ...extra });
 
 type Call = { method: string; path: string; body: unknown };
