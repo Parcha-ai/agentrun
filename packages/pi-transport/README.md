@@ -863,10 +863,11 @@ facts); `auto.rest` is where the session goes back when nothing needs it elsewhe
 environment) and `auto.threshold` how sure Jev must be (default 0.5).
 
 `jevPlacer(models, auto.classifier, { rest, threshold })` asks Jev through pi-ai's `Models.classify` (provider
-`typesafe`, model `jev-latest`): one call a decision, two questions. `need` is whether the step needs something `rest`
-cannot do, wherever the session is now; `where` is a choice among the environments, each by its purpose. Jev reads
-the step and each environment's purpose and facts (GPU, CPUs, memory, capabilities, isolation, region; not the
-provider, which names how a box is made). The session
+`typesafe`, model `jev-latest`, on `TYPESAFE_API_KEY`; or Jev through OpenRouter's System One, provider `openrouter`,
+model `~typesafe/jev-latest`, on `OPENROUTER_API_KEY`): one call a decision, two questions. `need` is whether the
+step needs something `rest` cannot do, wherever the session is now; `where` is a choice among the environments, each
+by its purpose. Jev reads the step and each environment's purpose and facts (GPU, CPUs, memory, capabilities,
+isolation, region; not the provider, which names how a box is made). The session
 moves only for a need: `need` at least the threshold and `where` elsewhere. A session away from rest stays while its
 next step needs that place, and goes back to rest at a turn's end when nothing does, by the config. Code checks only
 structure: the judgment is Jev's.
@@ -876,11 +877,14 @@ structure: the judgment is Jev's.
   keeps the session where it is and says why in `error`.
 - **No stand-in.** `jevPlacer` refuses to build without the classifier model (`no_classifier`) or its provider's key
   (`no_key`).
+- **On the key you have.** `jevClassifier(process.env)` picks the classifier as serve's decisions do: TypeSafe's own
+  API when `TYPESAFE_API_KEY` is set, else Jev through OpenRouter when `OPENROUTER_API_KEY` is, else `undefined`. The
+  host's `Models` holds pi-ai's `typesafeProvider()` and `openrouterProvider()`.
 - **Kept with the session.** `HomeHandle.recordPlacement(record)` writes the decision into the session's store
   (`transport.placements`, keyed by its id) in a commit of its runner: it travels with the session, and with the
   record stream it reaches the host's log. A record whose `by` is anything else is refused (`invalid`).
 - **Cost.** A decision's usage counts tokens; `costUsd` is `null` when the classifier has no price (pi-ai's catalog
-  gives TypeSafe none): unknown, not 0.
+  gives TypeSafe's own API none, and prices Jev through OpenRouter): unknown, not 0.
 
 `./testing` has `replayClassifier`, TypeSafe as a replay set keyed by the canonical question (an unknown question is
 an error, never an answer), and `recordingClassifications` to record one. This package's set, 40 decisions recorded
