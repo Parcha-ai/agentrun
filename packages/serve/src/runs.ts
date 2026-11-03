@@ -450,6 +450,8 @@ export class Runs {
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
   private closing = false;
+  /** When this data directory's record-keeping of end notices began (noticesSince), once read. */
+  private noticesFrom?: number;
   /** Set once `close` is done: the store is closed, so nothing settles after it. */
   private closed = false;
   /** Runs past the cap's check whose process is not started yet. */
@@ -749,16 +751,24 @@ export class Runs {
 
   async recover(): Promise<void> {
     await this.sweepOnce();
-    const since = this.options.notify ? Math.max(this.noticesSince(), Date.now() - END_NOTICE_WINDOW_MS) : Infinity;
+    // Read, or written at this first start, before anything ends here: a run that ends later is after it.
+    if (this.options.notify) this.noticesFrom ??= this.noticesSince();
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
       if (row.importedFrom) continue;
       if (row.state !== "running") {
-        if (this.options.notify && row.endedAt && Date.parse(row.endedAt) >= since) await this.endNotice(row).catch((error: Error) => warn(row.id, `its end's notice is not checked: ${error.message}`));
+        if (this.options.notify && row.endedAt && this.endNoticeDue(row.endedAt)) await this.endNotice(row).catch((error: Error) => warn(row.id, `its end's notice is not checked: ${error.message}`));
         continue;
       }
       const run = await this.adopt(row).catch((error: Error) => (warn(row.id, `not recovered: ${error.message}; the next start tries again`), null));
       if (run && !this.live(run) && !run.outcome) await this.settle(run, null, false);
     }
+  }
+
+  /** Whether an end's run.ended is still this server's to send: an end since record-keeping began (noticesSince) and
+   *  within the outbox's own day. An earlier one counts as delivered: an older server's, or past every retry. */
+  private endNoticeDue(endedAt: string): boolean {
+    this.noticesFrom ??= this.noticesSince();
+    return Date.parse(endedAt) >= Math.max(this.noticesFrom, Date.now() - END_NOTICE_WINDOW_MS);
   }
 
   /** When this data directory's servers began recording their ends' notices (END_NOTICES_SINCE): read, or written now,
@@ -1518,7 +1528,7 @@ export class Runs {
       if (now?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
       if (now?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
       // Its end's run.ended in the outbox before the run opens again, or not opened: once the row runs, nothing queues it.
-      if (this.options.notify && now?.endedAt && !(run.meta.end_notice?.queued && run.meta.end_notice.ended_at === now.endedAt)) {
+      if (this.options.notify && now?.endedAt && this.endNoticeDue(now.endedAt) && !(run.meta.end_notice?.queued && run.meta.end_notice.ended_at === now.endedAt)) {
         run.moment = "other";
         this.mark(run);
         if (!(run.meta.end_notice?.queued && run.meta.end_notice.ended_at === now.endedAt)) throw new ApiError("unavailable", "The run's end is still being announced to its webhook; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
