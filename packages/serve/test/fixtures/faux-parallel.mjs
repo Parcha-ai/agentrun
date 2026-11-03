@@ -1,7 +1,8 @@
 // Under --faux only: the fetch serve's Parallel provider, web_fetch and web_search send their requests through, in place
 // of Parallel's API (the tests' fake). It answers every question, and each extract with the URL's full content, or as
 // AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT says: "errors" lists the URL in `errors`, a number answers that HTTP status. A
-// search answers `max_results` results (search()), or the HTTP status AGENTRUN_TEST_FAUX_PARALLEL_SEARCH names. It counts
+// search answers `max_results` results (search()), or the HTTP status AGENTRUN_TEST_FAUX_PARALLEL_SEARCH names, and a list
+// of monitors (GET /v1/monitors, a saved key's check) answers none. It counts
 // as authorized only the canary key, and files one line per call (with the process that made it) in the file
 // AGENTRUN_TEST_FAUX_PARALLEL_CALLS names. Like Parallel's API, it reports no cost.
 import { appendFileSync } from "node:fs";
@@ -11,10 +12,11 @@ export const CANARY = "par-canary-4e81b0c39a27";
 
 export default async function fakeParallel(url, init = {}) {
   const key = new Headers(init.headers).get("x-api-key");
-  const body = JSON.parse(typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body));
+  const body = init.body === undefined ? {} : JSON.parse(typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body));
   const path = new URL(String(url)).pathname;
   if (process.env.AGENTRUN_TEST_FAUX_PARALLEL_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_PARALLEL_CALLS, `${JSON.stringify({ pid: process.pid, path, authorized: key === CANARY, questions: Object.keys(body.questions ?? {}), ...(body.urls ? { urls: body.urls } : {}), ...(body.search_queries ? { queries: body.search_queries } : {}) })}\n`);
   if (key !== CANARY) return new Response(JSON.stringify({ error: { message: "invalid key" } }), { status: 401, headers: { "content-type": "application/json" } });
+  if (path === "/v1/monitors") return new Response(JSON.stringify({ monitors: [] }), { status: 200, headers: { "content-type": "application/json" } });
   if (path === "/v1/extract") return extract(body.urls, process.env.AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT ?? "");
   if (path === "/v1/search") return search(body, process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH ?? "");
   const answers = Object.fromEntries(Object.entries(body.questions ?? {}).map(([id, q]) => {

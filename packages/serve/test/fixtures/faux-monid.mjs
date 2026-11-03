@@ -4,7 +4,8 @@
 // and keeps each call in `calls` for a test that calls it in its own process. Its
 // endpoints, by path: /person/enrich answers at once; /tweets answers 202 and completes on its second read; /slow never
 // ends until stopped; /wallet is 402; /budget is BLOCKED; /broken FAILS; /late is a sync 408; /missing is the provider's
-// 404; /huge answers more than the model reads.
+// 404; /huge answers more than the model reads. With AGENTRUN_TEST_FAUX_MONID_DOWN set, every call is filed and then
+// fails as a fetch to a host that can't be reached does.
 import { createHash } from "node:crypto";
 import { appendFileSync } from "node:fs";
 
@@ -27,6 +28,7 @@ export default async function fakeMonid(url, init = {}) {
   const key = createHash("sha256").update(bearer.replace(/^Bearer /, "")).digest("hex").slice(0, 16);
   calls.push({ method, path, body, authorized });
   if (process.env.AGENTRUN_TEST_FAUX_MONID_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_MONID_CALLS, `${JSON.stringify({ pid: process.pid, method, path, authorized, key })}\n`);
+  if (process.env.AGENTRUN_TEST_FAUX_MONID_DOWN) throw new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.monid.ai"), { code: "ENOTFOUND" }) });
   if (!authorized) return json(401, { code: 401, message: "Missing or invalid API key" });
   if (path === "/v1/discover") {
     const results = Array.from({ length: Math.min(body.limit ?? 5, 40) }, (_, i) => ({ provider: "faux", endpoint: i ? `/other/${i}` : "/person/enrich", description: body.query.includes("everything") ? "x".repeat(20_000) : "Enrich a person from a name and company.", score: 0.9 - i / 100, price: PRICE }));
