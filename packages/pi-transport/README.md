@@ -38,7 +38,7 @@ boxes, finds them again by id and lists them by label.
 Install the package with its pi peers, pinned. pi 1.4 is not supported yet; a later release widens the range.
 
 ```sh
-npm install @parcha/pi-transport@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-transport@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 The example below needs Docker; `localBoxes({ root: "./boxes" })` from `@parcha/pi-transport/box/local` runs it with
@@ -178,7 +178,8 @@ It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `iso
 
 `dockerBoxes` runs `sleep` for the lifetime in place of the image's own entrypoint, so Docker ends the box. It refuses
 `snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
-container every GPU of the host.
+container every GPU of the host. `dockerBoxes({ user: "1000:1000" })` runs every program of its boxes as that uid:gid
+(`--user`), so what a box writes in a bound directory stays the host user's.
 It alone binds a spec's `mounts` (`[{ source: "/data/run", target: "/workspace/run", readOnly: true }]`, canonical paths used as given, at most 8) with `--mount type=bind`, never `-v`, and refuses a source this machine lacks with `not_found`; `provider.mounts` says whether a provider binds them, and every other one refuses them as `unsupported`.
 
 ### Archil exec
@@ -286,6 +287,9 @@ const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONT
   and only when a kill call failed. When the group could not be confirmed gone, the error is a `StoppedCommandError`: its
   `killUnconfirmed` is `true`, and the command stays tracked, so `cleanup()` ends it with the rest. `killUnconfirmed` is
   absent when the group was confirmed gone, which is the normal case.
+- A host that dies leaves its commands running (ending a `docker exec` client does not end its program), and its
+  `cleanup()` with it. `endLeftCommands(box, context)`, from `@parcha/pi-transport/hands`, kills every command
+  group an environment wrote down in the box: the host that takes a box over calls it once, before its first command.
 - The variables a caller asks for, `PATH` included, reach the command alone. The environment's own scripts keep the
   box's search path, so a `PATH` with no shell in it still runs a program named by its path.
 - Results match pi's `NodeExecutionEnv` on the same files: the same values and the same error codes. Messages differ.

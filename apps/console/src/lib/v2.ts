@@ -7,6 +7,14 @@ export type RunState = "working" | "waiting" | "idle";
 /** `details`: what the server says beyond the message, by code (a 409 `agent_not_runnable` names the harness or box it lacks). */
 export type ApiError = { code: string; message: string; retryable: boolean; request_id?: string; details?: Record<string, unknown> };
 
+/** A provider per capability that has a choice (web_search, web_fetch): the server's (GET and PUT /v2/settings/tools)
+ *  and an agent's own (`definition.tool_settings`), over the server's. */
+export type ToolSettings = Record<string, { provider?: string }>;
+/** GET /v2/agents/{id}'s `tools`: each tool the agent grants; one with a provider choice with the provider in force, where
+ *  it came from (the agent's own setting, the server's, or the built-in default), the one that applies when the agent sets
+ *  none (the server's), and what it resolves to on the agent's harness and model. */
+export type AgentTool = { name: string; provider?: string; provider_from?: "agent" | "server" | "default"; default_provider?: string; resolved?: string };
+
 /** `at_most_usd`: the run's cost bound, when the server knows one. It is set only while `usd` is null because requests
  *  were cut or stopped, each with a worst case, and it is the most the run can have cost. Absent, the cost is unknown with
  *  no bound. */
@@ -53,7 +61,16 @@ export type TimelineRow = {
   timestamp: string;
   created_at?: string;
   tool_name: string | null;
-  tool_status?: "success" | "failed" | null;
+  /** The call a tool row belongs to: a call and its result share it. */
+  tool_use_id?: string | null;
+  /** The file a row names: an action's write (one row per action), or an older phase row's "Saved" file. */
+  path?: string | null;
+  /** When an action ended (one row per action): null while it runs. */
+  ended_at?: string | null;
+  /** A tool row's outcome. With one row per action (capabilities' `timeline.actions`) the call's own row changes in
+   *  place: `running` until it ends, then `success`, `failed`, `missing` (a read that found nothing the run wrote: not an
+   *  error) or `interrupted` (no result came). */
+  tool_status?: "running" | "success" | "failed" | "missing" | "interrupted" | null;
   tool_input_preview?: string | null;
   tool_result_preview?: string | null;
   agent_label?: string | null;

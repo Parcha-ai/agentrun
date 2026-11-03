@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { request } from 'node:http';
 import { modelPortFor } from '@parcha/agentrun-kernel';
-import { ProxyRefusal, startModelProxy } from '@parcha/agentrun-kernel/host';
+import { inputTokensMaxOf, ProxyRefusal, startModelProxy } from '@parcha/agentrun-kernel/host';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { anthropicPolicy, CLAUDE_WEB_SEARCH_TOOL, CLAUDE_WEB_SEARCH_USD } from '@parcha/agentrun-harness-claude';
 import { fakeAnthropic } from '@parcha/agentrun-harness-claude/testing';
@@ -556,6 +556,20 @@ test("usage: the searches a response reports, from a stream's last message_delta
   const tokens = (_m, u) => (u.input + u.output) / 1e6;
   assert.equal(withWebSearches(tokens)('m', { input: 9, output: 4, cacheRead: 0, webSearches: 3 }), tokens('m', { input: 9, output: 4 }) + 3 * CLAUDE_WEB_SEARCH_USD);
   assert.equal(withWebSearches(() => null)('m', { input: 9, output: 4, cacheRead: 0, webSearches: 3 }), null, 'an unknown price stays unknown');
+});
+
+test("with an allowance, a search request's input bound is its body's plus the allowance, however large the body; a request with no search is bound as before, and with no allowance a search has none", () => {
+  const recorded = CLI_SEARCH.body;
+  const policy = anthropicPolicy({ model: recorded.model, tools: ['lookup'], builtins: ['WebSearch'], webSearch: true, webSearchAllowance: 200_000 });
+  const none = anthropicPolicy({ model: recorded.model, tools: ['lookup'], builtins: ['WebSearch'], webSearch: true });
+  const big = policy.apply(structuredClone({ ...recorded, messages: [{ role: 'user', content: [{ type: 'text', text: 'x'.repeat(300_000) }] }] }), MESSAGES);
+  const sent = JSON.stringify(big);
+  // The same body with a tool of the session's in place of the search: what the provider adds for a body with tools.
+  const plain = { ...big, tools: [{ name: 'lookup', description: 'Look up.', input_schema: { type: 'object' } }] };
+  assert.equal(inputTokensMaxOf(policy, big, sent), Buffer.byteLength(sent) + none.serverInputOverhead(plain) + 200_000, 'the body, what the provider adds, and the allowance');
+  assert.ok(inputTokensMaxOf(policy, big, sent) > 500_000, 'never held at the allowance alone');
+  assert.equal(policy.serverInputOverhead(plain), none.serverInputOverhead(plain), 'no search tool: unchanged');
+  assert.equal(inputTokensMaxOf(none, big, sent), undefined, 'no allowance: no bound');
 });
 
 test("each web search is booked at Anthropic's rate into the session's cost, streamed and whole, and the cap refuses the next request once searches pass it; another hosted tool is still refused", async () => {

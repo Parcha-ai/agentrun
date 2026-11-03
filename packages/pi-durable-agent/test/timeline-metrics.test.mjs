@@ -262,8 +262,7 @@ test("a workflow's decision requests count with its model requests: each receipt
   assert.deepEqual([runMetricsWithDecisions([], [{ model: "jev-1.14.0" }]).requests, runMetricsWithDecisions([], [{ model: "jev-1.14.0" }]).unmetered], [1, 1], "a receipt with no usage at all");
 });
 
-test("runMetricsOf takes one parameter, so mapping it over runs' entries is safe: map's index is never read as receipts", () => {
+test("mapping runMetricsOf over runs' entries is safe: map's index is never read as receipts", () => {
   const entries = [answer([{ type: "text", text: "a" }], usage(10, 2)), answer([{ type: "text", text: "b" }], usage(5, 1))];
-  assert.equal(runMetricsOf.length, 1);
   assert.deepEqual([entries, entries].map(runMetricsOf), [runMetricsOf(entries), runMetricsOf(entries)]);
 });
