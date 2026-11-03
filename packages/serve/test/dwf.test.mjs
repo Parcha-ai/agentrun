@@ -239,8 +239,10 @@ test("a run's graph reads while it goes and while it is paused mid-map at maxCon
     assert.ok(Date.now() < end, "the judges in flight finish within a minute");
     await sleep(100);
   }
+  const asked = await sent();
   await sleep(1000);
   const later = await read();
+  assert.equal(await sent(), asked, "no decision is asked while paused");
   assert.equal(later.totals.decisions, settled.totals.decisions, "no decision lands while paused");
   assert.equal(later.totals.effects, settled.totals.effects, "no call starts while paused");
   assert.ok(later.nodes["/root/steps/0"].items.some((i) => i.status === "pending"), "the map is paused mid-way");
