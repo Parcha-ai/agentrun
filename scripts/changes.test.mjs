@@ -10,6 +10,10 @@ import { bulletOf, fold, hasVersionSection, loadFragments, parseFragment, releas
 
 const exec = promisify(execFile);
 const script = join(dirname(fileURLToPath(import.meta.url)), 'changes.mjs');
+/** changes.mjs and the module it decides it is the command with, into the fixture repository's scripts/. */
+const copyScript = async (root) => {
+  for (const name of ['changes.mjs', 'is-main.mjs']) await writeFile(join(root, 'scripts', name), await readFile(join(dirname(script), name), 'utf8'));
+};
 const known = new Set(['@parcha/agentrun-dsl', '@parcha/pi-vision']);
 const fragment = (packages, kind, body) => `---\npackages: ${packages}\nkind: ${kind}\n---\n${body}\n`;
 
@@ -437,7 +441,7 @@ test('the command line fails an Unreleased edit and passes a fragment', () => re
   const run = args => spawnSync(process.execPath, [script, ...args], { cwd: root, encoding: 'utf8' });
   // The script validates the repository it lives in; copy it beside the fixture so it reads this one.
   await mkdir(join(root, 'scripts'));
-  await writeFile(join(root, 'scripts/changes.mjs'), await readFile(script, 'utf8'));
+  await copyScript(root);
   const local = args => spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), ...args], { cwd: root, encoding: 'utf8' });
   await writeFile(join(root, 'changes/ok.md'), fragment('repo', 'fix', 'Ok.'));
   const pass = local(['--check', '--base', base.trim()]);
@@ -505,7 +509,7 @@ test('the command line fails a release commit that carries a fragment, and passe
   await withVersion(root, git);
   const { stdout: base } = await git('rev-parse', 'HEAD');
   await mkdir(join(root, 'scripts'));
-  await writeFile(join(root, 'scripts/changes.mjs'), await readFile(script, 'utf8'));
+  await copyScript(root);
   const local = () => spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', base.trim()], { cwd: root, encoding: 'utf8' });
   await writeFile(join(root, 'changes/normal.md'), fragment('repo', 'fix', 'Normal.'));
   assert.equal(local().status, 0, local().stderr);
