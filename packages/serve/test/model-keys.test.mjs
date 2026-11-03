@@ -7,7 +7,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { hostModel, MODEL_KEYS } from "../dist/model.js";
+import { claudeModel } from "../dist/adapters.js";
+import { chooseModel, hostModel, MODEL_KEYS } from "../dist/model.js";
 import { readingOf } from "../dist/server.js";
 import { agent, FAUX, follow, responsesEndpoint, serve, withEnv } from "./support.mjs";
 
@@ -50,6 +51,19 @@ test("the host's model counts for a harness only when that harness runs it: clau
   // A tier's own model the harness can't run is skipped, never an error: the default stands in.
   assert.equal(hostModel({ AGENT_MODEL_FAST: "openai/gpt-6-mini", AGENT_MODEL: "anthropic/claude-haiku-5" }, "fast", "claude-agent"), "anthropic/claude-haiku-5");
   assert.equal(hostModel({ AGENT_MODEL_FAST: "openai/gpt-6-mini", AGENT_MODEL: "anthropic/claude-haiku-5" }, "fast"), "openai/gpt-6-mini");
+});
+
+// A key-less first run (npx, no key yet) is told what a person does: add a key in the console or where AgentRun starts.
+// Operator detail (--faux, AGENT_MODEL, a tier's variable) is the README's. A model no catalog knows is still named.
+test("with no model here, the refusal says what a person does: a model key in Settings or where AgentRun starts, no operator flags", async () => {
+  const none = "No model yet: add a model key in Settings → Model keys, or set ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY where AgentRun starts.";
+  assert.equal((await chooseModel({}, undefined)).why, none);
+  assert.equal((await chooseModel({}, undefined, "fast")).why, none.replace("No model yet:", "No model yet for this workflow's fast steps:"));
+  assert.equal((await chooseModel({}, "openai/gpt-5")).why, "No OpenAI key here for openai/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts.");
+  assert.equal(claudeModel({}, undefined).why, "No model yet for claude-agent: add an Anthropic key in Settings → Model keys, or set ANTHROPIC_API_KEY where AgentRun starts.");
+  for (const why of [(await chooseModel({}, undefined)).why, (await chooseModel({}, "openai/gpt-5")).why, claudeModel({}, undefined).why]) assert.doesNotMatch(why, /--faux|AGENT_MODEL|agentrun-serve/);
+  const unknown = await chooseModel({ OPENAI_API_KEY: made() }, "openai/no-such-model");
+  assert.deepEqual([unknown.needs, /no-such-model/.test(unknown.why)], ["model", true], "a model no catalog knows is named");
 });
 
 test("each default is a model pi-ai's catalog lists and prices, of the key's own provider, and not that provider's dearest", () => {

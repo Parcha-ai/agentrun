@@ -53,11 +53,12 @@ test("without a default model a revision that names none is refused before it st
   const refused = await api("POST", "/agents/plain/runs", { input: { content: "hi" } });
   assert.equal(refused.status, 409);
   assert.equal(refused.body.error.code, "agent_not_runnable");
-  assert.match(refused.body.error.message, /names no model, and this host has no default/);
+  assert.match(refused.body.error.message, /No model yet: add a model key in Settings → Model keys, or set ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY where AgentRun starts\./);
+  assert.doesNotMatch(refused.body.error.message, /--faux|AGENT_MODEL/, "a person's words: no operator flags");
   assert.equal((await api("POST", "/agents", agent("keyless", { model: "openai/gpt-5" }))).status, 201);
   const keyless = await api("POST", "/agents/keyless/runs", { input: { content: "hi" } });
   assert.equal(keyless.body.error.code, "agent_not_runnable");
-  assert.match(keyless.body.error.message, /no key for openai/);
+  assert.match(keyless.body.error.message, /No OpenAI key here for openai\/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts\./);
   const unknown = await api("POST", "/agents", agent("unknown", { model: "openai/no-such-model" }));
   assert.equal(unknown.status, 422, "a model pi-ai does not know never runs here: refused at save (runnable.test.mjs)");
   assert.match(unknown.body.error.fields[0].message, /knows no model no-such-model of openai/);

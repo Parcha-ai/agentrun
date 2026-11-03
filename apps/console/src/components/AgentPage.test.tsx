@@ -480,11 +480,11 @@ describe("AgentPage, the model on a gateway server", () => {
     const page = await open(on("codex"), { models: gateway, harnesses });
     expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
     const claude = await open(on("claude-agent"), { models: gateway, harnesses });
-    expect(modelOf(claude).textContent).toBe("no default: choose a model");
+    expect(modelOf(claude).textContent).toBe("none yet: add a model key in Settings → Model keys");
   });
   it("a claude-agent agent naming no model has no default to show", async () => {
     const page = await open(on("claude-agent"), { models: gateway });
-    expect(modelOf(page).textContent).toBe("no default: choose a model");
+    expect(modelOf(page).textContent).toBe("none yet: add a model key in Settings → Model keys");
     expect(page.host.textContent).not.toContain("gpt-6-luna");
   });
 });
