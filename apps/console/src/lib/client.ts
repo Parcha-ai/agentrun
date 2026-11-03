@@ -146,7 +146,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** The server's own check of a workflow (the DSL's validator, no code run, nothing stored). 404 on a server without it. */
     validateWorkflow: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => call<WorkflowCheck>("POST", "/workflows/validate", { body, signal }),
     /** GET /v2/stats with its `analytics` bounded: runs started at or after `from`, of `agent`. Every other number is the
-     *  whole store's, and an older server, which has no analytics, leaves both unread. */
+     *  whole store's. */
     statsOver: ({ from, agent: of }: { from?: string; agent?: string }) => {
       const q = new URLSearchParams();
       if (from) q.set("from", from);

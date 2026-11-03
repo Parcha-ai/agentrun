@@ -6,7 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import { ROUTES, takesBytes } from "../dist/server.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, pathProblem, suffixed, uploadTestHooks } from "../dist/uploads.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -82,12 +82,13 @@ test("reserve, then send the bytes: pending, then ready, binary-safe, kept 0600 
   assert.deepEqual(JSON.parse(await readFile(join(dir, "file.json"), "utf8")), sent.json);
   for (const name of ["bytes", "file.json"]) assert.equal((await stat(join(dir, name))).mode & 0o777, 0o600, name);
   assert.equal((await stat(dir)).mode & 0o777, 0o700);
-  // A content type is optional; with none the file is octet-stream. A reservation is a create: Idempotency-Key replays it.
+  // A content type is optional; with none it is the path's extension's (empty.txt is text/plain). A reservation is a
+  // create: Idempotency-Key replays it.
   const once = await server.api("POST", "/files", { path: "empty.txt", size_bytes: 0 }, { "idempotency-key": "k1" });
   const again = await server.api("POST", "/files", { path: "empty.txt", size_bytes: 0 }, { "idempotency-key": "k1" });
   assert.deepEqual([once.status, again.status, again.headers.get("idempotent-replayed")], [201, 201, "true"]);
   assert.equal(again.body.file.file_id, once.body.file.file_id);
-  assert.equal(once.body.file.content_type, "application/octet-stream");
+  assert.equal(once.body.file.content_type, "text/plain; charset=utf-8");
   const empty = await put(server.port, `/v2/files/${once.body.file.file_id}`, Buffer.alloc(0), bearer(server));
   assert.deepEqual([empty.status, empty.json.status, empty.json.sha256], [200, "ready", sha(Buffer.alloc(0))], "an empty file, with no content type sent");
 });
@@ -281,6 +282,59 @@ test("a name taken already gets the next suffix, the same for the same files in 
   const ext = suffixed(`a.${"x".repeat(253)}`, 2);
   assert.ok(Buffer.byteLength(ext) <= 255 && ext.startsWith("a-2."), ext);
   assert.deepEqual([pathProblem("a/b.txt"), pathProblem("ünïcode/名前.txt")], [undefined, undefined]);
+});
+
+test("upload.expires_at is advisory: the answer carries it, as the contract requires, and a PUT after it is still taken", async (t) => {
+  const server = await serve(t);
+  const made = await server.api("POST", "/files", { path: "late.txt", size_bytes: 5 });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const { file, upload: where } = made.body;
+  assert.ok(Date.parse(where.expires_at) > Date.parse(file.created_at), "the contract's required time is there");
+  assert.equal(file.expires_at, null, "and the file promises no deletion");
+  assert.deepEqual(Object.keys(JSON.parse(await readFile(join(server.data, "files", file.file_id, "file.json"), "utf8"))).filter((key) => key.includes("expire")), ["expires_at"], "the record keeps no deadline but the File's null");
+  // A day past the time the answer gave: nothing refuses the bytes.
+  mock.timers.enable({ apis: ["Date"], now: Date.parse(where.expires_at) + 86_400_000 });
+  t.after(() => mock.timers.reset());
+  const late = await put(server.port, `/v2${where.url}`, Buffer.from("hello"), bearer(server));
+  mock.timers.reset();
+  assert.deepEqual([late.status, late.json?.status], [200, "ready"], late.text);
+});
+
+test("a reservation with no content_type takes its path's extension's type, as a run's files are served; a named one wins", async (t) => {
+  const { api } = await serve(t);
+  const typeOf = async (body) => {
+    const made = await api("POST", "/files", { size_bytes: 1, ...body });
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    return made.body.file.content_type;
+  };
+  assert.equal(await typeOf({ path: "plan.md" }), "text/markdown; charset=utf-8");
+  assert.equal(await typeOf({ path: "docs/REPORT.CSV" }), "text/csv; charset=utf-8", "by the extension in any case");
+  assert.equal(await typeOf({ path: "data.xyz" }), "application/octet-stream", "an extension not known");
+  assert.equal(await typeOf({ path: "Makefile" }), "application/octet-stream", "no extension");
+  assert.equal(await typeOf({ path: "plan.md", content_type: "text/x-custom" }), "text/x-custom", "a named type wins");
+});
+
+test("an extension that names an object's own property (.constructor, .__proto__, .toString) is not known: octet-stream, and the file takes its bytes", async (t) => {
+  const server = await serve(t);
+  for (const path of ["report.constructor", "notes.__proto__", "a.toString", "b.hasOwnProperty"]) {
+    const made = await server.api("POST", "/files", { path, size_bytes: 2 });
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    assert.equal(made.body.file.content_type, "application/octet-stream", path);
+    const sent = await put(server.port, `/v2/files/${made.body.file.file_id}`, Buffer.from("ok"), bearer(server));
+    assert.deepEqual([sent.status, sent.json?.status, sent.json?.content_type], [200, "ready", "application/octet-stream"], `${path}: ${sent.text}`);
+  }
+});
+
+test("a refusal that points at an upload route names it in full, under /v2", async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  assert.equal((await api("POST", "/agents", agent("pointed"))).status, 201);
+  const pending = (await api("POST", "/files", { path: "later.txt", size_bytes: 5 })).body.file;
+  const answer = await api("POST", "/agents/pointed/runs", { input: { content: "Hello." }, file_ids: ["no-such-file", pending.file_id] });
+  assert.equal(answer.status, 422, JSON.stringify(answer.body));
+  const [unknown, notReady] = answer.body.error.fields.map((f) => f.message);
+  assert.match(unknown, /reserve it with POST \/v2\/files\./);
+  assert.ok(notReady.includes(`PUT /v2/files/${pending.file_id}`), notReady);
 });
 
 test("file_ids naming an unknown, pending or repeated file, or more than max_files_per_run, are refused 422 at file_ids before anything starts", async (t) => {

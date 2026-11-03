@@ -202,7 +202,16 @@ test("a blob that is not the bytes its hash names is shown as the slate and repo
 
 test("ffmpeg that is killed on timeout is really gone: its process does not outlive the export", async (t) => {
   const pidFile = path.join(os.tmpdir(), `track-pid-${process.pid}-${Date.now()}`);
-  t.after(() => { try { process.kill(Number(fs.readFileSync(pidFile, "utf8")), "SIGKILL"); } catch {} fs.rmSync(pidFile, { force: true }); });
+  t.after(() => {
+    // The stub's `echo $$ >` makes the file before it writes to it, and the timeout can land in between: an empty file is
+    // never read as pid 0, which signals this test runner's own process group.
+    const text = fs.existsSync(pidFile) ? fs.readFileSync(pidFile, "utf8").trim() : null;
+    fs.rmSync(pidFile, { force: true });
+    if (text === null) return;
+    const pid = Number(text);
+    assert.ok(/^\d+$/.test(text) && pid > 1 && pid !== process.pid, `refusing to signal pid ${JSON.stringify(text)}: it does not name one other process`);
+    try { process.kill(pid, "SIGKILL"); } catch {}
+  });
   const stub = stubFfmpeg(t, `echo $$ > ${pidFile}; exec sleep 30`);
   await assert.rejects(exportFrameTracks({ lines: stubLines(), readBlob: () => JPEG, ffmpeg: stub.program, timeoutMs: 300 }), (error) => error.code === "ffmpeg_timeout");
   const pid = Number(fs.readFileSync(pidFile, "utf8"));

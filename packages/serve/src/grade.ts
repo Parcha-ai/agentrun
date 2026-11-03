@@ -1,6 +1,6 @@
 // Learning, its grade and its merge: once a run's proposal passed the checks (propose.ts), one grader decides whether its
 // new notes join the agent's main, and the host merges them.
-// - The grader is packages/learn's gradePrompt, asked as one bounded completion on the agent's own model, against main as
+// - The grader is learn/grade.ts' gradePrompt, asked as one bounded completion on the agent's own model, against main as
 //   it is now: each active note's index line, and the whole text only of the notes the proposal supersedes, so the
 //   prompt is bounded whatever the folder holds (GRADE_CAPS). Its answer is read by parseVerdict, which fails closed. A
 //   call cut off at its bound spent what nobody knows: the grade's cost is then unknown, never $0. Before it, and only
@@ -10,11 +10,11 @@
 //   them supersedes marked, and MEMORY.md rebuilt (buildIndex). Its message is `learning: <run id>: merged`, the verdict's
 //   reason and a `Run-Id` trailer, and main moves only from the commit it was made on (compare and swap), once more on a
 //   main that moved meanwhile. A run a commit on main already names is merged, never twice. The merge's own questions
-//   (packages/learn mergeProblems) are asked again of main as it is then. The checked-out files are brought in line.
+//   (learn/check.ts mergeProblems) are asked again of main as it is then. The checked-out files are brought in line.
 // The merge runs in the agent's queue; the screen and the grader never do, so no run's seed waits on a model.
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, type Verdict } from "@parcha/agentrun-learn";
+import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, type Verdict } from "./learn/index.js";
 import type { PageJudge } from "@parcha/pi-browser";
 import { claudeModel, claudeProvider } from "./adapters.js";
 import { FAUX_JEV_ENV, fauxFetch, jevKey } from "./decisions.js";
@@ -78,7 +78,7 @@ const proposedOf = (proposal: Proposal): LearnedNote[] => proposal.notes.map(({ 
   if (Array.isArray(note)) throw new Error(`the proposal's ${file} is not a note`);
   return note;
 });
-/** What stops the proposal joining `main` as it is now (packages/learn mergeProblems). */
+/** What stops the proposal joining `main` as it is now (learn/check.ts mergeProblems). */
 const problemsOf = (main: Main, notes: readonly LearnedNote[]) => mergeProblems({ files: main.files, active: notesOf(main).filter((note) => note.status === "active") }, notes);
 
 /** What a grade reads of main: each active note as the index lists it, and the whole text of the ones the proposal
@@ -213,7 +213,7 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
     }
   }
   try {
-    const { gradePrompt, parseVerdict } = await import("@parcha/agentrun-learn");
+    const { gradePrompt, parseVerdict } = await import("./learn/index.js");
     const prompt = gradePrompt({ run: runId, instructions: agent.instructions, active: main.active, superseded: main.superseded, proposed });
     const grader = await agentModel(env, agent, cost);
     const answer = await bounded(input.gradeTimeoutMs ?? GRADE_TIMEOUT_MS, signal, cost, (grade) => grader({ prompt, maxTokens: GRADE_MAX_TOKENS }, grade));

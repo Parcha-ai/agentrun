@@ -1,5 +1,5 @@
 // Learning, after a run: what its end-of-run turn added to the run's copy of its agent's folder is read by the host,
-// checked against the commit the run started from (packages/learn checkProposal), and kept in the run's own directory
+// checked against the commit the run started from (learn/check.ts checkProposal), and kept in the run's own directory
 // as its proposal (`learning-proposal.json`), or dropped. The copy is read from its snapshot, `<run dir>/learning-turn/`,
 // where it was moved from `work/.learning/` as the run settled (learning.ts snapshotLearned): never from the run's work,
 // which a follow-up may change. The host reads it itself, in the agent's queue: the folder's top only, each entry looked
@@ -9,7 +9,7 @@
 import { constants } from "node:fs";
 import { lstat, open, opendir } from "node:fs/promises";
 import { join } from "node:path";
-import { CAPS, type Change, checkProposal, INDEX_FILE, type Problem, printable } from "@parcha/agentrun-learn";
+import { CAPS, type Change, checkProposal, INDEX_FILE, type Problem, printable } from "./learn/index.js";
 import { homeOf, writeDurable } from "./files.js";
 import { activeOf, agentFolder, LEARNED_SNAPSHOT, type Proposal, PROPOSAL, readSeed, withAgentRepo } from "./learning.js";
 

@@ -2,7 +2,7 @@
 // - Per agent: main's index, its notes and its log of changes, each a page, and how its runs' learning fared; one note as
 //   text with its ETag, the note's blob id on main.
 // - A person's edit, create or retire of one note: a precondition on the note's version (If-Match, or If-None-Match: * to
-//   create; neither is 428), the structural checks a run's notes pass (packages/learn checkNote; a retire, the note's
+//   create; neither is 428), the structural checks a run's notes pass (learn/check.ts checkNote; a retire, the note's
 //   format alone, so a leaking note can always be revoked) and no grader, then one host commit on main in the agent's
 //   queue, compare and swap, with MEMORY.md rebuilt and a `Changed-By: user` trailer, and the checked-out files brought
 //   in line. MEMORY.md itself is never written here.
@@ -18,14 +18,14 @@
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, redactSecrets, retire, secretShapes, valueMatcher } from "@parcha/agentrun-learn";
+import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, redactSecrets, retire, secretShapes, valueMatcher } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
 import { agentFolder, checkOut, git, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, withAgentRepo } from "./learning.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
 
-/** A file on main larger than this is not read: a note is at most 4 KB (packages/learn CAPS.note). */
+/** A file on main larger than this is not read: a note is at most 4 KB (learn/check.ts CAPS.note). */
 const FILE_CAP = 1 << 20;
 /** A diff's file whose patch is larger than this is withheld as too large. */
 const PATCH_CAP = 64 * 1024;
@@ -35,7 +35,7 @@ const LOG_PAGE = 20;
 const PAGE_MAX = 200;
 /** The trailer of a person's commit, as `Run-Id` is a run's merge's. */
 const BY_USER = "Changed-By: user";
-/** What a retire adds to a note, on top of the note cap a retired note may fill (packages/learn retire). */
+/** What a retire adds to a note, on top of the note cap a retired note may fill (learn/notes.ts retire). */
 const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
@@ -46,11 +46,11 @@ type Note = LearnedNote & { text: string };
 export type Counts = { merged: number; dropped: Record<string, number>; in_progress: number };
 /** What a text or a name that leaves shows of the host's secrets now: none (secretsShown). */
 export type Shown = { text: (text: string) => string; name: (name: string) => string; holds: (text: string) => boolean };
-/** What a name holding a secret reads: packages/learn redactSecrets' mark, the name's whole, never a part of it. */
+/** What a name holding a secret reads: learn/secrets.ts redactSecrets' mark, the name's whole, never a part of it. */
 const REDACTED = "[redacted]";
 
 /** The host's secrets as a reader cuts them: a text holding a value or a shape is cut of it (whole when long:
- *  packages/learn redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
+ *  learn/secrets.ts redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
  *  route still answers the real name, to a caller who knows it); any other text or name is shown as it is. */
 export function secretsShown(values: readonly string[]): Shown {
   const matches = valueMatcher(values);
