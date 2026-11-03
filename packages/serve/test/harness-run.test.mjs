@@ -383,12 +383,32 @@ test("after a follow-up whose turn ends showing nothing, the run's answer is the
 });
 
 /** Until the run's store holds `n` entries of `kind`. */
-async function untilStored(data, runId, kind, n = 1) {
-  for (let i = 0; storeCount(data, runId, kind) < n; i++) {
-    assert.ok(i < 300, `${kind} in the run's store`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+/** The run's store entries, read once its process is gone (it holds the store exclusively while it lives): a read that
+ *  finds it still held tries again. */
+function storeEntries(data, runId) {
+  for (let tries = 0; ; tries++) {
+    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    try {
+      return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record)));
+    } catch (error) {
+      if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
+    } finally {
+      db.close();
+    }
   }
 }
+/** Whether, after the person's last message, the store holds the bridge's entry for a request that showed nothing. */
+const emptyAfterMessage = (entries) => {
+  const user = entries.findLastIndex((e) => e.kind === "pi.user");
+  return entries.slice(user + 1).some((e) => e.kind === "pi.assistant" && e.model?.[0]?.api === "agentrun-adapter" && (e.model[0].content ?? []).length === 0);
+};
+/** While the run lives, nothing the API shows says a request is in flight (one alone makes no row): after the run reads
+ *  working, the faux harness admits its first request at once; a second leaves it time. Each test then checks, from the
+ *  store once the process is gone, that the request was admitted, so it never passes without the case it is about. */
+const admitted = async (api, runId) => {
+  await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+};
 
 test("a run relaunched after a crash cut its turn's first request completes only once the recovered turn answers, never while the new process opens", { timeout: 90_000 }, async (t) => {
   // Review F1: the reopen writes the cut request as an empty entry and then opens the session (2 s here) before the
@@ -396,22 +416,26 @@ test("a run relaunched after a crash cut its turn's first request completes only
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");
   const runId = await started(api, "relaunch-slow", `Cut the first request; open slowly once ${go} exists.`);
-  await untilStored(data, runId, "agentrun.request_started");
+  await admitted(api, runId);
   await writeFile(go, "");
   await killRun(data, runId);
   await completesOnlyAfter(api, runId, "Recovered.");
   assert.equal(await answer(api, runId), "Recovered.");
+  const entries = storeEntries(data, runId);
+  const recovered = entries.findIndex((e) => e.kind === "pi.assistant" && JSON.stringify(e.model?.[0]?.content ?? []).includes("Recovered."));
+  assert.ok(emptyAfterMessage(entries.slice(0, recovered)), "the case: the cut request's empty entry came between the person's message and the recovered answer");
 });
 
 test("a cancel of a turn that has shown nothing reads working, then cancelled: never completed on the way", { timeout: 90_000 }, async (t) => {
   // Review F2: the interrupted request is written as an empty entry and the turn ends; the cancel decides the run's end.
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "cancel-empty", "Hold a request unanswered.");
-  await untilStored(data, runId, "agentrun.request_started");
+  await admitted(api, runId);
   assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
   const { pages } = await follow(api, runId, ["cancelled"], { deadlineMs: 55_000 });
   assert.deepEqual(pages.filter((page) => page.status === "completed").map((page) => page.status), [], `statuses: ${pages.map((page) => page.status).join(", ")}`);
   assert.equal((await api("GET", `/runs/${runId}`)).body.status, "cancelled");
+  assert.ok(emptyAfterMessage(storeEntries(data, runId)), "the case: the interrupted request's empty entry is in the store after the person's message");
 });
 
 test("pi: after a stopped turn's commentary and a follow-up answered with nothing, the run's answer is the earlier answer, never the commentary, on this server and the next", { timeout: 120_000 }, async (t) => {
