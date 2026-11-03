@@ -1213,3 +1213,54 @@ test("a run still waiting on the same question a day later, its message gone fro
   assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).type), ["run.ended", "run.needs_input", "run.ended"]);
   assert.deepEqual(ledgerOf(dir).waiting, { wait: "row_12", ended: end }, "the newest wait, and the end past it");
 });
+
+test("a run that ends while the webhook is off leaves its wait behind in the ledger; the next start, the webhook set again, drops it and sends nothing", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  let api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "asks-off", "Pick a region.", { tools: ["ask_person"] });
+  await until(() => ofType(hook.got, "run.needs_input").length === 1, "the wait's notice");
+  // Off while the run ends: its end is never queued, and nothing moves the run past its wait in the ledger.
+  assert.equal((await api("DELETE", "/settings/webhook")).status, 204);
+  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" })).status, 202);
+  await follow(api, run.run_id, ["completed"]);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  await first.close();
+  stopped = true;
+  assert.ok(waitNotice(data, run.run_id), "the wait is still in the ledger");
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => !noticed(data, run.run_id), "its entry dropped by the start: the store holds the run as ended");
+  await sleep(500);
+  assert.deepEqual([ofType(hook.got, "run.needs_input").length, ofType(hook.got, "run.ended").length], [1, 0], "nothing sent");
+});
+
+test("a start drops the ledger's waits of runs the store holds as ended or no longer has, keeps an end still due, and keeps a wait the run still stands at however old", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const day = 24 * 3_600_000;
+  writeFileSync(join(dir, "end-notices-since"), `${new Date(Date.now() - 3 * day).toISOString()}\n`);
+  const setup = new Webhooks(dir, env, () => undefined, []);
+  setup.save({ url: hook.url });
+  await setup.close();
+  const config = JSON.parse(readFileSync(join(dir, "webhook.json"), "utf8"));
+  writeFileSync(join(dir, "webhook.json"), `${JSON.stringify({ ...config, updated_at: new Date(Date.now() - 3 * day).toISOString() })}\n`);
+  const old = new Date(Date.now() - 2 * day).toISOString();
+  const recent = new Date(Date.now() - 60_000).toISOString();
+  writeFileSync(join(dir, "webhook-outbox.json"), `${JSON.stringify({ v: 3, messages: [], attempts: [], notices: { deleted: { wait: "row_1" }, ended: { wait: "row_2" }, kept: { wait: "row_3", ended: recent }, open: { wait: "row_4" } } })}\n`);
+  const webhooks = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => webhooks.close());
+  const describe = async (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
+  // The store's rows: "deleted" is gone, "ended" and "kept" have ended, "open" still waits (two days on).
+  await webhooks.catchUp([{ id: "ended", state: "completed", endedAt: old }, { id: "kept", state: "completed", endedAt: recent }, { id: "open", state: "running" }], describe);
+  assert.deepEqual(ledgerOf(dir), { kept: { ended: recent }, open: { wait: "row_4" } });
+  await sleep(300);
+  assert.equal(hook.got.length, 0, "nothing sent");
+});
