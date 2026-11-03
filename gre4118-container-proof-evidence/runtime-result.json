@@ -1,8 +1,8 @@
 {
-  "commit": "3573f4a6f4f1a68b2a1c52161b0a363d2802315f",
-  "tag": "gre4118-console-proof:3573f4a6-3d710450",
-  "container": "gre4118-console-proof-3d710450",
-  "volume": "gre4118-console-proof-3d710450-data",
+  "commit": "d9ff826df3195a2fb94530ad95d39186168341c8",
+  "tag": "gre4118-console-proof:d9ff826d-ccee69d4",
+  "container": "gre4118-console-proof-ccee69d4",
+  "volume": "gre4118-console-proof-ccee69d4-data",
   "checks": [
     {
       "name": "loopback-only publication and isolated data",
@@ -10,11 +10,11 @@
       "binding": [
         {
           "HostIp": "127.0.0.1",
-          "HostPort": "32783"
+          "HostPort": "32832"
         }
       ],
       "imageUser": "node",
-      "dataVolume": "gre4118-console-proof-3d710450-data"
+      "dataVolume": "gre4118-console-proof-ccee69d4-data"
     },
     {
       "name": "health",
@@ -38,7 +38,7 @@
             "code": "unauthenticated",
             "message": "this route needs Authorization: Bearer <the token in the data directory>",
             "retryable": false,
-            "request_id": "req_40cae410b67dab3f"
+            "request_id": "req_d84802b085f481bc"
           }
         }
       },
@@ -77,10 +77,10 @@
       "verdict": "PASS",
       "indexStatus": 200,
       "script": {
-        "path": "assets/index-DUXjp8H7.js",
+        "path": "assets/index-Bpz8EcuG.js",
         "status": 200,
-        "bytes": 458857,
-        "sha256": "7a14028d5518ba3e5929420def5b4a8d8c9518155a74d76955f948afa73f94db"
+        "bytes": 460366,
+        "sha256": "fda64627b643b165d22bac8f9b48c739ae6b00f821b2d3fdf9f867b13e073f0c"
       },
       "css": {
         "path": "assets/index-MZWl1iOl.css",
@@ -101,13 +101,33 @@
       "crossOriginStatus": 401
     },
     {
-      "name": "real faux child process, persisted result and native media MIME",
+      "name": "real faux child process, persisted result, summary availability and native media MIME",
       "verdict": "PASS",
+      "availabilityBeforeFiles": {
+        "global": {
+          "result_available": true,
+          "files_available": false
+        },
+        "agent": {
+          "result_available": true,
+          "files_available": false
+        }
+      },
+      "availabilityAfterFiles": {
+        "global": {
+          "result_available": true,
+          "files_available": true
+        },
+        "agent": {
+          "result_available": true,
+          "files_available": true
+        }
+      },
       "createStatus": 201,
       "startStatus": 202,
       "agentId": "container-proof",
       "revision": "bd1e004e5ba9f1ff00143fe063b5121d8db825dbafd27c0d6b212e90acff9910",
-      "runId": "01a19f04-86a8-7a62-9af9-b9deadd5ec9b",
+      "runId": "01a19f4b-8e91-755e-9185-5a536c1d39f0",
       "timelineFinal": true,
       "status": "completed",
       "result": {
@@ -149,7 +169,7 @@
       "revision": "bd1e004e5ba9f1ff00143fe063b5121d8db825dbafd27c0d6b212e90acff9910"
     },
     {
-      "runId": "01a19f04-86a8-7a62-9af9-b9deadd5ec9b"
+      "runId": "01a19f4b-8e91-755e-9185-5a536c1d39f0"
     }
   ],
   "cleanup": {
@@ -159,15 +179,15 @@
     "containerAbsentReadback": true,
     "volumeAbsentReadback": true,
     "imagePresentReadback": true,
-    "imageRetained": "gre4118-console-proof:3573f4a6-3d710450"
+    "imageRetained": "gre4118-console-proof:d9ff826d-ccee69d4"
   },
   "image": {
-    "id": "sha256:4aeb477a07fadc42a85a586237dbf403d29b109bfc160425aa8e264736980e27",
-    "sizeBytes": 388757306,
+    "id": "sha256:41cee42115ea7ea972ebb9d6bbc9e368dfa6b28e6b6e9808075c9045b3ac8cd0",
+    "sizeBytes": 388818745,
     "user": "node",
-    "created": "2026-11-03T01:26:47.391613986Z"
+    "created": "2026-11-03T02:43:54.606679146Z"
   },
-  "containerId": "4d7817ec0a6906d43eb33cbed661ef4dc32674987337d969ada06714bc050c7e",
-  "origin": "http://127.0.0.1:32783",
+  "containerId": "9842a80aadf37f1bde95ebecbf4636f67e6a0bc09c65387dd195955452de4da5",
+  "origin": "http://127.0.0.1:32832",
   "status": "PASS"
 }

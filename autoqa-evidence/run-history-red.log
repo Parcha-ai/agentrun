@@ -1,0 +1,38 @@
+npm notice run @parcha/agentrun-ui@0.1.0-beta.28 test
+npm notice run vitest run src/components/RunDetail.test.tsx
+
+ RUN  v2.1.9 <public-checkout>/apps/console
+
+ ❯ src/components/RunDetail.test.tsx (7 tests | 2 failed) 85ms
+   × RunDetail's native lifecycle controls > offers only supported native actions for 'completed archived run' 10ms
+     → expected true to be false // Object.is equality
+   × RunDetail's native lifecycle controls > offers only supported native actions for 'completed imported history' 4ms
+     → expected true to be false // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/RunDetail.test.tsx > RunDetail's native lifecycle controls > offers only supported native actions for 'completed archived run'
+ FAIL  src/components/RunDetail.test.tsx > RunDetail's native lifecycle controls > offers only supported native actions for 'completed imported history'
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/components/RunDetail.test.tsx:29:62
+     27|       rows: [], files: [], onMessage: vi.fn(), actions: { onStop: vi.f…
+     28|     })); });
+     29|     expect(host.querySelector("textarea#composer") !== null).toBe(mess…
+       |                                                              ^
+     30|     const buttons = [...host.querySelectorAll("button")].map((button) …
+     31|     expect(buttons.includes("Stop")).toBe(stop);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 5 passed (7)
+   Start at  02:02:46
+   Duration  761ms (transform 89ms, setup 0ms, collect 166ms, tests 85ms, environment 220ms, prepare 160ms)
+

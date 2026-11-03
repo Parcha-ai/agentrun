@@ -1,45 +1,34 @@
 # Console validation and remaining gates
 
-Candidate: `3573f4a6`. This is a review handoff, not a merge-ready verdict.
+Candidate: `d9ff826df3195a2fb94530ad95d39186168341c8`, including main `bc18a59f`. Review handoff; no merge approval or publication.
 
 | Proof | Result |
 |---|---|
-| Automated review | PASS, exact-head Greptile 5/5; all 5 threads answered and resolved in 2 iterations. [Review report](review-report.md). |
-| Console typecheck and full suite | PASS, 385 tests in 45 files. |
-| Live browser | PASS, 27 checkpoints across 9 scoped rows, including actual audio/video playback, byte-exact downloads and a slow expanded refresh across the polling interval. |
-| Public client against actual server/run processes | PASS, 8 test results, including revisions, input, idempotency, files and restart. |
-| Affected native server suites | PASS, 69 tests. Native source is unchanged after this run; the final UI-only polling change was rebuilt and tested separately. |
-| Strict installed UI consumer | PASS, Bundler and NodeNext with skipLibCheck disabled, Node ESM/client execution, portable declarations and notices. Final archive SHA-256: `65998e5ec0c5f1761f7713d54ba0fb89d046d554737534d71bc4197d809a33db`. |
-| Generated contracts, schema, author references, source inventory and changelog | PASS. |
-| Native package verification | PASS at `3d83a3f6`, all 17 packages. The final change affects only Mission polling and its Refresh control; final container proof separately checks the rebuilt assets. |
-| Release checks | PASS, 416 tests. |
-| Examples | PASS, 599 passed and 5 skipped. |
-| Viewer | PASS, 403 passed and 5 skipped. |
+| Console typecheck and full suite | PASS, 400 tests in 45 files, including upstream name lookup and the pinned Playground flow. |
+| Live browser | PASS, 31 checkpoints across 9 selected rows. Actual media playback, byte-exact downloads, slow polling, result/file availability, imported/archived controls and arbitrary-prefix external handoffs. |
+| Exported client against actual server/run processes | PASS, 8 results including skills, revisions, idempotency, input, files, failure and restart. |
+| Clean public container | PASS, 8 checks at this exact commit. Auth/session/CSP, same UI assets, actual faux run, both summary routes, media MIME/original bytes and native image gate. [Receipt](container-proof.md). |
+| Strict installed UI consumer | PASS, Bundler and NodeNext with skipLibCheck disabled, public ESM/client execution, 65 files and 57 portable declarations with notices. Archive SHA-256: `e0565b0331e2ba739d60c4c66a726c9cd9f7488826fca06702b2d24d57f94ec8`. |
+| Native package verification | PASS, all 17 packages, clean consumer execution/declarations, 3 demos and the repository's documented audit exceptions. |
+| Clean source | PASS, 3,083 files and 327 locked runtime package/version pairs; downloaded source installed, built and exercised offline demos/graphs/native discovery. Twelve dependency-license metadata flags remain for release-owner review. |
+| Generated files and changelog | PASS, generated schema/author/dependency inventory matches; fragment validator passed. |
+| Packaging boundaries and Storybook | PASS, boundary/export tests and static Storybook build. |
+| Review | Five automated threads answered and resolved; zero open. Current independent merge review found no blocking issue. Greptile's prior 5/5 belongs to `3573f4a6`; no fresh current-head score is claimed. [Report](review-report.md). |
 
-The earlier clean public-source build, Storybook build and 26 packaging guard tests passed. Publication holds remain intact. No registry release, hosted deployment or customer migration occurred.
+The native Stop and webhook-test corrections (#1406 and #1401) have merged upstream and are included. The earlier [Stop diagnosis](ci-failure.md) and [webhook diagnosis](webhook-ci-failure.md) are historical evidence, not outstanding integration requests.
 
-## Full repository result
+## Broad check and CI
 
-The full `npm run check` is not claimed green. Its build, generated checks and typechecks passed. All workspace suites except the native server passed. The initial local server run passed 730 of 740 tests and exposed:
+The full repository gate is still being reconciled; it is not claimed green. All build, generated checks and typechecks passed. The first disposable test environment omitted a process reaper; the unchanged orphan-holder case passed after adding `--init`. The corrected run exposed missing `ps` in the slim image and a video-frame assertion (50 versus 40) under that image's ffmpeg. Those results are under bounded investigation with unchanged suites and a corrected tools image. No source/test weakening or skip was added.
 
-- Four document cases requiring Ghostscript. The entire 14-case document suite passed in a disposable container with Ghostscript, Poppler and ffmpeg.
-- Five cases whose no-credential assumptions conflict with credentials inherited by the host process. All 32 cases in the affected API, harness and runnable files passed in a disposable environment with no credentials and the pinned SDK development dependencies.
-- The existing queued-status Stop race at `stop-follow-up.test.mjs:22`. An independently compiled copy of unchanged main reproduced the same `stopped:false,status:queued,state:working` failure. The same failure appears in earlier unrelated CI.
+Current-head GitHub CI is running. Read the PR checks for the live result. A final verdict requires the actual completed checks, not this static receipt.
 
-[CI diagnosis and prior-head evidence](ci-failure.md) records that race. [Approved PR #1406](https://github.com/Parcha-ai/agentrun/pull/1406) contains its fix. Integrate that dependency before treating the full gate as green. Current-head CI and review status must be read from the PR, rather than inferred from this static receipt.
+## Dependencies and queue
 
-## Final-head compatibility failure
+The unchanged console lock has 14 inherited affected package entries: 7 moderate, 3 high and 4 critical. DOMPurify is the sole production entry; the other entries are build/test/development tools. The added generator introduces none. [Concrete remediation assessment](dependency-remediation.md) records isolated lock-resolution options and their compatibility limits. No dependency upgrade has been applied; the owner scope decision remains pending. Native package verification uses existing audit exceptions, whose next high-severity expiry is November 6, 2026.
 
-The final-head pi 1.2.0 compatibility job passed 739 of 740 server tests and failed the existing webhook recovery assertion. [Diagnosis and limits](webhook-ci-failure.md) documents the unchanged source/test blobs and matching, already-reviewed [test-only PR #1401](https://github.com/Parcha-ai/agentrun/pull/1401). The assertion counts delivery receipts where the contract permits retrying the same notification ID. The current log omits IDs, so it does not prove those particular receipts were identical or that distinct duplicate notices occurred.
+The candidate is clean against inspected main. The [fresh queue trial](stack-trial.md) records the expected four packaging conflicts after still-queued #1405 and an earlier independent conflict in approved #1377. Already-merged #1323 and #1400 were reconciled while preserving uploads, availability metadata, complete name lookup, provider isolation and the selected Playground flow. [Merge preservation](merge-preservation.md).
 
-The native dependency decision now covers #1406 and #1401. Neither is included in this candidate.
+The file-availability budget bounds metadata reads to 128 entries and traversal depth to 16. The native walker still enumerates each directory's names; no runtime enumeration-cost fix is claimed. Unknown availability remains unknown.
 
-## Dependencies and queued work
-
-The console lockfile retains 14 inherited audit findings: 7 moderate, 3 high and 4 critical. The added contract generator introduces none. No dependency remediation is claimed. Native package verification uses the repository's existing audit exceptions; the next high-severity exception expiry is November 6, 2026.
-
-The [stack trial](stack-trial.md) inspected all 12 approved and queued PRs. The candidate is clean against the inspected main. Applying it after queued #1400 conflicts in App.tsx; the report records the intended reconciliation. Three other overlapping PRs merge cleanly. The combined queue also has an unrelated README conflict before this candidate enters it.
-
-Maintainer approval and a refreshed merge gate remain required.
-
-Final CI outcome:64 successful checks,1 failing pi1.2.0 test job and3 failed aggregate verification checks. Pi1.3.0 first passed. No check remains running. The sole underlying failing assertion is the webhook receipt-count case documented above.
+No paid-model qualification, OS application launch, hosted deployment, registry release or customer migration occurred. The UI library's publication hold remains intact. Maintainer approval and final gates remain required.

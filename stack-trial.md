@@ -1,139 +1,124 @@
-# PR1408 read-only stack trial
+# PR #1408 read-only stack trial
 
-Checked: 2026-11-02 17:02:51 PST. Public `ship-pr` step 6; syntax/merge trial only, not runtime or CI qualification.
+Observed `2026-11-03T02:40:43.295205+00:00`. Candidate `d9ff826df3195a2fb94530ad95d39186168341c8`; main `bc18a59f7d7275726ec42cd70d4adca96140493d`. This is a textual merge trial, not runtime qualification or approval.
 
-- Candidate: [#1408](https://github.com/Parcha-ai/agentrun/pull/1408), `0d1fb055e1263e0bce99af1fc87bbca6415c941e`; 75 changed paths.
-- Fresh `origin/main`: `1961a96fcbbfbe89d5b5e0de9704289d2538037d`. It is the candidate's merge base and ancestor; **0 new main commits, no new main file changes touching this PR**.
-- Enumerated all open PRs and all queue entries without pagination remaining: **12 approved PRs, the same 12 queued PRs**. Every complete file list and head was rechecked against the queue snapshot.
-- Candidate against current main: `git merge-tree --write-tree` **exit 0**, tree `8bb7f908c755158250e3508bbd051e0085e1e4e2`.
-- Result is a **named future merge gate**, not a current implementation failure: the candidate conflicts after queued #1400 lands. No source was integrated from an unmerged PR.
+- Current main merges cleanly with the candidate: exit 0, tree `004f2fa1ade72b71a49ef897a9b2f65914cea699`. Main is an ancestor; 0 unintegrated main commits.
+- Fully paginated snapshot: 34 open PRs, 8 approved, 7 queued. Every approved/queued head and complete file list was read; final metadata confirmed approvals, queue order and all selected heads unchanged.
+- Remote main remained `bc18a59f7d7275726ec42cd70d4adca96140493d` at the final check. Tracked status and checkout head were unchanged by this audit.
+- The normal main merge now includes #1400 names, #1323 uploads, #1403 workspace roots, #1404 keyless search and #1402 relaunched timelines. Prior App/README conflicts are resolved. No unmerged PR code was incorporated by this audit.
 
-## All approved/queued heads
+## Every approved/queued head
 
-| Queue | PR / title | Pinned head | Changed / shared paths | Candidate after that PR |
+| Queue/status | PR and title | Head | Files/shared | Candidate after earlier PR |
 |---|---|---|---|---|
-| 1 (AWAITING_CHECKS) | [#1400](https://github.com/Parcha-ai/agentrun/pull/1400) fix(console): an agent made here shows its name at once | `bcecd9010d717cea1fdcddbef173dcd4bf1b70b4` | 3 / 2 | CONFLICT (exit 1) |
-| 2 (MERGEABLE) | [#1399](https://github.com/Parcha-ai/agentrun/pull/1399) docs(serve): the console's build is the root build's, and a webhook may reach your own machine or network | `c3da329e96fd6c0ffab5f2265a382f573a7654d8` | 4 / 1 | CLEAN (exit 0) |
-| 3 (AWAITING_CHECKS) | [#1387](https://github.com/Parcha-ai/agentrun/pull/1387) fix(scripts): a script's command line refuses, loudly, on a Node with no import.meta.main | `d8f0bfa63f750623e2760b02b18ac9521d4ce04a` | 26 / 1 | CLEAN (exit 0) |
-| 4 (MERGEABLE) | [#1358](https://github.com/Parcha-ai/agentrun/pull/1358) fix(pi-durable-agent, serve): a workflow's decision requests count in its run metrics | `ca4cc5b3f10855de032e3327795faca8bec18e1f` | 8 / 0 | CLEAN (exit 0) |
-| 5 (UNMERGEABLE) | [#1401](https://github.com/Parcha-ai/agentrun/pull/1401) test(serve): an adopted run's wait counts webhook-ids, not receipts | `9b843648fa95a411c209276d7b862c4443ef369c` | 1 / 0 | CLEAN (exit 0) |
-| 6 (AWAITING_CHECKS) | [#1376](https://github.com/Parcha-ai/agentrun/pull/1376) fix(serve): one number per imported run, every subagent request counted once | `d79e4b099cc5e5683a2a5ff353cb6178c1cbf8fe` | 5 / 0 | CLEAN (exit 0) |
-| 7 (AWAITING_CHECKS) | [#1403](https://github.com/Parcha-ai/agentrun/pull/1403) fix(adapters, serve): the Claude and Codex CLIs run in the run's workspace, and tool errors name paths relative to it | `efbcfcc36acd5ed71858aebabd1419db17000d7f` | 17 / 0 | CLEAN (exit 0) |
-| 8 (AWAITING_CHECKS) | [#1406](https://github.com/Parcha-ai/agentrun/pull/1406) fix(serve): a stop works on a run that is working but still reads queued | `f5d12649e9599f1b462b93e803b724ddfc5b6c65` | 5 / 0 | CLEAN (exit 0) |
-| 9 (QUEUED) | [#1404](https://github.com/Parcha-ai/agentrun/pull/1404) feat(serve): web_search on pi with no key, through Exa's keyless endpoint | `485debedf3928a189cdecebe95d06adef0984210` | 15 / 0 | CLEAN (exit 0) |
-| 10 (QUEUED) | [#1323](https://github.com/Parcha-ai/agentrun/pull/1323) feat(serve): uploads: a file reserved and sent through the API, and a run's file_ids copied into its workspace | `ffd4037845fff8b971a7f4d27b7693365ab6858b` | 10 / 3 | CLEAN (exit 0) |
-| 11 (QUEUED) | [#1321](https://github.com/Parcha-ai/agentrun/pull/1321) feat(codex): an option turns on Codex's own web search, live, admitted by the model proxy and booked per search | `06c9af5a797767bf5f3a5902d3e9eb9cf304227b` | 12 / 0 | CLEAN (exit 0) |
-| 12 (QUEUED) | [#1402](https://github.com/Parcha-ai/agentrun/pull/1402) fix(timeline): an interrupted call sits after its call, so a relaunched run that answered ends | `d42565b7185efdf50ef1bde8156792de9e7ede26` | 3 / 0 | CLEAN (exit 0) |
+| 1 AWAITING_CHECKS | [#1399](https://github.com/Parcha-ai/agentrun/pull/1399) docs(serve): the console's build is the root build's, and a webhook may reach your own machine or network | `c3da329e96fd6c0ffab5f2265a382f573a7654d8` | 4 / 3 | CLEAN |
+| 2 AWAITING_CHECKS | [#1413](https://github.com/Parcha-ai/agentrun/pull/1413) ci: npm retries registry requests, and npm ci runs once more on a network error only | `ad9af6ca1d9ace8e7d440e4ba8a7f4ac9414f200` | 6 / 2 | CLEAN |
+| 3 MERGEABLE | [#1411](https://github.com/Parcha-ai/agentrun/pull/1411) ci: the pi compatibility check runs as five parallel jobs per pi version | `2d7dec5963235568c98461b70ea730c30fe8f595` | 4 / 1 | CLEAN |
+| 4 MERGEABLE | [#1409](https://github.com/Parcha-ai/agentrun/pull/1409) fix(serve): host-owned names are matched by identity | `765667c2011122d73be64c1e84998d0cca5096b6` | 7 / 3 | CLEAN |
+| 5 AWAITING_CHECKS | [#1405](https://github.com/Parcha-ai/agentrun/pull/1405) build(serve): the server is published, its console and notices with it | `06868a04f1469a63f037135485ddb5e7f2673099` | 18 / 7 | CONFLICT: apps/console/vite.config.ts, packages/serve/NOTICE, scripts/build-console.mjs, scripts/verify-packages.mjs |
+| 6 AWAITING_CHECKS | [#1415](https://github.com/Parcha-ai/agentrun/pull/1415) test: dsl's fractional poll wait on fake timers; scripted pids past any real pid | `41768714f4cd10dac6795f6237b41419c71dfbc7` | 3 / 0 | CLEAN |
+| 7 AWAITING_CHECKS | [#1412](https://github.com/Parcha-ai/agentrun/pull/1412) ci: the merge queue runs the test shards on one Node version; pull requests and main run all three | `85484a2ea235bd38d3b9709b4c7f92f89a77079f` | 2 / 1 | CLEAN |
+| Approved, not queued | [#1377](https://github.com/Parcha-ai/agentrun/pull/1377) feat(serve): a saved monid key works on every harness, only in the runs that name it, with its charges in the run's cost and cap | `51c4908701a0fb163aea0d1dfae0494bf3cb191b` | 32 / 4 | Earlier PR conflicts with main |
 
-Every individual earlier PR also merges cleanly onto the pinned main before the candidate is tested. These independent pair trials cover all 12, including the final queue item that the combined trial cannot reach.
+Each independent trial merges the earlier head onto pinned main with `git merge-tree --write-tree`, creates an unreferenced two-parent commit with `git commit-tree`, then appends the candidate. No checkout, branch, index, source, push, or PR mutation occurs.
 
 ## Shared paths
 
-- **#1400:** `apps/console/src/App.test.tsx`, `apps/console/src/App.tsx`.
-- **#1399:** `packages/serve/src/page.ts`.
-- **#1387:** `scripts/build-console.mjs`.
-- **#1323:** `packages/serve/src/openapi.ts`, `packages/serve/src/page.ts`, `packages/serve/test/openapi.test.mjs`.
+- **#1399:** `packages/serve/README.md`, `packages/serve/src/page.ts`, `packages/serve/test/files.test.mjs`.
+- **#1413:** `.github/workflows/ci.yml`, `scripts/build-console.mjs`.
+- **#1411:** `.github/workflows/ci.yml`.
+- **#1409:** `packages/serve/README.md`, `packages/serve/src/openapi.ts`, `packages/serve/src/server.ts`.
+- **#1405:** `.github/workflows/ci.yml`, `apps/console/vite.config.ts`, `packages/serve/NOTICE`, `packages/serve/README.md`, `packages/serve/scripts/copy-page.mjs`, `scripts/build-console.mjs`, `scripts/verify-packages.mjs`.
+- **#1412:** `.github/workflows/ci.yml`.
+- **#1377:** `packages/serve/README.md`, `packages/serve/src/openapi.ts`, `packages/serve/src/runs.ts`, `packages/serve/src/server.ts`.
 
-## Actual combined trials
+## Combined trials
 
-- Full queue order was **1400 → 1399 → 1387 → 1358 → 1401 → 1376 → 1403 → 1406 → 1404 → 1323 → 1321 → 1402**.
-- Queue positions **1–10 merged cleanly** using `merge-tree --write-tree` and unreferenced `commit-tree` objects with both parents.
-- Position **11, #1321**, then returned exit 1 in `packages/run-adapters-codex/README.md`; this happens **before #1408 is applied**. Position 12 and an all-12 final candidate merge were not claimed or fabricated.
-- Applying #1408 after the complete clean prefix (positions 1–10) returns exit 1 in `apps/console/src/App.tsx`.
-- The overlapping-only trial **1400 → 1399 → 1387 → 1323** was clean for all four earlier PRs; appending #1408 returned the same App.tsx conflict.
+- Queue order: #1399 → #1413 → #1411 → #1409 → #1405 → #1415 → #1412.
+- All 7 queued heads merge cleanly in that order. Appending this candidate conflicts only in `apps/console/vite.config.ts`, `packages/serve/NOTICE`, `scripts/build-console.mjs`, `scripts/verify-packages.mjs`.
+- Approved-only #1377 conflicts before this candidate is applied: `packages/pi-durable-agent/src/timeline/index.ts`, `packages/pi-durable-agent/src/timeline/timeline.ts`, `packages/serve/README.md`, `packages/serve/src/host-tools.ts`, `packages/serve/src/runs.ts`, `packages/serve/src/server.ts`, `packages/serve/src/tool-keys.ts`, `packages/serve/test/fixtures/faux-model.mjs`, `packages/serve/test/host-tools.test.mjs`, `packages/serve/test/import.test.mjs`, `packages/serve/test/tool-keys.test.mjs`. No all-approved clean stack is claimed.
+- #1321 is now REVIEW_REQUIRED at `1e97fb7c22a49141d30114b22c88f790e885ca74` and is not queued. Its earlier approved-head conflict is historical, outside the current approved/queued set.
 
-## Future conflict with #1400
+## Remaining future merge gate: #1405
 
-**[fix(console): an agent made here shows its name at once](https://github.com/Parcha-ai/agentrun/pull/1400)** refreshes names when run views open, reads both active and archived agents, discards superseded reads, retains partial successful names, and shows an ID only once a complete name lookup proves the agent absent. Its added cases cover a newly created agent without reload, an archived agent, and an archived-list failure.
+[#1405 — build(serve): the server is published, its console and notices with it](https://github.com/Parcha-ai/agentrun/pull/1405) is still open at the pinned head. Its intent is native server publication through the release workflow with the bundled console, canonical emitted third-party notices, and installed-package verification.
 
-The candidate also refreshes names after navigation, but its shared-provider extraction, capability gates, synchronous hash/address state and fallback differ. `App.test.tsx` auto-merges textually; its #1400 embedded-run-bar scenario must still be adapted to the candidate's API-playground administration flow.
+Preserve its explicit native release policy while leaving the separate UI library held. Combine its canonical license emission with this candidate’s dependency/private-import checks, exact asset manifest, font/license contents and static/library input hashes. Keep one notices output and update the installed consumer checks to validate both. After an actual merge, rebuild the app/library, verify generated assets and source/export boundaries, test installed consumers and run package/release preflight checks. This trial does not authorize incorporating #1405 before it lands.
 
-Actual conflicting hunks from merge-tree output (the left marker names an unreferenced main+#1400 trial commit; the right names #1408):
+Actual conflicting hunks from the independent earlier-PR trial:
 
-### App.tsx trial-tree lines 140–179
+### apps/console/vite.config.ts
 
-```tsx
-<<<<<<< a2f9f043e66854a335652b0f385a77c2e7f57c79
-  const go = (hash: string) => { location.hash = hash; };
-  useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
-  useEffect(() => { v2.capabilities().then(setCaps).catch(() => {}); }, [v2]);
-  // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
-  // view opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere, is named at once.
-  // Only the newest read lands.
-  useEffect(() => {
-    if (namesAsked.current && where.section !== "runs") return;
-    const n = ++namesAsked.current;
-    setNamesRead(false);
-    void Promise.allSettled([false, true].map((archived) => allPages((cursor) => v2.listAgents({ archived, cursor }), (p) => p.agents))).then((reads) => {
-      if (n !== namesAsked.current) return;
-      const fresh = Object.fromEntries(reads.flatMap((r) => (r.status === "fulfilled" ? r.value : [])).map((x) => [x.agent_id, x.definition.name ?? x.agent_id]));
-      // Each read's answer is kept. Both landed: the names are theirs. One failed: what came back goes over the names
-      // held, and the lookup is not complete, so a name it lacks (an agent the failed read would have named) shows as
-      // nothing yet, never as an id read as gone; the next runs view reads again.
-      const whole = reads.every((r) => r.status === "fulfilled");
-      setNames((held) => (whole ? fresh : { ...held, ...fresh }));
-      setNamesRead(whole);
-    });
-  }, [v2, where]);
+```
+<<<<<<< 59c6c15d4beeeb1276fcd8247d5e0980cff5dd9a
+import { thirdPartyNotices } from "./third-party-notices.mjs";
 =======
-  const go = (hash: string) => { location.hash = hash; setAddress(hash); };
-  useEffect(() => { const on = () => setAddress(location.hash); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
-  useEffect(() => {
-    if (!caps || caps.features.agents?.list === false) return;
-    // Every page of agents, for their names.
-    (async () => {
-      const all: Record<string, string> = {};
-      for (let c: string | null | undefined = undefined, i = 0; i < 50; i++) {
-        const page = await v2.listAgents({ cursor: c });
-        for (const x of page.agents) all[x.agent_id] = x.definition.name ?? x.agent_id;
-        if (!page.next_cursor) break;
-        c = page.next_cursor;
-      }
-      setNames(all);
-    })().catch(() => {});
-  }, [v2, caps, where.section, where.agent, where.run]);
->>>>>>> 0d1fb055e1263e0bce99af1fc87bbca6415c941e
+import { consoleBoundary } from "./build-boundary.mjs";
+>>>>>>> d9ff826df3195a2fb94530ad95d39186168341c8
 ```
 
-### App.tsx trial-tree lines 189–197
-
-```tsx
-<<<<<<< a2f9f043e66854a335652b0f385a77c2e7f57c79
-  }, [v2, where]);
-  // A name the lookup lacks while a read of it is under way shows as nothing yet, never as the id.
-  const agentName = (id: string) => names[id] ?? (namesRead ? id : "");
-  const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string } } | null;
+```
+<<<<<<< 59c6c15d4beeeb1276fcd8247d5e0980cff5dd9a
+  // THIRD-PARTY-NOTICES.txt beside index.html: the licenses of what the bundle holds (third-party-notices.mjs).
+  plugins: [react(), thirdPartyNotices()],
 =======
-  }, [v2, where, caps]);
-  const agentName = (id: string) => names[id] ?? id;
->>>>>>> 0d1fb055e1263e0bce99af1fc87bbca6415c941e
+  plugins: [react(), consoleBoundary()],
+>>>>>>> d9ff826df3195a2fb94530ad95d39186168341c8
 ```
 
-### Resolution plan after #1400 reaches main
+### packages/serve/NOTICE
 
-1. Fetch main and integrate it under the owner's branch policy; do not copy or cherry-pick unmerged #1400 into the current branch. Recheck all pinned queue heads first.
-2. Keep #1408's `AgentRunProvider` as the capability/session owner; keep synchronous `address`/`go` navigation and the `caps` dependencies/explicit list restrictions. Do not restore the old `setWhere`, private `setCaps`, duplicated capability fetch or cast-only capability model.
-3. Preserve #1400's behavior within that provider scope: active and supported archived pagination, newest-request guard, complete-versus-partial names state, merging partial successful results and distinguishing loading/unknown from a proven missing agent. Do not query explicitly unsupported agent/archive lists; an incomplete lookup must not imply an agent is gone. Keep session-generation invalidation and state reset.
-4. Preserve all three name regressions. Adapt the new-agent case to create → exact pinned API playground → run detail; retain archived-name and partial-list-failure cases, plus existing capability/session/pinning tests.
-5. Run affected App/provider/playground tests, console typecheck/build and native auth/client checks. Regenerate the OpenAPI client and dependency inventory if the refreshed main includes #1323 or other schema/package changes. Repeat the full queued stack trial and CI on the new candidate SHA before a merge handoff.
-
-## Unrelated queue conflict
-
-**[#1321 — feat(codex): an option turns on Codex's own web search, live, admitted by the model proxy and booked per search](https://github.com/Parcha-ai/agentrun/pull/1321)** is individually clean against main and against #1408. In the actual preceding queue stack, it conflicts in `packages/run-adapters-codex/README.md`, where its live-web-search documentation meets earlier queued workspace/cwd documentation. That path is **not changed by #1408**. The earlier queue owners should reconcile those descriptions and revalidate the queue; this is separate from the #1400 future gate.
-
-## Reproduction/evidence
-
-Commands executed through git plumbing (no checkout, index merge, branch rewrite, push, approval or external message):
-
-```sh
-git fetch --no-tags origin main
-git merge-tree --write-tree <pinned-main-or-trial-commit> <pinned-earlier-head>
-git commit-tree <clean-tree> -p <previous-trial> -p <earlier-head> -m "Temporary read-only stack trial"
-git merge-tree --write-tree <clean-trial-commit> 0d1fb055e1263e0bce99af1fc87bbca6415c941e
+```
+<<<<<<< 59c6c15d4beeeb1276fcd8247d5e0980cff5dd9a
+The console in dist/console bundles third-party software. dist/console/THIRD-PARTY-NOTICES.txt names each
+package it holds, with its version, its license and its license text.
+=======
+The console includes third-party code and fonts. Their license texts are in
+dist/console/THIRD-PARTY-NOTICES.txt, distributed beside its static assets.
+>>>>>>> d9ff826df3195a2fb94530ad95d39186168341c8
 ```
 
-- Complete file lists/head metadata: [stack-prs.json](stack-prs.json).
-- All-open approval and queue-order snapshot: [stack-snapshot.json](stack-snapshot.json).
-- Every merge exit code, tree hash, temporary commit hash, raw conflict output and extracted hunk: [stack-trial.json](stack-trial.json).
-- HEAD remains `0d1fb055e1263e0bce99af1fc87bbca6415c941e`; tracked worktree status remained unchanged. Only temporary local objects/FETCH_HEAD were used.
-- Main or queue movement invalidates this snapshot; refresh before acting.
+### scripts/build-console.mjs
+
+```
+<<<<<<< 59c6c15d4beeeb1276fcd8247d5e0980cff5dd9a
+const INPUTS = ['apps/console/src', 'apps/console/index.html', 'apps/console/package.json', 'apps/console/package-lock.json', 'apps/console/tsconfig.json', 'apps/console/vite.config.ts', 'apps/console/third-party-notices.mjs', 'apps/console/tailwind.config.ts', 'apps/console/postcss.config.js', 'packages/dsl/src'];
+=======
+const INPUTS = ['apps/console/src', 'apps/console/index.html', 'apps/console/package.json', 'apps/console/package-lock.json', 'apps/console/tsconfig.json', 'apps/console/vite.config.ts', 'apps/console/vite.library.config.ts', 'apps/console/tsconfig.library.json', 'apps/console/build-library.mjs', 'apps/console/build-boundary.mjs', 'apps/console/tailwind.config.ts', 'apps/console/postcss.config.js', 'packages/dsl/src'];
+>>>>>>> d9ff826df3195a2fb94530ad95d39186168341c8
+```
+
+### scripts/verify-packages.mjs
+
+```
+<<<<<<< 59c6c15d4beeeb1276fcd8247d5e0980cff5dd9a
+    // The console bundles third-party code; its notices ship beside it, one section per bundled package with its license
+    // text, and NOTICE points to them. React and the fonts are in every console bundle, so a notices file without them is not
+    // this bundle's.
+    const notices = await readFile(join(consumer, 'node_modules/@parcha/agentrun-serve/dist/console/THIRD-PARTY-NOTICES.txt'), 'utf8').catch(() => '');
+    assert.match(notices, /^Third-party software in the AgentRun console\n/, 'the installed agentrun-serve has the console\'s notices, dist/console/THIRD-PARTY-NOTICES.txt');
+    for (const name of ['react', 'react-dom']) assert.match(notices, new RegExp(`^${name} \\d+\\.\\d+\\.\\d+ \\(MIT\\)\\n\\n\\S`, 'm'), `the console's notices list ${name} with its license text`);
+    // Its fonts reach the bundle as assets a stylesheet imports, not as modules: their license is listed too.
+    for (const font of ['jetbrains-mono', 'schibsted-grotesk']) assert.match(notices, new RegExp(`^@fontsource/${font} \\d+\\.\\d+\\.\\d+ \\(OFL-1\\.1\\)\\n\\n\\S`, 'm'), `the console's notices list its font @fontsource/${font} with its license text`);
+    const serveNotice = await readFile(join(consumer, 'node_modules/@parcha/agentrun-serve/NOTICE'), 'utf8');
+    assert.match(serveNotice, /dist\/console\/THIRD-PARTY-NOTICES\.txt/, "agentrun-serve's NOTICE points to the console's notices");
+    receipt.checks.push('The installed agentrun-serve carries the console (dist/console/index.html) and its third-party notices (dist/console/THIRD-PARTY-NOTICES.txt, which NOTICE names); its files passed the same scans.');
+=======
+    assert.match(await readFile(join(consoleDir, 'THIRD-PARTY-NOTICES.txt'), 'utf8'), /Third-party software.*AgentRun console/);
+    const assets = JSON.parse(await readFile(join(consoleDir, 'asset-manifest.json'), 'utf8'));
+    assert.ok(Array.isArray(assets.files) && assets.files.length > 0, 'the installed console has an exact asset manifest');
+    for (const file of assets.files) {
+      assert.ok(/^(?:assets\/[A-Za-z0-9_-][A-Za-z0-9._-]*|THIRD-PARTY-NOTICES\.txt)$/.test(file), 'manifest files are public assets');
+      assert.ok((await readFile(join(consoleDir, file))).length > 0, `manifest asset is installed: ${file}`);
+    }
+    receipt.checks.push('The installed agentrun-serve carries the console (dist/console/index.html); its files passed the same scans.');
+>>>>>>> d9ff826df3195a2fb94530ad95d39186168341c8
+```
+
+## Merge preservation review at current head
+
+- App keeps provider-owned typed capabilities, session identity/generation remounting and client cache/auth invalidation. It does not restore a duplicate capabilities request or the old capability cast.
+- Active and archived agent name lists are paginated. Explicit `agents.list:false` skips and clears the lookup; `archive.agents:false` skips the unsupported archived listing. Newest-read and cleanup guards discard stale results. Partial failures preserve successful names and keep missing names unknown until the lookup is complete.
+- The upstream create/run regression follows administration → exact pinned API playground → native request → run detail, preserving the chosen administration design. Archived-agent and partial-archived-read tests remain.
+- Native upload preparation, workspace cwd, keyless-search wiring and timeline recovery changes coexist with the unchanged additive result/file-availability summaries. OpenAPI and generated console types contain uploads and both optional nullable availability fields. README retains upload `file_ids` and accurate bounded-metadata-scan documentation.
+- No substantive merge preservation regression was found in this bounded source review. Local focused proof: 41 App/provider/playground tests and typecheck passed during resolution. Root subsequently reported all 400 console tests and typecheck passing at this head. Earlier 01970/12fc browser/native/container receipts are historical until the new build is proven.

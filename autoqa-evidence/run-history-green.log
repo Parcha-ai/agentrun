@@ -1,0 +1,14 @@
+npm notice run @parcha/agentrun-ui@0.1.0-beta.28 test
+npm notice run vitest run src/components/RunDetail.test.tsx src/components/RunHeader.test.tsx src/lib/runState.test.ts
+
+ RUN  v2.1.9 <public-checkout>/apps/console
+
+ ✓ src/lib/runState.test.ts (11 tests) 4ms
+ ✓ src/components/RunHeader.test.tsx (6 tests) 25ms
+ ✓ src/components/RunDetail.test.tsx (8 tests) 81ms
+
+ Test Files  3 passed (3)
+      Tests  25 passed (25)
+   Start at  02:10:54
+   Duration  748ms (transform 141ms, setup 0ms, collect 319ms, tests 110ms, environment 701ms, prepare 429ms)
+

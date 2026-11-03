@@ -1,5 +1,7 @@
 # Durable CI failure diagnosis
 
+**Historical diagnosis.** The native Stop and webhook-test corrections have since merged upstream as #1406 and #1401. Candidate `01970d298602d7ca9a385040778190ff4eb87e3e` includes both through its main merge. This report preserves prior-head evidence; read the current PR checks and [gate status](gate-status.md) for the new candidate.
+
 The only failure in [test (22.23.2, durable), job 125656123877](https://github.com/Parcha-ai/agentrun/actions/runs/41556175977/job/125656123877) at head `0d1fb055e1263e0bce99af1fc87bbca6415c941e` is the existing queued-status Stop race already addressed by [PR #1406](https://github.com/Parcha-ai/agentrun/pull/1406). This is not introduced by the console branch.
 
 ## Exact CI evidence

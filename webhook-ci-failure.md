@@ -1,5 +1,7 @@
 # Webhook recovery CI failure diagnosis
 
+**Historical diagnosis.** The native Stop and webhook-test corrections have since merged upstream as #1406 and #1401. Candidate `01970d298602d7ca9a385040778190ff4eb87e3e` includes both through its main merge. This report preserves prior-head evidence; read the current PR checks and [gate status](gate-status.md) for the new candidate.
+
 The final-head failure is consistent with an inherited test assertion that counts delivery receipts instead of logical webhook messages. The exact correction already exists in [open PR #1401](https://github.com/Parcha-ai/agentrun/pull/1401), which changes only this test. The current CI output proves two receipts, but does not print their IDs or bodies; it does not establish that the server created two distinct notices.
 
 ## Exact failing run
@@ -81,4 +83,4 @@ The strongest supported diagnosis is an inherited receipt-count test flake again
 
 The failed CI log omits receipt IDs and bodies, so those particular two receipts cannot be independently deduplicated from its output. A genuine pair of distinct IDs would still be a product defect and would also fail PR #1401's corrected assertion. No current evidence demonstrates such a defect here.
 
-Investigation was read-only: no source changes, test executions, API mutations, reruns, commits or pushes. Applying the existing correction is left to the parent's requested user decision; it has not been folded into this implementation.
+Investigation was read-only: no source changes, test executions, API mutations, reruns, commits or pushes. The correction was not applied during the original investigation. It later arrived through the candidate's normal main merge after the upstream PR merged.

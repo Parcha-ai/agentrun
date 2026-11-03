@@ -1,28 +1,22 @@
-The review-clean exit criterion is met for PR #1408 at head `3573f4a6f4f1a68b2a1c52161b0a363d2802315f`. The latest Greptile summary reports 5/5 for that exact commit and lists no findings. All five threads have replies and GraphQL confirms all five are resolved.
+PR #1408 has zero unresolved threads at `d9ff826df3195a2fb94530ad95d39186168341c8`, while current-head review-clean remains pending. Greptile’s latest 5/5 explicitly reviews `3573f4a6`, not this head.
 
 | Field | Value |
 |---|---|
 | Repository / PR | `Parcha-ai/agentrun#1408` |
 | Iterations | 2 of max 3 |
 | Threads found (per reviewer) | Greptile 5; Devin 0; humans 0 |
-| Resolved this run | 5 total across both iterations, independently verified through GraphQL |
+| Resolved this run | 0 in this read-only audit; all 5 previously resolved threads independently verified resolved |
 | Replied, left open for a human | 0 |
-| Remaining | 0 |
-| Final Greptile score | 5/5 for current head `3573f4a6f4f1a68b2a1c52161b0a363d2802315f` |
-| Stop reason | Exit criterion met, review-clean |
+| Remaining | 0 across inline threads, review bodies and issue comments |
+| Final Greptile score | Pending for current head `d9ff826df3195a2fb94530ad95d39186168341c8`; prior 5/5 at `3573f4a6` is stale |
+| Stop reason | Current-head automated review pending; bounded read-only audit complete, no additional manual trigger authorized |
 
-The [summary](https://github.com/Parcha-ai/agentrun/pull/1408#issuecomment-6592483255) was updated at `2026-11-03T01:36:45Z`, after the [final review request](https://github.com/Parcha-ai/agentrun/pull/1408#issuecomment-6593070050) at `01:33:50Z`. It links the exact current head. The Greptile check for that head is completed with conclusion success. The earlier score for `3d83a3f6` was excluded as stale.
+The fully paginated audit at `2026-11-03T02:42:56.467957+00:00` read all 5 review threads and nested comments, all 7 reviews and all 3 issue comments. Every connection exhausted its pages. No new human, review-body or summary-only request exists.
 
-The final review audit at `2026-11-03T01:45:10Z` fully paginated all three sources. GraphQL returned 5 threads and all nested comments, with no remaining pages. REST pagination returned 7 reviews and 3 issue comments. No human requests, summary-only requests or additional findings remain.
+The [Greptile summary](https://github.com/Parcha-ai/agentrun/pull/1408#issuecomment-6592483255) was last updated `2026-11-03T01:36:45Z` and explicitly links the prior commit. No Greptile check exists on the current head. Both permitted manual requests were already used; no trigger or API mutation was sent.
 
-The bounded CI watch ended with 63 successful checks, 1 failed check and 1 running check. Review-clean does not imply that CI is green.
+Exact-head CI at this observation: **32 successful, 32 running, zero failed checks**. The checks are still running, so no terminal CI verdict is claimed. The root’s corrected full check is also in progress. Local source proof reported by root: all 400 console tests and typecheck pass on this head. Earlier 01970/12fc native/browser/container receipts remain historical until the merged artifact is rebuilt and verified.
 
-The failed [pi-1-2 1.2.0 first job](https://github.com/Parcha-ai/agentrun/actions/runs/41559597077/job/125667163350) passed its build and clean-consumer checks. Its server suite passed 739 of 740 tests. The failure was [the webhook recovery test](https://github.com/Parcha-ai/agentrun/blob/3573f4a6f4f1a68b2a1c52161b0a363d2802315f/packages/serve/test/webhooks.test.mjs#L524). At line 542, "the same wait, no new notice" expected 1 notification and received 2. The pi-git-remote and pi-transport suites passed in that job.
+Current main is `bc18a59f7d7275726ec42cd70d4adca96140493d`, already contained by the candidate and unchanged at the final stack snapshot. All seven queued heads combine cleanly before this candidate; appending the candidate has the four packaging conflicts from open #1405. Approved-only #1377 conflicts with main before this candidate enters the stack. #1321 is no longer approved/queued. The current App/README merge preserves naming, provider/capability/session restrictions, native uploads and availability metadata.
 
-The [pi-1-2 1.3.0 first job](https://github.com/Parcha-ai/agentrun/actions/runs/41559597077/job/125667163231) remained running. It started at `01:26:17Z`; its pi-leg test step started at `01:31:27Z`. At `01:44:15Z` the job had run for 17 minutes 58 seconds. These first-suite jobs test pi-transport, agentrun-serve and pi-git-remote with a 30-minute job budget. The API showed the current step but did not expose current per-test progress. No rerun was requested.
-
-Owner decisions on the #1406/native queued-stop dependency and inherited dependencies remain outside the review loop. This report does not imply merge approval. The root agent reports final local proof of 385 console checks, 27 browser rows, 69 native checks and 8 container checks; this read-only audit did not rerun that proof.
-
-This audit made no API mutations, source edits, dependency changes or review triggers.
-
-Final CI run41559597077 completed with64 successful checks and4 failed checks. The sole failing test job was the pi1.2.0 first leg, documented in [webhook diagnosis](webhook-ci-failure.md). The pi1.3.0 first leg passed. The other3 failures were aggregate verify checks after the matrix failure. Review remains exact-head5/5 with zero unresolved threads; this is a review-clean result, not a merge-ready verdict.
+The publisher has refreshed the PR body for this merged head: integrated main/native fixes and 400 console tests are recorded, with prior proof heads explicitly scoped and current live/full checks pending. This audit made no source, build, PR, review, dependency or lifecycle changes.

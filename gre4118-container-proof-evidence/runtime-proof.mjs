@@ -79,6 +79,18 @@ try {
   const read = await json(await fetch(`${origin}/v2/runs/${started.run_id}`, { headers: auth }));
   assert.equal(read.body.result.final_answer, 'The answer is 42.'); assert.equal(read.body.revision, made.revision);
   assert.equal([...rows.values()].filter(row => row.kind === 'user_message').length, 1);
+  const readAvailability = async () => {
+    const global = await json(await fetch(`${origin}/v2/runs?limit=10`, { headers: auth }));
+    const agent = await json(await fetch(`${origin}/v2/agents/${encodeURIComponent(made.agent_id)}/runs?limit=10`, { headers: auth }));
+    assert.equal(global.status, 200); assert.equal(agent.status, 200);
+    return Object.fromEntries([['global', global], ['agent', agent]].map(([scope, response]) => {
+      const summary = response.body.runs.find(run => run.run_id === started.run_id);
+      assert.ok(summary, `${scope} summary includes the completed run`);
+      return [scope, { result_available: summary.result_available, files_available: summary.files_available }];
+    }));
+  };
+  const availabilityBeforeFiles = await readAvailability();
+  assert.deepEqual(availabilityBeforeFiles, { global: { result_available: true, files_available: false }, agent: { result_available: true, files_available: false } });
   await docker('exec', meta.container, 'node', '--input-type=module', '-e', "import { writeFileSync } from 'node:fs'; import { join } from 'node:path'; for (const path of ['tone.wav', 'clip.webm']) writeFileSync(join(process.argv[1], path), Uint8Array.of(0,255,128,1,2));", `/data/runs/${started.run_id}/work`);
   const fileList = await json(await fetch(`${origin}/v2/runs/${started.run_id}/files`, { headers: auth }));
   assert.equal(fileList.status, 200);
@@ -91,7 +103,9 @@ try {
     assert.deepEqual(new Uint8Array(await raw.arrayBuffer()), Uint8Array.of(0,255,128,1,2));
     media.push({ path, type, status: raw.status, exactBytes: true, nosniff: true });
   }
-  checked('real faux child process, persisted result and native media MIME', { createStatus: create.status, startStatus: start.status, agentId: made.agent_id, revision: made.revision, runId: started.run_id, timelineFinal: final.final, status: read.body.status, result: read.body.result, rowKinds: [...rows.values()].sort((a,b) => a.seq-b.seq).map(row => row.kind), media });
+  const availabilityAfterFiles = await readAvailability();
+  assert.deepEqual(availabilityAfterFiles, { global: { result_available: true, files_available: true }, agent: { result_available: true, files_available: true } });
+  checked('real faux child process, persisted result, summary availability and native media MIME', { availabilityBeforeFiles, availabilityAfterFiles, createStatus: create.status, startStatus: start.status, agentId: made.agent_id, revision: made.revision, runId: started.run_id, timelineFinal: final.final, status: read.body.status, result: read.body.result, rowKinds: [...rows.values()].sort((a,b) => a.seq-b.seq).map(row => row.kind), media });
   const imageCheck = await docker('exec', meta.container, 'sh', '/opt/agentrun/packages/serve/docker/image-check.sh', '/opt/agentrun');
   checked('native image redistributable-dependency gate', { output: imageCheck });
   let logs = await docker('logs', meta.container);

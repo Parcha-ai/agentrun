@@ -1,11 +1,11 @@
 {
-  "origin": "http://127.0.0.1:43933",
+  "origin": "http://127.0.0.1:43575",
   "build": {
-    "asset": "assets/index-DUXjp8H7.js",
-    "sha256": "7a14028d5518ba3e5929420def5b4a8d8c9518155a74d76955f948afa73f94db",
+    "asset": "assets/index-Bpz8EcuG.js",
+    "sha256": "fda64627b643b165d22bac8f9b48c739ae6b00f821b2d3fdf9f867b13e073f0c",
     "css": "assets/index-MZWl1iOl.css",
     "cssSha256": "bf50c1d29c09f394dbd98026fef8f8c8cae60514718ac97b42d0ea5b6daf512f",
-    "sourceHash": "e563eb387a69af155a34773c0517a138422e739cf3c250b3356edc949ddebfa6"
+    "sourceHash": "a4d0d7727c39e1d016ecc14f513e516118949f96ce3c613a899b21e8854e3c97"
   },
   "checks": [
     {
@@ -43,7 +43,7 @@
       "mime": "audio/wav",
       "playback": {
         "duration": 1,
-        "currentTime": 0.011715,
+        "currentTime": 0.007146,
         "readyState": 4,
         "blobSource": true
       },
@@ -56,7 +56,7 @@
       "mime": "video/webm",
       "playback": {
         "duration": 1,
-        "currentTime": 0.0059,
+        "currentTime": 0.0055,
         "readyState": 4,
         "width": 320,
         "height": 180,
@@ -95,9 +95,9 @@
     {
       "row": "12-mission-desktop",
       "status": "PASS",
-      "waiting": "01a19f01-9bec-7839-8ad1-d98305e632a0",
-      "active": "01a19f01-b283-797a-8f95-ac2eb42e204a",
-      "failed": "01a19f01-b0c6-778c-b692-5904951a314e",
+      "waiting": "01a19f49-cd18-720b-a804-d45b4c71049c",
+      "active": "01a19f49-e625-76ba-a1c3-7aafb6487dc6",
+      "failed": "01a19f49-e3a9-7403-9934-e2d9d18146b7",
       "metricCardRadius": "12px"
     },
     {
@@ -116,10 +116,25 @@
       "refetchedOlderCursor": true
     },
     {
+      "row": "13c-mission-native-availability",
+      "status": "PASS",
+      "writer": {
+        "run": "01a19f49-5676-7bc0-bc6a-844f0b934bff",
+        "result": true,
+        "files": true
+      },
+      "plain": {
+        "run": "01a19f49-cd21-7ba0-91dc-342c47f9442a",
+        "result": true,
+        "files": false
+      },
+      "extraFileApiReads": 0
+    },
+    {
       "row": "13b-mission-slow-refresh-poll",
       "status": "PASS",
       "heldAtLeastMs": 16000,
-      "observedMs": 30023,
+      "observedMs": 30071,
       "skippedPollWhileHeld": true,
       "resumedNextPoll": true,
       "statsReads": 2,
@@ -150,92 +165,158 @@
     {
       "row": "17-server-settings",
       "status": "PASS"
+    },
+    {
+      "row": "18-archived-history",
+      "status": "PASS",
+      "run": "01a19f49-5676-7bc0-bc6a-844f0b934bff",
+      "composerOffered": false
+    },
+    {
+      "row": "19-imported-history",
+      "status": "PASS",
+      "agent": "imp-de88d7de1f1b63f13828a97cac1e3f48",
+      "run": "01a19f49-4e8b-7a89-b654-8cce6ef420e1",
+      "source": "claude-code",
+      "composerOffered": false,
+      "nativeRefusal": {
+        "status": 409,
+        "code": "not_continuable",
+        "reason": "imported"
+      }
+    },
+    {
+      "row": "20-prefixed-api-handoffs",
+      "status": "PASS",
+      "endpoint": "http://127.0.0.1:46199/team/native-api",
+      "contexts": [
+        {
+          "server": "http://127.0.0.1:46199/team/native-api",
+          "operation": "POST /team/native-api/agents",
+          "credentialAbsent": true,
+          "copiedExactPrompt": true
+        },
+        {
+          "server": "http://127.0.0.1:46199/team/native-api",
+          "operation": "POST /team/native-api/agents",
+          "credentialAbsent": true,
+          "copiedExactPrompt": true
+        },
+        {
+          "server": "http://127.0.0.1:46199/team/native-api",
+          "operation": "PUT /team/native-api/agents/01a19f49-553a-71d3-9b7e-4f68f99a8e0f/definition",
+          "credentialAbsent": true,
+          "copiedExactPrompt": true
+        },
+        {
+          "server": "http://127.0.0.1:46199/team/native-api",
+          "operation": "PUT /team/native-api/agents/01a19f49-553a-71d3-9b7e-4f68f99a8e0f/definition",
+          "credentialAbsent": true,
+          "copiedExactPrompt": true
+        },
+        {
+          "server": "http://127.0.0.1:46199/team/native-api",
+          "operation": "POST /team/native-api/agents/01a19f49-553a-71d3-9b7e-4f68f99a8e0f/runs",
+          "credentialAbsent": true,
+          "copiedExactPrompt": true
+        }
+      ],
+      "openapiStatus": 200,
+      "runsCreatedByHandoff": 0
     }
   ],
   "resources": [
     {
-      "agent": "01a19f01-2603-7d55-8a8d-89b00e0935d5"
+      "agent": "imp-de88d7de1f1b63f13828a97cac1e3f48"
     },
     {
-      "run": "01a19f01-2730-7dea-9979-2c0509457117",
-      "agent": "01a19f01-2603-7d55-8a8d-89b00e0935d5"
+      "run": "01a19f49-4e8b-7a89-b654-8cce6ef420e1",
+      "agent": "imp-de88d7de1f1b63f13828a97cac1e3f48",
+      "imported": true
+    },
+    {
+      "agent": "01a19f49-553a-71d3-9b7e-4f68f99a8e0f"
+    },
+    {
+      "run": "01a19f49-5676-7bc0-bc6a-844f0b934bff",
+      "agent": "01a19f49-553a-71d3-9b7e-4f68f99a8e0f"
     },
     {
       "agent": "browser-regions"
     },
     {
-      "run": "01a19f01-2cd5-78b8-a9e6-8b15ad6cf08b",
+      "run": "01a19f49-5c51-716e-a588-1e0922eed375",
       "agent": "browser-regions"
     },
     {
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-3074-7103-9d80-1037e7e99855",
+      "run": "01a19f49-6195-725d-9051-fefe403a5f30",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-9b46-7903-8f77-5f8590fff3c4",
+      "run": "01a19f49-cc73-741b-8730-560355a9c32e",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-9bec-7839-8ad1-d98305e632a0",
+      "run": "01a19f49-cd18-720b-a804-d45b4c71049c",
       "agent": "browser-regions"
     },
     {
-      "run": "01a19f01-9bf6-7324-b274-48ccb1f281d9",
+      "run": "01a19f49-cd21-7ba0-91dc-342c47f9442a",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-9db1-7dee-9b6e-36c366c30edc",
+      "run": "01a19f49-cee1-7239-a058-871243224d3d",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-9f6e-74ef-88b5-5d97bd13c19f",
+      "run": "01a19f49-d09f-7f71-bd94-16c41b62685f",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-a12a-7582-87af-3d7cd4985c0f",
+      "run": "01a19f49-d25d-7100-a985-c6f2ba78da05",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-a2e8-7257-8447-ba2aeb5958bb",
+      "run": "01a19f49-d434-799e-83a5-a2f184bbb8ce",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-a4a5-7b37-b0c7-7b4c12351ef9",
+      "run": "01a19f49-d5f9-74a7-8495-30897f3b090f",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-a661-750e-a026-909da29cedbc",
+      "run": "01a19f49-d7bb-7130-bc8c-25b7672e386b",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-a81b-7041-ae49-0ceb0cab4ee3",
+      "run": "01a19f49-d97a-7d96-b8b3-43294c2b3ec5",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-a9d6-7f69-b329-50d2410d80ed",
+      "run": "01a19f49-db38-7deb-bb4e-a31ec7650d47",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-ab95-7b41-b3ae-a9f39dff4103",
+      "run": "01a19f49-dcfa-72ba-aab3-c207a43a41bd",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-ad50-72f8-9447-f9d1dc01f010",
+      "run": "01a19f49-debb-7990-8a59-b684383c2100",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-af0a-7d07-a7c8-0dc3e2c37d3e",
+      "run": "01a19f49-e131-7ec6-b6ff-2fdd1bad9e9a",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-b0c6-778c-b692-5904951a314e",
+      "run": "01a19f49-e3a9-7403-9934-e2d9d18146b7",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19f01-b283-797a-8f95-ac2eb42e204a",
+      "run": "01a19f49-e625-76ba-a1c3-7aafb6487dc6",
       "agent": "browser-slow"
     }
   ],
@@ -243,7 +324,7 @@
     "Failed to load resource: the server responded with a status of 404 (Not Found)",
     "Executing inline event handler violates the following Content Security Policy directive 'script-src 'self''. Either the 'unsafe-inline' keyword, a hash ('sha256-...'), or a nonce ('nonce-...') is required to enable inline execution. Note that hashes do not apply to event handlers, style attributes and javascript: navigations unless the 'unsafe-hashes' keyword is present. The action has been blocked.",
     "Executing inline event handler violates the following Content Security Policy directive 'script-src 'self''. Either the 'unsafe-inline' keyword, a hash ('sha256-...'), or a nonce ('nonce-...') is required to enable inline execution. Note that hashes do not apply to event handlers, style attributes and javascript: navigations unless the 'unsafe-hashes' keyword is present. The action has been blocked.",
-    "Loading the image 'http://127.0.0.1:43933/x' violates the following Content Security Policy directive: \"img-src data:\". The action has been blocked.",
+    "Loading the image 'http://127.0.0.1:43575/x' violates the following Content Security Policy directive: \"img-src data:\". The action has been blocked.",
     "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
     "Failed to load resource: net::ERR_INTERNET_DISCONNECTED",
     "Failed to load resource: net::ERR_FAILED"
