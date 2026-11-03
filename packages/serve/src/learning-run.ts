@@ -20,7 +20,7 @@ import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-d
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
-import { dropSeed, keepTurn, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, type Seed, seedAt, seedOf, shortLearning, type Turn, withAgentGrade } from "./learning.js";
+import { dropSeed, gradeModelOf, keepTurn, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, type Seed, seedAt, seedOf, shortLearning, type Turn, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, withSecrets } from "./secrets.js";
@@ -513,7 +513,7 @@ export class LearningRuns {
       const proposal = JSON.parse(await readFile(join(run.dir, PROPOSAL), "utf8")) as Proposal;
       const known = await this.options.agents.revision(run.agentId, run.revision);
       if (known?.revision.kind !== "agentic") throw new Error("the run's revision is not agentic");
-      const { gradeModelOf, judgeProposal, mergeProposal, readForGrade } = await import("./grade.js");
+      const { judgeProposal, mergeProposal, readForGrade } = await import("./grade.js");
       const main = kept.verdict ? undefined : await readForGrade(data, run.agentId, run.id, proposal);
       // Main took a note of the same name, or superseded one it supersedes, since the run started: refused before the
       // grader is asked.

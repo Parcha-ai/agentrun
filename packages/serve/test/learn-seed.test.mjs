@@ -6,7 +6,7 @@
 // into it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
@@ -116,6 +116,25 @@ test("a new agent with learning on: its first run makes its folder, main checked
   await first.close();
   const again = await serve(t, { data, faux: SYSTEM });
   assert.deepEqual(await learningOf(again.api, "fresh", runId), { whole, short });
+});
+
+// A home made before the agent's first run that learns may already hold an empty `learning/` (mode 0700, no .git), as a
+// home's first making leaves it: the seed takes it as it is, git init in place, and the run starts from its one commit.
+test("an empty learning/ in the agent's home before its first run, with no .git, is taken as it is: the folder is made a repository in place, main holds an empty MEMORY.md, and the run is seeded from it", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: SYSTEM });
+  assert.equal((await api("POST", "/agents", agent("premade", { learning: true, instructions: "Answer the question." }))).status, 201);
+  const repo = repoOf(data, "premade");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  chmodSync(repo, 0o700);
+  assert.deepEqual(readdirSync(repo), []);
+  const { runId } = await ran(api, "premade");
+  const { whole } = await learningOf(api, "premade", runId);
+  assert.deepEqual([whole.state, whole.reason], ["dropped", "empty"], "seeded, and its end-of-run turn gave no note");
+  assert.ok(existsSync(join(repo, ".git")), "a repository, made in place");
+  assert.equal(git(repo, ["rev-list", "--count", "main"]), "1");
+  assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md"]);
+  assert.deepEqual(pinOf(data, runId), { seed: git(repo, ["rev-parse", "main"]) });
+  assert.equal(statSync(repo).mode & 0o777, 0o700, "its mode as it was");
 });
 
 // The faux harness stands in for claude-agent's and codex's: it says the system prompt the run gives it.

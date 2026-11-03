@@ -812,7 +812,8 @@ user said, each message cut of the server's secrets.
 Then one grader decides, one grade at a time per agent: packages/learn's `gradePrompt`, bounded (3 minutes), against
 `main` as it is then, and read by `parseVerdict`, which fails closed. It runs on the model the server grades on:
 `--grade-model` (or `AGENTRUN_SERVE_GRADE_MODEL`), else the strong tier (`AGENT_MODEL_STRONG`), named as the strong tier
-takes one; with neither, on the agent's own model. A cheap model is a poor grader, so point the strong tier (or
+takes one; with neither, on the agent's own model. `GET /capabilities` names it as `learning.grade_model` (null for
+each run's own). A cheap model is a poor grader, so point the strong tier (or
 `--grade-model`) at a strong one. The grader reads each active note's index line, the whole text only of the notes the
 proposal supersedes, what the user said in the run (cut of the server's secrets, as the proposal keeps it), and the new
 notes, so its prompt stays under 200,000 characters however many notes the folder holds. Only with Jev's key here does an injection screen
@@ -831,7 +832,8 @@ The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run list
 `reflecting` during the turn and until what it answered is checked, `proposed` while it is graded, and `merged`, or
 `dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`,
 `reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `screen`, `screen_down`,
-`grader`, `grade_failed`). It is `null` for a
+`grader`, `grade_failed`; `no_write_tool` and `tool_denied` are an older server's, still read and counted, and no run
+gets them now). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
 workflow's or an imported run). Once it is proposed, merged or dropped (`seed_failed` included), the run's timeline has
 one row of kind `learning` that says so. Each run's learning end is written once to the learning ledger,

@@ -1,10 +1,11 @@
 // A faux grader for the learning eval (learn-eval.test.mjs): it keeps a proposal exactly when every note in it is one the
-// eval set labels `keep` (test/fixtures/learn-eval.json, by the note's file name), and answers in the verdict's shape.
+// eval sets label `keep` (fixtures/learn-eval.json and learn-eval-heldout.json, by the note's file name), and answers in
+// the verdict's shape.
 // It also refuses to judge a prompt that does not fence what the user said in the run, so the eval proves the grader
 // is given it. Each call is filed as a line in the file AGENTRUN_TEST_FAUX_CALLS names.
 import { appendFileSync, readFileSync } from "node:fs";
 
-const CASES = JSON.parse(readFileSync(new URL("./learn-eval.json", import.meta.url), "utf8")).cases;
+const CASES = ["./learn-eval.json", "./learn-eval-heldout.json"].flatMap((file) => JSON.parse(readFileSync(new URL(file, import.meta.url), "utf8")).cases);
 /** Each labelled note's file, and its case's label. */
 const LABELS = new Map(CASES.flatMap((c) => c.notes.map((n) => [n.file, c.label])));
 const textOf = (value) => (typeof value === "string" ? value : Array.isArray(value) ? value.map((part) => (typeof part?.text === "string" ? part.text : "")).join("") : "");

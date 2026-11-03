@@ -17,7 +17,7 @@ import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, owne
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
-import { type LearningMode, learningOf } from "./learning.js";
+import { gradeModelOf, type LearningMode, learningOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
@@ -260,20 +260,21 @@ export function workflowTitle(name: string, input: Record<string, unknown>): str
 /** The server's reading of `base` with its secrets, saved keys among them, and its capabilities on it, the harnesses'
  *  offers included: made at the start and again at each save or delete of a key, so a key saved later can make a harness
  *  available with no restart. */
-export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode) {
+export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, gradeModel?: string) {
   const env = withSecrets(base, "all", stored);
-  return { env, caps: await capabilities(env, maxRuns, learning ?? learningOf(env)) };
+  return { env, caps: await capabilities(env, maxRuns, learning ?? learningOf(env), gradeModel) };
 }
 
 /** The capabilities document GET /v2/capabilities answers for `env`: each harness's offer resolved, its `default_model`
  *  included (harnessOffers), so what this returns is what the route serves and what the document's schema holds.
- *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given. */
-export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env)) {
-  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning);
+ *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given; `gradeModel`,
+ *  its `--grade-model`. */
+export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), gradeModel?: string) {
+  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, gradeModel);
 }
 
 /** The capabilities document from offers already resolved: the route builds it once, at start. */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode) {
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, gradeModel?: string) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -285,6 +286,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(env),
     models,
+    /** What grades a run's proposed notes: the model this server names for it (learning.ts gradeModelOf), or null when
+     *  each run is graded on its agent's own model. */
+    learning: { grade_model: gradeModelOf(env, gradeModel) ?? null },
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing;
      *  `key`, the tool key that unlocks it (tool-keys.ts), when one does. */
     tools: toolsView(env).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
@@ -441,7 +445,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let latest = 0;
   const keysChanged = async () => {
     const mine = ++latest;
-    const next = await readingOf(base, maxRuns, storedKeys, learning);
+    const next = await readingOf(base, maxRuns, storedKeys, learning, options.gradeModel);
     if (mine === latest) ({ env, caps } = next);
   };
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts). No run uses one yet: the log says which this server has.

@@ -288,13 +288,13 @@ test("the decision providers' widening to parallel is its own addition, decision
 });
 
 /** The closed list of a run's learning reasons, as the console's read shape names them. */
-const REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "screen", "screen_down", "grader", "grade_failed"];
+const REASONS = ["seed_failed", "no_budget", "unknown_cost", "no_write_tool", "tool_denied", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "screen", "screen_down", "grader", "grade_failed"];
 
 test("learning is this server's own addition, learning/1: the definition's switch, the server's in capabilities, a run's learning whole on its read and short in lists, its timeline row, the usage meter and the stats block, each enum whole, and the answers meet the document", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl, data } = await serve(t);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const schemas = doc.components.schemas;
-  for (const [schema, field] of [["DefinitionInput", "learning"], ["Run", "learning"], ["RunSummary", "learning"], ["Features", "learning"], ["TimelineRow", "learning"]]) {
+  for (const [schema, field] of [["DefinitionInput", "learning"], ["Run", "learning"], ["RunSummary", "learning"], ["Features", "learning"], ["TimelineRow", "learning"], ["Capabilities", "learning"]]) {
     assert.equal(schemas[schema].properties[field]?.["x-agentrun-serve"], "learning/1", `${schema}.${field} is marked`);
     assert.ok(doc.info["x-agentrun-serve"].fields.includes(`${schema}.${field}`), `info lists ${schema}.${field}`);
   }
@@ -313,6 +313,7 @@ test("learning is this server's own addition, learning/1: the definition's switc
   assert.equal(schemas.DefinitionInput.properties.learning.default, false, "off unless an agent says so");
   const caps = (await api("GET", "/capabilities")).body;
   assert.equal(caps.features.learning, "on", "the server's switch is on by default");
+  assert.deepEqual(caps.learning, { grade_model: null }, "each run graded on its own model: this server names none");
   assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "learning"]);
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, caps), []);
   // A run whose end-of-run turn gives no note, one whose folder cannot be made (a file where it goes), and one of an agent

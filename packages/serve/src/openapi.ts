@@ -224,6 +224,7 @@ const LEARNING_REASON = {
     "Set only when `state` is `dropped`, from a closed list; a new reason is announced before it ships.",
     "`seed_failed`: the agent's learning folder could not be read or made, or its notes copied, so the run started with nothing learned.",
     "`no_budget`: the run's cap left no room for the end-of-run turn, or refused its request. `unknown_cost`: a capped run whose spend is unknown.",
+    "`no_write_tool`, `tool_denied`: older runs only, from before the end-of-run turn answered with its notes (an agent with no `write` tool, or one a tool gate denied it); no run gets them now.",
     "`cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_timeout`, `reflect_failed`: the end-of-run turn did not end in time, or ended on an error.",
     "`empty`: the turn's answer gave no note. `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git.",
     "`screen`, `screen_down`: the injection screen (only with an independent judge) refused a new note, or could not judge one. `grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.",
@@ -799,6 +800,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     archived_at: { type: ["string", "null"], description: "When the agent was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
   },
   Capabilities: {
+    learning: {
+      type: "object", additionalProperties: false, required: ["grade_model"],
+      properties: { grade_model: { type: ["string", "null"], description: "The model that grades what a run proposes to learn: `--grade-model` (AGENTRUN_SERVE_GRADE_MODEL), else the strong tier (AGENT_MODEL_STRONG), named as the strong tier takes one; null when the server names none, and each run is graded on its agent's own model." } },
+      description: "How this server judges what a run proposes to learn.",
+      "x-agentrun-serve": "learning/1",
+    },
     places: {
       type: "object", additionalProperties: false, required: ["modes", "default", "boxes"],
       properties: {

@@ -3,7 +3,7 @@
 // - The grader is packages/learn's gradePrompt, asked as one bounded completion against main as it is now: each active
 //   note's index line, the whole text only of the notes the proposal supersedes, and what the user said in the run, so
 //   the prompt is bounded whatever the folder holds (GRADE_CAPS). It runs on the model the server names for grading
-//   (gradeModelOf: `--grade-model`, else its strong tier), else on the agent's own. Its answer is read by parseVerdict,
+//   (learning.ts gradeModelOf: `--grade-model`, else its strong tier), else on the agent's own. Its answer is read by parseVerdict,
 //   which fails closed. A
 //   call cut off at its bound spent what nobody knows: the grade's cost is then unknown, never $0. Before it, and only
 //   when this server has an independent judge (Jev), each new note goes through the injection screen: pi-browser's page
@@ -140,13 +140,6 @@ type PiUsage = { input: number; output: number; cacheRead?: number; cacheWrite?:
 const tokensOf = (usage: PiUsage | undefined): Tokens | null =>
   usage && [usage.input, usage.output, usage.cacheRead ?? 0, usage.cacheWrite ?? 0].every((n) => Number.isSafeInteger(n) && n >= 0) ? { input: usage.input, cache_read: usage.cacheRead ?? 0, cache_write: usage.cacheWrite ?? 0, output: usage.output } : null;
 type PiModels = { getModel(provider: string, id: string): unknown; completeSimple(...args: unknown[]): Promise<{ usage?: PiUsage }> };
-
-/** The variable that names the grader's model, as `--grade-model` does. */
-export const GRADE_MODEL_ENV = "AGENTRUN_SERVE_GRADE_MODEL";
-/** The model this server grades on, by name: `given` (`--grade-model`), else GRADE_MODEL_ENV, else its strong tier
- *  (AGENT_MODEL_STRONG); undefined when it names none, and each run is graded on its agent's own model. A name is a
- *  model as the strong tier takes one: sent as it is to a gateway, a provider/model-id otherwise. */
-export const gradeModelOf = (env: NodeJS.ProcessEnv, given?: string): string | undefined => given || env[GRADE_MODEL_ENV] || env.AGENT_MODEL_STRONG || undefined;
 
 /** One completion for the grader: on the model the server names for grading (`named`), picked as a workflow's strong
  *  tier is (runModels: the gateway, pi-ai's providers, or the faux module); else on the agent's own model, as its run's

@@ -44,13 +44,23 @@ export function learningOf(env: NodeJS.ProcessEnv, given?: string): LearningMode
  *  checks and is kept in the run's directory (propose.ts), `merged` once it is on main (grade.ts), or `dropped` with a
  *  reason from the closed list. A learning fault never refuses a run: it starts with nothing learned, `seed_failed`. */
 export const LEARNING_STATES = ["seeded", "reflecting", "proposed", "merged", "dropped"] as const;
-export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "screen", "screen_down", "grader", "grade_failed"] as const;
+export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "no_write_tool", "tool_denied", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "screen", "screen_down", "grader", "grade_failed"] as const;
+/** The reasons only an older server gave (an agent with no write tool, or a tool gate denying it, from before the
+ *  end-of-run turn answered with its notes): still read, from a run's serve.json and the ledger, and counted; never
+ *  given now. */
+export const LEGACY_LEARNING_REASONS: readonly LearningReason[] = ["no_write_tool", "tool_denied"];
 export type LearningState = (typeof LEARNING_STATES)[number];
 export type LearningReason = (typeof LEARNING_REASONS)[number];
 /** Tokens by the platform's names, as a run's metrics and /v2/stats count them: `input` is the input neither read from
  *  nor written to the cache. */
 export type Tokens = { input: number; cache_read: number; cache_write: number; output: number };
 export const NO_TOKENS: Tokens = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
+/** The variable that names the grader's model, as `--grade-model` does. */
+export const GRADE_MODEL_ENV = "AGENTRUN_SERVE_GRADE_MODEL";
+/** The model this server grades on, by name: `given` (`--grade-model`), else GRADE_MODEL_ENV, else its strong tier
+ *  (AGENT_MODEL_STRONG); undefined when it names none, and each run is graded on its agent's own model (grade.ts). A
+ *  name is a model as the strong tier takes one: sent as it is to a gateway, a provider/model-id otherwise. */
+export const gradeModelOf = (env: NodeJS.ProcessEnv, given?: string): string | undefined => given || env[GRADE_MODEL_ENV] || env.AGENT_MODEL_STRONG || undefined;
 /** A run's learning as serve.json keeps it. Past the view's four fields: the checker's `problems` (printable), the
  *  grader's `verdict`, kept before the merge, the merge commit, and what the grade cost (null when unknown, never 0),
  *  which is in no run's totals. */

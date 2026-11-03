@@ -13,7 +13,8 @@ import { judgeProposal } from "../dist/grade.js";
 import { answerWith } from "./fixtures/faux-learn.mjs";
 import { scratch, withEnv } from "./support.mjs";
 
-const { cases } = JSON.parse(readFileSync(new URL("./fixtures/learn-eval.json", import.meta.url), "utf8"));
+const setOf = (file) => JSON.parse(readFileSync(new URL(`./fixtures/${file}`, import.meta.url), "utf8")).cases;
+const { cases, heldOut } = { cases: setOf("learn-eval.json"), heldOut: setOf("learn-eval-heldout.json") };
 const FAUX_EVAL = new URL("./fixtures/faux-eval.mjs", import.meta.url).pathname;
 const parsed = (notes) => notes.map((n) => parseNoteFile(n.file, n.text)).filter((n) => !Array.isArray(n));
 
@@ -30,13 +31,24 @@ test("the eval set: 20 cases, 9 to keep and 11 to drop, injections, secrets, a '
   }
 });
 
-test("each case's notes, given as an end-of-run turn's answer, parse back whole, pass or fail the checks as labelled, and the faux grader keeps exactly the cases to keep, having been told what the user said", { timeout: 120_000 }, async (t) => {
+test("the held-out set: 9 cases in other domains, written by separate agents and never used for tuning, 4 to keep and 5 to drop, a user's own request to route money and a forwarded email's 'remember' among the drops; no note's file is the main set's", () => {
+  assert.equal(heldOut.length, 9);
+  assert.equal(heldOut.filter((c) => c.label === "keep").length, 4);
+  assert.equal(heldOut.filter((c) => c.kind === "injection").length, 3);
+  const mine = new Set(cases.flatMap((c) => c.notes.map((n) => n.file)));
+  for (const c of heldOut) {
+    assert.ok(c.id.startsWith("held-"), c.id);
+    for (const n of [...c.notes, ...c.active]) assert.ok(!Array.isArray(parseNoteFile(n.file, n.text)) && !mine.has(n.file), `${c.id}: ${n.file}`);
+  }
+});
+
+for (const [set, all] of [["the eval set", cases], ["the held-out set", heldOut]]) test(`${set}: each case's notes, given as an end-of-run turn's answer, parse back whole, pass or fail the checks as labelled, and the faux grader keeps exactly the cases to keep, having been told what the user said`, { timeout: 120_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   // The faux module runs in this process, and files its calls where this process's environment says.
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
   const env = { PATH: process.env.PATH, AGENTRUN_SERVE_FAUX: FAUX_EVAL };
   const outcome = {};
-  for (const c of cases) {
+  for (const c of all) {
     const answer = c.notes.length ? answerWith(c.notes.map((n) => [n.file, n.text])) : "No notes.";
     const reflection = parseReflection(answer);
     if (!c.notes.length) {
@@ -62,9 +74,9 @@ test("each case's notes, given as an end-of-run turn's answer, parse back whole,
   }
   // What the pipeline decides of each case: a shaped secret never reaches the grader, nothing to keep is empty, and the
   // grader's verdict is the label's.
-  assert.deepEqual(outcome, Object.fromEntries(cases.map((c) => [c.id, c.kind === "empty" ? "empty" : secretShapes(c.notes.map((n) => n.text).join("\n")).length ? "checker:secret_shape" : c.label === "keep" ? "merged" : "grader"])));
-  assert.ok(Object.values(outcome).includes("checker:secret_shape"), "the checker refuses a password in a URL before any grader");
+  assert.deepEqual(outcome, Object.fromEntries(all.map((c) => [c.id, c.kind === "empty" ? "empty" : secretShapes(c.notes.map((n) => n.text).join("\n")).length ? "checker:secret_shape" : c.label === "keep" ? "merged" : "grader"])));
+  if (all === cases) assert.ok(Object.values(outcome).includes("checker:secret_shape"), "the checker refuses a password in a URL before any grader");
   const graded = readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  assert.equal(graded.length, cases.filter((c) => !outcome[c.id].startsWith("checker") && outcome[c.id] !== "empty").length, "one grade a case that passed the checks");
+  assert.equal(graded.length, all.filter((c) => !outcome[c.id].startsWith("checker") && outcome[c.id] !== "empty").length, "one grade a case that passed the checks");
   for (const call of graded) assert.ok(call.said?.startsWith("1. "), `the grader was told what the user said: ${JSON.stringify(call)}`);
 });
