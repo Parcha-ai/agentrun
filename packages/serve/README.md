@@ -284,22 +284,23 @@ A call tool that fails on its own (an unreadable PDF, a model's refusal) fails i
 `onItemFailure: "collect"` it fails that item, and the other items go on. A cancel or the node's deadline still
 stops the run.
 
-`web_fetch`'s direct fetch reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
-every address it resolves to is checked, and the connection is dialled at the address checked, so a loopback, private,
-link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`, `::ffff:127.0.0.1`
-and the like), a name such as `localhost`, a public name that resolves to one of them and a redirect to one are all
-refused, as is any scheme but http(s). A URL on a port other than 80 or 443, or longer than 4,096 characters, is
-refused before the guard is asked. A body is at most 5 MiB and a fetch at most 30 s. A Page holds a part of the page's
-text: about `max_chars` characters from `offset` (20,000 by default, at most 50,000; a quote or a line break counts
-two, as the JSON answer holds it), its length as `chars`. A part that is not the whole page says so: `truncated` while
-more follows, `next_offset` where it begins, `original_chars` the page's whole length where it is known (Parallel's
-extract gives it only for a page shorter than it was asked for), and for an agent a line after the JSON says which
-characters these are and the call that reads on. The links, absolute http(s) only, come with the part at offset 0: at
-most 200, in 20,000 characters. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a
-thrown error: an agent reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's
-`call` node `via: "tool", tool: "web_fetch"` gets it as its output (`args: {url, offset?, max_chars?}`, 50,000
-characters of text by default, `out` a schema of that shape). A call node naming a tool the table cannot run that way
-is refused before the run starts (`409`).
+`web_fetch`'s direct fetch reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is
+resolved, every address it resolves to is checked, and the connection is dialled at the address checked, so a
+loopback, private, link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`,
+`::ffff:127.0.0.1` and the like), a name such as `localhost`, a public name that resolves to one of them and a
+redirect to one are all refused, as is any scheme but http(s). A URL on a port other than 80 or 443, or longer than
+4,096 characters, is refused before the guard is asked. A body is at most 5 MiB and a fetch at most 30 s. A Page holds
+a part of the page's text: about `max_chars` characters from `offset` (20,000 by default, at least 200, at most
+50,000; a quote or a line break counts two, as the JSON answer holds it, and a part holds one character at least, so
+it always advances), its length as `chars`. A part that is not the whole page says so: `truncated` while more follows,
+`next_offset` where it begins, `original_chars` the page's whole length where it is known (Parallel's extract gives it
+only for a page shorter than it was asked for), and for an agent a line after the JSON says which characters these are
+and the call that reads on. The links, absolute http(s) only, come with the part at offset 0: at most 200, in 20,000
+characters. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
+reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via:
+"tool", tool: "web_fetch"` gets it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by
+default, `out` a schema of that shape). A call node naming a tool the table cannot run that way is refused before the
+run starts (`409`).
 
 On another harness, every host tool's result stays under the host's bound of 120,000 characters
 (`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`), and each CLI adapter tells its CLI to pass a result that long to
