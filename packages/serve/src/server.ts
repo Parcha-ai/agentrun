@@ -304,26 +304,34 @@ const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] =
  *  env without the tool keys (offersEnvOf), and its capabilities made from both under its learning switch (`learning`,
  *  AGENTRUN_SERVE_LEARNING's when not given), its tool settings (`toolSettings`, what each web tool resolves to) and the
  *  box offers (`boxes`, what the box registry set up at the start, boxes.ts). The server makes it once at its start and
- *  then remakes only the parts a write changes (startHolding). `gradeModel` is its `--grade-model`; `approve`, whether its
- *  owner can approve a note that waits here (accounts on). */
-export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = [], gradeModel?: string, approve = false) {
+ *  then remakes only the parts a write changes (startHolding). `gradeModel` is its `--grade-model`. */
+export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = [], gradeModel?: string) {
   const env = withSecrets(base, "all", stored);
   const offers = await harnessOffers(offersEnvOf(env));
-  return { env, offers, caps: capabilitiesWith(env, maxRuns, offers, learning ?? learningOf(env), toolSettings, boxes, gradeModel, approve) };
+  return { env, offers, caps: capabilitiesWith(env, maxRuns, offers, learning ?? learningOf(env), toolSettings, boxes, gradeModel) };
 }
 
 /** The capabilities document GET /v2/capabilities answers for `env`: each harness's offer resolved, its `default_model`
  *  included (harnessOffers), so what this returns is what the route serves and what the document's schema holds.
  *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given; with this
  *  server's tool settings, what each web tool resolves to (tool-plane.ts); `boxes`, the box offers its places show;
- *  `gradeModel`, its `--grade-model`; `approve`, whether its owner can approve here. */
-export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = [], gradeModel?: string, approve = false) {
-  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, toolSettings, boxes, gradeModel, approve);
+ *  `gradeModel`, its `--grade-model`. */
+export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = [], gradeModel?: string) {
+  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, toolSettings, boxes, gradeModel);
+}
+
+/** capabilities.learning: whether the caller may approve a note that waits, and what that needs when not. */
+type LearningCaps = { grade_model: string | null; pending: true; approve: boolean; approve_needs?: "password" };
+
+/** The capabilities document as `req`'s caller reads it: approving takes the owner's password session alone, so only
+ *  that caller reads `approve: true`; every other (a token, a run, accounts off) reads `approve_needs: "password"`. */
+export function forCaller<T extends { learning: LearningCaps }>(caps: T, ownerSession: boolean): T {
+  return ownerSession ? { ...caps, learning: { grade_model: caps.learning.grade_model, pending: caps.learning.pending, approve: true } } : caps;
 }
 
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
  *  offers: cheap, made again after each key or tool-settings write with the offers the server holds. */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = [], gradeModel?: string, approve = false) {
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = [], gradeModel?: string) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -337,9 +345,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     models,
     /** What grades a run's proposed notes: the model this server names for it (learning.ts gradeModelOf), or null when
      *  each run is graded on its agent's own model; and `pending`: a risky rule a run's user asked for is kept to wait
-     *  for its owner's OK, served to no run; `approve`: whether its owner can approve one here, from the signed-in
-     *  console alone, so only with accounts on. */
-    learning: { grade_model: gradeModelOf(env, gradeModel) ?? null, pending: true, approve },
+     *  for its owner's OK, served to no run; `approve`: whether the caller can approve one, which takes the owner's
+     *  password session (forCaller), and `approve_needs` when not. */
+    learning: { grade_model: gradeModelOf(env, gradeModel) ?? null, pending: true, approve: false, approve_needs: "password" } as LearningCaps,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a
      *  web tool, what it resolves to on each harness under this server's tool settings; `key`, the tool key that unlocks
      *  it (tool-keys.ts), when one does. */
@@ -506,7 +514,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let offers!: HarnessCapability[];
   let caps!: ReturnType<typeof capabilitiesWith>;
   // The box offers are probed once, below, before the first reading is made.
-  const recompose = () => void (caps = capabilitiesWith(env, maxRuns, offers, learning, settings.get(), boxOffers, options.gradeModel, options.accounts === true));
+  const recompose = () => void (caps = capabilitiesWith(env, maxRuns, offers, learning, settings.get(), boxOffers, options.gradeModel));
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
   let probes = 0;
@@ -1126,7 +1134,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!matching.length) throw new ApiError("not_found", `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
-    if (found.name === "getCapabilities") return send(res, 200, caps);
+    if (found.name === "getCapabilities") return send(res, 200, forCaller(caps, byOwnerSession(req)));
     if (found.name === "getOpenapi") return send(res, 200, openapi);
     if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
@@ -1139,7 +1147,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // as every route is.
     if (found.name === "approveLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "approve_without_session");
-      throw new ApiError("forbidden", owner ? "Approving a note takes the owner's signed-in console, never a token." : "Approving a note takes the owner's signed-in console, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+      throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");

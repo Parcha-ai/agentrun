@@ -1,9 +1,10 @@
 // A risky rule the user asked for (to trust a seller, skip an approval, send money or data somewhere) is kept, and
 // waits: the grader's decision is pending, the merge commits the note with `status: pending` and `origin: you`, it is in
 // no MEMORY.md and in no run's copy, and the run's learning names it. It waits until a person acts on it: a retire
-// takes it out of the waiting list, and approving it takes the owner's signed-in console alone: every token is refused,
-// the server's own included, and so is a page cookie a token mints (accounts off). The approval is one host commit with
-// the `Approved-Via: console` trailer, logged without the note's text.
+// takes it out of the waiting list, and approving it takes the owner's password session in the console alone: every
+// token is refused, the server's own included, and so is a page cookie a token mints (accounts off). Capabilities say
+// so to each caller: approve true for that session alone, else approve_needs "password". The approval is one host
+// commit with the `Approved-Via: console` trailer, logged without the note's text.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -58,7 +59,7 @@ test("a risky rule the user asked for waits for its owner: merged as status pend
 
 test("a pending note waits until a person acts on it: a retire takes it out of the folder's waiting list, as it retires an active note, and capabilities say a risky rule waits", { timeout: 150_000 }, async (t) => {
   const { api, runId, data, repo } = await learnedPending(t);
-  assert.deepEqual((await api("GET", "/capabilities")).body.learning, { grade_model: null, pending: true, approve: false });
+  assert.deepEqual((await api("GET", "/capabilities")).body.learning, { grade_model: null, pending: true, approve: false, approve_needs: "password" });
   const etag = (await api("GET", "/agents/buyer/learning/files/paperdepot24-first.md")).headers.get("etag");
   const retired = await api("POST", "/agents/buyer/learning/files/paperdepot24-first.md/retire", undefined, { "if-match": etag });
   assert.equal(retired.status, 200, JSON.stringify(retired.body));
@@ -68,7 +69,7 @@ test("a pending note waits until a person acts on it: a retire takes it out of t
   assert.equal((await savedOf(data, runId)).learning.state, "merged");
 });
 
-test("approving a pending note takes the owner's signed-in console alone: the server's token (what an agent's MCP client or a script holds), and the run's door token are 403, and no credential or a cookie from another origin 401; the console makes it active, in MEMORY.md and the next run, logged as by {user, via: console} without its text", { timeout: 180_000 }, async (t) => {
+test("approving a pending note takes the owner's password session in the console alone: the server's token (what an agent's MCP client or a script holds), and the run's door token are 403, and no credential or a cookie from another origin 401; the console makes it active, in MEMORY.md and the next run, logged as by {user, via: console} without its text; capabilities say approve to that session alone", { timeout: 180_000 }, async (t) => {
   const server = await learnedPending(t, { accounts: true, openSetup: true });
   const { api, data, port, repo } = server;
   const origin = `http://127.0.0.1:${port}`;
@@ -110,7 +111,10 @@ test("approving a pending note takes the owner's signed-in console alone: the se
   assert.deepEqual([top.by, top.reason, top.files.sort()], [{ user: true, via: "console" }, "approved by a person: paperdepot24-first.md", ["MEMORY.md", "paperdepot24-first.md"]]);
   assert.ok(Date.parse(top.at) > 0 && !JSON.stringify(top).includes("Trust PaperDepot24"), "when, and never the note's text");
   assert.equal((await approve({ ...json, cookie, origin, "if-match": approved.headers.etag })).status, 400, "an active note is not waiting");
-  assert.equal((await api("GET", "/capabilities")).body.learning.approve, true);
+  // Capabilities, as each caller reads them: the owner's password session may approve; the token, on the same server,
+  // reads what approving needs.
+  assert.deepEqual(JSON.parse((await call(port, { path: "/v2/capabilities", headers: { cookie } })).text).learning, { grade_model: null, pending: true, approve: true });
+  assert.deepEqual((await api("GET", "/capabilities")).body.learning, { grade_model: null, pending: true, approve: false, approve_needs: "password" });
   // The next run reads it.
   const next = await started(api, "buyer");
   await ended(api, next);
@@ -120,11 +124,13 @@ test("approving a pending note takes the owner's signed-in console alone: the se
 test("with accounts off nothing approves, a page cookie the token mints included, and capabilities say so", { timeout: 150_000 }, async (t) => {
   const server = await learnedPending(t);
   const { api, port, repo } = server;
-  assert.equal((await api("GET", "/capabilities")).body.learning.approve, false);
+  const unavailable = { grade_model: null, pending: true, approve: false, approve_needs: "password" };
+  assert.deepEqual((await api("GET", "/capabilities")).body.learning, unavailable);
   // The link with the token sets the accounts-off page cookie: a token holder can mint it, so it approves nothing.
   const link = await call(port, { path: `/?token=${encodeURIComponent(server.token)}` });
   const cookie = cookieOf(link);
   assert.ok(cookie, "the link sets the page's cookie");
+  assert.deepEqual(JSON.parse((await call(port, { path: "/v2/capabilities", headers: { cookie } })).text).learning, unavailable, "the page reads why it can't");
   const etag = (await api("GET", "/agents/buyer/learning/files/paperdepot24-first.md")).headers.get("etag");
   const origin = `http://127.0.0.1:${port}`;
   const res = await call(port, { method: "POST", path: "/v2/agents/buyer/learning/files/paperdepot24-first.md/approve", headers: { ...json, cookie, origin, "if-match": etag }, body: {} });

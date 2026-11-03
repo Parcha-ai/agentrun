@@ -103,10 +103,11 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
   return file(req, res, raw, dir, "index.html", given === null ? 200 : 401);
 }
 
-/** The page writes of the owner's signed-in session: on this server's own origin, with a JSON body, under a password
- *  session (never the cookie accounts-off mints from the token). */
+/** The requests the owner's password session sends from the page (a write only from this server's own origin, with a
+ *  JSON body), never under the cookie accounts-off mints from the token. */
 const ownerSessions = new WeakSet<IncomingMessage>();
-/** Whether `req` is a write from the owner's signed-in page (answerPage). A token, whoever holds it, never is. */
+/** Whether `req` came from the owner's page under their password session (answerPage). A token, whoever holds it, never
+ *  did. */
 export const byOwnerSession = (req: IncomingMessage): boolean => ownerSessions.has(req);
 
 /**
@@ -123,9 +124,9 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
     const bytes = req.method === "PUT" && server.takesBytes?.(req.method, raw.slice(3)) === true;
     if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && (isJson(req) || bytes)))) {
       req.headers.authorization = `Bearer ${server.token}`;
-      // The owner's own signed-in session (accounts on), never a cookie a token mints: what a route only a person may
-      // call asks for (byOwnerSession).
-      if (server.owner && !safe) ownerSessions.add(req);
+      // The owner's password session (accounts on), never a cookie a token mints: what approving a note asks for, and
+      // what capabilities read to say whether this caller may (byOwnerSession).
+      if (server.owner) ownerSessions.add(req);
     }
     return false;
   }

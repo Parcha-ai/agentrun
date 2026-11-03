@@ -1099,15 +1099,20 @@ turn both, and prints keep-precision, keep-recall and the injection-drop rate pe
 
 ### Who can approve
 
-Only the owner, from the signed-in console: `POST .../approve` takes the page's password session alone, sent from this
-server's own origin with a JSON body (CSRF-checked as every page write), and answers 403 to every token, the server's
-own among them (a script, an agent's MCP client and the MCP endpoint's tools carry it), a run's door token and every
-value a run's process holds, the token and the session sent together, and, on a server with accounts off
-(`AGENTRUN_ACCOUNTS=0`), the page's cookie too, which the token mints. So with accounts off nothing approves
-(`capabilities.learning.approve` is false). The server has no API key with an approve scope: approving is
-session-only. The approval is one host commit, `learning: approved by a person: <file>`, with the trailers
-`Changed-By: user` and `Approved-Via: console`; the log shows `by: {user: true, via: "console"}` at the commit's time,
-never the note's text.
+The owner, signed in with their password. `POST .../approve` takes the console's password session alone, sent from
+this server's own origin with a JSON body (CSRF-checked as every page write). Every token is 403: the server's own
+(what a script, an agent's MCP client and the MCP endpoint's tools carry), a run's door token, and the token sent with
+the session. So is every request on a server with accounts off (`AGENTRUN_ACCOUNTS=0`), whose page cookie the token
+mints. No API key has an approve scope, because the server has no scoped keys: approving is session-only.
+`capabilities.learning.approve` is true only for the owner's password session; every other caller reads false, with
+`approve_needs: "password"`.
+
+So a run that reaches this server only through its API (its MCP tools, a sandbox run) can't approve its own notes.
+Runs that use bash on the host run as you. For untrusted tasks, use the sandbox. Such a run can read this server's
+files, its session key among them, so no route can keep it from approving.
+
+The approval is one host commit, `learning: approved by a person: <file>`, with the trailers `Changed-By: user` and
+`Approved-Via: console`; the log shows `by: {user: true, via: "console"}` at the commit's time, never the note's text.
 
 ### What a person sees and controls
 
