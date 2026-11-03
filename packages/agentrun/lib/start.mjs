@@ -126,9 +126,19 @@ export async function main(argv, env = process.env) {
   if (fetched) console.error(`Starting AgentRun (the first run fetches its server, ${SERVE_SPEC})...`);
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line.
-  const child = spawn(command, args, { stdio: ["ignore", "pipe", "inherit"], env: fetched ? fetchEnv(childEnv) : childEnv });
+  // The server in a process group of its own, which every stop signals whole: with no server beside this command, its
+  // child is another `npm exec`, which ends on a SIGTERM or a SIGHUP and leaves the server it started. A terminal's
+  // signals reach this command, which passes each on.
+  const child = spawn(command, args, { stdio: ["ignore", "pipe", "inherit"], env: fetched ? fetchEnv(childEnv) : childEnv, detached: true });
   const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
-  for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
+  const stop = (signal) => {
+    try {
+      process.kill(-child.pid, signal);
+    } catch {
+      child.kill(signal);
+    }
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => stop(signal));
   // Started by npx, this runs under npm exec and its `sh -c`. A signal to npm alone (a process manager's SIGTERM or
   // SIGKILL) ends npm and leaves this, and the server, with nobody to stop them: when that npm is gone, it stops the server,
   // as SIGTERM would, and ends. Started any other way, it watches nothing, so a shell's own rules apply (`&`, nohup).
@@ -137,7 +147,7 @@ export async function main(argv, env = process.env) {
     const watch = setInterval(() => {
       if (isNpm(commandOf(npm))) return;
       clearInterval(watch);
-      child.kill("SIGTERM");
+      stop("SIGTERM");
     }, 1000);
     watch.unref();
     child.on("exit", () => clearInterval(watch));
@@ -146,7 +156,7 @@ export async function main(argv, env = process.env) {
   const url = await Promise.race([openUrl(child.stdout), new Promise((resolve) => { timer = setTimeout(resolve, fetched ? 600_000 : 60_000); })]);
   clearTimeout(timer);
   if (url === undefined) {
-    child.kill("SIGTERM");
+    stop("SIGTERM");
     console.error(`AgentRun did not start on http://${HOST}:${port}.`);
     return (await exited) || 1;
   }
