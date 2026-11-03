@@ -36,9 +36,8 @@ const LOG_PAGE = 20;
 const PAGE_MAX = 200;
 /** The trailer of a person's commit, as `Run-Id` is a run's merge's. */
 const BY_USER = "Changed-By: user";
-/** How a person's approval came: the trailer an approve's commit carries beside BY_USER (`console`, the owner's signed-in
- *  page; `key:<id>`, a key that holds the approve scope, which this server has none of yet). */
-const APPROVED_VIA = "Approved-Via";
+/** The trailer an approval's commit carries beside BY_USER: it came from the owner's password session in the console. */
+const APPROVED_VIA = "Approved-Via: console";
 /** What a retire adds to a note, on top of the note cap a retired note may fill (learn/notes.ts retire). */
 const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 const utf8 = new TextDecoder("utf-8", { fatal: true });
@@ -323,14 +322,15 @@ function conditionOf(ifMatch: string | undefined, ifNoneMatch: string | undefine
   return { ...(match?.length ? { match } : {}), absent };
 }
 
-/** PUT /agents/{id}/learning/files/{file} (`body`, the note's whole text) or POST .../retire (no body), as a person:
- *  the precondition, then the checks (a retire's, the note's format alone: never its secrets), then one commit on main
- *  in the agent's queue, on the folder agentFolder checked: the note, and MEMORY.md rebuilt from main's notes with it,
- *  its message `learning: <edited|created|retired> by a person: <file>` and a `Changed-By: user` trailer, main moved
+/** PUT /agents/{id}/learning/files/{file} (`body`, the note's whole text), or POST .../retire or .../approve (`approve`;
+ *  no body), as a person: the precondition, then the checks (a retire's and an approve's, the note's format alone: never
+ *  its secrets), then one commit on main in the agent's queue, on the folder agentFolder checked: the note, and MEMORY.md
+ *  rebuilt from main's notes with it, its message `learning: <edited|created|retired|approved> by a person: <file>` and
+ *  a `Changed-By: user` trailer (and `Approved-Via: console` on an approval), main moved
  *  only from the commit it was made on (once more on a main that moved meanwhile), then the checked-out files. A note
  *  the checks refuse is never written to git. A retire of a note that is not active, and an edit that changes nothing,
  *  commit nothing. `refuse`: the host's secrets. */
-export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: { via: string } }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
+export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
   const file = fileOf(raw, true);
   const condition = conditionOf(input.ifMatch, input.ifNoneMatch, input.body !== undefined);
   let given: string | undefined;
@@ -399,7 +399,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         await git(home, repo, ["update-index", "-z", "--index-info"], entries, env);
         const tree = line(await git(home, repo, ["write-tree"], "", env));
         // Who approved, and how, in the trailers; the commit's own date is when. Never the note's text.
-        const trailers = input.approve ? `${BY_USER}\n${APPROVED_VIA}: ${input.approve.via}` : BY_USER;
+        const trailers = input.approve ? `${BY_USER}\n${APPROVED_VIA}` : BY_USER;
         commit = line(await git(home, repo, ["commit-tree", tree, "-p", parent, "-m", subject, "-m", trailers]));
       } finally {
         await rm(env.GIT_INDEX_FILE, { force: true });

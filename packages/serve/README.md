@@ -1097,23 +1097,6 @@ injections), runs in CI through the parser, the checks and the grader's prompt o
 (`test/learn-eval.test.mjs`). `scripts/learn-eval.mjs` runs the same set on real models, the grade and the end-of-run
 turn both, and prints keep-precision, keep-recall and the injection-drop rate per model; it spends.
 
-### Who can approve
-
-The owner, signed in with their password. `POST .../approve` takes the console's password session alone, sent from
-this server's own origin with a JSON body (CSRF-checked as every page write). Every token is 403: the server's own
-(what a script, an agent's MCP client and the MCP endpoint's tools carry), a run's door token, and the token sent with
-the session. So is every request on a server with accounts off (`AGENTRUN_ACCOUNTS=0`), whose page cookie the token
-mints. No API key has an approve scope, because the server has no scoped keys: approving is session-only.
-`capabilities.learning.approve` is true only for the owner's password session; every other caller reads false, with
-`approve_needs: "password"`.
-
-So a run that reaches this server only through its API (its MCP tools, a sandbox run) can't approve its own notes.
-Runs that use bash on the host run as you. For untrusted tasks, use the sandbox. Such a run can read this server's
-files, its session key among them, so no route can keep it from approving.
-
-The approval is one host commit, `learning: approved by a person: <file>`, with the trailers `Changed-By: user` and
-`Approved-Via: console`; the log shows `by: {user: true, via: "console"}` at the commit's time, never the note's text.
-
 ### What a person sees and controls
 
 A person reads and changes an agent's learning through this server's own routes (`learning/1` in `/v2/openapi.json`),
@@ -1138,7 +1121,7 @@ with the token, an archived agent's too:
   `application/json` `{text}`, the form the console's page sends under its session) edits it under `If-Match: <etag>`,
   or creates it under `If-None-Match: *` (201); `POST .../learning/files/{file}/retire` under `If-Match` sets `status: retired`,
   on an active or a pending note; `POST .../learning/files/{file}/approve` under `If-Match` makes a pending note active
-  (see who can approve, below). A stale
+  (see [Approving a note that waits](#approving-a-note-that-waits), below). A stale
   ETag, or a name already taken, is 412; neither header (or `If-Match: *`) is 428 `precondition_required`. The note
   passes the same structural checks as a run's (`checkNote`, in `src/learn/check.ts`), and no grader: a refusal is 400 with
   `problems`, and nothing is written. A retire is how a person revokes a note, so it checks the note's format alone:
@@ -1162,6 +1145,19 @@ parsed once and kept, for the few commits last read, so the view and every page 
 log page reads only its own commits (`git log` from the cursor's offset, at most `limit`), and the log's `total` is
 counted once a commit. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
 followed: a read or a write there answers `500`, and nothing is written.
+
+### Approving a note that waits
+
+Who can approve: the owner, signed in with their password. No token approves, the server's own included, so a run that reaches this server only through its API (its MCP tools, a sandbox run) can't approve its own notes. Runs that use bash on the host run as you: they can read this server's files, its session key among them, so no route keeps them from approving. For untrusted tasks, use the sandbox.
+
+`POST .../learning/files/{file}/approve` takes the console's password session, sent from this server's own origin with
+a JSON body as every page write is. Any token is 403: the server's own (what scripts and the MCP endpoint's tools
+carry), a run's door token, and a token sent beside the session. So is every request on a server with accounts off
+(`AGENTRUN_ACCOUNTS=0`), whose page cookie any token holder can mint. With no credential it is 401, as every route.
+`capabilities.learning.approve` is true only for the owner's session; every other caller reads `approve: false` with
+`approve_needs: "password"`. A note that is not pending is 400; a stale ETag is 412, none 428. The approval is one host
+commit, `learning: approved by a person: <file>`, with the trailers `Changed-By: user` and `Approved-Via: console`; the
+log shows `by: {user: true, via: "console"}` at the commit's time, never the note's text.
 
 ## Spend cap
 
