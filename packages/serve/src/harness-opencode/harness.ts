@@ -60,8 +60,6 @@ export interface OpenCodeHarnessOptions {
   price?: ModelProxyOptions["price"];
   maxOutputTokens?: number;
   contextWindow: number;
-  /** The line a turn's system prompt carries for the day it runs, when the host gives one. */
-  dateLine?: () => string | undefined;
   /** How long one try of the event stream may take to open. Default EVENT_CONNECT_MS. */
   eventConnectMs?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -468,13 +466,11 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         const ended = new Promise<Outcome>((resolve) => {
           turn = { messageID: id, busy: false, accepted: false, text: new Map(), finalText: "", end: (outcome) => resolve(outcome) };
         });
-        const system = options.dateLine?.();
         const answer = await live.request("POST", `/session/${sessionID}/prompt_async`, {
           messageID: id,
           agent: AGENT,
           model: { providerID: "openai", modelID: options.model },
           parts: [{ type: "text", text }],
-          ...(system ? { system } : {}),
         }, signal);
         if (answer.status >= 300) {
           turn = undefined;

@@ -55,8 +55,6 @@ export interface OpenCodeAdapterOptions {
   sessionsDir?: string;
   /** The host's skills, listed to the model by name and description and read with `read_skill_file`, and no others. */
   skills?: readonly HostSkill[];
-  /** The line each turn's system prompt carries for the day it runs (the host's shared date line), when it has one. */
-  dateLine?: () => string | undefined;
   /** How long a drive waits for OpenCode's event stream to open, on each of its three tries. Default 10 s. */
   eventConnectMs?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -184,7 +182,6 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
         ...(options.price ? { price: options.price } : {}),
         ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
         contextWindow: options.contextWindow ?? 272_000,
-        ...(options.dateLine ? { dateLine: options.dateLine } : {}),
         ...(options.eventConnectMs ? { eventConnectMs: options.eventConnectMs } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.fetch ? { fetch: options.fetch } : {}),

@@ -43,8 +43,8 @@ install line. `OPENCODE_BIN` names a binary in place of the platform package's.
   agents are off, its title and summary agents among them, and the session has a title of its own, so it makes no side
   request (`test/real-opencode.test.mjs`).
 - **The session's instructions.** They are the prompt of OpenCode's one agent, in place of OpenCode's own. OpenCode
-  still adds its environment lines (the model's name, the working directory, the platform and the date). A host's
-  `dateLine` goes in each turn's system prompt.
+  still adds its environment lines (the model's name, the working directory, the platform and the date). A host's own
+  lines (the server's shared date line among them) come in the session's instructions.
 - **The host's skills, and no others.** `openCodeAdapter({ skills: [{ name, files }] })`: the instructions list each
   skill by name and description, and the model reads its files with `read_skill_file`. The skills are checked when the
   adapter is made (`skillProblems`).

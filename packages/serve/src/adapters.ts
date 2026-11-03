@@ -101,8 +101,8 @@ export class HarnessUnavailable extends Error {
 /** What an adapter's own setup error says installing fixes, by its typed code: none for any other error. */
 function fixOf(error: unknown): InstallFix | undefined {
   const code = (error as { code?: unknown } | null)?.code;
-  if (code === "CLAUDE_AGENT_NOT_INSTALLED" || code === "CODEX_NOT_INSTALLED") return "install";
-  if (code === "CLAUDE_AGENT_PIN_MISMATCH" || code === "CODEX_PIN_MISMATCH") return "pins";
+  if (code === "CLAUDE_AGENT_NOT_INSTALLED" || code === "CODEX_NOT_INSTALLED" || code === "OPENCODE_NOT_INSTALLED") return "install";
+  if (code === "CLAUDE_AGENT_PIN_MISMATCH" || code === "CODEX_PIN_MISMATCH" || code === "OPENCODE_PIN_MISMATCH") return "pins";
   return undefined;
 }
 
@@ -306,7 +306,7 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
  *  gateway (AGENT_MODEL_BASE_URL) or OpenAI, on the Responses API, through the adapter's proxy. */
 export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<typeof import("./harness-opencode/index.js")> = () => import("./harness-opencode/index.js"), npx = startedByNpx()): Promise<AgentAdapter> {
   const opencode = await load().catch(() => {
-    throw new HarnessUnavailable(`opencode is not installed here: ${INSTALL.opencode}`);
+    throw new HarnessUnavailable(`opencode is not installed here: ${INSTALL.opencode}`, "install");
   });
   const standIn = env[OPENCODE_STANDIN_ENV] ? (JSON.parse(env[OPENCODE_STANDIN_ENV]) as { command: string; args?: string[]; env?: Record<string, string> }) : undefined;
   if (!standIn) {
@@ -316,11 +316,11 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
       // serve's own line, which installs the adapter with its pinned CLI, in place of the adapter's (the CLI alone).
       const message = (error as Error).message.replace(opencode.OPENCODE_INSTALL, INSTALL.opencode);
       const said = message.includes("npm install") ? message : `${message} (${INSTALL.opencode})`;
-      throw new HarnessUnavailable(installHint(said, INSTALL.opencode, `opencode-ai@${opencode.OPENCODE_VERSION}`, npx));
+      throw unavailable(error, said, INSTALL.opencode, `opencode-ai@${opencode.OPENCODE_VERSION}`, npx);
     }
   }
-  // TODO(#1462): pass `dateLine: environmentLine` (src/environment.ts) once #1462 merges, so OpenCode's turns carry the
-  // shared date line in their system prompt as pi's do; the adapter already sends it as each turn's `system`.
+  // The shared date line (environment.ts) reaches OpenCode in the session's system prompt (app.ts), as it reaches every
+  // harness.
   return opencode.openCodeAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model, "opencode"), price: priceOf(needs), log: harnessLog("opencode", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
 }
 
