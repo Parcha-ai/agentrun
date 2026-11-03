@@ -27,7 +27,7 @@ import { hostTools, type ToolResults } from "./host-tools.js";
 import type { CapGuard } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
-import { ADAPTER_API, TURN_END } from "./turn-end.js";
+import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
 import { REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
@@ -37,9 +37,9 @@ export const BOOKED = "adapter.request";
 export const PRICED_LATE = REQUEST_COST_LATE;
 /** How long a turn's end waits for its requests' costs, booked once the proxy has answered the harness. */
 export const BOOKING_WAIT_MS = 2_000;
-/** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop. */
-export const MESSAGE = "adapter.message";
-export const MESSAGE_END = "adapter.message_end";
+/** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop
+ *  (turn-end.ts, which runs.ts reads them from). */
+export { MESSAGE, MESSAGE_END } from "./turn-end.js";
 /** A turn's end on the root (turn-end.ts), with the session's own outcome (`completed`, `interrupted`, `failed`): written
  *  once its answer, its costs and any error are, before the door says the run is idle. The only record that a turn which
  *  took the person's message is over: a request without content is written alike whether it ended the turn or not. */

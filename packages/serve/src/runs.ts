@@ -34,7 +34,7 @@ import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
-import { ADAPTER_API, TURN_END } from "./turn-end.js";
+import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
 
@@ -159,6 +159,9 @@ export type Run = {
   /** Whether, in the run's entries, an answer that ended its request (stopReason "stop") comes after the person's newest
    *  message: the turn that took the message answered it, though perhaps with nothing it shows (noteAnswer). */
   answeredMessage?: boolean;
+  /** The messages a claude-agent or codex run's door accepted and has not sent yet, by id (MESSAGE with no MESSAGE_END in
+   *  its entries, noteAnswer): each still waits for its turn, also when this server started after it was accepted. */
+  waiting?: Set<string>;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
   /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
@@ -226,6 +229,13 @@ export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
 function noteAnswer(run: Run, entries: readonly unknown[]): void {
   for (const value of entries) {
     if (!isObject(value) || typeof value.kind !== "string") continue;
+    // A message a claude-agent or codex run accepted, and its end (harness-app.ts): one with no end still waits.
+    if (value.kind === MESSAGE || value.kind === MESSAGE_END) {
+      const id = isObject(value.data) && typeof value.data.id === "string" ? value.data.id : undefined;
+      if (id !== undefined && value.kind === MESSAGE) (run.waiting ??= new Set()).add(id);
+      else if (id !== undefined) run.waiting?.delete(id);
+      continue;
+    }
     // The person's message, as the timeline shows one (a user entry: pi's, or a host's own kind), or their sign-in: no
     // answer has followed it yet.
     const first = Array.isArray(value.model) && isObject(value.model[0]) ? value.model[0] : undefined;
@@ -235,11 +245,15 @@ function noteAnswer(run: Run, entries: readonly unknown[]): void {
       if (isObject(value.data) && value.data.status === "completed") run.answeredMessage = true;
       continue;
     }
-    if (value.kind !== "pi.assistant" || !first || first.stopReason !== "stop") continue;
-    // pi's own answer ends its turn (one commit with the run's end). The bridge's entries (api "agentrun-adapter") never
-    // say so: a request without content is written alike whether it is a cost, a cut, an interruption or an answer.
-    if (first.api !== ADAPTER_API) run.answeredMessage = true;
-    // The answer's text: an answer's (a stop with text), never commentary that came with a call.
+    if (value.kind !== "pi.assistant" || !first) continue;
+    // An answer, as the timeline shows one (timeline.ts): a request that ended without an error or an abort and called no
+    // tool, whatever else stopped it (its length, max output tokens, too). Never commentary that came with a call.
+    if (first.stopReason === "error" || first.stopReason === "aborted") continue;
+    if (Array.isArray(first.content) && first.content.some((block) => isObject(block) && block.type === "toolCall")) continue;
+    // pi's own stop answer ends its turn (one commit with the run's end). The bridge's entries (api "agentrun-adapter")
+    // never say so: a request without content is written alike whether it is a cost, a cut, an interruption or an answer.
+    if (first.stopReason === "stop" && first.api !== ADAPTER_API) run.answeredMessage = true;
+    // The answer's text: an answer's, never commentary that came with a call.
     const content = first.content;
     const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "";
     if (text) run.answerText = text;
@@ -617,6 +631,9 @@ export class Runs {
     const cost = costOf(run.rows);
     if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, over its cap of $${cap}.`, retryable: false } };
     if (run.working || run.submitted > 0) return undefined;
+    // A message accepted and not sent yet waits for its turn: a server started after it counts none submitted, and a turn's
+    // end before it is no end of the run (harness-app.ts writes a turn's end, then sends the next message).
+    if (run.waiting?.size) return undefined;
     // A cancel ends the run cancelled, by its settle (whatever the turn it cut wrote): nothing completes it meanwhile.
     if (run.cancel) return undefined;
     const last = meaningful(run.rows);
