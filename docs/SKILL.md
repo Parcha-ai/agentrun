@@ -26,7 +26,7 @@ done
 grep 'AgentRun is running at' agentrun.log || { echo "AgentRun did not start:"; tail -20 agentrun.log; }
 ```
 
-It keeps its data in `~/.agentrun` and takes the first free port from 7340 on this machine's loopback. If it did not start,
+It keeps its data in `~/.local/share/agentrun/agents` (under `$XDG_DATA_HOME` when that is set) and takes the first free port from 7340 on this machine's loopback. If it did not start,
 its last lines say why: tell the person, and stop. Give the person the address it prints; they open it in their browser and set the console's password on the first visit.
 
 ## 3. Give it a model
@@ -47,7 +47,7 @@ The person can do it in the console: **New agent**, then **Start a run** on its 
 token without printing it, and connect over MCP:
 
 ```sh
-export AGENTRUN_API_KEY=$(cat ~/.agentrun/.token)
+export AGENTRUN_API_KEY=$(cat "${XDG_DATA_HOME:-$HOME/.local/share}/agentrun/agents/.token")
 export AGENTRUN_BASE_URL="$(grep -o 'http://[^/ ]*' agentrun.log | head -1)/v2"
 claude mcp add --transport http agentrun "$AGENTRUN_BASE_URL/mcp" --header "Authorization: Bearer $AGENTRUN_API_KEY"
 codex mcp add agentrun --url "$AGENTRUN_BASE_URL/mcp" --bearer-token-env-var AGENTRUN_API_KEY

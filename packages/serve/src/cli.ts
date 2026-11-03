@@ -5,9 +5,8 @@
 import { secret } from "./secrets.js";
 // Then, before anything loads node:sqlite, the filter for its ExperimentalWarning (quiet-sqlite-warning.ts).
 import "./quiet-sqlite-warning.js";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { defaultData } from "./files.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
 import type { LearningMode } from "./learning.js";
@@ -64,7 +63,7 @@ if (process.argv[2] === "reset-password") {
     console.error(`${(error as Error).message}\n\n${USAGE}`);
     process.exit(2);
   }
-  const target = dir ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "agentrun", "agents");
+  const target = dir ?? defaultData();
   resetPassword(target);
   console.log(`The password is cleared and every browser is signed out (${target}). The next visit to the page sets a new one.`);
   process.exit(0);
@@ -119,7 +118,7 @@ if (publicName) {
   }
   publicUrl = parsed.href.replace(/\/+$/, "");
 }
-const data = values.data ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "agentrun", "agents");
+const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
