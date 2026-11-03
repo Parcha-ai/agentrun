@@ -20,6 +20,38 @@ export async function scratch(t) {
   return dir;
 }
 
+/** Resolves once `child`, a server in a process of its own, has printed a whole line on stdout that `ready` matches (the
+ *  line it prints once it listens); rejects as soon as it exits or cannot be spawned, with what it printed. A slow start
+ *  on a loaded machine is still a start: the backstop is only for a child that neither prints the line nor exits. */
+export function printed(child, ready, { backstopMs = 120_000 } = {}) {
+  let out = "";
+  let err = "";
+  return new Promise((resolve, reject) => {
+    const settle = (error) => {
+      clearTimeout(backstop);
+      child.stdout.off("data", onOut);
+      child.stderr?.off("data", onErr);
+      child.off("close", onClose);
+      child.off("error", settle);
+      if (error) reject(error);
+      else resolve(out);
+    };
+    const onOut = (chunk) => {
+      out += chunk;
+      if (ready.test(out.slice(0, out.lastIndexOf("\n") + 1))) settle();
+    };
+    const onErr = (chunk) => (err = (err + chunk).slice(-8_000));
+    // "close", not "exit": by then its stdout and stderr are read to their end, so its last words are in the message.
+    const onClose = (code, signal) => settle(new Error(`the server exited (${signal ?? code}) before it printed ${ready}: ${out}${err}`));
+    const backstop = setTimeout(() => settle(new Error(`the server printed no ${ready} in ${backstopMs / 1000} s and has not exited: ${out}${err}`)), backstopMs);
+    backstop.unref();
+    child.stdout.on("data", onOut);
+    child.stderr?.on("data", onErr);
+    child.once("close", onClose);
+    child.once("error", settle);
+  });
+}
+
 /** The index.html of a built console, as Vite writes it: one module script and one stylesheet, both relative. */
 export const CONSOLE_INDEX = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" /><title>AgentRun</title>
