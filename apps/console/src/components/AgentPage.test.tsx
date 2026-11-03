@@ -504,6 +504,10 @@ describe("AgentPage, an agent whose harness the server can't run", () => {
     const run = page.button(/^Run$/)!;
     expect(run.disabled).toBe(true);
     await page.click(/^Run$/);
+    // Ctrl or Cmd with Enter in the message starts a run without the button: the guard holds there too.
+    for (const key of [{ ctrlKey: true }, { metaKey: true }]) {
+      await act(async () => { page.input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, ...key })); });
+    }
     expect(page.starts).toEqual([]);
   });
 
