@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { childEnv } from "../dist/runs.js";
-import { SECRET_NAME } from "../dist/secret-cut.js";
+import { SECRET_NAME, secretCut } from "../dist/secret-cut.js";
 import * as secrets from "../dist/secrets.js";
 
 const { SECRET_NAMES, withoutSecrets, withSecrets } = secrets;
@@ -19,9 +19,9 @@ test("childEnv hands a run's process none of the server's secrets and not the to
   assert.deepEqual([out.PATH, out.AGENT_MODEL], ["/usr/bin", "m-1"]);
 });
 
-test("childEnv also leaves out every name shaped like a key that no list names (`*_API_KEY`, `*_TOKEN`, any with SECRET), and passes what a run's process reads: the AGENT_MODEL variables, a provider's settings, the pipe's own descriptor and length", () => {
+test("childEnv also leaves out every name shaped like a key that no list names (`*_API_KEY`, `*_TOKEN`, any with SECRET or PASSWORD), and passes what a run's process reads: the AGENT_MODEL variables, a provider's settings, the pipe's own descriptor and length", () => {
   const token = `ar_test_${"t".repeat(40)}`;
-  const unlisted = ["FOO_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "NPM_TOKEN", "NODE_AUTH_TOKEN", "CLIENT_SECRET", "MY_SECRET_THING"];
+  const unlisted = ["FOO_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "NPM_TOKEN", "NODE_AUTH_TOKEN", "CLIENT_SECRET", "MY_SECRET_THING", "DB_PASSWORD", "Db_PassWord_Hash"];
   for (const name of unlisted) assert.ok(!SECRET_NAMES.includes(name), `${name} is on no list`);
   const passes = { PATH: "/usr/bin", HOME: "/home/x", AGENT_MODEL: "google/gemini-2.5-flash", AGENT_MODEL_FAST: "m-fast", AGENT_MODEL_BASE_URL: "http://127.0.0.1:1", AGENT_MODEL_PRICE: "1,2", AGENT_THINKING: "low", AWS_REGION: "us-east-1", AWS_PROFILE: "p", GOOGLE_CLOUD_PROJECT: "p", AZURE_OPENAI_BASE_URL: "http://127.0.0.1:2", ANTHROPIC_BASE_URL: "http://127.0.0.1:3", AGENTRUN_SERVE_EFFORT: "low", AGENTRUN_SERVE_DECISION_KEY_FD: "4" };
   const out = childEnv({ ...Object.fromEntries(unlisted.map((name) => [name, `canary-${name}`])), ...passes }, token);
@@ -29,6 +29,17 @@ test("childEnv also leaves out every name shaped like a key that no list names (
   assert.deepEqual(out, passes, "what a run's process reads passes, whole");
   // The pipe's own variables are set for the run after this cut, but match the rule: they pass it by name.
   assert.deepEqual(withoutSecrets({ AGENTRUN_SECRETS_FD: "3", AGENTRUN_SECRETS_LEN: "12" }), { AGENTRUN_SECRETS_FD: "3", AGENTRUN_SECRETS_LEN: "12" });
+});
+
+test("one rule names a key, for a run's environment and the import's cut alike: a name with PASSWORD in it, in any case, is left out of the one and its value cut by the other, as SECRET's is", () => {
+  const names = ["FOO_API_KEY", "GITHUB_TOKEN", "DB_PASSWORD", "smtp_password", "Db_PassWord_Hash", "MYSQL_PASSWORD_FILE", "CLIENT_SECRET", "AWS_SECRET_ACCESS_KEY", "MY_SECRET_THING", "PATH", "AGENT_MODEL", "AWS_REGION", "GOOGLE_APPLICATION_CREDENTIALS"];
+  const value = (name) => `canary-value-of-${name}`;
+  const env = Object.fromEntries(names.map((name) => [name, value(name)]));
+  const dropped = names.filter((name) => !(name in withoutSecrets(env)));
+  const { text } = secretCut(env);
+  const cut = names.filter((name) => !text(`said ${value(name)}`).includes(value(name)));
+  assert.deepEqual(dropped, ["FOO_API_KEY", "GITHUB_TOKEN", "DB_PASSWORD", "smtp_password", "Db_PassWord_Hash", "MYSQL_PASSWORD_FILE", "CLIENT_SECRET", "AWS_SECRET_ACCESS_KEY", "MY_SECRET_THING"], "*_API_KEY, *_TOKEN, and any with SECRET or PASSWORD; nothing else");
+  assert.deepEqual(cut, dropped, "the import's cut cuts each one's value, and no other");
 });
 
 test("a key-shaped name reaches a run's environment only from the allow list, each entry its own reason: the pipe's descriptor and its length, which the run's process reads from its environment", () => {

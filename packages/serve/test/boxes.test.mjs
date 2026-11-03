@@ -96,11 +96,11 @@ test("docker's probe gets the server's environment through the one cut a run's t
   const seen = join(await scratch(t), "env-names");
   // Names only, never a value.
   const docker = await fakeDocker(t, `env | cut -d= -f1 > '${seen}'\n${ANSWERS}`);
-  const env = { PATH: docker.PATH, AGENTRUN_BOXES: "docker", DOCKER_HOST: "unix:///nowhere.sock", ...keys(), GEMINI_API_KEY: `${CANARY}-GEMINI`, FOO_API_KEY: `${CANARY}-FOO`, GITHUB_TOKEN: `${CANARY}-GH` };
+  const env = { PATH: docker.PATH, AGENTRUN_BOXES: "docker", DOCKER_HOST: "unix:///nowhere.sock", ...keys(), GEMINI_API_KEY: `${CANARY}-GEMINI`, FOO_API_KEY: `${CANARY}-FOO`, FOO_PASSWORD: `${CANARY}-PW`, GITHUB_TOKEN: `${CANARY}-GH` };
   const registry = await boxRegistry(env);
   assert.deepEqual(offerOf(registry, "docker"), { id: "docker", available: true });
   const names = readFileSync(seen, "utf8").split("\n").filter(Boolean);
-  assert.deepEqual(names.filter((name) => [...BOX_KEYS, "GEMINI_API_KEY", "FOO_API_KEY", "GITHUB_TOKEN"].includes(name)), [], "a key reached docker's environment");
+  assert.deepEqual(names.filter((name) => [...BOX_KEYS, "GEMINI_API_KEY", "FOO_API_KEY", "FOO_PASSWORD", "GITHUB_TOKEN"].includes(name)), [], "a key reached docker's environment");
   assert.ok(names.includes("DOCKER_HOST") && names.includes("AGENTRUN_BOXES"), names.join(" "));
 });
 

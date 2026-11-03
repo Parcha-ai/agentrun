@@ -490,13 +490,14 @@ function onlyTheServerHolds(root, canary) {
 /** The names of `names` shaped like a key (secret-cut.ts' rule, the env cut's and the import cut's). */
 const keyShapedIn = (names) => names.filter((name) => SECRET_NAME.test(name));
 
-test("under its launcher, a key pi-ai reads for a provider (GEMINI_API_KEY) is in no process's environment, a run's, a program's it starts and a tool's program included, and a run on that provider's model gets it over its pipe alone; a run on another provider's model gets it nowhere; a key-shaped name no list names (FOO_API_KEY) reaches no run", { timeout: 120_000 }, async (t) => {
+test("under its launcher, a key pi-ai reads for a provider (GEMINI_API_KEY) is in no process's environment, a run's, a program's it starts and a tool's program included, and a run on that provider's model gets it over its pipe alone; a run on another provider's model gets it nowhere; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) reach no run", { timeout: 120_000 }, async (t) => {
   const canary = `not-a-secret-provider-${process.pid}-${Date.now()}`;
   const gemini = `${canary}-GEMINI_API_KEY`;
-  // Named like a key and on no list: the launcher cannot know to take it, so the server's environment keeps it; no
+  // Named like a key and on no list: the launcher cannot know to take them, so the server's environment keeps them; no
   // run's may.
   const foo = `${canary}-FOO_API_KEY`;
-  const { root, api } = await launched(t, { AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN`, GEMINI_API_KEY: gemini, FOO_API_KEY: foo });
+  const password = `${canary}-FOO_PASSWORD`;
+  const { root, api } = await launched(t, { AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN`, GEMINI_API_KEY: gemini, FOO_API_KEY: foo, FOO_PASSWORD: password });
   // On the faux model whatever they name, as a faux run is: each is handed what a run on its model is handed, and its
   // model call answers.
   assert.equal((await api("POST", "/agents", agent("gemini", { model: "google/gemini-2.5-flash" }))).status, 201);
@@ -508,7 +509,7 @@ test("under its launcher, a key pi-ai reads for a provider (GEMINI_API_KEY) is i
   for (const report of [onGemini, onOther]) {
     assert.deepEqual(report.pipe, { fd: 3, closed: true }, "its pipe, fd 3, read and closed");
     for (const where of ["env", "child", "toolChild"]) {
-      assert.deepEqual(report[where].filter((name) => ["GEMINI_API_KEY", "FOO_API_KEY"].includes(name)), [], `none of them in ${where} of a run on ${report === onGemini ? "Gemini" : "another provider"}`);
+      assert.deepEqual(report[where].filter((name) => ["GEMINI_API_KEY", "FOO_API_KEY", "FOO_PASSWORD"].includes(name)), [], `none of them in ${where} of a run on ${report === onGemini ? "Gemini" : "another provider"}`);
       assert.deepEqual(keyShapedIn(report[where]), [], `no key-shaped name at all in ${where}`);
     }
   }
@@ -516,13 +517,14 @@ test("under its launcher, a key pi-ai reads for a provider (GEMINI_API_KEY) is i
   await holdTurn(api, onGemini.id);
   const seen = noSecretAnywhere(root, gemini);
   assert.ok(seen.some((cmdline) => cmdline.includes(" --app ")), "the run's process is among those read");
-  onlyTheServerHolds(root, foo);
+  for (const value of [foo, password]) onlyTheServerHolds(root, value);
 });
 
-test("on codex, with its turn held inside Codex's own process (a child of the run's), a key pi-ai reads for a provider (GEMINI_API_KEY) is in no process's environment, Codex's included, which every command it starts inherits; a key-shaped name no list names (FOO_API_KEY) is in none under the server", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
+test("on codex, with its turn held inside Codex's own process (a child of the run's), a key pi-ai reads for a provider (GEMINI_API_KEY) is in no process's environment, Codex's included, which every command it starts inherits; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) are in none under the server", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
   const canary = `not-a-secret-provider-codex-${process.pid}-${Date.now()}`;
   const gemini = `${canary}-GEMINI_API_KEY`;
   const foo = `${canary}-FOO_API_KEY`;
+  const password = `${canary}-FOO_PASSWORD`;
   const gw = await heldGateway(t);
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
   copyFileSync(STAND_IN, standIn);
@@ -531,6 +533,7 @@ test("on codex, with its turn held inside Codex's own process (a child of the ru
     AGENT_MODEL_API_KEY: `${canary}-AGENT_MODEL_API_KEY`,
     GEMINI_API_KEY: gemini,
     FOO_API_KEY: foo,
+    FOO_PASSWORD: password,
     AGENTRUN_CODEX_STANDIN: "1",
     AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }),
     AGENT_MODEL_BASE_URL: gw.origin,
@@ -546,7 +549,7 @@ test("on codex, with its turn held inside Codex's own process (a child of the ru
   const seen = noSecretAnywhere(root, gemini);
   assert.ok(seen.some((cmdline) => cmdline.includes(standIn)), `Codex's process is among those read: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
   assert.ok(seen.some((cmdline) => cmdline.includes(" --app ")), "and the run's, Codex's parent");
-  assert.ok(onlyTheServerHolds(root, foo).some((cmdline) => cmdline.includes(standIn)), "neither holds a key-shaped variable no list names");
+  for (const value of [foo, password]) assert.ok(onlyTheServerHolds(root, value).some((cmdline) => cmdline.includes(standIn)), "neither holds a key-shaped variable no list names");
 });
 
 test("a pi run on Amazon Bedrock hands each request the AWS keys its process holds, in pi-ai's own env option, which Bedrock's request reads them from: none needs an environment", async () => {
