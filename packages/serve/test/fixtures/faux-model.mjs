@@ -177,8 +177,10 @@ export default function reply(context, faux) {
   if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
   // A follow-up whose answer stops at its length (max output tokens): text, no tool call, stopReason "length".
   if (first.includes("Stop the follow-up at its length") && users.length > 1) return faux.message("The follow-up's answer, cut at its length", { stopReason: "length" });
-  // A final stop of the model's own with no text (turn-record.test.mjs): only a thinking block, or no content at all; as
+  // A final stop of the model's own with no text (turn-record.test.mjs): one empty text block (and an empty thinking
+  // block), only a thinking block, or no content at all; as
   // the first answer, or as a follow-up's after an answer with text.
+  if (first.includes("Answer with one empty text block.")) return faux.message([faux.thinking(""), faux.text("")]);
   if (first.includes("Answer only by thinking.") || last === "Now answer only by thinking.") return faux.message([faux.thinking("Nothing to add.")]);
   if (first.includes("Answer with no content.") || last === "Now answer with no content.") return faux.message([]);
   // A stop at the length limit (the model's max output tokens): text and no tool call, as a first answer or a follow-up's.

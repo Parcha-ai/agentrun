@@ -56,7 +56,7 @@ const until = async (what, check, ms = 30_000) => {
 
 // ---- a pi turn whose final stop shows no text (#1450, #1453) ------------------------------------------------------
 
-for (const [what, phrase] of [["one empty text block (#1450)", "Answer with nothing"], ["only a thinking block (#1453)", "Answer only by thinking."], ["no content at all (#1453)", "Answer with no content."]]) {
+for (const [what, phrase] of [["one empty text block (#1450)", "Answer with one empty text block."], ["only a thinking block (#1453)", "Answer only by thinking."], ["no content at all (#1453)", "Answer with no content."]]) {
   test(`pi: a final stop of the model's own with ${what} completes the run, its answer ""`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t);
     const runId = await start(api, "pi", phrase);
