@@ -1264,3 +1264,32 @@ test("a start drops the ledger's waits of runs the store holds as ended or no lo
   await sleep(300);
   assert.equal(hook.got.length, 0, "nothing sent");
 });
+
+test("an end the start's catch-up finds while the run's own store is held busy is still queued, once, under its end time's id: the notice is made from the store's row, never from the run's store", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  // Killed after the agent store's end and before run.ended is queued: the next start's catch-up has it to queue.
+  const first = await processOn(t, data, [SERVE_END_HELD, data, FAUX]);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(first.api, "busy-store", "Answer.");
+  const at = await until(() => endedIn(data, run.run_id), "its end in the store");
+  await killed(first.child);
+  // The run's own store held by another connection, exclusively, while the next server starts: no read of it lands.
+  const held = new DatabaseSync(join(data, "runs", run.run_id, "store", "run.sqlite"), { timeout: 0 });
+  held.exec("PRAGMA locking_mode=EXCLUSIVE");
+  held.exec("BEGIN EXCLUSIVE");
+  held.exec("CREATE TABLE IF NOT EXISTS held_by_the_test (x)");
+  const release = () => held.isOpen && (held.isTransaction && held.exec("ROLLBACK"), held.close());
+  t.after(release);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", carryBackRetry: { delaysMs: [50] } });
+  t.after(() => next.close());
+  await sleep(1_500);
+  release();
+  await until(() => ofType(hook.got, "run.ended").length >= 1, "its run.ended, though the run's store was busy at the start");
+  await sleep(500);
+  const ended = ofType(hook.got, "run.ended");
+  assert.equal(ended.length, 1, "once");
+  assert.equal(ended[0].headers["webhook-id"], noticeId(run.run_id, "run.ended", at));
+  assert.deepEqual(JSON.parse(ended[0].body).data.status, "completed");
+});
