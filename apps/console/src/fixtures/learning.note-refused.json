@@ -18,7 +18,7 @@
       "code": "bad_request",
       "message": "The note does not pass the checks: invisible_unicode.",
       "retryable": false,
-      "request_id": "req_2bb7d72982db6c3e",
+      "request_id": "req_7d2f7d1f5ccb9ab9",
       "problems": [
         {
           "rule": "invisible_unicode",
