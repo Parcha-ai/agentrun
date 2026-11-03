@@ -1,7 +1,6 @@
 {
   "name": "@parcha/agentrun-decisions",
   "version": "0.1.0-beta.28",
-  "private": true,
   "description": "Third-party decision models as DecisionProviders for the AgentRun DSL: Parallel Decisions (typed questions grounded in live web evidence) and OpenRouter's Decisions models (any of them by name), behind the DSL's runJudge seam.",
   "keywords": [
     "agentrun",

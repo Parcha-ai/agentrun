@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
@@ -76,12 +76,7 @@ const server = await startServe({ data: ${JSON.stringify(data)}, port: 0, faux: 
 process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token }) + "\\n");`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => child.kill("SIGKILL"));
-  let out = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !out.includes("\n"); i++) {
-    assert.ok(i < 200, `the server did not start: ${out}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  const out = await printed(child, /\n/);
   const { base, token } = JSON.parse(out.slice(0, out.indexOf("\n")));
   const first = client(base, token);
   const go = join(await scratch(t), "go");

@@ -14,7 +14,7 @@ import { secret } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, client, cookieOf, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, client, cookieOf, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -284,10 +284,7 @@ async function launched(t, data, config, token) {
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_BASE_URL=(\S+)/.test(out); i++) {
-    assert.ok(i < 300, `the server started: ${out}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  await printed(child, /^AGENTRUN_BASE_URL=\S+$/m);
   return { api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], token), stop: async () => (await stop(), out) };
 }
 
