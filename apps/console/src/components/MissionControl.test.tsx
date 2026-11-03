@@ -261,3 +261,34 @@ describe("the cost of cut runs (bounded_unknown)", () => {
     expect(render({ ...v, analytics: analytics() }, scope)).not.toContain("cut run");
   });
 });
+
+// Mission Control routes a person to what needs them: every count is a link to its list, and the latest runs say whose
+// they are, how long they took and what they cost.
+describe("MissionControl, the counts as links and the latest runs in full", () => {
+  it("links each count to its list, filtered to it", () => {
+    const html = render(view);
+    for (const [label, href] of [["Agents", "#/agents"], ["Runs", "#/runs"], ["Active", "#/runs?status=working"], ["Needs input", "#/runs?status=input_required"], ["Failed", "#/runs?status=failed"]]) {
+      expect(html, label).toMatch(new RegExp(`<a[^>]*href="${href.replace(/[?]/g, "\\?")}"[^>]*>(?:(?!</a>).)*${label}`));
+    }
+  });
+  it("shows each latest run's agent, how long it took, and its cost when known", () => {
+    const done: Run = { ...run("run-9", "completed", "idle", "Check invoice INV-2291"), ended_at: "2026-10-30T03:00:42Z", cost: { usd: 0.0086, basis: "estimate", charge_state: null, cap_usd: null } };
+    const html = render({ ...view, recent: [done, run("run-2", "working", "working", "Summarize the standup")] });
+    expect(html).toContain("Check invoice INV-2291");
+    expect(html).toContain("Calc");
+    expect(html).toContain("42s");
+    expect(html).toContain("$0.0086 est.");
+    // A run still working has no duration yet, and an unknown cost is left out, never $0.
+    expect(html).not.toContain("$0.0000");
+  });
+  it("puts what needs you first, and before a first run of your own, the start-here panel in place of the counts", () => {
+    const needs = createElement("section", { "aria-label": "Needs you" }, "the strip");
+    const first = createElement("section", { "aria-label": "Start here" }, "the panel");
+    const withNeeds = renderToStaticMarkup(createElement(MissionControl, { view, needsYou: needs }));
+    expect(withNeeds.indexOf("the strip")).toBeLessThan(withNeeds.indexOf("Needs input"));
+    const fresh = renderToStaticMarkup(createElement(MissionControl, { view, startHere: first }));
+    expect(fresh).toContain("the panel");
+    expect(fresh).not.toContain("Needs input");
+    expect(fresh).not.toContain("Recent runs");
+  });
+});

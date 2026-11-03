@@ -1,0 +1,61 @@
+import { describe, expect, it } from "vitest";
+import { choicesOf, failureGroups, hasOwnRun } from "./needs";
+import type { Run } from "./v2";
+
+const run = (id: string, over: Partial<Run> = {}): Run => ({
+  run_id: id, agent_id: "calc", agent_version: 1, revision: "r1", kind: "agentic", status: "failed", state: "idle", title: id,
+  created_at: "2026-11-03T16:08:00Z", ended_at: "2026-11-03T16:08:30Z", result: null, error: null, cost: null, archived_at: null, ...over,
+});
+const failed = (id: string, message: string, over: Partial<Run> = {}) => run(id, { error: { code: "run_failed", message, retryable: false }, ...over });
+
+// The answers a question offers, as one-tap choices: only when it plainly offers them.
+describe("choicesOf", () => {
+  it("reads the options after a colon, without their article", () => {
+    expect(choicesOf("Contoso Freight isn't on the vendor list yet. Which approval limit applies: the $5,000 standard or the $25,000 preferred tier?"))
+      .toEqual(["$5,000 standard", "$25,000 preferred tier"]);
+  });
+  it("reads an either-or request in the last sentence, without its trailing instead", () => {
+    expect(choicesOf("The refund is $640, over the $500 policy limit. Approve an exception, or offer store credit instead?")).toEqual(["Approve an exception", "Offer store credit"]);
+  });
+  it("reads three options from a list, a bare token kept as written", () => {
+    expect(choicesOf("Which region should I deploy to: us-east, eu-west, or ap-south?")).toEqual(["us-east", "eu-west", "ap-south"]);
+  });
+  it("offers none for an open question, a yes-or-no one, or options too long to be buttons", () => {
+    expect(choicesOf("Which product or plan was charged twice?")).toEqual([]);
+    expect(choicesOf("Should I use the staging database or production?")).toEqual([]);
+    expect(choicesOf("What should the release be called?")).toEqual([]);
+    expect(choicesOf(`Pick one: ${"a very long option that keeps going and going ".repeat(2)}or the other one?`)).toEqual([]);
+  });
+});
+
+// Failures that need a person: the same error once, with every run it stopped behind it; imported history is not here.
+describe("failureGroups", () => {
+  it("groups failures by their error, the most recent group first, and leaves imported runs out", () => {
+    const groups = failureGroups([
+      failed("a", "529 overloaded: the provider is over capacity", { ended_at: "2026-11-03T16:09:00Z" }),
+      failed("b", "the run hit its spend cap", { ended_at: "2026-11-03T16:10:00Z" }),
+      failed("c", "529 overloaded: the provider is over capacity", { ended_at: "2026-11-03T16:08:00Z" }),
+      failed("d", "API Error: overloaded", { imported_from: { source: "claude-code", session: "s1" } }),
+    ]);
+    expect(groups.map((g) => [g.message, g.runs.map((r) => r.run_id)])).toEqual([
+      ["the run hit its spend cap", ["b"]],
+      ["529 overloaded: the provider is over capacity", ["a", "c"]],
+    ]);
+  });
+  it("names a failure with no error message by what happened", () => {
+    expect(failureGroups([run("e")])[0]!.message).toBe("The run failed.");
+  });
+});
+
+// Mission Control's first-run panel shows until a run of the owner's own exists: imported history is not one.
+describe("hasOwnRun", () => {
+  const live = (runs: number) => [{ source: "live", runs }];
+  it("is false with no runs, or only imported ones", () => {
+    expect(hasOwnRun([], [])).toBe(false);
+    expect(hasOwnRun([run("i", { imported_from: { source: "codex", session: "s" } })], [{ source: "codex", runs: 1 }])).toBe(false);
+  });
+  it("is true once a run here exists, in the recent runs or in the analytics", () => {
+    expect(hasOwnRun([run("r")], [])).toBe(true);
+    expect(hasOwnRun([run("i", { imported_from: { source: "pi", session: "s" } })], live(3))).toBe(true);
+  });
+});

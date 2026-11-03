@@ -5,6 +5,8 @@ import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { KeysPage } from "@/components/KeysPage";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
+import { NeedsYouStrip } from "@/components/NeedsYouStrip";
+import { StartHere } from "@/components/StartHere";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult, startFailure } from "@/components/Playground";
 import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
@@ -13,7 +15,9 @@ import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { allPages, type Capabilities, ClientError, createClient, type RunsFilter } from "@/lib/client";
-import { appendRuns } from "@/lib/idempotency";
+import { appendRuns, keeper, sendOnce, uuid } from "@/lib/idempotency";
+import { hasOwnRun } from "@/lib/needs";
+import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
 import type { Run, RunStatus } from "@/lib/v2";
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
@@ -102,6 +106,11 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [statsRange, setStatsRange] = useState<StatsRange>("30d");
   const [statsAgent, setStatsAgent] = useState<string | null>(null);
   const [missionReading, setMissionReading] = useState(false);
+  // What needs a person on Mission Control: the runs asking a question, the failures of the last day, the runs at work;
+  // read with the page, and again every 10 seconds while it is open. `ownRun`: whether anything of the owner's has run.
+  const [needs, setNeeds] = useState<{ asking: Run[]; failed: Run[]; live: Run[] } | null>(null);
+  const [ownRun, setOwnRun] = useState<boolean | null>(null);
+  const [needsTry, setNeedsTry] = useState(0);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
@@ -148,6 +157,13 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string; route_prefix?: string | null } } | null;
   // The server lists its tools as objects (name, available, missing).
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
+  // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
+  const tryIt = async (t: Template) => {
+    const harness = templateHarness(editorCaps.harnesses);
+    if (!harness) return "This server has no model to run it on yet.";
+    try { const id = await tryTemplate(v2, t, harness); go(`#/runs/${encodeURIComponent(id)}`); return null; } catch (e) { return refusal(e); }
+  };
+  const imported = (mission?.analytics.by_source ?? []).filter((g) => g.source !== "live").reduce((n, g) => n + g.runs, 0);
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", settings: "#/settings/keys" }[s]);
   // The agents both start screens pick from, every page of them.
   const [agents, setAgents] = useState<Agent[] | null>(null);
@@ -173,11 +189,47 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     setMissionError(null); setMissionReading(true);
     const from = rangeFrom(statsRange);
     Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), v2.listRuns(10)])
-      .then(([s, r]) => { if (live) setMission(missionFrom(s, r.runs)); })
+      .then(([s, r]) => { if (live) { setMission(missionFrom(s, r.runs)); setOwnRun(hasOwnRun(r.runs, s.analytics.by_source)); } })
       .catch((e) => { if (live) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); })
       .finally(() => { if (live) setMissionReading(false); });
     return () => { live = false; };
   }, [v2, where.section, missionTry, statsRange, statsAgent]);
+  useEffect(() => {
+    if (where.section !== "mission") return;
+    let live = true;
+    const read = () => Promise.all((["input_required", "failed", "working"] as const).map((status) => v2.listRuns(20, null, { status })))
+      .then(([asking, failed, working]) => {
+        if (!live) return;
+        const day = Date.now() - 86_400_000;
+        setNeeds({ asking: asking.runs.filter((r) => r.pending), failed: failed.runs.filter((r) => Date.parse(r.ended_at ?? r.created_at) > day), live: working.runs });
+      }, () => {});
+    void read();
+    const t = setInterval(() => void read(), 10_000);
+    return () => { live = false; clearInterval(t); };
+  }, [v2, where.section, needsTry]);
+  const answerKeys = useRef(keeper()).current;
+  const refusal = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
+  // After an action the strip reads again in a moment, so an answered question or a run started again leaves it.
+  const later = () => setTimeout(() => setNeedsTry((n) => n + 1), 2500);
+  const answer = async (runId: string, text: string) => {
+    try { await sendOnce(answerKeys, runId, text, v2.sendMessage); later(); return null; } catch (e) { return refusal(e); }
+  };
+  // A run is started again with its own first message, read from its timeline (a run's read carries no input).
+  const runAgain = async (rs: readonly Run[]) => {
+    try {
+      for (const r of rs) {
+        if (r.kind === "workflow") throw new Error(`"${r.title}" is a workflow run: start it again from its agent's page`);
+        const first = (await v2.getTimeline(r.run_id)).rows.find((row) => row.kind === "user_message");
+        const content = first?.text ?? first?.summary;
+        if (!content) throw new Error(`"${r.title}": its first message could not be read`);
+        await v2.startRun(r.agent_id, { input: { content } }, uuid());
+      }
+      later(); return null;
+    } catch (e) { return refusal(e); }
+  };
+  const stop = async (runId: string) => {
+    try { await v2.stop(runId); later(); return null; } catch (e) { return refusal(e); }
+  };
   const revsAsked = useRef(0);
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
@@ -207,7 +259,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={() => { v2.capabilities().then(setCaps).catch(() => {}); }} />
         : where.section === "mission"
         ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
-            scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
+            scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
+            needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} agentName={agentName} onAnswer={answer} onRunAgain={runAgain} onStop={stop} />}
+            startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={imported} /> : undefined} />
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
