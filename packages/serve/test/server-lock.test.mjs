@@ -67,7 +67,7 @@ test("a server killed by SIGKILL leaves its server.lock behind, and the next ser
   await mkdir(data);
   // A process that takes the lock as a server's start does, and is killed holding it.
   const lock = new URL("../dist/server-lock.js", import.meta.url).href;
-  const holder = spawn(process.execPath, ["--input-type=module", "-e", `import { takeServerLock } from ${JSON.stringify(lock)}; takeServerLock(${JSON.stringify(data)}); console.log("held"); setInterval(() => {}, 60_000);`], { stdio: ["ignore", "pipe", "pipe"] });
+  const holder = spawn(process.execPath, ["--input-type=module", "-e", `import { takeServerLock } from ${JSON.stringify(lock)}; globalThis.serverLock = takeServerLock(${JSON.stringify(data)}); console.log("held"); setInterval(() => {}, 60_000);`], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => holder.exitCode === null && holder.signalCode === null && holder.kill("SIGKILL"));
   const exited = new Promise((resolve) => holder.once("exit", resolve));
   await printed(holder, /^held$/m);
