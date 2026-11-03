@@ -37,13 +37,16 @@ it("remembers the distinct CLI destination and leaves an editable, selectable pr
   try {
     render("first");
     act(() => button(/^Use your coding agent$/).click());
-    const picker = host.querySelector("select")!;
-    expect([...picker.options].map((o) => o.text)).toEqual(["Claude Code app", "Claude Code CLI", "Codex app", "Codex CLI"]);
-    act(() => { picker.value = "codex-cli"; picker.dispatchEvent(new Event("change", { bubbles: true })); });
+    const picker = host.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Application"]')!;
+    expect(picker).toBeTruthy();
+    act(() => picker.click());
+    const options = [...host.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(options.map((option) => option.textContent)).toEqual(["Claude Code app", "Claude Code CLI", "Codex app", "Codex CLI"]);
+    act(() => options.find((option) => option.textContent === "Codex CLI")!.click());
     act(() => button(/^Close$/).click());
     render("second");
     act(() => button(/^Use your coding agent$/).click());
-    expect(host.querySelector("select")!.value).toBe("codex-cli");
+    expect(host.querySelector('[role="combobox"][aria-label="Application"]')!.textContent).toContain("Codex CLI");
     const text = host.querySelector("textarea")!;
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(text, "Review this agent before revising.");

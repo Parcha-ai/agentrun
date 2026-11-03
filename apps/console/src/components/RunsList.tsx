@@ -1,6 +1,7 @@
 import { Archive, ArrowUpRight } from "lucide-react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import type { RunsFilter } from "@/lib/client";
 import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
 import type { Run, RunStatus } from "@/lib/v2";
@@ -19,11 +20,9 @@ export function RunsList({ runs, agentName, onOpen, error, onMore, loadingMore, 
         <h1 className="mr-auto font-mono text-2xl font-semibold">{archived ? "Archived runs" : "Runs"}</h1>
         {onFilter && (
           <>
-            <select aria-label="Runs in one state" value={filter.status ?? ""} onChange={(e) => onFilter({ ...filter, status: (e.target.value || undefined) as RunStatus | undefined })}
-              className="h-11 border bg-background px-3 font-mono text-[13px]">
-              <option value="">Any state</option>
-              {RUN_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-            </select>
+            <Select aria-label="Runs in one state" value={filter.status ?? ""} onValueChange={(value) => onFilter({ ...filter, status: (value || undefined) as RunStatus | undefined })}
+              className="h-11 w-auto min-w-40 max-w-full"
+              options={[{ value: "", label: "Any state" }, ...RUN_STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s] }))]} />
             <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onFilter({ ...filter, archived: !archived })}><Archive aria-hidden /> Archived</Button>
           </>
         )}

@@ -32,12 +32,20 @@ async function open(kind: "agentic" | "workflow", answers = [202], props: Partia
   }))));
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()))!;
   const click = async (label: RegExp) => { await act(async () => button(label).click()); };
+  const choose = async (label: string, option: RegExp) => {
+    const picker = host.querySelector<HTMLButtonElement>(`[role="combobox"][aria-label="${label}"]`);
+    expect(picker).toBeTruthy();
+    await act(async () => picker!.click());
+    const choice = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((el) => option.test(el.textContent ?? ""));
+    expect(choice).toBeTruthy();
+    await act(async () => choice!.click());
+  };
   const type = (text: string) => act(() => {
     const box = host.querySelector("textarea")!;
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, text);
     box.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  return { agent, host, requests, went, button, click, type };
+  return { agent, host, requests, went, button, click, choose, type };
 }
 
 it.each([
@@ -80,11 +88,15 @@ it("does not submit malformed workflow input and preserves the invalid draft", a
   expect(page.requests).toEqual([]);
 });
 
-it("uses an older revision's workflow schema and kind even when the current agent is agentic", async () => {
+it("uses the picked revision's kind and resets its pin when picking another agent", async () => {
   const older = agentFixture("support-triage");
   const current = agentFixture("invoice-checker");
+  const other = { ...older, agent_id: "other-workflow", revision: "other-current", definition: { ...older.definition, name: "Other workflow" } };
+  const selectedAgents: string[] = [];
   const page = await open("agentic", [202], {
+    agents: [current, other],
     revision: older.revision,
+    onAgent: (id) => selectedAgents.push(id),
     revisions: [
       { revision: older.revision, version: 1, current: false, note: null, kind: "workflow", definition: older.definition },
       { revision: current.revision, version: 2, current: true, note: null, kind: "agentic", definition: current.definition },
@@ -95,11 +107,17 @@ it("uses an older revision's workflow schema and kind even when the current agen
   page.type(draft);
   await page.click(/^Send request$/);
   expect(page.requests[0].body).toEqual({ input: { subject: "Invoice", body: "Where is it?" }, revision: older.revision });
-  act(() => {
-    const revision = page.host.querySelector<HTMLSelectElement>('[aria-label="Revision"]')!;
-    revision.value = current.revision; revision.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  await page.choose("Revision", /^rev 2 \(current\)$/);
   expect(page.host.querySelector("textarea")!.value).toBe(draft);
+  expect(page.host.querySelector("textarea")!.getAttribute("aria-label")).toBe("Task");
+  await page.click(/^Send request$/);
+  expect(page.requests[1].body).toEqual({ input: { content: draft }, revision: current.revision });
+  await page.choose("Agent", /^Other workflow$/);
+  expect(selectedAgents).toEqual([other.agent_id]);
+  expect(page.host.querySelector("textarea")!.value).toBe(draft);
+  expect(page.host.querySelector("textarea")!.getAttribute("aria-label")).toBe("Workflow input (JSON)");
+  await page.click(/^Send request$/);
+  expect(page.requests[2]).toMatchObject({ url: `/v2/agents/${other.agent_id}/runs`, body: { input: { subject: "Invoice", body: "Where is it?" }, revision: other.revision } });
 });
 
 it("keeps the draft and shows revision-read failures instead of sending an unresolved revision with the current kind", async () => {

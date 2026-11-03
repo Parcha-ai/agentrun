@@ -28,6 +28,12 @@ Mission Control combines whole-store statistics with bounded operational lists. 
 
 The administration layout and visual behavior follow the AgentRun console design. Code is composed from the reviewed public console and native server; the hosted application, backend and Git history are not copied into this repository. Provider identity, teams, billing, remote Runner fleets, deployments, swarms, managed evaluation dashboards and hosted connectors are optional private extensions outside core.
 
+## Menu controls
+
+Application, run-state and API playground selectors use a shared select-only combobox. Its dark menu shows the selected value with an orange check mark. Keyboard navigation highlights enabled options; Enter, Space or a pointer selection commits the value. Escape dismisses the menu without changing the value, and Tab follows the page's normal focus order.
+
+Menus stay within the visible viewport and scroll when their options exceed the available height. A menu opened inside a modal belongs to that dialog's top layer. Embedded menus inherit the console's theme. Mission Control keeps its searchable agent filter for longer agent lists.
+
 ## Builds and acceptance
 
 The root build first builds the standalone static page and embeddable library, then copies the page, exact asset manifest and notices into the native server. Browser runtime dependencies are reviewed independently from development tooling. Compiled assets are scanned for private integrations, and the source export includes the browser lockfile in its runtime inventory.

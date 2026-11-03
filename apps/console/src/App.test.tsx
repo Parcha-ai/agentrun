@@ -364,8 +364,10 @@ describe("App, archiving a run and filtering the runs list", () => {
     await wait(() => !!host.textContent?.includes("What is two and two?"), "the archived runs hold it");
     expect(location.hash).toBe("#/runs?archived=true");
     expect(host.querySelector("h1")?.textContent).toBe("Archived runs");
-    const select = host.querySelector("select[aria-label='Runs in one state']") as HTMLSelectElement;
-    await act(async () => { select.value = "failed"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const select = host.querySelector<HTMLButtonElement>("[role='combobox'][aria-label='Runs in one state']")!;
+    await act(async () => select.click());
+    const failed = [...document.querySelectorAll<HTMLElement>("[role='option']")].find((option) => option.textContent === "Failed")!;
+    await act(async () => failed.click());
     await wait(() => !!host.textContent?.includes("No run matches."), "no archived run failed");
     expect(location.hash).toBe("#/runs?status=failed&archived=true");
     expect(asked).toContain("GET /v2/runs?limit=50&status=failed&archived=true");

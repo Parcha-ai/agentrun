@@ -1,6 +1,7 @@
 import { ArrowRight, Copy, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 import { curlFor, exampleInput, keeper, runStartUrl, type StartBody, startBody, submitStart } from "@/lib/runStart";
@@ -87,11 +88,11 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
-        <label className="flex items-center gap-2 text-[12px]">
+        <label className="flex min-w-0 max-w-full items-center gap-2 text-[12px]">
           <span className="caps text-muted-foreground">Agent</span>
-          <select value={agentId} onChange={(e) => { setAgentId(e.target.value); setRevision(""); onAgent?.(e.target.value); }} className="h-10 border bg-background px-3 font-mono text-[13px]">
-            {agents.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name}</option>)}
-          </select>
+          <Select aria-label="Agent" value={agentId} onValueChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
+            options={agents.map((a) => ({ value: a.agent_id, label: a.definition.name }))}
+            className="h-10 min-w-0 max-w-full" />
         </label>
         <span className="min-w-0 break-all font-mono text-[12px]"><span className="text-primary">POST</span> <span className="text-muted-foreground" aria-label="Request URL">{target}</span></span>
         <span className="flex-1" />
@@ -121,10 +122,11 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
                   )}
                 </Label>
                 <Label name="revision" note="The request pins the displayed revision, including the loaded current one.">
-                  <select aria-label="Revision" value={revision} onChange={(e) => setRevision(e.target.value)} className={field}>
-                    <option value="">The loaded current revision{agent ? ` (rev ${agent.definition.version})` : ""}</option>
-                    {revisions.map((r) => <option key={r.revision} value={r.revision}>rev {r.version}{r.current ? " (current)" : ""}{r.note ? `: ${r.note}` : ""}</option>)}
-                  </select>
+                  <Select aria-label="Revision" value={revision} onValueChange={setRevision} className="w-full"
+                    options={[
+                      { value: "", label: `The loaded current revision${agent ? ` (rev ${agent.definition.version})` : ""}` },
+                      ...revisions.map((r) => ({ value: r.revision, label: `rev ${r.version}${r.current ? " (current)" : ""}${r.note ? `: ${r.note}` : ""}` })),
+                    ]} />
                 </Label>
                 <Label name="effort" note="Empty uses the agent's own.">
                   <div className="flex gap-2" role="group" aria-label="Effort">{["", ...efforts].map((e) => <button key={e || "default"} type="button" aria-pressed={effort === e} onClick={() => setEffort(e)} className={cn("caps border px-3 py-2 text-[12px]", effort === e ? "border-foreground" : "text-muted-foreground")}>{e || "default"}</button>)}</div>

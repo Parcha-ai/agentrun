@@ -19,3 +19,5 @@ Sending a follow-up opens its timeline and acknowledges acceptance until the sav
 The API playground keeps its request and response tabs vertically centered at the same height when switching between Code and Response.
 
 Tab indicators use straight underlines throughout the console, including the API playground's request, response and language tabs.
+
+Application choices, run-state filters and API playground selectors use dark menus with clear selected options, keyboard navigation and viewport-aware placement.

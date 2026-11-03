@@ -1,6 +1,7 @@
 import { Copy, ExternalLink, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { CODING_AGENTS, codingAgentPrompt, readCodingAgent, rememberCodingAgent, type CodingAgentChoice, type CodingAgentContext } from "@/lib/codingAgentHandoff";
 
 /** A reviewed prompt copied into the person's chosen app or CLI. No application is opened automatically. */
@@ -19,7 +20,11 @@ export function CodingAgentHandoff({ context, serverUrl = "/v2", label = "Use yo
     window.addEventListener("agentrun-coding-agent-change", changed);
     return () => { window.removeEventListener("storage", changed); window.removeEventListener("agentrun-coding-agent-change", changed); };
   }, []);
-  useEffect(() => { if (open && typeof dialog.current?.showModal === "function") dialog.current.showModal(); }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    if (typeof dialog.current?.showModal === "function") dialog.current.showModal();
+    document.getElementById(`${id}-application`)?.focus();
+  }, [open, id]);
   const destination = CODING_AGENTS.find((agent) => agent.id === choice)!;
   const copy = async () => {
     try {
@@ -40,9 +45,7 @@ export function CodingAgentHandoff({ context, serverUrl = "/v2", label = "Use yo
           <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(false)}><X aria-hidden /> Close</Button>
         </div>
         <label className="mt-4 block text-[13px]">Application
-          <select autoFocus value={choice} onChange={(e) => { const next = e.target.value as CodingAgentChoice; rememberCodingAgent(next); setChoice(next); }} className="mt-2 block w-full rounded-lg border bg-background px-3 py-2.5">
-            {CODING_AGENTS.map((agent) => <option key={agent.id} value={agent.id}>{agent.label}</option>)}
-          </select>
+          <Select id={`${id}-application`} aria-label="Application" autoFocus value={choice} onValueChange={(value) => { const next = value as CodingAgentChoice; rememberCodingAgent(next); setChoice(next); }} options={CODING_AGENTS.map((agent) => ({ value: agent.id, label: agent.label }))} className="mt-2 w-full" />
         </label>
         <p className="mt-3 text-[13px] text-muted-foreground">{destination.instruction}</p>
         <label className="mt-4 block text-[13px]">Review or edit the prompt
