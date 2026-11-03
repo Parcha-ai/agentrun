@@ -96,3 +96,13 @@ test("personsWords keeps the person's words around a command and drops only the 
   assert.equal(personsWords("<thinking>is mine</thinking>"), "<thinking>is mine</thinking>");
   assert.equal(personsWords("  Rotate   the\n keys.  "), "Rotate the keys.");
 });
+
+test("a title is cut before it is clipped: a key across its 120th character leaves no piece of itself", async (t) => {
+  const key = "CANARY-VALUE-title-7f3e9d2c1b0a6e5d";
+  const title = `Rotate the deploy key ${"x".repeat(90)} ${key}`;
+  const got = await titles(t, (home, project) => claude(home, project, 12, [{ type: "ai-title", aiTitle: title }, "Rotate it."]), { env: { ...ENV, OPENAI_API_KEY: key } });
+  const kept = got[sessionId(12)];
+  assert.match(kept, /^Rotate the deploy key x{90} /, "Claude Code's title, clipped");
+  assert.ok(kept.length <= 120);
+  assert.ok(!kept.includes(key.slice(0, 5)), `no piece of the key: ${kept.slice(100)}`);
+});

@@ -728,17 +728,18 @@ async function revisionFor(
   return store.commitRevision(agentId, revision, { setCurrent: current });
 }
 
-/** An imported run's title: the source's own (Claude Code's), else the person's first words, else where the session ran
- *  ("Session in billing-api"), never a CLI's command markup. */
+/** An imported run's title, whole: the source's own (Claude Code's), else the person's first words, else where the
+ *  session ran ("Session in billing-api"), never a CLI's command markup. */
 function runTitleOf(session: Pick<Session, "sourceTitle" | "titleText" | "cwd" | "source">): string {
   const folder = session.cwd ? basename(session.cwd) : "";
-  return clip(session.sourceTitle ?? session.titleText ?? (folder ? `Session in ${folder}` : `${session.source} session`), 120);
+  return session.sourceTitle ?? session.titleText ?? (folder ? `Session in ${folder}` : `${session.source} session`);
 }
 
 /** A run's serve.json: its title and input, and the session file it was read from, as read. */
 async function writeMeta(dir: string, session: Session, read: SourceFile, json: (value: unknown) => unknown): Promise<void> {
   const meta = json({
-    title: runTitleOf(session),
+    // Cut before it is clipped: a key the clip cut short would match no cut.
+    title: clip(json(runTitleOf(session)) as string, 120),
     created_at: session.startedAt ?? new Date(0).toISOString(),
     input: { content: session.firstPrompt ?? "" },
   }) as Record<string, unknown>;
