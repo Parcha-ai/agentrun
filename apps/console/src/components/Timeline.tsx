@@ -2,6 +2,7 @@ import { Brain, ChevronRight, CircleAlert, CircleDollarSign, FileText, Flag, Loa
 import { useState } from "react";
 import { Chip } from "@/components/ui/chip";
 import { clock } from "@/lib/format";
+import { rowDetail, rowFailed } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import type { TimelineRow } from "@/lib/v2";
 
@@ -25,8 +26,8 @@ const label = (row: TimelineRow) =>
 function Row({ row, last }: { row: TimelineRow; last: boolean }) {
   const [open, setOpen] = useState(false);
   const Icon = ICON[row.kind] ?? Flag;
-  const detail = row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text;
-  const failed = row.tool_status === "failed" || row.kind === "error";
+  const detail = rowDetail(row);
+  const failed = rowFailed(row);
   return (
     <li className="relative flex gap-3">
       <div className="flex w-7 shrink-0 flex-col items-center">

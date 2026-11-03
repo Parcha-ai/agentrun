@@ -6,6 +6,7 @@
 
 import { cost } from "./format";
 import { elapsed } from "./runGraph";
+import { rowDetail, rowFailed } from "./timeline";
 import type { TimelineRow } from "./v2";
 
 /** `pending` (a newer server's): the run kept a note that waits for the owner's OK before any run reads it. */
@@ -307,12 +308,23 @@ export function lookedBack(l: RunLearning | undefined): string {
   return `Looked back: kept nothing. ${upperFirst(dropWords(l).replace(/^Not kept:\s*/, ""))}`;
 }
 
+/** One row of the look-back as the step's lines: its line, marked when it failed, then what it opens to, indented,
+ *  unless that is the line again. */
+function foldedRow(row: TimelineRow): string {
+  const r = learningLabel(row);
+  const line = rowFailed(r) ? `${r.summary} (failed)` : r.summary;
+  const detail = rowDetail(r)?.trimEnd();
+  return detail && detail.trim() !== r.summary.trim() ? `${line}\n${detail.replace(/^(?=.)/gm, "  ")}` : line;
+}
+
 /** A run's timeline rows as its page shows them, with its end-of-run look-back as ONE step. Every row labelled
  *  `learning` (the look-back's message, whatever it did, its notes written as files or given as text, and the row that
  *  says how its learning ended) folds into one row, where the look-back began: "Looked back: kept 2 notes (Refund
  *  limit, Answer shape)", said from the run's learning (`learning`, the same the header's chips read, so the two agree)
- *  or from the timeline's own row when that one is further on. The rows it stands for open under it, each on a line. A
- *  run that did not look back (a skip) keeps its one learning row, labelled. Every other row is as it was. */
+ *  or from the timeline's own row when that one is further on. The rows it stands for open under it, each on its line,
+ *  with "(failed)" when it failed, and under that, indented, what the row would open to on its own (a message's whole
+ *  text, a call's input, a result's output) when that says more than its line. A run that did not look back (a skip)
+ *  keeps its one learning row, labelled. Every other row is as it was. */
 export function learningSteps(rows: readonly TimelineRow[], learning?: RunLearning): TimelineRow[] {
   const looked = rows.filter((r) => r.agent_label === LEARNING && r.kind !== LEARNING);
   if (!looked.length) return rows.map(learningLabel);
@@ -323,7 +335,7 @@ export function learningSteps(rows: readonly TimelineRow[], learning?: RunLearni
   const step: TimelineRow = {
     id: first.id, seq: first.seq, timestamp: first.timestamp, ...(first.created_at ? { created_at: first.created_at } : {}),
     kind: "Learning", agent_label: null, tool_name: null, summary: lookedBack(said ?? undefined),
-    text: [...looked, ...(end ? [end] : [])].map((r) => learningLabel(r).summary).join("\n"),
+    text: [...looked, ...(end ? [end] : [])].map(foldedRow).join("\n"),
   };
   return rows.flatMap((r) => (r === first ? [step] : r.agent_label === LEARNING || r.kind === LEARNING ? [] : [r]));
 }

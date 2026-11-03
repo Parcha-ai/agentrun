@@ -10,3 +10,9 @@ export function applyPage(held: TimelineRow[], page: TimelinePage): TimelineRow[
   for (const row of page.rows) byId.set(row.id, row);
   return [...byId.values()].sort((a, b) => a.seq - b.seq);
 }
+
+/** What a row opens to on the timeline: a call's input, a result's output, or else its own text. */
+export const rowDetail = (row: TimelineRow): string | null =>
+  (row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text) ?? null;
+/** A row that failed: a call its result says did not do its work, or an error. */
+export const rowFailed = (row: TimelineRow) => row.tool_status === "failed" || row.kind === "error";
