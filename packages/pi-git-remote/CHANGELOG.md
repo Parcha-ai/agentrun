@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.29 (2026-11-03)
+
+- Install and `npx` commands in the READMEs and docs name `@latest` instead of `@beta`. Releases publish under npm's `latest` tag, and `beta` was not moved with them: it still pointed at 0.1.0-beta.21 while `latest` was 0.1.0-beta.28, and `@parcha/pi-durable-agent`, `@parcha/pi-git-remote` and `@parcha/pi-agent-learn` had no `beta` tag at all, so their install lines failed. The harness demo's hint for a missing `@parcha/pi-transport` names `@latest` too. `@parcha/agentrun-harness` is not on npm yet (its `latest` is a placeholder), so its README says it is held and installs it from a packed tarball. The README's Render option gives measured memory: a Starter's 512 MB runs about 3 pi agents at once, and Claude Code or Codex runs want a 2 GB instance. The stranger check reads the install line as `@latest`, installs `@latest` with `--registry`, and walks the keyless examples against the registry's `latest`. The release guide drops the step that moved `beta` after a release; `beta` is kept only for older links, with the one-time command to bring it up to a release.
+
 ## 0.1.0-beta.23 (2026-10-22)
 
 First release of `@parcha/pi-git-remote`, versioned with the other packages of the repository it is published from.
