@@ -9,9 +9,13 @@
 export type Decode = (text: string) => string;
 
 const INERT_NAMES = new Set(["script", "style", "svg", "noscript", "template"]);
-const CLOSER: Record<string, RegExp> = Object.fromEntries(["script", "style", "svg", "noscript", "template"].map((name) => [name, new RegExp(`</${name}(?=[\\s/>])[^>]*>?`, "gi")]));
-/** The inert blocks whose content is text, not markup, to their first end tag: a tag inside one is none. */
-const RAW_TEXT = new Set(["script", "style", "noscript"]);
+/** The elements whose content is text, not markup, to their first end tag, as a browser reads them: a tag inside one is
+ *  none (script, style and noscript are also inert). */
+const TEXT_ONLY = new Set(["script", "style", "noscript", "textarea", "title", "xmp", "iframe", "noembed", "noframes"]);
+/** The kept ones whose text the drop also writes as text: each "<" in a textarea's or a title's text becomes "&lt;", so
+ *  a parser that reads them as markup (node-html-parser does) reads the text a browser shows. */
+const KEPT_TEXT = new Set(["textarea", "title"]);
+const CLOSER: Record<string, RegExp> = Object.fromEntries([...TEXT_ONLY, "svg", "template"].map((name) => [name, new RegExp(`</${name}(?=[\\s/>])[^>]*>?`, "gi")]));
 
 /** InertDrop's one pass over a page's template tags, from its first template: `open` the start tags of the templates
  *  it holds open, innermost last; `seen` every start it met; `ends`, for each it saw closed, the offset just past the
@@ -22,8 +26,9 @@ type TemplatePass = { next: (at: number) => Tag | null; at: number; open: number
  *  event loop can yield between them (dropInert, all at once). One whose end is missing runs to the end of the page, as
  *  a browser reads it; but an svg's start tag goes alone, since a browser lets the HTML that follows out of an unclosed
  *  svg. A template ends at the end tag that closes it, as in a browser: a template inside it is counted, so its end tag
- *  ends only the inner one, and a "</template>" inside a script, a style, a noscript or a comment within it is text.
- *  A nested svg ends at the first end tag of its name. A search for an end tag that finds none is not made again from
+ *  ends only the inner one, and the text of an element that holds text, not markup, is never read as tags in it
+ *  (TEXT_ONLY: a script, a textarea, a title). Out of a template, a textarea's or a title's text is not read as tags
+ *  either: a "<template>" or a "<script>" in it is text, kept with each "<" written "&lt;" (KEPT_TEXT). A nested svg ends at the first end tag of its name. A search for an end tag that finds none is not made again from
  *  a later start of that name (none follows it either), so a page of unclosed svgs is read once, not once for each; and
  *  the templates' ends are found in one forward pass however many there are (#templateEnd). */
 export class InertDrop {
@@ -52,7 +57,21 @@ export class InertDrop {
       const comment = html.startsWith("!--", tag.lt + 1);
       // A tag with no ">" after it: the rest of the page is kept as it is (a comment with no "-->" runs to its end).
       if (!comment && tag.gt < 0) { this.#finish(); break; }
-      if (!comment && (tag.end || !INERT_NAMES.has(tag.name))) { this.#at = tag.gt + 1; continue; }
+      if (!comment && (tag.end || !INERT_NAMES.has(tag.name))) {
+        if (tag.end || !KEPT_TEXT.has(tag.name)) { this.#at = tag.gt + 1; continue; }
+        // A textarea or a title: its text is passed to its end tag, never read as tags, so a "<script>" or a
+        // "<template>" in it drops nothing, and is kept with each "<" written "&lt;"; with no end tag the rest of the
+        // page is its text.
+        const close = this.#endTag(tag.name, tag.gt + 1);
+        const text = html.slice(tag.gt + 1, close ? close.start : html.length);
+        if (text.includes("<")) {
+          this.#kept.push(html.slice(this.#from, tag.gt + 1), text.replaceAll("<", "&lt;"));
+          this.#from = close ? close.start : html.length;
+        }
+        if (!close) { this.#finish(); break; }
+        this.#at = close.end;
+        continue;
+      }
       let end = tag.gt < 0 ? html.length : tag.gt + 1;
       if (!comment) {
         const name = tag.name;
@@ -73,22 +92,28 @@ export class InertDrop {
     return this.#done;
   }
 
-  /** The offset just past the first end tag named `name` from `from` (CLOSER), or -1 when there is none. */
-  #endTagEnd(name: string, from: number): number {
-    if (from >= (this.#unclosed.get(name) ?? Number.POSITIVE_INFINITY)) return -1;
+  /** The first end tag named `name` from `from` (CLOSER), where it starts and the offset just past it; null when there
+   *  is none. */
+  #endTag(name: string, from: number): { start: number; end: number } | null {
+    if (from >= (this.#unclosed.get(name) ?? Number.POSITIVE_INFINITY)) return null;
     const closer = CLOSER[name]!;
     closer.lastIndex = from;
     const close = closer.exec(this.html);
-    if (!close) { this.#unclosed.set(name, from); return -1; }
-    return close.index + close[0].length;
+    if (!close) { this.#unclosed.set(name, from); return null; }
+    return { start: close.index, end: close.index + close[0].length };
+  }
+
+  /** The offset just past the first end tag named `name` from `from`, or -1 when there is none (#endTag). */
+  #endTagEnd(name: string, from: number): number {
+    return this.#endTag(name, from)?.end ?? -1;
   }
 
   /**
    * The offset just past the end tag that closes the template whose start tag is at `lt` and ends at `from`, -1 when
    * none closes it, or undefined when the pass has read `budget` characters without finding it (the next call goes on).
    * One pass over the page's tags from its first template, with tags of its own (tagsOf), only ever forward: a start
-   * tag of a template is opened, an end tag closes the innermost one open, and a script, a style or a noscript is
-   * passed to its end tag, its text never read as tags. Each template's end is kept as the pass meets it, so a later
+   * tag of a template is opened, an end tag closes the innermost one open, and an element that holds text (TEXT_ONLY:
+   * a script, a textarea, a title) is passed to its end tag, its text never read as tags. Each template's end is kept as the pass meets it, so a later
    * template asks the pass again only when it is past where the pass has read. A template the pass did not meet as a
    * tag (one inside a block the two scans read differently) ends at the first end tag of its name, as before.
    */
@@ -107,7 +132,7 @@ export class InertDrop {
           const opened = pass.open.pop();
           if (opened !== undefined) pass.ends.set(opened, tag.gt + 1);
         }
-      } else if (!tag.end && RAW_TEXT.has(tag.name)) {
+      } else if (!tag.end && TEXT_ONLY.has(tag.name)) {
         const close = this.#endTagEnd(tag.name, pass.at);
         if (close < 0) pass.done = true;
         else pass.at = close;
