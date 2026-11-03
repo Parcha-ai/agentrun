@@ -86,6 +86,8 @@ export type TimelinePage = {
   next_after: number;
   poll_after_ms?: number;
   cost?: Cost | null;
+  /** A serve extension: an imported run whose transcript the import at setup is still to write (no rows yet, not final). */
+  transcript?: "importing";
 };
 
 export type RunFile = { path: string; size_bytes: number; modified_at: string; content_type: string | null };

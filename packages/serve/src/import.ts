@@ -61,8 +61,15 @@ export type ImportOptions = {
   signal?: AbortSignal;
   /** Read each session's turns while planning, and measure it (`Plan.found`): what a dry run's summary counts. */
   measure?: boolean;
+  /** The index pass: each run's row (its metrics and estimate those of the entries its transcript holds) and its
+   *  serve.json, and no transcript, so the lists fill first; the import run again without it writes the transcripts,
+   *  as for a run whose transcript never landed. */
+  index?: boolean;
+  /** How far it has got, after each run: the rows held, those with their transcript, the agents with a row. */
+  onProgress?: (done: ImportProgress) => void;
 };
 export type Skipped = { what: string; why: string };
+export type ImportProgress = { rows: number; transcripts: number; agents: number };
 export type ProjectPlan = {
   cwd: string;
   agentId: string;
@@ -755,8 +762,21 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
   let prices: Promise<Map<string, Listed[]>> | undefined;
   const catalog = () => (prices ??= catalogPrices());
   const held = importedIn(store);
+  const progress: ImportProgress = { rows: 0, transcripts: 0, agents: 0 };
+  // The entries a transcript holds, cut as writeTimeline writes them: the index pass's numbers are read from these.
+  const asWritten = (session: Session, children: readonly Session[]): EntryLike[] => [
+    ...entriesOf(session).map((entry) => ({ ...entry, model: entry.model?.map((part) => json(part)) }) as EntryLike),
+    ...subagentMarks(children).map((mark) => ({ ...mark, data: json(mark.data) }) as EntryLike),
+  ];
   for (const project of plan.projects) {
     if (options.signal?.aborted) break;
+    let counted = false;
+    const done = (transcript: boolean) => {
+      progress.rows += 1;
+      if (transcript) progress.transcripts += 1;
+      if (!counted) (counted = true), (progress.agents += 1);
+      options.onProgress?.({ ...progress });
+    };
     const created = !store.readAgent(project.agentId);
     if (created)
       store.createAgent({
@@ -780,6 +800,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       const heldRun = held.get(`${listed.source}:${listed.id}`);
       if (heldRun !== undefined && existsSync(store.runStorePath(heldRun))) {
         line.already += 1;
+        done(true);
         continue;
       }
       // Each of its files, in order. The first's size and time before its read: a file that changes during it is read
@@ -787,17 +808,22 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       const parts: Session[] = [];
       // Every file of it read: one holding only copies adds no records, but its subagents' folder is read with the rest.
       const searched: Session[] = [];
+      const own: { file: string; part: Session; stats: Stats }[] = [];
+      const copies: typeof own = [];
       let read: SourceFile | undefined;
       for (const { file } of files) {
         const stats = await stat(file).catch(() => null);
         const part = stats ? await readSession(file, listed.source, { seen: seen(listed.source) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed" });
         if (!part || !stats) continue;
         searched.push(part);
-        // A file of it holding only copies adds nothing to it.
-        if (heldRun === undefined && ownless(part)) {
-          report.skipped.push({ what: file, why: "holds only records of sessions imported already" });
-          continue;
-        }
+        (ownless(part) ? copies : own).push({ file, part, stats });
+      }
+      // A file of it holding only copies adds nothing to it, so is left out, whichever pass reads it: the transcript is
+      // made of the files its row was. A run held already all of whose files are copies is made of them all, so its row
+      // is never left without a transcript.
+      const kept = own.length || heldRun === undefined ? own : copies;
+      if (kept === own) for (const { file } of copies) report.skipped.push({ what: file, why: "holds only records of sessions imported already" });
+      for (const { file, part, stats } of kept) {
         read ??= { path_sha256: hash(file), size: stats.size, mtime_ms: stats.mtimeMs };
         parts.push(part);
       }
@@ -806,13 +832,19 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       // Its id as the plan has it.
       session.id = idOf(session.id);
       const subagents = await readChildren(plan, session, searched, seen(listed.source));
+      // The index pass reads a run it holds the row of (its files read all the same, for what they count once), and
+      // leaves its transcript to the next pass.
+      if (options.index && heldRun !== undefined) {
+        done(false);
+        continue;
+      }
       // The transcript is whole before its run is: written beside the store, then moved into the run's directory.
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
       let started: { runId: string; dir: string; storePath: string } | undefined;
       try {
         // Its subagents' requests are the run's too: marked in its transcript, so its timeline's usage row counts what its
-        // metrics do, one number for the run.
-        const entries = await writeTimeline(pending, session, json, subagents);
+        // metrics do, one number for the run. The index pass writes none: its numbers are those of what it would write.
+        const entries = options.index ? asWritten(session, subagents) : await writeTimeline(pending, session, json, subagents);
         const metrics: StoredMetrics = { ...withChildren(runMetricsOf(entries), subagents.map((child) => runMetricsOf(entriesOf(child)))), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
         // A session its source did not price: the catalog's estimate, beside its cost (unknown), never written as it.
         const estimate = session.costUsd === undefined ? await estimateOf([...entries, ...subagents.flatMap(entriesOf)], catalog) : undefined;
@@ -835,17 +867,19 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
             metrics,
           });
         }
-        if (started) await rename(pending, started.storePath);
+        if (started && !options.index) await rename(pending, started.storePath);
       } finally {
         await rm(pending, { force: true });
       }
       if (!started) {
         line.already += 1;
+        done(!options.index);
         continue;
       }
       await writeMeta(started.dir, session, read, json);
       if (heldRun !== undefined) line.finished += 1;
       else line.runs += 1;
+      done(!options.index);
     }
     report.agents.push(line);
   }

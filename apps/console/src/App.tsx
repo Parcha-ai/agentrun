@@ -70,6 +70,29 @@ function setupCodeOnce(): string | null {
 /** How often the console reads an import under way, and how many failed reads in a row end its watch. */
 export const IMPORT_POLL_MS = 1000;
 const IMPORT_READ_TRIES = 30;
+/** How often, while an import runs, what the page shows (Mission Control, the runs and agents lists) is read again. */
+export const IMPORT_REFRESH_MS = 2500;
+
+const count = (n: number) => n.toLocaleString("en-US");
+/** About how long is left, from the rate so far: none until a second has gone and something is done. */
+function timeLeft(done: number, total: number, sinceMs: number): string {
+  if (sinceMs < 1000 || done <= 0 || done >= total) return "";
+  const s = ((total - done) * sinceMs) / done / 1000;
+  return s < 60 ? ` · about ${Math.max(5, Math.round(s / 5) * 5)} s left` : ` · about ${Math.round(s / 60)} min left`;
+}
+/** The first reading of the transcripts phase this page saw, which its rate counts from. */
+type PhaseStart = { at: number; done: number };
+/** A running import's line and bar, where the server says how far it has got. */
+function importProgress(s: ImportState, transcriptsFrom: PhaseStart | null, now = Date.now()): { line: string; done: number; total: number } | null {
+  if (s.state !== "running" || typeof s.total !== "number" || s.total <= 0 || typeof s.runs !== "number") return null;
+  if (s.phase === "transcripts" && typeof s.transcripts === "number") {
+    const left = transcriptsFrom ? timeLeft(s.transcripts - transcriptsFrom.done, s.total - transcriptsFrom.done, now - transcriptsFrom.at) : "";
+    return { line: `All ${count(s.total)} sessions are in · reading their transcripts: ${count(s.transcripts)} of ${count(s.total)}${left}`, done: s.transcripts, total: s.total };
+  }
+  const since = s.started_at ? now - Date.parse(s.started_at) : 0;
+  const agents = typeof s.agents === "number" ? ` · ${count(s.agents)} agent${s.agents === 1 ? "" : "s"}` : "";
+  return { line: `Importing this machine's sessions: ${count(s.runs)} of ${count(s.total)} sessions${agents}${timeLeft(s.runs, s.total, Number.isFinite(since) ? since : 0)}`, done: s.runs, total: s.total };
+}
 
 /** The import asked for at setup, as a line. */
 function importLine(s: ImportState): string {
@@ -167,13 +190,17 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const asked = useRef(0);
   const go = (hash: string) => { location.hash = hash; };
   // The import asked for at setup (here, or before the server restarted): read until it ends, a failed read tried again.
-  // One that ends while this page watches has what the page shows read again (`refreshed`).
+  // One that ends while this page watches has what the page shows read again (`refreshed`). While it runs, what the page
+  // shows is read again every IMPORT_REFRESH_MS (`tick`), in place: kept through a failed read, never emptied first.
   const [imported, setImported] = useState<ImportState | null>(null);
   const [refreshed, setRefreshed] = useState(0);
+  const [tick, setTick] = useState(0);
+  const [transcriptsFrom, setTranscriptsFrom] = useState<PhaseStart | null>(null);
   useEffect(() => {
     let live = true;
     (async () => {
       let watched = false;
+      let ticked = Date.now();
       for (let failed = 0; live && failed < IMPORT_READ_TRIES; ) {
         const s = await v2.setupImport().then((r) => r, () => undefined);
         if (!live) return;
@@ -183,7 +210,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
           if (!s || !("state" in s)) return;
           setImported(s);
           if (s.state !== "running") return void (watched && setRefreshed((n) => n + 1));
+          if (s.phase === "transcripts" && typeof s.transcripts === "number") setTranscriptsFrom((held) => held ?? { at: Date.now(), done: s.transcripts! });
           watched = true;
+          if (Date.now() - ticked >= IMPORT_REFRESH_MS) { ticked = Date.now(); setTick((n) => n + 1); }
         }
         await new Promise((r) => setTimeout(r, IMPORT_POLL_MS));
       }
@@ -198,8 +227,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
   // view opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere, is named at once, and
-  // again when an import at setup ends while this page watches (`refreshed`).
-  // Only the newest read lands.
+  // again when an import at setup ends while this page watches (`refreshed`), and with a runs view's list while it runs
+  // (`tick`). Only the newest read lands.
   useEffect(() => {
     if (namesAsked.current && where.section !== "runs" && namesAfter.current === refreshed) return;
     namesAfter.current = refreshed;
@@ -215,7 +244,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       setNames((held) => (whole ? fresh : { ...held, ...fresh }));
       setNamesRead(whole);
     });
-  }, [v2, where, refreshed]);
+  }, [v2, where, refreshed, tick]);
   const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
   useEffect(() => {
     if (where.section !== "runs" || where.run) return;
@@ -226,6 +255,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); } })
       .catch((e) => { if (n === asked.current) setError(problem(e, "the runs")); });
   }, [v2, where, refreshed, runsTry]);
+  // While an import runs, the list's first page again, over what it shows: a failed read leaves it. A list read past its
+  // first page, or reading more, is the person's: left as it is.
+  useEffect(() => {
+    if (!tick || where.section !== "runs" || where.run || more || (runs?.length ?? 0) > 50) return;
+    const n = ++asked.current;
+    (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, null, runsFilter) : v2.listRuns(50, null, runsFilter))
+      .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); setError(null); } })
+      .catch(() => {});
+  }, [tick]); // eslint-disable-line react-hooks/exhaustive-deps
   // A name the lookup lacks while a read of it is under way shows as nothing yet, never as the id.
   const agentName = (id: string) => names[id] ?? (namesRead ? id : "");
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string; route_prefix?: string | null } } | null;
@@ -258,17 +296,33 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       })
       .catch((e) => { if (n === agentsAsked.current) { const p = problem(e, "the agents"); setStartError(`${p.why} ${p.next}${p.said ? ` (${p.said})` : ""}`); } });
   }, [v2, where.section, retry, refreshed]);
+  // Only the newest of Mission Control's reads lands: one for an earlier range, or a tick's begun before it, never
+  // replaces it.
+  const missionAsked = useRef(0);
+  const readMission = () => {
+    const from = rangeFrom(statsRange);
+    return Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), v2.listRuns(10)]);
+  };
   useEffect(() => {
     if (where.section !== "mission") return;
-    let live = true;
+    const n = ++missionAsked.current;
     setMissionError(null); setMissionReading(true);
-    const from = rangeFrom(statsRange);
-    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), v2.listRuns(10)])
-      .then(([s, r]) => { if (live) setMission(missionFrom(s, r.runs)); })
-      .catch((e) => { if (live) setMissionError(problem(e, "Mission Control")); })
-      .finally(() => { if (live) setMissionReading(false); });
-    return () => { live = false; };
-  }, [v2, where.section, missionTry, statsRange, statsAgent, refreshed]);
+    readMission()
+      .then(([s, r]) => { if (n === missionAsked.current) setMission(missionFrom(s, r.runs)); })
+      .catch((e) => { if (n === missionAsked.current) setMissionError(problem(e, "Mission Control")); })
+      .finally(() => { if (n === missionAsked.current) setMissionReading(false); });
+  }, [v2, where.section, missionTry, statsRange, statsAgent, refreshed]); // eslint-disable-line react-hooks/exhaustive-deps
+  // While an import runs, Mission Control again, over what it shows: a failed read (the store busy with the import's
+  // writes) leaves it as it was.
+  useEffect(() => {
+    if (!tick || where.section !== "mission") return;
+    const n = ++missionAsked.current;
+    // The newest read clears what an older one in flight would have: that one no longer lands.
+    readMission()
+      .then(([s, r]) => { if (n === missionAsked.current) { setMission(missionFrom(s, r.runs)); setMissionError(null); } })
+      .catch(() => {})
+      .finally(() => { if (n === missionAsked.current) setMissionReading(false); });
+  }, [tick]); // eslint-disable-line react-hooks/exhaustive-deps
   // Back after the server was away: Mission Control reads again what may have moved meanwhile, keeping the page.
   useResumed(() => setMissionTry((n) => n + 1));
   const revsAsked = useRef(0);
@@ -295,10 +349,21 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     }}>
       {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
       {imported && (
-        <p className="flex items-center gap-3 border-b bg-card px-5 py-3 font-mono text-[13px] md:px-8" role="status">
-          <span className="flex-1">{importLine(imported)}</span>
+        <div className="flex items-center gap-3 border-b bg-card px-5 py-3 font-mono text-[13px] md:px-8" role="status">
+          {(() => {
+            const progress = importProgress(imported, transcriptsFrom);
+            if (!progress) return <span className="flex-1">{importLine(imported)}</span>;
+            return (
+              <span className="flex flex-1 flex-col gap-2">
+                <span>{progress.line}</span>
+                <span className="block h-1 w-full bg-muted" role="progressbar" aria-label="Import progress" aria-valuemin={0} aria-valuenow={progress.done} aria-valuemax={progress.total}>
+                  <span className="block h-full bg-foreground transition-[width] duration-500" style={{ width: `${Math.min(100, (progress.done / progress.total) * 100)}%` }} />
+                </span>
+              </span>
+            );
+          })()}
           {imported.state !== "running" && <button type="button" className="caps border px-2 py-1 text-[11px] hover:bg-accent" onClick={() => setImported(null)}>Dismiss</button>}
-        </p>
+        </div>
       )}
       {where.section === "playground" && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
@@ -314,14 +379,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
         : where.section === "agents"
-        ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
+        ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} refresh={tick} />
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} defaultModel={editorCaps.defaultModel} modelSource={c?.models?.source} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={where.agent ?? "new"} v2={v2} choices={choices} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows) }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
-            onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); setError(null); } }).catch((e) => setError(problem(e, "more runs"))).finally(() => setMore(false)); } : undefined} />}
+            onMore={cursor ? () => { const n = ++asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); setError(null); } }).catch((e) => setError(problem(e, "more runs"))).finally(() => setMore(false)); } : undefined} />}
     </Shell>
   );
 }

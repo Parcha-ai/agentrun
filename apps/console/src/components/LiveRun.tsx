@@ -34,6 +34,8 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   const [error, setError] = useState<Failure | null>(null);
   const [busy, setBusy] = useState<"stop" | "cancel" | "archive" | null>(null);
   const [follows, setFollows] = useState(0);
+  // An imported run whose transcript the import at setup has still to write: said, until a page has it.
+  const [importing, setImporting] = useState(false);
 
   const status = useRef<string>("");
   // Only the newest read of the run and of its files lands: an older one finishing last never puts back an old state.
@@ -68,7 +70,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
       // row per action, its own row stopping running).
       onRows: (r) => { setRows(r); const n = r.filter((x) => x.kind === "tool_result" || (x.kind === "tool_use" && !!x.tool_status && x.tool_status !== "running")).length; if (n > toolResults.current) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) setFiles(f.files); }).catch(() => {}); } },
       // A page names the run's status and state: when they move, the run record (result, error, cost) and files move too.
-      onPage: (p) => { const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
+      onPage: (p) => { setImporting(p.transcript === "importing"); const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
     }).catch((e) => { if (!ctl.signal.aborted) setError(failure(e)); });
     return () => ctl.abort();
   }, [runId, follows]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -111,6 +113,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   return (
     <div className="flex h-full min-h-0 flex-col">
       {error && <div className="border-b p-3"><RunError title={error.title} error={error.api} /></div>}
+      {importing && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] md:px-8" role="status">This session's transcript is still being imported. It shows here as soon as it lands.</p>}
       <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}

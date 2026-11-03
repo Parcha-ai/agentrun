@@ -23,7 +23,7 @@ import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFa
 import { FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
-import type { ImportAnswer, ImportTask } from "./import-worker.js";
+import type { ImportAnswer, ImportNote, ImportTask } from "./import-worker.js";
 import { type LearningMode, learningOf } from "./learning.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
@@ -32,7 +32,7 @@ import { fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, toolCostOf } from "./runs.js";
+import { type CarryBackRetry, importingNow, type Run, Runs, STATUSES, type Status, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
@@ -62,6 +62,10 @@ const MAX_BODY = 1 << 20;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
+/** GET /stats's last good answers kept, one per filter (the newest read last), for a store held busy. */
+const LAST_STATS = 16;
+/** How soon a client reads again the timeline of an imported run whose transcript is still to come. */
+const IMPORTING_POLL_MS = 2_000;
 const IDEMPOTENCY_TTL_S = 86_400;
 const FILE_LIST_CAP = 2_000;
 /** Why a home's PUT or DELETE is 501 where `capabilities.home.writes` is false (workspace.ts writesHeld). */
@@ -547,9 +551,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // a busy store's wait and the sessions' parsing never hold up a request.
   const offersImport = options.openSetup === true && options.publicUrl === undefined && isLoopback(host);
   let closing = false;
+  /** GET /stats's last good answer for each filter, with when it was read. */
+  const lastStats = new Map<string, { body: Record<string, unknown>; at: string }>();
   const workers = new Map<Worker, { task: ImportTask["task"]; exit: Promise<unknown> }>();
   // Once the server closes, no worker starts: a setup still being answered then leaves its yes for the next start.
-  const onWorker = (task: ImportTask["task"]): Promise<ImportAnswer> =>
+  const onWorker = (task: ImportTask["task"], onNote?: (note: ImportNote) => void): Promise<ImportAnswer> =>
     closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
         // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), and
@@ -565,7 +571,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
       let answer: ImportAnswer | undefined;
-      worker.on("message", (message: ImportAnswer) => void (answer = message));
+      // How far it has got, as it goes; then its answer, its last message.
+      worker.on("message", (message: ImportAnswer | ImportNote) => void ("progress" in message ? onNote?.(message) : (answer = message)));
       worker.once("error", failed);
       worker.once("exit", (code) => {
         workers.delete(worker);
@@ -591,15 +598,23 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // The owner's yes, kept until the import ends: a server stopped (or killed) mid-import goes on with it at its next start.
   const importAsked = join(data, IMPORT_ASKED);
   let importing: Promise<void> | undefined;
-  /** The import at setup as the owner's console reads it: running, done with what it took, or stopped (the next start
-   *  goes on with it). */
-  let importState: { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" } | undefined;
+  /** The import at setup as the owner's console reads it: running (since `started_at`; once the worker has planned, its
+   *  pass, the sessions it takes in all, the runs whose row is in, those whose transcript is, and the agents with a run),
+   *  done with what it took, or stopped (the next start goes on with it). */
+  let importState:
+    | { state: "running"; started_at: string; phase?: "index" | "transcripts"; total?: number; runs?: number; transcripts?: number; agents?: number }
+    | { state: "done"; agents: number; runs: number; skipped: number }
+    | { state: "stopped" }
+    | undefined;
   /** Never rejects: whatever stops it (the store held past its wait, a file) is said on stderr, and the server goes on. */
   const importAtSetup = () =>
     (importing ??= (async () => {
-      importState = { state: "running" };
+      const started_at = new Date().toISOString();
+      importState = { state: "running", started_at };
       try {
-        const answer = await onWorker("import");
+        const answer = await onWorker("import", ({ progress: { phase, total, rows, transcripts, agents } }) => {
+          if (importState?.state === "running") importState = { state: "running", started_at, phase, total, runs: rows, transcripts, agents };
+        });
         if (!("took" in answer)) return void (importState = { state: "stopped" });
         // The whole import, every start's part of it: what earlier starts took is kept with the owner's yes.
         // The yes as setup wrote it is empty: no earlier start took anything.
@@ -798,18 +813,29 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const asked = url.searchParams.get("limit");
     if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= PAGE_ROWS)) throw new ApiError("bad_request", `limit is an integer from 1 to ${PAGE_ROWS}`);
     const limit = asked === null ? PAGE_ROWS : Number(asked);
+    // An imported run whose transcript the import at setup has still to write: no rows yet, and not final, so a client
+    // reads again soon, without waiting on a page that cannot change; the next read finds the transcript once it lands.
+    const transcript = runs.transcriptOf(run);
+    const importing = importingNow(transcript.awaiting, transcript.landed, importState?.state === "running");
     const pageOf = async (from: number, wait: number) => {
-      const page = await runs.page(run, from, wait, limit);
-      return { run_id: run.id, status: page.status, state: page.state, reset: page.reset, rows: page.rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final: page.final, cost: runs.cost(run) };
+      const page = await runs.page(run, from, importing ? 0 : wait, limit);
+      return { run_id: run.id, status: page.status, state: page.state, reset: page.reset, rows: page.rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final: page.final && !importing, cost: runs.cost(run), ...(importing ? { transcript: "importing" as const } : {}) };
     };
     if (!String(req.headers.accept ?? "").includes("text/event-stream")) {
       const page = await pageOf(after, waitMs);
-      return send(res, 200, { ...page, poll_after_ms: page.final || page.has_more ? 0 : 1000 });
+      return send(res, 200, { ...page, poll_after_ms: importing ? IMPORTING_POLL_MS : page.final || page.has_more ? 0 : 1000 });
     }
     const last = req.headers["last-event-id"];
     if (last !== undefined && !/^[0-9]+$/.test(String(last))) throw new ApiError("bad_request", "Last-Event-ID is a change number");
     let cursor = last !== undefined ? Number(last) : after;
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-content-type-options": "nosniff" });
+    // Its transcript still to come: the page as it is, and the stream closed with a retry, so the client connects again
+    // and reads the run anew.
+    if (importing) {
+      const page = await pageOf(cursor, 0);
+      res.write(`retry: ${IMPORTING_POLL_MS}\nevent: rows\nid: ${page.next_after}\ndata: ${JSON.stringify(page)}\n\n`);
+      return void res.end();
+    }
     const beat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
     let open = true;
     res.once("close", () => void (open = false));
@@ -1299,8 +1325,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await usage(url));
       case "getStats": {
         const filter = analyticsFilter(url);
-        const [stats, analytics] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter)] as const);
-        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter) });
+        const key = JSON.stringify([filter.from ?? null, filter.to ?? null, filter.agent ?? null]);
+        try {
+          const [stats, analytics] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter)] as const);
+          const body = { ...statsView(stats, runs), analytics: analyticsView(analytics, filter) };
+          lastStats.delete(key);
+          lastStats.set(key, { body, at: new Date().toISOString() });
+          if (lastStats.size > LAST_STATS) lastStats.delete(lastStats.keys().next().value!);
+          return send(res, 200, body);
+        } catch (error) {
+          // A store an import keeps busy past the request's wait: the last good answer for the same filter, as of when it
+          // was read. With none, busy is busy.
+          const held = lastStats.get(key);
+          if (held && (storeBusy(error) || (error instanceof ApiError && error.code === "home_busy"))) return send(res, 200, { ...held.body, as_of: held.at });
+          throw error;
+        }
       }
       case "listToolKeys":
         return send(res, 200, toolKeys.view(caps.harnesses));

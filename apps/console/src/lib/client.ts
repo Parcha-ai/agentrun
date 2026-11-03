@@ -31,7 +31,11 @@ export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string;
 /** `GET /v2/setup/import`'s answer. Before the owner is set: the server can import, still counting (202), then its counts
  *  (null for each when the count failed). After: the import's state. */
 export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null };
-export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" };
+/** Running: how far it has got, where the server says (an older one says only that it runs). `phase` "index": the runs'
+ *  rows are going in (`runs` of `total`, in `agents` agents), and the lists fill from them; "transcripts": every row is in
+ *  and `transcripts` of `total` have their transcript. `total` is setup's count; `started_at`, when the import began. */
+export type ImportProgress = { phase: "index" | "transcripts"; runs: number; transcripts: number; agents: number; total: number; started_at: string };
+export type ImportState = ({ state: "running" } & Partial<ImportProgress>) | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" };
 export type SetupImport = ImportOffer | ImportState;
 
 /** A runs list's filter (GET /v2/runs's `status` and `archived`): runs in one status, and the archived runs in place of

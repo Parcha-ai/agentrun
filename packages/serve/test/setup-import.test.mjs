@@ -212,18 +212,20 @@ test("a server closed during the import at setup stops it between sessions and w
   assert.equal(made.status, 201, made.text);
   await server.close();
   closed = true;
+  // The runs, and those whose transcript is in: the import writes every row first, then the transcripts.
   const count = () => {
     const reader = openStoreReader(data);
     try {
-      return reader.listRuns().length;
+      const runs = reader.listRuns();
+      return [runs.length, runs.filter((run) => existsSync(join(data, "runs", run.id, "store", "run.sqlite"))).length];
     } finally {
       reader.close();
     }
   };
   const atClose = count();
   await sleep(1_500);
-  assert.equal(count(), atClose, "no run written after close");
-  assert.equal(existsSync(join(data, ".import-at-setup")), atClose < 40, "the yes is kept while the import is unfinished");
+  assert.deepEqual(count(), atClose, "no run or transcript written after close");
+  assert.equal(existsSync(join(data, ".import-at-setup")), atClose[1] < 40, "the yes is kept while the import is unfinished");
 });
 
 test("a setup with the box ticked still being answered when the server closes starts no import after close: the yes waits for the next start", { timeout: 60_000 }, async (t) => {
@@ -516,11 +518,12 @@ test("an import at setup stopped part way and gone on with at the next start say
   for (let n = 1; n <= 60; n++) claudeSession(home, site, n, { prompt: `Task ${n}.` });
   const data = join(root, "agents");
   const options = { data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } };
+  // The runs whose transcript is in: every row goes in first, then the transcripts.
   const runs = () => {
     if (!existsSync(join(data, "store.sqlite"))) return 0;
     const reader = openStoreReader(data);
     try {
-      return reader.listRuns().length;
+      return reader.listRuns().filter((run) => existsSync(join(data, "runs", run.id, "store", "run.sqlite"))).length;
     } finally {
       reader.close();
     }
@@ -528,11 +531,11 @@ test("an import at setup stopped part way and gone on with at the next start say
   const first = await startServe(options);
   const made = await call(first.port, { method: "POST", path: "/v2/setup", headers: page(first), body: { password: PASSWORD, import: true } });
   assert.equal(made.status, 201, made.text);
-  // Stopped once some sessions are in, not all.
+  // Stopped once some sessions are in whole, not all.
   for (const deadline = Date.now() + 30_000; runs() === 0 && Date.now() < deadline; ) await sleep(20);
   await first.close();
   const before = runs();
-  assert.ok(before > 0 && before < 60, `stopped part way: ${before} of 60 in`);
+  assert.ok(before > 0 && before < 60, `stopped part way: ${before} of 60 in whole`);
   const second = await startServe(options);
   t.after(() => second.close());
   const signedIn = await call(second.port, { method: "POST", path: "/v2/auth/sign-in", headers: page(second), body: { password: PASSWORD } });

@@ -8,20 +8,22 @@ import type { ToolChoice } from "@/lib/toolSettings";
 
 const problemOf = (e: unknown) => (e instanceof ClientError ? saveError(e) : { kind: "other" as const, message: e instanceof Error ? e.message : String(e) });
 
-/** The agents on the live server: the list, or the archived ones (`#/agents?archived=true`), every page of them. */
-export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean; go: (hash: string) => void }) {
+/** The agents on the live server: the list, or the archived ones (`#/agents?archived=true`), every page of them. A change
+ *  of `refresh` (an import under way) reads them again over the list shown: a failed read leaves it. */
+export function AgentsPage({ v2, archived, go, refresh = 0 }: { v2: Client; archived: boolean; go: (hash: string) => void; refresh?: number }) {
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const asked = useRef(0);
-  const load = () => {
+  const load = (inPlace = false) => {
     // Only the newest request lands: a slower answer for the other view never replaces this one.
     const n = ++asked.current;
-    setAgents(null); setError(null);
+    if (!inPlace) { setAgents(null); setError(null); }
     allPages((cursor) => v2.listAgents({ archived, cursor }), (p) => p.agents)
-      .then((a) => { if (n === asked.current) setAgents(a); })
-      .catch((e) => { if (n === asked.current) setError(problemOf(e).message); });
+      .then((a) => { if (n === asked.current) { setAgents(a); setError(null); } })
+      .catch((e) => { if (n === asked.current && !inPlace) setError(problemOf(e).message); });
   };
-  useEffect(load, [v2, archived]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => load(), [v2, archived]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (refresh) load(true); }, [refresh]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <AgentsList agents={agents} archived={archived} onArchivedChange={(on) => go(on ? "#/agents?archived=true" : "#/agents")} error={error}
       actions={{

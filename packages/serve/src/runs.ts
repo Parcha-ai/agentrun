@@ -157,6 +157,9 @@ export type Run = {
   /** Imported history (`agentrun-serve import`): the source it was run in, and its id there. It takes no message, and a
    *  stop or a cancel moves nothing. */
   imported?: { source: string; session: string };
+  /** An imported run read before its transcript was there (the import at setup writes the transcripts after the rows):
+   *  read again once it is. */
+  awaitingTranscript?: true;
   /** The revision's number among its agent's. */
   version: number;
   dir: string;
@@ -475,6 +478,11 @@ export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   }
 }
 
+/** Whether a timeline read of a run says its transcript is importing (no rows yet, not final, read again soon): a run read
+ *  before its transcript was there, while the import runs, or once the transcript has landed though this read of the
+ *  run is older than it, so a page is never final with none of the transcript's rows. */
+export const importingNow = (awaiting: boolean, landed: boolean, importRunning: boolean): boolean => awaiting && (landed || importRunning);
+
 export class Runs {
   private readonly runs = new Map<string, Run>();
   /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
@@ -514,10 +522,12 @@ export class Runs {
     return this.runs.get(id);
   }
 
-  /** Run `id`, read from the agent store the first time this process sees it. */
+  /** Run `id`, read from the agent store the first time this process sees it, and again once the transcript of an
+   *  imported run read before it landed is there. */
   async get(id: string): Promise<Run | null> {
     const known = this.runs.get(id);
-    if (known) return known;
+    if (known && !(known.awaitingTranscript && existsSync(this.storeFile(known)))) return known;
+    if (known) this.runs.delete(id);
     const row = await this.options.agents.request(() => this.store.readRun(id));
     return row ? this.adopt(row) : null;
   }
@@ -562,6 +572,7 @@ export class Runs {
     }
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, known ? await toolingOf(known.revision) : undefined);
+    if (row.importedFrom && !existsSync(this.storeFile(run))) run.awaitingTranscript = true;
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
@@ -614,6 +625,12 @@ export class Runs {
     if (typeof record.heartbeatAt !== "string" || Date.now() - Date.parse(record.heartbeatAt) >= LEASE_MS) return undefined;
     const url = URL.parse(record.holder.serve);
     return url?.protocol === "http:" && isLoopback(url.hostname) ? url.origin : undefined;
+  }
+
+  /** An imported run read before its transcript was there (`awaiting`), and whether the transcript is there now
+   *  (`landed`): such a read is stale, and the next one reads the run again. */
+  transcriptOf(run: Run): { awaiting: boolean; landed: boolean } {
+    return { awaiting: run.awaitingTranscript === true, landed: existsSync(this.storeFile(run)) };
   }
 
   private storeFile(run: Run): string {
