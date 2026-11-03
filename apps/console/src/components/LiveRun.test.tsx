@@ -43,3 +43,30 @@ describe("LiveRun's Archive", () => {
     expect(reads).toBeGreaterThan(2);
   });
 });
+
+// A run ends before its learning does: the page reads it again until its learning settles, so the header says what it
+// kept as soon as it has, with no reload.
+describe("LiveRun, a run whose learning is still deciding", () => {
+  it("reads the ended run again until its learning is kept, then shows Learned 1 note", async () => {
+    let reads = 0;
+    const learning = (n: number): Run["learning"] => (n < 3 ? { state: n < 2 ? "reflecting" : "proposed", reason: null } : { state: "merged", reason: null, used: [], learned: [{ file: "b.md", name: "Try it first", supersedes: [] }] });
+    const v2 = {
+      getRun: async () => ({ ...at("completed", false), learning: learning(++reads) }),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      getTimeline: async () => final("completed"),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+    const header = () => host.querySelector("header")?.textContent ?? "";
+    for (let i = 0; i < 40 && !header().includes("Looking back"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(header()).toContain("Looking back");
+    for (let i = 0; i < 300 && !header().includes("Learned 1 note"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(header()).toContain("Learned 1 note");
+    expect(header()).not.toContain("Looking back");
+    const settled = reads;
+    await act(async () => { await new Promise((r) => setTimeout(r, 2300)); });
+    expect(reads).toBe(settled);
+  }, 15_000);
+});

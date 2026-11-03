@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/agents/release-notes/runs?limit=50"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "runs": [],
+    "next_cursor": null
+  }
+}

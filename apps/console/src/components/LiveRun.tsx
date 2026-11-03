@@ -7,6 +7,7 @@ import { keeper, sendOnce } from "@/lib/idempotency";
 import { type HarnessRead, messageOffer, readHarness } from "@/lib/liveRun";
 import { costOf, type RunGraph, usd } from "@/lib/runGraph";
 import { latest } from "@/lib/viewing";
+import { useLearningSettle } from "@/lib/useLearningSettle";
 import type { ApiError, Run, RunFile, TimelineRow } from "@/lib/v2";
 
 // An ended workflow run's record carries its final cost (its graph's totals agree); while it goes, only the graph has it.
@@ -48,6 +49,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     } catch (e) { if (runReads.current(n)) setError(asApiError(e)); }
   };
   useEffect(() => { void refresh(); }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useLearningSettle(run, refresh);
   useEffect(() => {
     const ctl = new AbortController();
     follow(v2, runId, {

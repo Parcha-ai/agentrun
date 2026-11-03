@@ -1,5 +1,7 @@
 // The slice of agentrun.v2/0 the console reads, typed from the server's recorded responses (src/fixtures).
 
+import type { RunLearning } from "./learning";
+
 /** `paused`: a workflow run paused by POST /v2/runs/{id}/pause; its calls in flight finish and no node starts. */
 export type RunStatus = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled" | "paused";
 export type RunState = "working" | "waiting" | "idle";
@@ -30,6 +32,8 @@ export type Run = {
   result: { output?: unknown; final_answer?: string | null } | null;
   error: ApiError | null;
   cost: Cost | null;
+  /** Where the run's learning is: null for a run that does not learn, absent from a server without learning. */
+  learning?: RunLearning;
   archived_at: string | null;
   poll_after_ms?: number;
   /** A workflow run that escalated: it completed, and waits for a person to review it (`kind`, the node it stopped
