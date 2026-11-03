@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
+import { placeOf } from "@/lib/place";
 import { curlFor, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { cn } from "@/lib/utils";
 
@@ -14,7 +15,7 @@ export const startFailure = (e: unknown, ms: number): StartResult =>
   e instanceof ClientError ? { status: e.status, ms, body: { error: { ...e.toApiError(), ...(e.fields ? { fields: e.fields } : {}) } } } : { status: 0, ms, body: { error: { code: "network", message: String(e) } } };
 export type PlaygroundProps = {
   agents: Agent[];
-  revisions?: { revision: string; version: number; current: boolean; note: string | null }[];
+  revisions?: { revision: string; version: number; current: boolean; note: string | null; definition?: Record<string, unknown> }[];
   efforts: string[];
   origin: string;
   agentId?: string;
@@ -52,6 +53,12 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [revision, setRevision] = useState("");
   const [effort, setEffort] = useState("");
   const [cap, setCap] = useState("");
+  // A sandbox agent's run asked for on the server instead: the request's `place: "runner"`. The place is the one of the
+  // revision the run would start from: the one picked, else the current one.
+  const picked = revision ? revisions.find((r) => r.revision === revision) : undefined;
+  const boxed = placeOf(picked ? picked.definition?.place : agent?.definition.place);
+  const inBox = kind === "agentic" && boxed?.mode === "sandbox" ? boxed.box : undefined;
+  const [onServer, setOnServer] = useState(false);
   const [view, setView] = useState<"form" | "json">("form");
   const [pane, setPane] = useState<"code" | "response">(initialResult ? "response" : "code");
   const [lang, setLang] = useState<"curl" | "fetch">("curl");
@@ -63,7 +70,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   }, [result]);
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
-  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap });
+  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap, onServer: !!inBox && onServer });
   const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text };
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
@@ -118,6 +125,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 <Label name="effort" note="How hard the model thinks. Empty uses the agent's own.">
                   <div className="flex gap-2">{["", ...efforts].map((e) => <button key={e || "default"} type="button" onClick={() => setEffort(e)} className={cn("caps border px-3 py-2 text-[12px]", effort === e ? "border-foreground" : "text-muted-foreground")}>{e || "default"}</button>)}</div>
                 </Label>
+                {inBox && (
+                  <Label name="place" note={`Runs this one on the server, without the agent's ${inBox} box.`}>
+                    <label className="flex items-center gap-2 font-mono text-[13px]"><input type="checkbox" name="place" checked={onServer} onChange={(e) => setOnServer(e.target.checked)} className="accent-[hsl(var(--primary))]" /> runner</label>
+                  </Label>
+                )}
                 {kind === "agentic" && (
                   <Label name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
                     <input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />

@@ -525,6 +525,18 @@ describe("AgentPage, an agent whose harness the server can't run", () => {
   });
 });
 
+// Where the agent runs, said with the rest of its current revision: its box, or the server (no place is the server's
+// default, the runner).
+describe("AgentPage, where it runs", () => {
+  it("says the box an agent runs in, or the server", async () => {
+    const base = agentFixture("invoice-checker");
+    const boxed = { ...base, definition: { ...base.definition, place: { mode: "sandbox", box: "docker" } } };
+    expect((await open(boxed)).fact("Runs")).toBe("In a docker box");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    expect((await open(base)).fact("Runs")).toBe("On the server");
+  });
+});
+
 // Each failed read says what failed and what to do next in words: an agent this server has no record of, a server that
 // can't be reached, and anything else thrown, with what was said kept small.
 describe("AgentPage, a failed read's problem", () => {
