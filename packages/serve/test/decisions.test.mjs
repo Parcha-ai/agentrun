@@ -84,10 +84,10 @@ async function withKeys(t, which) {
   return async () => ({ jev: await read(files.jev), parallel: await read(files.parallel) });
 }
 
-async function startFlow(api, steps, output, { schemas = {}, tools } = {}) {
+async function startFlow(api, steps, output, { schemas = {}, tools, tool_settings } = {}) {
   const doc = flow(steps, output);
   Object.assign(doc.schemas, schemas);
-  const made = await api("POST", "/agents", flowAgent("coi", doc, tools ? { tools } : {}));
+  const made = await api("POST", "/agents", flowAgent("coi", doc, { ...(tools ? { tools } : {}), ...(tool_settings ? { tool_settings } : {}) }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const started = await api("POST", "/agents/coi/runs", { input: { question: QUESTION } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -207,7 +207,7 @@ test("with no decision key, a run's process gets no key descriptor at all", asyn
 const keysNode = (tools) => ({ node: "extract", label: "keys", instructions: "Report the decision keys.", out: "Names", as: "names", ...(tools ? { tools } : {}) });
 const NAMES = { Names: { type: "object", required: ["names"], properties: { names: { type: "array", items: { type: "string" } } } } };
 
-test("a workflow is handed only the decision keys its nodes need: none with no decision node (no descriptor at all), Jev's alone for a Jev judge, Parallel's alone for a Parallel judge or web_fetch, on a server holding Jev's, Parallel's and OpenRouter's", async (t) => {
+test("a workflow is handed only the decision keys its nodes need: none with no decision node (no descriptor at all), Jev's alone for a Jev judge, Parallel's alone for a Parallel judge or a web_fetch picked onto Parallel, none for a web_fetch on the direct fetch, on a server holding Jev's, Parallel's and OpenRouter's", async (t) => {
   withEnv(t, { TYPESAFE_API_KEY: CANARY, PARALLEL_API_KEY: PARALLEL_CANARY, OPENROUTER_API_KEY: OTHER_ROUTER_KEY }, KEYS);
   const gate = join(await scratch(t), "go");
   const { api, data } = await serve(t, { fauxJev: FAUX_JEV, fauxParallel: FAUX_PARALLEL });
@@ -219,10 +219,10 @@ test("a workflow is handed only the decision keys its nodes need: none with no d
   await writeFile(gate, "");
   assert.equal((await follow(api, runId, ["completed", "failed"])).last.status, "completed");
   // Each with what its nodes need, and no other.
-  const handed = async (id, steps) => {
+  const handed = async (id, steps, tool_settings) => {
     const doc = flow(steps, { schemaId: "Names", path: "names" });
     Object.assign(doc.schemas, NAMES);
-    assert.equal((await api("POST", "/agents", flowAgent(id, doc))).status, 201);
+    assert.equal((await api("POST", "/agents", flowAgent(id, doc, tool_settings ? { tool_settings } : {}))).status, 201);
     const { body } = await api("POST", `/agents/${id}/runs`, { input: { question: QUESTION } });
     const { last } = await follow(api, body.run_id, ["completed", "failed"]);
     const run = (await api("GET", `/runs/${body.run_id}`)).body;
@@ -231,26 +231,37 @@ test("a workflow is handed only the decision keys its nodes need: none with no d
   };
   assert.deepEqual(await handed("onjev", [judge, keysNode()]), ["TYPESAFE_API_KEY"], "a Jev judge: Jev's key alone");
   assert.deepEqual(await handed("onparallel", [onParallel, keysNode()]), ["PARALLEL_API_KEY"], "a Parallel judge: Parallel's alone");
-  assert.deepEqual(await handed("fetching", [keysNode(["web_fetch"])]), ["PARALLEL_API_KEY"], "a node naming web_fetch: Parallel's, for its extract");
+  assert.deepEqual(await handed("fetching", [keysNode(["web_fetch"])], { web_fetch: { provider: "parallel" } }), ["PARALLEL_API_KEY"], "a node whose web_fetch resolves to Parallel: Parallel's, for its extract");
+  assert.deepEqual(await handed("fetching-direct", [keysNode(["web_fetch"])]), [], "a node whose web_fetch is the direct fetch: none");
   assert.deepEqual(await handed("plain", [keysNode()]), [], "no decision node: none");
 });
 
-test("decisionNeedsFor and decisionKeysFor: a run's decision keys by what it runs, an agentic run Parallel's for web_fetch alone; Jev's by its route", async () => {
-  const { decisionNeedsFor } = await import("../dist/runs.js");
+test("decisionProvidersFor and decisionKeysFor: a run's decision keys by what it runs, Parallel's for a web tool only where its plane resolves it to Parallel; Jev's by its route", async () => {
+  const { decisionProvidersFor } = await import("../dist/runs.js");
   const { decisionKeysFor } = await import("../dist/decisions.js");
+  const { handsParallel, planeFor } = await import("../dist/tool-plane.js");
+  const { toolingOf } = await import("../dist/tools.js");
   const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
-  const workflow = (steps) => revision("workflow", { workflow: flow(steps) });
+  const workflow = (steps, body = {}) => revision("workflow", { workflow: flow(steps), ...body });
   const keys = { TYPESAFE_API_KEY: "t".repeat(20), PARALLEL_API_KEY: "p".repeat(20), OPENROUTER_API_KEY: "o".repeat(20) };
-  const names = async (rev, env = keys) => Object.keys(decisionKeysFor(env, await decisionNeedsFor(rev))).sort();
+  // As a launch reads them: the revision's decision providers, and its plane under the server's settings.
+  const names = async (rev, env = keys, settings = {}) => Object.keys(decisionKeysFor(env, { providers: await decisionProvidersFor(rev), parallelWeb: handsParallel(planeFor(env, await toolingOf(rev), settings)) })).sort();
+  const onParallelPick = (tool) => ({ [tool]: { provider: "parallel" } });
   assert.deepEqual(await names(revision("agentic", { instructions: "Answer." })), [], "an agentic run: none");
-  assert.deepEqual(await names(revision("agentic", { instructions: "Answer.", tools: ["web_fetch"] })), ["PARALLEL_API_KEY"], "an agentic run naming web_fetch: Parallel's");
+  assert.deepEqual(await names(revision("agentic", { instructions: "Answer.", tools: ["web_fetch", "web_search"] })), [], "an agentic run whose web tools resolve to the direct fetch and keyless search: none");
+  assert.deepEqual(await names(revision("agentic", { instructions: "Answer.", tools: ["web_fetch"] }), keys, onParallelPick("web_fetch")), ["PARALLEL_API_KEY"], "the server's pick of Parallel for web_fetch: Parallel's");
+  assert.deepEqual(await names(revision("agentic", { instructions: "Answer.", tools: ["web_search"], toolSettings: onParallelPick("web_search") })), ["PARALLEL_API_KEY"], "the agent's own pick of Parallel for web_search: Parallel's");
+  assert.deepEqual(await names(revision("agentic", { instructions: "Answer.", tools: ["web_fetch"] }), { TYPESAFE_API_KEY: keys.TYPESAFE_API_KEY }, onParallelPick("web_fetch")), [], "Parallel picked on a server without its key: unavailable, and none");
   assert.deepEqual(await names(workflow([probe()])), [], "no decision node: none");
   assert.deepEqual(await names(workflow([judge, probe()])), ["TYPESAFE_API_KEY"]);
   assert.deepEqual(await names(workflow([judge, probe()]), { OPENROUTER_API_KEY: keys.OPENROUTER_API_KEY, PARALLEL_API_KEY: keys.PARALLEL_API_KEY }), ["OPENROUTER_API_KEY"], "Jev on the OpenRouter route: OpenRouter's");
   assert.deepEqual(await names(workflow([onParallel, probe()])), ["PARALLEL_API_KEY"]);
   assert.deepEqual(await names(workflow([{ ...judge, provider: "openrouter", model: "m" }, probe()])), ["OPENROUTER_API_KEY"], "an OpenRouter decision node: OpenRouter's");
   assert.deepEqual(await names(workflow([judge, onParallel, probe()])), ["PARALLEL_API_KEY", "TYPESAFE_API_KEY"]);
-  assert.deepEqual(await names(workflow([{ node: "call", label: "page", via: "tool", tool: "web_fetch", args: { url: "https://example.com/" }, out: "Probe", as: "page", deadline_s: 30 }, probe()])), ["PARALLEL_API_KEY"], "a call node to web_fetch: Parallel's");
+  const fetching = [{ node: "call", label: "page", via: "tool", tool: "web_fetch", args: { url: "https://example.com/" }, out: "Probe", as: "page", deadline_s: 30 }, probe()];
+  assert.deepEqual(await names(workflow(fetching)), [], "a call node to web_fetch on the direct fetch: none");
+  assert.deepEqual(await names(workflow(fetching, { toolSettings: onParallelPick("web_fetch") })), ["PARALLEL_API_KEY"], "a call node to web_fetch picked onto Parallel: Parallel's");
+  assert.deepEqual(await names(workflow([judge, ...fetching]), keys, onParallelPick("web_fetch")), ["PARALLEL_API_KEY", "TYPESAFE_API_KEY"], "a Jev judge and a web_fetch on Parallel: both");
 });
 
 test("with TYPESAFE_API_KEY set, a judge workflow runs on Jev and its decision is recorded in the run", async (t) => {
@@ -684,13 +695,15 @@ test("a decision whose cost the provider reports is on its row, and the run's to
   assert.equal(storeRun(data, runId).costUsd, 0.00003, "and the store keeps the same total");
 });
 
-test("only a run that asks Parallel or names a web tool holds the Parallel key, in memory: never in its environment, a child process or a file; an agentic run naming no web tool gets no key at all", async (t) => {
+test("only a run that asks Parallel or whose web tool resolves to Parallel holds the Parallel key, in memory: never in its environment, a child process or a file; an agentic run whose web tools resolve native or to the kernel gets no key at all", async (t) => {
   const seen = await withKeys(t, { parallel: true });
+  // pi's web_search resolves native on a direct Anthropic model: the server's default here.
+  withEnv(t, { AGENT_MODEL: "anthropic/claude-sonnet-4-5" });
   const gate = join(await scratch(t), "go");
   const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL, fauxWeb: FAUX_WEB });
-  // A workflow asking Parallel on one read of the key: a decision node, then web_fetch in a call node.
+  // A workflow asking Parallel on one read of the key: a decision node, then web_fetch in a call node, Parallel picked.
   const read = { node: "call", label: "read", via: "tool", tool: "web_fetch", args: { url: "http://public.example/" }, out: "Page", as: "page", deadline_s: 60 };
-  const runId = await startFlow(api, [onParallel, read, probe(gate)], undefined, { tools: ["web_fetch"], schemas: { Page: { type: "object", required: ["via"], properties: { via: { const: "parallel" } } } } });
+  const runId = await startFlow(api, [onParallel, read, probe(gate)], undefined, { tools: ["web_fetch"], tool_settings: { web_fetch: { provider: "parallel" } }, schemas: { Page: { type: "object", required: ["via"], properties: { via: { const: "parallel" } } } } });
   // While the run's process waits at the probe, after it read the key: as the kernel shows that process.
   const pid = await processOf(data, runId);
   const environ = await readFile(`/proc/${pid}/environ`, "utf8");
@@ -703,19 +716,22 @@ test("only a run that asks Parallel or names a web tool holds the Parallel key, 
   assert.equal(last.status, "completed", JSON.stringify(run.error));
   assert.deepEqual(run.result.output, CLEAN, "the model node's process, and an sh and a node -e it starts, see neither the key nor its descriptor");
   assert.deepEqual((await seen()).parallel.map((c) => [c.path, c.authorized]), [["/v1/decisions", true], ["/v1/extract", true]], "Parallel got the key from the decision node and from web_fetch, on the one read");
-  // Agentic runs, each held in its first turn: one naming web_fetch holds the key as the workflow does, one naming no web
+  // Agentic runs, each held in its first turn: one whose web_fetch or web_search resolves to Parallel holds the key as the
+  // workflow does; one whose web_search resolves native, whose web_fetch resolves to the kernel, or that names no web
   // tool was never handed it.
-  for (const tool of ["web_fetch", "read"]) {
+  const parallel = (tool) => ({ [tool]: { provider: "parallel" } });
+  for (const [tool, picked, handed] of [["web_fetch", parallel("web_fetch"), true], ["web_search", parallel("web_search"), true], ["web_search", undefined, false], ["web_fetch", undefined, false], ["read", undefined, false]]) {
     const hold = join(await scratch(t), "go");
-    const id = `holds-${tool.replace("_", "-")}`;
-    assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: "Hold.", tools: [tool] } })).status, 201);
+    const id = `holds-${tool.replace("_", "-")}${picked ? "-parallel" : ""}`;
+    assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: "Hold.", tools: [tool], ...(picked ? { tool_settings: picked } : {}) } })).status, 201);
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: `Answer once ${hold} exists.` } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const pid = await processOf(data, started.body.run_id);
     const environ = await readFile(`/proc/${pid}/environ`, "utf8");
-    assert.equal(environ.includes(PARALLEL_CANARY), false, `${tool}: the run's process environment holds no copy of the key`);
-    assert.equal(keyFdIn(environ), tool === "web_fetch" ? KEY_FD : undefined, `${tool}: handed the key only when it names web_fetch`);
-    assert.equal(await handedSocket(pid, KEY_FD), false, `${tool}: no key descriptor open`);
+    assert.equal(environ.includes(PARALLEL_CANARY), false, `${id}: the run's process environment holds no copy of the key`);
+    assert.equal(keyFdIn(environ), handed ? KEY_FD : undefined, `${id}: handed the key only when a web tool resolves to Parallel`);
+    assert.match(environ, handed ? /AGENTRUN_SERVE_TOOL_PLANE=\{"web_\w+":"parallel"\}/ : tool === "read" ? /^(?![\s\S]*AGENTRUN_SERVE_TOOL_PLANE)/ : /AGENTRUN_SERVE_TOOL_PLANE=\{"web_\w+":"(native|kernel)"/, `${id}: its plane, a description with no key in it`);
+    assert.equal(await handedSocket(pid, KEY_FD), false, `${id}: no key descriptor open`);
     await writeFile(hold, "");
     await follow(api, started.body.run_id, ["completed"]);
   }

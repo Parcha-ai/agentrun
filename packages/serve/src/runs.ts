@@ -21,18 +21,18 @@ import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWho
 import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
-import { ASK_TOOL, FAUX_BROWSER_ENV, workflowTools } from "./tools.js";
+import { ASK_TOOL, FAUX_BROWSER_ENV, toolingOf, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
-import { DECISION_KEY_FD_ENV, decisionKeysFor, type DecisionNeeds, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, providersNamed } from "./decisions.js";
+import { DECISION_KEY_FD_ENV, decisionKeysFor, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, providersNamed } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { FAUX_MONID_ENV } from "./monid.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, FAUX_ENV, GATEWAY_KEY_ENV, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
+import { EFFORT_ENV, FAUX_ENV, FAUX_UPSTREAM_ENV, GATEWAY_KEY_ENV, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
+import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
@@ -113,6 +113,8 @@ type RunMeta = {
   /** What its newest process took its thinking level from (app.ts's thinkingOf), as its environment had them: `effort`,
    *  the run's effort, and `host`, the host's AGENT_THINKING. Absent for a process an older server started. */
   launch_thinking?: { effort?: string; host?: string };
+  /** Its tools' providers, resolved at its first launch and kept for its life (tool-plane.ts). */
+  tool_plane?: Plane;
   /** Where it runs, as its start resolved it (place.ts): its process reads it. Absent for a run an older server started,
    *  which ran on the runner. */
   place?: Place;
@@ -121,6 +123,7 @@ type RunMeta = {
 };
 /** A run's learning as a list shows it: its state and reason. */
 const shortLearning = (learning: Learning | null) => (learning ? { state: learning.state, reason: learning.reason } : null);
+
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */
@@ -147,6 +150,8 @@ export type Run = {
   revision: string;
   /** The harness its revision names, read at its first message. */
   harness?: string;
+  /** What its pinned revision's tools resolve from (tool-plane.ts), resolved again at each launch. */
+  tooling?: Tooling;
   /** Imported history (`agentrun-serve import`): the source it was run in, and its id there. It takes no message, and a
    *  stop or a cancel moves nothing. */
   imported?: { source: string; session: string };
@@ -230,6 +235,18 @@ export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
     }
   }
   return out;
+}
+
+/** The row that says a run's booked spend passed its cap, and by how much, after its usage row: a request's cost is
+ *  booked once it answers, and one carrying a native web search is held at an allowance, not a bound (cap.ts), so a run
+ *  can pass its cap by its last request. The next request is then refused, and the run ends spend_cap_reached. */
+export function withOverCap(rows: TimelineEvent[], cap: number | undefined): TimelineEvent[] {
+  const at = rows.findLastIndex((row) => row.kind === "usage");
+  const usd = rows[at]?.usage?.usd;
+  if (cap === undefined || typeof usd !== "number" || usd <= cap) return rows;
+  const { usage: _, ...usage } = rows[at]!;
+  const over: TimelineEvent = { ...usage, id: `${usage.id}:over_cap`, kind: "phase", summary: `Spent $${usd.toFixed(4)}, $${(usd - cap).toFixed(4)} over the run's cap of $${cap}`, text: null };
+  return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
 
 /** Notes the whole text of the newest assistant message in `entries` (pi's stored entries). */
@@ -348,7 +365,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; fauxBox?: string; runBoxes?: BoxProvider; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; fauxExa?: string; learning?: LearningMode };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxUpstream?: string; fauxExa?: string; fauxHarness?: string; fauxBox?: string; runBoxes?: BoxProvider; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
  *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
 export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => void;
@@ -387,14 +404,12 @@ export async function secretsFor(revision: Revision, rows: readonly KeyRow[] = T
   const needs = new Set(harness !== DEFAULT_HARNESS ? harnessModelKeys(harness, env) : nodes ? modelKeys(env, undefined, llmTiers(nodes, nodeTiers(nodes))) : modelKeys(env, revision.kind === "agentic" ? revision.body.model : undefined));
   return RUN_SECRETS.filter((name) => (!scoped.includes(name) || unlocked.has(name)) && (!MODEL_KEYS.includes(name) || needs.has(name)));
 }
-/** What a run of `revision` needs decision keys for (decisions.ts' decisionKeysFor): its workflow's decision nodes'
- *  providers (providersNamed, Jev for a node that names none), and whether it binds web_fetch, which reads Parallel's key
- *  for its extract: an agentic revision's tools, a workflow's on its model nodes and its call nodes. */
-export async function decisionNeedsFor(revision: Revision): Promise<DecisionNeeds> {
-  if (revision.kind !== "workflow") return { providers: [], webFetch: (revision.body.tools ?? []).includes(WEB_FETCH_TOOL) };
-  const nodes = workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow));
-  const bound = workflowTools(nodes);
-  return { providers: providersNamed(nodes), webFetch: [...bound.nodes, ...bound.calls].includes(WEB_FETCH_TOOL) };
+/** The decision providers a run of `revision` needs keys for (decisions.ts' decisionKeysFor): its workflow's decision
+ *  nodes' (providersNamed, Jev for a node that names none); an agentic revision's, none. Its web tools' need, Parallel's
+ *  where one resolves to Parallel, is its tool plane's (tool-plane.ts' handsParallel), read at each launch. */
+export async function decisionProvidersFor(revision: Revision): Promise<readonly string[]> {
+  if (revision.kind !== "workflow") return [];
+  return providersNamed(workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)));
 }
 /** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
 const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
@@ -476,8 +491,9 @@ export class Runs {
   /** The secrets each revision's runs are handed (secretsFor), by revision id: read before a launch, from the revision
    *  the run is pinned to, never from a request. */
   private readonly secrets = new Map<string, readonly string[]>();
-  /** What each revision's runs need decision keys for (decisionNeedsFor), by revision id, read with its secrets. */
-  private readonly decisionNeeds = new Map<string, DecisionNeeds>();
+  /** The decision providers each revision's runs need keys for (decisionProvidersFor), by revision id, read with its
+   *  secrets. */
+  private readonly decisionProviders = new Map<string, readonly string[]>();
   /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
   private readonly graphs = new Map<string, object>();
   private readonly adopting = new Map<string, Promise<Run>>();
@@ -541,6 +557,7 @@ export class Runs {
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
+      ...(isObject(stored?.tool_plane) ? { tool_plane: stored.tool_plane as Plane } : {}),
       ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
     };
@@ -552,7 +569,7 @@ export class Runs {
       warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
     }
     const known = await this.options.agents.revision(row.agent, row.revision);
-    const run = this.blank(row, dir, meta, known?.version ?? 0);
+    const run = this.blank(row, dir, meta, known?.version ?? 0, known ? await toolingOf(known.revision) : undefined);
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
@@ -578,10 +595,11 @@ export class Runs {
     return run;
   }
 
-  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
+  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number, tooling?: Tooling): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
       working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
+      ...(tooling ? { tooling } : {}),
     };
   }
 
@@ -645,7 +663,7 @@ export class Runs {
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
   /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
   private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
-    run.rows = withAsks(rows.filter((r) => !QUIET.test(r.id)));
+    run.rows = withOverCap(withAsks(rows.filter((r) => !QUIET.test(r.id))), run.meta.max_cost_usd);
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
@@ -667,7 +685,7 @@ export class Runs {
     if (run.kind === "workflow") return undefined;
     const cap = run.meta.max_cost_usd;
     const cost = costOf(run.rows);
-    if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, over its cap of $${cap}.`, retryable: false } };
+    if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
     if (run.working || run.submitted > 0) return undefined;
     const last = meaningful(run.rows);
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
@@ -986,7 +1004,7 @@ export class Runs {
   private async pinSecrets(run: Pick<Run, "id" | "revision">, given?: Revision): Promise<void> {
     if (this.secrets.has(run.revision)) return;
     const revision = given ?? (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store")));
-    this.decisionNeeds.set(run.revision, await decisionNeedsFor(revision));
+    this.decisionProviders.set(run.revision, await decisionProvidersFor(revision));
     this.secrets.set(run.revision, await secretsFor(revision));
   }
 
@@ -999,7 +1017,7 @@ export class Runs {
       ...childEnv(process.env, this.options.token),
       [SECRETS_FD_ENV]: "3",
       [SECRETS_LEN_ENV]: String(secrets.length),
-      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}), ...(this.options.fauxParallel ? { [FAUX_PARALLEL_ENV]: this.options.fauxParallel } : {}), ...(this.options.fauxOpenrouter ? { [FAUX_OPENROUTER_ENV]: this.options.fauxOpenrouter } : {}) } : {}),
+      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}), ...(this.options.fauxParallel ? { [FAUX_PARALLEL_ENV]: this.options.fauxParallel } : {}), ...(this.options.fauxOpenrouter ? { [FAUX_OPENROUTER_ENV]: this.options.fauxOpenrouter } : {}), ...(this.options.fauxUpstream ? { [FAUX_UPSTREAM_ENV]: this.options.fauxUpstream } : {}), ...(this.options.fauxExa ? { [FAUX_EXA_ENV]: this.options.fauxExa } : {}) } : {}),
       ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
       ...(this.options.faux && this.options.fauxMonid ? { [FAUX_MONID_ENV]: this.options.fauxMonid } : {}),
       ...(this.options.faux && this.options.fauxBox ? { [FAUX_BOX_ENV]: this.options.fauxBox } : {}),
@@ -1012,14 +1030,29 @@ export class Runs {
     void this.saveMeta(run).catch((error: Error) => warn(run.id, `what its process thinks at is not saved: ${error.message}`));
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
+    // Its tools' providers (tool-plane.ts): resolved at its first launch from its pinned revision and this server's
+    // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
+    // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are
+    // in the serve.json its start writes (start); resolving here is for a run made before that. A description with no secret
+    // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
+    // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
+    const served = withSecrets(process.env, "all", this.options.storedKeys);
+    const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served) : run.tooling ? planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined }) : {};
+    if (!run.meta.tool_plane && Object.keys(plane).length) {
+      run.meta.tool_plane = plane;
+      void this.saveMeta(run).catch(() => undefined);
+    }
+    delete env[TOOL_PLANE_ENV];
+    if (Object.keys(plane).length) env[TOOL_PLANE_ENV] = JSON.stringify(plane);
     // The decision keys are never in a run's environment, which its tools and its model's provider read (childEnv leaves
-    // out every secret): a run's process gets those its revision needs (decisionNeedsFor) once on an inherited pipe, by
-    // name, for its decision providers and web_fetch alone (decisions.ts), and a run that needs none no pipe at all. One
-    // whose revision was not read gets none.
+    // out every secret): a run's process gets those it needs once on an inherited pipe, by name: its decision
+    // providers' (decisionProvidersFor), and Parallel's where one of its web tools resolves to Parallel (its plane,
+    // handsParallel). A web tool reaches Parallel only where its own capability resolves there. A run that needs none
+    // gets no pipe at all, and one whose revision was not read gets none.
     delete env[DECISION_KEY_FD_ENV];
     // Chosen from the secrets this server holds: out of its environment once its launcher hands them over (secrets.ts).
-    const needs = this.decisionNeeds.get(run.revision);
-    const decisionKeys = needs ? decisionKeysFor(withSecrets(process.env, "all", this.options.storedKeys), needs) : {};
+    const providers = this.decisionProviders.get(run.revision);
+    const decisionKeys = providers ? decisionKeysFor(served, { providers, parallelWeb: handsParallel(plane) }) : {};
     const handsKey = Object.keys(decisionKeys).length > 0;
     this.markLaunching(run);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
@@ -1370,6 +1403,10 @@ export class Runs {
   }
 
   private async start(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
+    // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in the serve.json its start writes first,
+    // so a launch after a crash reads them back, never the settings of that moment, and keeping them is no write of its own.
+    const tooling = await toolingOf(revision);
+    const plane = tooling ? planeFor(withSecrets(process.env, "all", this.options.storedKeys), tooling, this.options.toolSettings?.() ?? {}, { capped: options.maxCostUsd !== undefined }) : {};
     // A run learns when the server's switch (`--learning`) is on and its agent's definition says `learning: true`. Its
     // seed is read before the run is made, so the folder is read once whatever the run's setup does.
     const learns = this.options.learning !== "off" && revision.kind === "agentic" && revision.body.learning === true;
@@ -1383,6 +1420,7 @@ export class Runs {
       place: options.place,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
+      ...(Object.keys(plane).length ? { tool_plane: plane } : {}),
     };
     // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
     // next one relaunches with its first message.
@@ -1403,7 +1441,7 @@ export class Runs {
       meta.learning = failed === undefined ? { state: "seeded", reason: null, detail: null, at } : { state: "dropped", reason: "seed_failed", detail: failed, at };
       await this.setUp(started.runId, started.dir, meta);
     }
-    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version);
+    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, tooling);
     run.moment = "other";
     // Before the run is known here, so nothing launches it first.
     await this.pinSecrets(run, revision);
