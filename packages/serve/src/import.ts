@@ -103,6 +103,8 @@ const hash = (text: string) => createHash("sha256").update(text).digest("hex");
  *  and different for each id, so two such sessions stay two runs and a later import finds each one's. The plan and the
  *  import keep it from the same keys, or a later import would not find the run an earlier one made. */
 const redactedId = (id: string) => `redacted-${hash(id).slice(0, 16)}`;
+/** A file's size and time, as an import read it: the same after means the same content was read. */
+const stampOf = (stats: { size: number; mtimeMs: number }) => `${stats.size}:${stats.mtimeMs}`;
 const keptId = (envs: readonly NodeJS.ProcessEnv[]) => {
   const { text } = secretCut(envs, SECRET_NAMES);
   // A key secretlint finds in the id itself (a session named after its file); a count, whose ids are kept by no run, asks
@@ -128,6 +130,48 @@ async function keysInSessions(sessions: readonly Session[]): Promise<string[]> {
   };
   sessions.forEach(collect);
   return secretsIn(strings.join("\n"));
+}
+
+/** Every key an import would cut, found before anything of it is written, across every project: each project's own text,
+ *  and each run the import would write (its sessions, then its subagents, which the reader holds to MAX_SESSION_BYTES),
+ *  read through secretlint once, findings only, into `add`. Each file's size and time as read, and each project's text
+ *  as read, are kept: a write reads a run (or a project's text) through secretlint again only if it changed since. */
+async function findKeys(plan: Plan, add: (keys: readonly string[]) => void, cut: (text: string) => string, held: (listed: Session) => boolean, signal?: AbortSignal): Promise<{ stamps: Map<string, string>; texts: Map<string, string> }> {
+  const stamps = new Map<string, string>();
+  const texts = new Map<string, string>();
+  for (const project of plan.projects) {
+    if (signal?.aborted) break;
+    const own = projectText(project.cwd, await projectFiles(project.cwd, []));
+    texts.set(project.agentId, hash(own));
+    add(await secretsIn(own));
+  }
+  for (const project of plan.projects) {
+    for (const files of byRun(project.sessions)) {
+      if (signal?.aborted) break;
+      const listed = files[0]!;
+      if (held(listed)) continue;
+      // Its own count of records seen: the import's, shared across its files, is the write's to keep.
+      const seen = new Set<string>();
+      const parts: Session[] = [];
+      for (const { file } of files) {
+        const stats = await stat(file).catch(() => null);
+        const part = stats ? await readSession(file, listed.source, { seen }).catch(() => undefined) : undefined;
+        if (!part || !stats) continue;
+        stamps.set(file, stampOf(stats));
+        parts.push(part);
+      }
+      if (!parts.length) continue;
+      add(await keysInSessions(parts));
+      const session = merged(parts);
+      const subagents = await readChildren(plan, { ...session, id: cut(session.id) === session.id ? session.id : redactedId(session.id) }, parts, seen);
+      for (const child of subagents) {
+        const stats = await stat(child.file).catch(() => null);
+        if (stats) stamps.set(child.file, stampOf(stats));
+      }
+      add(await keysInSessions(subagents));
+    }
+  }
+  return { stamps, texts };
 }
 
 /** A project's own text for secretlint: its path, its instructions, and its skills' paths and text. */
@@ -252,20 +296,11 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   const plan: Plan = { projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, untied };
   if (!measure) return plan;
   const counting = secretCut(env, SECRET_NAMES);
-  // A new agent's own text (its name, its path, its instructions and skills) is the import's to cut too: counted here,
-  // after the keys secretlint finds in that text, as the import finds them before it cuts.
-  for (const project of plan.projects) {
-    const files = await projectFiles(project.cwd, []);
-    counting.add(await secretsIn(projectText(project.cwd, files)));
-    if (store?.readAgent(project.agentId)) continue;
-    counting.text(project.name);
-    counting.text(project.cwd);
-    for (const text of Object.values(files.instructions)) counting.text(text);
-    for (const [path, text] of Object.entries(files.skills)) (counting.text(path), counting.text(text));
-  }
+  // Every key the import would cut, found first, as the import finds it before it writes anything: then the counts.
+  const heldBy = store ? importedIn(store) : undefined;
+  await findKeys(plan, counting.add, counting.text, (listed) => heldBy?.get(`${listed.source}:${listed.id}`) !== undefined, signal);
   // Measured in the import's own order, a record or response counted once across files, each session with its
   // subagents; a session the store holds already from its run, as the import counts it, not from its file now.
-  const heldBy = store ? importedIn(store) : undefined;
   for (const project of plan.projects) {
     const seen = await seenIn(store, project.agentId);
     for (const files of byRun(project.sessions)) {
@@ -284,14 +319,22 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
       const parts = read.filter((part) => !ownless(part));
       if (!parts.length) continue;
       const session = merged(parts);
-      // What the import's cut would take out of it (its turns, its first message), with what secretlint finds in it as
-      // the import reads it: the dry run's count.
-      counting.add(await keysInSessions(parts));
+      // What the import's cut would take out of it (its turns, its first message): the dry run's count.
       counting.json(session.turns);
       if (session.firstPrompt) counting.text(session.firstPrompt);
       const subagents = await readChildren(plan, session, read, seen(session.source));
       found.push({ source: session.source, agent: project.agentId, ...measured(session, subagents) });
     }
+  }
+  // A new agent's own text (its name, its path, its instructions and skills) is the import's to cut too: counted here,
+  // after every key is known, as the import cuts it.
+  for (const project of plan.projects) {
+    if (store?.readAgent(project.agentId)) continue;
+    const files = await projectFiles(project.cwd, []);
+    counting.text(project.name);
+    counting.text(project.cwd);
+    for (const text of Object.values(files.instructions)) counting.text(text);
+    for (const [path, text] of Object.entries(files.skills)) (counting.text(path), counting.text(text));
   }
   return { ...plan, found, secretsFound: counting.text.removed };
 }
@@ -805,12 +848,19 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
   let prices: Promise<Map<string, Listed[]>> | undefined;
   const catalog = () => (prices ??= catalogPrices());
   const held = importedIn(store);
+  // Every key of the import is known before anything of it is written.
+  const known = await findKeys(plan, add, text, (listed) => {
+    const run = held.get(`${listed.source}:${listed.id}`);
+    return run !== undefined && existsSync(store.runStorePath(run));
+  }, options.signal);
+  const scannedAs = known.stamps;
   for (const project of plan.projects) {
     if (options.signal?.aborted) break;
     const created = !store.readAgent(project.agentId);
     const files = await projectFiles(project.cwd, report.skipped);
-    // The keys secretlint finds in its own text, cut with the environment's from here on (each run adds its own).
-    add(await secretsIn(projectText(project.cwd, files)));
+    // Its own text read through secretlint again only if it changed since the pass above.
+    const textNow = projectText(project.cwd, files);
+    if (hash(textNow) !== known.texts.get(project.agentId)) add(await secretsIn(textNow));
     if (created)
       store.createAgent({
         id: project.agentId,
@@ -840,6 +890,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       // Every file of it read: one holding only copies adds no records, but its subagents' folder is read with the rest.
       const searched: Session[] = [];
       let read: SourceFile | undefined;
+      let changed = false;
       for (const { file } of files) {
         const stats = await stat(file).catch(() => null);
         const part = stats ? await readSession(file, listed.source, { seen: seen(listed.source) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed" });
@@ -852,18 +903,20 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
         }
         read ??= { path_sha256: hash(file), size: stats.size, mtime_ms: stats.mtimeMs };
         parts.push(part);
+        if (scannedAs.get(file) !== stampOf(stats)) changed = true;
       }
       if (!read) continue;
       const session = merged(parts);
-      // What secretlint finds in it as read now, before any of it is cut: a key a session still being written added after
-      // the plan is in what was read here, and is found here.
-      add(await keysInSessions(parts));
+      // A file of it changed since the scan above (a session still being written): what it holds now, read through
+      // secretlint again before any of it is cut.
+      if (changed) add(await keysInSessions(parts));
       // Its id as the plan keeps it (a key in it is one secretlint finds in what was read, the id among it); one
       // holding a key counts among the keys removed.
       const keptAs = text(session.id) === session.id ? session.id : redactedId(session.id);
       session.id = keptAs;
       const subagents = await readChildren(plan, session, searched, seen(listed.source));
-      add(await keysInSessions(subagents));
+      const moved = await Promise.all(subagents.map(async (child) => scannedAs.get(child.file) !== stampOf((await stat(child.file).catch(() => null)) ?? { size: -1, mtimeMs: -1 })));
+      if (moved.some(Boolean)) add(await keysInSessions(subagents));
       // The transcript is whole before its run is: written beside the store, then moved into the run's directory.
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
       let started: { runId: string; dir: string; storePath: string } | undefined;

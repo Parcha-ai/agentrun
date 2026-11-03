@@ -540,6 +540,47 @@ test("a key a session still being written adds after the plan read it is cut all
   assert.equal(report.secretsRemoved, 1);
 });
 
+test("a key found in a project's sessions is cut from its instructions too, where it stands bare: every key of a project is known before any of it is written", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "infra");
+  mkdirSync(site, { recursive: true });
+  const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
+  const id = `${["AK", "IA"].join("")}${pick(16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")}`;
+  const secret = pick(40, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+");
+  // Bare in the project's instructions, no name or id beside it: no rule finds it there.
+  writeFileSync(join(site, "CLAUDE.md"), `Deploy with ${secret} on Fridays.\n`);
+  // Beside its name in a session: secretlint's AWS rule finds it.
+  claudeSession(at, site, 1, { prompt: "Show the credentials.", output: `AWS_ACCESS_KEY_ID=${id}\nAWS_SECRET_ACCESS_KEY=${secret}` });
+  const data = join(root, "agents");
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: () => {} }), 0);
+  for (const form of [secret, secret.replaceAll("/", "\\/")]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(form), `${file.slice(data.length + 1)} holds the secret`);
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  assert.match(reader.readAgent(agentIdOf(site)).revisions.find((r) => r.current).body.instructions, /Deploy with \[redacted\] on Fridays\./);
+});
+
+test("a key found in one project's sessions is cut from another project's instructions where it stands bare, though that project is imported first: every key is known before anything is written", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  // In the import's order (by path), the docs project comes first.
+  const [docs, infra] = [join(at, "code", "a-docs"), join(at, "code", "b-infra")];
+  for (const dir of [docs, infra]) mkdirSync(dir, { recursive: true });
+  const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
+  const id = `${["AK", "IA"].join("")}${pick(16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")}`;
+  const secret = pick(40, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+");
+  // Bare in the first project's instructions; beside its name only in the second project's session.
+  writeFileSync(join(docs, "CLAUDE.md"), `Deploy with ${secret} on Fridays.\n`);
+  claudeSession(at, docs, 1, { prompt: "Tidy the docs." });
+  claudeSession(at, infra, 2, { prompt: "Show the credentials.", output: `AWS_ACCESS_KEY_ID=${id}\nAWS_SECRET_ACCESS_KEY=${secret}` });
+  const data = join(root, "agents");
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: () => {} }), 0);
+  for (const form of [secret, secret.replaceAll("/", "\\/")]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(form), `${file.slice(data.length + 1)} holds the secret`);
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  assert.match(reader.readAgent(agentIdOf(docs)).revisions.find((r) => r.current).body.instructions, /Deploy with \[redacted\] on Fridays\./);
+});
+
 test("an import's plan reads no subagent file through secretlint: a subagent of a session the import leaves out is never read", async (t) => {
   const { secretlintCalls } = await import("../dist/secret-cut.js");
   const root = await scratch(t);
