@@ -54,6 +54,7 @@ learning after it; the person's own note read and retired, and the learning afte
 no notes and learning off: its learning, its runs, the definition saved with learning on, and its learning after.
 They are recorded from a server that says what each run read and kept (`used`, `learned`, on a run and in every list)
 and the agent's before and after (`impact`): two Brooklinen and Allbirds runs, the agent's runs and its learning carry
-them.
+them. Each note in the learning carries its `etag`, the same value as `learning.note`'s ETag, so the console edits and
+retires on the version a card shows; the note's own reads are kept for the reload after a refused save.
 To record them again: build the server and the console, then `node serve.mjs ...`, `node seed.mjs <url> <data>` and
 `node record.mjs <url> <data> apps/console/src/fixtures`. No token is written: the token stays in the data directory.

@@ -11,7 +11,8 @@ import { createClient } from "@/lib/client";
 // to the same story (src/fixtures/README.md, "learning.*"). An agent learned over six runs; a person opens its Learning
 // tab, edits a note that someone else changed meanwhile (412: the newest loads, the edit is kept), saves it on the newest
 // version (first refused by the checks, 400, then saved), and retires their own note. Then an agent with no notes turns
-// learning on from its empty tab. Every write names the version the console read, as the server checked it.
+// learning on from its empty tab. Every write names the version the person saw (the card's own etag, never read again),
+// as the server checked it.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type Rec = { request: { method: string; path: string; headers?: Record<string, string>; body?: unknown }; status: number; headers?: Record<string, string>; body: unknown };
@@ -71,8 +72,10 @@ const MINE = "Keep the summary to three lines";
 
 describe("demo: a person and an agent's notes, on a faux server's recorded answers", () => {
   it("reads what the agent learned, edits a note that changed meanwhile, saves it on the newest version, and retires one", async () => {
+    // The note's own read comes only after the refused save, for its newest version: the edit and the retire are made on
+    // the cards' versions.
     const s = replay(["learning.agent", "learning.stats", "learning.view", "learning.view-edited", "learning.view-retired", "learning.runs",
-      "learning.note", "learning.note-newest", "learning.note-stale", "learning.note-refused", "learning.note-saved", "learning.mine", "learning.mine-retired"]);
+      "learning.note-newest", "learning.note-stale", "learning.note-refused", "learning.note-saved", "learning.mine-retired"]);
     const page = await mount(s.v2, "refund-finder");
 
     // What learning changed: the runs before its first note against the runs that started from one, as the server said.
@@ -97,9 +100,11 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
     expect(notKept.querySelector("li")!.textContent).toContain("https://www.kith.com");
     expect(notKept.textContent).toContain("3 more runs had nothing new to remember.");
 
-    // Edit: the note opens on the version read; someone else saved a change meanwhile, so the save is refused.
+    // Edit: the note opens on the version its card showed; someone else saved a change meanwhile, so the save is refused.
     await page.click(/^Edit Try/);
     const opened = recorded<string>("learning.note");
+    const card = recorded<{ notes: { items: { file: string; etag: string }[] } }>("learning.view").body.notes.items.find((x) => x.file === "try-policies-refund-policy-first.md")!;
+    expect(card.etag).toBe(opened.headers!.etag);
     expect(page.editor()!.querySelector("textarea")!.value).toContain("It answered at once on Taylor Stitch and Brooklinen.");
     await page.type(page.editor()!.querySelector("textarea")!, "Open `https://<shop>/policies/refund-policy` first.\n\n**How to apply:** fetch it before any search, every time.\n");
     await page.save();
@@ -129,8 +134,12 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
     await page.click(/^Earlier notes/);
     expect(page.host.querySelector('section[aria-label="Earlier notes"]')!.textContent).toContain(`${MINE}Retired`);
 
-    // Every write named the version the console read, as JSON (the one write the server takes under a session).
+    // Every write named the version the person saw, as JSON (the one write the server takes under a session), and the
+    // note was read only for its newest version after the refused save.
     expect(s.mismatches).toEqual([]);
+    const firstPut = s.sent.findIndex((x) => x.method === "PUT");
+    expect(s.sent.slice(0, firstPut).some((x) => x.path.endsWith(".md"))).toBe(false);
+    expect(s.sent.filter((x) => x.method === "GET" && x.path.endsWith(".md")).map((x) => x.path)).toEqual(["/agents/refund-finder/learning/files/try-policies-refund-policy-first.md"]);
     const writes = s.sent.filter((x) => x.method !== "GET");
     expect(writes.map((w) => `${w.method} ${w.path} ${w.headers["if-match"]}`)).toEqual([
       `PUT /agents/refund-finder/learning/files/try-policies-refund-policy-first.md ${opened.headers!.etag}`,

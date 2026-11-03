@@ -10,7 +10,7 @@
   "body": {
     "runs": [
       {
-        "run_id": "01a1a28e-b627-7146-a5d8-f49bbba7d1b6",
+        "run_id": "01a1a296-19d9-75f7-84d9-fab30134df42",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -19,8 +19,8 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.everlane.com",
-        "created_at": "2026-11-03T17:57:04.176Z",
-        "ended_at": "2026-11-03T17:57:08.002Z",
+        "created_at": "2026-11-03T18:05:08.450Z",
+        "ended_at": "2026-11-03T18:05:12.438Z",
         "error": null,
         "review": null,
         "pending": null,
@@ -48,7 +48,7 @@
         }
       },
       {
-        "run_id": "01a1a28e-a41a-713a-9805-27308e34b1ce",
+        "run_id": "01a1a296-05ea-7282-b71a-7dce80836923",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -57,8 +57,8 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.kith.com",
-        "created_at": "2026-11-03T17:56:59.555Z",
-        "ended_at": "2026-11-03T17:57:04.071Z",
+        "created_at": "2026-11-03T18:05:03.346Z",
+        "ended_at": "2026-11-03T18:05:08.029Z",
         "error": null,
         "review": null,
         "pending": null,
@@ -86,7 +86,7 @@
         }
       },
       {
-        "run_id": "01a1a28e-9402-7ec4-b217-07c050daaa88",
+        "run_id": "01a1a295-f5e8-768e-8254-a49f61f21fae",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -95,8 +95,8 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.allbirds.com",
-        "created_at": "2026-11-03T17:56:55.440Z",
-        "ended_at": "2026-11-03T17:56:59.270Z",
+        "created_at": "2026-11-03T18:04:59.247Z",
+        "ended_at": "2026-11-03T18:05:03.000Z",
         "error": null,
         "review": null,
         "pending": null,
@@ -124,7 +124,7 @@
         }
       },
       {
-        "run_id": "01a1a28e-8155-7a86-b290-f0a5915db949",
+        "run_id": "01a1a295-e3a4-7740-97b6-9a00fda0a565",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -133,8 +133,8 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.brooklinen.com",
-        "created_at": "2026-11-03T17:56:50.656Z",
-        "ended_at": "2026-11-03T17:56:54.760Z",
+        "created_at": "2026-11-03T18:04:54.573Z",
+        "ended_at": "2026-11-03T18:04:58.543Z",
         "error": null,
         "review": null,
         "pending": null,
@@ -167,7 +167,7 @@
         }
       },
       {
-        "run_id": "01a1a28e-5340-7b7f-bd5e-e60a65459a70",
+        "run_id": "01a1a295-b5d3-7dfd-bc5d-6d6a5ed2bda6",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -176,8 +176,8 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.patagonia.com",
-        "created_at": "2026-11-03T17:56:38.860Z",
-        "ended_at": "2026-11-03T17:56:49.409Z",
+        "created_at": "2026-11-03T18:04:42.861Z",
+        "ended_at": "2026-11-03T18:04:53.155Z",
         "error": null,
         "review": null,
         "pending": null,
@@ -195,7 +195,7 @@
         }
       },
       {
-        "run_id": "01a1a28e-52b4-7255-a460-963ff10c581b",
+        "run_id": "01a1a295-b578-7c09-bcc8-d176a2176698",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -204,8 +204,8 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.taylorstitch.com",
-        "created_at": "2026-11-03T17:56:38.847Z",
-        "ended_at": "2026-11-03T17:56:50.007Z",
+        "created_at": "2026-11-03T18:04:42.804Z",
+        "ended_at": "2026-11-03T18:04:53.987Z",
         "error": null,
         "review": null,
         "pending": null,

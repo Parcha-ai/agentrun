@@ -28,8 +28,8 @@ export type RunLearning = {
   learned?: LearnedRef[];
 } | null;
 
-/** `etag` (a newer server's): the note's version, the file read's ETag, so an edit or a retire is made on the version a
- *  card showed without reading it again. */
+/** `etag`: the note's version, the same value as the file read's ETag, so an edit or a retire is made on the version a
+ *  card showed without reading it again (absent from an older server's). */
 export type LearningNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; superseded_by: string | null; text: string; etag?: string };
 /** One change to what the agent learned, newest first: a run's (`by.run`; `reason`, why it was kept) or a person's. */
 export type LearningChange = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
@@ -45,10 +45,10 @@ export type AgentLearning = { agent: string; main: string | null; index: string;
 /** A note as GET .../learning/files/{file} answers it, and as a write answers it: its whole text and its version, as
  *  getAgent gives an agent and its ETag. */
 export type NoteText = { note: string; etag: string | null };
-/** The version of a note a person saw, which an edit or a retire of it is made on. From a server whose notes carry their
- *  `etag`, it is the card's own. Else the note is read now, and is that version only if its text is still the text the
- *  card showed: `changed` when it is not (someone, or a run, changed it since), `unknown` when the server named no
- *  version. This is the one place the console moves to the notes' own `etag`. */
+/** The version of a note a person saw, which an edit or a retire of it is made on: the card's own `etag`, which every
+ *  note the server lists carries, with no read. Only for a note with none (an older server's) is it read now, and is
+ *  that version only if its text is still the text the card showed: `changed` when it is not (someone, or a run,
+ *  changed it since), `unknown` when the server named no version. The one place this is decided. */
 export type Seen = { kind: "same"; etag: string; text: string } | { kind: "changed"; now: NoteText } | { kind: "unknown" };
 export async function seenVersion(note: Pick<LearningNote, "text" | "etag">, read: () => Promise<NoteText>): Promise<Seen> {
   if (typeof note.etag === "string" && note.etag) return { kind: "same", etag: note.etag, text: note.text };
