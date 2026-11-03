@@ -3,7 +3,7 @@
 // whole string (go.dev/dl, 3.15 MB of tables: 300 KB took 1.3 s, 600 KB 8.7 s, the whole did not end in 240 s); and
 // the parser under it (node-html-parser) walks a node's siblings each time it appends one, so a table of 8,000 rows
 // takes a second to parse, and four more when it is left unclosed and the parser takes it apart. So the page is never
-// parsed whole: one linear scan of its tags (nextTag), with a stack of the elements open, cuts it into pieces of about
+// parsed whole: one linear scan of its tags (tagsOf), with a stack of the elements open, cuts it into pieces of about
 // PIECE_CHARS, each converted on its own. A piece is cut before a block element's start tag where every element open
 // adds nothing to the markdown (a div, a section); past WIDE_CHARS, also between a list's items or a table's rows, or
 // before a <br> outside a table's rows, so a table or a list smaller than a piece is never cut; past FORCE_CHARS, before
@@ -12,7 +12,7 @@
 // their end tags, so no piece is ever unclosed. The markdown of a well-formed page in pieces is the one pass's, but for
 // the spaces that end a line at a piece's edges; an ordered list in pieces is counted from 1 in each.
 import { NodeHtmlMarkdown } from "node-html-markdown";
-import { nextTag } from "./page-scan.js";
+import { tagsOf } from "./page-scan.js";
 
 export const PIECE_CHARS = 16_384;
 /** Past this, a piece is cut between a list's items or a table's rows, or before a `<br>`. */
@@ -96,7 +96,8 @@ export function piecesOf(html: string): string[] {
     }
     return -1;
   };
-  for (let tag = nextTag(html, 0); tag && tag.gt >= 0; tag = nextTag(html, tag.gt + 1)) {
+  const next = tagsOf(html);
+  for (let tag = next(0); tag && tag.gt >= 0; tag = next(tag.gt + 1)) {
     const { lt, gt, name, end } = tag;
     if (!name) continue;
     if (end) {

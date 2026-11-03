@@ -145,7 +145,8 @@ test("a quoted attribute value is part of its tag: a \"<script>\" in one drops n
     const how = deadlineMs === undefined ? "markdown" : "text";
     assert.equal(page.converted, how);
     assert.match(page.text, /Keep me/, how);
-    assert.match(page.text, how === "markdown" ? /\[Next\]\(\/next\)/ : /Next/, how);
+    // node-html-markdown writes a link's title into its markdown: the link stands, with its href.
+    assert.match(page.text, how === "markdown" ? /\[Next\]\(\/next "x > y"\)/ : /Next/, how);
     assert.match(page.text, /After/, how);
     assert.deepEqual(page.links, ["https://site.example/next"], how);
   }
