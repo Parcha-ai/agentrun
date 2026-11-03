@@ -16,7 +16,7 @@ function open(props: { minCapUsd?: number | null; result?: StartResult; efforts?
   root = createRoot(host);
   act(() => root!.render(createElement(Playground, { agents: [agentFixture("invoice-checker")], efforts: props.efforts ?? [], origin: "http://serve.test", agentId: "invoice-checker", minCapUsd: props.minCapUsd, result: props.result, onSend: async () => ({ status: 202, ms: 1, body: {} }) })));
   const cap = () => host.querySelector('input[placeholder="e.g. 0.50"]') as HTMLInputElement;
-  const field = () => cap().closest("label")!;
+  const field = () => cap().parentElement!;
   const type = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => act(() => {
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
     el.dispatchEvent(new Event("input", { bubbles: true }));
