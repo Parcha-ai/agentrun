@@ -38,6 +38,10 @@ type Tab = "graph" | "report" | "timeline" | "files";
 export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText }: RunDetailProps) {
   const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
   const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
+  // Once the page's steps scroll, a phone's header goes compact (RunHeader's `compact`), and whole again back near the
+  // top: in past 24 px, out under 4, so a scroll that rests near the line doesn't flicker it. At 390 px the header is
+  // about 250 px whole and 65 compact.
+  const [compact, setCompact] = useState(false);
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   const waiting = pendingQuestion(run.status, run.state, rows);
   // Only the newest read lands: closing the viewer or opening another file retires a read still in flight.
@@ -56,7 +60,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`]];
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
+      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} compact={compact} />
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map(([id, name]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
@@ -65,7 +69,15 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           </button>
         ))}
       </div>
-      {tab === "graph" ? <div className="min-h-0 flex-1">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto">
+      {tab === "graph" ? <div className="min-h-0 flex-1">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto" data-run-scroll onScroll={(e) => {
+        const area = e.currentTarget;
+        const top = area.scrollTop;
+        // Only when the steps would still scroll with the header compact, by more than the 24 px it takes to go compact:
+        // else the shrink lets them fit, the scroll snaps back to the top, and the header grows again, a flicker. The
+        // compact header is about 65 px at 390 px (72 with room), so going compact frees the header's height less that.
+        const frees = (area.parentElement?.querySelector("header")?.offsetHeight ?? 0) - 72;
+        setCompact((c) => (c ? top > 4 : top > 24 && area.scrollHeight - area.clientHeight > frees + 24));
+      }}>
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
