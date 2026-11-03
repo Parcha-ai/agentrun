@@ -22,6 +22,7 @@ import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@
 import type { DurableRun } from "@parcha/pi-durable-disk";
 import { CAP_REFUSED_FIELD, HELD_FIELD, HELD_USD } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
+import { NOT_SENT } from "./cap.js";
 
 /** Whether the run in `root` (its directory) was cancelled: the mark serve's cancel writes there first. */
 export const cancelledIn = (root: string) => () => existsSync(join(root, RUN_CANCELLED));
@@ -38,10 +39,13 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     const run = await opened;
     await run.harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), BACKGROUND_CONTEXT);
   };
-  const failed = (model: Model<Api>, why: string): AssistantMessage => ({
+  /** pi's message for a request that ended here with an error, never sent (NOT_SENT, which the cap counts at $0) unless
+   *  `left`: then it left, and the cap counts it at its hold. */
+  const failed = (model: Model<Api>, why: string, left = false): AssistantMessage => ({
     role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, stopReason: "error", timestamp: Date.now(),
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
     errorMessage: why,
+    ...(left ? {} : { [NOT_SENT]: true }),
   });
   const reason = (error: unknown) => String((error as Error)?.message ?? error).slice(0, 200);
   /** What the run's cap held for a request (its options' HELD_USD), as an end mark's field; none without a cap. */
@@ -93,7 +97,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
         result = await inner.result();
       } catch (error) {
         // A stream that throws instead of ending on an error event still ends the request, as an error, never a hang.
-        result = failed(model, `the model request failed: ${reason(error)}`);
+        result = failed(model, `the model request failed: ${reason(error)}`, true);
         outer.push({ type: "error", reason: "error", error: result });
       }
       // An answer or a failure gets pi's own entry; an abort may get none, so its end is marked, with the provider's id
@@ -137,7 +141,9 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       // Its tokens, in pi's shape, when pi counted any: zeros are no count.
       const u = result.usage;
       const usage = u && u.input + u.output + u.cacheRead + u.cacheWrite > 0 ? { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite } : undefined;
-      await mark(REQUEST_COST, usage ? { ...COMPACTION, usd, usage: usage as never } : { ...COMPACTION, usd }).catch(() => undefined);
+      // One that ended on an error left, and its usage is what had streamed: it says so, with the hold the cap counts it at.
+      const failure = result.stopReason === "error" ? { failed: true, ...heldOf(options) } : {};
+      await mark(REQUEST_COST, usage ? { ...COMPACTION, usd, usage: usage as never, ...failure } : { ...COMPACTION, usd, ...failure }).catch(() => undefined);
     }
     return result;
   };
