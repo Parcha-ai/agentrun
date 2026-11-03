@@ -14,7 +14,7 @@ function read(entry, id, path, status = "success", { harness = "pi", above = fal
 }
 
 test("a run's reads of its .learning/ copy, on pi, claude-agent and codex rows: relative, ./, absolute and dotted paths each name the file once, in the order first read; a failed or unended read, MEMORY.md, a file below the folder's top, another tool and a look-alike folder do not", () => {
-  const work = "/srv/data/runs/0193/work";
+  const work = "/var/lib/agentrun/runs/0193/work";
   const rows = [
     // pi: relative to the workspace, as pi's file tools take it.
     ...read(10, "call_A1|fc_1", ".learning/units.md"),
