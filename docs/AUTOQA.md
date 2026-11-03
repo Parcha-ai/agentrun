@@ -206,7 +206,7 @@ The journal is the `entries` table of the run's `store/run.sqlite`.
 ### Tool plane
 
 What a run's agent can call, on every harness, and the keys those tools use. Later changes extend this section as they
-land (web search and tool settings, monid on every harness, the per-tool permission gate).
+land (native and picked web search and tool settings, monid on every harness, the per-tool permission gate).
 
 **Seam.**
 - Takes from the kernel:
@@ -244,6 +244,8 @@ land (web search and tool settings, monid on every harness, the per-tool permiss
    with their replay class; a `write` cut off by a crash comes back interrupted, never re-run.
 5. A `monid.run` is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
    by name; an answer over 60,000 characters is filed under `work/evidence/monid/`.
+6. On pi, `web_search` searches Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server; a 429
+   is a tool error naming the rate limit, never a hang.
 
 ### Places (boxes, home, files)
 
