@@ -913,3 +913,32 @@ test("a server that cannot write when it first started takes now, says so, and s
   await sleep(1_500);
   assert.equal(ofType(hook.got, "run.ended").length, 1, "nothing ended before it is sent again");
 });
+
+test("a run that ended before record-keeping began is continued at once, its old end never sent again, and its next end arrives under its own id", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  let api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "older-continued", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, sent then");
+  await first.close();
+  stopped = true;
+  const before = endedIn(data, run.run_id);
+  asAnOlderServerLeftIt(data, run.run_id, new Date(Date.parse(before) + 1_000).toISOString());
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  api = client(next.baseUrl, next.token);
+  const continued = await api("POST", `/runs/${run.run_id}/messages`, { content: "And now?" });
+  assert.equal(continued.status, 202, JSON.stringify(continued.body));
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 2, "its next end");
+  await sleep(500);
+  const after = endedIn(data, run.run_id);
+  assert.notEqual(after, before);
+  assert.deepEqual(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]), [noticeId(run.run_id, "run.ended", before), noticeId(run.run_id, "run.ended", after)], "the old end once, then the new one under its own id");
+});
