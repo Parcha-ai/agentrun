@@ -565,7 +565,7 @@ test('the command line fails a change to the files a package on its own version 
   await withVersion(root, git);
   const base = await ownPackage(root, git, '0.3.0');
   await mkdir(join(root, 'scripts'));
-  await writeFile(join(root, 'scripts/changes.mjs'), await readFile(script, 'utf8'));
+  await copyScript(root);
   const local = () => spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', base], { cwd: root, encoding: 'utf8' });
   await writeFile(join(root, 'changes/start.md'), fragment('repo', 'fix', 'Start.'));
   await writeFile(join(root, 'packages/agentrun/lib/start.mjs'), 'export const start = 2;\n');
