@@ -24,7 +24,7 @@ export function problem(e: unknown, what: string): Problem {
   if (e.status === 429) return of("Too many requests at once.", "Wait a few seconds, then try again.");
   if (e.retryable || e.status === 409 || e.status === 503) return of("The server is busy.", "Try again in a moment.");
   if (e.status >= 500) return of("The server hit a problem on its side.", "Try again. If it keeps failing, the server's log says why.");
-  return of("The server turned the request down.", "Try again, and if it keeps happening, the server's words below say why.");
+  return of("The server turned the request down.", "Its words say why: change what they name, then try again.");
 }
 
 /** A title for a request the server did not carry out: "refused" only when it answered with a refusal (a 4xx). */

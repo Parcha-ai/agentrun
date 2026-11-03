@@ -26,7 +26,7 @@ assert.equal(lock.lockfileVersion, 3, 'Source inventory requires package-lock v3
 // names), and it ships only where a runtime dependency requires it, which that dependency's own edge reaches. A workspace
 // package's optional peers (the host it runs in, an adapter's SDK) are followed.
 const entries = lock.packages;
-const roots = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness'];
+const roots = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'];
 const inventory = new Map();
 const unresolved = [];
 function resolveDependency(from, name) {
@@ -174,7 +174,7 @@ async function collect(relative = '') {
     if (entry.isDirectory()) { await collect(path); continue; }
     if (!entry.isFile()) throw new Error(`Source export refuses special file: ${path}`);
     const ext = extension(path);
-    const isText = entry.name === '.gitignore' || textExtensions.has(ext) || allowedRootFiles.has(path) || /^packages\/(?:dsl|jev|pi|pi-durable-disk|pi-browser|pi-vision|pi-transport|pi-durable-agent|serve|pi-git-remote|pi-agent-learn|learn|decisions|run-adapters|run-adapters-claude-agent|run-adapters-codex|harness)\/(?:LICENSE|NOTICE)$/.test(path) || path === 'packages/pi-durable-disk/bin/archil-scoped' || path === 'packages/serve/launcher/agentrun-serve' || path === 'packages/pi-durable-disk/docker/Dockerfile' || path === 'packages/pi-durable-disk/.dockerignore' || path === 'packages/serve/docker/Dockerfile' || path === '.dockerignore' || path === 'spec/lean/lean-toolchain' || path === '.github/CODEOWNERS' || /^packages\/run-adapters(?:-[a-z0-9-]+)?\/vendor\/durable-harness\/port\/patches\/[a-z0-9-]+\/\d{3}-[a-z0-9-]+\.patch$/.test(path);
+    const isText = entry.name === '.gitignore' || textExtensions.has(ext) || allowedRootFiles.has(path) || /^packages\/(?:dsl|jev|pi|pi-durable-disk|pi-browser|pi-vision|pi-transport|pi-durable-agent|serve|pi-git-remote|pi-agent-learn|learn|decisions|run-adapters|run-adapters-claude-agent|run-adapters-codex|harness|agentrun)\/(?:LICENSE|NOTICE)$/.test(path) || path === 'packages/pi-durable-disk/bin/archil-scoped' || path === 'packages/serve/launcher/agentrun-serve' || path === 'packages/pi-durable-disk/docker/Dockerfile' || path === 'packages/pi-durable-disk/.dockerignore' || path === 'packages/serve/docker/Dockerfile' || path === '.dockerignore' || path === 'spec/lean/lean-toolchain' || path === '.github/CODEOWNERS' || /^packages\/run-adapters(?:-[a-z0-9-]+)?\/vendor\/durable-harness\/port\/patches\/[a-z0-9-]+\/\d{3}-[a-z0-9-]+\.patch$/.test(path);
     if (!isText && !binaryExtensions.has(ext)) throw new Error(`Unreviewed source-export file type: ${path}`);
     const bytes = await readFile(join(root, path));
     if (ext === '.pdf' && !assetsLines.some(line => line.includes(`\`${path.split('/').at(-1)}\``) && line.includes(sha256(bytes)))) throw new Error(`Unreviewed PDF: ${path} is not in ASSETS.md with its SHA-256 ${sha256(bytes)} on its line`);

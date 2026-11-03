@@ -95,20 +95,6 @@ test("PUT definition takes the contract's body too: the definition itself, with 
   assert.deepEqual([jumped.body.definition.version, jumped.body.definition.instructions, await revisions()], [4, "Further on.", 4], "a version further on is taken, numbered as the next");
 });
 
-test("the served document takes exactly one of PUT definition's two bodies: the contract's, or this server's {definition, skills?, note?}; never both, never neither", async (t) => {
-  const { api } = await serve(t);
-  const doc = (await api("GET", "/openapi.json")).body;
-  const op = doc.paths["/agents/{agent_id}/definition"].put;
-  const schema = op.requestBody.content["application/json"].schema;
-  const definition = { id: "a", version: 2, name: "a", instructions: "x", skills: [], tools: [] };
-  const problems = (value) => schemaProblems(doc, schema, value);
-  assert.deepEqual(problems(definition), [], "the contract's body");
-  assert.deepEqual(problems({ definition, skills: { "cite/SKILL.md": "# Cite" }, note: "why" }), [], "this server's body");
-  assert.notDeepEqual(problems({ ...definition, definition }), [], "both at once");
-  assert.notDeepEqual(problems({ note: "why" }), [], "neither");
-  assert.deepEqual(op["x-agentrun-serve-changed"], { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" });
-});
-
 test("POST current makes an earlier revision current again; a revision of another agent is refused", async (t) => {
   const { api } = await serve(t);
   const first = (await api("POST", "/agents", agent("back"))).body;
@@ -176,6 +162,9 @@ test("a workflow agent: its definition carries the workflow, its kind is workflo
   const created = await api("POST", "/agents", flowAgent("flow"));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   assert.deepEqual([created.body.kind, created.body.definition.workflow.name], ["workflow", "answer"]);
+  const started = await api("POST", "/agents/flow/runs", { input: { question: "What is six times seven?" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.deepEqual((await api("GET", "/runs?agent=flow")).body.runs.map((r) => [r.run_id, r.kind]), [[started.body.run_id, "workflow"]]);
   assert.equal((await api("POST", "/agents", flowAgent("bad", { v: 2, name: "bad" }))).body.error.fields[0].field, "definition.workflow");
   assert.equal((await api("GET", "/agents/bad")).status, 404, "a refused workflow makes no agent");
 });

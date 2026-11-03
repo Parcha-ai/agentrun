@@ -114,7 +114,9 @@ export class Owner {
 
   /** The first password, from setup: refused once there is one (`exists`) or while another is being set. `byToken`: the
    *  server's token stands in for the code. */
-  async setFirst(password: string, code: unknown, byToken: boolean): Promise<"ok" | "exists" | "code"> {
+  /** `along`: what the setup keeps with the owner (setup's import), written once the setup is the one going on and before
+   *  the password is: a setup that cannot write it sets no owner, and one whose password is not written takes it back. */
+  async setFirst(password: string, code: unknown, byToken: boolean, along?: { keep: () => Promise<unknown>; drop: () => Promise<unknown> }): Promise<"ok" | "exists" | "code"> {
     if (this.settingUp || this.hasPassword()) return "exists";
     this.settingUp = true;
     try {
@@ -122,7 +124,13 @@ export class Owner {
         const spent = this.spendCode(code);
         if (spent !== "ok") return "code";
       }
-      await this.setPassword(password);
+      await along?.keep();
+      try {
+        await this.setPassword(password);
+      } catch (error) {
+        await along?.drop();
+        throw error;
+      }
       return "ok";
     } finally {
       this.settingUp = false;

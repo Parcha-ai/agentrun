@@ -30,6 +30,11 @@ export type DockerBoxesOptions = {
 	readonly docker?: string;
 	/** Image for a spec that names none. Default `debian:bookworm-slim`. */
 	readonly image?: string;
+	/**
+	 * The user every program of a box runs as, `uid:gid` or `uid` (Docker's `--user`). Default: the image's. A host that
+	 * binds its own directories in names its own ids, so what the box writes there stays the host's to manage.
+	 */
+	readonly user?: string;
 };
 
 type Inspected = {
@@ -189,6 +194,9 @@ function createError(stderr: string): BoxError {
  * machine, where the sources are checked.
  */
 export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
+	if (options.user !== undefined && !/^\d+(:\d+)?$/.test(options.user)) {
+		throw new Error(`the docker user ${options.user} is not uid or uid:gid`);
+	}
 	const docker = new Docker(options.docker ?? "docker");
 
 	return {
@@ -234,6 +242,7 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
 			for (const [key, value] of Object.entries(spec.env ?? {})) args.push("--env", `${key}=${value}`);
 			if (network.kind === "none") args.push("--network", "none");
+			if (options.user !== undefined) args.push("--user", options.user);
 			if (spec.cpus !== undefined) args.push("--cpus", String(spec.cpus));
 			if (spec.memoryMb !== undefined) args.push("--memory", `${spec.memoryMb}m`);
 			if (spec.gpu !== undefined) args.push("--gpus", "all");
