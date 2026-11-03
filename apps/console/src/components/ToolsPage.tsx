@@ -11,8 +11,9 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
  *  agent without its own takes, and what each resolves to on each harness. A change is saved at once (PUT), and
  *  `onSaved` reads the capabilities again: what each capability resolves to is the server's to say. `onOpen` reads them as
  *  the page opens, since the settings it reads may be newer than capabilities read earlier (another tab's change); until
- *  capabilities name the provider a row shows, its resolution reads "reading…". */
-export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choices: ToolChoice[]; onSaved: () => void; onOpen?: () => void }) {
+ *  capabilities name the provider a row shows, its resolution reads "reading…", and a read that failed says so with
+ *  Retry (`onOpen` answers whether its read landed). */
+export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choices: ToolChoice[]; onSaved: () => void; onOpen?: () => Promise<boolean> | void }) {
   const [answer, setAnswer] = useState<ToolSettings | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [problem, setProblem] = useState<{ fields: Record<string, string>; error: ApiError | null } | null>(null);
@@ -23,7 +24,10 @@ export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choice
     v2.toolSettings().then((s) => { if (n === asked.current) { setAnswer(s); setLoadError(null); } }, (e) => { if (n === asked.current) setLoadError(apiError(e)); });
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { onOpen?.(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Whether the last capabilities read this page asked for failed: then a row it would have answered offers Retry.
+  const [capsFailed, setCapsFailed] = useState(false);
+  const readCaps = () => { setCapsFailed(false); void Promise.resolve(onOpen?.()).then((ok) => { if (ok === false) setCapsFailed(true); }); };
+  useEffect(readCaps, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (!answer) return loadError
     ? (
       <div className="m-8 border p-4" role="alert">
@@ -58,7 +62,9 @@ export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choice
         <section aria-label="This server's providers">
           {choices.length ? (
             <ToolTable label="This server's tool providers" rows={choices} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onChange={(next) => void save(next)}
-              resolvesOf={(t, provider) => (provider === t.provider ? <PerHarness choice={t} /> : <span className="block font-mono text-[12px] text-muted-foreground">reading…</span>)} />
+              resolvesOf={(t, provider) => (provider === t.provider ? <PerHarness choice={t} />
+                : capsFailed ? <span className="block text-[12px] text-muted-foreground">What it resolves to couldn't be read. <button type="button" onClick={readCaps} className="caps ml-1 border px-2 py-0.5 text-[11px] hover:bg-accent">Retry</button></span>
+                : <span className="block font-mono text-[12px] text-muted-foreground">reading…</span>)} />
           ) : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">This server offers no tool with a choice of provider.</p>}
           {rest.map((m) => <p key={m} className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}
           {problem?.error && <div className="mt-3 border"><RunError error={problem.error} title="The change was not saved" /></div>}

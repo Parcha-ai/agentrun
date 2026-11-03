@@ -182,7 +182,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The capabilities, read at the start and again after a settings save: only the newest read lands, so an answer to an
   // earlier read (two saves in a row) never puts back what an earlier save left.
   const capsAsked = useRef(0);
-  const readCaps = () => { const n = ++capsAsked.current; v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); }).catch(() => {}); };
+  // It answers whether the read landed, for a page that says so (Settings → Tools).
+  const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); return true; }, () => false); };
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
   // view opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere, is named at once, and

@@ -148,3 +148,20 @@ describe("Settings → Tools, the server's why", () => {
     expect(text).toMatch(/codex: native(?! ·)/);
   });
 });
+
+describe("Settings → Tools, a capabilities read that fails", () => {
+  it("never looks busy for ever: a failed read says so with a retry, which reads again", async () => {
+    const stale = toolChoices([{ name: "web_search", providers: ["auto", "exa-keyless", "off"], provider: "exa-keyless", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } }]);
+    const v2 = { toolSettings: async () => ({ web_search: { provider: "off" } }), saveToolSettings: async (b: ToolSettings) => b };
+    let reads = 0;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: stale, onSaved: () => {}, onOpen: async () => { reads++; return false; } } as never)));
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const row = () => host.querySelector('tr[data-tool="web_search"]')!;
+    expect(row().textContent).not.toContain("reading…");
+    expect(row().textContent).toContain("couldn't be read");
+    await act(async () => { [...row().querySelectorAll("button")].find((b) => /Retry/.test(b.textContent ?? ""))!.click(); });
+    expect(reads).toBe(2);
+  });
+});
