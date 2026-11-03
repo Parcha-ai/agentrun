@@ -80,7 +80,10 @@ test("a request a crash cut (marked as sent, no answer, no end) counts at the fi
 
 test("a cut request is unknown when its start mark holds no figure (an older store), and one request is counted once whatever marks and entry it has", (t) => {
   assert.equal(spentIn(storeOf(t, [startedHeld(0.001), answer({ total: 0.001 }), started])), null, "a start with no figure, cut");
-  assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), startedHeld(0.4)])), null, "a figure on the cut one, but a start without one: which was cut is not certain");
+  // Read in order, the answer closed the start before it, which holds no figure: the cut one is certain, at its own.
+  assert.equal(Math.round(spentIn(storeOf(t, [started, answer({ total: 0.001 }), startedHeld(0.4)])) * 1e6) / 1e6, 0.401, "an older start, answered before the cut one started");
+  assert.equal(spentIn(storeOf(t, [started, startedHeld(0.4), answer({ total: 0.001 })])), null, "a start with no figure that may still be the open one: which was cut is not certain");
+  assert.equal(spentIn(storeOf(t, [startedHeld(0.2), started])), null, "a start with no figure still open at the crash, beside one with a figure: unknown, never the figure alone");
   const round = (usd) => Math.round(usd * 1e6) / 1e6;
   for (const [why, entries] of Object.entries({
     "start, aborted entry, end": [startedHeld(0.4), answer({ total: 0 }, "aborted"), ended(0.4)],
@@ -101,6 +104,79 @@ test("a request stopped before its end counts at the figure its end mark holds, 
   for (const [why, entries] of Object.entries(cases)) assert.equal(round(spentIn(storeOf(t, entries))), 0.501, why);
   assert.equal(round(spentIn(storeOf(t, [started, answer({ total: 0.001 }), compactionStarted, ended(0.2, { request: "compaction" })]))), 0.201, "a summary stopped before its end, at its figure");
   assert.equal(round(spentIn(storeOf(t, [started, ended(0.5), started, answer({ total: 0.002 }), refusedStart, refused]))), 0.502, "the cap's refusal, marked, answers its own mark");
+});
+
+test("after a crash, each request still open counts at its own start's figure: a start an answer or an end mark closed is never counted again", (t) => {
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.3), answer({ total: 0.2 }), startedHeld(0.1)]))), 0.3, "answered at 0.20 before the cut one (held 0.10) started: 0.20 + 0.10, never the answered start's 0.30 again");
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.1), startedHeld(0.3), ended(0.3)]))), 0.4, "one stopped at 0.30 (its end mark) and one a crash cut, held 0.10: 0.30 + 0.10");
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.3), ended(0.3), startedHeld(0.1)]))), 0.4, "the same, the stop before the cut one started");
+  // Requests that overlap: the marks do not say which one an answer closed, so it closes the smallest figure still open.
+  // Its cost is not read as a clue: a held figure is the cap's worst case, and a reading that trusted it never to be
+  // passed would count less than was spent if it ever were.
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.1), startedHeld(0.3), answer({ total: 0.2 })]))), 0.5, "either can have been cut: at the larger, 0.30");
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.5), startedHeld(0.2), answer({ total: 0.1 }), startedHeld(0.3)]))), 0.9, "an overlap, then a request after it: 0.10 + 0.50 + 0.30");
+});
+
+/** The most the marks `events` allow the run to have spent: each answer can have closed any request open when it came,
+ *  each end mark one open with its figure, and each request still open at the end counts at its figure. */
+const mostOf = (events, open = [], i = 0) => {
+  if (i === events.length) return open.reduce((sum, figure) => sum + figure, 0);
+  const [kind, x] = events[i];
+  const without = (figure) => {
+    const at = open.indexOf(figure);
+    return [...open.slice(0, at), ...open.slice(at + 1)];
+  };
+  if (kind === "start") return mostOf(events, [...open, x], i + 1);
+  if (kind === "end") return open.includes(x) ? x + mostOf(events, without(x), i + 1) : -Infinity;
+  if (!open.length) return x + mostOf(events, open, i + 1);
+  return Math.max(...[...new Set(open)].map((figure) => x + mostOf(events, without(figure), i + 1)));
+};
+
+test("read in order, the spend after a crash is never less than any reading of the marks allows, and exactly what was spent when no requests overlap", (t) => {
+  let seed = 1377;
+  const rand = (n) => ((seed = (seed * 1103515245 + 12345) % 2147483648), seed % n);
+  const FIGURES = [0.1, 0.2, 0.3, 0.4, 0.5];
+  // A run's requests as they went: each one opens with its start mark, and may close by an answer (at most its figure)
+  // or a stop (its end mark); the process then crashes, cutting the rest. `serial`: each closes before the next opens.
+  const runOf = (serial) => {
+    const entries = [];
+    const events = [];
+    const open = [];
+    let spent = 0;
+    for (let step = 0, steps = 1 + rand(7); step < steps; step++) {
+      const opening = open.length === 0 || (!serial && rand(2) === 0);
+      if (opening) {
+        const figure = FIGURES[rand(FIGURES.length)];
+        open.push(figure);
+        entries.push(startedHeld(figure));
+        events.push(["start", figure]);
+        continue;
+      }
+      const [figure] = open.splice(rand(open.length), 1);
+      if (rand(2) === 0) {
+        const cost = Math.round(figure * rand(5) * 25_000) / 100_000;
+        entries.push(answer({ total: cost }));
+        events.push(["answer", cost]);
+        spent += cost;
+      } else {
+        entries.push(ended(figure));
+        events.push(["end", figure]);
+        spent += figure;
+      }
+    }
+    return { entries, events, most: spent + open.reduce((sum, figure) => sum + figure, 0) };
+  };
+  for (let i = 0; i < 300; i++) {
+    const { entries, events, most: actual } = runOf(false);
+    const got = spentIn(storeOf(t, entries));
+    assert.ok(got >= mostOf(events) - 1e-9, `never less than the marks allow: ${got} for ${JSON.stringify(events)}`);
+    assert.ok(got >= actual - 1e-9, `never less than what the run can have spent: ${got} < ${actual}`);
+  }
+  for (let i = 0; i < 300; i++) {
+    const { entries, events, most } = runOf(true);
+    assert.ok(Math.abs(spentIn(storeOf(t, entries)) - most) < 1e-9, `exact with no overlap: ${JSON.stringify(events)}`);
+  }
 });
 
 test("the run's shown cost is the timeline's, unchanged: a stopped request is unknown there, and a refusal after it never makes it $0", () => {
