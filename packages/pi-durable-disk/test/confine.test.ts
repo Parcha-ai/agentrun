@@ -274,6 +274,21 @@ describe("every escape is refused by every operation, and nothing outside work/ 
     });
   });
 
+  it("a refusal's message names no path: not the one asked for, the workspace, or where it resolves (on a server, host paths)", async () => {
+    await withLayout(async (layout) => {
+      const env = layout.env();
+      const refusal = (result: Result<unknown, FileError>, path: string): string => {
+        assert.ok(!result.ok && result.error instanceof PathOutsideWorkError && result.error.reason === "outside_work", `${path}: ${JSON.stringify(result)}`);
+        return result.error.message;
+      };
+      // As pi's tools ask: resolved against the workspace first. Up out of it, absolute, and through links out of it.
+      for (const path of [join(layout.work, "../store/run.sqlite"), "/etc/passwd", join(layout.work, "link-abs"), join(layout.work, "link-root/etc/hostname")]) {
+        assert.equal(refusal(await env.readTextFile(path, context), path), "outside the workspace", path);
+      }
+      assert.equal(refusal(await env.remove(".", { recursive: true, force: true }, context), "."), "the workspace root itself cannot be removed or renamed");
+    });
+  });
+
   it("covers every path-taking method of pi's NodeExecutionEnv, so a method pi adds fails here until it is confined", async () => {
     await withLayout(async (layout) => {
       const piMethods = Object.getOwnPropertyNames(NodeExecutionEnv.prototype).filter(
