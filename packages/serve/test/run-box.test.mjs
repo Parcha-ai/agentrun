@@ -38,7 +38,10 @@ async function fakeDocker(t, vars = {}) {
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
   const calls = () => (existsSync(join(state, "argv.jsonl")) ? readFileSync(join(state, "argv.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
   const containers = async () => (await readdir(join(state, "containers")).catch(() => [])).filter((name) => name.endsWith(".json")).map((name) => JSON.parse(readFileSync(join(state, "containers", name), "utf8")));
-  return { state, calls, runs: () => calls().filter((args) => args[0] === "run"), removed: () => calls().filter((args) => args[0] === "rm").map((args) => args.at(-1)), containers };
+  // The fake writes a call's argv before it acts on it, so an `rm` is in `removed()` before its container's file is gone:
+  // a wait on a box's destroy waits on both.
+  const gone = (id) => !existsSync(join(state, "containers", `${id}.json`));
+  return { state, calls, runs: () => calls().filter((args) => args[0] === "run"), removed: () => calls().filter((args) => args[0] === "rm").map((args) => args.at(-1)), containers, gone };
 }
 
 function answers(data, runId) {
@@ -140,7 +143,7 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   assert.equal(args[args.indexOf("--entrypoint") + 2], "registry.example/agentrun-box:1", "AGENTRUN_DOCKER_IMAGE");
   for (const never of ["-e", "-v", "--volume", "--privileged", "--env-file", "--cap-add", "-p", "--publish"]) assert.ok(!args.includes(never), never);
   // Its destroy at the run's end: removed by the id its label lists.
-  await until(() => docker.removed().length === 1, "the destroy at the run's end");
+  await until(() => docker.removed().length === 1 && docker.gone(docker.removed()[0]), "the destroy at the run's end");
   assert.deepEqual(await docker.containers(), [], "no container is left");
 });
 
@@ -164,7 +167,7 @@ test("fake docker: a run's box is found by its label and taken over, its left co
   assert.deepEqual(docker.runs(), [], "taken over: no create");
   const execs = docker.calls().filter((args) => args[0] === "exec");
   assert.ok(execs[0].join(" ").includes(".pi-transport") && execs[0].join(" ").includes("kill -KILL"), "the first command kills what the earlier process left");
-  await until(() => docker.removed().includes(id), "the destroy at the run's end");
+  await until(() => docker.removed().includes(id) && docker.gone(id), "the destroy at the run's end");
 });
 
 test("fake docker: a bash timeout kills the command's group in the box, though the killed docker exec client left it running", { timeout: 90_000 }, async (t) => {
@@ -208,8 +211,9 @@ test("fake docker: a create that fails is the call's error, never a run on this 
   assert.match(bash.text, /the run's box could not be made: docker could not start a box: docker: Error response from daemon: the fake's start failed/);
   assert.equal(existsSync(join(data, "runs", runId, "work", "out.txt")), false, "nothing ran on this machine");
   assert.equal(docker.runs().length, 1);
-  await until(async () => (await docker.containers()).length === 0, "the left container's destroy");
-  assert.equal(docker.removed().length >= 1, true);
+  // Waited on by its rm and its file, not by polling containers(), which could read a file an rm in flight is removing.
+  await until(() => docker.removed().length >= 1 && docker.removed().every(docker.gone), "the left container's destroy");
+  assert.deepEqual(await docker.containers(), [], "no container is left");
 });
 
 test("fake docker: the start's sweep destroys the box of a run that has ended, and leaves one of a run this store does not know", { timeout: 90_000 }, async (t) => {
@@ -227,7 +231,7 @@ test("fake docker: the start's sweep destroys the box of a run that has ended, a
   await left("b".repeat(64), "run_unknown");
   const second = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
   t.after(() => second.close());
-  await until(() => docker.removed().includes("a".repeat(64)), "the sweep");
+  await until(() => docker.removed().includes("a".repeat(64)) && docker.gone("a".repeat(64)), "the sweep");
   assert.deepEqual(docker.removed(), ["a".repeat(64)]);
   assert.deepEqual((await docker.containers()).map((c) => c.Id), ["b".repeat(64)]);
 });
