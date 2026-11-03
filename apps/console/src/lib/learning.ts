@@ -142,7 +142,7 @@ export const runsWord = (n: number) => `${n} ${n === 1 ? "run" : "runs"}`;
  *  with a fix, or a stop. The tab lists the first kind and counts the others. */
 export type DropKind = "refused" | "nothing" | "skipped" | "stopped";
 const KIND: Record<string, DropKind> = {
-  grader: "refused", checker: "refused", screen: "refused", screen_down: "refused",
+  grader: "refused", checker: "refused", screen: "refused", screen_down: "refused", unparsed: "refused",
   empty: "nothing",
   no_budget: "skipped", unknown_cost: "skipped", no_write_tool: "skipped", tool_denied: "skipped",
 };
@@ -152,6 +152,7 @@ export const dropKind = (reason: string | null): DropKind => KIND[reason ?? ""] 
  *  else the console's for the reason. A reason the console does not know reads as a stop, never as a code. */
 const WORDS: Record<string, string> = {
   empty: "Nothing new to remember from this run.",
+  unparsed: "Not kept: its notes weren't in the expected format.",
   grader: "Not kept: it wouldn't help later runs enough.",
   checker: "Not kept: it held something that must not be stored.",
   screen: "Not kept: it held something that must not be stored.",
@@ -290,14 +291,17 @@ const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
 const upperFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** The look-back's one step, in words, from where the run's learning stands: under way, what it kept by name, what
- *  waits for the OK, nothing new, or why nothing was kept. Never a file path. */
+ *  waits for the OK (a merge that holds notes for it names them too), nothing new, or why nothing was kept. Never a
+ *  file path. */
 export function lookedBack(l: RunLearning | undefined): string {
   if (!l || stage(l) < 2) return "Looking back on this run…";
   if (l.state === "proposed") return `Looking back: ${lowerFirst(l.detail?.trim() || "Checking its new notes…")}`;
   const names = (refs: NoteRef[]) => refs.map((x) => x.name.replace(/\s+/g, " ").trim()).join(", ");
   if (l.state === "merged") {
     const kept = learnedBy(l);
-    return kept.length ? `Looked back: kept ${notes(kept.length)} (${names(kept)})` : `Looked back. ${l.detail?.trim() || "It kept what it learned."}`;
+    const waits = pendingBy(l);
+    const said = [...(kept.length ? [`kept ${notes(kept.length)} (${names(kept)})`] : []), ...(waits.length ? [`${lowerFirst(waitWords(waits.length))} (${names(waits)})`] : [])];
+    return said.length ? `Looked back: ${said.join("; ")}` : `Looked back. ${l.detail?.trim() || "It kept what it learned."}`;
   }
   if (l.state === "pending") {
     const waits = pendingBy(l);

@@ -1,7 +1,7 @@
 // What a person reads of a run's learning: every `detail` of Run.learning, which the run's learning row in its timeline
-// shows as its summary too, in one place and in a user's words. Never the machine's: no "main", "merged into", "end-of-run
-// turn", "grader's verdict" or "proposal". The reason codes (learning.ts LEARNING_REASONS) stay as they are for machines;
-// only these sentences are for people.
+// shows as its summary too, in one place and in a user's words, a note that waits for the owner's OK included. Never the
+// machine's: no "main", "merged into", "end-of-run turn", "grader's verdict" or "proposal". The reason codes (learning.ts
+// LEARNING_REASONS) stay as they are for machines; only these sentences are for people.
 //
 // Text a model wrote (a note's name, the grader's reason) is never shortened where it is said: a value that becomes a
 // secret later is found only whole, so a part of it kept would show for good. A run's learning keeps the parts its
@@ -85,13 +85,20 @@ export const said = {
   /** The end-of-run turn's message, as a person reads it in the timeline: never the prompt the model is sent. */
   asked: "Looking back on this run.",
   proposed: (notes: number) => `Checking ${count(notes, "new note")}…`,
-  /** What it learned, by name, and how many older notes they replace. */
-  merged: (learned: readonly { name: string; supersedes: readonly string[] }[]) => {
-    const names = learned.map((note) => note.name.replace(/\s+/g, " ").trim());
+  /** What it learned, by name, and how many older notes they replace; then what waits for the owner's OK, by name. A
+   *  merge that only holds notes for the OK says that alone. */
+  merged: (learned: readonly { name: string; supersedes: readonly string[] }[], pending: readonly { name: string }[] = []) => {
+    const flat = (name: string) => name.replace(/\s+/g, " ").trim();
+    const waiting = pending.length ? `Waiting for your OK: ${pending.map((note) => flat(note.name)).join("; ")}.` : "";
+    if (!learned.length && waiting) return waiting;
+    const names = learned.map((note) => flat(note.name));
     const replaced = learned.reduce((n, note) => n + note.supersedes.length, 0);
-    return `${names.length === 1 ? `Learned: ${names[0]}` : `Learned ${names.length} notes: ${names.join("; ")}`}${replaced ? ` (replaces ${count(replaced, "older note")})` : ""}`;
+    const kept = `${names.length === 1 ? `Learned: ${names[0]}` : `Learned ${names.length} notes: ${names.join("; ")}`}${replaced ? ` (replaces ${count(replaced, "older note")})` : ""}`;
+    return waiting ? `${kept}. ${waiting}` : kept;
   },
   empty: "Nothing new to remember from this run.",
+  /** The run's answer gave its notes, but not in the format asked for, so none was read. */
+  unparsed: "Not kept: its notes weren't in the expected format.",
   /** The grader's reason, its first sentence. */
   grader: (reason: string) => `Not kept: ${firstSentence(reason) || "it was not judged worth remembering."}`,
   /** The checks refused what the run wrote, at its end. */
@@ -119,12 +126,17 @@ export function notKept(verdict: Pick<Verdict, "reason" | "items">): string {
   return why ? said.grader(why) : said.stopped(STOPPED.unread);
 }
 
-/** A run's learning in words as a read says them, whole: what it learned or why the grader kept nothing, said again
- *  from its parts (`learned`, `verdict`) each cut by `cut` first (the host's secrets as they are now); any other detail,
- *  the server's own sentence, cut as well. The caller cuts the words short after. */
-export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" | "learned" | "verdict">, cut: (text: string) => string): string | null {
-  const { learned, verdict } = learning;
-  if (learning.state === "merged" && Array.isArray(learned) && learned.length) return said.merged(learned.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })));
+/** A run's learning in words as a read says them, whole: what it learned and what waits for the owner's OK, or why the
+ *  grader kept nothing, said again from its parts (`learned`, `pending`, `verdict`) each cut by `cut` first (the host's
+ *  secrets as they are now); any other detail, the server's own sentence, cut as well. The caller cuts the words short
+ *  after. */
+export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" | "learned" | "pending" | "verdict">, cut: (text: string) => string): string | null {
+  const { learned, pending, verdict } = learning;
+  if (learning.state === "merged") {
+    const kept = Array.isArray(learned) ? learned : [];
+    const waiting = Array.isArray(pending) ? pending.filter((note) => typeof note?.name === "string") : [];
+    if (kept.length || waiting.length) return said.merged(kept.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })), waiting.map((note) => ({ name: cut(note.name) })));
+  }
   if (learning.state === "dropped" && learning.reason === "grader" && verdict) return notKept({ reason: cut(verdict.reason), items: (verdict.items ?? []).map((item) => ({ ...item, why: cut(item.why) })) });
   return learning.detail === null ? null : cut(learning.detail);
 }

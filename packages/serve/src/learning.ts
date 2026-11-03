@@ -103,12 +103,13 @@ export function secretsShown(values: readonly string[]): Shown {
 
 const isText = (value: unknown): value is string => typeof value === "string";
 /** The notes a run read and learned, as a view or a list shows them, each name cut of the host's secrets (`shown`):
- *  `used` once the run settled, `learned` once it merged, each only when it holds a note. serve.json's are read as
- *  untrusted: an entry out of shape is left out. */
-export function notesView({ state, used, learned }: Learning, shown: Shown, settled: boolean): { used?: NoteUsed[]; learned?: NoteLearned[] } {
+ *  `used` once the run settled, `learned` and `pending` (what waits for the owner's OK) once it merged, each only when
+ *  it holds a note. serve.json's are read as untrusted: an entry out of shape is left out. */
+export function notesView({ state, used, learned, pending }: Learning, shown: Shown, settled: boolean): { used?: NoteUsed[]; learned?: NoteLearned[]; pending?: NoteUsed[] } {
   const read = settled && Array.isArray(used) ? used.filter((note) => isText(note?.file) && isText(note.name)).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })) : [];
   const added = state === "merged" && Array.isArray(learned) ? learned.filter((note) => isText(note?.file) && isText(note.name) && Array.isArray(note.supersedes) && note.supersedes.every(isText)).map(({ file, name, supersedes }) => ({ file: shown.name(file), name: shown.text(name), supersedes: supersedes.map(shown.name) })) : [];
-  return { ...(read.length ? { used: read } : {}), ...(added.length ? { learned: added } : {}) };
+  const waiting = state === "merged" && Array.isArray(pending) ? pending.filter((note) => isText(note?.file) && isText(note.name)).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })) : [];
+  return { ...(read.length ? { used: read } : {}), ...(added.length ? { learned: added } : {}), ...(waiting.length ? { pending: waiting } : {}) };
 }
 /** A run's learning in a person's words as a read shows them (learning-words.ts wordsOf): each part cut of the host's
  *  secrets as they are now (`shown`) first, then the words cut short to `max`, so a secret is never shown in part. */
@@ -117,7 +118,7 @@ export const detailShown = (learning: Learning, shown: Shown, max = DETAIL_MAX):
   return words === null ? null : short(words, max);
 };
 /** A run's learning as its view shows it: the state, why in a person's words (detailShown), and when, and the notes it
- *  read and learned (notesView). */
+ *  read, learned and holds for the owner's OK (notesView). */
 export const learningView = (learning: Learning, shown: Shown, settled: boolean) => {
   const { state, reason, at } = learning;
   return { state, reason, detail: detailShown(learning, shown), at, ...notesView(learning, shown, settled) };

@@ -680,7 +680,7 @@ export class LearningRuns {
       else if (proposed.reason === "empty") this.setLearning(run, "dropped", "empty", said.empty);
       else if (proposed.reason === "unparsed") {
         warn(run.id, `its end-of-run turn's answer was not read: ${proposed.detail}`);
-        this.setLearning(run, "dropped", "unparsed", "The end-of-run turn's answer gave its notes out of format, so none were kept.");
+        this.setLearning(run, "dropped", "unparsed", said.unparsed);
       } else this.setLearning(run, "dropped", "checker", said.checker(proposed.problems), { problems: proposed.problems });
     } catch (error) {
       warn(run.id, `what its end-of-run turn answered could not be checked: ${(error as Error).message}`);
@@ -745,7 +745,7 @@ export class LearningRuns {
       const pending = proposal.notes.filter(({ file }) => waiting.has(file)).map(({ file, text }) => ({ file, name: nameOf(file, text) }));
       // What it learned: the notes it added that runs read, a note that waits for its OK not among them.
       const learned = learnedOf(proposal).filter(({ file }) => !waiting.has(file));
-      await end("merged", null, redactSecrets(pending.length ? `Waiting for your OK: ${pending.map((note) => note.name).join(", ")}.` : said.merged(learned), this.refused(run)), { merged: merge.merged, learned, ...(pending.length ? { pending } : {}) });
+      await end("merged", null, redactSecrets(said.merged(learned, pending), this.refused(run)), { merged: merge.merged, learned, ...(pending.length ? { pending } : {}) });
     } catch (error) {
       // A server closing: nothing was decided, and the next start grades the run.
       if (this.closing) return;

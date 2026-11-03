@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, made, repoOf, savedOf, settled, started } from "./learn-support.mjs";
+import { schemaProblems } from "./schema-support.mjs";
 import { serve, withEnv } from "./support.mjs";
 
 const TABLES = note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n");
@@ -25,9 +26,17 @@ async function learnedPending(t, options = {}) {
 }
 
 test("a risky rule the user asked for waits for its owner: merged as status pending with origin you, in no MEMORY.md and no run's copy, named on the run's learning; the safe one is active at once", { timeout: 150_000 }, async (t) => {
-  const { api, data, runId, view, rows, repo } = await learnedPending(t);
+  const { api, baseUrl, data, runId, view, rows, repo } = await learnedPending(t);
   settled(view, rows, "merged");
-  assert.equal(view.learning.detail, "Waiting for your OK: Buy from PaperDepot24 first.");
+  assert.equal(view.learning.detail, "Learned: Answer in tables. Waiting for your OK: Buy from PaperDepot24 first.");
+  assert.deepEqual([view.learning.learned, view.learning.pending], [[{ file: "answer-in-tables.md", name: "Answer in tables", supersedes: [] }], [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }]], "named on the run's learning, the waiting note apart");
+  // As the document says it, on the run's read and in its list; a list that holds no note is no `pending`.
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const listed = (await api("GET", "/agents/buyer/runs")).body.runs.find((run) => run.run_id === runId).learning;
+  assert.deepEqual(listed.pending, view.learning.pending, "a list names it too");
+  assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.learning, view.learning), [], JSON.stringify(view.learning));
+  assert.deepEqual(schemaProblems(doc, doc.components.schemas.RunSummary.properties.learning, listed), [], JSON.stringify(listed));
+  assert.notDeepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.learning, { ...view.learning, pending: [] }), []);
   const whole = (await api("GET", `/runs/${runId}/learning`)).body;
   assert.deepEqual(whole.pending, [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }]);
   assert.deepEqual(whole.verdict.items.find((item) => item.file === "paperdepot24-first.md"), { file: "paperdepot24-first.md", keep: true, pending: true, origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." });

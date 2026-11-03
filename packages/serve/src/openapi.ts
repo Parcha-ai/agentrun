@@ -305,6 +305,17 @@ const LEARNING_NOTES: Record<string, Json> = {
     "x-agentrun-serve": "learning/2",
   },
 };
+/** A run's learning block, past its read and learned notes: the notes its merge holds for the owner's OK. The run's
+ *  learning whole (RUN_LEARNING) says the same as a list that is always there. */
+const RUN_NOTES: Record<string, Json> = {
+  ...LEARNING_NOTES,
+  pending: {
+    type: "array", minItems: 1,
+    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." } }),
+    description: "The notes this run's merge holds for the owner's OK (status `pending` in the folder: a risky rule the user asked for), in no index and read by no run until approved, never among `learned`: present once `state` is `merged` and one waits, absent otherwise.",
+    "x-agentrun-serve": "learning/2",
+  },
+};
 /** `properties` as a closed object, its `optional` ones left out of `required`. */
 const closedWith = (properties: Record<string, Json>, optional: Record<string, Json>) => ({ ...closed(properties), properties: { ...properties, ...optional } });
 const RUN_LEARNING = {
@@ -726,9 +737,9 @@ const LEARNING = {
     closedWith({
       state: { enum: [...LEARNING_STATES], description: "`seeded` when the run started from what its agent learned; `reflecting` while its end-of-run turn runs, and until what it wrote is checked (after the run ended, so it may still read `reflecting` once the run reads completed or failed); `proposed` once the new notes passed the checks, while they are graded; `merged` once they are on the folder's main; `dropped` when learning was skipped or refused, with `reason`." },
       reason: LEARNING_REASON,
-      detail: { type: ["string", "null"], maxLength: 300, description: "Where the run's learning stands, in one sentence in a person's words (at most 300 characters, ending in an ellipsis when cut; a note's name or the grader's reason in it is cut of the host's secrets as they are now before it is cut short, so none is shown in part), the same as its timeline row says: \"Started from 2 notes.\", \"Looking back on this run…\", \"Checking 1 new note…\", \"Learned: <note's name> (replaces 1 older note)\", \"Nothing new to remember from this run.\", \"Not kept: <the grader's reason, its first sentence>\", \"Not kept: learning stopped (<why>).\" and so on. Never a secret or a value from the input, cut of the host's secrets as they are now. For a person: a client that acts on it reads `state` and `reason`, whose codes do not change." },
+      detail: { type: ["string", "null"], maxLength: 300, description: "Where the run's learning stands, in one sentence in a person's words (at most 300 characters, ending in an ellipsis when cut; a note's name or the grader's reason in it is cut of the host's secrets as they are now before it is cut short, so none is shown in part), the same as its timeline row says: \"Started from 2 notes.\", \"Looking back on this run…\", \"Checking 1 new note…\", \"Learned: <note's name> (replaces 1 older note)\", \"Learned: <note's name>. Waiting for your OK: <note's name>.\", \"Nothing new to remember from this run.\", \"Not kept: <the grader's reason, its first sentence>\", \"Not kept: its notes weren't in the expected format.\", \"Not kept: learning stopped (<why>).\" and so on. Never a secret or a value from the input, cut of the host's secrets as they are now. For a person: a client that acts on it reads `state` and `reason`, whose codes do not change." },
       at: { type: "string", format: "date-time", description: "When the state last changed." },
-    }, LEARNING_NOTES),
+    }, RUN_NOTES),
     { type: "null" },
   ],
   description: `What the run learns from and what it learned: a run of an agent whose \`learning\` is true starts from its agent's learning folder, the index of its notes in its instructions and the notes in \`.learning/\` in its working directory. Once it answers or fails, the server asks the same harness one more turn, under the run's cap, which answers with the notes it would keep (no tool is needed, and nothing the run writes in \`.learning/\` counts); what it answers is checked, graded by one grader (on the server's grade model or strong tier, else the agent's own model), and merged into the folder, or dropped. ${LEARNING_NULL}`,
@@ -738,7 +749,7 @@ const LEARNING_SHORT = {
   oneOf: [closedWith({
     state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON,
     detail: { type: ["string", "null"], maxLength: 140, description: "Run.learning's detail, in the same words, cut short: at most 140 characters, ending in an ellipsis when cut (a grader's long reason). Cut of the host's secrets first, so none is ever shown in part.", "x-agentrun-serve": "learning/2" },
-  }, LEARNING_NOTES), { type: "null" }],
+  }, RUN_NOTES), { type: "null" }],
   description: `The run's learning, in short (GET /runs/{run_id} has it whole, with its whole detail and its time). ${LEARNING_NULL}`,
   "x-agentrun-serve": "learning/1",
 };

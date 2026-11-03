@@ -826,7 +826,8 @@ for what the user asked in their own words, `run` for what the run worked out), 
 `status: superseded` with `superseded_by`, `MEMORY.md` rebuilt from the active notes, and the checked-out files brought
 in line. A risky rule the user asked for (to trust a site or a seller, skip or loosen an approval or a check, or send
 money or data to an account) is merged as `status: pending`: in no `MEMORY.md` and no run's copy, to wait for its
-owner's OK, and named on the run's learning (`pending: [{file, name}]`, detail "Waiting for your OK: <name>.").
+owner's OK, and named on the run's learning (`pending: [{file, name}]`, detail "Waiting for your OK: <name>.", after
+what it learned when it kept one too).
 `GET /capabilities` says so (`learning.pending: true`). Its message is `learning: <run id>: merged`, the grader's reason and a `Run-Id` trailer; `main` moves only from
 the commit the merge was made on (once more on a `main` that moved meanwhile), and a run a trailer already names is
 merged, never twice. The merge's own questions are asked again of `main` first: a name another run added since is
@@ -841,22 +842,24 @@ characters and no time) says how it went: `seeded`, then
 gets them now). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
 workflow's or an imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2
-notes.", "Looking back on this run…", "Checking 1 new note…", "Learned: Check units (replaces 1 older note)", "Nothing new
-to remember from this run.", "Not kept: <the grader's reason, its first sentence>", "Not kept: it held something that must
-not be stored (one of this server's secrets).", "Not kept: learning stopped (looking back took too long)." and so on
-(`learning-words.ts`); a client that acts on it reads `state` and `reason`. A note's name or the grader's reason in it
-is said again at each read from what the run keeps (its `learned` notes, the grader's verdict), cut of the server's
-secrets as they are then before the words are cut short (300 characters, 140 in a list), so a value that became a secret
-after the run is never shown in part. Once it is proposed, merged or dropped (`seed_failed` included), the run's
+notes.", "Looking back on this run…", "Checking 1 new note…", "Learned: Check units (replaces 1 older note)", "Learned:
+Check units. Waiting for your OK: Buy from PaperDepot24 first.", "Nothing new to remember from this run.", "Not kept: <the
+grader's reason, its first sentence>", "Not kept: it held something that must not be stored (one of this server's
+secrets).", "Not kept: its notes weren't in the expected format.", "Not kept: learning stopped (looking back took too
+long)." and so on (`learning-words.ts`); a client that acts on it reads `state` and `reason`. A note's name or the
+grader's reason in it is said again at each read from what the run keeps (its `learned` and `pending` notes, the
+grader's verdict), cut of the server's secrets as they are then before the words are cut short (300 characters, 140 in a
+list), so a value that became a secret after the run is never shown in part. Once it is proposed, merged or dropped (`seed_failed` included), the run's
 timeline has one row of kind `learning` whose summary is that detail.
 
-Two more fields say what the run used and learned (`learning/2`), on its read and in run lists alike, each absent when it
-holds no note: `used`, `[{file, name}]`, the notes its job read from `.learning/`, found once as the run settles from its
-timeline (each `read` call on any harness whose result was a success, of a note the run started from: never `MEMORY.md`,
-nor a read its end-of-run turn made, nor a note read through a command such as `bash`'s `cat`) and kept in
-`serve.json`, so a list never reads a timeline; and `learned`, `[{file,
-name, supersedes}]`, the notes its merge added, once `merged`. A name and a file are cut of the server's secrets as they
-are now, a file holding one `[redacted]`.
+Three more fields say what the run used, learned and holds for the owner's OK (`learning/2`), on its read and in run
+lists alike, each absent when it holds no note: `used`, `[{file, name}]`, the notes its job read from `.learning/`,
+found once as the run settles from its timeline (each `read` call on any harness whose result was a success, of a note
+the run started from: never `MEMORY.md`, nor a read its end-of-run turn made, nor a note read through a command such as
+`bash`'s `cat`) and kept in `serve.json`, so a list never reads a timeline; `learned`, `[{file, name, supersedes}]`, the
+notes its merge added, once `merged`; and `pending`, `[{file, name}]`, the notes its merge holds for the owner's OK, once
+`merged`, never among `learned`. A name and a file are cut of the server's secrets as they are now, a file holding one
+`[redacted]`.
 
 Each run's learning end is written once to the learning ledger, `DATA/learning-usage.jsonl`, one line `{run, agent,
 state, reason, at, cost, tokens, seed_notes, answered_at, job_cost_usd, look_back_usd}` (`cost` and `tokens` the
