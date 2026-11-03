@@ -77,7 +77,8 @@ test("browser_read's markdown of a 3 MB page of one table answers within 10 s, i
   const run = await inChild(3_000_000, { what: "markdown", oneTable: true });
   quick(run, 10_000);
   assert.deepEqual([run.extractor, run.ext], ["readability-md", "md"]);
-  assert.match(run.body, /^# All releases\n/, "the main element's markdown, from its heading");
+  // The iframe first in the main element: node-html-markdown writes its fallback text, as one pass always did.
+  assert.match(run.body, /^Checking your browser & connection\s*\n\n# All releases\n/, "the main element's markdown, from its frame and its heading");
   assert.match(run.body, /\| File name +\| Kind +\| OS +\| Arch +\| Size +\| SHA256 Checksum +\|/);
   assert.match(run.body, row(run.first), "the first row, as a markdown table row");
   assert.ok(!run.body.includes(run.last), "the rows past the cut are not read");
