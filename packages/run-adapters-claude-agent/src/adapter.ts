@@ -141,11 +141,13 @@ export function thinkingOf(spec: Pick<SessionSpec, "thinking" | "effort">, fallb
   return asked && THINKING.has(asked) ? (asked as ClaudeAgentThinking) : fallback;
 }
 
-/** The SDK with every query thinking at `level`: adaptive thinking, at that effort. */
+/** The SDK with every query thinking at `level`: adaptive thinking, at that effort, its summaries returned. The current
+ *  models' default display is "omitted", which streams every thinking block with empty text, so a run would show no
+ *  thinking at any level; the display changes what comes back, not what the model thinks or what it is billed. */
 function thinkingAt(sdk: ClaudeAgentSdk, level: ClaudeAgentThinking): ClaudeAgentSdk {
   return {
     ...sdk,
-    query: ((args: Parameters<ClaudeAgentSdk["query"]>[0]) => sdk.query({ ...args, options: { ...args.options, thinking: { type: "adaptive" }, effort: level } })) as ClaudeAgentSdk["query"],
+    query: ((args: Parameters<ClaudeAgentSdk["query"]>[0]) => sdk.query({ ...args, options: { ...args.options, thinking: { type: "adaptive", display: "summarized" }, effort: level } })) as ClaudeAgentSdk["query"],
   };
 }
 
@@ -392,8 +394,10 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       });
 
       const live = (event: unknown) => {
-        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; args?: unknown; reason?: unknown };
+        const e = event as { type?: string; delta?: unknown; text?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; args?: unknown; reason?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
+        // A thinking block's summary, once the block is whole (the transcript sends none for a block with no text).
+        if (e?.type === "thinking" && typeof e.text === "string" && e.text) io.onEvent({ type: "thinking", text: e.text });
         // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
         // hear the call ended, with the text recorded.
         if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {

@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/transcript.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 009-tool-result-barrier-and-refusals
+// Changed by Parcha, imports rewritten for AgentRun; patches: 009-tool-result-barrier-and-refusals, 016-thinking-summaries
 import type { TranscriptEntry } from './host/process.js';
 
 /**
@@ -12,8 +12,10 @@ import type { TranscriptEntry } from './host/process.js';
  * (with `includePartialMessages`), and one `result` per turn. This keeps the
  * text said since the last tool call, writes it with the call that follows it
  * (`{ role: 'assistant', text, toolCalls }`), and writes the rest and a `turn`
- * entry at the result. Text deltas go to the live stream. Subagent messages
- * (`parent_tool_use_id` set) are left out.
+ * entry at the result. Text deltas go to the live stream, and so does each
+ * thinking block's text (a `thinking` event, once the block is whole; one
+ * with no text, as a block under the "omitted" display is, is not sent).
+ * Subagent messages (`parent_tool_use_id` set) are left out.
  *
  * Pure: the drive hands it SDK messages and gets entries back through `sink`,
  * so it is tested on recorded messages.
@@ -45,7 +47,7 @@ export interface TurnEnd {
   sessionId?: string;
 }
 
-type Block = { type?: string; text?: string; id?: string; name?: string; input?: unknown };
+type Block = { type?: string; text?: string; thinking?: string; id?: string; name?: string; input?: unknown };
 type ResultBlock = { type?: string; tool_use_id?: string; is_error?: boolean; content?: unknown };
 
 /** The CLI's own refusal of a call, before any hook or tool server sees it (a tool the session doesn't have, say). */
@@ -76,6 +78,7 @@ export class TranscriptBuilder {
       const content = (m.message as { content?: unknown } | undefined)?.content;
       for (const block of Array.isArray(content) ? (content as Block[]) : []) {
         if (block.type === 'text' && block.text) this.said = this.said ? `${this.said}\n\n${block.text}` : block.text;
+        else if (block.type === 'thinking' && block.thinking) this.sink.live({ type: 'thinking', text: block.thinking });
         else if (block.type === 'tool_use' && block.id) {
           this.asked.set(block.id, { name: bareToolName(block.name ?? 'tool'), input: block.input });
           this.call(block.id, bareToolName(block.name ?? 'tool'));

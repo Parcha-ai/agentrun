@@ -64,7 +64,7 @@ function tokensOf(usage: unknown): { input: number; output: number; cacheRead: n
 /** One request as pi's own assistant message: its content, the model it asked for (the harness's id when that is not
  *  known), and its usage with the cost when it is known. Tokens not known are 0, which pi's timeline reads as unknown.
  *  `error`: a turn that ended on an error, as pi's own reads (the cap's refusal is spend_cap_reached), at $0. */
-function assistantMessage(harness: string, model: string | undefined, request: Pending | undefined, text: string, calls: ToolCall[], error?: string) {
+function assistantMessage(harness: string, model: string | undefined, request: Pending | undefined, text: string, calls: ToolCall[], error?: string, thinking = "") {
   if (error !== undefined) {
     return { role: "assistant", content: [], api: "agentrun-adapter", provider: harness, model: harness, stopReason: "error", errorMessage: error, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   }
@@ -73,7 +73,8 @@ function assistantMessage(harness: string, model: string | undefined, request: P
   const tokens = { input: usage?.input ?? 0, output: usage?.output ?? 0, cacheRead: usage?.cacheRead ?? 0, cacheWrite: usage?.cacheWrite ?? 0 };
   return {
     role: "assistant",
-    content: [...(text ? [{ type: "text", text }] : []), ...calls],
+    // The model's thinking summary first, as pi's own message holds it: pi's timeline makes its Thinking row of it.
+    content: [...(thinking ? [{ type: "thinking", thinking }] : []), ...(text ? [{ type: "text", text }] : []), ...calls],
     api: "agentrun-adapter",
     provider: harness,
     model: model ?? harness,
@@ -149,6 +150,8 @@ export function adapterRun(
   const stop = new AbortController();
   // The current request's content, and the requests whose cost is in but whose entry is not written yet.
   let text = "";
+  // The current request's thinking summaries, in order, joined as pi joins a message's thinking.
+  let thinking = "";
   let calls: ToolCall[] = [];
   const costed: Pending[] = [];
   const written = new Set<number>();
@@ -194,10 +197,11 @@ export function adapterRun(
         });
         priced.add(late.request);
       }
-      if (!text && !calls.length && !costed.length) return;
+      if (!thinking && !text && !calls.length && !costed.length) return;
       if (!costed.length && !final) return;
       const request = costed.shift();
-      const content = { text, calls };
+      const content = { thinking, text, calls };
+      thinking = "";
       text = "";
       calls = [];
       // At a turn's end with no cost in: the request still unbooked is the one this content answers. It is written at
@@ -207,7 +211,7 @@ export function adapterRun(
       const marked = request?.request ?? unbooked;
       if (marked !== undefined) answered.add(marked);
       await commit(async (tx) => {
-        await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls) as never] });
+        await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls, undefined, content.thinking) as never] });
         // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
         if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
         if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
@@ -251,6 +255,7 @@ export function adapterRun(
 
   const onEvent = (event: AdapterEvent) => {
     if (event.type === "text") text += event.delta;
+    else if (event.type === "thinking") thinking = thinking ? `${thinking}\n\n${event.text}` : event.text;
     else if (event.type === "tool_start") {
       const call: ToolCall = { type: "toolCall", id: event.callId, name: event.name, arguments: (event.args ?? {}) as Record<string, unknown> };
       // A call of the current request's answer after that answer's entry was written (at its first call's end): written

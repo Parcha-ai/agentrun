@@ -1,0 +1,40 @@
+Patch: 016-thinking-summaries
+Reason: each thinking block the model returns with text is a `thinking` live event, once the block is whole, so a host can show the model's thinking summary as it shows its text; a block with no text (the "omitted" display streams every block empty) is not sent, and a subagent's is left out as its text is
+Upstream: ours
+Pins: a thinking block's summary is a live thinking event, in order; an empty or redacted one is not, and none is written as text
+Pins: on each current model, a node that names no level thinks at medium on the wire with its thinking summarized, a node's own level reaches it, the host hears each summary, and the betas and content blocks the CLI sends are the allowlists
+---
+diff --git a/packages/harness-claude-code/src/transcript.ts b/packages/harness-claude-code/src/transcript.ts
+index aa9b275..e70b04b 100644
+--- a/packages/harness-claude-code/src/transcript.ts
++++ b/packages/harness-claude-code/src/transcript.ts
+@@ -9,8 +9,10 @@ import type { TranscriptEntry } from 'harness-world-process';
+  * (with `includePartialMessages`), and one `result` per turn. This keeps the
+  * text said since the last tool call, writes it with the call that follows it
+  * (`{ role: 'assistant', text, toolCalls }`), and writes the rest and a `turn`
+- * entry at the result. Text deltas go to the live stream. Subagent messages
+- * (`parent_tool_use_id` set) are left out.
++ * entry at the result. Text deltas go to the live stream, and so does each
++ * thinking block's text (a `thinking` event, once the block is whole; one
++ * with no text, as a block under the "omitted" display is, is not sent).
++ * Subagent messages (`parent_tool_use_id` set) are left out.
+  *
+  * Pure: the drive hands it SDK messages and gets entries back through `sink`,
+  * so it is tested on recorded messages.
+@@ -42,7 +44,7 @@ export interface TurnEnd {
+   sessionId?: string;
+ }
+ 
+-type Block = { type?: string; text?: string; id?: string; name?: string; input?: unknown };
++type Block = { type?: string; text?: string; thinking?: string; id?: string; name?: string; input?: unknown };
+ type ResultBlock = { type?: string; tool_use_id?: string; is_error?: boolean; content?: unknown };
+ 
+ /** The CLI's own refusal of a call, before any hook or tool server sees it (a tool the session doesn't have, say). */
+@@ -73,6 +75,7 @@ export class TranscriptBuilder {
+       const content = (m.message as { content?: unknown } | undefined)?.content;
+       for (const block of Array.isArray(content) ? (content as Block[]) : []) {
+         if (block.type === 'text' && block.text) this.said = this.said ? `${this.said}\n\n${block.text}` : block.text;
++        else if (block.type === 'thinking' && block.thinking) this.sink.live({ type: 'thinking', text: block.thinking });
+         else if (block.type === 'tool_use' && block.id) {
+           this.asked.set(block.id, { name: bareToolName(block.name ?? 'tool'), input: block.input });
+           this.call(block.id, bareToolName(block.name ?? 'tool'));
