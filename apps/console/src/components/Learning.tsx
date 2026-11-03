@@ -1,4 +1,4 @@
-import { ArrowRight, BookOpen, ChevronDown, Pencil, Plus, RotateCw, Sparkles, TriangleAlert, User } from "lucide-react";
+import { BookOpen, ChevronDown, Pencil, Plus, RotateCw, Sparkles, TriangleAlert, User } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -7,7 +7,7 @@ import { type Agent, editBody } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import {
-  type AgentLearning, bodyOf, change, dollars, dropKind, dropWords, fileFor, impactWords, type LearningNote, type NoteParts, noteParts,
+  type AgentLearning, bodyOf, change, costsShown, dollars, dropKind, learningCost, dropWords, fileFor, impactWords, type LearningNote, type NoteParts, noteParts,
   type NoteProblem, notes, noteText, NOTE_TYPES, provenance, runsWord, seconds, shortTitle, shownImpact, TYPE_HINT, typeLabel, usedBy,
 } from "@/lib/learning";
 import { cn } from "@/lib/utils";
@@ -145,35 +145,45 @@ function Skeleton() {
   );
 }
 
-/** Before and after the agent first learned: its median run time and cost on each side, and how many runs the after
- *  side counts. Shown only when the server has two runs on each side. */
+/** Before and after the agent first learned: the median time to its answer and the median cost of a run, each side's,
+ *  how many runs the after side counts, and what learning itself costs a run when the server says. Said as the numbers
+ *  are, a slower or costlier after included: the change is coloured by direction, never left out. Shown only when the
+ *  server has two runs on each side. */
 function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }) {
   const { before: b, after: a } = impact;
-  const stats: { label: string; from: string; to: string; delta: number | null }[] = [
-    { label: "Run time", from: seconds(b.median_duration_s), to: seconds(a.median_duration_s), delta: change(b.median_duration_s, a.median_duration_s) },
-    ...(b.median_cost_usd !== null && a.median_cost_usd !== null ? [{ label: "Cost", from: dollars(b.median_cost_usd), to: dollars(a.median_cost_usd), delta: change(b.median_cost_usd, a.median_cost_usd) }] : []),
+  const stats: { label: string; now: string; was: string; delta: number | null; unit?: string }[] = [
+    { label: "Answers in", now: seconds(a.median_duration_s), was: seconds(b.median_duration_s), delta: change(b.median_duration_s, a.median_duration_s) },
+    ...(costsShown(impact) ? [{ label: "A run costs", now: dollars(a.median_cost_usd!), was: dollars(b.median_cost_usd!), delta: change(b.median_cost_usd!, a.median_cost_usd!) }] : []),
   ];
+  const learning = learningCost(impact);
+  const basis = [`Medians of ${runsWord(b.runs)} before its first note and ${runsWord(a.runs)} that started from its notes.`,
+    ...(typeof a.cost_runs === "number" && typeof b.cost_runs === "number" ? [`Costs are of the ${b.cost_runs} and ${a.cost_runs} runs whose cost is known, and are estimates.`] : ["Costs are estimates."])].join(" ");
   return (
-    <section className="relative overflow-hidden border border-primary/40 bg-gradient-to-br from-primary/[0.07] via-transparent to-transparent" aria-label={impactWords(impact)}>
+    <section className="border border-primary/40 bg-gradient-to-br from-primary/[0.07] via-transparent to-transparent" aria-label={impactWords(impact)}>
       <div className="flex flex-wrap items-center gap-x-8 gap-y-4 px-5 py-4">
         <div className="flex items-center gap-2.5">
           <Sparkles className="size-4 text-primary" aria-hidden />
           <span className="caps text-[11px] font-semibold text-primary">Since it learned</span>
+          <span className="font-mono text-[11px] text-muted-foreground" title={basis}>on {runsWord(a.runs)}</span>
         </div>
-        <dl className="flex flex-1 flex-wrap gap-x-10 gap-y-3">
+        <dl className="flex flex-1 flex-wrap items-baseline gap-x-10 gap-y-3" aria-hidden>
           {stats.map((s) => (
             <div key={s.label} className="flex items-baseline gap-3">
               <dt className="caps text-[10px] text-muted-foreground">{s.label}</dt>
               <dd className="flex items-baseline gap-2 font-mono">
-                <span className="text-[15px] text-muted-foreground line-through decoration-muted-foreground/40">{s.from}</span>
-                <ArrowRight className="size-3.5 self-center text-muted-foreground" aria-hidden />
-                <span className="text-[22px] font-semibold leading-none">{s.to}</span>
+                <span className="text-[22px] font-semibold leading-none">{s.now}</span>
+                <span className="text-[12px] text-muted-foreground">instead of {s.was}</span>
                 {s.delta !== null && s.delta !== 0 && <span className={cn("text-[12px]", s.delta < 0 ? "text-success-text" : "text-warning-text")}>{s.delta > 0 ? "+" : "−"}{Math.abs(s.delta)}%</span>}
               </dd>
             </div>
           ))}
+          {learning !== null && (
+            <div className="flex items-baseline gap-3">
+              <dt className="caps text-[10px] text-muted-foreground">Learning itself</dt>
+              <dd className="font-mono text-[13px] text-muted-foreground">≈ {dollars(learning)} a run</dd>
+            </div>
+          )}
         </dl>
-        <span className="font-mono text-[11px] text-muted-foreground" title={`Medians: ${runsWord(b.runs)} before its first note, ${runsWord(a.runs)} that started from its notes. Costs are estimates.`}>on {runsWord(a.runs)}</span>
       </div>
     </section>
   );

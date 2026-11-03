@@ -151,10 +151,19 @@ describe("the before and after", () => {
   it("shows run time and cost before and after it learned, on the after side's runs", async () => {
     const t = await open(agent(true), { learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 18, median_cost_usd: 0.11 }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.03 } } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
-    expect(card.getAttribute("aria-label")).toBe("Since it learned: run time 18s → 12s, cost $0.11 → $0.03, on 4 runs");
-    expect(card.textContent).toContain("−33%");
-    expect(card.textContent).toContain("−73%");
+    expect(card.getAttribute("aria-label")).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 instead of $0.11 a run");
+    expect(card.textContent).toContain("Answers in12sinstead of 18s−33%");
+    expect(card.textContent).toContain("A run costs$0.03instead of $0.11−73%");
     expect(card.textContent).toContain("on 4 runs");
+    expect(card.textContent).not.toContain("Learning itself");
+  });
+  it("says what learning itself costs a run when the server does, and a costlier after as it is, in the warning colour", async () => {
+    const t = await open(agent(true), { learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 1.2, median_cost_usd: 0.000814, cost_runs: 2 }, after: { runs: 4, median_duration_s: 1.1, median_cost_usd: 0.000837, cost_runs: 4, median_learning_usd: 0.008 } } }) });
+    const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
+    expect(card.textContent).toContain("Learning itself≈ $0.008 a run");
+    const up = [...card.querySelectorAll("span")].find((x) => x.textContent === "+3%")!;
+    expect(up.className).toContain("text-warning-text");
+    expect(card.querySelector('[title^="Medians of 2 runs"]')?.getAttribute("title")).toContain("Costs are of the 2 and 4 runs whose cost is known, and are estimates.");
   });
   it("is hidden when the server has none, or an older server says nothing", async () => {
     for (const impact of [null, undefined]) {

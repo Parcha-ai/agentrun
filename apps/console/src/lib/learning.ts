@@ -30,7 +30,10 @@ export type LearningNote = { file: string; name: string; description: string; ty
 /** One change to what the agent learned, newest first: a run's (`by.run`; `reason`, why it was kept) or a person's. */
 export type LearningChange = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
 export type LearningCounts = { merged: number; dropped: Record<string, number>; in_progress: number };
-export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null };
+/** One side of the before and after: how many runs, the median time to the answer, the median cost of the run's own work
+ *  (null when no run's cost is known), and from a newer server how many runs that cost is of (`cost_runs`) and the median
+ *  cost of learning itself (`median_learning_usd`). */
+export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null; cost_runs?: number; median_learning_usd?: number | null };
 /** The agent's runs before its first kept note against its runs that started from one; null until each side has two. */
 export type Impact = { before: ImpactSide; after: ImpactSide } | null;
 /** GET /v2/agents/{id}/learning. `main` is null until the agent first learns. */
@@ -112,6 +115,8 @@ export const goingWords = (state: LearningState) => (state === "seeded" ? "Learn
 
 /** "18s", "1m 05s": a duration in seconds as the console writes run times. */
 export function seconds(s: number): string {
+  // Under ten seconds a tenth still tells two runs apart: 1.2s, 9.8s.
+  if (s < 9.95) return `${Math.max(0, Math.round(s * 10) / 10)}s`;
   const t = Math.max(0, Math.round(s));
   const m = Math.floor(t / 60);
   return m ? `${m}m ${String(t % 60).padStart(2, "0")}s` : `${t}s`;
@@ -128,11 +133,19 @@ export function dollars(usd: number): string {
 }
 /** The change from `a` to `b` as a whole percent: -33 is a third less. Null when `a` is not above zero. */
 export const change = (a: number, b: number) => (a > 0 ? Math.round(((b - a) / a) * 100) : null);
-/** The impact line in words, as a screen reader and a tooltip say it. */
+/** Whether both sides' costs are known, so they can be set side by side. */
+export const costsShown = (i: NonNullable<Impact>) => typeof i.before.median_cost_usd === "number" && typeof i.after.median_cost_usd === "number";
+/** The median cost of learning itself on the after side, when the server says. */
+export const learningCost = (i: NonNullable<Impact>) => (typeof i.after.median_learning_usd === "number" ? i.after.median_learning_usd : null);
+/** The before and after in one line, as the card says it and a screen reader reads it, whichever way the numbers went:
+ *  "Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 instead of $0.11 a run · learning itself ≈
+ *  $0.008 a run". */
 export function impactWords(i: NonNullable<Impact>): string {
-  const parts = [`run time ${seconds(i.before.median_duration_s)} → ${seconds(i.after.median_duration_s)}`];
-  if (i.before.median_cost_usd !== null && i.after.median_cost_usd !== null) parts.push(`cost ${dollars(i.before.median_cost_usd)} → ${dollars(i.after.median_cost_usd)}`);
-  return `Since it learned: ${parts.join(", ")}, on ${runsWord(i.after.runs)}`;
+  const parts = [`answers in ${seconds(i.after.median_duration_s)} instead of ${seconds(i.before.median_duration_s)}`];
+  if (costsShown(i)) parts.push(`${dollars(i.after.median_cost_usd!)} instead of ${dollars(i.before.median_cost_usd!)} a run`);
+  const learning = learningCost(i);
+  if (learning !== null) parts.push(`learning itself ≈ ${dollars(learning)} a run`);
+  return `Since it learned (on ${runsWord(i.after.runs)}): ${parts.join(" · ")}`;
 }
 /** Whether an impact the server sent is whole enough to show: both sides, two runs each, a duration each. */
 export const shownImpact = (i: unknown): i is NonNullable<Impact> => {
