@@ -56,10 +56,7 @@ test("every host tool's largest result is within the host's result bound, which 
   assert.ok(page.links.reduce((n, link) => n + JSON.stringify(link).length + 1, 0) > pages.LINKS_CHARS - 200, "the links at theirs");
   const cjk = await web.webFetch(PUBLIC, { lookup: async () => ["93.184.216.34"], fetchImpl: async () => new Response(wide.repeat(4 * pages.TEXT_CAP), { status: 200, headers: { "content-type": "text/plain" } }), maxChars: 10 * pages.TEXT_CAP });
   assert.equal(cjk.chars, pages.TEXT_CAP, "a part of three-byte text at the most max_chars takes");
-  // A later part Parallel gave no page for: the lines saying why and that it was fetched directly, with no links.
-  const switched = await web.webFetch(url, { lookup: async () => ["93.184.216.34"], fetchImpl: async () => new Response(html, { status: 200, headers: { "content-type": "text/html" } }), parallel: failing, offset: 1, maxChars: 10 * pages.TEXT_CAP });
-  assert.ok(switched.switched && switched.truncated, "a later part fetched directly where Parallel gave none, flagged, and the page goes on");
-  for (const tool of ["web_fetch", "fetch_page"]) keep(tool, web.webFetchText(page, tool), web.webFetchText(switched, tool), web.webFetchText(cjk, tool));
+  for (const tool of ["web_fetch", "fetch_page"]) keep(tool, web.webFetchText(page, tool), web.webFetchText(cjk, tool));
 
   // web_search: every result at its caps; the answer keeps the most relevant that fit.
   const hit = { url: `https://s.example/${'"'.repeat(pages.URL_MAX)}`, title: '"'.repeat(pages.TITLE_CAP), snippet: '"'.repeat(search.SNIPPET_MAX), published: '"'.repeat(200) };
