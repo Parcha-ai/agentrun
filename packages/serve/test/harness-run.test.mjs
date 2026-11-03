@@ -10,12 +10,14 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
+import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
+const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer;
 
@@ -116,13 +118,13 @@ test("a message to a run working on a harness that cannot steer answers follow_u
   assert.equal(await answer(api, runId), "Answered the chat.");
 });
 
-/** How many of the run's store entries are of `kind` (a session's runner record, or the root's request marker). */
-function storeCount(data, runId, kind) {
+/** The run's store entries of `kind` (a session's record, or the root's request marker). */
+function storeRecords(data, runId, kind) {
   // The run's process writes the store meanwhile: a read that finds it locked tries again.
   for (let tries = 0; ; tries++) {
     const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
-      return db.prepare("SELECT record FROM entries").all().filter((row) => JSON.parse(String(row.record)).kind === kind).length;
+      return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((record) => record.kind === kind);
     } catch (error) {
       if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
     } finally {
@@ -130,6 +132,7 @@ function storeCount(data, runId, kind) {
     }
   }
 }
+const storeCount = (data, runId, kind) => storeRecords(data, runId, kind).length;
 
 const killRun = async (data, runId) => {
   const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
@@ -253,13 +256,35 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-test("capabilities say which harnesses run each tool: the file tools, fetch_page and web_fetch on every harness, the rest on pi", async (t) => {
+for (const harness of ["claude-agent", "codex"]) {
+  test(`monid.run runs on ${harness} as monid_run: it saves with no warning, reaches monid on the key from the run's pipe, and is journaled and shown under its wire name`, { timeout: 60_000 }, async (t) => {
+    const log = join(await scratch(t), "monid-calls.jsonl");
+    withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
+    const saved = await api("POST", "/agents", agent(`monid-${harness}`, { harness, instructions: "Run monid's /person/enrich on Ada.", tools: ["monid.discover", "monid.inspect", "monid.run"] }));
+    assert.deepEqual([saved.status, saved.body.warnings], [201, []], JSON.stringify(saved.body));
+    const run = await api("POST", `/agents/monid-${harness}/runs`, { input: { content: "hi" } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const seen = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(seen.map((call) => [call.method, call.path, call.authorized]), [["POST", "/v1/run", true]], "sent once, on the key");
+    assert.ok(seen.every((call) => call.pid !== process.pid), "from the run's process");
+    assert.deepEqual(storeRecords(data, run.body.run_id, "faux.call").map((record) => record.data?.name), ["monid_run"], "the harness's journal names the wire name");
+    assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => r.tool_name), ["monid_run"]);
+    const results = toolResults(rows);
+    assert.equal(results.length, 1, JSON.stringify(results));
+    assert.match(results[0][0], /"full_name":"Ada"/, "the run's output reaches the timeline");
+    assert.equal(results[0][1], "success");
+  });
+}
+
+test("capabilities say which harnesses run each tool: the file tools, fetch_page, web_fetch and monid's three on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
   const every = ["pi", "claude-agent", "codex"];
-  const host = ["read", "write", "edit", "fetch_page", "web_fetch"];
-  for (const name of host) assert.deepEqual(tools[name], every, name);
-  for (const [name, harnesses] of Object.entries(tools)) if (!host.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
+  const hosted = ["read", "write", "edit", "fetch_page", "web_fetch", "monid.discover", "monid.inspect", "monid.run"];
+  for (const name of hosted) assert.deepEqual(tools[name], every, name);
+  for (const [name, harnesses] of Object.entries(tools)) if (!hosted.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });
 
 test("pi's confinement holds for another harness's read: a link out of the workspace is refused with pi's words", { timeout: 90_000 }, async (t) => {
