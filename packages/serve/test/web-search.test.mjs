@@ -2,9 +2,10 @@
 // Parallel's Search API on the run's Parallel key where Parallel is picked, Exa's keyless MCP search, and pi's one
 // request to its model provider's hosted search. Parallel, Exa and the provider are the tests' fakes
 // (fixtures/faux-parallel.mjs, faux-exa.mjs, faux-upstream.mjs) and the network a table (fixtures/fake-network.mjs): no
-// socket, no real key.
+// socket leaves this machine (Exa's IPv4 pin dials a loopback server), and no real key is used.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -13,6 +14,7 @@ import { PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js
 import { parallelExtract, webFetch } from "../dist/web-fetch.js";
 import { PARALLEL_SEARCH_URL, webSearch } from "../dist/web-search.js";
 import { exaSearch } from "../dist/exa-keyless.js";
+import * as keyless from "../dist/exa-keyless.js";
 import { hostedSearch } from "../dist/hosted-search.js";
 import { runModels } from "../dist/model.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
@@ -297,6 +299,27 @@ test("keyless Exa: one MCP exchange with no key, its text read into results; a 4
   };
   delete process.env.AGENTRUN_TEST_FAUX_EXA;
   assert.deepEqual(await exaSearch("widgets", 3, { send: failing }), { error: "Exa's search failed: the query is empty" }, "a JSON answer is read as well as a stream");
+});
+
+test("keyless Exa is dialled over IPv4 alone: its name is looked up for family 4 and the connection goes to that address, on a host whose resolver answers IPv6 otherwise", async (t) => {
+  assert.equal(typeof keyless.ipv4Fetch, "function", "exa-keyless has a transport pinned to IPv4");
+  const server = createServer((request, response) => response.end(`over IPv4, to ${request.headers.host}`));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const { port } = server.address();
+  // A host whose default route is IPv6: its resolver answers ::1 alone unless it is asked for family 4.
+  const asked = [];
+  const lookup = (host, options, callback) => {
+    asked.push({ host, family: options?.family });
+    const [address, family] = options?.family === 4 ? ["127.0.0.1", 4] : ["::1", 6];
+    if (options?.all) callback(null, [{ address, family }]);
+    else callback(null, address, family);
+  };
+  const transport = keyless.ipv4Fetch(lookup);
+  t.after(() => transport.close());
+  const answer = await transport.send(`http://exa.example:${port}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(await answer.text(), `over IPv4, to exa.example:${port}`);
+  assert.ok(asked.length > 0 && asked.every((call) => call.host === "exa.example" && call.family === 4), `every lookup asked for IPv4: ${JSON.stringify(asked)}`);
 });
 
 test("pi's hosted search: Anthropic's pause_turn answers the results it has and no text, sent once; a model with no hosted search is an error, sent nowhere", async (t) => {
