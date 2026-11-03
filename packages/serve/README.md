@@ -732,7 +732,7 @@ auto-memory format:
 - `MEMORY.md`, the index a run reads, one line per active note: `- [name](file.md) — description`, built by the server;
 - one file per note, `<slug>.md`: front matter with `name`, `description` and `type` (`user`, `feedback`, `project` or
   `reference`), and optionally `status: superseded` or `retired` with `superseded_by` (no status: active), then the
-  note's text. The server parses it and builds the index (`src/notes.ts`).
+  note's text. [`packages/learn`](../learn/README.md) parses it and builds the index.
 
 The folder is plain git with `main` checked out. The agent's first run that learns makes it, with one commit on `main`
 holding an empty `MEMORY.md`; an agent that does not learn never gets one. The server is its only writer. Every git

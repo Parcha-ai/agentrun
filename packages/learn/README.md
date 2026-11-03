@@ -6,8 +6,8 @@ may ask it one more turn to add notes. This package is the contract, in [SPEC.md
 around that turn: the format, the prompt, the checker of what a run proposes, and the grader's prompt and verdict. It
 runs no git and calls no model: the host does both.
 
-It is held: it is built, tested and verified with the other packages and is not on npm yet. Install it from a packed
-tarball (`npm pack -w @parcha/agentrun-learn`).
+Published to npm from the next release (`@beta`), with AgentRun Server, which uses it. Until then it installs from this
+repository.
 
 ## Notes
 
