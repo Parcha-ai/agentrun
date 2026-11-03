@@ -30,6 +30,18 @@ export function placeWords(place: Place | undefined, places: Places | null): str
   return p.mode === "sandbox" ? `Runs in a ${p.box} box` : "Runs on the server";
 }
 
+/** Where an agent runs, as its page's fact: "In a docker box", or "On the server" (none is the runner, this server's
+ *  default). */
+export const placeLabel = (place: Place | undefined) => (place?.mode === "sandbox" ? `In a ${place.box} box` : "On the server");
+
+/** Where a run ran, as its header says it: "in a docker box", "on the server", or, for a run its start narrowed,
+ *  "on the server, not in its docker box". Nothing for a run kept without a place (an older server). */
+export function runPlaceWords(run: Place | undefined, revision: Place | undefined): string | undefined {
+  if (!run) return undefined;
+  if (run.mode === "sandbox") return `in a ${run.box} box`;
+  return revision?.mode === "sandbox" ? `on the server, not in its ${revision.box} box` : "on the server";
+}
+
 /** A run that ran on the server though its revision names a box: its start narrowed the place (a "Run on the server
  *  instead", say). */
 export const narrowed = (revision: Place | undefined, run: Place | undefined) => revision?.mode === "sandbox" && run?.mode === "runner";
