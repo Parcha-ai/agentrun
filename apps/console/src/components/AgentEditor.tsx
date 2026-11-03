@@ -1,5 +1,6 @@
 import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
+import { LearningField } from "@/components/LearningSwitch";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
@@ -15,7 +16,7 @@ export type Revision = { revision: string; version: number; current: boolean; no
  *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. `modelSource`:
  *  capabilities' `models.source`; `routePrefix`, its `models.route_prefix`, the routing prefix taken off model ids. A harness's `default_model` is the
  *  model the server runs for it when a definition names none (null: none). */
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string };
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; learning?: "on" | "off" };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -255,6 +256,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <input value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
                 </Field>
               )}
+              {!workflow && !starting && caps.learning && <LearningField fields={f} onFields={set} saved={d?.learning} tools={caps.tools} server={caps.learning} error={fieldError("learning")} warning={fieldWarning("learning")} />}
             </div>
           )}
 

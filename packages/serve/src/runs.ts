@@ -18,7 +18,7 @@ import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
-import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, learningView, shortLearning } from "./learning.js";
+import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
@@ -45,6 +45,7 @@ export type State = "working" | "waiting" | "idle";
 export const STATUSES: readonly Status[] = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"];
 type Ended = Exclude<RunState, "running">;
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
+
 const RELEASED = new Set(["sleeping", "paused", "done", "failed"]);
 const LEASE_MS = 90_000;
 /** How long an agentic run's process may finish its turn after SIGTERM, unless the server says otherwise. */
@@ -671,7 +672,7 @@ export class Runs {
    *  only, never the run's own rows, which its cost and its answer are read from. */
   private show(run: Run): void {
     const rows = run.decisions?.length ? withDecisions(run.rows, run.decisions) : run.rows;
-    if (run.log.sync(withLearning(rows, run.meta.learning), run.keep)) run.updatedAt = new Date().toISOString();
+    if (run.log.sync(withLearning(rows, run.meta.learning, this.learning.shown()), run.keep)) run.updatedAt = new Date().toISOString();
   }
 
   /** A live process: the child this server started, or one an earlier server started that still serves the run. */
@@ -1705,14 +1706,15 @@ export class Runs {
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
-      learning: run.meta.learning ? learningView(run.meta.learning) : null,
+      // The notes it read once it settled: while it runs, or runs again for a follow-up, they are still being read.
+      learning: this.learning.view(run.meta.learning, TERMINAL.has(status) && run.settled),
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
     };
   }
 
   async summary(run: Run) {
     const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning: shortLearning(learning) };
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning: learning && shortOf(learning) };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -1740,8 +1742,16 @@ export class Runs {
       // A run read from its row alone has ended: it waits on nothing.
       pending: null,
       imported_from: row.importedFrom ?? null,
-      learning: shortLearning(isObject(meta?.learning) ? (meta.learning as Learning) : null),
+      // Its row says it ended: what serve.json holds of its learning is as it settled.
+      learning: this.learning.short(isObject(meta?.learning) ? (meta.learning as Learning) : null, true),
     };
+  }
+
+  /** A key was saved on this server or deleted from it: each held run's learning row shown again, cut of the keys as
+   *  they are now (learning-run.ts shown), as its view and its lists already are from the next read on. */
+  keysChanged(): void {
+    this.learning.keysChanged();
+    for (const run of this.runs.values()) if (run.meta.learning) this.show(run);
   }
 
   /** A held run's learning, in short (learning-run.ts heldLearning). */

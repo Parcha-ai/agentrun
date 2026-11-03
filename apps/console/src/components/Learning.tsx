@@ -1,0 +1,631 @@
+import { BookOpen, ChevronDown, Pencil, Plus, Sparkles, TriangleAlert, User } from "lucide-react";
+import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Chip } from "@/components/ui/chip";
+import { problem, ProblemCard } from "@/components/learningProblem";
+import { LearningSwitch } from "@/components/LearningSwitch";
+import { type Agent, editBody, noteSaveError } from "@/lib/agentForm";
+import { type Client, ClientError } from "@/lib/client";
+import { markdown, when } from "@/lib/format";
+import {
+  type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
+  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, HOST_RUNS, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
+} from "@/lib/learning";
+import { cn } from "@/lib/utils";
+import type { Run } from "@/lib/v2";
+
+/** `server`: the server's own learning switch (capabilities `features.learning`); "off" means no run learns there. */
+export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server?: "on" | "off" | null; onAgent?: (agent: Agent) => void };
+
+/** A failed write in the problem card's words, under its own title ("The note was not saved."). */
+const failed = (e: unknown, what: string, title: string) => ({ ...problem(e, what), title });
+const runTitle = (runs: Map<string, Run>, id: string) => runs.get(id)?.title || `run ${id.slice(0, 8)}`;
+/** A rendered note body: markdown, sanitized, in the console's type at a note's size. */
+const PROSE = "text-[14px] leading-[1.65] [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2 [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[12.5px] [&_h1]:mb-2 [&_h1]:text-[15px] [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-[14px] [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:mb-0.5 [&_ol]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:mb-2 [&_pre]:overflow-x-auto [&_pre]:border [&_pre]:bg-background [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-[12px] [&_ul]:mb-2 [&_ul]:list-disc [&_ul]:pl-5";
+/** Whether the keyboard's save is ⌘ or Ctrl, as the editor's hint names it (both save). */
+const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+/** The most pages of notes, or of changes, the tab reads past the first on its own (for a link's note, or a note's source). */
+const MORE_PAGES = 20;
+const field = "w-full border bg-background px-3 py-2 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
+
+/** The agent's Learning tab: the notes it wrote for itself after its runs, which every later run reads first. Each note
+ *  shows where it came from and how often it was used, and a person edits it (its version named, so a change made since
+ *  is never written over), retires it, or adds one. Beside them: the learning switch, what runs did not keep and why, the
+ *  before and after once there is one, and what the next run reads. */
+export function LearningTab({ agent, v2, focus = [], server, onAgent }: LearningProps) {
+  const [view, setView] = useState<AgentLearning | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [later, setLater] = useState<{ items: LearningNote[]; cursor: string | null; error?: unknown; pages: number }>({ items: [], cursor: null, pages: 0 });
+  // The changes past the view's first page, read only while a note's source is not yet known.
+  const [olderLog, setOlderLog] = useState<{ items: LearningChange[]; cursor: string | null; pages: number }>({ items: [], cursor: null, pages: 0 });
+  // Whether the runs read are all the agent's (false: the latest page of them only).
+  const [allRuns, setAllRuns] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const asked = useRef(0);
+  const reading = useRef(false);
+  const read = () => {
+    const n = ++asked.current;
+    reading.current = false;
+    setError(null);
+    v2.agentLearning(agent.agent_id).then((r) => {
+      if (n !== asked.current) return;
+      setView(r); setLater({ items: [], cursor: r.notes.next_cursor, pages: 0 }); setOlderLog({ items: [], cursor: r.log.next_cursor, pages: 0 });
+    }, (e) => { if (n === asked.current) setError(e ?? new Error("unknown")); });
+    // The agent's latest runs: what each read and kept, the titles a note's source is named by, and the drops.
+    v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) { setRuns(r.runs); setAllRuns(!r.next_cursor); } }, () => {});
+  };
+  useEffect(read, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The next page of notes, for this read only: a page asked for before a refresh (an edit, a retire) never lands after
+  // it, so old and new versions never mix and the cursor is always the current read's.
+  const more = () => {
+    if (!later.cursor || reading.current) return;
+    const n = asked.current;
+    reading.current = true;
+    v2.learningNotes(agent.agent_id, later.cursor).then(
+      (p) => { if (n !== asked.current) return; reading.current = false; setLater((x) => ({ items: [...x.items, ...p.items.filter((i) => !x.items.some((y) => y.file === i.file))], cursor: p.next_cursor, pages: x.pages + 1 })); },
+      (e) => { if (n !== asked.current) return; reading.current = false; setLater((x) => ({ ...x, error: e ?? new Error("unknown") })); },
+    );
+  };
+
+  const on = agent.definition.learning === true;
+  const readOnly = !!agent.archived_at;
+  const all = useMemo(() => [...(view?.notes.items ?? []), ...later.items], [view, later.items]);
+  const active = all.filter((x) => x.status === "active");
+  const waiting = all.filter(isPending);
+  // Whether this caller approves from the console, read once a note waits: until the server says so, no Approve.
+  const [approves, setApproves] = useState<Approval | undefined>(undefined);
+  const anyWaiting = waiting.length > 0;
+  useEffect(() => {
+    if (!anyWaiting || approves !== undefined) return;
+    let live = true;
+    Promise.resolve().then(() => v2.capabilities()).then((c) => { if (live) setApproves(approval(c)); }, () => { if (live) setApproves("later"); });
+    return () => { live = false; };
+  }, [anyWaiting]); // eslint-disable-line react-hooks/exhaustive-deps
+  const earlier = all.filter((x) => x.status === "superseded" || x.status === "retired");
+  const byRun = useMemo(() => new Map(runs.map((r) => [r.run_id, r])), [runs]);
+  const from = useMemo(() => provenance([...(view?.log.items ?? []), ...olderLog.items]), [view, olderLog.items]);
+  // A note an address points at past the pages read: the next pages are read until it shows, at most MORE_PAGES of them.
+  const missing = focus.filter((f) => !all.some((x) => x.file === f)).length > 0;
+  useEffect(() => {
+    if (view && missing && later.cursor && later.error === undefined && later.pages < MORE_PAGES) more();
+  }, [view, missing, later.cursor, later.pages]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A note whose source is past the changes read: the next changes are read until every note's is known, or they end.
+  const unknown = all.some((x) => !from.has(x.file));
+  useEffect(() => {
+    if (!view || !unknown || !olderLog.cursor || olderLog.pages >= MORE_PAGES) return;
+    const n = asked.current;
+    v2.learningLog(agent.agent_id, olderLog.cursor).then(
+      (p) => { if (n === asked.current) setOlderLog((x) => ({ items: [...x.items, ...p.items], cursor: p.next_cursor, pages: x.pages + 1 })); },
+      () => { if (n === asked.current) setOlderLog((x) => ({ ...x, cursor: null })); },
+    );
+  }, [view, unknown, olderLog.cursor]); // eslint-disable-line react-hooks/exhaustive-deps
+  // How many of the runs read here used each note: shown only by a server that says what a run read.
+  const usedIn = useMemo(() => {
+    const out = new Map<string, number>();
+    for (const r of runs) for (const u of usedBy(r.learning)) out.set(u.file, (out.get(u.file) ?? 0) + 1);
+    return out;
+  }, [runs]);
+  const lookedBack = runs.filter((r) => r.learning && (r.learning.state === "merged" || r.learning.state === "dropped")).length;
+
+  if (error && !view) return <ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />;
+  if (!view) return <Skeleton />;
+
+  const switchRow = (quiet: boolean) => <SavedSwitch agent={agent} v2={v2} onAgent={onAgent} server={server} disabled={readOnly} quiet={quiet} />;
+  if (!all.length && !adding) return (
+    <div className="space-y-6">
+      <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
+      <NotKept runs={runs} />
+    </div>
+  );
+
+  return (
+    <div className="space-y-6">
+      {waiting.length > 0 && (
+        <section className="border border-warning/50" aria-label="Waiting for your OK">
+          <h2 className="caps flex items-baseline gap-2 border-b border-warning/50 px-4 py-3 text-[12px] font-semibold">Waiting for your OK<span className="font-mono font-normal text-muted-foreground">{waiting.length}</span></h2>
+          <p className="px-4 pt-3 text-[13px] text-muted-foreground">{WAITS_WHY}</p>
+          <p className="px-4 pt-1 text-[13px] text-muted-foreground">{HOST_RUNS}</p>
+          <ul className="space-y-3 p-4">
+            {waiting.map((x) => (
+              <li key={x.file}>
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} usedOf={allRuns ? undefined : runs.length} onChanged={read} approves={approves} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {shownImpact(view.impact) ? <ImpactCard impact={view.impact} /> : view.impact === null && on && <p className="font-mono text-[12px] text-muted-foreground">{IMPACT_LATER}</p>}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <section className="min-w-0 space-y-3" aria-label="Notes">
+          <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-lg font-semibold">What it has learned</h2>
+              <p className="mt-0.5 text-[13px] text-muted-foreground">{active.length ? `${notes(active.length)} in use. Every later run reads ${active.length === 1 ? "it" : "them"} before it starts.` : "No note is in use: the next run starts with nothing learned."}</p>
+            </div>
+            {!readOnly && !adding && <Button size="sm" onClick={() => setAdding(true)}><Plus aria-hidden /> Add a note</Button>}
+          </div>
+          {!on && <Off server={server} />}
+          {adding && <NoteEditor key="new" title="New note" v2={v2} agentId={agent.agent_id} taken={all.map((x) => x.file)} onDone={(saved) => { setAdding(false); if (saved) read(); }} />}
+          <ul className="space-y-3">
+            {active.map((x) => (
+              <li key={x.file}>
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} usedOf={allRuns ? undefined : runs.length} onChanged={read} />
+              </li>
+            ))}
+          </ul>
+          {later.error !== undefined && <ProblemCard problem={problem(later.error, "more notes")} onRetry={more} className="" />}
+          {later.cursor && <div className="flex justify-center"><Button size="sm" onClick={more}>Load more notes</Button></div>}
+          {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} />}
+        </section>
+        <aside className="min-w-0 space-y-6" aria-label="About learning">
+          <Panel title="Learning">{switchRow(false)}</Panel>
+          <NotKept runs={runs} />
+          <NextRun index={view.index} />
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+/** Said where the before and after goes until the server has one (it needs two runs on each side of the first note). */
+const IMPACT_LATER = "After two runs on each side of its first note, this shows what learning changed.";
+
+/** A titled box at the side, as Mission Control's lists are: a bordered section under a caps header. */
+function Panel({ title, children, label }: { title: string; children: ReactNode; label?: string }) {
+  return (
+    <section className="border" aria-label={label ?? title}>
+      <h2 className="caps border-b px-4 py-3 text-[12px] font-semibold">{title}</h2>
+      {children}
+    </section>
+  );
+}
+
+function Skeleton() {
+  const bone = "block bg-muted motion-safe:animate-pulse";
+  return (
+    <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading what it learned">
+      <span aria-hidden className={cn(bone, "h-6 w-56")} />
+      {[0, 1, 2].map((i) => (
+        <div key={i} aria-hidden className="space-y-3 border p-5">
+          <span className={cn(bone, "h-4 w-1/3")} />
+          <span className={cn(bone, "h-3 w-2/3 bg-muted/70")} />
+          <span className={cn(bone, "h-3 w-1/2 bg-muted/70")} />
+        </div>
+      ))}
+      <span className="sr-only">Loading what it learned…</span>
+    </div>
+  );
+}
+
+/** Before and after the agent first learned, as a flat panel like the others: the median time to its answer and the
+ *  median cost of a run, each side's, how many runs the after side counts, and what learning itself costs a run when
+ *  the server says. Said as the numbers are, a slower or costlier after included: a change down is in the primary colour,
+ *  one up in the warning colour, and neither is ever left out. Shown only when the server has two runs on each side. */
+function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }) {
+  const { before: b, after: a } = impact;
+  const stats: { label: string; now: string; was: string; delta: number | null; unit?: string }[] = [
+    { label: "Answers in", now: took(a.median_duration_s), was: took(b.median_duration_s), delta: change(b.median_duration_s, a.median_duration_s) },
+    ...(costsShown(impact) ? [{ label: "A run costs", now: money(a.median_cost_usd!), was: money(b.median_cost_usd!), delta: change(b.median_cost_usd!, a.median_cost_usd!) }] : []),
+  ];
+  const learning = learningCost(impact);
+  const basis = [`Medians of ${runsWord(b.runs)} before its first note and ${runsWord(a.runs)} that started from its notes.`,
+    ...(typeof a.cost_runs === "number" && typeof b.cost_runs === "number" ? [`Costs are of the ${b.cost_runs} and ${a.cost_runs} runs whose cost is known.`] : [])].join(" ");
+  return (
+    <section className="border" aria-label={impactWords(impact)}>
+      <div className="flex flex-wrap items-center gap-x-8 gap-y-4 px-4 py-3">
+        <div className="flex items-baseline gap-2.5">
+          <span className="caps text-[12px] font-semibold">Since it learned</span>
+          <span className="font-mono text-[11px] text-muted-foreground" title={basis}>on {runsWord(a.runs)}</span>
+        </div>
+        <dl className="flex flex-1 flex-wrap items-baseline gap-x-10 gap-y-3" aria-hidden>
+          {stats.map((s) => (
+            <div key={s.label} className="flex items-baseline gap-3">
+              <dt className="caps text-[10px] text-muted-foreground">{s.label}</dt>
+              <dd className="flex items-baseline gap-2 font-mono">
+                <span className="text-[22px] font-semibold leading-none">{s.now}</span>
+                <span className="text-[12px] text-muted-foreground">instead of {s.was}</span>
+                {s.delta !== null && s.delta !== 0 && <span className={cn("text-[12px]", s.delta < 0 ? "text-primary" : "text-warning-text")}>{s.delta > 0 ? "+" : "−"}{Math.abs(s.delta)}%</span>}
+              </dd>
+            </div>
+          ))}
+          {learning !== null && (
+            <div className="flex items-baseline gap-3">
+              <dt className="caps text-[10px] text-muted-foreground">Learning itself</dt>
+              <dd className="font-mono text-[13px] text-muted-foreground">{money(learning)} a run</dd>
+            </div>
+          )}
+        </dl>
+      </div>
+    </section>
+  );
+}
+
+/** The learning switch on the tab: a new revision with `learning` on or off, made on the agent as the server has it
+ *  now, shown as it goes and put back if the save fails. */
+function SavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [trouble, setTrouble] = useState<unknown>(null);
+  const [shown, setShown] = useState<boolean | null>(null);
+  const flip = async (next: boolean) => {
+    setBusy(true); setTrouble(null); setShown(next);
+    try {
+      const { agent: now, etag } = await v2.getAgent(agent.agent_id);
+      const body = editBody(now, { learning: next }, next ? "Learning on" : "Learning off");
+      if (body.unchanged) onAgent?.(now);
+      else { const { unchanged: _u, ...send } = body; onAgent?.((await v2.updateDefinition(agent.agent_id, send, etag)).agent); }
+    } catch (e) { setTrouble(e ?? new Error("unknown")); }
+    setShown(null); setBusy(false);
+  };
+  return (
+    <LearningSwitch id={`learns-${agent.agent_id}`} className="px-4 py-4" quiet={quiet} checked={shown ?? agent.definition.learning === true} onChange={(v) => void flip(v)}
+      busy={busy} disabled={disabled} server={server} noWrite={!(agent.definition.tools ?? []).includes("write")}
+      problem={trouble ? <ProblemCard problem={failed(trouble, "the agent", "Learning was not changed.")} className="mt-2" /> : null} />
+  );
+}
+
+function Off({ server }: { server?: "on" | "off" | null }) {
+  return (
+    <p className="flex items-start gap-2 border border-warning/40 bg-warning/5 px-4 py-3 text-[13px]" role="status">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning-text" aria-hidden />
+      <span>Learning is off{server === "off" ? " on this server" : ""}, so later runs don't read these notes. They're kept for when it's back on.</span>
+    </p>
+  );
+}
+
+/** No note yet, as the console says a tab is empty: a bordered centred line, one sentence on what learning is, and the
+ *  switch as the next step (or, with learning on, how many runs looked back). */
+function Empty({ on, lookedBack, switchRow, onAdd }: { on: boolean; lookedBack: number; switchRow: ReactNode; onAdd?: () => void }) {
+  return (
+    <section className="mx-auto max-w-xl border" aria-label="Learning">
+      <div className="px-6 py-12 text-center">
+        <Sparkles className="mx-auto mb-3 size-5 text-primary" aria-hidden />
+        <p className="font-mono text-[13px] text-muted-foreground">{on ? "Nothing learned yet." : "Learning is off for this agent."}</p>
+        <p className="mx-auto mt-2 max-w-md text-[14px] text-muted-foreground">
+          {on ? "After each run, it looks back and keeps a note when something will help next time. Its notes show here, and every later run reads them first."
+            : "With learning on, it keeps short notes on what worked after each run, and every later run reads them before it starts."}
+        </p>
+        {on && lookedBack > 0 && <p className="mt-3 font-mono text-[12px] text-muted-foreground">{runsWord(lookedBack)} looked back: nothing worth keeping yet.</p>}
+      </div>
+      <div className="border-t">{switchRow}</div>
+      {onAdd && <div className="flex justify-center border-t px-4 py-3"><Button size="sm" variant="ghost" onClick={onAdd}><Plus aria-hidden /> Or write a note yourself</Button></div>}
+    </section>
+  );
+}
+
+type From = { run?: { id: string; at: string; reason: string }; edited?: string } | undefined;
+
+/** One note: its name, type and description, its body, where it came from and how often runs used it; Edit and Retire. */
+/** `approves`: for a note that waits, whether this caller approves from the console (undefined while that is read).
+ *  `usedOf`: how many runs `usedIn` counts over, when they are the agent's latest only (more runs than were read). */
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, usedOf, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; usedIn?: number; usedOf?: number; onChanged: () => void; approves?: Approval }) {
+  const [editing, setEditing] = useState(false);
+  const [retiring, setRetiring] = useState(false);
+  const [flash, setFlash] = useState(focused);
+  const [saved, setSaved] = useState<string | null>(null);
+  const [approving, setApproving] = useState(false);
+  const [said, setSaid] = useState<ReactNode>(null);
+  const ref = useRef<HTMLElement>(null);
+  const waits = isPending(note);
+  // Approve, in one click, on the version the card shows, as an edit or a retire is made.
+  const approve = async () => {
+    const words = (text: string) => <p className="text-[12px] text-destructive-text" role="alert">{text}</p>;
+    setApproving(true); setSaid(null);
+    try {
+      const seen = await seenVersion(note, () => v2.readNote(agentId, note.file));
+      if (seen.kind === "changed") { setSaid(words(`${CHANGED} Reload the tab to see the newest version.`)); setApproving(false); return; }
+      if (seen.kind === "unknown") { setSaid(words(NO_VERSION)); setApproving(false); return; }
+      await v2.approveNote(agentId, note.file, seen.etag);
+      onChanged();
+    } catch (e) {
+      setApproving(false);
+      setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? words(`${CHANGED} Reload the tab to see the newest version.`) : <ProblemCard problem={failed(e, "the note", "The note was not approved.")} className="" />);
+    }
+  };
+  useEffect(() => {
+    if (!focused) return;
+    setFlash(true);
+    ref.current?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    const t = setTimeout(() => setFlash(false), 2600);
+    return () => clearTimeout(t);
+  }, [focused]);
+  useEffect(() => { if (!saved) return; const t = setTimeout(() => setSaved(null), 2400); return () => clearTimeout(t); }, [saved]);
+  if (editing) return <NoteEditor title="Edit note" v2={v2} agentId={agentId} file={note.file} seen={note} onDone={(ok) => { setEditing(false); if (ok) { setSaved("Saved"); onChanged(); } }} />;
+  const body = bodyOf(note.text);
+  return (
+    <article ref={ref} id={`note-${note.file}`} tabIndex={-1} aria-label={note.name} className={cn("border bg-card/40 outline-none focus-visible:border-primary transition-[border-color,box-shadow] duration-700", flash && "border-primary shadow-[0_0_0_1px_hsl(var(--primary))]")}>
+      <header className="flex flex-col gap-x-3 gap-y-1 px-5 pt-4 sm:flex-row sm:items-start">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="min-w-0 break-words text-[15px] font-semibold leading-snug">{note.name}</h3>
+            <Chip>{typeLabel(note.type)}</Chip>
+            {originOf(note) === "you" && <Chip tone="muted">From you</Chip>}
+            {saved && <span className="caps text-[10px] text-success-text" role="status">{saved}</span>}
+          </div>
+          <p className="mt-1 text-[13px] text-muted-foreground">{note.description}</p>
+          {waits && (approves === "later" || approves === "password") && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{approves === "password" ? APPROVE_SIGN_IN : APPROVE_LATER}</p>}
+        </div>
+        {!readOnly && !retiring && (
+          <div className="-ml-3 flex shrink-0 items-center gap-1 sm:ml-0">
+            {waits ? approves === "yes" && <Button size="sm" variant="solid" onClick={() => void approve()} disabled={approving} aria-label={`Approve ${note.name}`}>{approving ? "Approving" : "Approve"}</Button>
+              : <Button size="sm" variant="ghost" onClick={() => setEditing(true)} aria-label={`Edit ${note.name}`}><Pencil aria-hidden /> Edit</Button>}
+            <Button size="sm" variant="destructive" onClick={() => setRetiring(true)} aria-label={`Retire ${note.name}`}>Retire</Button>
+          </div>
+        )}
+      </header>
+      {said && <div className="px-5 pt-3">{said}</div>}
+      {body.trim() && <Body text={body} />}
+      {(from?.run || from?.edited || (usedIn ?? 0) > 0) && <footer className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
+        {from?.run ? (
+          <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={`Kept because: ${from.run.reason}`}><Sparkles className="size-3 shrink-0 text-primary" aria-hidden />Learned in</span>
+            <a href={`#/runs/${encodeURIComponent(from.run.id)}`} className="min-w-0 truncate text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, from.run.id)}>{shortTitle(runTitle(runs, from.run.id))}</a>
+            <span className="shrink-0">· {when(from.run.at)}</span>
+          </span>
+        ) : from?.edited ? <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />Written by you · {when(from.edited)}</span> : null}
+        {from?.run && from.edited && <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />Edited by you · {when(from.edited)}</span>}
+        {usedIn !== undefined && usedIn > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Used in {usedOf ? `${usedIn} of the latest ${usedOf} runs` : runsWord(usedIn)}</span>}
+      </footer>}
+      {retiring && <RetireConfirm note={note} v2={v2} agentId={agentId} onDone={(ok) => { setRetiring(false); if (ok) onChanged(); }} />}
+    </article>
+  );
+}
+
+/** A note's body, cut to a few lines with a way to show it whole when it is long. */
+function Body({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.split("\n").length > 8 || text.length > 520;
+  const html = useMemo(() => markdown(text), [text]);
+  return (
+    <div className="px-5 pb-4 pt-3">
+      <div className={cn("relative", long && !open && "max-h-[9.5rem] overflow-hidden")}>
+        <div className={PROSE} dangerouslySetInnerHTML={{ __html: html }} />
+        {long && !open && <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background to-transparent" aria-hidden />}
+      </div>
+      {long && <button type="button" onClick={() => setOpen((o) => !o)} className="caps mt-2 flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"><ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} aria-hidden />{open ? "Show less" : "Show all"}</button>}
+    </div>
+  );
+}
+
+/** Retire, after a confirm in place as the run header's cancel is: "Yes, retire" takes the focus, so Enter retires,
+ *  and Esc or Keep keeps it. It is made on the version the card showed (seenVersion): a note changed since is never
+ *  retired unseen, it says so instead, and one the server names no version of is not retired either. */
+function RetireConfirm({ note, v2, agentId, onDone }: { note: LearningNote; v2: Client; agentId: string; onDone: (retired: boolean) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<ReactNode>(null);
+  const yes = useRef<HTMLButtonElement>(null);
+  useEffect(() => { yes.current?.focus(); }, []);
+  const words = (text: string) => <p className="text-[12px] text-destructive-text" role="alert">{text}</p>;
+  const go = async () => {
+    setBusy(true); setSaid(null);
+    try {
+      const seen = await seenVersion(note, () => v2.readNote(agentId, note.file));
+      if (seen.kind === "changed") { setBusy(false); setSaid(words(`${CHANGED} Reload the tab to see the newest version.`)); return; }
+      if (seen.kind === "unknown") { setBusy(false); setSaid(words(NO_VERSION)); return; }
+      await v2.retireNote(agentId, note.file, seen.etag);
+      onDone(true);
+    } catch (e) {
+      setBusy(false);
+      setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? words(`${CHANGED} Reload the tab to see the newest version.`) : <ProblemCard problem={failed(e, "the note", "The note was not retired.")} className="" />);
+    }
+  };
+  return (
+    <div role="alertdialog" aria-label={`Retire ${note.name}?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onDone(false); } }}
+      className="flex flex-wrap items-center gap-3 border-t border-destructive/40 bg-destructive/5 px-5 py-3">
+      <p className="min-w-0 flex-1 text-[13px]"><span className="font-semibold">Retire it?</span> Later runs stop reading it. It stays under Earlier notes.</p>
+      {said && <div className="w-full">{said}</div>}
+      <Button ref={yes} size="sm" variant="destructive" onClick={() => void go()} disabled={busy}>{busy ? "Retiring" : "Yes, retire"}</Button>
+      <Button size="sm" variant="ghost" onClick={() => onDone(false)} disabled={busy}>Keep</Button>
+    </div>
+  );
+}
+
+/** A note to edit (`file`, opened on the version its card showed: `seen`) or a new one: name, description and type as
+ *  fields, the body as markdown. ⌘/Ctrl+Enter saves anywhere in it and Enter saves in a one-line field; Esc cancels. A
+ *  note that changed since the card showed it opens on its newest version, and says so. One that changes while it is
+ *  open is not written over: the save is refused, the newest version loads, and the edit stays below to copy. A note
+ *  the server names no version of is never saved (no empty If-Match). */
+function NoteEditor({ title, v2, agentId, file, seen, taken: names = [], onDone }: { title: string; v2: Client; agentId: string; file?: string; seen?: LearningNote; taken?: string[]; onDone: (saved: boolean) => void }) {
+  const [parts, setParts] = useState<NoteParts | null>(file ? null : { name: "", description: "", type: "feedback", body: "\n", rest: [] });
+  const [etag, setEtag] = useState<string | null>(null);
+  const [readError, setReadError] = useState<unknown>(null);
+  const [busy, setBusy] = useState(false);
+  const [problems, setProblems] = useState<NoteProblem[]>([]);
+  const [trouble, setTrouble] = useState<unknown>(null);
+  const [taken, setTaken] = useState(false);
+  const [stale, setStale] = useState<string | null>(null);
+  const [moved, setMoved] = useState(false);
+  const first = useRef<HTMLInputElement>(null);
+  /** The note as the server has it now. */
+  const reload = async () => {
+    if (!file) return;
+    try { const n = await v2.readNote(agentId, file); setParts(noteParts(n.note)); setEtag(n.etag); setReadError(null); } catch (e) { setReadError(e ?? new Error("unknown")); }
+  };
+  /** The note as its card showed it, or its newest version, said so, when it changed since. */
+  const open = async () => {
+    if (!file || !seen) return reload();
+    try {
+      const v = await seenVersion(seen, () => v2.readNote(agentId, file));
+      if (v.kind === "same") { setParts(noteParts(v.text)); setEtag(v.etag); }
+      else if (v.kind === "changed") { setParts(noteParts(v.now.note)); setEtag(v.now.etag); setMoved(true); }
+      else { setParts(noteParts(seen.text)); setEtag(null); }
+    } catch (e) { setReadError(e ?? new Error("unknown")); }
+  };
+  useEffect(() => { void open(); }, [file]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (parts) first.current?.focus(); }, [parts === null]); // eslint-disable-line react-hooks/exhaustive-deps
+  const set = (p: Partial<NoteParts>) => setParts((x) => (x ? { ...x, ...p } : x));
+  const ready = !!parts && parts.name.trim() !== "" && parts.description.trim() !== "" && !busy;
+  const save = async () => {
+    if (!parts || !ready) return;
+    setTrouble(null); setProblems([]); setTaken(false);
+    if (file && !etag) { setTrouble(NO_VERSION); return; }
+    setBusy(true);
+    const text = noteText(parts);
+    try {
+      await v2.writeNote(agentId, file ?? fileFor(parts.name, names), text, file ? { etag: etag ?? "" } : { create: true });
+      onDone(true);
+    } catch (e) {
+      setBusy(false);
+      const p = e instanceof ClientError ? noteSaveError(e, !file) : null;
+      // Someone, or a run, changed it since it was opened: show the newest, keep this edit to copy.
+      if (p?.kind === "conflict") { setStale(text); setMoved(false); await reload(); }
+      else if (p?.kind === "refused") setProblems(p.problems);
+      else if (p?.kind === "taken") setTaken(true);
+      else setTrouble(e ?? new Error("unknown"));
+    }
+  };
+  const keys = (e: KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onDone(false); }
+    else if (e.key === "Enter" && (e.metaKey || e.ctrlKey || (e.target as HTMLElement).tagName === "INPUT")) { e.preventDefault(); void save(); }
+  };
+  return (
+    <section className="border border-border-strong bg-card" aria-label={title} onKeyDown={keys}>
+      <div className="flex items-center gap-3 border-b px-5 py-2.5">
+        <h3 className="caps text-[11px] font-semibold">{title}</h3>
+        <span className="ml-auto hidden font-mono text-[11px] text-muted-foreground sm:inline"><kbd>{MAC ? "⌘" : "Ctrl"}+Enter</kbd> save · <kbd>Esc</kbd> cancel</span>
+      </div>
+      {readError !== null && <ProblemCard problem={problem(readError, "the note")} onRetry={() => { setReadError(null); void open(); }} className="m-5" />}
+      {!parts && readError === null && <div className="space-y-3 p-5" role="status" aria-label="Loading the note"><div aria-hidden className="h-9 bg-muted motion-safe:animate-pulse" /><div aria-hidden className="h-24 bg-muted/70 motion-safe:animate-pulse" /></div>}
+      {parts && (
+        <div className="space-y-4 px-5 py-4">
+          {moved && !stale && (
+            <div className="border border-warning/50 bg-warning/10 px-4 py-3 text-[13px]" role="status">
+              <p className="flex items-center gap-2 font-semibold"><TriangleAlert className="size-4 text-warning-text" aria-hidden />Changed since you opened it</p>
+              <p className="mt-1 text-muted-foreground">This is the newest version, not the one the card showed.</p>
+            </div>
+          )}
+          {stale && (
+            <div className="border border-warning/50 bg-warning/10 px-4 py-3 text-[13px]" role="alert">
+              <p className="flex items-center gap-2 font-semibold"><TriangleAlert className="size-4 text-warning-text" aria-hidden />Changed since you opened it</p>
+              <p className="mt-1 text-muted-foreground">This is the newest version. Your edit wasn't saved; it's below to copy.</p>
+              <details className="mt-2"><summary className="caps cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">Your edit</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words border bg-background p-3 font-mono text-[12px]">{stale}</pre></details>
+            </div>
+          )}
+          <label className="block"><span className="caps mb-1.5 block text-[11px] font-semibold">Name</span>
+            <input ref={first} value={parts.name} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Try /policies/refund-policy first" className={field} /></label>
+          <label className="block"><span className="caps mb-1.5 block text-[11px] font-semibold">Description</span>
+            <span className="-mt-0.5 mb-1.5 block text-[12px] text-muted-foreground">One line: what the next run sees before it opens the note.</span>
+            <input value={parts.description} onChange={(e) => set({ description: e.target.value })} placeholder="When it applies, and what to do" className={field} /></label>
+          <fieldset>
+            <legend className="caps mb-1.5 text-[11px] font-semibold">Type</legend>
+            <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Type">
+              {NOTE_TYPES.map((t) => (
+                <label key={t} className={cn("caps cursor-pointer border px-3 py-1.5 text-[11px]", parts.type === t ? "border-foreground" : "text-muted-foreground hover:text-foreground")} title={t}>
+                  <input type="radio" name={`type-${file ?? "new"}`} className="sr-only" checked={parts.type === t} onChange={() => set({ type: t })} />{typeLabel(t)}
+                </label>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[12px] text-muted-foreground">{TYPE_HINT[parts.type]}</p>
+          </fieldset>
+          <label className="block"><span className="caps mb-1.5 block text-[11px] font-semibold">Note</span>
+            <textarea value={parts.body.replace(/^\n/, "")} onChange={(e) => set({ body: `\n${e.target.value}` })} rows={7} placeholder="What to do, and why. Markdown." className={cn(field, "resize-y leading-[1.65]")} /></label>
+          {problems.length > 0 && (
+            <div className="border border-destructive/50 bg-destructive/5 px-4 py-3 text-[13px]" role="alert">
+              <p className="font-semibold text-destructive-text">Not saved: the note doesn't pass the checks.</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">{problems.map((p, i) => <li key={i}>{p.detail}</li>)}</ul>
+            </div>
+          )}
+          {taken && <p className="text-[13px] text-destructive-text" role="alert">Not saved: a note by this name exists already. Change its name.</p>}
+          {trouble === NO_VERSION ? <p className="text-[13px] text-destructive-text" role="alert">Not saved: {NO_VERSION}</p>
+            : trouble !== null && <ProblemCard problem={failed(trouble, "the note", "The note was not saved.")} className="" />}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="solid" onClick={() => void save()} disabled={!ready}>{busy ? "Saving" : file ? "Save" : "Add note"}</Button>
+            <Button size="sm" variant="ghost" onClick={() => onDone(false)} disabled={busy}>Cancel</Button>
+            {!file && parts.name.trim() && <span className="ml-auto font-mono text-[11px] text-muted-foreground">{fileFor(parts.name, names)}</span>}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** The notes no longer in use: replaced by a newer one, or retired. Closed until asked; one a link points at opens it. */
+function Earlier({ notes: list, all, from, focus }: { notes: LearningNote[]; all: LearningNote[]; from: ReturnType<typeof provenance>; focus: string[] }) {
+  const [open, setOpen] = useState(list.some((x) => focus.includes(x.file)));
+  // A note a link points at that arrives with a later page opens the list too.
+  const pointed = list.some((x) => focus.includes(x.file));
+  useEffect(() => { if (pointed) setOpen(true); }, [pointed]);
+  const nameOf = (file: string | null) => all.find((x) => x.file === file)?.name ?? file;
+  // To the note that replaced it: scrolled to, and the focus on it.
+  const toNote = (file: string) => {
+    const card = document.getElementById(`note-${file}`);
+    card?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    card?.focus({ preventScroll: true });
+  };
+  return (
+    <section className="border" aria-label="Earlier notes">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-accent">
+        <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", !open && "-rotate-90")} aria-hidden />
+        <span className="caps text-[12px] font-semibold">Earlier notes</span>
+        <span className="font-mono text-[11px] text-muted-foreground">{list.length} no longer read</span>
+      </button>
+      {open && (
+        <ul className="border-t">
+          {list.map((x) => (
+            <li key={x.file} id={`note-${x.file}`} className={cn("border-b px-4 py-3 last:border-b-0", focus.includes(x.file) && "bg-primary/5")}>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[14px] text-muted-foreground line-through decoration-muted-foreground/40">{x.name}</span>
+                <Chip tone="muted">{x.status === "retired" ? "Retired" : "Replaced"}</Chip>
+              </div>
+              <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                {x.status === "superseded" && x.superseded_by ? <>Replaced by <button type="button" onClick={() => toNote(x.superseded_by!)} className="text-foreground/80 underline-offset-2 hover:text-foreground hover:underline">{nameOf(x.superseded_by)}</button></> : x.status === "retired" ? `Retired${from.get(x.file)?.edited ? ` by you · ${when(from.get(x.file)!.edited!)}` : ""}` : null}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** A reason under the panel's own title says it once: "Not kept: too specific" reads "Too specific". */
+const untitled = (words: string) => words.replace(/^Not kept:\s*(.)/, (_, c: string) => c.toUpperCase());
+
+/** The latest runs that kept nothing, and why, in plain words: notes turned away, skips and stops, newest first. Runs
+ *  with nothing new to remember are counted, not listed. */
+function NotKept({ runs }: { runs: Run[] }) {
+  const dropped = runs.filter((r) => r.learning?.state === "dropped");
+  const listed = dropped.filter((r) => dropKind(r.learning!.reason) !== "nothing").slice(0, 6);
+  const nothing = dropped.length - dropped.filter((r) => dropKind(r.learning!.reason) !== "nothing").length;
+  if (!dropped.length) return null;
+  return (
+    <Panel title="Not kept">
+      {listed.length > 0 && (
+        <ul>
+          {listed.map((r) => (
+            <li key={r.run_id} className="border-b last:border-b-0">
+              <a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="block px-4 py-3 hover:bg-accent">
+                <span className="block text-[13px]">{untitled(dropWords(r.learning!))}</span>
+                <span className="mt-1 flex items-center gap-2 font-mono text-[11px] text-muted-foreground"><span className="min-w-0 truncate" title={r.title}>{r.title}</span><span className="shrink-0">· {when(r.created_at)}</span></span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+      {nothing > 0 && <p className={cn("px-4 py-3 font-mono text-[11px] text-muted-foreground", listed.length > 0 && "border-t")}>{listed.length ? `${nothing} more ${nothing === 1 ? "run" : "runs"} had` : `${runsWord(nothing)} had`} nothing new to remember.</p>}
+    </Panel>
+  );
+}
+
+/** The index the next run reads first, one line a note in use (so its lines are counted as notes): built by the server
+ *  from the notes, so read-only. */
+function NextRun({ index }: { index: string }) {
+  const [open, setOpen] = useState(false);
+  const lines = index.split("\n").filter((l) => l.trim()).length;
+  return (
+    <section className="border" aria-label="What the next run reads">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-accent">
+        <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", !open && "-rotate-90")} aria-hidden />
+        <span className="caps text-[12px] font-semibold">What the next run reads</span>
+        <span className="ml-auto font-mono text-[11px] text-muted-foreground">{lines ? notes(lines) : "nothing"}</span>
+      </button>
+      {open && (
+        <div className="border-t">
+          {lines ? <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-[11.5px] leading-[1.7]">{index.trim()}</pre>
+            : <p className="px-4 py-3 text-[13px] text-muted-foreground">Nothing yet: no note is in use.</p>}
+          <p className="border-t px-4 py-2 text-[11px] text-muted-foreground">Read-only: it's made from the notes in use, one line each.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+

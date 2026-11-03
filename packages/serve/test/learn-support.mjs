@@ -82,11 +82,16 @@ export const mergesOf = (repo, runId) => git(repo, ["log", "--format=%H %(traile
 export const reflectRows = (rows) => rows.filter((row) => row.agent_label === "learning" && row.kind !== "learning");
 export const learningRows = (rows) => rows.filter((row) => row.kind === "learning");
 
-/** The run's learning ended as `state` (and `reason`): its view says so, and its one learning row holds it. */
+/** The machine's words, which nothing a person reads of a run's learning says (learning-words.ts). */
+export const UNSAID = /\bmain\b|merged into|end-of-run|grader|verdict|\bpropos/i;
+
+/** The run's learning ended as `state` (and `reason`): its view says so in a person's words, and its one learning row
+ *  holds it and says the same. */
 export function settled(view, rows, state, reason = null) {
   assert.deepEqual([view.learning?.state, view.learning?.reason], [state, reason], JSON.stringify(view.learning));
   assert.equal(typeof view.learning.detail, "string");
+  assert.doesNotMatch(view.learning.detail, UNSAID, "said in a person's words");
   const [row, ...more] = learningRows(rows);
   assert.equal(more.length, 0, "one learning row");
-  assert.deepEqual([row?.agent_label, row?.learning], ["learning", { state, reason, detail: view.learning.detail }]);
+  assert.deepEqual([row?.agent_label, row?.learning, row?.summary], ["learning", { state, reason, detail: view.learning.detail }, view.learning.detail]);
 }

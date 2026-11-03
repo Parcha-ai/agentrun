@@ -445,6 +445,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let caps!: Awaited<ReturnType<typeof readingOf>>["caps"];
   let latest = 0;
   const keysChanged = async () => {
+    // A run's learning, as its view, a list and its timeline row show it, is cut of the keys saved now (runs.ts).
+    runs.keysChanged();
     const mine = ++latest;
     const next = await readingOf(base, maxRuns, storedKeys, learning, options.gradeModel);
     if (mine === latest) ({ env, caps } = next);
@@ -1162,9 +1164,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "getAgentLearning": {
         await needAgent(id);
         const rows = await agents.request(() => agents.store.listRuns({ agent: id }));
-        // Counted as GET /stats counts (learning-run.ts counts): a held run from memory, any other's end from the ledger.
-        const { runs: _, ...counts } = await runs.learning.counts(rows, { agent: id });
-        return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts));
+        // Counted as GET /stats counts (learning-run.ts counts): a held run from memory, any other's end from the ledger;
+        // what learning changed, from the same rows and ledger (learningImpact).
+        const { counts, impact } = await runs.learning.ofAgent(rows, id);
+        return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts, impact));
       }
       case "listLearningNotes":
       case "listLearningLog":

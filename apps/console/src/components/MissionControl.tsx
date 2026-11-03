@@ -1,4 +1,5 @@
 import { agentHash } from "@/components/AgentPage";
+import { LearningChips } from "@/components/LearningChips";
 import { StatusBadge } from "@/components/StatusBadge";
 import { when } from "@/lib/format";
 import { costParts, type MissionView } from "@/lib/mission";
@@ -65,6 +66,7 @@ export function MissionControl({ view, error, onRetry, scope }: { view: MissionV
               <ul>{view.recent.map((r) => (
                 <li key={r.run_id} className="border-b last:border-b-0"><a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex items-center gap-3 px-4 py-3 hover:bg-accent">
                   <StatusBadge run={r} /><span className="min-w-0 flex-1 truncate text-[14px]">{r.title}</span><span className="hidden font-mono text-[12px] text-muted-foreground sm:inline">{when(r.created_at)}</span>
+                  <LearningChips run={r} className="hidden sm:inline-flex" />
                 </a></li>
               ))}</ul>
             ) : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No runs yet.</p>}

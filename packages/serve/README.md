@@ -832,18 +832,38 @@ the commit the merge was made on (once more on a `main` that moved meanwhile), a
 merged, never twice. The merge's own questions are asked again of `main` first: a name another run added since is
 refused as `exists`. A server that goes between steps picks the run up at its next start, once.
 
-The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run lists) says how it went: `seeded`, then
+The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in run lists, the detail cut to 140
+characters and no time) says how it went: `seeded`, then
 `reflecting` during the turn and until what it answered is checked, `proposed` while it is graded, and `merged`, or
 `dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`,
 `reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `screen`, `screen_down`,
 `grader`, `grade_failed`; `no_write_tool` and `tool_denied` are an older server's, still read and counted, and no run
 gets them now). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
-workflow's or an imported run). Once it is proposed, merged or dropped (`seed_failed` included), the run's timeline has
-one row of kind `learning` that says so. Each run's learning end is written once to the learning ledger,
-`DATA/learning-usage.jsonl`, one line `{run, agent, state, reason, at, cost, tokens}` (`cost` and `tokens` the grade's,
-null when unknown, 0 when nothing was graded), after its `serve.json` holds it; a server that went between the two writes
-it at its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
+workflow's or an imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2
+notes.", "Looking back on this run…", "Checking 1 new note…", "Learned: Check units (replaces 1 older note)", "Nothing new
+to remember from this run.", "Not kept: <the grader's reason, its first sentence>", "Not kept: it held something that must
+not be stored (one of this server's secrets).", "Not kept: learning stopped (looking back took too long)." and so on
+(`learning-words.ts`); a client that acts on it reads `state` and `reason`. A note's name or the grader's reason in it
+is said again at each read from what the run keeps (its `learned` notes, the grader's verdict), cut of the server's
+secrets as they are then before the words are cut short (300 characters, 140 in a list), so a value that became a secret
+after the run is never shown in part. Once it is proposed, merged or dropped (`seed_failed` included), the run's
+timeline has one row of kind `learning` whose summary is that detail.
+
+Two more fields say what the run used and learned (`learning/2`), on its read and in run lists alike, each absent when it
+holds no note: `used`, `[{file, name}]`, the notes its job read from `.learning/`, found once as the run settles from its
+timeline (each `read` call on any harness whose result was a success, of a note the run started from: never `MEMORY.md`,
+nor a read its end-of-run turn made, nor a note read through a command such as `bash`'s `cat`) and kept in
+`serve.json`, so a list never reads a timeline; and `learned`, `[{file,
+name, supersedes}]`, the notes its merge added, once `merged`. A name and a file are cut of the server's secrets as they
+are now, a file holding one `[redacted]`.
+
+Each run's learning end is written once to the learning ledger, `DATA/learning-usage.jsonl`, one line `{run, agent,
+state, reason, at, cost, tokens, seed_notes, answered_at, job_cost_usd, look_back_usd}` (`cost` and `tokens` the
+grade's, null when unknown, 0 when nothing was graded; `seed_notes` how many notes the run started from; once it looked
+back, `answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then; `look_back_usd` what
+looking back cost, 0 when it did not), after its `serve.json` holds it; a server that went between the two writes it at
+its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
 `agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
 `learning` meter on `GET /usage` reads the same lines.
 
@@ -862,7 +882,13 @@ with the token, an archived agent's too:
   newest first) and the first 20 changes on `main` (newest first, each `by: {run}` from its `Run-Id` trailer or
   `{user: true}`, with its commit, time, reason and files), and how the agent's runs that tried to learn fared
   (`merged`, `dropped` by reason, `in_progress`), counted as `GET /stats` counts them: from the learning ledger and the
-  runs the server holds, never a run's files. An agent with no folder answers `main: null` and empty pages.
+  runs the server holds, never a run's files; and `impact` (`learning/2`), what learning changed: the agent's completed
+  runs that started from at least one active note against those that started before its first note (the earlier of its
+  first merge and the start of its first run that started from a note, so a person's first note counts), each side's
+  `runs`; `median_duration_s`, the time to the answer (the run's start to its job's end, before it looks back);
+  `median_cost_usd`, the job's own cost without its look-back, over the `cost_runs` whose cost is known; and
+  `median_learning_usd`, what learning itself cost a run (its look-back and its grade). From the same rows and ledger;
+  null unless both sides count 2 runs. An agent with no folder answers `main: null`, empty pages and `impact: null`.
   `GET .../learning/notes?cursor=&limit=&status=` and `GET .../learning/log?cursor=&limit=` page on, up to 200 at a
   time; a cursor reads the same commit its first page did.
 - `GET .../learning/files/{file}`: one note (or `MEMORY.md`) on `main` as `text/markdown`, with its `ETag`, the note's
@@ -881,7 +907,7 @@ with the token, an archived agent's too:
   `learning: <edited, created or retired> by a person: <file>` with a `Changed-By: user` trailer, with `MEMORY.md`
   rebuilt, `main` moved only from the commit it was made on, and the folder's files brought in line; it answers the
   note as it now is, with its new `ETag`. `MEMORY.md` itself is never written (400).
-- `GET /runs/{run_id}/learning`: the run's learning whole (its seed, its merge, the grader's verdict with its item for
+- `GET /runs/{run_id}/learning`: the run's learning whole (its `used` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
   each new note, `{file, keep, question, why}`, `question` the rubric's question a dropped note failed, the checker's
   problems, what the grade cost), `null` for a run that does not learn; `verdict` is `null` until a grade ran.
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, else its proposal against its

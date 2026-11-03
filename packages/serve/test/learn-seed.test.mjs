@@ -110,8 +110,8 @@ test("a new agent with learning on: its first run makes its folder, main checked
   assert.ok(prompt.includes("Answer the question.") && !prompt.includes("# Learned"), `an empty index adds no section: ${prompt}`);
   // Seeded, then asked the end-of-run turn, which (the faux model says its prompt) gave no note (learn-reflect.test.mjs).
   const { whole, short } = await learningOf(api, "fresh", runId);
-  assert.deepEqual({ ...whole, at: typeof whole.at }, { state: "dropped", reason: "empty", detail: "The end-of-run turn added no note.", at: "string" });
-  assert.deepEqual(short, { state: "dropped", reason: "empty" });
+  assert.deepEqual({ ...whole, at: typeof whole.at }, { state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", at: "string" });
+  assert.deepEqual(short, { state: "dropped", reason: "empty", detail: "Nothing new to remember from this run." }, "a list says it in the same words");
   // A server started again reads the run's learning back from its serve.json, whole and in a list.
   await first.close();
   const again = await serve(t, { data, faux: SYSTEM });
@@ -159,7 +159,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const skills = join(data, "runs", runId, "work", ".agents", "skills");
     assert.deepEqual(existsSync(skills) ? readdirSync(skills) : [], [], "no learned skill is written");
     const { whole, short } = await learningOf(api, id, runId);
-    assert.deepEqual([whole.state, whole.reason, short], ["dropped", "empty", { state: "dropped", reason: "empty" }], "seeded, and its end-of-run turn gave no note");
+    assert.deepEqual([whole.state, whole.reason, short], ["dropped", "empty", { state: "dropped", reason: "empty", detail: whole.detail }], "seeded, and its end-of-run turn gave no note");
   });
 }
 
@@ -301,8 +301,8 @@ async function seedFailed(api, data, id, runId, prompt) {
   assert.equal(existsSync(learnedDir(data, runId)), false, "no .learning in the run's work");
   assert.ok(prompt.includes("Answer the question.") && !prompt.includes("# Learned"), prompt);
   const { whole, short } = await learningOf(api, id, runId);
-  assert.deepEqual([whole.state, whole.reason, short], ["dropped", "seed_failed", { state: "dropped", reason: "seed_failed" }]);
-  assert.match(whole.detail, /started with nothing learned/);
+  assert.deepEqual([whole.state, whole.reason, short], ["dropped", "seed_failed", { state: "dropped", reason: "seed_failed", detail: whole.detail }]);
+  assert.match(whole.detail, /^Not kept: learning stopped \(.*, so the run started without (them|its notes)\)\.$/);
 }
 
 test("a folder the server cannot read: the run still completes, with nothing learned, and its learning is dropped for seed_failed", { timeout: 120_000, skip: process.getuid?.() === 0 && "root reads any folder" }, async (t) => {
