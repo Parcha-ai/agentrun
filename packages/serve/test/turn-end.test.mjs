@@ -156,4 +156,13 @@ test("a working turn's last progress: when its message was taken, then each entr
   assert.equal(turns.progressAt(), 4_000);
   turns.note([ended(5, { message: "a", status: "completed", answer: null })], [], undefined, 5_000);
   assert.equal(turns.progressAt(), undefined);
+  // pi: a submission's move (queued, then placed) is progress; the same record read again (a reconnect's snapshot) is not.
+  const pi = new Turns();
+  const queued = { id: 2, conversationId: 1, type: "input", status: "queued", requestId: "first-r1" };
+  pi.note([], [queued], undefined, 1_000);
+  pi.note([], [queued], undefined, 2_000);
+  assert.equal(pi.progressAt(), 1_000, "a queued submission read again is no progress");
+  pi.note([], [{ ...queued, status: "placed", entry: 3 }], undefined, 3_000);
+  pi.note([], [{ ...queued, status: "placed", entry: 3 }], undefined, 4_000);
+  assert.equal(pi.progressAt(), 3_000, "placed is, and placed read again is not");
 });
