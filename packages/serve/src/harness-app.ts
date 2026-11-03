@@ -533,9 +533,11 @@ export function adapterRun(
       await flush();
       session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       // That turn is over in the session, and an earlier process died before it wrote the turn's end: written now, after
-      // what this open wrote and before any new turn, so the message the turn took reads answered (turns.ts).
-      // The session says only that the turn is over: completed, or failed when the bridge wrote its error.
-      const restored: TurnStatus | undefined = session.state === "idle" && unended ? (unended.failed ? "failed" : "completed") : undefined;
+      // what this open wrote and before any new turn. The session says only that the turn is over; how it ended is what
+      // the root holds of it: failed when the bridge wrote its error, completed when its answer (a request with text and
+      // no call) is there. With neither, the turn is not known to have completed: it ends interrupted, and the run waits
+      // for the person (turns.ts), never answered "".
+      const restored: TurnStatus | undefined = session.state === "idle" && unended ? (unended.failed ? "failed" : unended.answer !== null ? "completed" : "interrupted") : undefined;
       const restore = (status: TurnStatus) => later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, message: unended!.message, status, answer: status === "completed" ? unended!.answer : null } satisfies TurnEndData }))));
       // A turn the session holds open is the last message's, resumed now.
       if (session.state === "open_turn" && unended) taking = unended.message;
