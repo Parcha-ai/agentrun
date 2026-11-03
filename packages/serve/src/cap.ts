@@ -23,9 +23,10 @@ export const SPEND_CAP_REACHED = "spend_cap_reached";
 /** The option a request's worst case rides on from the cap to its marks (request-start.ts): what the cap held for it. A
  *  symbol, so no provider ever sends it. */
 export const HELD_USD = Symbol.for("agentrun.serve.held_usd");
-/** Set on pi's message for a request that never left (its mark could not be written, the run was cancelled), by the
- *  marks (request-start.ts): it costs nothing, while any other that ended on an error left and counts at its hold. */
-export const NOT_SENT = Symbol.for("agentrun.serve.not_sent");
+/** Set by the marks (request-start.ts) on pi's message for a request that ended on an error after its response had begun
+ *  (an event came in first): it left and the provider may have billed what it generated, so it counts at its hold, as one
+ *  stopped does. An error before any event (refused at the HTTP level: a 429, a 5xx) counts at its own usage. */
+export const RESPONSE_BEGAN = Symbol.for("agentrun.serve.response_began");
 /** The field of a request's end mark (REQUEST_ENDED) that says what the cap held for it, when its stream ended aborted
  *  or its summary failed: the request counts at that figure. Optional: an end with none (an older store, a run with no
  *  cap) leaves the request cut, at an unknown cost. */
@@ -99,6 +100,8 @@ export function spentIn(storeFile: string): number | null {
   // What the cap held for each request, as its start mark says (undefined: it says none), a generation's and a summary's.
   const starts = { generation: [] as (number | undefined)[], compaction: [] as (number | undefined)[] };
   let marked = false;
+  // End marks of requests that ended on an error after their response began (`error`), whose pi entry is still to come.
+  let erred = 0;
   try {
     for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) {
       const entry = JSON.parse(String((row as { record: string }).record)) as EntryLike;
@@ -111,13 +114,18 @@ export function spentIn(storeFile: string): number | null {
         starts[data.request === "compaction" ? "compaction" : "generation"].push(figureOf(data[HELD_FIELD]));
       }
       // pi's entry for a marked request stopped before its end (what had streamed of it): the request is counted by its
-      // marks instead, at the figure its end holds, or cut. Before the first mark (an older run) it stays unknown. So is one
-      // that ended on an error after it left: its start stays open, at the figure it holds (an error for a request that
-      // never left is left out above, or has no start of its own, or its start withdrawn).
-      if (marked && entry.kind === "pi.assistant" && ["aborted", "error"].includes((entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason as string)) continue;
+      // marks instead, at the figure its end holds, or cut. Before the first mark (an older run) it stays unknown.
+      if (marked && entry.kind === "pi.assistant" && (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason === "aborted") continue;
+      // So is pi's error entry for a request that ended on an error after its response began: its end mark (`error`, before
+      // the entry) counts it at its hold. An error with no such mark (before any event: a 429, a 5xx) is its answer.
+      if (entry.kind === REQUEST_ENDED && data.error === true) erred += 1;
+      else if (erred > 0 && entry.kind === "pi.assistant" && (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason === "error") {
+        erred -= 1;
+        continue;
+      }
       entries.push(entry);
       const held = data[HELD_FIELD];
-      // A summary that ended on an error (its cost mark says `failed`) counts at what the cap held for it, as a stopped one.
+      // A summary that ended on an error after its response began (its cost mark says `failed`) counts at its hold.
       if (entry.kind === REQUEST_COST && data.failed === true && figureOf(held) !== undefined) entries[entries.length - 1] = { ...entry, data: { ...data, usd: held } };
       if (entry.kind !== REQUEST_ENDED || data.unsent === true || typeof held !== "number" || !Number.isFinite(held)) continue;
       // The stopped request closed at what the cap held for it: a summary by its cost, a generation by an answer.
@@ -269,13 +277,13 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     errorMessage: why,
   });
   /** Adds what `answer` cost to what the run has spent once it settles. One stopped before its end, one that ended on an
-   *  error (its usage is what had streamed, not what the provider can have billed), or that failed with no answer,
-   *  counts at `worst`, what the cap held for it (as spentIn reads its marks); without one (a deferred response) it is
-   *  unknown, as is a cost that is not a number, from then on. One that never left (NOT_SENT) counts nothing. */
+   *  error after its response began (RESPONSE_BEGAN: its usage is what had streamed, not what the provider can have
+   *  billed), or that failed with no answer, counts at `worst`, what the cap held for it (as spentIn reads its end mark);
+   *  without one (a deferred response) it is unknown, as is a cost that is not a number, from then on. */
   const count = (answer: Promise<AssistantMessage>, worst?: number) => {
     const add = (cost: unknown) => void (spent = spent !== null && typeof cost === "number" && Number.isFinite(cost) ? spent + cost : null);
-    const cut = (message: AssistantMessage) => message.stopReason === "aborted" || message.stopReason === "error";
-    return answer.then((message) => add((message as unknown as Record<symbol, unknown>)[NOT_SENT] === true ? 0 : cut(message) ? worst : message.usage?.cost?.total), () => add(worst));
+    const cut = (message: AssistantMessage) => message.stopReason === "aborted" || (message.stopReason === "error" && (message as unknown as Record<symbol, unknown>)[RESPONSE_BEGAN] === true);
+    return answer.then((message) => add(cut(message) ? worst : message.usage?.cost?.total), () => add(worst));
   };
   /** Sends a request judged to fit at `worst`, holding that until `answer` settles. */
   const admit = (worst: number, answer: () => Promise<AssistantMessage>): Promise<AssistantMessage> => {

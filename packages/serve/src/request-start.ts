@@ -22,7 +22,7 @@ import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@
 import type { DurableRun } from "@parcha/pi-durable-disk";
 import { CAP_REFUSED_FIELD, HELD_FIELD, HELD_USD } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
-import { NOT_SENT } from "./cap.js";
+import { RESPONSE_BEGAN } from "./cap.js";
 
 /** Whether the run in `root` (its directory) was cancelled: the mark serve's cancel writes there first. */
 export const cancelledIn = (root: string) => () => existsSync(join(root, RUN_CANCELLED));
@@ -39,13 +39,10 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     const run = await opened;
     await run.harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), BACKGROUND_CONTEXT);
   };
-  /** pi's message for a request that ended here with an error, never sent (NOT_SENT, which the cap counts at $0) unless
-   *  `left`: then it left, and the cap counts it at its hold. */
-  const failed = (model: Model<Api>, why: string, left = false): AssistantMessage => ({
+  const failed = (model: Model<Api>, why: string): AssistantMessage => ({
     role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, stopReason: "error", timestamp: Date.now(),
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
     errorMessage: why,
-    ...(left ? {} : { [NOT_SENT]: true }),
   });
   const reason = (error: unknown) => String((error as Error)?.message ?? error).slice(0, 200);
   /** What the run's cap held for a request (its options' HELD_USD), as an end mark's field; none without a cap. */
@@ -91,13 +88,18 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
         return refused();
       }
       let result: AssistantMessage;
+      // Whether the provider's response had begun (an event came in) by the time the request ended.
+      let began = false;
       try {
         const inner = models.streamSimple(model, context, options);
-        for await (const event of inner) outer.push(event);
+        for await (const event of inner) {
+          if (event.type !== "error") began = true;
+          outer.push(event);
+        }
         result = await inner.result();
       } catch (error) {
         // A stream that throws instead of ending on an error event still ends the request, as an error, never a hang.
-        result = failed(model, `the model request failed: ${reason(error)}`, true);
+        result = failed(model, `the model request failed: ${reason(error)}`);
         outer.push({ type: "error", reason: "error", error: result });
       }
       // An answer or a failure gets pi's own entry; an abort may get none, so its end is marked, with the provider's id
@@ -107,6 +109,12 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       if (result.stopReason === "aborted") {
         const responseId = (result as { responseId?: unknown }).responseId;
         await mark(REQUEST_ENDED, { ...(typeof responseId === "string" ? { responseId } : {}), ...heldOf(options) }).catch(() => undefined);
+      } else if (result.stopReason === "error" && began) {
+        // An error after its response began (an overload part way, a reset): its usage is what had streamed, not what the
+        // provider can have billed. Its end is marked with the hold (`error`) before pi writes its entry, and the cap counts
+        // it there, as a stop. One before any event (a 429, a 5xx) is refused unbilled, and counts at its own usage.
+        (result as unknown as Record<symbol, unknown>)[RESPONSE_BEGAN] = true;
+        await mark(REQUEST_ENDED, { error: true, ...heldOf(options) }).catch(() => undefined);
       }
       outer.end(result);
     })();
@@ -141,8 +149,11 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       // Its tokens, in pi's shape, when pi counted any: zeros are no count.
       const u = result.usage;
       const usage = u && u.input + u.output + u.cacheRead + u.cacheWrite > 0 ? { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite } : undefined;
-      // One that ended on an error left, and its usage is what had streamed: it says so, with the hold the cap counts it at.
-      const failure = result.stopReason === "error" ? { failed: true, ...heldOf(options) } : {};
+      // One that ended on an error after its response began (it holds content or a token count; a summary has no events
+      // to read) counts at its hold: it says so, and carries it. One before any of that counts at its own usage.
+      const began = result.stopReason === "error" && (usage !== undefined || result.content.length > 0);
+      if (began) (result as unknown as Record<symbol, unknown>)[RESPONSE_BEGAN] = true;
+      const failure = began ? { failed: true, ...heldOf(options) } : {};
       await mark(REQUEST_COST, usage ? { ...COMPACTION, usd, usage: usage as never, ...failure } : { ...COMPACTION, usd, ...failure }).catch(() => undefined);
     }
     return result;
