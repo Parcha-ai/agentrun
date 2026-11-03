@@ -18,7 +18,7 @@ test("the capabilities a grant may name are tools the table binds, fetch_page an
   assert.deepEqual([...CAPABILITIES], ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"]);
   for (const name of CAPABILITIES) assert.ok(BOUND_TOOLS.includes(name), name);
   for (const name of ["fetch_page", "pdf_pages", "llm", "monid.discover"]) assert.ok(!CAPABILITIES.includes(name), name);
-  assert.deepEqual(PROVIDERS, { web_search: ["auto", "native", "exa-keyless", "parallel"], web_fetch: ["kernel", "parallel"] });
+  assert.deepEqual(PROVIDERS, { web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"] });
 });
 
 test("the resolver: the agent's pick over the server's; auto is native where the harness or a direct Anthropic or OpenAI model has it, else keyless Exa; native is native only; the kernel's fetch; Parallel only with its key, never in its place", () => {
@@ -144,7 +144,7 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   process.env.AGENT_MODEL_BASE_URL = "https://gateway.example/v1";
   const gateway = await serve(t);
   assert.equal((await gateway.api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
-  assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "unavailable: no native search for pi behind a gateway", "claude-agent": "native", codex: "unavailable: no native search for codex yet" });
+  assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "unavailable: no native search for pi behind a gateway", "claude-agent": "native", codex: "unavailable: no native search for codex behind a gateway" });
   assert.equal((await gateway.api("PUT", "/settings/tools", {})).status, 200);
   assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "exa-keyless", "claude-agent": "native", codex: "exa-keyless" }, "auto falls back to keyless Exa");
   delete process.env.AGENT_MODEL_BASE_URL;
