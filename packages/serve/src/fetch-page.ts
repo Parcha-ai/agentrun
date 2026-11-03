@@ -40,6 +40,10 @@ export const TITLE_CAP = 500;
 /** The longest URL fetched: a longer one is refused before anything is sent. */
 export const URL_MAX = 4_096;
 export const TIMEOUT_MS = 30_000;
+/** Where readPage cuts a page's HTML before it reads it, scripts and styles aside: pi-browser's READ_MAX_CHARS, held here
+ *  so the tool's words name it without loading pi-browser where nothing is fetched (fetch-page-cut.test holds the two
+ *  equal). */
+export const HTML_READ_CHARS = 1_000_000;
 
 export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
