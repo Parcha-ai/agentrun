@@ -90,6 +90,15 @@ test("the contract's operations are as vendored; this server's own are added and
       assert.ok(isDeepStrictEqual(same, vendoredSame), "getTimeline is the contract's but for its limit");
       continue;
     }
+    if (op.operationId === "cancelRun") {
+      // What a cancel's 202 reads here: the contract's description, then this server's own reading of it.
+      assert.deepEqual(Object.keys(changes), ["description"]);
+      assert.ok(op.description.startsWith(original.description.trimEnd()), "the contract's description comes first");
+      const { description: _a, ...same } = rest;
+      const { description: _b, ...vendoredSame } = original;
+      assert.ok(isDeepStrictEqual(same, vendoredSame), "cancelRun is the contract's but for its description");
+      continue;
+    }
     assert.deepEqual(Object.keys(changes).sort(), ["If-Match", "requestBody"]);
     const schema = (o) => o.requestBody.content["application/json"].schema;
     assert.deepEqual(schema(op).oneOf[0], schema(original), "the contract's body is one of the two");

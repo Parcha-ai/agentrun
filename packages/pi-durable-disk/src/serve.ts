@@ -165,6 +165,15 @@ async function answerOf(conversation: Conversation, entry: EntryId, context: Con
   return { entry, text };
 }
 
+/** An answer's whole text, as a reader of the run's answer reads it: its text blocks, joined by newlines, trimmed. */
+const answerTextOf = (record: { model?: readonly unknown[] } | undefined): string =>
+  ((record?.model?.[0] as { role?: string; content?: unknown } | undefined)?.content as { type?: string; text?: string }[] | undefined ?? [])
+    .flatMap((b) => (b && b.type === "text" ? [String(b.text ?? "")] : [])).join("\n").trim();
+
+/** Whether an entry is an assistant message that asked for tools. */
+const callsOf = (record: { model?: readonly unknown[] } | undefined): boolean =>
+  (((record?.model?.[0] as { content?: unknown } | undefined)?.content as { type?: string }[] | undefined) ?? []).some((b) => b?.type === "toolCall");
+
 /** Start listening; requests are answered once `attach` hands over the open run. */
 export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
   const base = options.context ?? BACKGROUND_CONTEXT;
@@ -265,6 +274,28 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     };
   }
 
+  /** The conversation's input submissions from its newest settled one on, oldest first, a `done` one with its answer's
+   *  whole text (`answer_text`) and whether that answer asked for tools (`answer_calls`, a tool ended the turn):
+   *  pi-durable settles a person's message in the commit of its turn's last entry, so a reader that comes in now knows
+   *  which messages are still open and how the newest one's turn ended. */
+  async function inputsOf(conversationId: ConversationId, context: Context): Promise<unknown[]> {
+    const out: unknown[] = [];
+    const storage = run!.store.storage;
+    for (let cursor: unknown; ; ) {
+      const page = await storage.scanSubmissions({ conversationId, order: "descending" }, 50, cursor as never, context);
+      for (const record of page.items) {
+        if (record.type !== "input") continue;
+        const settled = (record.status === "done" || record.status === "unanswered") && record.entry !== undefined;
+        const answer = record.status === "done" ? (await storage.entry(record.answer, context))?.entry : undefined;
+        // A done one with its answer's text, and whether that answer asked for tools (a tool ended the turn).
+        out.push(record.status === "done" ? { ...record, answer_text: answerTextOf(answer), answer_calls: callsOf(answer) } : record);
+        if (settled) return out.reverse();
+      }
+      if (page.next === undefined) return out.reverse();
+      cursor = page.next;
+    }
+  }
+
   async function events(req: IncomingMessage, res: ServerResponse, url: URL, context: Context): Promise<void> {
     const raw = url.searchParams.get("conversationId");
     const conversation = await conversationOf(raw === null ? undefined : optionalId(Number(raw), "conversationId"), context);
@@ -275,7 +306,10 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     // A door hook's turn is the root conversation's run: its run events go out as they are emitted. A batch is written
     // in the microtasks after its commit, before the code that awaited the commit goes on, so the order holds.
     const hook = door && conversation.id === ROOT_CONVERSATION_ID ? door : undefined;
-    write("snapshot", hook ? { ...stream.snapshot, run: hook.busy() ? { inputs: [] } : undefined } : stream.snapshot);
+    // pi's turns record their ends as the settlements of the person's messages, which the snapshot does not hold: a reader
+    // that asks (`inputs=1`) gets the root's newest ones with it.
+    const inputs = !hook && url.searchParams.get("inputs") === "1" && conversation.id === ROOT_CONVERSATION_ID ? await inputsOf(conversation.id, context).catch(() => undefined) : undefined;
+    write("snapshot", hook ? { ...stream.snapshot, run: hook.busy() ? { inputs: [] } : undefined } : { ...stream.snapshot, ...(inputs ? { inputs } : {}) });
     const unwatch = hook?.watch((event) => write("events", [event]));
     stream.start(async (batch) => write("events", batch));
     req.once("close", () => void stream.stop());

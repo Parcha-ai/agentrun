@@ -611,6 +611,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   Run: {
     ...RUN_FIELDS,
+    last_progress_at: {
+      type: ["string", "null"],
+      format: "date-time",
+      description: "While a message the run took is still open (an agentic run, working or queued): when its turn last wrote anything, a request's start included; it holds still while a tool or a model request runs, and moves as the turn writes. Null once every message has had its turn, and on a workflow run.",
+      "x-agentrun-serve": "turnend/1",
+    },
     place: RUN_PLACE,
     learning: LEARNING,
     review: REVIEW,
@@ -869,6 +875,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   timeline.parameters = [...(timeline.parameters as Json[]), { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } }];
   timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1" };
   changed.push("GET /runs/{run_id}/timeline");
+  // An agentic run's cancel is its end at once: the 202 reads `cancelled`, and no later end of its turn moves it.
+  const cancel = (doc.paths["/runs/{run_id}/cancel"] as Json).post as Json;
+  cancel.description = `${String(cancel.description).trimEnd()}\nHere an agentic run reads \`cancelled\` from the 202 on, \`final\` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads \`cancelled\` once its workflow has stopped.\n`;
+  cancel["x-agentrun-serve-changed"] = { description: "turnend/1" };
+  changed.push("POST /runs/{run_id}/cancel");
   // models/2: capabilities' `models.source` takes on the values this server answers with that the contract's enum (managed,
   // chatgpt, env, faux) lacks, `gateway` and `providers`. A client that validates against the contract's enum refuses them,
   // so the widening is a mark of its own, each value listed, as RunStatus's `paused` is.
