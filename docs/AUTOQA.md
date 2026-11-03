@@ -262,6 +262,9 @@ the run's files go to. It gives back:
 - Internal to pi-transport: `bwrapArgs`, `bwrapFiles` and `probeBwrap` (`src/box/bwrap-args.ts`).
 - `@parcha/pi-transport/testing`: `registerBoxConformance`, and fake providers for each box (`fakeBoxes` and the
   provider-shaped fakes).
+- Serve, what a run is told of its files (`packages/serve/src/run-manifest.ts`): `firstMessage` adds one line to an
+  agentic run's first message, `Files for this run: inputs/<path> (<size>), ...`, at most `MANIFEST_ENTRIES` (20), from
+  the run's `work/inputs/` as `runs.ts` sends it to the door, on every harness.
 - Serve: `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/{path}`, and the sweep before any run starts
   (`sweepBoxes`, `settleBox`, `Quarantine` in `packages/serve/src/box/sweep.ts`).
 - Serve, an agent's place (`packages/serve/src/place.ts`): `definition.place` is `{mode: "runner"}` or
@@ -290,7 +293,7 @@ npm test -w @parcha/pi-transport -- home-untrusted-store                       #
 # serve: node:test over dist, on the faux model
 npm run build
 (cd packages/serve && node --test test/place.test.mjs test/boxes.test.mjs test/files.test.mjs \
-  test/box-sweep.test.mjs test/box-record.test.mjs)
+  test/box-sweep.test.mjs test/box-record.test.mjs test/run-manifest.test.mjs)
 ```
 
 The Docker variant runs only where Docker exists, as CI's `transport-docker` job does:
@@ -317,6 +320,9 @@ or a real `docker` on `PATH` for a server under test.
    a `..` segment, a target of `/` and a repeated target before `docker run`; `box-local` refuses any mount.
 6. **Run files and the sweep**: `files.test.mjs` never lists or serves a dotfile or a symlink, and refuses `..` with the
    contract's codes; `box-sweep.test.mjs` reaps a box whose writer is gone and quarantines one it cannot empty.
+7. **Run files told**: `run-manifest.test.mjs` passes. A run given `notes.txt` is sent "Summarize the attached file."
+   plus `Files for this run: inputs/notes.txt (<n> B).`, reads it and answers with its text; on claude-agent and codex
+   the first `user_message` names both files with their sizes; a run given none is sent its `content` unchanged.
 
 ### Console, import and analytics
 

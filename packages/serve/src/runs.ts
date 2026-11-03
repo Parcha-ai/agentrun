@@ -35,6 +35,7 @@ import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
+import { firstMessage } from "./run-manifest.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
 
@@ -1000,7 +1001,8 @@ export class Runs {
     if (run.kind !== "agentic" || usersOf(run.rows) > 0 || typeof first !== "string") return;
     run.submitted = 1;
     this.refresh(run);
-    void this.submit(run, first, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
+    // As it was first sent: the run never took it, so its work/inputs/ is as its start left it.
+    void firstMessage(first, join(run.dir, "work")).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS)).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
   }
 
   /** After the run's process exited, or was found gone: its rows from its released store, then, when it is over, its
@@ -1321,7 +1323,8 @@ export class Runs {
     }
     this.launch(run);
     if (revision.kind === "workflow") return run;
-    void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => {
+    // The first message names the files given to the run (run-manifest.ts), on every harness.
+    void firstMessage(options.input.content as string, started.workspace).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS)).catch((error: Error) => {
       run.submitted = 0;
       // The run ended before its first message reached it (a process that crashed at its start): how it ended stands.
       if (run.outcome || run.finishing || run.cancel) return;
