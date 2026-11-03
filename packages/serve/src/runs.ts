@@ -1508,7 +1508,7 @@ export class Runs {
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
-    let steers: boolean;
+    const working = ({ status, state }: { status: Status; state: State }) => status === "queued" || (status === "working" && state === "working");
     // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
     // to the count below nothing awaits, so no stop can begin in between.
     do {
@@ -1519,15 +1519,18 @@ export class Runs {
       // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
       if (run.finishing && !run.outcome) await this.endWritten(run);
       if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
-      // Its harness, read from the agent store at the run's first message.
-      steers = await this.steers(run);
+      // Its harness, read from the agent store once per run, and only for a message to a working run, whose mode it
+      // decides: a message to a run that waits is a follow-up or an answer whatever the harness, so it reads nothing
+      // from the store, and a store another connection holds never refuses it.
+      if (working(statusOf(run)) && run.kind === "agentic" && run.harness === undefined) await this.steers(run);
     } while (run.stopping);
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
     // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
-    // the same run, which the contract calls follow_up, never a steer it does not do.
-    const working = status === "queued" || (status === "working" && state === "working");
-    const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
+    // the same run, which the contract calls follow_up, never a steer it does not do. Nothing was awaited since the look
+    // above, so a working run's harness is known; were it not, a follow-up is the mode every harness takes.
+    const steers = run.kind !== "agentic" || (run.harness !== undefined && steersMidTurn(run.harness));
+    const mode = working({ status, state }) ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
     run.submitted++;
     this.refresh(run);

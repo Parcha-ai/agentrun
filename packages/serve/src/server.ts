@@ -32,7 +32,7 @@ import { fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, toolCostOf } from "./runs.js";
+import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
@@ -1185,8 +1185,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
           const { mode, messageId } = await runs.message(run, content);
-          const view = await runs.view(run);
-          return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status: view.status, state: view.state, poll_after_ms: 1000 } };
+          // The run's state as the message left it, from the run itself: the stored row (its view's) would make a
+          // message already taken answer home_busy while another connection holds the agent store.
+          const { status, state } = statusOf(run);
+          return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
         });
         return send(res, answer.status, answer.body, answer.headers);
       }
