@@ -20,6 +20,8 @@ describe("App, setup's import of this machine's sessions", () => {
     const before = (Array.isArray(offer[0]) ? offer : [offer]) as [number, unknown][];
     const sent: Record<string, unknown>[] = [];
     let agentsRead = 0;
+    // The names' read asks for the archived agents too; nothing else does on the agents list.
+    let archivedRead = 0;
     let statsRead = 0;
     let set = false;
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
@@ -31,11 +33,11 @@ describe("App, setup's import of this machine's sessions", () => {
         const [status, body] = (after.length > 1 ? after.shift() : after[0]) ?? [404, missing(path)];
         return json(status, body);
       }
-      if (path === "/v2/agents") { agentsRead += 1; return json(200, { agents: [], next_cursor: null }); }
+      if (path === "/v2/agents") { agentsRead += 1; if (new URL(url, "http://serve.test").searchParams.get("archived") === "true") archivedRead += 1; return json(200, { agents: [], next_cursor: null }); }
       if (path === "/v2/stats") statsRead += 1;
       return json(404, missing(path));
     });
-    return { sent, agentsRead: () => agentsRead, statsRead: () => statsRead };
+    return { sent, agentsRead: () => agentsRead, archivedRead: () => archivedRead, statsRead: () => statsRead };
   }
   async function until(host: HTMLElement, found: () => unknown, ms = 3000) {
     const end = Date.now() + ms;
@@ -91,6 +93,23 @@ describe("App, setup's import of this machine's sessions", () => {
     const [names, stats] = [agentsRead(), statsRead()];
     expect(await until(host, () => /Imported 2 sessions into 1 agent\./.test(host.textContent ?? ""), 6000)).toBe(true);
     expect(await until(host, () => agentsRead() > names && statsRead() > stats)).toBe(true);
+  }, 15_000);
+
+  it("an import that ends while the agents list is open reads the agents' names again, though that list is not a runs view", async () => {
+    location.hash = "#/agents";
+    const { sent, archivedRead } = server({ offer: [200, { projects: 1, sessions: 2 }], after: [[200, { state: "running" }], [200, { state: "done", agents: 1, runs: 2, skipped: 0 }]] });
+    const host = await render();
+    await until(host, () => box(host));
+    await act(async () => { box(host)!.click(); });
+    await setPassword(host);
+    await submit(host);
+    await until(host, () => sent.length);
+    expect(await until(host, () => /Importing this machine's sessions/.test(host.textContent ?? ""))).toBe(true);
+    expect(await until(host, () => archivedRead() > 0)).toBe(true);
+    const read = archivedRead();
+    expect(await until(host, () => /Imported 2 sessions into 1 agent\./.test(host.textContent ?? ""), 6000)).toBe(true);
+    expect(await until(host, () => archivedRead() > read)).toBe(true);
+    location.hash = "";
   }, 15_000);
 
   it("shows the box at once while the server counts, and fills in the counts when they arrive", async () => {
