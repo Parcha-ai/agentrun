@@ -5,15 +5,18 @@
 // run is merged once, never twice. GET /v2/stats counts how the runs that tried to learn fared, from the ledger and the
 // runs the server holds, never a run's files.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, git, LEARN, learner, ledgerOf, made, mergesOf, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
-import { agent, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
+const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const PLAN = [["check-units.md", note("Check units", "Convert every amount to one unit before comparing")]];
 const callsIn = (file) => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 
@@ -113,6 +116,57 @@ test("a server that goes mid-grade grades the run once at its next start; a run 
   assert.equal(callsIn(calls).length, 2, "the kept verdict was not asked again");
 });
 
+// A run whose learning waits to be checked or graded is opened again for a follow-up, and its server goes while the
+// follow-up runs. The next server reads the run as running, so its start passes the learning over: the run's own end,
+// once the follow-up finishes, is where it is checked and graded, with no later restart.
+for (const at of ["proposed", "reflecting"]) {
+  test(`a run opened again for a follow-up while its learning is ${at}, its server gone while the follow-up runs: the next server finishes the follow-up, then ${at === "proposed" ? "grades" : "checks and grades"} what the run proposed, and it merges, with no restart after`, { timeout: 180_000 }, async (t) => {
+    const gate = join(await scratch(t), "answer");
+    const calls = join(await scratch(t), "calls.jsonl");
+    writeFileSync(gate, "");
+    withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls, AGENTRUN_TEST_FAUX_GRADE_HOLD: "1" }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+    const first = await serve(t, { learning: "on", faux: LEARN });
+    const { data } = first;
+    await made(first.api, learner("reopened", { plan: PLAN, instructions: `Answer once ${gate} exists.` }));
+    const runId = await started(first.api, "reopened");
+    for (let i = 0; callsIn(calls).length === 0; i++) {
+      assert.ok(i < 1200, "the grader is asked");
+      await sleep(50);
+    }
+    assert.equal((await first.api("GET", `/runs/${runId}`)).body.learning.state, "proposed");
+    // The follow-up's answer holds until the gate is back, so the server goes while it runs, mid-grade.
+    rmSync(gate);
+    const sent = await first.api("POST", `/runs/${runId}/messages`, { content: "One more thing." });
+    assert.equal(sent.status, 202, JSON.stringify(sent.body));
+    for (let i = 0; (await first.api("GET", `/runs/${runId}`)).body.status !== "working"; i++) {
+      assert.ok(i < 1200, "the follow-up runs");
+      await sleep(50);
+    }
+    await first.close();
+    const saved = JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8"));
+    assert.deepEqual([saved.learning.state, saved.learning.verdict], ["proposed", undefined], "nothing was decided");
+    if (at === "reflecting") {
+      // A server that went after the run settled and before its check: what the turn wrote is set aside, not yet checked.
+      writeFileSync(join(data, "runs", runId, "serve.json"), JSON.stringify({ ...saved, learning: { ...saved.learning, state: "reflecting", reason: null, detail: "The end-of-run turn ended; what it wrote waits to be checked." } }));
+      rmSync(join(data, "runs", runId, "learning-proposal.json"));
+      assert.ok(existsSync(join(data, "runs", runId, "learning-turn", "check-units.md")), "the turn's copy is set aside");
+    }
+    // The next server: the follow-up answers, the run ends, and its learning goes on from where it was.
+    delete process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD;
+    writeFileSync(gate, "");
+    const second = await serve(t, { learning: "on", faux: LEARN, data });
+    const { view, rows } = await ended(second.api, runId);
+    assert.equal(view.status, "completed");
+    settled(view, rows, "merged");
+    assert.equal(callsIn(calls).length, 2, "one grader call per server");
+    const repo = repoOf(data, "reopened");
+    assert.equal((await savedOf(data, runId)).learning.merged, git(repo, ["rev-parse", "main"]));
+    assert.equal(mergesOf(repo, runId).length, 1, "merged once");
+    assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md", "check-units.md"]);
+    await second.close();
+  });
+}
+
 test("a grader that never answers is cut off at its bound: the run's learning is grade_failed, and what the grade spent is unknown (null), never $0, on the run, in the ledger and on /v2/usage", { timeout: 120_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_GRADE_HOLD: "never", AGENTRUN_TEST_FAUX_CALLS: calls }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
@@ -127,6 +181,47 @@ test("a grader that never answers is cut off at its bound: the run's learning is
   assert.deepEqual(ledgerOf(data).map(({ run, state, reason, cost, tokens }) => [run, state, reason, cost, tokens]), [[runId, "dropped", "grade_failed", null, null]]);
   const line = (await api("GET", "/usage?group_by=meter")).body.lines.find((entry) => entry.meter === "learning");
   assert.deepEqual([line.usd, line.unpriced_runs], [0, 1], "unpriced, never $0");
+});
+
+// GET /v2/usage on one server with both kinds of spend outside a run's tokens: a run whose paid tool charged (monid's
+// `tools`, from S2) and a run whose grade spent (the learning ledger's `learning`). Each groups the same way, and the
+// total is every line once.
+test("GET /v2/usage books a run's tool charge as tools and a grade as learning, beside the runs' tokens: by meter, agent and day the lines sum to the same total", { timeout: 180_000 }, async (t) => {
+  const saved = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: join(await scratch(t), "monid.jsonl"), AGENTRUN_TEST_FAUX_MONID_KEY: saved }, ["MONID_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
+  // A learning run on pi, graded and merged: its grade's cost is the learning ledger's.
+  await made(api, learner("learner", { plan: PLAN }));
+  const learnt = await started(api, "learner");
+  const learning = await ended(api, learnt);
+  settled(learning.view, learning.rows, "merged");
+  const grade = (await savedOf(data, learnt)).learning.cost_usd.grade;
+  assert.ok(grade > 0, "the grade cost something");
+  // A run on claude-agent whose monid call charged $0.003, on a key saved through the settings API.
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: saved } })).status, 204);
+  await made(api, agent("enrich", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: ["monid.discover", "monid.inspect", "monid.run"] }));
+  const enriched = await started(api, "enrich", "hi");
+  await follow(api, enriched, ["completed"], { deadlineMs: 55_000 });
+  const cost = async (runId) => (await api("GET", `/runs/${runId}`)).body.cost.usd;
+  const [learnerRun, enrichRun] = [await cost(learnt), await cost(enriched)];
+  assert.equal(enrichRun, 0.005, "two requests and monid's charge");
+  const round = (v) => Math.round(v * 1e6) / 1e6;
+  const usage = async (group) => (await api("GET", `/usage?group_by=${group}`)).body;
+  const sum = (body) => round(body.lines.reduce((total, line) => total + line.usd, 0));
+  const byMeter = await usage("meter");
+  assert.deepEqual(Object.fromEntries(byMeter.lines.map((line) => [line.meter, line.usd])), { tokens: round(learnerRun + 0.002), tools: 0.003, learning: round(grade) });
+  assert.equal(byMeter.total_usd, round(learnerRun + enrichRun + grade), "every run's cost, and the grade, once");
+  assert.equal(sum(byMeter), byMeter.total_usd, "the lines sum to the total");
+  const byAgent = await usage("agent");
+  assert.deepEqual(Object.fromEntries(byAgent.lines.map((line) => [line.group, line.usd])), { learner: round(learnerRun + grade), enrich: enrichRun });
+  assert.equal(byAgent.total_usd, byMeter.total_usd);
+  const byDay = await usage("day");
+  assert.equal(byDay.lines.length, 1, "one day");
+  assert.equal(byDay.lines[0].usd, byMeter.total_usd);
+  assert.equal(byDay.total_usd, byMeter.total_usd);
+  for (const body of [byMeter, byAgent, byDay]) assert.equal(body.unpriced_runs, 0);
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "learning"]);
 });
 
 test("GET /v2/usage books each grade under the meter learning, by agent and by day; GET /v2/stats counts the runs that tried to learn, over its filters, from the ledger, and a restarted server counts the same with runs/ unreadable", { timeout: 180_000 }, async (t) => {

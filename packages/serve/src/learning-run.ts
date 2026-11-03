@@ -108,7 +108,7 @@ function once(running: Map<string, Promise<void>>, key: string, work: () => Prom
 }
 
 /** What learning needs of the server's options: the data directory and the agents, its tokens, the switch, and its bounds. */
-export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "learning" | "reflectTimeoutMs" | "gradeTimeoutMs">;
+export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "learning" | "reflectTimeoutMs" | "gradeTimeoutMs">;
 /** What the kernel (runs.ts) hands learning: its runs, and the parts of a run's life learning moves. */
 export type LearningKernel = {
   /** Run `id` when the kernel holds it; read from the agent store the first time (`get`). */
@@ -237,9 +237,13 @@ export class LearningRuns {
   }
 
   /** The run's end written, as it would be without learning: what its end-of-run turn wrote checked, then graded and
-   *  merged. Called only then, so a slow or failing check never holds the job. */
+   *  merged. Called only then, so a slow or failing check never holds the job. A run already `proposed` is graded: one
+   *  a follow-up opened again mid-grade, whose server went while it ran, which the next start passed over as running.
+   *  gradeOnce does nothing for any other state, nor while a grade of the run is in flight here. */
   afterSettle(run: Run): Promise<void> {
-    return this.proposeOnce(run);
+    const proposing = this.proposeOnce(run);
+    void this.gradeOnce(run);
+    return proposing;
   }
 
   /** A run that learns, opened again for a follow-up once its end-of-run turn's copy went to its snapshot, before its
@@ -447,8 +451,8 @@ export class LearningRuns {
       const pin = await readPin(run.dir);
       if (!pin) throw new Error("the run has no learning pin");
       const { proposeRun } = await import("./propose.js");
-      // The secrets this server holds, wherever its launcher put them, and its own tokens.
-      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, refuse: [...hostSecrets(process.env), this.options.token, this.options.doorToken] });
+      // The secrets this server holds, wherever its launcher put them, the keys saved on it, and its own tokens.
+      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, refuse: [...hostSecrets(process.env, this.options.storedKeys), this.options.token, this.options.doorToken] });
       if (proposed.state === "proposed") this.setLearning(run, "proposed", null, `The run proposes ${proposed.notes === 1 ? "one new note" : `${proposed.notes} new notes`}, which passed the checks and are being graded.`);
       else if (proposed.reason === "empty") this.setLearning(run, "dropped", "empty", "The end-of-run turn added no note.");
       else this.setLearning(run, "dropped", "checker", `The checks refused what the run wrote: ${[...new Set(proposed.problems.map((problem) => problem.rule))].join(", ")}.`, { problems: proposed.problems });

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, reflectRows, repoOf, savedOf, settled, sleep, started, turnCopyOf } from "./learn-support.mjs";
-import { client, scratch, serve } from "./support.mjs";
+import { client, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const TABLES = note("Prefers tables", "The user reads results as tables");
@@ -210,6 +210,29 @@ async function launched(t, env) {
   }
   return { child, data, stop, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], env.AGENTRUN_TOKEN) };
 }
+
+// A key a person saved on the server (the settings API, tool-keys.ts) is the host's secret too: a run that names its
+// tool is handed it, so its end-of-run turn could write it into a note.
+test("a note that holds a key the server saved through its settings API is refused as secret_value: the grader is never asked, no git object holds the key, and nothing the run shows does", { timeout: 120_000 }, async (t) => {
+  // Built here, so no scanner reads it as a credential, and no pattern does: only the value check can refuse it.
+  const saved = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_CALLS: calls }, ["MONID_API_KEY"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: saved } })).status, 204);
+  await made(api, learner("keeper", { plan: [["call-monid.md", note("Call monid", "Call monid on its saved key", `Call monid with ${saved}.\n`)]] }));
+  const runId = await started(api, "keeper");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "dropped", "checker");
+  const { learning } = await savedOf(data, runId);
+  assert.deepEqual(learning.problems, [{ rule: "secret_value", path: "call-monid.md", detail: "it holds a value the host named as secret" }]);
+  assert.equal(existsSync(calls) ? readFileSync(calls, "utf8").trim() : "", "", "the grader was never asked, so its prompt never held the note");
+  const held = objects(repoOf(data, "keeper"));
+  assert.ok(!held.includes(saved), "no git object holds the key");
+  assert.equal(existsSync(join(data, "runs", runId, "learning-proposal.json")), false, "no proposal was kept");
+  const shown = JSON.stringify([view.learning, rows.filter((row) => row.kind === "learning"), learning.problems]);
+  assert.ok(!shown.includes(saved), "the key is nowhere the run's learning is shown");
+});
 
 test("under the launcher's custody, a note that holds the model key it handed over, base64-wrapped, is refused as secret_value: no git object holds the key, and nothing the run shows does", { timeout: 120_000 }, async (t) => {
   // Built at the run, from parts: a value no file of this repository holds.

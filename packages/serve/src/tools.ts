@@ -210,7 +210,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     },
   },
   browser: browserTool,
-  // monid's catalog on one key (monid.ts): pi binds each under its wire name, `monid_discover` and the rest.
+  // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.
   "monid.discover": monidTool("discover"),
   "monid.inspect": monidTool("inspect"),
   "monid.run": monidTool("run"),
