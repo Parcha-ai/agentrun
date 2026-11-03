@@ -8,13 +8,14 @@ import { parentPort, workerData } from "node:worker_threads";
 import { openStore } from "@parcha/pi-durable-agent";
 import { planImport, runImport } from "./import.js";
 
-/** `secrets`: the server's own, which the import cuts out of everything it writes; never put in an environment. */
-export type ImportTask = { task: "plan" | "import"; data: string; home: string; temp?: string; secrets?: Record<string, string> };
+/** `secrets`: the server's own, and `stored`: the keys saved on its Tool keys page (tool-keys.ts' `values`), both cut
+ *  out of everything the import writes; never put in an environment. */
+export type ImportTask = { task: "plan" | "import"; data: string; home: string; temp?: string; secrets?: Record<string, string>; stored?: Record<string, string> };
 /** `took`: what this start's import took (stopped too: what it took before it stopped), its agents by id, so the server
  *  adds it to what earlier starts took. */
 export type ImportAnswer = { projects: number; sessions: number } | { took: { agents: string[]; runs: number; skipped: number }; stopped?: true } | { stopped: true };
 
-const { task, data, home, temp, secrets = {} } = workerData as ImportTask;
+const { task, data, home, temp, secrets = {}, stored = {} } = workerData as ImportTask;
 const stop = new AbortController();
 parentPort!.on("message", (message) => void (message === "stop" && stop.abort()));
 // The port does not keep the thread alive: the task does, and the thread ends with it.
@@ -23,7 +24,7 @@ parentPort!.unref();
 // properties that do not enumerate, as secrets.ts's withSecrets gives them: read by name, left out of a spread or a spawn.
 const env: NodeJS.ProcessEnv = { ...process.env };
 for (const [name, value] of Object.entries(secrets)) Object.defineProperty(env, name, { value, enumerable: false });
-const options = { home, ...(temp ? { temp } : {}), env, signal: stop.signal };
+const options = { home, ...(temp ? { temp } : {}), env, stored, signal: stop.signal };
 const answer = async (): Promise<ImportAnswer> => {
   if (task === "plan") {
     const plan = await planImport(options);

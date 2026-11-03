@@ -13,8 +13,8 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { claudeSession, codexSession, piSession } from "./fixtures/import-sessions.mjs";
-import { call, cookieOf, FAUX, scratch, serve } from "./support.mjs";
+import { claudeSession, claudeSubagent, codexSession, piSession } from "./fixtures/import-sessions.mjs";
+import { call, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const json = { "content-type": "application/json" };
@@ -391,6 +391,36 @@ test("under its launcher, setup's import cuts each of the server's own secrets o
   for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
   assert.deepEqual(await state(), { state: "done", agents: 1, runs: 1, skipped: 0 }, err);
   for (const [name, value] of Object.entries(keys)) assert.deepEqual(holding(data, value), [], `no file under the data directory holds ${name}'s value`);
+});
+
+test("a key saved on the Tool keys page, not in the server's environment, is cut out of everything setup's import writes: a session's text and title, and its subagent's file", { timeout: 60_000 }, async (t) => {
+  // Built here, so no scanner reads it as a credential.
+  const saved = ["not-a-secret", "monid", randomBytes(8).toString("hex")].join("-");
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["MONID_API_KEY"]);
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const site = join(home, "code", "acme-site");
+  mkdirSync(site, { recursive: true });
+  claudeSession(home, site, 1, { prompt: `Use ${saved} to list the files.`, output: `README.md (with ${saved})` });
+  claudeSubagent(home, site, 1, 1, { answer: `It is ${saved}.` });
+  const server = await serve(t, { accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } });
+  const kept = await server.api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: saved } });
+  assert.equal(kept.status, 204, JSON.stringify(kept.body));
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
+  assert.deepEqual([made.status, made.json], [201, { signed_in: true, importing: true }], made.text);
+  const state = async () => (await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
+  for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
+  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 1, skipped: 0 });
+  const names = [];
+  const walk = (at) => {
+    for (const name of readdirSync(at)) {
+      names.push(name);
+      if (statSync(join(at, name)).isDirectory()) walk(join(at, name));
+    }
+  };
+  walk(server.data);
+  assert.deepEqual([holding(server.data, saved), names.filter((name) => name.includes(saved))], [[], []], "no file under the data directory holds the saved key, or is named after it");
+  assert.ok(holding(join(server.data, "runs"), "[redacted]").length > 0, "[redacted] where it was");
 });
 
 test("setup counts sessions as the import takes them: a thread resumed in a second file of the same id is one session", { timeout: 60_000 }, async (t) => {

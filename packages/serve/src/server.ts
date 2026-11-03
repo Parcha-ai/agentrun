@@ -488,9 +488,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const onWorker = (task: ImportTask["task"]): Promise<ImportAnswer> =>
     closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
-        // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), in
-        // the worker's memory alone: the values the import cuts out of everything it writes.
-        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
+        // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), and
+        // the keys saved on its Tool keys page, opened now (each cut too, the same rule as the CLI's import: a saved key
+        // and the server's own of the same name may differ), in the worker's memory alone: what the import cuts out of
+        // everything it writes.
+        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = secret(name); return value === undefined ? [] : [[name, value]]; })), stored: toolKeys.values() } satisfies ImportTask,
         // Started from a string (its launcher runs node --input-type=module -e), the server's flags are given again
         // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
         // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
