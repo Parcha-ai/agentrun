@@ -36,15 +36,19 @@ const tierModel = (env: NodeJS.ProcessEnv, tier: Tier): string | undefined => en
 /** A faux model id per tier: `faux-1`, or the id a tier's variable names. */
 const fauxModel = (env: NodeJS.ProcessEnv, tier: Tier): string => (tier === "default" ? undefined : env[TIER_ENV[tier]]) || "faux-1";
 
-export type ModelSource = { source: "faux" | "gateway" | "providers" } & Record<Tier, string | null>;
+/** `route_prefix`: the routing prefix this server puts before a gateway's model ids (MODEL_PROVIDER), which a reader takes off
+ *  to show the gateway's own id; null with any other source. */
+/** The values `models.source` takes here: a faux module, a gateway, or each provider with its own key. */
+export const MODEL_SOURCES = ["faux", "gateway", "providers"] as const;
+export type ModelSource = { source: (typeof MODEL_SOURCES)[number]; route_prefix: string | null } & Record<Tier, string | null>;
 
 /** What capabilities say about models here: where they come from, and the model of each tier (`default` is also what a
  *  revision that names none runs on). */
 export function modelSource(env: NodeJS.ProcessEnv): ModelSource {
   const each = (name: (tier: Tier) => string | null) => Object.fromEntries(TIERS.map((tier) => [tier, name(tier)])) as Record<Tier, string | null>;
-  if (env[FAUX_ENV]) return { source: "faux", ...each((tier) => `faux/${fauxModel(env, tier)}`) };
-  if (env.AGENT_MODEL_BASE_URL) return { source: "gateway", ...each((tier) => (tierModel(env, tier) ? `${MODEL_PROVIDER}/${tierModel(env, tier)}` : null)) };
-  return { source: "providers", ...each((tier) => tierModel(env, tier) ?? null) };
+  if (env[FAUX_ENV]) return { source: "faux", route_prefix: null, ...each((tier) => `faux/${fauxModel(env, tier)}`) };
+  if (env.AGENT_MODEL_BASE_URL) return { source: "gateway", route_prefix: MODEL_PROVIDER, ...each((tier) => (tierModel(env, tier) ? `${MODEL_PROVIDER}/${tierModel(env, tier)}` : null)) };
+  return { source: "providers", route_prefix: null, ...each((tier) => tierModel(env, tier) ?? null) };
 }
 
 /** A workflow's nodes as the DSL's inspection lists them, each read from the document at its path: only what the

@@ -342,6 +342,20 @@ test("a capped run with a request cut by a crash goes on: the cut request counts
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 55_000 });
   const ended = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([ended.status, ended.result?.final_answer], ["completed", "After the cut."], JSON.stringify(ended.error));
+  assert.equal(ended.cost.usd, null, "the cut request's own price never came in: the shown cost is unknown");
+  // What the cap held for each request, on its record: the model's $0 worst case, so the cut one counts at $0.
+  for (let tries = 0; ; tries++) {
+    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    try {
+      const held = db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data.heldUsd);
+      assert.deepEqual(held, [0, 0, 0], "the first, the cut one, and the one after it, each held at $0");
+      break;
+    } catch (error) {
+      if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
+    } finally {
+      db.close();
+    }
+  }
 });
 
 // Three runs in turn, each followed for up to 55 s.

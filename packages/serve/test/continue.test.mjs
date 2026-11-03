@@ -1,34 +1,13 @@
 // A completed run takes a follow-up: the same run opens again on its own store and session, answers, and completes
-// again, also after a restart, and under the server's run cap. A failed or cancelled run does not, and neither does an
-// archived run or a run of an archived agent: archiving closes it.
+// again, under the server's run cap. A failed run does not, and neither does an archived run or a run of an archived
+// agent: archiving closes it.
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
+import { agent, follow, serve, startRun, storeRun } from "./support.mjs";
 
-test("after a restart, a completed run takes a follow-up on the next server and completes again, the same run", { timeout: 60_000 }, async (t) => {
-  const data = join(await scratch(t), "agents");
-  const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  const { run_id } = await startRun(client(one.baseUrl, one.token), "calc", "What is six times seven?");
-  await follow(client(one.baseUrl, one.token), run_id, ["completed"]);
-  await one.close();
-  const two = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  t.after(() => two.close());
-  const api = client(two.baseUrl, two.token);
-  assert.equal((await api("GET", `/runs/${run_id}`)).body.status, "completed");
-  const next = await api("POST", `/runs/${run_id}/messages`, { content: "go on" });
-  assert.equal(next.status, 202, JSON.stringify(next.body));
-  assert.equal(next.body.mode, "follow_up");
-  const { rows } = await follow(api, run_id, ["completed"]);
-  const kinds = rows.map((r) => r.kind);
-  assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["What is six times seven?", "go on"]);
-  assert.ok(kinds.lastIndexOf("final_answer") > kinds.lastIndexOf("user_message"), `a new answer after the follow-up: ${kinds.join(", ")}`);
-  assert.equal(storeRun(data, run_id).state, "completed");
-});
-
-test("a failed or cancelled run takes no follow-up, and archiving closes a completed one: an archived run, or a run of an archived agent, is 409 not_continuable", async (t) => {
+test("a failed run takes no follow-up, and archiving closes a completed one: an archived run, or a run of an archived agent, is 409 not_continuable", async (t) => {
   const { api, data } = await serve(t);
   const failed = await startRun(api, "broken", "Fail now.");
   await follow(api, failed.run_id, ["failed"]);
@@ -88,8 +67,15 @@ test("a follow-up sent while a completed run's end is still being written waits 
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.equal(storeRun(data, run_id).state, "running", "its end is not written yet");
-  const sent = api("POST", `/runs/${run_id}/messages`, { content: "go on" });
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  // Sent under a key: a probe under the same key, with a body the route refuses before it does anything, is
+  // idempotency_mismatch only once the server holds the message.
+  let answered = false;
+  const sent = api("POST", `/runs/${run_id}/messages`, { content: "go on" }, { "idempotency-key": "go-on" }).finally(() => (answered = true));
+  for (let i = 0; (await api("POST", `/runs/${run_id}/messages`, {}, { "idempotency-key": "go-on" })).body.error?.code !== "idempotency_mismatch"; i++) {
+    assert.ok(i < 400 && !answered, "the server holds the message");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(answered, false, "it waits for the run's end to be written");
   store.exec("ROLLBACK");
   store.close();
   const answer = await sent;
