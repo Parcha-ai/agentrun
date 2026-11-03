@@ -279,21 +279,26 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
    *  pi-durable settles a person's message in the commit of its turn's last entry, so a reader that comes in now knows
    *  which messages are still open and how the newest one's turn ended. */
   async function inputsOf(conversationId: ConversationId, context: Context): Promise<unknown[]> {
-    const out: unknown[] = [];
     const storage = run!.store.storage;
+    // In id order (an older pi-durable scans no other way): the newest settled input and every one after it.
+    let tail: Extract<SubmissionRecord, { type: "input" }>[] = [];
     for (let cursor: unknown; ; ) {
-      const page = await storage.scanSubmissions({ conversationId, order: "descending" }, 50, cursor as never, context);
+      const page = await storage.scanSubmissions({ conversationId }, 100, cursor as never, context);
       for (const record of page.items) {
         if (record.type !== "input") continue;
-        const settled = (record.status === "done" || record.status === "unanswered") && record.entry !== undefined;
-        const answer = record.status === "done" ? (await storage.entry(record.answer, context))?.entry : undefined;
-        // A done one with its answer's text, and whether that answer asked for tools (a tool ended the turn).
-        out.push(record.status === "done" ? { ...record, answer_text: answerTextOf(answer), answer_calls: callsOf(answer) } : record);
-        if (settled) return out.reverse();
+        if ((record.status === "done" || record.status === "unanswered") && record.entry !== undefined) tail = [record];
+        else tail.push(record);
       }
-      if (page.next === undefined) return out.reverse();
+      if (page.next === undefined) break;
       cursor = page.next;
     }
+    const out: unknown[] = [];
+    for (const record of tail) {
+      const answer = record.status === "done" ? (await storage.entry(record.answer, context))?.entry : undefined;
+      // A done one with its answer's text, and whether that answer asked for tools (a tool ended the turn).
+      out.push(record.status === "done" ? { ...record, answer_text: answerTextOf(answer), answer_calls: callsOf(answer) } : record);
+    }
+    return out;
   }
 
   async function events(req: IncomingMessage, res: ServerResponse, url: URL, context: Context): Promise<void> {
