@@ -33,6 +33,11 @@ test("a run of an endpoint carries its charge, as booked, on its own row", () =>
   const booked = { kind: TOOL_COST, id: next++, conversationId: 1, data: { tool: "monid.run", charged_by: "monid", usd: 0.0049, call: "u1" } };
   const rows = timelineOf([user("Find Ada."), asks("u1", "monid_run", args), answers("u1", "monid_run", record, { details: { cost: record.cost } }), booked], { settled: true });
   assert.deepEqual(rows.filter((row) => row.kind === "tool_use" || row.kind === "phase").map((row) => [row.summary, row.tool_status]), [["Ran faux /person/enrich: ok · charged $0.0049", "success"]]);
+  // A run that failed and was charged anyway says both: its failure, and the charge as booked.
+  const failedRun = { error: "the run went past monid's time budget (TIMED_OUT)", status: 408, runId: "r2", cost: { value: 0.0049, currency: "USD" } };
+  const charged = { kind: "agentrun.tool_cost", id: next++, conversationId: 1, data: { tool: "monid.run", charged_by: "monid", usd: 0.0049, call: "u3" } };
+  const timedOut = timelineOf([user("Find Ada."), asks("u3", "monid_run", args), answers("u3", "monid_run", failedRun, { isError: true, details: { cost: failedRun.cost } }), charged], { settled: true }).find((row) => row.tool_use_id === "u3");
+  assert.deepEqual([timedOut.tool_status, timedOut.summary], ["failed", "Ran faux /person/enrich failed: the run went past monid's time budget (TIMED_OUT) · charged $0.0049"]);
   const free = rowOf("u2", "monid_run", { provider: "faux", endpoint: "/person/enrich", input: {} }, { ...record, cost: undefined });
   assert.equal(free.summary, "Ran faux /person/enrich: ok", "no charge said when none was booked");
 });

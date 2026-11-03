@@ -6,7 +6,7 @@
 // workspace. A settled run's usage row is its total. The run's metrics count each action once.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runMetricsOf, timelineOf, timelineReducer } from "../dist/timeline/index.js";
+import { runMetricsOf, runMetricsWithDecisions, timelineOf, timelineReducer } from "../dist/timeline/index.js";
 import { assistant, call, result, user } from "./timeline-support.mjs";
 
 const failed = (callId, name, text, t) => result(callId, name, text, t, { isError: true });
@@ -99,6 +99,20 @@ test("a read of a path the run never wrote that finds nothing is a quiet 'not fo
   assert.deepEqual(tools(rows).map((r) => [r.tool_use_id, r.tool_status]), [["r1", "missing"], ["w1", "success"], ["r2", "failed"]], shown(rows));
   assert.equal(tools(rows)[0].summary, "Read AGENTS.md: not found");
   assert.deepEqual(runMetricsOf(entries).tools, { read: { calls: 2, errors: 1 }, write: { calls: 1, errors: 0 } });
+});
+
+test("a read the run's own write makes failed counts as an error in the metrics too, however each names the file: an absolute path under the workspace or a relative one", () => {
+  const work = "/data/runs/r1/work";
+  const entries = [
+    user("Write, then read it back.", 0),
+    assistant([call("w1", "write", { path: `${work}/notes.md`, content: "x" })], 1),
+    result("w1", "write", "Successfully wrote 1 bytes to notes.md", 2),
+    assistant([call("r1", "read", { path: "notes.md" })], 3),
+    failed("r1", "read", "ENOENT: no such file or directory, open 'notes.md'", 4),
+    assistant([{ type: "text", text: "Done." }], 5),
+  ];
+  assert.deepEqual(tools(timelineOf(entries, { settled: true, workDir: work })).map((r) => [r.tool_use_id, r.tool_status]), [["w1", "success"], ["r1", "failed"]]);
+  assert.deepEqual(runMetricsWithDecisions(entries, [], { workDir: work }).tools, { read: { calls: 1, errors: 1 }, write: { calls: 1, errors: 0 } }, "the metrics read the paths as the timeline does");
 });
 
 test("labels show neither a tool's wire name, nor 'Using tool:', nor an absolute path under the run's workspace", () => {

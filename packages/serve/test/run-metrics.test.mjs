@@ -58,7 +58,8 @@ test("a pi run's end writes its tokens, requests, tool calls and errors, model a
   assert.equal(m.requests, 3);
   assert.equal(m.requests, usageOf(rows).requests, "as many requests as the usage row says");
   assert.equal(m.unmetered, 0);
-  assert.deepEqual(m.tools, { read: { calls: 1, errors: 1 }, write: { calls: 1, errors: 0 } });
+  // The read of a file the run never wrote found nothing: a probe, shown "not found" and no error.
+  assert.deepEqual(m.tools, { read: { calls: 1, errors: 0 }, write: { calls: 1, errors: 0 } });
   assert.deepEqual([m.model, m.models], ["faux/faux-1", { "faux/faux-1": 3 }]);
   assert.equal(m.effort, "high");
   assert.equal(m.activeMs, undefined, "a live run's active time is its end less its start, never stored");
