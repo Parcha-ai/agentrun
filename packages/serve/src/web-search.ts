@@ -7,7 +7,7 @@
 // one shape, `{provider, query, results: [{url, title, snippet, published?}], text?}` (`text`, the provider's short
 // answer with its sources), followed for the model by one line asking it to cite the URLs it relies on; or `{error}`:
 // no provider here, no key, a refused key, a status other than 2xx, nothing within 60 s. Nothing else is searched
-// instead. The query is cut at 200 characters, 1 to 25 results (10 by default), and a result's snippet (its excerpts
+// instead. Keyless Exa past its free limit is tried once more, and then answers our words (exa-keyless.ts). The query is cut at 200 characters, 1 to 25 results (10 by default), and a result's snippet (its excerpts
 // joined, links reduced to their text) is cut at 3,000 characters.
 // Parallel is asked through the run's one client (web-fetch.ts), on the key the server handed the run's process: a 401
 // or 403 to either web tool stops both for the rest of the run. No request is retried. Each is a paid request, held by
@@ -92,7 +92,9 @@ export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unk
   // Under --faux, Exa is the faux module's or none: a test never reaches the network.
   const faux = await fauxFetch(env, FAUX_EXA_ENV);
   if (env[FAUX_ENV] && !faux) return { error: "web_search: under --faux, Exa's endpoint is a faux module's, and this server names none" };
-  return exaSearch(query, n, { ...(faux ? { send: faux } : {}), ...(signal ? { signal } : {}) });
+  const found = await exaSearch(query, n, { ...(faux ? { send: faux } : {}), ...(signal ? { signal } : {}) });
+  // Which limit Exa met is the server's to read, never the model's: it reads the error alone.
+  return "limit" in found ? { error: found.error } : found;
 }
 
 /** The agent's tool: the Search as JSON text. A run whose web_search resolves to Parallel reads its key as the tool is
