@@ -87,7 +87,7 @@ describe("Timeline, the run told as steps", () => {
     const out = renderToStaticMarkup(<Timeline live={false} rows={[
       row({ id: "q1", seq: 1, kind: "tool_use", summary: "Asked you: Which limit applies?", tool_name: "ask_person", tool_use_id: "q" }),
       row({ id: "q2", seq: 2, kind: "tool_result", summary: "Asked you: Which limit applies?", tool_name: "ask_person", tool_use_id: "q", tool_status: "success" }),
-      row({ id: "q3", seq: 3, kind: "waiting", summary: "Waiting for you: Which limit applies?" }),
+      row({ id: "q2:waiting", seq: 3, kind: "waiting", summary: "Waiting for you: Which limit applies?" }),
     ]} />);
     expect(out.match(/Which limit applies\?/g)).toHaveLength(1);
   });

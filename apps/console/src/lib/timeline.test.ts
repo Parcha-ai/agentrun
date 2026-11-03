@@ -76,7 +76,8 @@ describe("steps", () => {
       r(0, "user_message", "You: Check invoice INV-2310.", "26.876"),
       r(1, "tool_use", "Asked you: Which limit applies?", "26.914", { tool_name: "ask_person", tool_use_id: "q" }),
       r(2, "tool_result", "Asked you: Which limit applies?", "26.930", { tool_name: "ask_person", tool_use_id: "q", tool_status: "success" }),
-      r(3, "waiting", "Waiting for you: Which limit applies?", "26.930"),
+      // The server names a waiting row after the row it stands for: its id plus ":waiting".
+      r(3, "waiting", "Waiting for you: Which limit applies?", "26.930", { id: "r2:waiting" }),
       r(4, "usage", "Cost so far: $0.0052 over 1 model request", "26.930"),
     ]);
     expect(s.map((x) => x.row.kind)).toEqual(["user_message", "waiting", "usage"]);
@@ -165,5 +166,43 @@ describe("steps, an older server's call row with no status of its own", () => {
       ]);
       expect(s.map((x) => [x.row.kind, x.row.summary, x.ms]), JSON.stringify(status)).toEqual([["tool_result", "Read notes.md", 12]]);
     }
+  });
+});
+
+// The fold keeps each thing with its own call: a saved file with the call whose result it follows, a question's rows
+// only behind that question's own waiting row, and a retried failure folded only when it is the same failure.
+describe("steps, each fold with its own call", () => {
+  const r = (seq: number, kind: string, summary: string, at: string, over: Partial<TimelineRow> = {}): TimelineRow =>
+    ({ id: `r${seq}`, seq, kind, summary, text: null, timestamp: `2026-11-03T16:41:${at}Z`, tool_name: null, ...over });
+  it("credits each saved file to the call whose result it follows, when two calls run before either returns", () => {
+    const s = steps([
+      r(1, "tool_use", "Wrote a.md", "01.000", { tool_name: "write", tool_use_id: "A" }),
+      r(2, "tool_use", "Wrote b.md", "01.100", { tool_name: "write", tool_use_id: "B" }),
+      r(3, "tool_result", "Wrote a.md: ok", "02.000", { tool_name: "write", tool_use_id: "A", tool_status: "success" }),
+      r(4, "phase", "Saved a.md", "02.000", { path: "a.md" }),
+      r(5, "tool_result", "Wrote b.md: ok", "03.000", { tool_name: "write", tool_use_id: "B", tool_status: "success" }),
+      r(6, "phase", "Saved b.md", "03.000", { path: "b.md" }),
+    ]);
+    expect(s.map((x) => [x.row.summary, x.saved])).toEqual([["Wrote a.md", "a.md"], ["Wrote b.md", "b.md"]]);
+  });
+  it("hides a question's rows only behind its own waiting row, so a later ask that failed still shows", () => {
+    const s = steps([
+      r(1, "tool_use", "Asked you: Which currency?", "01.000", { id: "1:16:0", tool_name: "ask_person", tool_use_id: "q1" }),
+      r(2, "tool_result", "Asked you: Which currency?", "01.100", { id: "1:17", tool_name: "ask_person", tool_use_id: "q1", tool_status: "success" }),
+      r(3, "waiting", "Waiting for you: Which currency?", "01.100", { id: "1:17:waiting" }),
+      r(4, "user_message", "You: EUR", "05.000"),
+      r(5, "tool_use", "Asked you: Which rate?", "06.000", { tool_name: "ask_person", tool_use_id: "q2" }),
+      r(6, "tool_result", "Asked you: Which rate? interrupted", "07.000", { tool_name: "ask_person", tool_use_id: "q2", tool_status: "failed" }),
+    ]);
+    expect(s.map((x) => [x.row.kind, x.row.summary])).toEqual([
+      ["waiting", "Waiting for you: Which currency?"], ["user_message", "You: EUR"], ["tool_result", "Asked you: Which rate? interrupted"],
+    ]);
+  });
+  it("folds a repeated failure only when its message, its detail and its agent are the same", () => {
+    const err = (seq: number, text: string, agent: string | null = null) => r(seq, "error", "Model request failed: 529 overloaded", `0${seq}.000`, { text, agent_label: agent });
+    const s = steps([err(1, "529 overloaded: retry 1"), err(2, "529 overloaded: retry 1"), err(3, "529 overloaded: the region is down"), err(4, "529 overloaded: the region is down", "judge")]);
+    expect(s.map((x) => [x.row.text, x.row.agent_label ?? null, x.times ?? 1])).toEqual([
+      ["529 overloaded: retry 1", null, 2], ["529 overloaded: the region is down", null, 1], ["529 overloaded: the region is down", "judge", 1],
+    ]);
   });
 });
