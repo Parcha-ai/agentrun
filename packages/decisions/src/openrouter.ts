@@ -185,7 +185,12 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
         try { takes = await raced(Promise.resolve().then(() => takesImages(model)), signal); }
         catch (error) {
           if (!signal.aborted) throw error;
-          throw ctx.signal.aborted ? stopped(0) : new DecisionProviderError("timeout", `Whether the OpenRouter model ${model} takes images was not known before the deadline; nothing was sent.`, { attempts: 0 });
+          // Nothing was sent, and the error says so (unsent), so a host's node timeout never takes it for a billed request.
+          // A cancel is aborted; a deadline is timeout, the node's own timeoutMs (its cut's TimeoutError) included.
+          const cancelled = ctx.signal.aborted && (ctx.signal.reason as { name?: unknown } | null)?.name !== "TimeoutError";
+          throw cancelled
+            ? new DecisionProviderError("aborted", "The OpenRouter request was cancelled before it was sent.", { attempts: 0, unsent: true })
+            : new DecisionProviderError("timeout", `Whether the OpenRouter model ${model} takes images was not known before the deadline; nothing was sent.`, { attempts: 0, unsent: true });
         }
         if (!takes) throw new DecisionProviderError("invalid_request", `The OpenRouter model ${model} takes no image input.`);
         if (readsTokenAnywhere(model)) {

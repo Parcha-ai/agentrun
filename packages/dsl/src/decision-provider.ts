@@ -113,7 +113,11 @@ export class DecisionProviderError extends Error {
    *  reached; null when unknown. */
   readonly costUsd?: number | null;
   readonly costBasis?: CostBasis;
-  constructor(readonly code: DecisionProviderErrorCode, message: string, details: { status?: number; attempts?: number; refId?: string; costUsd?: number | null; costBasis?: CostBasis; cause?: unknown } = {}) {
+  /** True when the provider knows the request was never sent (a check before it, cut by the deadline or a cancel):
+   *  judgeFromProviders keeps its code under a node's timeoutMs, where any other cut is taken for a request that may
+   *  have been billed. Absent when it may have been sent; `attempts` alone never says so. */
+  readonly unsent?: true;
+  constructor(readonly code: DecisionProviderErrorCode, message: string, details: { status?: number; attempts?: number; refId?: string; costUsd?: number | null; costBasis?: CostBasis; unsent?: boolean; cause?: unknown } = {}) {
     super(message, details.cause !== undefined ? { cause: details.cause } : undefined);
     this.name = "DecisionProviderError";
     this.attempts = details.attempts ?? 0;
@@ -121,6 +125,7 @@ export class DecisionProviderError extends Error {
     if (details.refId !== undefined) this.refId = details.refId;
     if (details.costUsd !== undefined) this.costUsd = details.costUsd;
     if (details.costBasis !== undefined) this.costBasis = details.costBasis;
+    if (details.unsent === true) this.unsent = true;
   }
 }
 
@@ -231,7 +236,7 @@ export function judgeFromProviders(options: { providers: Readonly<Record<string,
       const result = await judgeFromProvider(provider, { deadlineMs, ...(options.loadImage ? { loadImage: options.loadImage } : {}) })({ ...params, signal });
       return { ...result, provider: id };
     } catch (error) {
-      if (cut.signal.aborted && error instanceof DecisionProviderError && (error.code === "aborted" || error.code === "timeout")) {
+      if (cut.signal.aborted && error instanceof DecisionProviderError && error.unsent !== true && (error.code === "aborted" || error.code === "timeout")) {
         throw new DecisionProviderError("outcome_unknown", `${id}: cut by the node's timeoutMs (${node} ms) after it may have been sent`, {
           attempts: error.attempts, ...(error.costUsd !== undefined ? { costUsd: error.costUsd } : {}), ...(error.costBasis !== undefined ? { costBasis: error.costBasis } : {}), cause: error });
       }
