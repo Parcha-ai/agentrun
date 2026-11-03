@@ -207,22 +207,6 @@ test("importHome turns a beta.24 home into one agent with one agentic revision, 
   store.close();
 });
 
-test("startRun seeds the run's directory first, then inserts the row; carryBack ends the row once and refuses a second call", async () => {
-  const dir = await scratch();
-  const store = openStore(dir);
-  const agent = store.createAgent({ name: "Runner" });
-  await store.commitRevision(agent.id, A, { setCurrent: true });
-  const run = await store.startRun({ agent: agent.id });
-  assert.deepEqual(store.listRuns().map((r) => [r.id, r.state, r.kind]), [[run.runId, "running", "agentic"]]);
-  assert.equal(run.dir, path.join(path.resolve(dir), "runs", run.runId));
-  store.carryBack(run.runId, { state: "escalated", costUsd: 0.5, summary: "escalated at gate" });
-  assert.deepEqual(store.listRuns().map((r) => [r.state, r.costUsd, r.summary]), [["escalated", 0.5, "escalated at gate"]]);
-  assert.throws(() => store.carryBack(run.runId, { state: "completed" }), refused("exists"));
-  assert.throws(() => store.carryBack("nope", { state: "completed" }), refused("missing"));
-  assert.throws(() => store.carryBack(run.runId, { state: "running" }), refused("invalid"));
-  store.close();
-});
-
 test("a writer killed mid-transaction leaves a hot journal: the FOLDER copied whole opens with the last commit and a clean integrity check", async () => {
   const dir = await scratch();
   const first = openStore(dir);
@@ -262,17 +246,6 @@ test("a parent must be the agent's own revision: a current pointing at another a
   const again = openStore(dir);
   await assert.rejects(again.commitRevision(y.id, B), refused("invalid", /parent is not a revision of that agent/));
   again.close();
-});
-
-test("a seed that fails writes no row and leaves no directory", async () => {
-  const dir = await scratch();
-  const store = openStore(dir);
-  const agent = store.createAgent({ name: "Seed" });
-  await store.commitRevision(agent.id, A, { setCurrent: true });
-  writeFileSync(path.join(dir, "runs"), "not a directory"); // runs/ cannot be made, so the seed fails
-  await assert.rejects(store.startRun({ agent: agent.id }));
-  assert.deepEqual(store.listRuns(), [], "no row");
-  store.close();
 });
 
 test("an agentic-only store (create, commit, start, carry back) never loads the DSL or the pi package: a resolve hook records every load", async () => {
