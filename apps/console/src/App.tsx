@@ -186,10 +186,12 @@ export function AgentRunConsole() {
   useEffect(() => {
     if (!caps || caps.features.runs?.list === false || where.section !== "mission") return;
     let live = true;
+    let reading = false;
     setMissionError(null); setMissionReading(true);
     const from = rangeFrom(statsRange);
     const statuses: RunStatus[] = ["queued", "working", "input_required", "failed", ...(caps?.features.runs?.pause_workflow_runs ? ["paused" as const] : [])];
     const read = () => {
+      reading = true;
       const n = ++missionAsked.current;
       const readRecent = async () => {
         let recent: Run[] = [], nextCursor: string | null = null;
@@ -215,10 +217,10 @@ export function AgentRunConsole() {
         setMissionError(null);
       })
       .catch((e) => { if (live && n === missionAsked.current) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); })
-      .finally(() => { if (live && n === missionAsked.current) { setMissionReading(false); setMissionMore(false); } });
+      .finally(() => { reading = false; if (live && n === missionAsked.current) { setMissionReading(false); setMissionMore(false); } });
     };
     void read();
-    const poll = setInterval(() => { setMissionReading(true); void read(); }, 15000);
+    const poll = setInterval(() => { if (!reading) { setMissionReading(true); void read(); } }, 15000);
     return () => { live = false; clearInterval(poll); };
   }, [v2, where.section, missionTry, statsRange, statsAgent, caps]);
   const revsAsked = useRef(0);

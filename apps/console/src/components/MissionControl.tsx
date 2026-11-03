@@ -47,7 +47,7 @@ export function MissionControl({ view, error, onRetry, scope, onRefresh, onMore,
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-[1600px] space-y-8 px-6 py-8">
         <div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold">Mission Control</h1>
-          {(onRefresh || onRetry) && <button type="button" disabled={scope?.refreshing} onClick={onRefresh ?? onRetry} className="border px-3 py-2 text-[13px] disabled:opacity-50">{scope?.refreshing ? "Refreshing" : "Refresh"}</button>}
+          {(onRefresh || onRetry) && <button type="button" onClick={onRefresh ?? onRetry} className="border px-3 py-2 text-[13px]">{scope?.refreshing ? "Refreshing" : "Refresh"}</button>}
         </div>
         {error && <p role="alert" className="border p-3 text-[13px] text-warning-text">Disconnected: {error}. Showing the last successful snapshot.</p>}
         <p className="font-mono text-[12px] text-muted-foreground" role="status">{snapshot}{view.readAt ? ` · Updated ${when(new Date(view.readAt).toISOString())}` : ""}. Totals cover all non-archived runs on this server.</p>

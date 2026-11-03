@@ -109,6 +109,7 @@ describe("App, Mission Control's loaded recent range", () => {
     let rows = Array.from({ length: 25 }, (_, i) => run(`r${i + 1}`));
     let hold: "head" | "tail" | undefined;
     let release: (() => void) | undefined;
+    let recentReads = 0;
     const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
     vi.stubGlobal("fetch", async (url: string) => {
       const u = new URL(url, "http://serve.test");
@@ -119,6 +120,7 @@ describe("App, Mission Control's loaded recent range", () => {
       if (u.pathname === "/v2/runs") {
         if (u.searchParams.has("status")) return json({ runs: [], next_cursor: null });
         const cursor = u.searchParams.get("cursor");
+        if (!cursor) recentReads++;
         if (cursor && !cursor.startsWith(`${version}:`)) return new Response(JSON.stringify({ error: { code: "invalid_cursor", message: "cursor belongs to an older listing", retryable: false } }), { status: 400 });
         const start = cursor ? Number(cursor.split(":")[1]) : 0;
         const end = start + Number(u.searchParams.get("limit"));
@@ -138,7 +140,7 @@ describe("App, Mission Control's loaded recent range", () => {
     const recent = () => [...host.querySelectorAll("section")].find((section) => section.querySelector("h2")?.textContent === "Recent runs")!;
     const ids = () => [...recent().querySelectorAll<HTMLAnchorElement>('a[href^="#/runs/"]')].map((link) => link.getAttribute("href")!.slice("#/runs/".length));
     const click = async (label: string) => { await act(async () => { [...host.querySelectorAll("button")].find((button) => button.textContent === label)!.click(); }); };
-    return { host, ids, click, change: () => { version++; rows = [run("new"), ...rows.filter((row) => row.run_id !== "r15")]; }, hold: (page: "head" | "tail") => { hold = page; }, release: async () => { expect(release).toBeTypeOf("function"); await act(async () => { release!(); }); } };
+    return { host, ids, click, reads: () => recentReads, change: () => { version++; rows = [run("new"), ...rows.filter((row) => row.run_id !== "r15")]; }, hold: (page: "head" | "tail") => { hold = page; }, release: async () => { expect(release).toBeTypeOf("function"); await act(async () => { release!(); }); } };
   }
 
   it.each(["poll", "manual"] as const)("refreshes the loaded range from new cursors after a %s refresh", async (refresh) => {
@@ -160,13 +162,13 @@ describe("App, Mission Control's loaded recent range", () => {
     expect(page.host.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it.each(["more", "poll"] as const)("keeps the expanded fresh range when an older %s response arrives last", async (pending) => {
+  it.each(["more", "poll"] as const)("lets an explicit action supersede an older %s response without losing the expanded fresh range", async (pending) => {
     const page = await open();
     page.hold(pending === "more" ? "tail" : "head");
     if (pending === "more") await page.click("Load more");
     else await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     page.change();
-    if (pending === "more") await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    if (pending === "more") await page.click("Refreshing");
     else await page.click("Load more");
     expect(page.ids()).toHaveLength(20);
     expect(page.ids()).toContain("new");
@@ -177,6 +179,26 @@ describe("App, Mission Control's loaded recent range", () => {
     expect(page.ids()).not.toContain("r15");
     await page.click("Load more");
     expect(page.ids()).toHaveLength(25);
+    expect(page.host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("lets a refresh slower than the poll interval settle before polling again", async () => {
+    const page = await open();
+    await page.click("Load more");
+    page.hold("tail");
+    await page.click("Refresh");
+    const reads = page.reads();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(page.reads()).toBe(reads);
+    await page.release();
+    expect(page.ids()).toHaveLength(20);
+    expect([...page.host.querySelectorAll("button")].some((button) => button.textContent === "Refresh" && !button.disabled)).toBe(true);
+    page.change();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(page.reads()).toBeGreaterThan(reads);
+    expect(page.ids()).toHaveLength(20);
+    expect(page.ids()).toContain("new");
+    expect(page.ids()).not.toContain("r15");
     expect(page.host.querySelector('[role="alert"]')).toBeNull();
   });
 });
