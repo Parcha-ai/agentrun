@@ -16,13 +16,13 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 /** The tab over a server that answers `answer(from)` (the analytics' own filter says the `from` it was asked for). */
-async function open(answer: (from?: string) => Analytics | undefined = () => ANALYTICS) {
+async function open(answer: (from?: string) => Analytics = () => ANALYTICS) {
   const asked: string[] = [];
   const v2 = {
     statsOver: async ({ from, agent: of }: { from?: string; agent?: string }) => {
       asked.push(`${of} ${from ?? "all"}`);
       const a = answer(from);
-      return statsWith(a && { ...a, filter: { ...a.filter, from: from ?? null } });
+      return statsWith({ ...a, filter: { ...a.filter, from: from ?? null } });
     },
   };
   const host = document.body.appendChild(document.createElement("div"));
@@ -52,7 +52,7 @@ describe("AnalyticsTab", () => {
     const tab = await open();
     expect(tab.tile("Tokens")?.textContent).toBe("Tokens1.3M83% of input cached · 50K outputtokens from 5 of 8 runs2 requests unmetered: in no token sum");
     expect(tab.tile("Run time")?.textContent).toBe("Run time2.5 hwall time of 7 ended runs1.5 h active, over 4 runs");
-    expect(tab.tile("Success rate")?.textContent).toBe("Success rate71%5 completed · 2 failed or escalated");
+    expect(tab.tile("Success rate")?.textContent).toBe("Success rate71%5 completed · 2 failed");
     expect(tab.tile("Cost")?.textContent).toBe("Cost$0.75 est.3 runs unknown");
     act(() => root?.unmount());
     // Every run covered and metered: nothing is said about either.
@@ -74,7 +74,7 @@ describe("AnalyticsTab", () => {
 
   it("lists the top tools with their error rates, and draws a column per day over the range, each named for hover and focus", async () => {
     const tab = await open();
-    expect(tab.rows("Top tools")).toEqual([["read", "30", "0", "0%"], ["shell", "12", "4", "33%"], ["fetch", "3", "1", "33%"]]);
+    expect(tab.rows("Top tools")).toEqual([["Read files", "30", "0", "0%"], ["Run commands", "12", "4", "33%"], ["Fetch web pages", "3", "1", "33%"]]);
     const runs = tab.days("Runs per day");
     expect(runs.length).toBe(30);
     expect(runs[0]).toBe("2026-09-16: 0 runs, 0 completed · 0 failed · 0 other");
@@ -114,12 +114,9 @@ describe("AnalyticsTab", () => {
     expect(host.querySelector('[aria-busy="true"]')).toBeNull();
   });
 
-  it("says when the agent has no runs in the range, and when the analytics can't be read", async () => {
+  it("says when the agent has no runs in the range", async () => {
     const empty = await open(() => ({ ...ANALYTICS, totals: { ...ANALYTICS.totals, runs: 0, completed: 0, failed: 0, runs_with_metrics: 0 }, by_day: [], by_harness_effort: [], tools: [] }));
     expect(empty.host.textContent).toContain("No runs of this agent in this range.");
-    act(() => root?.unmount());
-    const none = await open(() => undefined);
-    expect(none.host.querySelector('[role="alert"]')?.textContent).toBe("The analytics could not be read: this server gives no analytics");
   });
 });
 

@@ -2,7 +2,7 @@ import { Archive, ArrowUpRight } from "lucide-react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import type { RunsFilter } from "@/lib/client";
-import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
+import { cost, when } from "@/lib/format";
 import type { Run, RunStatus } from "@/lib/v2";
 
 /** The statuses GET /v2/runs filters by, in the order a run moves through them. */
@@ -59,7 +59,7 @@ function RunsTable({ runs, agentName, onOpen }: { runs: Run[]; agentName: (id: s
             <td className="hidden px-3 py-2.5 align-top md:table-cell">{agentName(r.agent_id)}</td>
             <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{r.kind}</td>
             <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{when(r.created_at)}</td>
-            <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{cost(r.cost)}{bounded(r.cost) && <span className="block text-[11px]">{CUT_NOTE}</span>}</td>
+            <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{cost(r.cost)}</td>
           </tr>
         ))}
       </tbody>

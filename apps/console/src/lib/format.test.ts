@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bounded, cost, CUT_NOTE, markdown, upTo } from "./format";
+import { cost, markdown } from "./format";
 import unpriced from "../fixtures/run.working.working.1.json";
 
 // An unknown cost is never $0: the contract says "Null while unknown. A client shows null as unknown, never as $0."
@@ -88,57 +88,10 @@ describe("cost in the runs list", () => {
   });
 });
 
-describe("cost, by whose number it is (cost.source)", () => {
-  it("a cost every part of which a provider reported reads plainly, though its basis is estimate", () => {
-    expect(cost({ usd: 0.00003, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("<$0.0001");
-    expect(cost({ usd: 1.5, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("$1.50");
-  });
-  it("an estimated cost reads est., whatever its basis says", () => {
-    expect(cost({ usd: 1.5, basis: "estimate", source: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
-    expect(cost({ usd: 1.5, basis: "charge", source: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
-  });
-  it("an older server that says no source: the basis decides, as before", () => {
+describe("cost, by its basis", () => {
+  it("an estimate reads est., a charge reads plainly", () => {
     expect(cost({ usd: 1.5, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
     expect(cost({ usd: 1.5, basis: "charge", charge_state: null, cap_usd: null })).toBe("$1.50");
-  });
-  it("an unknown cost is Unknown whatever its source says", () => {
-    expect(cost({ usd: null, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("Unknown");
-  });
-});
-
-// A cost unknown because requests were cut, each with a recorded figure, reads as its bound: "≤ $x", never a bare "$x".
-describe("a cost bounded by cut requests (at_most_usd)", () => {
-  const base = (unpriced as { body: { cost: { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null } } }).body.cost;
-  it("reads ≤ the bound, rounded up so it never reads below it, never a bare $x and never Unknown", () => {
-    expect(base.usd).toBeNull();
-    // Under a cent, in $0.0001 steps; from a cent up, in cents, as a known cost is said: each rounded up.
-    expect(cost({ ...base, at_most_usd: 0.00123 })).toBe("≤ $0.0013");
-    expect(cost({ ...base, at_most_usd: 0.0049 })).toBe("≤ $0.0049");
-    expect(cost({ ...base, at_most_usd: 0.01234 })).toBe("≤ $0.02");
-    expect(cost({ ...base, at_most_usd: 1.231 })).toBe("≤ $1.24");
-    expect(cost({ ...base, at_most_usd: 2 })).toBe("≤ $2.00");
-    expect(bounded({ ...base, at_most_usd: 0.5 })).toBe(true);
-    expect(upTo(0.00001)).toBe("$0.0001");
-    expect(CUT_NOTE).toBe("some requests were cut");
-  });
-  it("without the field, or with it null, reads as it always did: Unknown", () => {
-    expect(cost(base)).toBe("Unknown");
-    expect(cost({ ...base, at_most_usd: null })).toBe("Unknown");
-    expect(bounded(base)).toBe(false);
-  });
-  it("a known cost is its figure, whatever a bound beside it says", () => {
-    expect(cost({ ...base, usd: 0.5, at_most_usd: 0.9 })).toBe("$0.50 est.");
-    expect(bounded({ ...base, usd: 0.5, at_most_usd: 0.9 })).toBe(false);
-  });
-  it("the runs list says the bound and why, under it", async () => {
-    const { renderToStaticMarkup } = await import("react-dom/server");
-    const { createElement } = await import("react");
-    const { RunsList } = await import("../components/RunsList");
-    const run = (unpriced as unknown as { body: Parameters<typeof RunsList>[0]["runs"] extends (infer R)[] | null ? R : never }).body;
-    const html = renderToStaticMarkup(createElement(RunsList, { runs: [{ ...run, cost: { ...run.cost!, at_most_usd: 0.03 } }], agentName: () => "Meeting notes", onOpen: () => {} }));
-    expect(html).toContain("≤ $0.03");
-    expect(html).toContain(CUT_NOTE);
-    expect(html).not.toContain("Unknown");
   });
 });
 

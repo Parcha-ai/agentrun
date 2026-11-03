@@ -10,7 +10,7 @@ import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
-import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
+import { cost, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel } from "@/lib/models";
 import { elapsed, metaOf } from "@/lib/runGraph";
@@ -20,7 +20,7 @@ import type { Run } from "@/lib/v2";
 
 /** `stats`: the page's own read of the agent's stats over the Analytics tab's first range, which that tab starts from. */
 type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null };
-/** What the server gives beside the agent: `analytics`, once its stats are read (an older server has none). */
+/** What the server gives beside the agent: `analytics`, once its stats are read. */
 type Server = { analytics: boolean };
 
 /** The page's tabs, in order, each at `#/agents/{id}/{tab}`. A tab shows only on an agent it has content for; a new one
@@ -42,9 +42,8 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
 export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix, harnesses, efforts = [], go, tab }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The agent's stats over the Analytics tab's first range: undefined until read, null when the read failed. Whether
-  // they carry analytics decides the tab (an older server's have none), and the tab opens on this answer, never a second
-  // read of it.
+  // The agent's stats over the Analytics tab's first range: undefined until read, null when the read failed. A read that
+  // landed gives the tab, which opens on this answer, never a second read of it.
   const [stats, setStats] = useState<Stats | null | undefined>(undefined);
   useEffect(() => {
     let live = true;
@@ -53,7 +52,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
     v2.statsOver({ from: rangeFrom(FIRST_RANGE), agent: agentId }).then((r) => { if (live) setStats(r); }, () => { if (live) setStats(null); });
     return () => { live = false; };
   }, [v2, agentId]);
-  const analytics = stats === undefined ? undefined : stats?.analytics !== undefined;
+  const analytics = stats === undefined ? undefined : stats !== null;
   if (error) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">The agent could not be read: {error}</p>;
   if (!agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
   const d = agent.definition;
@@ -154,7 +153,7 @@ function RunsTab({ agent, v2 }: TabProps) {
               {r.effort && <Chip>effort {r.effort}</Chip>}
               <span className="font-mono text-[12px] text-muted-foreground">{when(r.created_at)}</span>
               {r.ended_at && <span className="font-mono text-[12px] text-muted-foreground" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
-              {r.cost && (r.cost.usd !== null || bounded(r.cost)) && <span className="font-mono text-[12px] text-muted-foreground">{cost(r.cost)}{bounded(r.cost) && ` · ${CUT_NOTE}`}</span>}
+              {r.cost && r.cost.usd !== null && <span className="font-mono text-[12px] text-muted-foreground">{cost(r.cost)}</span>}
             </a>
           </li>
         ))}
