@@ -22,6 +22,8 @@ export function script(spec) {
   if (/Write two files in one answer\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001 }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
   // Codex's shape (F22): a request that only says something (its tool call is the harness's own, which the host never
   // sees), then the host's tool, then the answer.
+  // The same turn, its first answer empty (only whitespace, which the timeline reads as an empty answer).
+  if (/Say nothing, then write\./.test(text)) return [{ say: " ", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
   if (/Comment, then write\./.test(text)) return [{ say: "I'll write note.md.", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
   if (/Write then read\./.test(text)) return [{ call: "write", args: { path: "note.txt", content: "hello from the tool" }, usd: 0.001 }, { call: "read", args: { path: "note.txt" }, usd: 0.001 }, { say: "Read back.", usd: 0.001 }];
