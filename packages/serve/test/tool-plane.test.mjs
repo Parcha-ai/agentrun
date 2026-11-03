@@ -11,6 +11,7 @@ import { CAPABILITIES, planeFor, PROVIDERS, recheckPlane, resolveCapability, set
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { blockersOf } from "../dist/runnable.js";
 
 const base = { gateway: false, parallelKey: false };
 
@@ -219,4 +220,16 @@ test("a run keeps the tools its first launch resolved: a PUT between its launche
   assert.deepEqual(via((await follow(api, next.body.run_id, ["completed"])).rows), ["parallel"], "the next run takes the new setting");
   const sent = (await readFile(files.parallel, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(sent.map((call) => [call.path, call.authorized]), [["/v1/extract", true]], "only the next run asked Parallel");
+});
+
+test("the run check resolves search as the run does: a workflow picking native search is refused before it starts, and so is a capped codex run picking it", async () => {
+  const env = { AGENT_MODEL: "anthropic/claude-sonnet-4-5", ANTHROPIC_API_KEY: "not-a-secret" };
+  const said = (blockers) => blockers.map((blocker) => blocker.message).join(" ");
+  const flow = answerFlow();
+  flow.root.steps[0].tools = ["web_search"];
+  const native = { web_search: { provider: "native" } };
+  assert.match(said(await blockersOf(env, { kind: "workflow", workflow: flow, toolSettings: native }, {})), /The tool web_search does not run here on pi: no native search for a model with none named\./, "a workflow's nodes may run on another tier: never the default model's native search");
+  const codex = { kind: "agentic", harness: "codex", tools: ["web_search"], toolSettings: native };
+  assert.doesNotMatch(said(await blockersOf(env, codex, {})), /web_search/, "uncapped: Codex's own search");
+  assert.match(said(await blockersOf(env, codex, {}, { capped: true })), /The tool web_search does not run here on codex: no native search for codex under a spend cap\./, "capped: refused, never a search that cannot run");
 });
