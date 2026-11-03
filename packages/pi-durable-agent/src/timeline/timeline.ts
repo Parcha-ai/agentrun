@@ -203,6 +203,19 @@ function createMeter() {
   // the cost, the usage row names it.
   let unpriced: string | undefined;
   let unpricedBefore: string | undefined;
+  // A request that ended on an error after its response began: its end mark (`error`) holds what was held for it, and
+  // pi's error entry for it its stream's partial cost, which is not what the provider charged. Each such end pairs with
+  // the nearest error entry, written just before or just after it, as a cap that marks such ends reads them: the bound
+  // counts that request at its hold, instead of its entry's partial cost, and never as an end that closes another one.
+  const erredEntries: (number | undefined)[] = [];
+  const erredEnds: number[] = [];
+  let erredHeld = 0;
+  let erredPartial = 0;
+  const pairErred = (held: number, partial: number | undefined) => {
+    if (partial === undefined) return void figures.generation.ends.push(held);
+    erredHeld += held;
+    erredPartial += partial;
+  };
 
   function push(entry: EntryLike): "answer" | "continued" | "mark" | undefined {
     const message = entry.model?.[0];
@@ -257,7 +270,10 @@ function createMeter() {
       if (data?.capRefused !== true) figures.generation.starts.push(heldOf(entry));
     } else if (entry.kind === REQUEST_ENDED) {
       if (unsent(entry)) marked -= 1;
-      else if (heldOf(entry) !== undefined) figures.generation.ends.push(heldOf(entry)!);
+      else if (data?.error === true && heldOf(entry) !== undefined) {
+        if (erredEntries.length) pairErred(heldOf(entry)!, erredEntries.pop());
+        else erredEnds.push(heldOf(entry)!);
+      } else if (heldOf(entry) !== undefined) figures.generation.ends.push(heldOf(entry)!);
       inFlight = false;
     } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;
@@ -274,6 +290,11 @@ function createMeter() {
       addCost(aborted ? undefined : total);
       const returned = (Array.isArray(message.content) && message.content.length > 0) || Number(obj(message.usage)?.input) > 0 || Number(obj(message.usage)?.output) > 0;
       unpricedBefore = unpriced;
+      if (message.stopReason === "error") {
+        const partial = typeof total === "number" && Number.isFinite(total) ? total : undefined;
+        if (erredEnds.length) pairErred(erredEnds.pop()!, partial);
+        else erredEntries.push(partial);
+      }
       if (name && !aborted && message.stopReason !== "error" && returned && !(typeof total === "number" && Number.isFinite(total))) unpriced = name;
       const counted = aborted ? undefined : tokensOf(message.usage, message.stopReason === "error");
       lastUnmetered = !counted;
@@ -304,14 +325,16 @@ function createMeter() {
    *  unknown cost (an answer with none, as a harness writes a request a crash cut; one with no answer, as pi leaves it) at
    *  one of the largest figures its kind's start marks hold, since the marks do not say which start an answer closed. This
    *  is a cap's own reading of the same marks. A cost still pending counts the same way, at what its host held for it (its
-   *  pending mark's figure, else one of its kind's start figures), until it comes. Undefined when one is unknown from before
+   *  pending mark's figure, else one of its kind's start figures), until it comes; one that ended on an error after its
+   *  response began counts at its end mark's figure, its entry's partial cost aside. Undefined when one is unknown from before
    *  the first mark, or a start of a kind with such a request holds no figure. `flying`, `summarizing`: in flight, not cut. */
   function bound(flying: number, summarizing: number): number | undefined {
     if (unknownUnmarked > 0) return undefined;
-    let sum = known;
+    let sum = known - erredPartial + erredHeld;
     for (const { figure } of pending) if (figure !== undefined) sum += figure;
     const unheld = pending.filter(({ figure }) => figure === undefined).length;
-    for (const part of [requestPart("generation", flying, unheld), requestPart("compaction", summarizing)]) {
+    // An erred request's end with no entry paired to it yet counts at its figure, as a stopped request's does.
+    for (const part of [requestPart("generation", flying, unheld, erredEnds), requestPart("compaction", summarizing)]) {
       if (part === undefined) return undefined;
       sum += part;
     }
@@ -322,8 +345,9 @@ function createMeter() {
    *  own beside these): each request of that kind stopped before its end at the figure its end mark holds, and every other
    *  one of unknown cost (an answer with none, or a request with no answer and not in flight) at one of the largest figures
    *  the kind's start marks hold. Undefined when one of those has no figure to count at. */
-  function requestPart(kind: Kind, flying: number, pendingUnheld = 0): number | undefined {
-    const { starts, ends } = figures[kind];
+  function requestPart(kind: Kind, flying: number, pendingUnheld = 0, moreEnds: readonly number[] = []): number | undefined {
+    const { starts } = figures[kind];
+    const ends = [...figures[kind].ends, ...moreEnds];
     const answeredOf = kind === "generation" ? answered : compactions;
     const startedOf = kind === "generation" ? marked : compacting;
     const uncounted = unknownOf[kind] + pendingUnheld + Math.max(0, startedOf - flying - answeredOf) - ends.length;
