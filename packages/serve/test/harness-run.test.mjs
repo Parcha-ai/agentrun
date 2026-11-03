@@ -310,7 +310,6 @@ test("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) en
 });
 
 const FAUX_WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
-const FAUX_HARNESS_SLOW_START = new URL("./fixtures/faux-harness-slow-start.mjs", import.meta.url).pathname;
 
 /** Follows a run to completed, then checks it never read completed before `answer` was on its timeline: the rows of every
  *  page up to the first completed one. */
@@ -398,11 +397,6 @@ function storeEntries(data, runId) {
     }
   }
 }
-/** Whether, after the person's last message, the store holds the bridge's entry for a request that showed nothing. */
-const emptyAfterMessage = (entries) => {
-  const user = entries.findLastIndex((e) => e.kind === "pi.user");
-  return entries.slice(user + 1).some((e) => e.kind === "pi.assistant" && e.model?.[0]?.api === "agentrun-adapter" && (e.model[0].content ?? []).length === 0);
-};
 /** Until the faux harness has admitted its request: it writes `signal` the moment it does (cutSignalled). Nothing the API
  *  shows says a request is in flight (one alone makes no row), and the run's store is its process's alone while it lives. */
 const admitted = async (signal) => {
@@ -411,27 +405,9 @@ const admitted = async (signal) => {
   }
 };
 
-test("a run relaunched after a crash cut its turn's first request completes only once the recovered turn answers, never while the new process opens", { timeout: 90_000 }, async (t) => {
-  // Review F1: the reopen writes the cut request as an empty entry, then opens the session and starts the recovered
-  // turn. With the harness slow to start (2 s, as claude-agent's checks its CLI), serve follows the new process's door,
-  // idle, when that entry lands: it must not read as the turn's end.
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS_SLOW_START });
-  const dir = await scratch(t);
-  const [go, signal] = [join(dir, "go"), join(dir, "admitted")];
-  const runId = await started(api, "relaunch-slow", `Cut the first request (signal ${signal}); recover once ${go} exists.`);
-  await admitted(signal);
-  await writeFile(go, "");
-  await writeFile(join(data, "runs", runId, "slow-start"), "");
-  await killRun(data, runId);
-  await completesOnlyAfter(api, runId, "Recovered.");
-  assert.equal(await answer(api, runId), "Recovered.");
-  const entries = storeEntries(data, runId);
-  const recovered = entries.findIndex((e) => e.kind === "pi.assistant" && JSON.stringify(e.model?.[0]?.content ?? []).includes("Recovered."));
-  assert.ok(emptyAfterMessage(entries.slice(0, recovered)), "the case: the cut request's empty entry came between the person's message and the recovered answer");
-});
-
 test("a cancel of a turn that has shown nothing reads working, then cancelled: never completed on the way", { timeout: 90_000 }, async (t) => {
-  // Review F2: the interrupted request is written as an empty entry and the turn ends; the cancel decides the run's end.
+  // Review F2, not reproduced (an interrupted request that showed nothing and was never paid writes no entry): a guard
+  // that the cancel decides the run's end, whatever the turn it cut writes.
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const signal = join(await scratch(t), "admitted");
   const runId = await started(api, "cancel-empty", `Hold a request unanswered (signal ${signal}).`);

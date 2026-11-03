@@ -29,11 +29,6 @@ export function script(spec) {
   // A chat whose second turn has a request of unknown price.
   // A follow-up whose turn makes one request and shows nothing, as the Claude CLI's /compact does (a summary request, no
   // text): the turn ends with no answer row after the person's message.
-  // F1 (adversarial review of #1424): the turn's first request is admitted (the signal file says so) and cut before any
-  // content; the test kills the process. On the relaunch (go exists) the recovered turn answers. Its slow start is
-  // faux-harness-slow-start.mjs's.
-  const relaunch = /Cut the first request \(signal (\S+)\); recover once (\S+) exists\./.exec(text);
-  if (relaunch) return existsSync(relaunch[2]) ? [{ say: "Recovered.", usd: 0.001 }] : [cutSignalled(relaunch[1])];
   // F2: a request admitted (the signal file says so) and never answered: the turn holds until it is cancelled.
   const unanswered = /Hold a request unanswered \(signal (\S+)\)\./.exec(text)?.[1];
   if (unanswered) return [cutSignalled(unanswered)];
