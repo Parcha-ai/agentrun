@@ -308,13 +308,13 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-test("capabilities say which harnesses run each tool: the file tools, the web tools and monid's three on every harness, the rest on pi", async (t) => {
+test("capabilities say which harnesses run each tool: the file tools, bash (in a box), the web tools and monid's three on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
   const every = ["pi", "claude-agent", "codex"];
-  const host = ["read", "write", "edit", "web_fetch", "web_search", "monid.discover", "monid.inspect", "monid.run"];
-  for (const name of host) assert.deepEqual(tools[name], every, name);
-  for (const [name, harnesses] of Object.entries(tools)) if (!host.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
+  const hosted = ["read", "write", "edit", "bash", "web_fetch", "web_search", "monid.discover", "monid.inspect", "monid.run"];
+  for (const name of hosted) assert.deepEqual(tools[name], every, name);
+  for (const [name, harnesses] of Object.entries(tools)) if (!hosted.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });
 
 test("pi's confinement holds for another harness's read: a link out of the workspace is refused with pi's words", { timeout: 90_000 }, async (t) => {
