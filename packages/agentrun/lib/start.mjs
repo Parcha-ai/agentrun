@@ -146,10 +146,17 @@ export async function main(argv, env = process.env) {
   const p = rest.indexOf("--port");
   const port = p >= 0 && Number(rest[p + 1]) > 0 ? Number(rest[p + 1]) : await freePort();
   const passed = rest.filter((arg, i) => arg !== "--no-open" && !(p >= 0 && (i === p || i === p + 1)));
+  // Started by npx, this runs under npm exec and its `sh -c`. A signal to npm alone (a process manager's SIGTERM or
+  // SIGKILL) ends npm and leaves this, and the server, with nobody to stop them: this finds that npm now, before any fetch,
+  // starts no server once it is gone, and stops the server when it goes later. Started any other way, it watches nothing,
+  // so a shell's own rules apply (`&`, nohup).
+  const npm = npmExecOf(env);
+  const npmGone = () => npm !== undefined && !isNpm(commandOf(npm));
   const { command, args, fetched } = server(["--data", dir, "--port", String(port), ...passed]);
   if (fetched) console.error(`Starting AgentRun (the first run fetches its server, ${SERVE_SPEC})...`);
   const bin = fetched ? await fetchServer(childEnv).catch((error) => void console.error(`AgentRun: ${error.message}`)) : command;
   if (!bin) return 1;
+  if (npmGone()) return console.error("AgentRun: npm stopped while the server was fetched, so the server was not started."), 1;
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line.
   // The server is this command's own child (fetchServer runs nothing between them): a stop signals it alone, and it drains
@@ -160,13 +167,10 @@ export async function main(argv, env = process.env) {
   const stop = (signal) => child.kill(signal);
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => stop(signal));
   process.on("SIGHUP", () => stop("SIGTERM"));
-  // Started by npx, this runs under npm exec and its `sh -c`. A signal to npm alone (a process manager's SIGTERM or
-  // SIGKILL) ends npm and leaves this, and the server, with nobody to stop them: when that npm is gone, it stops the server,
-  // as SIGTERM would, and ends. Started any other way, it watches nothing, so a shell's own rules apply (`&`, nohup).
-  const npm = npmExecOf(env);
+  // When that npm goes, the server stops, as on a SIGTERM, and this ends.
   if (npm !== undefined) {
     const watch = setInterval(() => {
-      if (isNpm(commandOf(npm))) return;
+      if (!npmGone()) return;
       clearInterval(watch);
       stop("SIGTERM");
     }, 1000);
