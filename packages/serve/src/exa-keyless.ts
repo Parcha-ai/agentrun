@@ -6,6 +6,11 @@
 // line may lead it. That text is read into the same Search every web_search answers, and no more than 1 MiB of an
 // answer is read. Over the free limit Exa answers 429, which is said as such with its Retry-After; a 403 is a connection keyless use refuses (Exa takes it over IPv4,
 // straight to the endpoint). Nothing is retried, and each exchange ends at 60 s. No key is sent, ever.
+// Exa is dialled over IPv4 alone (ipv4Fetch): its name looked up for family 4 and the connection made to that address,
+// so a host whose default route is IPv6 reaches it the one way keyless use is taken.
+import { lookup as dnsLookup } from "node:dns";
+import type { LookupFunction } from "node:net";
+import type { Agent } from "undici";
 import { clip, TITLE_CAP } from "./fetch-page.js";
 import { type Hit, type Search, snippetOf } from "./web-search.js";
 
@@ -24,6 +29,20 @@ const ACCEPT = "application/json, text/event-stream";
 const MAX_BYTES = 1 << 20;
 
 type Rpc = { result?: Record<string, unknown>; error?: { message?: unknown } };
+
+/** A fetch that reaches hosts over IPv4 alone: each name looked up for family 4 (through `lookup`, default the system
+ *  resolver) and the connection dialled at the address found, never an IPv6 one. undici loads at the first request, so
+ *  a run that never searches never loads it; `close` ends the connections. */
+export function ipv4Fetch(lookup: LookupFunction = dnsLookup as LookupFunction): { send: typeof fetch; close(): Promise<void> } {
+  const ipv4: LookupFunction = (host, options, callback) => lookup(host, { ...options, family: 4 }, callback);
+  let opened: Promise<{ dispatcher: Agent; dial: typeof import("undici").fetch }> | undefined;
+  const open = () => (opened ??= import("undici").then(({ Agent, fetch }) => ({ dispatcher: new Agent({ connect: { family: 4, lookup: ipv4 } }), dial: fetch })));
+  const send = async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const { dispatcher, dial } = await open();
+    return dial(url as never, { ...init, dispatcher } as never) as unknown as Promise<Response>;
+  };
+  return { send: send as typeof fetch, close: async () => void (opened && (await (await opened).dispatcher.close())) };
+}
 
 /** At most MAX_BYTES of a body, as text; the rest is not read. */
 async function boundedText(response: Response): Promise<string> {
@@ -67,12 +86,15 @@ function hitOf(section: string): Hit | undefined {
   return { url, title: clip(known(field("Title")) ?? "", TITLE_CAP), snippet: snippetOf(snippet), ...(published ? { published } : {}) };
 }
 
-/** `query` searched on Exa's keyless MCP endpoint through `send` (fetch; a test's fake), at most `n` results. */
-export async function exaSearch(query: string, n: number, { send = fetch, signal }: { send?: typeof fetch; signal?: AbortSignal } = {}): Promise<Search> {
+/** `query` searched on Exa's keyless MCP endpoint through `send` (a test's fake; default a fetch over IPv4 alone,
+ *  ipv4Fetch, closed when the search ends), at most `n` results. */
+export async function exaSearch(query: string, n: number, { send, signal }: { send?: typeof fetch; signal?: AbortSignal } = {}): Promise<Search> {
   const deadline = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(signal ? [signal] : [])]);
+  const own = send ? undefined : ipv4Fetch();
+  const dial = send ?? own!.send;
   let session: string | undefined;
   const post = (body: Record<string, unknown>) =>
-    send(EXA_MCP_URL, {
+    dial(EXA_MCP_URL, {
       method: "POST",
       headers: { "content-type": "application/json", accept: ACCEPT, "mcp-protocol-version": PROTOCOL, ...(session ? { "mcp-session-id": session } : {}) },
       body: JSON.stringify({ jsonrpc: "2.0", ...body }),
@@ -106,5 +128,7 @@ export async function exaSearch(query: string, n: number, { send = fetch, signal
   } catch (error) {
     const name = (error as Error)?.name;
     return { error: name === "TimeoutError" ? "Exa's search did not answer within 60 s" : name === "AbortError" ? "the search was stopped" : `Exa's search failed: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
+  } finally {
+    await own?.close().catch(() => undefined);
   }
 }

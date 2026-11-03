@@ -92,7 +92,7 @@ export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unk
   // Under --faux, Exa is the faux module's or none: a test never reaches the network.
   const faux = await fauxFetch(env, FAUX_EXA_ENV);
   if (env[FAUX_ENV] && !faux) return { error: "web_search: under --faux, Exa's endpoint is a faux module's, and this server names none" };
-  return exaSearch(query, n, { send: faux ?? fetch, ...(signal ? { signal } : {}) });
+  return exaSearch(query, n, { ...(faux ? { send: faux } : {}), ...(signal ? { signal } : {}) });
 }
 
 /** The agent's tool: the Search as JSON text. A run whose web_search resolves to Parallel reads its key as the tool is
