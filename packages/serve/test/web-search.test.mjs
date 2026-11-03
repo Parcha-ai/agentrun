@@ -267,7 +267,7 @@ test("with the key and Parallel picked by the agent, web_search runs on pi: an a
   assert.deepEqual((await seen()).map((call) => [call.path, call.authorized, call.queries]), [["/v1/search", true, ["widgets delaware"]], ["/v1/search", true, ["acme registry"]]]);
 });
 
-test("keyless Exa: one MCP exchange with no key, its text read into results; a 429 naming a wait past 5 s is our words at once, a 403 the connection, an error its words; none is tried again", async (t) => {
+test("keyless Exa: one MCP exchange with no key, its text read into results; a 429 naming a wait past 5 s is our words at once, a 403 the connection, an error our words quoting Exa's; none is tried again", async (t) => {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_EXA"]);
   const sent = [];
   const send = async (url, init) => {
@@ -307,7 +307,7 @@ test("keyless Exa: one MCP exchange with no key, its text read into results; a 4
     return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: "the query is empty" }] } }), { status: 200, headers: { "content-type": "application/json" } });
   };
   delete process.env.AGENTRUN_TEST_FAUX_EXA;
-  assert.deepEqual(await exaSearch("widgets", 3, { send: failing }), { error: "Exa's search failed: the query is empty" }, "a JSON answer is read as well as a stream");
+  assert.deepEqual(await exaSearch("widgets", 3, { send: failing }), { error: 'Free web search failed. Exa said: "the query is empty"' }, "a JSON answer is read as well as a stream");
 });
 
 test("keyless Exa past its free limit (a 429, or Exa's own notice in a 200): tried once more after a short jittered wait, Retry-After's where it names 5 s or less; then our words, never Exa's fix", async (t) => {
@@ -357,6 +357,39 @@ test("keyless Exa past its free limit (a 429, or Exa's own notice in a 200): tri
   const stopped = await search("limited", stop.signal);
   assert.deepEqual([stopped.answer, stopped.searches], [{ error: "the search was stopped" }, 1]);
   assert.ok(Date.now() - started < 900, `ended ${Date.now() - started} ms after it started, inside the shortest wait`);
+});
+
+test("any other failure Exa answers is said in our words, quoting only the first sentence of Exa's, at most 120 characters: never its fix for an MCP URL, even from a deployment that does not mark its limit", async (t) => {
+  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_EXA"]);
+  /** Exa answering the search with `answer` (a tools/call body, as JSON), counting the searches it was sent. */
+  const answering = (answer) => {
+    const sent = [];
+    const send = async (url, init) => {
+      const { method, id } = JSON.parse(init.body);
+      if (method !== "tools/call") return fakeExa(url, init);
+      sent.push(method);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id, ...answer }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    return { sent, send };
+  };
+  const SETUP = /Fix:|MCP URL|exaApiKey|exa\.ai|api-keys|Create a free Exa account/;
+  // Exa's notice of its free limit with no ai.exa/rateLimited mark (an older deployment): a failure like any other,
+  // not retried, and none of its setup text.
+  const unmarked = answering({ result: { isError: true, content: [{ type: "text", text: EXA_LIMIT_TEXT }] } });
+  const said = await exaSearch("widgets", 3, { send: unmarked.send, pause: async () => assert.fail("an unmarked failure is not retried") });
+  assert.deepEqual(said, { error: 'Free web search failed. Exa said: "You\'ve hit Exa\'s free MCP rate limit."' });
+  assert.doesNotMatch(said.error, SETUP);
+  assert.equal(unmarked.sent.length, 1);
+  // A JSON-RPC error, its message on several lines: the first sentence of the first line.
+  const rpc = answering({ error: { code: -32000, message: `web_search_exa error (500): Internal error. Retry later.\nTimestamp: 2026-11-03T17:00:00Z\n\n${EXA_LIMIT_TEXT}` } });
+  assert.deepEqual(await exaSearch("widgets", 3, { send: rpc.send }), { error: 'Free web search failed. Exa said: "web_search_exa error (500): Internal error."' });
+  // A long first sentence is cut on a word, at most 120 characters.
+  const long = answering({ result: { isError: true, content: [{ type: "text", text: `${"word ".repeat(60)}end` }] } });
+  const cut = /^Free web search failed\. Exa said: "(.*)"$/.exec((await exaSearch("widgets", 3, { send: long.send })).error)?.[1];
+  assert.ok(cut && cut.length <= 120 && cut.endsWith("…") && /^(word )+word…$/.test(cut), `cut on a word: ${cut}`);
+  // A failure with no words: said so.
+  const empty = answering({ result: { isError: true, content: [] } });
+  assert.deepEqual(await exaSearch("widgets", 3, { send: empty.send }), { error: "Free web search failed: Exa gave no answer" });
 });
 
 test("keyless Exa is dialled over IPv4 alone: its name is looked up for family 4 and the connection goes to that address, on a host whose resolver answers IPv6 otherwise", async (t) => {
