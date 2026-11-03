@@ -23,7 +23,7 @@ const choicesUnder = (settings: ToolSettings): ToolChoice[] => toolChoices([
   { name: "web_fetch", providers: ["kernel", "parallel"], provider: settings.web_fetch?.provider ?? "kernel", default_provider: "kernel", resolves: { pi: "kernel", "claude-agent": "native", codex: "native" } },
 ]);
 
-async function open(start: ToolSettings = {}, refuse?: () => ClientError) {
+async function open(start: ToolSettings = {}, refuse?: () => ClientError, harnesses?: { id: string; available: boolean; reason?: string }[]) {
   // The server: its settings, each capability's provider in its answer (its default filled in).
   let held: ToolSettings = { ...start };
   const whole = (): ToolSettings => ({ web_search: { provider: held.web_search?.provider ?? "auto" }, web_fetch: { provider: held.web_fetch?.provider ?? "kernel" } });
@@ -35,7 +35,7 @@ async function open(start: ToolSettings = {}, refuse?: () => ClientError) {
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  const render = () => act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: choicesUnder(held), onSaved: () => { reads++; render(); } })));
+  const render = () => act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: choicesUnder(held), ...(harnesses ? { harnesses } : {}), onSaved: () => { reads++; render(); } })));
   render();
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
@@ -50,6 +50,29 @@ async function open(start: ToolSettings = {}, refuse?: () => ClientError) {
 }
 
 describe("Settings → Tools", () => {
+  it("a harness this server can't run is greyed out as not offered here, with the server's reason; one it runs shows what it resolves to", async () => {
+    // capabilities.harnesses on a server with only an OpenRouter key: pi runs, Claude Code and Codex don't.
+    const page = await open({}, undefined, [
+      { id: "pi", available: true },
+      { id: "claude-agent", available: false, reason: "ANTHROPIC_API_KEY is not set" },
+      { id: "codex", available: false, reason: "codex is not installed" },
+    ]);
+    const lines = (tool: string) => [...page.row(tool).querySelectorAll<HTMLElement>("td:nth-child(3) span")];
+    for (const tool of ["web_search", "web_fetch"]) {
+      expect(lines(tool).map((l) => l.textContent)).toEqual([tool === "web_search" ? "pi: Exa keyless" : "pi: kernel fetch", "claude-agent: not offered here", "codex: not offered here"]);
+      const [pi, claude, codex] = lines(tool);
+      expect(pi.className).not.toContain("opacity-60");
+      expect(claude.className).toContain("opacity-60");
+      expect(claude.title).toBe("ANTHROPIC_API_KEY is not set");
+      expect(codex.title).toBe("codex is not installed");
+    }
+    expect(page.host.textContent).not.toContain("claude-agent: native");
+  });
+  it("with no word on the harnesses, or a harness the server doesn't list, each resolution shows as the server says", async () => {
+    const page = await open({}, undefined, [{ id: "pi", available: true }]);
+    expect(page.row("web_search").textContent).toContain("claude-agent: native");
+    expect(page.row("web_search").textContent).not.toContain("not offered here");
+  });
   it("lists each capability with a choice, its providers in the server's order, the default first and named so, the server's pick chosen", async () => {
     const page = await open({ web_search: { provider: "exa-keyless" } });
     expect([...page.host.querySelectorAll("tr[data-tool]")].map((r) => r.getAttribute("data-tool"))).toEqual(["web_search", "web_fetch"]);

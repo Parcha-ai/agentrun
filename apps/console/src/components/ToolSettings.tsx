@@ -63,8 +63,14 @@ export function Resolves({ value, prefix }: { value: string | undefined; prefix?
   return <span className={cn("block font-mono text-[12px]", r.unavailable ? "text-warning-text" : "text-muted-foreground")}>{prefix}{r.text}</span>;
 }
 
-/** What a capability resolves to on each harness, one line each. */
-export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORDER.map((h) => <Resolves key={h} value={choice.resolves[h]} prefix={`${h}: `} />)}</>;
+/** What a capability resolves to on each harness, one line each. A harness this server can't run (`harnesses`, from
+ *  capabilities, says it is unavailable) is greyed out as not offered here, with the server's reason on hover: what it
+ *  would resolve to runs nowhere. A harness `harnesses` doesn't list shows as the server resolves it. */
+export const PerHarness = ({ choice, harnesses = [] }: { choice: ToolChoice; harnesses?: readonly { id: string; available: boolean; reason?: string }[] }) => <>{HARNESS_ORDER.map((h) => {
+  const off = harnesses.find((x) => x.id === h && !x.available);
+  return off ? <span key={h} title={off.reason} className="block font-mono text-[12px] text-muted-foreground opacity-60">{h}: not offered here</span>
+    : <Resolves key={h} value={choice.resolves[h]} prefix={`${h}: `} />;
+})}</>;
 
 /** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
  *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
