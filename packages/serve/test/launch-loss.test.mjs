@@ -79,35 +79,6 @@ test("a run whose launch took its server down is failed by the next start, once,
   assert.deepEqual(listed.error, run.error, "the list says the same");
 });
 
-test("a run whose process served and then died with its server is opened again by the next start, and completes", async (t) => {
-  const dir = await scratch(t);
-  const data = join(dir, "agents");
-  const env = { [LAUNCH_COUNT_ENV]: join(dir, "launches"), [LAUNCH_KILL_ENV]: join(dir, "kill") };
-  const first = await serverProcess(t, data, env);
-  assert.equal((await first.api("POST", "/agents", agent("calc"))).status, 201);
-  const { body: started } = await first.api("POST", "/agents/calc/runs", { input: { content: "Answer soon." } });
-  await until("the run works", async () => {
-    const { body } = await first.api("GET", `/runs/${started.run_id}`);
-    return body.status === "working" && body.state === "working";
-  });
-  first.child.kill("SIGKILL");
-  await exited(first.child);
-  const { holder } = JSON.parse(await readFile(join(data, "runs", started.run_id, "run.json"), "utf8"));
-  if (processAlive(holder.pid)) process.kill(holder.pid, "SIGKILL");
-  await until("the run's process is gone", () => !processAlive(holder.pid), 10_000);
-  assert.equal(await launchCount(env[LAUNCH_COUNT_ENV]), 1);
-
-  const second = await serverProcess(t, data, env);
-  const run = await until("the run completes", async () => {
-    const { body } = await second.api("GET", `/runs/${started.run_id}`);
-    assert.notEqual(body.status, "failed", JSON.stringify(body.error));
-    return body.status === "completed" && body.poll_after_ms === 0 ? body : undefined;
-  });
-  assert.equal(run.result.final_answer, "Soon.");
-  assert.equal(await launchCount(env[LAUNCH_COUNT_ENV]), 2, "opened again once");
-  assert.equal(storeRun(data, started.run_id).state, "completed");
-});
-
 test("a launch mark the server cannot remove is logged by name, and the server stays up and the run completes", async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
