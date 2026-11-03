@@ -151,7 +151,7 @@ test("a save still waiting on its provider when the server closes stores nothing
 function recorder(answer) {
   const sent = [];
   const fetcher = async (url, init = {}) => {
-    sent.push({ url: String(url), method: init.method ?? "GET", headers: Object.fromEntries(new Headers(init.headers)), body: typeof init.body === "string" ? JSON.parse(init.body) : init.body });
+    sent.push({ url: String(url), method: init.method ?? "GET", headers: Object.fromEntries(new Headers(init.headers)), body: typeof init.body === "string" ? JSON.parse(init.body) : init.body, redirect: init.redirect });
     return answer(init);
   };
   return Object.assign(fetcher, { sent });
@@ -178,6 +178,23 @@ test("a 401 refuses the key whatever its body does: a provider that sends its he
   assert.deepEqual(await checkKey(row, fake(), {}, stalled, 200), { state: "refused", message: "Monid refused this key (401)" }, "the body stalled past the deadline");
 });
 
+test("a check never follows a redirect: a provider that answers 302 to another origin reads not checked, and nothing, the key's header least of all, reaches where it points", async (t) => {
+  const { checkKey } = await import("../dist/key-check.js");
+  // Where the redirect points: it files the headers of each request it gets.
+  const landed = [];
+  const elsewhere = createServer((req, res) => (landed.push(req.headers), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  await new Promise((listening) => elsewhere.listen(0, "127.0.0.1", listening));
+  t.after(() => new Promise((closed) => (elsewhere.closeAllConnections(), elsewhere.close(closed))));
+  const redirecting = await onLoopback(t, (res) => res.writeHead(302, { location: `http://127.0.0.1:${elsewhere.address().port}/` }).end());
+  for (const [id, label, header] of [["parallel", "Parallel", "x-api-key"], ["browserbase", "Browserbase", "x-bb-api-key"], ["monid", "Monid", "authorization"]]) {
+    const { at, ...outcome } = await checkKey({ id, label }, fake(), {}, redirecting);
+    assert.deepEqual(landed.map((headers) => Object.hasOwn(headers, header)), [], `${label}: no request reached the redirect's target (true: one did, with the key's ${header} header)`);
+    assert.deepEqual(outcome, { state: "not_checked", reason: `${label} answered 302 (a redirect, not followed)` });
+    assert.match(at, ISO);
+    landed.length = 0;
+  }
+});
+
 const ROWS = { monid: "Monid", parallel: "Parallel", browserbase: "Browserbase", typesafe: "TypeSafe (Jev)", anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter" };
 
 test("each provider's check is one documented call that costs nothing, on the key, at the base this server sends that provider's calls to", async () => {
@@ -190,7 +207,6 @@ test("each provider's check is one documented call that costs nothing, on the ke
     browserbase: ["GET", "https://api.browserbase.com/v1/projects", { "x-bb-api-key": key }],
     typesafe: ["GET", "https://api.typesafe.ai/v1/models", { authorization: `Bearer ${key}` }],
     anthropic: ["GET", "https://api.anthropic.com/v1/models?limit=1", { "x-api-key": key, "anthropic-version": "2023-06-01" }],
-    openai: ["GET", "https://api.openai.com/v1/models", { authorization: `Bearer ${key}` }],
     openrouter: ["GET", "https://openrouter.ai/api/v1/key", { authorization: `Bearer ${key}` }],
   };
   assert.deepEqual(Object.keys(KEY_CHECKS).sort(), Object.keys(expected).sort(), "every check is here, and no other");
@@ -202,9 +218,14 @@ test("each provider's check is one documented call that costs nothing, on the ke
     const [sent] = fetcher.sent;
     assert.deepEqual([sent.method, sent.url], [method, url], id);
     for (const [name, value] of Object.entries(auth)) assert.equal(sent.headers[name], value, `${id}: ${name}`);
+    assert.equal(sent.redirect, "manual", `${id}: a redirect is never followed, so the key goes nowhere but the provider`);
     if (id === "monid") assert.deepEqual(sent.body, { query: "company data", limit: 1 }, "a discover of one result");
     else assert.equal(sent.body, undefined, `${id}: a GET with no body`);
   }
+  // OpenAI's key is not checked: OpenAI answers 401 to a restricted key that works but may not list models.
+  const none = recorder(json(200, {}));
+  const { at: _, ...openai } = await checkKey({ id: "openai", label: ROWS.openai }, key, {}, none);
+  assert.deepEqual([openai, none.sent.length], [{ state: "not_checked", reason: "OpenAI keys aren't checked here: a restricted key can work without listing models" }, 0], "no call, and why");
   // A base URL the server sends a provider's calls to (a gateway, a proxy) is where its key is checked.
   const env = { BROWSERBASE_BASE_URL: "https://bb.proxy.example/", TYPESAFE_BASE_URL: "https://ts.gateway.example", ANTHROPIC_BASE_URL: "https://claude.gateway.example/" };
   for (const [id, url] of [["browserbase", "https://bb.proxy.example/v1/projects"], ["typesafe", "https://ts.gateway.example/v1/models"], ["anthropic", "https://claude.gateway.example/v1/models?limit=1"]]) {
@@ -237,7 +258,7 @@ test("a check reads the provider's answer: 2xx accepted, 401 refused in its firs
   assert.deepEqual(await outcome(json(401, { message: `x`.repeat(400) })), { state: "refused", message: `Monid refused this key (401: ${"x".repeat(200)})` }, "at most 200 characters");
   // A provider that echoes the key, or a piece of it, is never quoted.
   const masked = `Incorrect API key provided: ${key.slice(0, 8)}${"*".repeat(20)}${key.slice(-4)}. You can find your API key in your account.`;
-  assert.deepEqual(await outcome(json(401, { error: { message: masked } }), { row: { id: "openai", label: "OpenAI" } }), { state: "refused", message: "OpenAI refused this key (401)" });
+  assert.deepEqual(await outcome(json(401, { error: { message: masked } }), { row: { id: "anthropic", label: "Anthropic" } }), { state: "refused", message: "Anthropic refused this key (401)" });
   assert.deepEqual(await outcome(json(401, { message: `The key ${key} is not valid.` })), { state: "refused", message: "Monid refused this key (401)" });
   assert.deepEqual(await outcome(json(500, { message: `Upstream failed for ${key.slice(3, 11)}.` })), { state: "not_checked", reason: "Monid answered 500" });
   // Any other answer, or none, does not say whether the key works.
