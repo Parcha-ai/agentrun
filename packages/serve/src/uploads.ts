@@ -271,7 +271,14 @@ export class Uploads {
     if (!file) throw new ApiError("not_found", `no file ${id}`);
     const dir = join(this.root, id);
     const temp = file.status === "pending" ? tempOf(join(dir, BYTES)) : undefined;
-    const handle = temp ? await open(temp, "wx", 0o600) : undefined;
+    // A DELETE that lands between the read above and this open has taken the folder: the file is gone, a 404. Any other
+    // failure of the open stays the server's own.
+    const handle = temp
+      ? await open(temp, "wx", 0o600).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") throw new ApiError("not_found", `no file ${id}: it was deleted as its bytes arrived`);
+          throw error;
+        })
+      : undefined;
     let closed = false;
     let kept = false;
     try {

@@ -3,11 +3,11 @@
 // reaches a run on every harness; and the page's session sends a file's bytes in one call only with its own Origin.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { MAX_UPLOAD_BYTES, uploadTestHooks } from "../dist/uploads.js";
+import { MAX_UPLOAD_BYTES, Uploads, uploadTestHooks } from "../dist/uploads.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, cookieOf, follow, scratch, serve } from "./support.mjs";
 
@@ -264,4 +264,20 @@ test("the served document covers every body a file sent in one call takes", asyn
   }
   // With path in the query, a JSON body is a file's bytes: the document says so beside the contract's reservation.
   assert.match(body.description, /application\/json.*path.*query|path.*query.*application\/json/s);
+});
+
+test("a pending file deleted between its PUT's read and its first write answers 404, not a server error", async (t) => {
+  const root = join(await scratch(t), "files");
+  const uploads = new Uploads(root);
+  const { file } = await uploads.reserve({ path: "race.txt", size_bytes: 2 });
+  // The upload's folder goes right after the PUT read the record, before it opens the file its bytes go to: what a
+  // DELETE landing between the two does.
+  const read = uploads.get.bind(uploads);
+  uploads.get = async (id) => {
+    const found = await read(id);
+    uploads.get = read;
+    await rm(join(root, id), { recursive: true, force: true });
+    return found;
+  };
+  await assert.rejects(uploads.receive(file.file_id, [Buffer.from("ok")]), (error) => error.code === "not_found" && error.status === 404);
 });
