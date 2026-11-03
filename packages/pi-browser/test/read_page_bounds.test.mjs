@@ -137,3 +137,23 @@ test("50,000 svg start tags never closed, then a style and a script never closed
   assert.ok(page.text.includes("para 0 of the page, kept"), "the text after an unclosed svg is kept");
   assert.doesNotMatch(page.text, /color: red|track\(\)/, "an unclosed style runs to the end of the page");
 });
+
+test("a quoted attribute value is part of its tag: a \"<script>\" in one drops nothing, a \">\" in one ends no tag, as markdown and as plain text", async () => {
+  const html = '<html><head><title>Quotes</title></head><body><div data-example="<script>"><p>Keep me</p></div><p><a title="x > y" href="/next">Next</a></p><p>After</p></body></html>';
+  for (const deadlineMs of [undefined, 0]) {
+    const page = await readPage(html, "https://site.example/", deadlineMs === undefined ? {} : { deadlineMs });
+    const how = deadlineMs === undefined ? "markdown" : "text";
+    assert.equal(page.converted, how);
+    assert.match(page.text, /Keep me/, how);
+    assert.match(page.text, how === "markdown" ? /\[Next\]\(\/next\)/ : /Next/, how);
+    assert.match(page.text, /After/, how);
+    assert.deepEqual(page.links, ["https://site.example/next"], how);
+  }
+});
+
+test("a quote no quote closes, opened in 40,000 tags on a 2 MB page: each tag ends at its \">\", read within 10 s without holding the event loop", async () => {
+  const run = await inChild("readPage", 2_000_000, {}, "unquoted");
+  quick(run, 10_000);
+  assert.ok(run.page.text.includes("para 0 of the page, kept"), "the page is not eaten by the open quote");
+  assert.ok(run.page.text.includes("para 1 of the page, kept"));
+});
