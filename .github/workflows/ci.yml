@@ -401,12 +401,14 @@ jobs:
       - name: Build, for serve's boxed tools on Docker (advisory)
         continue-on-error: true
         run: npm run build
-      - name: Serve's boxed tools on Docker, no network and no key in the box (advisory)
+      - name: Serve's boxed tools on Docker, no network and no key in the box, and the default box image built (advisory)
         continue-on-error: true
         working-directory: packages/serve
         env:
           AGENTRUN_SERVE_LIVE_DOCKER: '1'
-        run: node --test --test-timeout=300000 test/boxed-tools.docker.test.mjs
+          AGENTRUN_SERVE_LIVE_DOCKER_BUILD: '1'
+        # The flag bounds the whole file, which builds the default box image (python, git, curl) once.
+        run: node --test --test-timeout=900000 test/boxed-tools.docker.test.mjs
 
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's

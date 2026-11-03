@@ -6,17 +6,24 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { Worker } from "node:worker_threads";
+import { once } from "node:events";
+import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir } from "./files.js";
+import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, ownedByIdentity } from "./home-path.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
+import { IMPORT_ASKED } from "./import.js";
+import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { type LearningMode, learningOf } from "./learning.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
@@ -31,10 +38,10 @@ import { type BoxOffer, boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
-import { SECRET_NAMES, type StoredKeys, withSecrets } from "./secrets.js";
+import { SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
-import { keyOf, SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
+import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
@@ -43,6 +50,10 @@ import { openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused
 import { type ServerLock, takeServerLock } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
+
+/** A process's flags for a worker of it: without --input-type and the code string given with -e, --eval, -p or --print. */
+const workerArgs = (args: readonly string[]): string[] =>
+  args.filter((arg, i) => !arg.startsWith("--input-type") && !/^(?:-e|--eval|-p|--print)(?:=|$)/.test(arg) && !/^(?:-e|--eval|-p|--print)$/.test(args[i - 1] ?? ""));
 export const DEFAULT_PORT = 7340;
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const TOKEN_FILE = ".token";
@@ -69,6 +80,12 @@ export type ServeOptions = {
   openSetup?: boolean;
   /** With accounts: the address people open (AGENTRUN_PUBLIC_URL), which the printed setup link uses. */
   publicUrl?: string;
+  /** With open setup: the home whose Claude Code, Codex and pi sessions setup offers to import (default this user's),
+   *  and the temp directory whose projects it leaves out (default the OS's). */
+  sessionsHome?: { home: string; temp?: string };
+  /** With open setup on this machine, and no owner yet: count the sessions setup would import as the server starts, so
+   *  the offer has its numbers by the time the page opens (the CLI sets it). */
+  countSessions?: boolean;
   /** With accounts: the most addresses the sign-in limit keeps at once (default 10,000); a new one past it is a 429. */
   signInAddresses?: number;
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
@@ -133,6 +150,8 @@ export type ServeOptions = {
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
+  /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
+  beforeAbort?: (runId: string) => Promise<void> | void;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
   /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it (default 5 min). */
@@ -251,14 +270,28 @@ export function workflowTitle(name: string, input: Record<string, unknown>): str
   return words.length ? `${name}${/[?!:.]$/.test(name) ? "" : ":"} ${words.join(", ")}` : name;
 }
 
-/** The server's reading of `base` with its secrets, saved keys among them, and its capabilities on it, the harnesses'
- *  offers included, under its learning switch (`learning`, AGENTRUN_SERVE_LEARNING's when not given) and its tool
- *  settings (`toolSettings`, what each web tool resolves to): made at the start and again at each save or delete of a key
- *  and each PUT of the tool settings, so a key saved later can make a harness or a provider available with no restart.
- *  `boxes`: what the box registry set up at the start (boxes.ts), the same in every reading. */
+/** `env` as the harnesses' offers are made from it: without the tool keys' fields (TOOL_FIELDS), which no harness reads.
+ *  So the offers never depend on a tool key, and its save or delete leaves them as they are. */
+export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const descriptors = Object.getOwnPropertyDescriptors(env);
+  for (const name of TOOL_FIELDS) delete descriptors[name];
+  return Object.defineProperties({}, descriptors) as NodeJS.ProcessEnv;
+}
+
+/** What of `env` a write can change that the harnesses' offers are made from: each secret but the tool keys' fields (a
+ *  saved key is one of those; the rest of the environment is the server's start's). Held to tell whether a write needs
+ *  the offers probed again, never shown. */
+const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]);
+
+/** The server's reading of `base`, whole: its secrets, saved keys among them (`env`), the harnesses' offers, probed from
+ *  env without the tool keys (offersEnvOf), and its capabilities made from both under its learning switch (`learning`,
+ *  AGENTRUN_SERVE_LEARNING's when not given), its tool settings (`toolSettings`, what each web tool resolves to) and the
+ *  box offers (`boxes`, what the box registry set up at the start, boxes.ts). The server makes it once at its start and
+ *  then remakes only the parts a write changes (startHolding). */
 export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const env = withSecrets(base, "all", stored);
-  return { env, caps: await capabilities(env, maxRuns, learning ?? learningOf(env), toolSettings, boxes) };
+  const offers = await harnessOffers(offersEnvOf(env));
+  return { env, offers, caps: capabilitiesWith(env, maxRuns, offers, learning ?? learningOf(env), toolSettings, boxes) };
 }
 
 /** The capabilities document GET /v2/capabilities answers for `env`: each harness's offer resolved, its `default_model`
@@ -270,7 +303,7 @@ export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.
 }
 
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
- *  offers (capabilities, through readingOf at the start and after each key or tool-settings write). */
+ *  offers: cheap, made again after each key or tool-settings write with the offers the server holds. */
 function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const models = modelSource(env);
   return {
@@ -434,20 +467,37 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   toolKeys.view();
   // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
   const settings = new ToolSettings(data);
-  // The server's reading, saved keys with it (storedKeys), and its capabilities under its tool settings: made again at
-  // each save or delete of a key, the one writer of its file, and at each PUT of the tool settings, both through this one
-  // recompute, so capabilities, the harnesses' offers, save checks and run checks see either with no restart and no
-  // request opening the file. A reading a later write overtook is dropped, so a key write and a settings write never
-  // leave capabilities stale. The first is made once saved keys are read (below), so the offers are checked once at the
-  // start.
+  // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
+  // `offers`, what each harness offers, probed from env without the tool keys (offersEnvOf), the one slow part (each
+  // CLI's package and pins, codex's binary hashed); and `caps`, the capabilities document made from both under the tool
+  // settings and the box offers. A write remakes only the parts it changes, before it answers: a PUT of the tool
+  // settings, caps; a save or delete of a key, env and caps, and the offers only when what they are made from changed,
+  // which no tool key is. So a write answers at once, and capabilities, save checks and run checks after it see it, with
+  // no restart and no request opening the file. The offers are probed once saved keys are read (below), at the start.
   let env = withSecrets(base, "all", storedKeys);
-  let caps!: Awaited<ReturnType<typeof readingOf>>["caps"];
-  let latest = 0;
+  let offers!: HarnessCapability[];
+  let caps!: ReturnType<typeof capabilitiesWith>;
+  // The box offers are probed once, below, before the first reading is made.
+  const recompose = () => void (caps = capabilitiesWith(env, maxRuns, offers, learning, settings.get(), boxOffers));
+  // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
+  let offersFrom: readonly (string | undefined)[] | undefined;
+  let probes = 0;
+  const probe = async (why: string) => {
+    const mine = ++probes;
+    const from = offersInputs(env);
+    const started = performance.now();
+    const next = await harnessOffers(offersEnvOf(env));
+    log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
+    if (mine !== probes) return;
+    [offers, offersFrom] = [next, from];
+    recompose();
+  };
+  /** After a save or delete of a key, the one writer of its file: env again, then what reads it. */
   const keysChanged = async () => {
-    const mine = ++latest;
-    // The box offers are probed once, below, before the first reading is made.
-    const next = await readingOf(base, maxRuns, storedKeys, learning, settings.get(), boxOffers);
-    if (mine === latest) ({ env, caps } = next);
+    env = withSecrets(base, "all", storedKeys);
+    const inputs = offersInputs(env);
+    if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
+    else await probe("key");
   };
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
   // box stands in for Docker, and nothing asks Docker.
@@ -465,6 +515,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
   const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}), ...(options.fauxUpstream ? { fauxUpstream: resolve(options.fauxUpstream) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), toolSettings: () => settings.get(), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(fauxBox ? { fauxBox: resolve(options.fauxBox!) } : {}), ...(runBoxes ? { runBoxes } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
   const expected = digest(`Bearer ${token}`);
+  if (options.beforeAbort) runs.beforeAbort = options.beforeAbort;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
@@ -485,11 +536,89 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
-  await keysChanged();
+  await probe("start");
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
+
+  // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
+  // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
+  // a busy store's wait and the sessions' parsing never hold up a request.
+  const offersImport = options.openSetup === true && options.publicUrl === undefined && isLoopback(host);
+  let closing = false;
+  const workers = new Map<Worker, { task: ImportTask["task"]; exit: Promise<unknown> }>();
+  // Once the server closes, no worker starts: a setup still being answered then leaves its yes for the next start.
+  const onWorker = (task: ImportTask["task"]): Promise<ImportAnswer> =>
+    closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
+      const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
+        // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), and
+        // the keys saved on its Tool keys page, opened now (each cut too, the same rule as the CLI's import: a saved key
+        // and the server's own of the same name may differ), in the worker's memory alone: what the import cuts out of
+        // everything it writes.
+        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = secret(name); return value === undefined ? [] : [[name, value]]; })), stored: toolKeys.values() } satisfies ImportTask,
+        // Started from a string (its launcher runs node --input-type=module -e), the server's flags are given again
+        // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
+        // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
+        // runner's child holds many).
+        ...(process.execArgv.some((arg) => arg.startsWith("--input-type")) ? { execArgv: workerArgs(process.execArgv) } : {}),
+      });
+      workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
+      let answer: ImportAnswer | undefined;
+      worker.on("message", (message: ImportAnswer) => void (answer = message));
+      worker.once("error", failed);
+      worker.once("exit", (code) => {
+        workers.delete(worker);
+        if (answer) answered(answer);
+        else failed(new Error(`the import's worker ended (${code}) with no answer`));
+      });
+    });
+  // The count of what setup would import: started once (at start, or by the page's first read), read as it stands. One
+  // stopped (by close, or by setup) starts again on the next read; one that failed stays failed.
+  let count: { state: "counting" } | { state: "counted"; projects: number; sessions: number } | { state: "failed" } | undefined;
+  const countSessions = () => {
+    if (count) return;
+    count = { state: "counting" };
+    onWorker("plan").then(
+      (answer) => void (count = "sessions" in answer ? { state: "counted", projects: answer.projects, sessions: answer.sessions } : undefined),
+      (error: unknown) => {
+        count = { state: "failed" };
+        process.stderr.write(`agentrun-serve: the count of this machine's sessions failed: ${(error as Error).message}\n`);
+      },
+    );
+  };
+  const stopCount = () => { for (const [worker, { task }] of workers) if (task === "plan") worker.postMessage("stop"); };
+  // The owner's yes, kept until the import ends: a server stopped (or killed) mid-import goes on with it at its next start.
+  const importAsked = join(data, IMPORT_ASKED);
+  let importing: Promise<void> | undefined;
+  /** The import at setup as the owner's console reads it: running, done with what it took, or stopped (the next start
+   *  goes on with it). */
+  let importState: { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" } | undefined;
+  /** Never rejects: whatever stops it (the store held past its wait, a file) is said on stderr, and the server goes on. */
+  const importAtSetup = () =>
+    (importing ??= (async () => {
+      importState = { state: "running" };
+      try {
+        const answer = await onWorker("import");
+        if (!("took" in answer)) return void (importState = { state: "stopped" });
+        // The whole import, every start's part of it: what earlier starts took is kept with the owner's yes.
+        // The yes as setup wrote it is empty: no earlier start took anything.
+        const before = (await readFile(importAsked, "utf8").then((text) => (text.trim() ? (JSON.parse(text) as unknown) : null)).catch(() => null)) as { agents?: unknown; runs?: unknown } | null;
+        const agents = [...new Set([...(Array.isArray(before?.agents) ? before.agents.filter((id): id is string => typeof id === "string") : []), ...answer.took.agents])];
+        const runs = (typeof before?.runs === "number" ? before.runs : 0) + answer.took.runs;
+        if (answer.stopped) {
+          await writeDurable(importAsked, JSON.stringify({ agents, runs }));
+          return void (importState = { state: "stopped" });
+        }
+        await rm(importAsked, { force: true });
+        const took = { agents: agents.length, runs, skipped: answer.took.skipped };
+        importState = { state: "done", ...took };
+        process.stdout.write(`${logLine("import", took)}\n`);
+      } catch (error) {
+        importState = { state: "stopped" };
+        if (!closing) process.stderr.write(`agentrun-serve: the import at setup stopped (the next start goes on with it): ${(error as Error).message}\n`);
+      }
+    })());
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
@@ -574,7 +703,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const shape = { ...shapeOf(revision), place };
     if (shape.kind === "agentic" && place.mode === "runner" && revision.body.place?.mode === "sandbox") shape.tools = (shape.tools ?? []).filter((tool) => !toolOf(tool)?.sandboxOnly);
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers });
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
@@ -590,7 +719,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision), settings.get(), { boxes: boxOffers });
+    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision), settings.get(), { boxes: boxOffers, offers });
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);
@@ -872,6 +1001,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- the owner ------------------------------------------------------------------------------------------------------
 
+  /** A read only this server's page makes: the browser says so (Sec-Fetch-Site), or its Origin is this server's. A
+   *  same-origin GET carries no Origin and no body, so fromPage's checks would refuse the page itself. */
+  function pageRead(req: IncomingMessage): void {
+    if (req.headers["sec-fetch-site"] === "same-origin" || req.headers.origin?.toLowerCase() === ownOrigin(req)) return;
+    throw new ApiError("forbidden", "this read must come from this server's page");
+  }
+
   /** A write from the page: this server's own origin and a JSON body. A cookie never makes one from anywhere else. */
   function fromPage(req: IncomingMessage): void {
     if (req.headers.origin?.toLowerCase() !== ownOrigin(req)) throw new ApiError("forbidden", "this write must come from this server's page");
@@ -891,18 +1027,42 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out and GET /v2/auth/session, answered before any
    *  credential: their own checks are the setup code (or the token), the password, and the session. */
   async function ownerRoute(req: IncomingMessage, res: ServerResponse, path: string, me: Owner): Promise<void> {
-    const method = path === "/auth/session" ? "GET" : "POST";
+    const method = path === "/auth/session" || path === "/setup/import" ? "GET" : "POST";
     if (req.method !== method) throw new ApiError("method_not_allowed", `${req.method} is not a method of /v2${path}`, {}, { allow: method });
     switch (path) {
       case "/setup": {
         const byToken = req.headers.authorization !== undefined;
         if (byToken && !timingSafeEqual(digest(String(req.headers.authorization)), expected)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
         if (!byToken) fromPage(req);
-        const { password, body } = await passwordIn(req, ["password", "code"]);
-        const made = await me.setFirst(password, body.code, byToken);
+        const { password, body } = await passwordIn(req, ["password", "code", "import"]);
+        if (body.import !== undefined && typeof body.import !== "boolean") throw invalid([{ field: "import", reason: "wrong_type", message: "import is true or false" }]);
+        if (body.import === true && !offersImport) throw invalid([{ field: "import", reason: "not_allowed", message: "Only a server on this machine (no public address, on loopback) imports its sessions at setup: run the import command where they are." }]);
+        // The owner's yes, on the box ticked, is kept with the owner: written durably before the password, so a setup that
+        // cannot keep it sets no owner and can be tried again, and taken back if the password is not written.
+        const along = body.import === true ? { keep: () => writeDurable(importAsked, ""), drop: () => rm(importAsked, { force: true }) } : undefined;
+        const made = await me.setFirst(password, body.code, byToken, along);
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
         if (made === "code") throw new ApiError("forbidden", "that is not the setup code in the server's log, or it has expired");
-        return send(res, 201, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
+        // The count is for the offer, now answered: it stops.
+        stopCount();
+        // Only on the box ticked: the owner, now set, asked for it. It runs after the answer; agents arrive as it goes.
+        if (body.import === true) void importAtSetup();
+        return send(res, 201, { signed_in: true, ...(body.import === true ? { importing: true } : {}) }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
+      }
+      case "/setup/import": {
+        if (!offersImport) throw new ApiError("not_found", "no route /v2/setup/import");
+        // Before the owner is set, to the setup page: that it can import (202 while it counts), and then how many projects
+        // and sessions it would, or null for each when the count failed.
+        if (!me.hasPassword()) {
+          pageRead(req);
+          countSessions();
+          if (count?.state === "counted") return send(res, 200, { projects: count.projects, sessions: count.sessions });
+          if (count?.state === "failed") return send(res, 200, { projects: null, sessions: null });
+          return send(res, 202, { counting: true });
+        }
+        // After, to the signed-in owner: the import asked for at setup, running, done or stopped.
+        if (!signedIn(req, me) || importState === undefined) throw new ApiError("not_found", "no route /v2/setup/import");
+        return send(res, 200, importState);
       }
       case "/auth/sign-in": {
         fromPage(req);
@@ -1128,7 +1288,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const { issues, warnings } = await workflowIssues(body.workflow, body.tools as string[] | undefined);
         // What a save refuses on this host (a model node's tool, a code node where none runs), and what it lacks yet.
         if (!issues.length) {
-          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never, ...(body.tools ? { tools: body.tools as string[] } : {}) }, settings.get()).catch(() => [])) {
+          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never, ...(body.tools ? { tools: body.tools as string[] } : {}) }, settings.get(), { offers }).catch(() => [])) {
             if (blocker.host) warnings.push(blocker.message);
             else issues.push({ path: "", code: "NOT_RUNNABLE_HERE", message: blocker.message });
           }
@@ -1179,9 +1339,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const issues = settingsIssues(body);
         if (issues.length) throw invalid(issues);
         settings.put(body as ToolSettingsMap);
-        // The same recompute a key write makes (keysChanged): env and capabilities again, under these settings and the
-        // keys saved now, so neither write can leave the other's capabilities stale.
-        await keysChanged();
+        // A setting changes what the web tools resolve to, never env or what a harness offers: capabilities again.
+        recompose();
         return send(res, 200, withDefaults(settings.get()));
       }
       case "getWebhook":
@@ -1241,7 +1400,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
-    if (owner && (raw === "/v2/setup" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
+    if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}) })) return;
@@ -1249,9 +1408,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     route(req, res, url, raw.slice(3)).catch(fail);
   });
   const port = options.port ?? DEFAULT_PORT;
-  await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done()))).catch((error: Error) => {
-    throw error;
-  });
+  await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done())));
+  // Only a server that started takes up the import its owner asked for, or counts for setup's offer: one that failed to
+  // listen hands back no close to stop them.
+  if (offersImport && existsSync(importAsked)) void importAtSetup();
+  else if (offersImport && options.countSessions && owner && !owner.hasPassword()) countSessions();
   const address = server.address() as AddressInfo;
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...(options.allowHosts ?? [])].map((h) => `${h.toLowerCase()}:${address.port}`));
   // An address of every interface is reached on this machine at its loopback one.
@@ -1269,6 +1430,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
     async close() {
+      // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
+      // after close.
+      closing = true;
+      for (const worker of workers.keys()) worker.postMessage("stop");
+      await Promise.all([...workers.values()].map((w) => w.exit));
+      await importing;
       // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
       await runs.close();
       await webhooks.close();

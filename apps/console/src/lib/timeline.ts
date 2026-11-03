@@ -13,8 +13,9 @@ export function applyPage(held: TimelineRow[], page: TimelinePage): TimelineRow[
 
 /** One step of a run as a person reads it: a row, and what folds into it. `ms`: how long a tool took (its call to its
  *  result, or to its row's `ended_at`); `saved`: the file it saved; `times` and `until`: a failure repeated in a row,
- *  how many times and its last; `detail`: what opens under it (a tool's input, then its result). */
-export type Step = { row: TimelineRow; ms?: number; saved?: string; times?: number; until?: string; detail?: string | null };
+ *  how many times and its last; `detail`: what opens under it (a tool's input, then its result); `above`: a question
+ *  the page shows above the timeline while the run waits on it, so the step points there instead of saying it again. */
+export type Step = { row: TimelineRow; ms?: number; saved?: string; times?: number; until?: string; detail?: string | null; above?: boolean };
 
 /** A run's rows told as steps, from either of the server's shapes. An older server sends a call row, then its result
  *  row; one that serves one row per action (capabilities' `timeline.actions`) sends the call as its own row, changing in
