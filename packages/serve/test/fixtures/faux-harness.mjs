@@ -1,9 +1,14 @@
 // The faux harness's script for serve's tests: one action per paid request, across the session's turns, by what the
 // agent's instructions say. The script is read again at every open, so what a later process does can depend on a file.
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 
 /** An answer of 3,000 characters, longer than the 2,000 a run's summary keeps; its end says it was not cut. */
 export const LONG_ANSWER = `${"The long answer goes on. ".repeat(119)}The end.`;
+
+/** The faux harness's `{ cut: true }` (a request admitted, never answered) that writes `signal` the moment the request is
+ *  admitted: the faux adapter asks whether an action is a cut right after the request's beforeRequest has passed (and
+ *  asks "hang" and "halt" before it), so the file exists only once the session holds the request. */
+const cutSignalled = (signal) => new Proxy({ cut: true }, { has(target, key) { if (key === "cut") writeFileSync(signal, ""); return key in target; } });
 
 export function script(spec) {
   const text = spec.system.join("\n");
@@ -24,16 +29,18 @@ export function script(spec) {
   // A chat whose second turn has a request of unknown price.
   // A follow-up whose turn makes one request and shows nothing, as the Claude CLI's /compact does (a summary request, no
   // text): the turn ends with no answer row after the person's message.
-  // F1 (adversarial review of #1424): the turn's first request is admitted and cut before any content (the test then
-  // kills the process); the next process's open holds 2 s (after its booked-but-unwritten request is written, empty,
-  // before the recovered turn starts), then the recovered turn answers.
-  const relaunch = /Cut the first request; open slowly once (\S+) exists\./.exec(text)?.[1];
+  // F1 (adversarial review of #1424): the turn's first request is admitted and cut before any content; the test kills the
+  // process once the signal file says the request is admitted. The next process's open holds 2 s (after its booked but
+  // unwritten request is written, empty, and before the recovered turn starts), then the recovered turn answers.
+  const relaunch = /Cut the first request \(signal (\S+)\); open slowly once (\S+) exists\./.exec(text);
   if (relaunch) {
-    if (existsSync(relaunch)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
-    return [{ cut: true }, { say: "Recovered.", usd: 0.001 }];
+    if (!existsSync(relaunch[2])) return [cutSignalled(relaunch[1])];
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
+    return [{ say: "Recovered.", usd: 0.001 }];
   }
-  // F2: a request admitted and never answered: the turn holds until it is cancelled.
-  if (/Hold a request unanswered\./.test(text)) return [{ cut: true }];
+  // F2: a request admitted (the signal file says so) and never answered: the turn holds until it is cancelled.
+  const unanswered = /Hold a request unanswered \(signal (\S+)\)\./.exec(text)?.[1];
+  if (unanswered) return [cutSignalled(unanswered)];
   // The same, after an answer past the store's 2,000-character summary: the run's answer is the whole of it.
   if (/The second turn answers nothing, after a long answer\./.test(text)) return [{ say: LONG_ANSWER, usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
   if (/The second turn answers nothing\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];

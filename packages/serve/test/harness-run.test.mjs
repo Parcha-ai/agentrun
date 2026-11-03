@@ -3,7 +3,7 @@
 // one resumes the session.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -402,21 +402,22 @@ const emptyAfterMessage = (entries) => {
   const user = entries.findLastIndex((e) => e.kind === "pi.user");
   return entries.slice(user + 1).some((e) => e.kind === "pi.assistant" && e.model?.[0]?.api === "agentrun-adapter" && (e.model[0].content ?? []).length === 0);
 };
-/** While the run lives, nothing the API shows says a request is in flight (one alone makes no row): after the run reads
- *  working, the faux harness admits its first request at once; a second leaves it time. Each test then checks, from the
- *  store once the process is gone, that the request was admitted, so it never passes without the case it is about. */
-const admitted = async (api, runId) => {
-  await follow(api, runId, ["working"], { deadlineMs: 30_000 });
-  await new Promise((resolve) => setTimeout(resolve, 1_000));
+/** Until the faux harness has admitted its request: it writes `signal` the moment it does (cutSignalled). Nothing the API
+ *  shows says a request is in flight (one alone makes no row), and the run's store is its process's alone while it lives. */
+const admitted = async (signal) => {
+  for (const end = Date.now() + 60_000; !existsSync(signal); await new Promise((resolve) => setTimeout(resolve, 50))) {
+    assert.ok(Date.now() < end, `the faux harness never admitted the turn's first request (no ${signal} in 60 s)`);
+  }
 };
 
 test("a run relaunched after a crash cut its turn's first request completes only once the recovered turn answers, never while the new process opens", { timeout: 90_000 }, async (t) => {
   // Review F1: the reopen writes the cut request as an empty entry and then opens the session (2 s here) before the
   // recovered turn starts, with the door idle; that entry must not read as the turn's end.
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
-  const go = join(await scratch(t), "go");
-  const runId = await started(api, "relaunch-slow", `Cut the first request; open slowly once ${go} exists.`);
-  await admitted(api, runId);
+  const dir = await scratch(t);
+  const [go, signal] = [join(dir, "go"), join(dir, "admitted")];
+  const runId = await started(api, "relaunch-slow", `Cut the first request (signal ${signal}); open slowly once ${go} exists.`);
+  await admitted(signal);
   await writeFile(go, "");
   await killRun(data, runId);
   await completesOnlyAfter(api, runId, "Recovered.");
@@ -429,8 +430,9 @@ test("a run relaunched after a crash cut its turn's first request completes only
 test("a cancel of a turn that has shown nothing reads working, then cancelled: never completed on the way", { timeout: 90_000 }, async (t) => {
   // Review F2: the interrupted request is written as an empty entry and the turn ends; the cancel decides the run's end.
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
-  const runId = await started(api, "cancel-empty", "Hold a request unanswered.");
-  await admitted(api, runId);
+  const signal = join(await scratch(t), "admitted");
+  const runId = await started(api, "cancel-empty", `Hold a request unanswered (signal ${signal}).`);
+  await admitted(signal);
   assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
   const { pages } = await follow(api, runId, ["cancelled"], { deadlineMs: 55_000 });
   assert.deepEqual(pages.filter((page) => page.status === "completed").map((page) => page.status), [], `statuses: ${pages.map((page) => page.status).join(", ")}`);
