@@ -18,7 +18,7 @@ import { spawn } from "node:child_process";
 import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
-import { homeOf, writeDurable } from "./files.js";
+import { homeOf, serialBy, writeDurable } from "./files.js";
 import { INDEX_FILE, loadedIndex, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { isObject } from "./validate.js";
 
@@ -180,12 +180,7 @@ const queues = new Map<string, Promise<unknown>>();
 /** Runs `work` once every call queued before it on the agent's folder has finished: one at a time per agent, in this
  *  process. Everything that touches an agent's folder goes through it, so two runs made at once never both make it. */
 export function withAgentRepo<T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> {
-  const key = learningRepo(data, agentId);
-  const next = (queues.get(key) ?? Promise.resolve()).then(work, work);
-  const settled = next.catch(() => undefined);
-  queues.set(key, settled);
-  void settled.then(() => queues.get(key) === settled && queues.delete(key));
-  return next;
+  return serialBy(queues, learningRepo(data, agentId), work);
 }
 
 /** Main's commit, or undefined when there is no main yet: no repository, one whose `init` never finished, or one whose
@@ -323,6 +318,7 @@ export async function dropSeed(runDir: string, work: string): Promise<boolean> {
   const pinFile = join(runDir, LEARNING_PIN);
   const dir = join(work, LEARNED_DIR);
   const there = Boolean((await lstat(pinFile).catch(() => null)) ?? (await lstat(dir).catch(() => null)));
+  if (!there) return false;
   await rm(pinFile, { force: true });
   await rm(dir, { recursive: true, force: true });
   return there;
