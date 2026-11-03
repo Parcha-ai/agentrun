@@ -2,7 +2,7 @@
 // data directory (F20, F25). The rule is one for every place that shows a path: a host tool's error or write result
 // (host-tools.ts), and a timeline row's file (runs.ts, through the projector's `path` option).
 import { realpathSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 /**
  * `text` with the workspace's absolute path taken out: `<work>/notes/a.md` reads `notes/a.md`, the workspace itself `.`,
@@ -40,12 +40,23 @@ export const realOf = (path: string): string => {
   }
 };
 
-/** How a run's rows name a file path: relative to its workspace (`<run>/work`) when it is in the run's directory (`hello.md`,
- *  `../x`), and as given otherwise. The workspace as serve names it and as the kernel resolves it (a harness's CLI sends
- *  the resolved one: its working directory is `work/`). */
+/** How a run's rows name a file path, a whole path (never a text): one in the run's directory relative to its workspace
+ *  (`<run>/work`: `hello.md`, `.`, `../work 2024/a.md`, `..`), and any other path, or one that is not absolute, exactly
+ *  as given. Checked against the workspace as serve names it and as the kernel resolves it (a harness's CLI sends the
+ *  resolved one: its working directory is `work/`). By `path.relative`, segment by segment, so a sibling whose name
+ *  starts with `work` is never taken for it. Text, such as a tool's error, goes through `workspaceRelative`. */
 export function rowPaths(runDir: string): (path: string) => string {
   if (!isAbsolute(runDir)) return (path) => path;
   const work = join(runDir, "work");
-  const works = [work, realOf(work)];
-  return (path) => workspaceRelative(path, works);
+  const works = [...new Set([work, realOf(work)])];
+  /** Whether `rel`, a `path.relative`, stays inside its base: not `..`, not under `..`, not absolute (another root). */
+  const within = (rel: string) => rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+  return (path) => {
+    if (!isAbsolute(path)) return path;
+    for (const named of works) {
+      if (!within(relative(dirname(named), path))) continue;
+      return relative(named, path) || ".";
+    }
+    return path;
+  };
 }

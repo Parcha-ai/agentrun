@@ -13,17 +13,20 @@ function rowText(row: TimelineEvent): string {
   return row.kind === "text_block" ? `Agent: ${summary}` : row.kind === "final_answer" ? `Answer: ${summary}` : summary;
 }
 
-function foldEntry(fold: Fold): { text: string; status: string; reasons: Call[] } {
+/** How the text names a file path a call gave: the host's own name for it (`TimelineOptions.path`). */
+type PathName = { path?: (path: string) => string };
+
+function foldEntry(fold: Fold, options: PathName): { text: string; status: string; reasons: Call[] } {
   const [only] = fold.calls;
   if (fold.calls.length === 1 && only) return { text: only.use.summary ?? fold.tool, status: statusOf(only), reasons: statusOf(only) === "failed" ? [only] : [] };
   const counts = new Map<string, number>();
   for (const call of fold.calls) counts.set(statusOf(call), (counts.get(statusOf(call)) ?? 0) + 1);
   const status = [...counts].map(([name, count]) => `${count} ${name}`).join(", ");
-  const text = foldLabel(fold.tool, fold.calls.map((call) => ({ input: call.use.tool_input_preview, output: call.result?.tool_result_preview ?? null })));
+  const text = foldLabel(fold.tool, fold.calls.map((call) => ({ input: call.use.tool_input_preview, output: call.result?.tool_result_preview ?? null })), options);
   return { text, status, reasons: fold.calls.filter((call) => statusOf(call) === "failed") };
 }
 
-function linesOf(groups: readonly Group[], depth: number, fold: boolean): Line[] {
+function linesOf(groups: readonly Group[], depth: number, fold: boolean, options: PathName = {}): Line[] {
   const lines: Line[] = [];
   for (const group of groups) {
     if (group.type === "row") {
@@ -35,11 +38,11 @@ function linesOf(groups: readonly Group[], depth: number, fold: boolean): Line[]
     const nested = folds.length > 1;
     if (nested) lines.push({ at, depth, text: `Ran ${group.calls.length} tools` });
     for (const entry of folds) {
-      const { text, status, reasons } = foldEntry(entry);
+      const { text, status, reasons } = foldEntry(entry, options);
       const inner = nested ? depth + 1 : depth;
       lines.push({ at: nested ? undefined : at, depth: inner, text: `${text.padEnd(58)}  ${status}` });
       for (const call of reasons) lines.push({ depth: inner + 1, text: call.result?.summary ?? statusOf(call) });
-      for (const call of entry.calls) lines.push(...linesOf(call.inner, inner + 1, fold));
+      for (const call of entry.calls) lines.push(...linesOf(call.inner, inner + 1, fold, options));
     }
   }
   return lines;
@@ -48,9 +51,9 @@ function linesOf(groups: readonly Group[], depth: number, fold: boolean): Line[]
 const isRows = (input: readonly (TimelineEvent | Group)[]): input is readonly TimelineEvent[] => input.every((item) => "kind" in item);
 
 /** Plain text, one line per row or group: `HH:MM:SS  text`. `fold: false` shows every call on its own line. */
-export function renderText(input: readonly (TimelineEvent | Group)[], options: { fold?: boolean } = {}): string {
+export function renderText(input: readonly (TimelineEvent | Group)[], options: { fold?: boolean } & PathName = {}): string {
   const groups = isRows(input) ? groupTimeline(input) : (input as readonly Group[]);
-  return linesOf(groups, 0, options.fold !== false)
+  return linesOf(groups, 0, options.fold !== false, options)
     .map((line) => `${(line.at ?? "").padEnd(8)}  ${"  ".repeat(line.depth)}${line.text}`.trimEnd())
     .join("\n");
 }

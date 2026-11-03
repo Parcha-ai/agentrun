@@ -73,6 +73,21 @@ test("a host may name a call's file path its own way (path option): the tool row
   assert.deepEqual(timelineOf(entries()).filter((r) => r.kind === "tool_use").map((r) => r.summary), [`Wrote ${work}/hello.md`]);
 });
 
+test("folded calls take the host's path option too: two reads by absolute path read \"Read 2 files: a.md, b.md\"; without it, as before", () => {
+  const work = "/data/runs/r1/work";
+  const path = (p) => (p.startsWith(`${work}/`) ? p.slice(work.length + 1) : p);
+  const entries = () => [
+    assistant([call("r1", "read", { path: `${work}/a.md` }), call("r2", "read", { path: `${work}/b.md` })]),
+    result("r1", "read", "a"), result("r2", "read", "b"),
+    assistant([{ type: "text", text: "Read both." }]),
+  ];
+  const folded = (rows, options) => lines(rows, options).find((line) => /Read 2 files/.test(line)) ?? "";
+  assert.match(folded(timelineOf(entries(), { path }), { path }), /Read 2 files: a\.md, b\.md/);
+  assert.ok(folded(timelineOf(entries())).includes(`Read 2 files: ${work}/a.md, ${work}/b.md`), folded(timelineOf(entries())));
+  // The preview stays the call's own.
+  assert.equal(timelineOf(entries(), { path }).find((r) => r.kind === "tool_use").tool_input_preview, `${work}/a.md`);
+});
+
 test("a round of three browser_read folds to one line and shows its failure", () => {
   const rows = timelineOf([
     assistant([call("a", "browser_read"), call("b", "browser_read"), call("c", "browser_read")], 0),
