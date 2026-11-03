@@ -181,6 +181,8 @@ export default function reply(context, faux) {
   // the first answer, or as a follow-up's after an answer with text.
   if (first.includes("Answer only by thinking.") || last === "Now answer only by thinking.") return faux.message([faux.thinking("Nothing to add.")]);
   if (first.includes("Answer with no content.") || last === "Now answer with no content.") return faux.message([]);
+  // A stop at the length limit (the model's max output tokens): text and no tool call, as a first answer or a follow-up's.
+  if (first.includes("Answer until the length runs out.") || last === "Now answer until the length runs out.") return faux.message("Cut short: the length ran out", { stopReason: "length" });
   // One answer asks for two fetches (no such tool here, so both fail), then the turn stops with no text.
   if (first.includes("Fetch two pages at once and both fail")) {
     if (results === 0) return faux.message([faux.toolCall("web_fetch", { url: "http://a.example/" }), faux.toolCall("web_fetch", { url: "http://b.example/" })], { stopReason: "toolUse" });

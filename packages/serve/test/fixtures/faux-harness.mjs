@@ -90,6 +90,10 @@ export function script(spec) {
   // A cancel's race: an answer, then a request held unanswered (signal written when it is admitted): the answer's row is in, the turn not over.
   const after = /Answer, then hold a request unanswered \(signal (\S+)\)\./.exec(text)?.[1];
   if (after) return [{ say: "Done.", usd: 0.002 }, cutSignalled(after)];
+  // A turn held on a fetch until the file exists, so a follow-up waits its place; then each turn answers. A third turn
+  // answers too, so a follow-up sent twice shows.
+  const queuedBehind = /Queue a follow-up behind a turn held until (\S+)\./.exec(text)?.[1];
+  if (queuedBehind) return [{ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(queuedBehind)}` }, usd: 0.001 }, { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2, sent again.", usd: 0.001 }, { end: true, usd: 0.001 }];
   // The same with a cap: an answer under the cap, then a request held until the cancel cuts it, booked then at $0.002 (over it).
   const booked = /Answer, then hold a request the cancel cuts and books \(signal (\S+)\)\./.exec(text)?.[1];
   if (booked) return [{ say: "Done.", usd: 0.0005 }, cutBookedSignalled(booked, 0.002)];
