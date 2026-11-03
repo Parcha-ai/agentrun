@@ -9,8 +9,9 @@ const sha = (seed) => Array.from({ length: 8 }, (_, i) => ((Math.imul(seed + 1, 
 const fileName = (release, file) => `tool1.${release}.${file}.${OS[file % OS.length][0]}-${ARCH[file % ARCH.length][0]}.tar.gz`;
 
 /** A page of at least `chars` characters: `{ html, first, last }`, `first` and `last` the file names of its first and
- *  last rows. Each release's link to its notes carries `&amp;` in its query. */
-export function downloadsPage(chars) {
+ *  last rows. Each release's link to its notes carries `&amp;` in its query. `oneTable`: every release's rows in one
+ *  table, under one header (a listing of a single table, the shape whose parse is slowest), not a table each. */
+export function downloadsPage(chars, { oneTable = false } = {}) {
   const parts = [
     '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>All releases &amp; downloads</title>\n',
     "<script>window.dataLayer = window.dataLayer || []; function track(e) { dataLayer.push({ event: e, at: Date.now() }); }</script>\n",
@@ -20,19 +21,22 @@ export function downloadsPage(chars) {
   let size = parts.reduce((n, part) => n + part.length, 0);
   let first = null;
   let last = null;
+  const header = '<table class="downloadtable">\n<thead>\n<tr><th>File name</th><th>Kind</th><th>OS</th><th>Arch</th><th>Size</th><th>SHA256 Checksum</th></tr>\n</thead>\n';
+  if (oneTable) { parts.push(header, "<tbody>\n"); size += header.length + 8; }
   for (let release = 0; size < chars; release += 1) {
-    const rows = [`<div class="toggle" id="tool1.${release}">\n<h2>tool1.${release}</h2>\n<p><a href="/notes?release=${release}&amp;lang=en">Release notes</a></p>\n<table class="downloadtable">\n<thead>\n<tr><th>File name</th><th>Kind</th><th>OS</th><th>Arch</th><th>Size</th><th>SHA256 Checksum</th></tr>\n</thead>\n`];
+    const rows = oneTable ? [] : [`<div class="toggle" id="tool1.${release}">\n<h2>tool1.${release}</h2>\n<p><a href="/notes?release=${release}&amp;lang=en">Release notes</a></p>\n${header}`];
     for (let file = 0; file < 24; file += 1) {
       const name = fileName(release, file);
       first ??= name;
       last = name;
       rows.push(`<tr${file === 0 ? ' class="highlight"' : ""}>\n  <td class="filename"><a class="download" href="/dl/${name}">${name}</a></td>\n  <td>Archive</td>\n  <td>${OS[file % OS.length][1]}</td>\n  <td>${ARCH[file % ARCH.length][1]}</td>\n  <td>${60 + (file % 40)}MB</td>\n  <td><tt>${sha(release * 24 + file)}</tt></td>\n</tr>\n`);
     }
-    rows.push("</table>\n</div>\n");
+    if (!oneTable) rows.push("</table>\n</div>\n");
     const block = rows.join("");
     parts.push(block);
     size += block.length;
   }
+  if (oneTable) parts.push("</tbody>\n</table>\n");
   parts.push("</main>\n<footer><p>Footer</p></footer>\n</body>\n</html>\n");
   return { html: parts.join(""), first, last };
 }
