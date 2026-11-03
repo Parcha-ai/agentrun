@@ -2,9 +2,10 @@
 // the web, and what each resolves to on a run. A capability resolves in one order: (1) the provider the user picked, the
 // agent's own (`definition.tool_settings`) over the server's (`PUT /v2/settings/tools`), optional; (2) the native tool:
 // the harness's own (claude-agent's WebSearch), or on pi one request to the run's own model provider with its hosted
-// search (hosted-search.ts); (3) the kernel's keyless fallback: web_fetch's guarded direct fetch, and web_search on Exa's
-// public keyless MCP endpoint (exa-keyless.ts). Codex's own search on codex, keyless Exa behind a gateway or under a spend cap; `off` turns web_search off
-// unless Parallel is picked. web_search's default, `auto`, is that order; a pick of `native` is native only,
+// search (hosted-search.ts); (3) for web_search, Parallel where the server holds its key (env or saved, which then bills
+// it); (4) the kernel's keyless fallback: web_fetch's guarded direct fetch, and web_search on Exa's public keyless MCP
+// endpoint (exa-keyless.ts). Codex's own search on codex, Parallel or keyless Exa behind a gateway or under a spend cap;
+// `off` turns web_search off. web_search's default, `auto`, is that order; a pick of `native` is native only,
 // unavailable where there is none, never Exa. A grant names a capability, never a provider. A pick of parallel without
 // PARALLEL_API_KEY resolves unavailable, never to something else. The server resolves a run's tools at its first
 // launch, from its pinned revision and the settings then, keeps them for the run's life (runs.ts), and hands the run's
@@ -27,7 +28,7 @@ import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 /** The providers a user may pick for each capability that has a choice, its default first: `auto`, the native search
- *  where there is one, else keyless Exa; `native`, the harness's own tool or its model provider's hosted one, and
+ *  where there is one, else Parallel where the server holds its key, else keyless Exa; `native`, the harness's own tool or its model provider's hosted one, and
  *  nothing else; `exa-keyless`, Exa's public MCP endpoint, no key; `kernel`, the guarded direct fetch; `parallel`,
  *  Parallel's Search and Extract APIs on PARALLEL_API_KEY; `off`, web_search turned off: nothing is searched, and an
  *  agent naming it is refused until it is turned on again. */
@@ -83,11 +84,13 @@ export function resolveCapability(capability: Pickable, input: ResolveInput): Re
   // (no known hosted search) or under a spend cap (its request has no input bound, which a cap cannot admit); pi asks
   // Anthropic's or OpenAI's. Under a spend cap Claude's own search is not offered either: each search has a per-use fee
   // the cap cannot reserve yet (its request's bound holds the pages' input tokens, not the fees). Where there is none,
-  // `auto` falls back to keyless Exa and `native` is unavailable.
+  // `native` is unavailable, and `auto` goes to Parallel on the server's key (its fee booked and held by a cap, paid-calls.ts),
+  // else to keyless Exa.
   const vendor = input.model?.slice(0, Math.max(0, input.model.indexOf("/")));
   const none = input.harness === "claude-agent" ? (input.capped ? CLAUDE_CAPPED : undefined) : input.harness === "codex" ? (input.gateway ? "codex behind a gateway" : input.capped ? "codex under a spend cap" : undefined) : input.gateway ? `${input.harness} behind a gateway` : vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor) ? undefined : input.model ?? "a model with none named";
   if (none === undefined) return "native";
-  return chosen === "native" ? `unavailable: no native search for ${none}` : "exa-keyless";
+  if (chosen === "native") return `unavailable: no native search for ${none}`;
+  return input.parallelKey ? "parallel" : "exa-keyless";
 }
 
 export const isUnavailable = (resolution: Resolution | undefined): resolution is `unavailable: ${string}` => resolution?.startsWith("unavailable: ") === true;

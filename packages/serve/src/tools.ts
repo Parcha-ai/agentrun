@@ -205,7 +205,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   },
   [WEB_FETCH_TOOL]: webFetchEntry(WEB_FETCH_TOOL),
   [WEB_SEARCH_TOOL]: {
-    summary: "Search the web: the harness's own search, on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Exa's keyless search, or Parallel's Search API where Parallel is picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
+    summary: "Search the web: the harness's own search, on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Parallel's Search API where the server holds its key, else Exa's keyless search; or the provider picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
     needs: [],
     nodes: true,
     bind: async (host) => {
