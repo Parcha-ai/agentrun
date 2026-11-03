@@ -34,6 +34,7 @@ import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
+import { ADAPTER_API, TURN_END } from "./turn-end.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
 
@@ -229,8 +230,16 @@ function noteAnswer(run: Run, entries: readonly unknown[]): void {
     // answer has followed it yet.
     const first = Array.isArray(value.model) && isObject(value.model[0]) ? value.model[0] : undefined;
     if (value.kind === "agent.handover" || (first?.role === "user" && (value.kind === "pi.user" || !value.kind.startsWith("pi.")))) run.answeredMessage = false;
-    if (value.kind !== "pi.assistant" || !first) continue;
-    if (first.stopReason === "stop") run.answeredMessage = true;
+    // A claude-agent or codex turn's end (harness-app.ts): its turn took the message and answered it, if it completed.
+    if (value.kind === TURN_END) {
+      if (isObject(value.data) && value.data.status === "completed") run.answeredMessage = true;
+      continue;
+    }
+    if (value.kind !== "pi.assistant" || !first || first.stopReason !== "stop") continue;
+    // pi's own answer ends its turn (one commit with the run's end). The bridge's entries (api "agentrun-adapter") never
+    // say so: a request without content is written alike whether it is a cost, a cut, an interruption or an answer.
+    if (first.api !== ADAPTER_API) run.answeredMessage = true;
+    // The answer's text: an answer's (a stop with text), never commentary that came with a call.
     const content = first.content;
     const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "";
     if (text) run.answerText = text;
@@ -270,7 +279,7 @@ export function costView(rows: readonly TimelineEvent[], stored: number | null |
   return usage.usage?.usd ?? null;
 }
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
-const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text ?? null;
+const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer")?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
 const lastUserMessage = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "user_message")?.id;
 // A row's place in the store: its entry's id. The store mints conversation and entry ids from one counter, so entry ids
@@ -608,6 +617,8 @@ export class Runs {
     const cost = costOf(run.rows);
     if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, over its cap of $${cap}.`, retryable: false } };
     if (run.working || run.submitted > 0) return undefined;
+    // A cancel ends the run cancelled, by its settle (whatever the turn it cut wrote): nothing completes it meanwhile.
+    if (run.cancel) return undefined;
     const last = meaningful(run.rows);
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };

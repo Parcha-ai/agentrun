@@ -382,6 +382,68 @@ test("after a follow-up whose turn ends showing nothing, the run's answer is the
   assert.equal(await answer(client(two.baseUrl, two.token), runId), LONG_ANSWER, "and on the next server, read from the run's store");
 });
 
+/** Until the run's store holds `n` entries of `kind`. */
+async function untilStored(data, runId, kind, n = 1) {
+  for (let i = 0; storeCount(data, runId, kind) < n; i++) {
+    assert.ok(i < 300, `${kind} in the run's store`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+test("a run relaunched after a crash cut its turn's first request completes only once the recovered turn answers, never while the new process opens", { timeout: 90_000 }, async (t) => {
+  // Review F1: the reopen writes the cut request as an empty entry and then opens the session (2 s here) before the
+  // recovered turn starts, with the door idle; that entry must not read as the turn's end.
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const go = join(await scratch(t), "go");
+  const runId = await started(api, "relaunch-slow", `Cut the first request; open slowly once ${go} exists.`);
+  await untilStored(data, runId, "agentrun.request_started");
+  await writeFile(go, "");
+  await killRun(data, runId);
+  await completesOnlyAfter(api, runId, "Recovered.");
+  assert.equal(await answer(api, runId), "Recovered.");
+});
+
+test("a cancel of a turn that has shown nothing reads working, then cancelled: never completed on the way", { timeout: 90_000 }, async (t) => {
+  // Review F2: the interrupted request is written as an empty entry and the turn ends; the cancel decides the run's end.
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "cancel-empty", "Hold a request unanswered.");
+  await untilStored(data, runId, "agentrun.request_started");
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  const { pages } = await follow(api, runId, ["cancelled"], { deadlineMs: 55_000 });
+  assert.deepEqual(pages.filter((page) => page.status === "completed").map((page) => page.status), [], `statuses: ${pages.map((page) => page.status).join(", ")}`);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.status, "cancelled");
+});
+
+test("pi: after a stopped turn's commentary and a follow-up answered with nothing, the run's answer is the earlier answer, never the commentary, on this server and the next", { timeout: 120_000 }, async (t) => {
+  // Review F3: commentary that came with a call is no answer, though it is the run's newest text.
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let closed = false;
+  t.after(() => (closed ? undefined : one.close()));
+  const api = client(one.baseUrl, one.token);
+  assert.equal((await api("POST", "/agents", agent("reread", { tools: ["read"] }))).status, 201);
+  const run = await api("POST", "/agents/reread/runs", { input: { content: "Answer, reread, then compact." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(await answer(api, runId), "Report written.");
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Reread it." })).status, 202);
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "text_block" && /reread the report/.test(r.summary ?? "")); i++) {
+    assert.ok(i < 300, "the commentary and its call");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  await follow(api, runId, ["input_required"], { deadlineMs: 30_000 });
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(await answer(api, runId), "Report written.", "the earlier answer, not the stopped turn's commentary");
+  await one.close();
+  closed = true;
+  const two = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => two.close());
+  assert.equal(await answer(client(two.baseUrl, two.token), runId), "Report written.", "and on the next server, read from the run's store");
+});
+
 test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");

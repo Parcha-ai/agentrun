@@ -20,13 +20,14 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
-import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec } from "@parcha/agentrun-kernel";
+import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import type { CapGuard } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
+import { ADAPTER_API, TURN_END } from "./turn-end.js";
 import { REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
@@ -39,6 +40,10 @@ export const BOOKING_WAIT_MS = 2_000;
 /** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop. */
 export const MESSAGE = "adapter.message";
 export const MESSAGE_END = "adapter.message_end";
+/** A turn's end on the root (turn-end.ts), with the session's own outcome (`completed`, `interrupted`, `failed`): written
+ *  once its answer, its costs and any error are, before the door says the run is idle. The only record that a turn which
+ *  took the person's message is over: a request without content is written alike whether it ended the turn or not. */
+export { TURN_END } from "./turn-end.js";
 
 type ToolCall = { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
 type Pending = { request: number; usage: ModelUsage };
@@ -66,7 +71,7 @@ function tokensOf(usage: unknown): { input: number; output: number; cacheRead: n
  *  `error`: a turn that ended on an error, as pi's own reads (the cap's refusal is spend_cap_reached), at $0. */
 function assistantMessage(harness: string, model: string | undefined, request: Pending | undefined, text: string, calls: ToolCall[], error?: string) {
   if (error !== undefined) {
-    return { role: "assistant", content: [], api: "agentrun-adapter", provider: harness, model: harness, stopReason: "error", errorMessage: error, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+    return { role: "assistant", content: [], api: ADAPTER_API, provider: harness, model: harness, stopReason: "error", errorMessage: error, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   }
   const usage = request?.usage;
   const known = usage !== undefined && usage.usd !== null && usage.usd !== undefined;
@@ -74,7 +79,7 @@ function assistantMessage(harness: string, model: string | undefined, request: P
   return {
     role: "assistant",
     content: [...(text ? [{ type: "text", text }] : []), ...calls],
-    api: "agentrun-adapter",
+    api: ADAPTER_API,
     provider: harness,
     model: model ?? harness,
     usage: {
@@ -320,9 +325,11 @@ export function adapterRun(
       emit?.({ type: "run_start" });
       for (let start: (() => Promise<void>) | undefined = first; start; ) {
         let failed: string | undefined;
+        let status: TurnStatus = "failed";
         try {
           await start();
           const end = await session!.turnEnd();
+          status = end.status;
           if (end.status === "failed") failed = end.error ?? "the turn failed";
         } catch (error) {
           failed = String((error as Error)?.message ?? error);
@@ -336,6 +343,8 @@ export function adapterRun(
           const why = refused ?? halted?.message ?? (failed === undefined ? undefined : `${harness}: ${failed}`);
           refused = undefined;
           if (why !== undefined) await commit(async (tx) => void (await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] })));
+          // Last, and before run_end: a live server reads the turn over no later than it reads the run idle.
+          await commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, status: why === undefined ? status : "failed" } })));
         }
         const next = queue.shift();
         start = next === undefined ? undefined : sendOf(next);

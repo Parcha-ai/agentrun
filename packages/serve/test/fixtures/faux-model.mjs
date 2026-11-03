@@ -118,6 +118,13 @@ export default function reply(context, faux) {
     if (results === 0) return faux.message(faux.toolCall("write", { path: "a.md", content: "a" }), { stopReason: "toolUse" });
     return import("node:fs").then(({ writeFileSync }) => (writeFileSync(signalWait[1], ""), slow(faux, 60_000, "Done slowly.")));
   }
+  // Review F3: an answer; a follow-up whose turn says something with a call, then holds (the person stops it); a last
+  // follow-up answered with nothing (as a /compact is).
+  if (first.includes("Answer, reread, then compact.")) {
+    if (users.length === 1) return faux.message("Report written.");
+    if (users.length === 2) return results === 0 ? faux.message([faux.text("Let me reread the report first."), faux.toolCall("read", { path: "report.md" })], { stopReason: "toolUse" }) : slow(faux, 60_000, "Reread it.");
+    return faux.message("");
+  }
   // Holds its first answer until the file exists; the person's follow-up, placed at that answer's end with it, is
   // answered in a run of its own.
   const held = /Hold the answer until (\S+)\./.exec(first)?.[1];

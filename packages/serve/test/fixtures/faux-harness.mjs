@@ -24,6 +24,16 @@ export function script(spec) {
   // A chat whose second turn has a request of unknown price.
   // A follow-up whose turn makes one request and shows nothing, as the Claude CLI's /compact does (a summary request, no
   // text): the turn ends with no answer row after the person's message.
+  // F1 (adversarial review of #1424): the turn's first request is admitted and cut before any content (the test then
+  // kills the process); the next process's open holds 2 s (after its booked-but-unwritten request is written, empty,
+  // before the recovered turn starts), then the recovered turn answers.
+  const relaunch = /Cut the first request; open slowly once (\S+) exists\./.exec(text)?.[1];
+  if (relaunch) {
+    if (existsSync(relaunch)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
+    return [{ cut: true }, { say: "Recovered.", usd: 0.001 }];
+  }
+  // F2: a request admitted and never answered: the turn holds until it is cancelled.
+  if (/Hold a request unanswered\./.test(text)) return [{ cut: true }];
   // The same, after an answer past the store's 2,000-character summary: the run's answer is the whole of it.
   if (/The second turn answers nothing, after a long answer\./.test(text)) return [{ say: LONG_ANSWER, usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
   if (/The second turn answers nothing\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
