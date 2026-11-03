@@ -17,7 +17,7 @@ export function Wordmark() {
   return <span className="whitespace-nowrap font-mono text-[22px] font-semibold" aria-label="AgentRun">agent<span className="text-primary">.run()</span></span>;
 }
 
-/** The AgentRun shell: a 220px sidebar with the wordmark, the nav (the active item orange with a 2px inset bar),
+/** The AgentRun shell: a 220px sidebar with the wordmark, the nav (the active item has orange text and a tinted background),
  *  and sign out at its foot; under 700px a top bar with a menu that opens the nav. Settings shows only when `settings`
  *  (the server has a settings page to open). */
 export function Shell({ active, settings = true, agents = true, runs = true, onNavigate, onSignOut, extensions = [], activeExtension, onExtensionNavigate, children }: { active: Section; settings?: boolean; agents?: boolean; runs?: boolean; onNavigate?: (s: Section) => void; onSignOut?: () => void; extensions?: readonly { id: string; label: string; path: string }[]; activeExtension?: string; onExtensionNavigate?: (path: string) => void; children: ReactNode }) {
@@ -33,7 +33,7 @@ export function Shell({ active, settings = true, agents = true, runs = true, onN
         <nav aria-label="Navigation" className="flex flex-col gap-1">
           {NAV.filter((n) => (n.id !== "settings" || settings) && (n.id !== "agents" || agents) && (n.id !== "playground" || agents) && (n.id !== "runs" || runs)).map(({ id, label, Icon }) => (
             <button key={id} type="button" onClick={() => { onNavigate?.(id); setOpen(false); }} aria-current={!activeExtension && active === id ? "page" : undefined}
-              className={cn("flex items-center gap-2.5 p-3 text-left text-[13px] hover:bg-accent", !activeExtension && active === id && "bg-primary/[0.06] text-primary shadow-[inset_2px_0_hsl(var(--primary))]")}>
+              className={cn("flex items-center gap-2.5 p-3 text-left text-[13px] hover:bg-accent", !activeExtension && active === id && "bg-primary/[0.06] text-primary")}>
               <Icon className="size-4" aria-hidden /> {label}
             </button>
           ))}
