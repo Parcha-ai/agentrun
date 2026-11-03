@@ -929,6 +929,23 @@ carries no cost at all, as from a provider that does not price the model. The te
   backslash or a NUL is `400 invalid_file_path`; a segment that starts with `.` (the run's skills under `.agents/`) is
   `403 system_file_forbidden`; a symlink on the way is `404` (a write or a delete in a home through one, `403`). Every
   answer is `nosniff`, and HTML carries a CSP with `sandbox` and `default-src 'none'`.
+- The launcher hands the server every secret on its list that is set over one pipe, which holds 4,096 bytes for sure
+  before the server reads it: each set secret costs its name, its value and two bytes. Past that it refuses to start,
+  saying `the secrets come to N bytes, more than the 4096 a pipe is sure to hold`, and starts nothing. A long value adds up
+  fast (an AWS session token is often over 1,000 bytes): set only the keys the server needs where it starts.
+
+### Known gaps
+
+- The provider keys are checked against pi-ai when this package is tested, not derived when the server starts: the
+  launcher's list and `PROVIDER_KEYS` match pi-ai 1.1.0 to 1.3.0, the peer range. A pi-ai that reads a key neither
+  names would leave it in the server's environment and out of every run's, and a run on that provider would fail at
+  its start for want of the key.
+- The cut is by name alone. A variable named like no key whose value is one reaches a run's environment and is not cut
+  from what an import or a harness's log keeps: a URL with credentials (`DATABASE_URL=postgres://user:pass@host/db`,
+  `HTTPS_PROXY=http://user:pass@proxy`), headers that carry a token (`OTEL_EXPORTER_OTLP_HEADERS`), or a held key's
+  value under another name.
+- The 4,096-byte pipe limit stays until the launcher writes the pipe from a background subshell that blocks until the
+  server has read it.
 
 ## Test
 
