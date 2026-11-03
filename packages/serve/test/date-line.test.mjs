@@ -30,17 +30,18 @@ async function ran(api, id, harness) {
 
 test("pi, claude-agent and codex all get the same first line in their system prompt: today's date in UTC and where the workspace is, before the instructions", { timeout: 150_000 }, async (t) => {
   const { api } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
-  const before = dayOf(Date.now());
   const firsts = {};
+  const wanted = {};
   for (const harness of HARNESSES) {
+    // Each run's day, read before and after that run alone: one that crosses midnight (UTC) may say either day.
+    const before = dayOf(Date.now());
     const { prompt } = await ran(api, `dated-${harness}`, harness);
+    const after = dayOf(Date.now());
     assert.ok(prompt.includes("Answer the question."), `${harness}: the instructions are still there: ${prompt}`);
     firsts[harness] = prompt.split("\n")[0];
+    wanted[harness] = lineOf(firsts[harness] === lineOf(after) ? after : before);
   }
-  // Read again after the runs: a run that crossed midnight says the later day.
-  const after = dayOf(Date.now());
-  const today = HARNESSES.every((harness) => firsts[harness] === lineOf(after)) ? after : before;
-  assert.deepEqual(firsts, Object.fromEntries(HARNESSES.map((harness) => [harness, lineOf(today)])));
+  assert.deepEqual(firsts, wanted);
 });
 
 for (const harness of HARNESSES) {
