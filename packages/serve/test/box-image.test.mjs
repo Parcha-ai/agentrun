@@ -123,7 +123,7 @@ test("the default image is built on first use, once, from a private context dire
   assert.deepEqual({ ...build, context: undefined }, { tag: DEFAULT_DOCKER_IMAGE, labels: { [RECIPE_LABEL]: RECIPE_HASH }, context: undefined, mode: "700", files: ["Dockerfile"], recipe: BOX_RECIPE }, "of the recipe alone, in a 0700 directory, labelled with its hash");
   assert.ok(build.context.startsWith(`${process.env.TMPDIR ?? tmpdir()}/`) || build.context.startsWith(`${tmpdir()}/`), `under TMPDIR: ${build.context}`);
   assert.equal(existsSync(build.context), false, "the context directory is gone after the build");
-  assert.match(BOX_RECIPE, /^FROM python:3\.12-slim\n/);
+  assert.match(BOX_RECIPE, /^FROM python:3\.12-slim@sha256:[0-9a-f]{64}\n/, "the base pinned by its digest");
   assert.equal([...BOX_RECIPE.matchAll(/^FROM /gm)].length, 1, "one FROM, python:3.12-slim");
   assert.match(BOX_RECIPE, /apt-get install -y --no-install-recommends git curl ca-certificates/);
   assert.deepEqual(docker.calls().find((args) => args[0] === "build"), ["build", "--quiet", "--label", `${RECIPE_LABEL}=${RECIPE_HASH}`, "--tag", DEFAULT_DOCKER_IMAGE, build.context], "the context directory is the build's last argument, never stdin");

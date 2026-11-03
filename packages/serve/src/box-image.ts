@@ -27,10 +27,17 @@ import { BOX_KEYS, type BoxOffer } from "./boxes.js";
 export const DOCKER_IMAGE_ENV = "AGENTRUN_DOCKER_IMAGE";
 /** What the default image has, in words. */
 export const RECIPE_HAS = "python 3.12, git, curl";
+/** The base the default image builds from: `python:3.12-slim`, pinned to the multi-arch index digest Docker Hub served
+ *  for that tag on 2026-11-03, so a build gets the same base wherever it runs. To move it, read the tag's index digest
+ *  again (an anonymous pull token from auth.docker.io for `repository:library/python:pull`, then a HEAD of
+ *  registry-1.docker.io/v2/library/python/manifests/3.12-slim accepting an OCI index or a manifest list: its
+ *  `docker-content-digest`), and put it here. The recipe's hash changes with it, and so does the image's tag
+ *  (DEFAULT_DOCKER_IMAGE), so every server builds the new one at its next start. */
+export const BOX_BASE = "python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30";
 /** The default image's recipe: a Dockerfile that needs no other file, written alone into a private context directory for
  *  each build (buildContext). Its hash names the image. */
 export const BOX_RECIPE = [
-  "FROM python:3.12-slim",
+  `FROM ${BOX_BASE}`,
   "RUN apt-get update \\",
   " && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git curl ca-certificates \\",
   " && rm -rf /var/lib/apt/lists/*",

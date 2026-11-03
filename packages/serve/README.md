@@ -711,8 +711,11 @@ go through `work/` by path.
 
 ### The box's image
 
-A Docker box starts from this server's own image by default: `agentrun-box`, python 3.12 (`python:3.12-slim`) with git,
-curl and their certificates, about 200 MB. Its recipe is `BOX_RECIPE` in `src/box-image.ts`. The server builds it on
+A Docker box starts from this server's own image by default: `agentrun-box`, python 3.12 (`python:3.12-slim`, pinned by
+its digest) with git, curl and their certificates, about 200 MB. Its recipe is `BOX_RECIPE` in `src/box-image.ts`, its
+base `BOX_BASE` there. To move the base, read the tag's index digest again from Docker Hub (the comment beside it says
+how) and put it in `BOX_BASE`: the recipe's hash changes, and so does the image's tag, so the next start builds it. The
+server builds it on
 first use (`docker build`, at most 10 minutes, its context a private directory under `TMPDIR` holding the recipe alone
 as its `Dockerfile`, removed after), tags it with the recipe's hash (`agentrun-box:<12 hex>`) and labels it
 with the whole hash (`agentrun.box-image`), and builds again only when the recipe changes: a start that finds the image
