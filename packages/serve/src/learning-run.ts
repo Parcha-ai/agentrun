@@ -125,6 +125,45 @@ export function learningStats(rows: readonly RunRow[], filter: AnalyticsFilter, 
   return out;
 }
 
+/** One side of an agent's impact: how many runs, and their median run time and cost. */
+export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null };
+export type Impact = { before: ImpactSide; after: ImpactSide } | null;
+/** The middle of `values` (the mean of the two middle ones when there is an even count); undefined for none. */
+const median = (values: readonly number[]): number | undefined => {
+  if (!values.length) return undefined;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+};
+const sideOf = (rows: readonly RunRow[]): ImpactSide => {
+  const costs = rows.flatMap((row) => (typeof row.costUsd === "number" ? [row.costUsd] : []));
+  const cost = median(costs);
+  return {
+    runs: rows.length,
+    median_duration_s: Math.round(median(rows.map((row) => (Date.parse(row.endedAt!) - Date.parse(row.startedAt)) / 1000))! * 10) / 10,
+    median_cost_usd: cost === undefined ? null : Math.round(cost * 1e6) / 1e6,
+  };
+};
+/** What learning changed for an agent, from its run rows (`rows`) and what its runs' learning says (`learningOf`: how
+ *  many notes each run started from, and how its learning ended and when), never a run's files. `after`: its completed
+ *  agentic runs that started from at least one active note. `before`: its completed agentic runs that started before
+ *  its first note, the earlier of its first merge's end and the start of its first run that started from a note (a
+ *  person's note comes first that way); none of them could have. Each side's median run time (ended less started, in
+ *  seconds to a tenth, as the run's view shows them) and median cost (of the runs whose cost is known; null when none
+ *  is). An imported or archived run is on neither side, nor is a later one with learning off or seeded with no note
+ *  (every note retired). Null unless both sides hold 2 runs or more. */
+export function learningImpact(rows: readonly RunRow[], learningOf: (row: RunRow) => { state: string; at: string; seed_notes?: number } | null | undefined): Impact {
+  const done = rows.filter((row) => row.kind === "agentic" && !row.importedFrom && !row.archivedAt && row.state === "completed" && row.endedAt);
+  const after = done.filter((row) => (learningOf(row)?.seed_notes ?? 0) > 0);
+  const merges = rows.flatMap((row) => {
+    const learning = learningOf(row);
+    return learning?.state === "merged" ? [Date.parse(learning.at)] : [];
+  });
+  const first = Math.min(...merges, ...after.map((row) => Date.parse(row.startedAt)));
+  const before = done.filter((row) => Date.parse(row.startedAt) < first);
+  return before.length >= 2 && after.length >= 2 ? { before: sideOf(before), after: sideOf(after) } : null;
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
 /** A row of the run's that a person sees. Its rows never hold the reducer's quiet ones (runs.ts take). */
@@ -210,7 +249,7 @@ export class LearningRuns {
           failed = "What the agent learned could not be copied into the run, so it started with nothing learned.";
         }
       }
-      return failed === undefined ? { state: "seeded", reason: null, detail: null, at } : { state: "dropped", reason: "seed_failed", detail: failed, at };
+      return failed === undefined ? { state: "seeded", reason: null, detail: null, at, seed_notes: "seed" in seeded ? Object.keys(seeded.seed.notes).length : 0 } : { state: "dropped", reason: "seed_failed", detail: failed, at };
     };
   }
 
@@ -396,6 +435,19 @@ export class LearningRuns {
     return learningStats(rows, filter, (row) => this.heldLearning(row.id) ?? ledger.get(row.id) ?? null);
   }
 
+  /** Agent `agentId`'s runs (`rows`, its own) as its learning view counts them, the ledger read once: how they fared
+   *  (counts, less `runs`), and what learning changed (learningImpact), each run's learning from memory when the kernel
+   *  holds it, else its end from its ledger line; never a run's files. */
+  async ofAgent(rows: readonly RunRow[], agentId: string): Promise<{ counts: Omit<ReturnType<typeof learningStats>, "runs">; impact: Impact }> {
+    const ledger = await outcomes(this.options.agents.dir);
+    const learningOf = (row: RunRow) => {
+      const held = this.kernel.held(row.id);
+      return held ? (held.meta.learning ?? null) : (ledger.get(row.id) ?? null);
+    };
+    const { runs: _, ...counts } = learningStats(rows, { agent: agentId }, learningOf);
+    return { counts, impact: learningImpact(rows, learningOf) };
+  }
+
   // ---- the run's learning ---------------------------------------------------------------------------------------------
 
   /** What a run of `agentId` starts from: its learning folder's main (learning.ts), the folder made first when it is
@@ -417,8 +469,8 @@ export class LearningRuns {
   /** Moves the run's learning on, and shows its row. The notes the run read (`used`) stay with it, whatever its
    *  learning does after. Saved by the caller, or with the run's end. */
   private setLearning(run: Run, state: LearningState, reason: LearningReason | null = null, detail: string | null = null, more: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = {}): void {
-    const used = run.meta.learning?.used;
-    run.meta.learning = { state, reason, detail, at: new Date().toISOString(), ...(used ? { used } : {}), ...more };
+    const { used, seed_notes } = run.meta.learning ?? {};
+    run.meta.learning = { state, reason, detail, at: new Date().toISOString(), ...(used ? { used } : {}), ...(seed_notes === undefined ? {} : { seed_notes }), ...more };
     run.updatedAt = run.meta.learning.at;
     this.kernel.show(run);
   }

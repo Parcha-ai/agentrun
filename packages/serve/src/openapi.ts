@@ -252,6 +252,12 @@ const LEARNING_COUNTS = closed({
   dropped: { type: "object", additionalProperties: COUNT, propertyNames: { enum: [...LEARNING_REASONS] }, description: "By reason (Run.learning.reason): only reasons with one run or more." },
   in_progress: { ...COUNT, description: "Seeded, reflecting or proposed: runs this server holds." },
 }, "How the agent's runs that tried to learn fared, archived runs left out: GET /stats' `learning` with `agent`, less `runs`, counted as it counts them, from the runs this server holds and its learning ledger, no run's files opened.");
+/** One side of an agent's impact (learning-run.ts learningImpact). */
+const IMPACT_SIDE = (side: "before" | "after") => closed({
+  runs: { ...COUNT, description: side === "before" ? "The completed runs that started before the agent's first note." : "The completed runs that started from at least one active note." },
+  median_duration_s: { type: "number", minimum: 0, description: "Their median run time, ended less started as each run's row holds it (its end-of-run turn included), in seconds to a tenth." },
+  median_cost_usd: { type: ["number", "null"], minimum: 0, description: "The median cost of those whose cost is known, rounded to 1e-6; null when none is." },
+});
 const AGENT_LEARNING = closed({
   agent: { type: "string" },
   main: { ...NULL_STRING, description: "Main's head commit; null while the agent has no learning folder (its learning was never on), when every page is empty." },
@@ -259,6 +265,11 @@ const AGENT_LEARNING = closed({
   notes: PAGE(LEARNING_NOTE, "The first 50 notes: active first, then by their newest change, newest first. GET .../learning/notes for more."),
   log: PAGE(LEARNING_CHANGE, "The first 20 changes on main, newest first. GET .../learning/log for more."),
   counts: LEARNING_COUNTS,
+  impact: {
+    oneOf: [closed({ before: IMPACT_SIDE("before"), after: IMPACT_SIDE("after") }), { type: "null" }],
+    description: "What learning changed for the agent: its completed agentic runs that started from at least one active note (`after`) against those that started before its first note (`before`: before the earlier of its first merge and the start of its first run that started from a note, so a person's first note counts too). A later run with learning off, or seeded with no note (every note retired), an imported and an archived run are on neither side. Null unless both sides count 2 runs or more: say it \"on N runs\", N `after.runs`. Read from the runs' rows and the learning ledger, no run's files opened.",
+    "x-agentrun-serve": "learning/2",
+  },
 });
 const PROBLEM = { type: "object", additionalProperties: false, required: ["rule", "detail"], properties: { rule: { type: "string" }, path: { type: "string" }, detail: { type: "string" } } };
 const VERDICT_ITEM = {

@@ -1156,9 +1156,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "getAgentLearning": {
         await needAgent(id);
         const rows = await agents.request(() => agents.store.listRuns({ agent: id }));
-        // Counted as GET /stats counts (learning-run.ts counts): a held run from memory, any other's end from the ledger.
-        const { runs: _, ...counts } = await runs.learning.counts(rows, { agent: id });
-        return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts));
+        // Counted as GET /stats counts (learning-run.ts counts): a held run from memory, any other's end from the ledger;
+        // what learning changed, from the same rows and ledger (learningImpact).
+        const { counts, impact } = await runs.learning.ofAgent(rows, id);
+        return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts, impact));
       }
       case "listLearningNotes":
       case "listLearningLog":

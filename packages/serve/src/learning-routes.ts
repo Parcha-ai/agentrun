@@ -22,6 +22,7 @@ import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote,
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
 import { agentFolder, checkOut, git, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, type Shown, withAgentRepo } from "./learning.js";
+import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
 
@@ -213,14 +214,15 @@ async function pageRequest(home: string, repo: string, query: URLSearchParams, f
   return { limit, at: { sha: named[1]!, offset: Number(named[2]) } };
 }
 
-/** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and the runs' counts; an
- *  agent with no folder (its learning never on) has an empty one. */
-export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts) {
+/** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and how the agent's runs
+ *  fared and what learning changed for them (`counts`, `impact`: learning-run.ts, from the runs' rows and the learning
+ *  ledger); an agent with no folder (its learning never on) has an empty one. */
+export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts, impact: Impact) {
   const { home, repo } = await placeOf(data, agentId);
   const sha = await mainOf(home, repo);
-  if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, log: EMPTY, counts };
+  if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, log: EMPTY, counts, impact };
   const [{ index, notes }, log] = await Promise.all([notesAt(home, repo, sha), logPage(home, repo, sha, 0, LOG_PAGE, shown)]);
-  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => noteView(note, shown)), log, counts };
+  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => noteView(note, shown)), log, counts, impact };
 }
 
 /** GET /agents/{id}/learning/notes?cursor=&limit=&status=: a page of the notes, ordered as the view's, from what the
