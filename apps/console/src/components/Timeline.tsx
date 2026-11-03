@@ -13,15 +13,16 @@ const ICON: Record<string, typeof Brain> = {
 };
 
 /** A line's own Markdown, bold (`**…**`) and code (`` `…` ``) only, as elements; the rest stays text (React escapes it,
- *  so no HTML gets through), and a mark with no partner stays as typed. `__…__` is not bold here: a step names files
- *  like `__init__.py`. */
+ *  so no HTML gets through), and a mark with no partner stays as typed. Code inside bold is code; bold inside code is
+ *  as typed. `__…__` is not bold here: a step names files like `__init__.py`. */
 function inline(text: string): ReactNode {
   const parts = text.split(/(\*\*[^*\n]+?\*\*|`[^`\n]+`)/);
   if (parts.length === 1) return text;
   return parts.map((p, i) =>
     i % 2 === 0 ? p
       : p.startsWith("`") ? <code key={i} className="font-mono text-[0.9em]">{p.slice(1, -1)}</code>
-      : <strong key={i} className="font-semibold">{p.slice(2, -2)}</strong>);
+      // A command inside bold is code there too (a model's heading, **Run `npm test` first**); bold can't nest in bold.
+      : <strong key={i} className="font-semibold">{inline(p.slice(2, -2))}</strong>);
 }
 
 /** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: "), its bold and code shown as

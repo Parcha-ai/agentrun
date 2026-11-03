@@ -31,6 +31,16 @@ describe("Timeline, a step's words", () => {
     expect(h).not.toContain("`");
   });
 
+  it("shows a command inside bold as code too, and bold inside a command as typed", () => {
+    const h = html([
+      row({ kind: "thinking", summary: "Thinking: **Run `python3 -m unittest` first**", tool_status: null }),
+      row({ tool_name: "bash", summary: "Ran `grep -n '**' notes.md`" }),
+    ]);
+    expect(h).toMatch(/<strong[^>]*>Run <code[^>]*>python3 -m unittest<\/code> first<\/strong>/);
+    expect(h).toMatch(/Ran <code[^>]*>grep -n &#x27;\*\*&#x27; notes.md<\/code>/);
+    expect(h).not.toContain("`");
+  });
+
   it("leaves everything else as text: HTML stays text, and a name with underscores keeps them", () => {
     const h = html([
       row({ tool_name: "write", summary: "Wrote pkg/__init__.py", path: "pkg/__init__.py" }),
