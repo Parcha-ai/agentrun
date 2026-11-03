@@ -42,7 +42,7 @@ test("a message sent while a stop is in flight is taken after the stop: the run 
   assert.deepEqual(rows.filter((row) => row.kind === "user_message").map((row) => row.summary), ["You: Take your time.", "You: Go on."]);
 });
 
-test("a message that began before a stop, and was waiting on the agent store when the stop came, is taken after the stop", { timeout: 600_000 }, async (t) => {
+test("a message that began before a stop, and was waiting on the agent store when the stop came, is taken after the stop", { timeout: 180_000 }, async (t) => {
   // The stop's seam, given a fresh hold by each attempt below.
   let hold;
   const { api, data } = await serve(t, { beforeAbort: () => hold?.() });
@@ -56,13 +56,13 @@ test("a message that began before a stop, and was waiting on the agent store whe
     const held = new Promise((resolve) => (release = resolve));
     hold = async () => { reached(); await held; };
     const { run_id } = await startRun(api, `slow-${n}`, "Take your time.");
-    for (const end = Date.now() + 60_000; ; await sleep(50)) {
+    for (const end = Date.now() + 30_000; ; await sleep(50)) {
       const { status, state } = (await api("GET", `/runs/${run_id}`)).body;
       if (status === "working" && state === "working") break;
       assert.ok(Date.now() < end, `the run works: last ${status}/${state}`);
     }
-    // The agent store held exclusively (no read gets through): the run's first message reads its harness from the store
-    // (its revision, once per run), so it waits there, past its first look for a stop, while the store is held.
+    // The agent store held exclusively (no read gets through): a message to a working run reads its harness from the
+    // store (its revision, once per run), so it waits there, past its first look for a stop, while the store is held.
     store.exec("BEGIN EXCLUSIVE");
     // The same message twice under one Idempotency-Key: one runs, and the other is answered 409 in progress only once the
     // first is inside its work, which reaches the store read without awaiting anything before it.
@@ -81,15 +81,16 @@ test("a message that began before a stop, and was waiting on the agent store whe
     const stopping = api("POST", `/runs/${run_id}/stop`).then((res) => (order.push("stop"), res));
     await atAbort;
     store.exec("ROLLBACK");
-    // Without the second look the message goes on here, while the stop is held, to the turn the abort will cut.
-    await Promise.race([sending, sleep(2_000)]);
+    // Without the second look the message goes on here, while the stop is held, to the turn the abort will cut. Its store
+    // read, let go, goes through at its next try, at most 600 ms on (REQUEST_BUSY_MS's longest step): a second covers it.
+    await Promise.race([sending, sleep(1_000)]);
     release();
     const [stop, sent] = await Promise.all([stopping, sending]);
     assert.equal(stop.body.stopped, true, JSON.stringify(stop.body));
     if (sent.status === 409 && sent.body.error?.code === "home_busy") return null;
     assert.deepEqual(order, ["stop", "message"], "the message looks for the stop again after its waits");
     assert.deepEqual([sent.status, sent.body.mode], [202, "follow_up"], JSON.stringify(sent.body));
-    const { rows, last } = await follow(api, run_id, ["completed"], { deadlineMs: 120_000 });
+    const { rows, last } = await follow(api, run_id, ["completed"]);
     assert.equal(last.final, true);
     assert.deepEqual(rows.filter((row) => row.kind === "user_message").map((row) => row.summary), ["You: Take your time.", "You: Go on."]);
     return run_id;
