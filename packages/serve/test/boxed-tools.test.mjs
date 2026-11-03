@@ -19,9 +19,11 @@ const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const NO_SHELL = "<harness>\n[error] Tool bash is not available\n</harness>";
-// Values planted in the server's environment, each one no box may hold: an unnamed key, a model key and a tool key.
+// Values planted in the server's environment, each one no box may hold: an unnamed key, OpenAI's, and the four keys a
+// tester runs everything with: OpenRouter's (which a harness may be handed under another name), Monid's, Parallel's and
+// Browserbase's. A box is searched for each value, so a key handed on under any name is found.
 const planted = (name) => `planted-${name}-sentinel`;
-const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("model"), MONID_API_KEY: planted("tool") };
+const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("openai"), OPENROUTER_API_KEY: planted("openrouter"), MONID_API_KEY: planted("monid"), PARALLEL_API_KEY: planted("parallel"), BROWSERBASE_API_KEY: planted("browserbase") };
 const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 // What a shell adds to its own environment, and what pi-transport's local box adds (its marker and private TMPDIR).
 const SHELL_OWN = ["OLDPWD", "PWD", "SHLVL", "_"];
