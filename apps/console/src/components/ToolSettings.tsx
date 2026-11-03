@@ -96,7 +96,10 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, value
           // capabilities', for the server's provider on each harness with the server's default model. A change of any of
           // them resolves once saved.
           const own = (value[t.name]?.provider ?? null) !== (saved[t.name]?.provider ?? null);
-          const known = agent?.tools?.find((x) => x.name === t.name)?.resolved;
+          // The agent's word holds only for the provider it was read for, the one the select shows: a server pick changed
+          // since capabilities were read (another tab) leaves capabilities' word, which goes with the select.
+          const read = agent?.tools?.find((x) => x.name === t.name);
+          const known = read && read.provider === (value[t.name]?.provider ?? t.provider) ? read.resolved : undefined;
           const savedModel = (model ?? "") === ((agent?.definition.model as string | undefined) ?? "");
           if (!own && harness === (agent?.definition.harness ?? "pi") && savedModel && known) return <Resolves value={known} prefix={`${harness}: `} />;
           if (!own && !saved[t.name] && !model) return <Resolves value={t.resolves[harness]} prefix={`${harness}: `} />;

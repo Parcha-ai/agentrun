@@ -68,6 +68,9 @@ export type ResolveInput = {
   capped?: boolean;
 };
 
+/** Why claude-agent has no native search under a spend cap, and what works there instead. */
+const CLAUDE_CAPPED = "claude-agent under a spend cap: Claude's own search has per-use fees a spend cap cannot reserve yet, so web_search works under a cap through the default provider, auto";
+
 /** What `capability` resolves to on a run of `input`. */
 export function resolveCapability(capability: Pickable, input: ResolveInput): Resolution {
   const chosen = input.override ?? input.pick ?? PROVIDERS[capability][0];
@@ -78,9 +81,11 @@ export function resolveCapability(capability: Pickable, input: ResolveInput): Re
   // Native, where there is one. Claude's model goes to Anthropic's Messages API (or its own ANTHROPIC_BASE_URL), never
   // through the other harnesses' gateway; Codex's own search goes to OpenAI with its request, except behind a gateway
   // (no known hosted search) or under a spend cap (its request has no input bound, which a cap cannot admit); pi asks
-  // Anthropic's or OpenAI's. Where there is none, `auto` falls back to keyless Exa and `native` is unavailable.
+  // Anthropic's or OpenAI's. Under a spend cap Claude's own search is not offered either: each search has a per-use fee
+  // the cap cannot reserve yet (its request's bound holds the pages' input tokens, not the fees). Where there is none,
+  // `auto` falls back to keyless Exa and `native` is unavailable.
   const vendor = input.model?.slice(0, Math.max(0, input.model.indexOf("/")));
-  const none = input.harness === "claude-agent" ? undefined : input.harness === "codex" ? (input.gateway ? "codex behind a gateway" : input.capped ? "codex under a spend cap" : undefined) : input.gateway ? `${input.harness} behind a gateway` : vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor) ? undefined : input.model ?? "a model with none named";
+  const none = input.harness === "claude-agent" ? (input.capped ? CLAUDE_CAPPED : undefined) : input.harness === "codex" ? (input.gateway ? "codex behind a gateway" : input.capped ? "codex under a spend cap" : undefined) : input.gateway ? `${input.harness} behind a gateway` : vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor) ? undefined : input.model ?? "a model with none named";
   if (none === undefined) return "native";
   return chosen === "native" ? `unavailable: no native search for ${none}` : "exa-keyless";
 }

@@ -163,15 +163,16 @@ describe("all", () => {
     assert.equal(lastLine(thrown.lines), "not ok: sweep: it did not finish, so what is left is unknown");
   });
 
-  it("as a command: without the key the last line is the preflight refusal, and a held lock refuses a second run", async () => {
+  it("as a command: without the key the last line is the preflight refusal, and a held lock refuses a second run, its holder leaving nothing behind", async () => {
     const dir = scratchRoot("live-ci-command");
     try {
       const lock = join(dir.root, "pda-live.lock");
       const r = ci(["all"], { PDA_STATE_DIR: join(dir.root, "state"), PDA_LIVE_LOCK: lock });
       assert.equal(r.status, 1, r.stderr);
       assert.equal(lastLine(r.stdout.trimEnd().split("\n")), "not ok: preflight: ARCHIL_API_KEY is not set; PDA_LIVE_DISK is not set");
-      // Another run holds the lock: this one refuses before anything else.
-      const holder = spawn("flock", [lock, "sleep", "30"], { stdio: "ignore" });
+      // Another run holds the lock: this one refuses before anything else. --no-fork: flock runs the sleep in its own
+      // process, so the process killed below is the one holding the lock, with no child left holding it.
+      const holder = spawn("flock", ["--no-fork", lock, "sleep", "30"], { stdio: "ignore" });
       try {
         for (let i = 0; i < 100 && spawnSync("flock", ["-n", lock, "true"]).status === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20));
         const held = ci(["all"], { PDA_STATE_DIR: join(dir.root, "state"), PDA_LIVE_LOCK: lock });
@@ -180,6 +181,12 @@ describe("all", () => {
       } finally {
         holder.kill("SIGKILL");
       }
+      // The holder leaves nothing behind: once it has gone the lock is free again, with no process it started still
+      // holding the lock's descriptor past the test.
+      if (holder.exitCode === null && holder.signalCode === null) await new Promise((resolve) => holder.once("exit", resolve));
+      let free = false;
+      for (let i = 0; i < 100 && !(free = spawnSync("flock", ["-n", lock, "true"]).status === 0); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.ok(free, "the lock is free once its holder is killed: nothing it started still holds it");
     } finally {
       dir.remove();
     }
