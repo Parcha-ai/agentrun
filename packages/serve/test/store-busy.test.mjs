@@ -351,3 +351,28 @@ test("a follow-up to a stopped run is taken while another connection holds the a
   const { rows } = await follow(api, run_id, ["completed"]);
   assert.deepEqual(rows.filter((row) => row.kind === "user_message").map((row) => row.summary), ["You: Take your time.", "You: Go on."], "it ran, once");
 });
+
+test("a run's start is answered 202 even when the agent store turns busy right after the run is written; taken or refused, never both", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("starter"))).status, 201);
+  // In this process the agent store reads and writes through node:sqlite. From the moment the run's row is written, the
+  // store's read of one run (readRun) finds it busy for 3 s, longer than a request waits (about 2 s), as a store another
+  // connection took right then would be. Everything before that goes through, the run's own writes among it.
+  const prepare = DatabaseSync.prototype.prepare;
+  let busyUntil = 0;
+  DatabaseSync.prototype.prepare = function (sql, ...rest) {
+    if (/^INSERT INTO runs /.test(sql)) busyUntil = Date.now() + 3_000;
+    if (Date.now() < busyUntil && /FROM runs r JOIN agents a /.test(sql) && /WHERE r\.id = :id/.test(sql)) throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
+    return prepare.call(this, sql, ...rest);
+  };
+  t.after(() => (DatabaseSync.prototype.prepare = prepare));
+  const started = await api("POST", "/agents/starter/runs", { input: { content: "What is six times seven?" } });
+  while (Date.now() < busyUntil) await sleep(100);
+  DatabaseSync.prototype.prepare = prepare;
+  // Taken or refused, never both: a refusal for a run that started anyway invites a retry that starts a second one.
+  const runs = (await api("GET", "/agents/starter/runs")).body.runs;
+  assert.equal(runs.length === 1, started.status === 202, `answered ${started.status} ${started.body.error?.code ?? ""}, and ${runs.length} run(s) started: taken or refused, never both`);
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.equal(runs.length, 1, "one run");
+  await follow(api, started.body.run_id, ["completed"]);
+});
