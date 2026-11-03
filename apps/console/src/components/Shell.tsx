@@ -1,7 +1,7 @@
 import { Bot, History, LayoutDashboard, LogOut, Menu, Monitor, Moon, Settings, Sun, Terminal } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { cn } from "@/lib/utils";
-import { applyTheme, savedTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
+import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
 export type Section = "mission" | "playground" | "agents" | "runs" | "settings";
 
@@ -18,7 +18,8 @@ const THEME_LABEL: Record<Theme, [string, typeof Bot]> = { system: ["System", Mo
 
 /** System (the OS's), Light or Dark: a pick shows at once and is kept in this browser (lib/theme). */
 function ThemeSwitch() {
-  const [theme, setTheme] = useState<Theme>(savedTheme);
+  // The pick in force: kept in this browser, or held on this page when the storage refused it.
+  const [theme, setTheme] = useState<Theme>(() => currentTheme());
   const pick = (t: Theme) => { saveTheme(t); applyTheme(t); setTheme(t); };
   return (
     <div role="group" aria-label="Theme" className="flex border">

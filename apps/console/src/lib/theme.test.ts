@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { applyTheme, followTheme, savedTheme, saveTheme, THEME_KEY } from "./theme";
+import { applyTheme, currentTheme, followTheme, savedTheme, saveTheme, THEME_KEY } from "./theme";
 import html from "../../index.html?raw";
 // (The stylesheet is not read here: this test runner gives a CSS import as an empty string.)
 
@@ -18,7 +18,8 @@ function scheme(dark: boolean) {
 }
 const shown = () => [...document.documentElement.classList];
 
-afterEach(() => { document.documentElement.className = ""; });
+// A pick a refusing storage could not keep stays held on the page (in the module): each test starts from none.
+afterEach(() => { document.documentElement.className = ""; saveTheme("system", memory()); });
 
 describe("the theme", () => {
   it("is the OS's until the person picks one; a pick is kept per browser, and System forgets it", () => {
@@ -71,6 +72,26 @@ describe("the theme", () => {
     expect(shown()).toEqual(["light"]);
     stop();
     expect(os.on.size).toBe(0);
+  });
+});
+
+describe("a pick this browser can't keep (storage refused)", () => {
+  it("stays the pick for this page: an OS change never replaces it, and the switch reads it back", () => {
+    const refusing = { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); }, removeItem: () => { throw new Error("denied"); } };
+    const os = scheme(false), el = document.documentElement;
+    const stop = followTheme(el, os, refusing);
+    saveTheme("dark", refusing);
+    applyTheme("dark", el, os);
+    os.set(true);
+    os.set(false);
+    expect(shown()).toEqual(["dark"]);
+    expect(currentTheme(refusing)).toBe("dark");
+    saveTheme("system", refusing);
+    os.set(true);
+    expect(shown()).toEqual(["dark"]);
+    os.set(false);
+    expect(shown()).toEqual(["light"]);
+    stop();
   });
 });
 

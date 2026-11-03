@@ -12,6 +12,9 @@ type Media = { matches: boolean; addEventListener(type: "change", f: () => void)
 const local = (): Store | null => { try { return globalThis.localStorage ?? null; } catch { return null; } };
 const os = (): Media | null => (typeof globalThis.matchMedia === "function" ? globalThis.matchMedia(DARK_OS) : null);
 
+// A pick made on this page that the storage refused to keep: it still holds here, for an OS change and the switch.
+let unkept: Theme | null = null;
+
 /** The pick this browser kept; anything else, or a storage that refuses (a private window), is the OS's. */
 export function savedTheme(store: Store | null = local()): Theme {
   try {
@@ -20,9 +23,14 @@ export function savedTheme(store: Store | null = local()): Theme {
   } catch { return "system"; }
 }
 
-/** Keeps the pick in this browser; System forgets it. A storage that refuses keeps nothing, and the pick still shows. */
+/** The pick in force on this page: one made here that the storage could not keep, else the one this browser kept. */
+export const currentTheme = (store: Store | null = local()): Theme => unkept ?? savedTheme(store);
+
+/** Keeps the pick for this page and in this browser; System forgets it. A storage that refuses keeps nothing, and the
+ *  pick still holds on this page. */
 export function saveTheme(t: Theme, store: Store | null = local()) {
-  try { if (t === "system") store?.removeItem(THEME_KEY); else store?.setItem(THEME_KEY, t); } catch { /* not kept */ }
+  unkept = null;
+  try { if (t === "system") store?.removeItem(THEME_KEY); else store?.setItem(THEME_KEY, t); } catch { unkept = t; }
 }
 
 /** Puts what shows on <html>: the pick, or for System the OS's scheme now. */
@@ -34,8 +42,8 @@ export function applyTheme(t: Theme, html: HTMLElement = document.documentElemen
 
 /** Shows the kept pick now, and follows the OS as it changes while the pick is System. Returns its unsubscribe. */
 export function followTheme(html: HTMLElement = document.documentElement, media: Media | null = os(), store: Store | null = local()) {
-  applyTheme(savedTheme(store), html, media);
-  const on = () => { const t = savedTheme(store); if (t === "system") applyTheme(t, html, media); };
+  applyTheme(currentTheme(store), html, media);
+  const on = () => { if (currentTheme(store) === "system") applyTheme("system", html, media); };
   media?.addEventListener("change", on);
   return () => media?.removeEventListener("change", on);
 }
