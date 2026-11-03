@@ -16,6 +16,7 @@
 // Model spend is accounted only there, by the runner: the proxy keeps no ledger of its own.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
+import type { RequestReasoning } from "../types.js";
 
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
 export interface ProxyRoute {
@@ -36,6 +37,8 @@ export interface ProxyUsage {
   output: number;
   cacheRead: number;
   cacheWrite?: number;
+  /** Of `output`, the tokens the model spent thinking, when the response reports them. */
+  thinking?: number;
 }
 
 /** What one provider's API may carry through the proxy. */
@@ -69,6 +72,9 @@ export interface ProviderPolicy {
    *  smaller one for a client's background calls). The runner is asked about, and the price taken for, that model.
    *  Absent, or undefined for a body: the session's model. */
   modelOf?(body: Record<string, unknown>): string | undefined;
+  /** How the body `apply` returned asks the model to reason (its effort, its thinking mode), handed to the runner with
+   *  the request so a host can say it. Absent, or empty for a body: not said. */
+  reasoningOf?(body: Record<string, unknown>): RequestReasoning | undefined;
   /** The input tokens the provider bills for the body `apply` returned that the body does not carry: a prompt it adds
    *  itself, such as a tool-use system prompt. Added to the body's bytes for `inputTokensMax`. Undefined: the body has
    *  no input bound the policy can state (a hosted tool that reads pages into the input), so `inputTokensMax` is
@@ -93,7 +99,7 @@ export interface ModelProxyHooks {
   /** Before a paid request leaves; a throw refuses it. What it returns (a ticket) is handed back to this request's
    *  `afterRequest`, since requests may be in flight together. `inputTokensMax` is the most input tokens it can be
    *  billed for (see `inputTokensMaxOf`), undefined when that could not be measured. */
-  beforeRequest(request: { model: string; inputTokensMax?: number }): Promise<unknown>;
+  beforeRequest(request: { model: string; inputTokensMax?: number; reasoning?: RequestReasoning }): Promise<unknown>;
   /** When a request's response has completed, with its usage and the ticket its `beforeRequest` returned. */
   afterRequest(usage: ModelUsageReport, ticket?: unknown): Promise<void>;
   /** When a paid request's response headers arrive, before its body: the ids they give it (`providerIdsOf`), so a
@@ -394,6 +400,14 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } catch (error) {
       say(`model proxy (${policy.id}): the policy could not name the request's model; it is booked as the session's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
+    // How it asks the model to reason, as the policy reads it from the same body: told to the runner with the request.
+    let reasoning: RequestReasoning | undefined;
+    try {
+      const read = policy.reasoningOf?.(body);
+      if (read && Object.keys(read).length) reasoning = read;
+    } catch (error) {
+      say(`model proxy (${policy.id}): the policy could not read the request's reasoning; it is asked about without it`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    }
     // The body as it is sent, and the most input tokens it can be billed for, measured before the runner is asked.
     let sent: string;
     try {
@@ -429,7 +443,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
     try {
-      if (!route.free) ticket = await hooks.beforeRequest({ model: asked, inputTokensMax });
+      if (!route.free) ticket = await hooks.beforeRequest({ model: asked, inputTokensMax, ...(reasoning ? { reasoning } : {}) });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
       return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);

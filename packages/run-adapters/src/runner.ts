@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
 import { HarnessRunError, SessionFenced } from "./errors.js";
-import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
+import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, RequestReasoning, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
 
 /** Exactly the interpreter's `runNode`, plus `stop`: a pause of every node it is running. With `drainMs`, each node
  *  starts no new turn, call or paid request, its calls in flight run on until their outcomes are recorded (for at most
@@ -85,7 +85,7 @@ const positive = (value: number, name: string): number => {
 export const NO_PROGRESS_TURNS = 3;
 
 /** What a paid request tells a host, beside its session's key and label. */
-export type ModelPortEvent = { type: "request_start"; turn: number; model: string } | { type: "request_end"; turn: number; usage: ModelUsage };
+export type ModelPortEvent = { type: "request_start"; turn: number; model: string; reasoning?: RequestReasoning } | { type: "request_end"; turn: number; usage: ModelUsage };
 
 export interface ModelPortOptions {
   /** The session's key: what `beforeRequest` and every event carry. */
@@ -192,7 +192,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let failed: Error | undefined;
   const end = (reason: "turn_limit" | "refused" | "model_error", message?: string): Error =>
     options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
-  const admit = async (model: string, inputTokensMax: number | undefined): Promise<ModelTicket> => {
+  const admit = async (model: string, inputTokensMax: number | undefined, reasoning?: RequestReasoning): Promise<ModelTicket> => {
     const stopped = options.stopped?.() ?? failed;
     if (stopped) throw stopped;
     const pausing = options.draining?.();
@@ -208,7 +208,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
     // run one at a time), so a write that fails refuses the request and costs no turn.
     const turn = turns + 1;
-    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }) } }]);
+    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }), ...(reasoning ? { reasoning: reasoningRecord(reasoning) } : {}) } }]);
     turns = turn;
     if (hold !== undefined) held.set(turn, hold);
     // A stop that came while the record was written: the request has not left. It is booked withdrawn, at $0, so no
@@ -222,12 +222,12 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       throw stoppedNow;
     }
     open.push({ turn, model, inputTokensMax });
-    emit({ type: "request_start", turn, model });
+    emit({ type: "request_start", turn, model, ...(reasoning ? { reasoning } : {}) });
     return { turn };
   };
   const models: ModelPort = {
-    beforeRequest: ({ model, inputTokensMax }: ModelRequest) => {
-      const admitted = admitting.then(() => admit(model, inputTokensMax));
+    beforeRequest: ({ model, inputTokensMax, reasoning }: ModelRequest) => {
+      const admitted = admitting.then(() => admit(model, inputTokensMax, reasoning));
       admitting = admitted.catch(() => {});
       return admitted;
     },
@@ -300,6 +300,12 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
 
 /** A booking's tokens as its runner.turn keeps them (`usage`, in pi's shape: `input` excludes cached tokens), or nothing
  *  when it reports none: a request whose usage was not read is booked with zeros, which are no count. */
+/** A request's reasoning as its record keeps it: only the fields it names. */
+const reasoningRecord = (reasoning: RequestReasoning): Record<string, string> => ({
+  ...(reasoning.effort ? { effort: reasoning.effort } : {}),
+  ...(reasoning.thinking ? { thinking: reasoning.thinking } : {}),
+});
+
 function tokensOf(usage: ModelUsage): { usage?: { input: number; output: number; cacheRead: number; cacheWrite: number } } {
   const tokens = { input: usage.input, output: usage.output, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0 };
   return tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite > 0 ? { usage: tokens } : {};
@@ -327,7 +333,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     // label, which map items and loops repeat.
     const key = request.step ? `step:${request.step.sessionId}` : `call:${randomUUID()}`;
     const node = { key, label: request.label, ...(request.executionPath === undefined ? {} : { executionPath: request.executionPath }) };
-    const emit = (event: AdapterEvent | { type: "request_start"; turn: number; model: string } | { type: "request_end"; turn: number; usage: ModelUsage }) => options.onEvent?.({ ...event, ...node } as HarnessEvent);
+    const emit = (event: AdapterEvent | ModelPortEvent) => options.onEvent?.({ ...event, ...node } as HarnessEvent);
     const refuse = (message: string, turns = 0, submissions = 0) => new HarnessRunError("refused", turns, submissions, { message });
 
     const signals = [options.signal, request.signal].filter((s): s is AbortSignal => Boolean(s));

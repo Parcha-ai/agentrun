@@ -174,6 +174,21 @@ function createMeter() {
     for (const key of ["input", "cacheRead", "cacheWrite", "output"] as const) tokens[key] += counted[key];
   };
   const models = new Map<string, number>();
+  // How the answers' requests asked the model to reason (a harness other than pi says it on each, `reasoning`): their
+  // effort levels and thinking modes, each in the order first asked, and the thinking tokens of those that reported them.
+  const efforts: string[] = [];
+  const thinkings: string[] = [];
+  let thinkingTokens: number | undefined;
+  const reasoned = (message: Obj) => {
+    const r = obj(message.reasoning);
+    if (!r) return;
+    const effort = str(r.effort);
+    const thinking = str(r.thinking);
+    if (effort && !efforts.includes(effort)) efforts.push(effort);
+    if (thinking && !thinkings.includes(thinking)) thinkings.push(thinking);
+    const tokens = r.tokens;
+    if (typeof tokens === "number" && Number.isSafeInteger(tokens) && tokens >= 0) thinkingTokens = (thinkingTokens ?? 0) + tokens;
+  };
 
   function push(entry: EntryLike): "answer" | "continued" | "mark" | undefined {
     const message = entry.model?.[0];
@@ -229,6 +244,7 @@ function createMeter() {
       const counted = aborted ? undefined : tokensOf(message.usage, message.stopReason === "error");
       lastUnmetered = !counted;
       addTokens(counted);
+      reasoned(message);
       return "answer";
     } else return undefined;
     return "mark";
@@ -272,7 +288,18 @@ function createMeter() {
     return { ...tokens, requests: all, unmetered: Math.min(all, unmetered + cut), models: kept, ...(model !== undefined ? { model } : {}) };
   }
 
-  return { push, decide, usage, settled };
+  /** What the usage row says after the cost: " · high effort · adaptive thinking · 412 thinking tokens", each part only
+   *  when an answer said it; "" for a run whose answers say none (a pi run's). */
+  const reasoning = (): string => {
+    const parts = [
+      ...(efforts.length ? [`${efforts.join("/")} effort`] : []),
+      ...(thinkings.length ? [`${thinkings.join("/")} thinking`] : []),
+      ...(thinkingTokens === undefined ? [] : [`${thinkingTokens.toLocaleString("en-US")} thinking token${thinkingTokens === 1 ? "" : "s"}`]),
+    ];
+    return parts.map((part) => ` · ${part}`).join("");
+  };
+
+  return { push, decide, usage, settled, reasoning };
 }
 
 type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean };
@@ -520,7 +547,7 @@ function createProjector(options: TimelineOptions) {
     if (!counted || root === undefined) return undefined;
     const { usd, requests } = counted;
     return make("usage", root, `${root}:usage`, {
-      summary: `Cost so far: ${usd === null ? "unknown" : dollars(usd)} over ${requests} model request${requests === 1 ? "" : "s"}`,
+      summary: `Cost so far: ${usd === null ? "unknown" : dollars(usd)} over ${requests} model request${requests === 1 ? "" : "s"}${meter.reasoning()}`,
       usage: { usd, requests },
     });
   }

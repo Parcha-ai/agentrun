@@ -18,7 +18,7 @@
 // is dropped, so the model is offered exactly the host's tools. With `webSearch`, one hosted tool passes: Anthropic's web
 // search, exactly as the pinned CLI asks for it in the request its WebSearch tool makes. Usage is read from the stream's
 // `message_start` (input and cache tokens) and its last `message_delta` (output, and the searches the provider ran).
-import { providerInputOverhead, ProxyRefusal, type InputShape, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { providerInputOverhead, ProxyRefusal, type InputShape, type ProviderPolicy, type ProxyRoute, type ProxyUsage, type RequestReasoning } from "@parcha/agentrun-kernel/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";
@@ -237,7 +237,17 @@ function bookedUsage(usage: unknown): AnthropicUsage | undefined {
   const said = isPlain(usage.server_tool_use) ? usage.server_tool_use.web_search_requests : undefined;
   const webSearches = said === undefined ? 0 : tokenCount(said);
   if (webSearches === undefined) return undefined;
-  return { input, output, cacheRead: tokenCount(usage.cache_read_input_tokens) ?? 0, cacheWrite: tokenCount(usage.cache_creation_input_tokens) ?? 0, ...(webSearches ? { webSearches } : {}) };
+  // Of the output, what the model spent thinking (the thinking-token-count beta the pinned CLI sends): only a count.
+  const thinking = isPlain(usage.output_tokens_details) ? tokenCount(usage.output_tokens_details.thinking_tokens) : undefined;
+  return { input, output, cacheRead: tokenCount(usage.cache_read_input_tokens) ?? 0, cacheWrite: tokenCount(usage.cache_creation_input_tokens) ?? 0, ...(thinking === undefined ? {} : { thinking }), ...(webSearches ? { webSearches } : {}) };
+}
+
+/** How a Messages body asks the model to reason: its `output_config.effort` and its `thinking.type` (`adaptive`), each
+ *  only when the body names it. */
+export function anthropicReasoning(body: Record<string, unknown>): RequestReasoning {
+  const effort = isPlain(body.output_config) ? body.output_config.effort : undefined;
+  const thinking = isPlain(body.thinking) ? body.thinking.type : undefined;
+  return { ...(typeof effort === "string" && effort ? { effort } : {}), ...(typeof thinking === "string" && thinking ? { thinking } : {}) };
 }
 
 /** `price` with each web search a response reports added at `CLAUDE_WEB_SEARCH_USD`: the host prices the tokens, the
@@ -318,6 +328,7 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     apply: (body, route) => applyAnthropic(body, route, options),
     // `apply` let through only the session's model or its small one.
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
+    reasoningOf: anthropicReasoning,
     serverInputOverhead: anthropicServerInputOverhead,
     usageOf: anthropicUsage,
   };

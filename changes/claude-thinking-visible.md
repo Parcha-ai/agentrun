@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-harness-claude, @parcha/agentrun-kernel, @parcha/agentrun-serve, @parcha/pi-durable-agent
+kind: fix
+---
+A Claude run shows its thinking, and the run's usage row says how its requests reasoned. The effort level always reached the model; what a person saw did not change with it. The Claude adapter now asks for summarized thinking (the current models' default display, "omitted", returns every thinking block empty; the display changes what comes back, not what is thought or billed), each thinking summary is a Thinking row as on a pi run, and the usage row of a Claude run says the effort and thinking mode its requests asked for and the thinking tokens the provider reported, after its cost: "Cost so far: $0.1216 over 4 model requests · high effort · adaptive thinking · 412 thinking tokens". The row's `usage` figures are unchanged, and a pi run's row reads as before.
+- `@parcha/agentrun-kernel`: `AdapterEvent` gains `{ type: "thinking", text }` (one whole thinking block's text); `ModelRequest` gains `reasoning` (`{ effort?, thinking? }`), which the model proxy reads through its policy's new `reasoningOf` and the runner records with the request and reports on `request_start`; `ModelUsage` and `ProxyUsage` gain `thinking` (tokens, a part of output). The faux adapter's actions take `think`, `reasoning` and `thinkingTokens`.
+- `@parcha/agentrun-harness-claude`: the Anthropic policy reads `output_config.effort`, `thinking.type` and `usage.output_tokens_details.thinking_tokens`.

@@ -20,7 +20,7 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
-import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec } from "@parcha/agentrun-kernel";
+import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, type RequestReasoning, RUNNER_RECORDS, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
@@ -64,14 +64,18 @@ function tokensOf(usage: unknown): { input: number; output: number; cacheRead: n
 /** One request as pi's own assistant message: its content, the model it asked for (the harness's id when that is not
  *  known), and its usage with the cost when it is known. Tokens not known are 0, which pi's timeline reads as unknown.
  *  `error`: a turn that ended on an error, as pi's own reads (the cap's refusal is spend_cap_reached), at $0. */
-function assistantMessage(harness: string, model: string | undefined, request: Pending | undefined, text: string, calls: ToolCall[], error?: string, thinking = "") {
+function assistantMessage(harness: string, model: string | undefined, request: Pending | undefined, text: string, calls: ToolCall[], error?: string, thinking = "", asked?: RequestReasoning) {
   if (error !== undefined) {
     return { role: "assistant", content: [], api: "agentrun-adapter", provider: harness, model: harness, stopReason: "error", errorMessage: error, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   }
   const usage = request?.usage;
   const known = usage !== undefined && usage.usd !== null && usage.usd !== undefined;
   const tokens = { input: usage?.input ?? 0, output: usage?.output ?? 0, cacheRead: usage?.cacheRead ?? 0, cacheWrite: usage?.cacheWrite ?? 0 };
+  // How the request asked the model to reason, and the thinking tokens its answer reported: pi's timeline says them on
+  // the run's usage row. Only what is known.
+  const reasoning = { ...asked, ...(typeof usage?.thinking === "number" ? { tokens: usage.thinking } : {}) };
   return {
+    ...(Object.keys(reasoning).length ? { reasoning } : {}),
     role: "assistant",
     // The model's thinking summary first, as pi's own message holds it: pi's timeline makes its Thinking row of it.
     content: [...(thinking ? [{ type: "thinking", thinking }] : []), ...(text ? [{ type: "text", text }] : []), ...calls],
@@ -164,8 +168,9 @@ export function adapterRun(
   // Requests admitted and not yet booked, by turn: the proxy answers the harness before it books a response, so a turn
   // can end with its last request's cost still on its way.
   const open = new Set<number>();
-  // The model each request asked for, by number: its entry names it.
+  // The model each request asked for, by number: its entry names it; and how it asked the model to reason.
   const models = new Map<number, string>();
+  const reasonings = new Map<number, RequestReasoning>();
   let booked: () => void = () => {};
   /** Until every admitted request is booked, or `ms` pass. */
   const bookings = async (ms: number) => {
@@ -211,7 +216,7 @@ export function adapterRun(
       const marked = request?.request ?? unbooked;
       if (marked !== undefined) answered.add(marked);
       await commit(async (tx) => {
-        await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls, undefined, content.thinking) as never] });
+        await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls, undefined, content.thinking, marked === undefined ? undefined : reasonings.get(marked)) as never] });
         // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
         if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
         if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
@@ -225,7 +230,7 @@ export function adapterRun(
         if (written.has(next.request)) continue;
         answered.add(next.request);
         await commit(async (tx) => {
-          await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(next.request), next, "", []) as never] });
+          await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(next.request), next, "", [], undefined, "", reasonings.get(next.request)) as never] });
           await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: next.request } });
         });
         written.add(next.request);
@@ -238,6 +243,7 @@ export function adapterRun(
       current = event.turn;
       open.add(event.turn);
       models.set(event.turn, event.model);
+      if (event.reasoning) reasonings.set(event.turn, event.reasoning);
       void flush();
       // Marked on the root as it leaves, as a pi run's request is (request-start.ts): one never answered, a run that ends
       // without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
