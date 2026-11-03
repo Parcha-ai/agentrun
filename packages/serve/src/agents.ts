@@ -100,7 +100,10 @@ export class Agents {
     const harness = typeof definition.harness === "string" && definition.harness !== DEFAULT_HARNESS ? { harness: definition.harness } : {};
     // Unlike the harness, a place is kept when it is runner: the default is the host's, so naming runner says something.
     const place = isObject(definition.place) ? { place: definition.place as RevisionPlace } : {};
-    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...(note !== undefined ? { note } : {}) };
+    // A capability with nothing set is none: `{web_search: {}}` and no settings are one revision.
+    const kept = Object.entries(isObject(definition.tool_settings) ? definition.tool_settings : {}).filter(([, setting]) => isObject(setting) && Object.keys(setting).length);
+    const set = kept.length ? { toolSettings: Object.fromEntries(kept) as Record<string, Record<string, string>> } : {};
+    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...set, ...(note !== undefined ? { note } : {}) };
     if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow as never, ...common };
     // The learning switch is kept whenever a definition sets it, false included; a definition that leaves it out keeps
     // none, and its revision id is the one it had before the switch.
@@ -272,7 +275,7 @@ export function definitionOf(agent: Agent, revision: Revision, version: number):
   const body = revision.kind === "agentic"
     ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}) }
     : { workflow: revision.body.workflow };
-  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools };
+  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}) };
 }
 
 /** `Agent` as the contract shows it, with its current revision. */
