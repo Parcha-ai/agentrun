@@ -3,9 +3,9 @@
 // catalog, and the stand-in, Codex's own process, runs under the run's confinement: setpriv's no_new_privs, as pi's
 // commands do, under the same user.
 import assert from "node:assert/strict";
-import { copyFile, readdir, readFile } from "node:fs/promises";
+import { copyFile, readdir, readFile, readlink } from "node:fs/promises";
 import { createServer } from "node:http";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
@@ -88,10 +88,10 @@ test("a codex run whose cap is below one request's ceiling is refused before any
   assert.equal(ended.cost.usd, 0);
 });
 
-test("a run on codex goes through the adapter's proxy to serve's gateway, priced from serve's catalog, with Codex's own process under the run's confinement", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a run on codex goes through the adapter's proxy to serve's gateway, priced from serve's catalog, with Codex's own process under the run's confinement, in the run's workspace", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const gw = await gateway(t);
-  const { api, standIn } = await codexServe(t, gw);
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex"), { id: "codex", available: true, steer: false });
+  const { api, standIn, data } = await codexServe(t, gw);
+  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex"), { id: "codex", available: true, steer: false, default_model: "agent-model/gpt-test" });
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   // Mid-turn, with the gateway holding its answer: Codex's process and its rights.
@@ -103,6 +103,7 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
   assert.ok(child, "Codex's process runs");
   assert.equal(field(child.status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(child.status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
+  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(join(data, "runs", run.body.run_id, "work")), "in the run's workspace, where its file tools write");
   gw.release();
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen[0].path, "/v1/responses");

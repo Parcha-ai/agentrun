@@ -81,12 +81,11 @@ export function createBody(f: { name: string; description: string; instructions:
 }
 
 /** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
- *  (`summary`), and, when the server says, which harnesses run it. An older server lists bare names. */
+ *  (`summary`), and, when the server says, which harnesses run it. */
 export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; harnesses?: string[]; call_only?: true; nodes?: boolean };
 
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
-    if (typeof t === "string") return [{ name: t, available: true }];
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
     const { name, available, summary, missing, harnesses, call_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; missing?: string[]; harnesses?: string[]; call_only?: unknown; nodes?: unknown };
     return [{
