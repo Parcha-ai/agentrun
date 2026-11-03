@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BOUND_TOOLS } from "../dist/tools.js";
+import { randomBytes } from "node:crypto";
+import { BOUND_TOOLS, toolsView } from "../dist/tools.js";
 import { CAPABILITIES, planeFor, PROVIDERS, recheckPlane, resolveCapability, settingsIssues, ToolSettings } from "../dist/tool-plane.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
@@ -85,6 +86,35 @@ test("auto where the server holds Parallel's key: the pick, then native, then Pa
   assert.equal(search({ harness: "codex", gateway: true, override: "exa-keyless", pick: "parallel" }), "exa-keyless", "the agent's exa-keyless over the server's parallel");
   assert.equal(search({ harness: "pi", pick: "off" }), "unavailable: web_search is turned off in settings");
   assert.equal(resolveCapability("web_fetch", { ...base, parallelKey: true, harness: "pi" }), "kernel", "web_fetch's default is the kernel's fetch, key or not");
+});
+
+test("capabilities say why each web tool resolves as it does on each harness, one plain sentence beside resolves, from the resolver's own reasons: the native search, the gateway or cap that leaves none, claude-agent's own search as an explicit pick, the Parallel key and where it is from, keyless Exa, a pick, off", async (t) => {
+  const why = (env, settings = {}) => Object.fromEntries(toolsView(env, settings).filter((tool) => tool.resolves).map((tool) => [tool.name, tool.why]));
+  const each = (text) => ({ pi: text, "claude-agent": text, codex: text });
+  const direct = { AGENT_MODEL: "anthropic/claude-sonnet-4-5" };
+  const gateway = { ...direct, AGENT_MODEL_BASE_URL: "https://gateway.example/v1" };
+  const claudeKeyless = "Exa's free keyless search, no key; Claude's own search is an explicit pick";
+  assert.deepEqual(why(direct), { web_fetch: each("the guarded direct fetch"), web_search: { pi: "Anthropic's hosted search, for anthropic/claude-sonnet-4-5", "claude-agent": claudeKeyless, codex: "Codex's own search" } });
+  assert.deepEqual(why({ AGENT_MODEL: "openai/gpt-5" }).web_search.pi, "OpenAI's hosted search, for openai/gpt-5");
+  assert.deepEqual(why({ ...gateway, PARALLEL_API_KEY: "not-a-secret" }).web_search, { pi: "behind a gateway pi has no hosted search; your Parallel key (server)", "claude-agent": "your Parallel key (server)", codex: "behind a gateway Codex has no own search; your Parallel key (server)" });
+  assert.deepEqual(why(gateway).web_search, { pi: "behind a gateway pi has no hosted search; Exa's free keyless search, no key", "claude-agent": claudeKeyless, codex: "behind a gateway Codex has no own search; Exa's free keyless search, no key" });
+  assert.deepEqual(why({ AGENT_MODEL: "google/gemini-2.5-pro" }).web_search.pi, "google/gemini-2.5-pro has no hosted search here; Exa's free keyless search, no key");
+  assert.deepEqual(why({}).web_search.pi, "no model is named, so there is no hosted search; Exa's free keyless search, no key");
+  assert.deepEqual(why(gateway, { web_search: { provider: "native" } }).web_search, { pi: "no native search for pi behind a gateway", "claude-agent": "Claude's own search", codex: "no native search for codex behind a gateway" }, "native picked with none: the unavailable text's reason");
+  assert.deepEqual(why(direct, { web_search: { provider: "off" } }).web_search, each("turned off in settings"));
+  assert.deepEqual(why(direct, { web_search: { provider: "exa-keyless" } }).web_search, each("keyless Exa, picked in settings: Exa's free search, no key"));
+  assert.deepEqual(why(direct, { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } }), { web_fetch: each("Parallel is picked, and no PARALLEL_API_KEY is set or saved"), web_search: each("Parallel is picked, and no PARALLEL_API_KEY is set or saved") });
+  assert.deepEqual(why({ ...direct, PARALLEL_API_KEY: "not-a-secret" }, { web_fetch: { provider: "parallel" } }).web_fetch, each("Parallel, picked in settings: your Parallel key (server)"));
+  // Through the API, a key saved on Tool keys is said as saved, and the document holds the field its schema names.
+  withEnv(t, { ...gateway, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY"]);
+  const { api } = await serve(t);
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: CANARY } })).status, 204);
+  const doc = (await api("GET", "/openapi.json")).body;
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.deepEqual(schemaProblems(doc, doc.paths["/capabilities"].get.responses["200"].content["application/json"].schema, caps), [], "capabilities meet their schema");
+  const search = caps.tools.find((tool) => tool.name === "web_search");
+  assert.deepEqual([search.resolves, search.why], [{ pi: "parallel", "claude-agent": "parallel", codex: "parallel" }, { pi: "behind a gateway pi has no hosted search; your Parallel key (saved)", "claude-agent": "your Parallel key (saved)", codex: "behind a gateway Codex has no own search; your Parallel key (saved)" }]);
+  assert.equal(caps.tools.filter((tool) => tool.why).length, 2, "web_search and web_fetch, where resolves is");
 });
 
 test("a run's plane: each web tool its revision names, resolved in the server's environment, with the model pi's native search asks", () => {
