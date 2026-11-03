@@ -51,6 +51,19 @@ test("a revision keeps the harness it names, in its body and so its id; one that
   store.close();
 });
 
+test("a revision keeps the tool settings it names, sorted, in its body and so its id; none or an empty map keeps none; settings that are not names are refused before a write", async () => {
+  const store = openStore(await scratch());
+  const agent = store.createAgent({ name: "P" });
+  const plain = await store.commitRevision(agent.id, A);
+  assert.equal((await store.commitRevision(agent.id, { ...A, toolSettings: {} })).id, plain.id, "an empty map is no setting");
+  const set = await store.commitRevision(agent.id, { ...A, toolSettings: { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "parallel" } } });
+  assert.notEqual(set.id, plain.id, "the settings are part of the body, so of the id");
+  assert.deepEqual(Object.entries(store.readRevision(set.id).body.toolSettings), [["web_fetch", { provider: "parallel" }], ["web_search", { provider: "exa-keyless" }]], "read back sorted");
+  assert.deepEqual((await store.commitRevision(agent.id, { ...WF, toolSettings: { web_fetch: { provider: "parallel" } } })).body.toolSettings, { web_fetch: { provider: "parallel" } }, "a workflow revision has them too");
+  for (const toolSettings of [[], "parallel", { web_search: "parallel" }, { web_search: { provider: 1 } }, { "Web Search": { provider: "parallel" } }, { web_search: { provider: "" } }]) await assert.rejects(store.commitRevision(agent.id, { ...A, toolSettings }), refused("invalid", /tool settings/), JSON.stringify(toolSettings));
+  store.close();
+});
+
 test("a revision keeps the place it names, {mode, box?}, in its body and so its id; one that names none keeps none and its id is unchanged; a place that is not {mode, box?} of ids is refused before a write", async () => {
   const store = openStore(await scratch());
   const agent = store.createAgent({ name: "P" });

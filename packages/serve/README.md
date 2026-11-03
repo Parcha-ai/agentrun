@@ -180,8 +180,8 @@ of a process that is gone is not trusted.
 
 ## Boxes
 
-A box is a machine apart from this one where a run's tools could run. No run uses a box yet. This release sets the boxes
-up and says which ones this server has. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
+A box is a machine apart from this one where a run's tools run. Runs execute in `docker` boxes ([place](#place)); the
+others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
 (`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
 refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
 log line says what the server found:
@@ -267,9 +267,8 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `write` | Write a file in the run's `work/` | nothing | yes, no |
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
-| `web_fetch` | Read one web page from a public host through Parallel's extract, else fetched as `fetch_page` fetches it: `{url}` in, `fetch_page`'s Page plus `via`, `"parallel"` or `"direct"` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
-| `web_search` | Search the web through Exa's keyless endpoint, on pi: `{query, n?}` in, `{provider: "exa-keyless", query, results: [{url, title, snippet, published?}]}` out, or `{error}` | nothing (no key) | yes, no |
+| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)): `{url}` in, a Page out, `{ok, url, status, title, text, truncated?, original_chars?, links, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_search` | Search the web, natively where the harness or the model's provider can, else keyless through Exa, or through Parallel where it is picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 | `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
 | `monid.inspect` | One monid endpoint before it runs: `{provider, endpoint}` in, the JSON Schemas of its input (`pathParams`, `queryParams`, `body`), its price, notes and documentation out | `MONID_API_KEY` | no, no |
@@ -277,13 +276,16 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/`, the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
 
-There is no `bash`: a run gets no shell (see [Safety](#safety)).
+There is no `bash`: a run gets no shell (see [Safety](#safety)). `fetch_page` is a legacy name for `web_fetch`: a
+revision, a model node or a call node that names it still saves and runs, and gets `web_fetch` under that name (the
+same Page with `via`, resolved as `web_fetch` is: the guarded fetch, Parallel only where picked). The table lists it no
+more.
 
 A call tool that fails on its own (an unreadable PDF, a model's refusal) fails its call node; inside a `map` with
 `onItemFailure: "collect"` it fails that item, and the other items go on. A cancel or the node's deadline still
 stops the run.
 
-`fetch_page` reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
+`web_fetch`'s direct fetch reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
 every address it resolves to is checked, and the connection is dialled at the address checked, so a loopback, private,
 link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`, `::ffff:127.0.0.1`
 and the like), a name such as `localhost`, a public name that resolves to one of them and a redirect to one are all
@@ -291,31 +293,105 @@ refused, as is any scheme but http(s). A URL on a port other than 80 or 443 is r
 body is at most 5 MiB, a fetch at most 30 s, the text is cut at 60,000 characters and the links at 200, absolute
 http(s) only. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
 reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via: "tool",
-tool: "fetch_page"` gets it as its output (`args: {url}`, `out` a schema of that shape). A call node naming a tool the
+tool: "web_fetch"` gets it as its output (`args: {url}`, `out` a schema of that shape). A call node naming a tool the
 table cannot run that way is refused before the run starts (`409`).
 
-`web_fetch` answers the same Page with `via` added, on every harness. Where the server sets `PARALLEL_API_KEY`, the
-page is read through Parallel's extract (`POST https://api.parallel.ai/v1/extract`, its full content as the text, about
-$0.001 a URL) and `via` is `"parallel"`, with status 200 and the absolute links of its markdown. Without the key, or
-when Parallel lists the URL in its errors, answers with no content, a 5xx or not within 60 s, it is `fetch_page`'s
-fetch, `via: "direct"`; a 401 or 403 stops Parallel for the rest of the run. A URL passes the guard's own check before
-anything is sent to Parallel: a URL `fetch_page` refuses is refused here too and never leaves the machine. The key
-reaches an agentic run only when its revision names `web_fetch`, on the run's decision descriptor (see
-[Decision workflows](#decision-workflows)), read once into the run process's memory: never into its environment, a child or a file.
+### Search and fetch
 
-`web_search` searches the web with no key, on pi, through Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its
-`web_search_exa` tool). This server has no keyed search, so it is the only search there is. What leaves the server is
+`web_search` and `web_fetch` work on every harness with only a model key. Each resolves, for a run, in one order: (1) the
+provider the user picked, optional: the agent's own (`definition.tool_settings`) over the server's
+(`PUT /settings/tools`); (2) the native tool, the harness's own or its model provider's hosted one; (3) the kernel's
+keyless fallback. A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
+Codex's own search, except behind a gateway or under a spend cap (its request has no input bound, which a cap cannot
+admit), where it is keyless Exa. `off` turns `web_search` off: nothing is searched, and an agent naming it is refused
+(`409`) until it is turned on again.
+A workflow's model nodes may each run on another tier's model, so a workflow's `web_search` never searches natively:
+it is keyless Exa, or Parallel where picked, and a pick of `native` alone is unavailable for a workflow.
+
+| | `claude-agent` | `codex` | pi |
+| --- | --- | --- | --- |
+| `web_search`, `auto` (the default) | Claude's own WebSearch; under a spend cap, keyless Exa | Codex's own search, each search booked; behind a gateway or under a spend cap, keyless Exa, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, keyless Exa |
+| `web_search`, `native` | the same, unavailable under a spend cap | the same, unavailable behind a gateway or under a spend cap | the same, unavailable where there is none: never keyless Exa |
+| `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
+| `web_search`, `exa-keyless` | Exa's public MCP search, a host tool | the same | the same |
+| `web_fetch`, `kernel` (the default) | the guarded direct fetch | the same | the same |
+| either, `parallel` | Parallel's search and extract, host tools | the same | the same |
+
+`GET /settings/tools` answers the server's settings, `{web_search: {provider}, web_fetch: {provider}}`, the default
+where none is set; `PUT /settings/tools` takes the same map and replaces it (a capability it leaves out takes its
+default). An agent's `definition.tool_settings` has the same shape and is over the server's. A provider is one offered
+for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_search`; `kernel` or `parallel` for `web_fetch`); an
+unknown capability or provider is `422`, and so is a `permission` (`reason: not_yet`): permissions arrive with the tool
+gate, and capabilities say `features.tool_permissions: false` until then. The settings are kept in the data directory
+(`tool-settings.json`, 0600, written whole and durably), not a secret, and read by every run launched from then on.
+`GET /capabilities` is the one tool catalog: each of the two tools there gives the providers offered (`providers`), the
+server's (`provider`, its default where it sets none), the built-in default (`default_provider`) and `resolves`, what it
+resolves to on each harness under the server's settings and default model (`native`, `kernel`, `exa-keyless`,
+`parallel`, or `unavailable: <reason>`), recomputed at each `PUT`. `GET /agents/{id}` projects it onto the agent:
+`tools`, each tool its current revision grants in the same order, and for one with a choice the provider in force,
+`provider_from` (`agent`, its own `tool_settings`; `server`; or `default`), `default_provider` (the server's) and
+`resolved`, on its harness and model. Parallel picked where
+the server holds no `PARALLEL_API_KEY` resolves `unavailable: parallel picked, no PARALLEL_API_KEY`, never to another
+provider: a revision naming the tool saves with a warning, and its run is `409` with `details.missing`.
+
+The server resolves a run's tools at its first launch, from its pinned revision and the settings then, keeps the outcome
+in the run's `serve.json` for the run's life (a later `PUT` changes the next runs, never a run already started; a
+Parallel key gone since makes Parallel unavailable, never another provider), and hands its process the outcome as a
+description with no secret in it (`AGENTRUN_SERVE_TOOL_PLANE`); the run reads its providers there, never from a request.
+A workflow's tools are those its revision lists and those its model and call nodes name.
+
+Upgrading: a server holding `PARALLEL_API_KEY` used to read every `web_fetch` page through Parallel's extract on its own.
+Now `web_fetch` is the guarded direct fetch unless Parallel is picked; to keep the old behaviour, set
+`PUT /v2/settings/tools {"web_fetch": {"provider": "parallel"}}` once (or `tool_settings` in an agent). Parallel's key reaches an agentic run only when one of its capabilities resolves to Parallel (see
+[Decision workflows](#decision-workflows)), and a web tool reaches Parallel only where its own capability does.
+
+pi's native `web_search` is one standalone request, as Claude's CLI runs its WebSearch: one user turn carrying the
+query and an instruction to answer with sources, on the run's own model and key, with the provider's hosted tool added
+and nothing else (Anthropic's `{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}`, OpenAI's Responses
+`{"type": "web_search"}`). The results, their citations and the search count are read from the provider's own events;
+nothing of the request enters the run's conversation but the tool's answer, with `text`, the provider's own short
+answer with its sources. A `pause_turn`
+answers what it has, and nothing is retried. It is booked as one of the run's requests: its tokens at the model's price
+plus $10 per 1,000 searches (Anthropic) or calls (OpenAI).
+
+With no key and no native search, web_search falls back to Exa's public keyless MCP endpoint, a third-party service with
+its own rate limits (unpublished; it answers `429` past them) and its own terms (https://exa.ai/terms), reached over
+direct IPv4. To turn it off, set `web_search` to `native` (native only) for the server (`PUT /v2/settings/tools`) or for
+an agent (`tool_settings`). To search with a key instead, pick `parallel` and set `PARALLEL_API_KEY`.
+
+Keyless Exa is one exchange with Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its `web_search_exa` tool, at most
+8 results, no key) at Exa's free rate limit: over it Exa answers `429`, which the tool answers as `{error}` naming the
+limit and its wait, never tried again. Exa takes keyless use only over IPv4, straight to its endpoint: over IPv6 or
+through a proxy it answers `403`, said the same way.
+
+Every provider answers one shape, `{provider, query, results: [{url, title, snippet, published?}], text?}`, `provider`
+naming the one that served it (`native`, `exa-keyless`, `parallel`), each snippet cut at 3,000 characters; the answer
+the model reads ends with one line asking it to cite the URL of each result it relies on.
+
+`web_fetch` answers a Page with `via`; a text cut at 60,000 characters says so, `truncated: true`
+with `original_chars`, its whole length, where it is known (Parallel cuts a page itself and gives none; no paging). With Parallel picked the page is read through Parallel's
+extract (`POST https://api.parallel.ai/v1/extract`, its full content as the text, about $0.001 a URL) and `via` is
+`"parallel"`, with status 200 and the absolute links of its markdown; when Parallel lists the URL in its errors, answers
+with no content, a 5xx or not within 60 s, it is the guarded direct fetch, `via: "direct"`, with `parallel` saying why
+Parallel gave no page (`refused the key (401)`, `answered 503`, `timed out`, `listed the URL in errors`, `not tried:
+refused earlier in this run`), and the model reads a line saying so; a 401 or 403 stops Parallel for the rest of the
+run. A fetch Parallel was not picked for says nothing of it. A URL passes the guard's own check before anything is sent to Parallel: a URL the guard
+refuses is refused and never leaves the machine.
+
+`web_search` through Parallel uses its Search API (`POST https://api.parallel.ai/v1/search`, its `fast` mode, about
+$0.001 a search). On every provider the query is cut at 200 characters and `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers
+`{error}`, with nothing searched instead; a 401 or 403 to either web tool stops Parallel for both for the rest of the run.
+
+Keyless Exa, where `web_search` resolves to it, searches through Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its
+`web_search_exa` tool), with no key. What leaves the server is
 the search query (cut at 200 characters) and the number of results asked for (1 to 8, 5 by default), nothing else
 from the run, and no key. It goes to Exa over IPv4, straight from the run's process. Exa is a third party: its free,
 keyless use has a rate limit it does not publish, and its own terms. Past that limit Exa answers 429, and the search is a
 tool error that says so, with Exa's Retry-After: the model reads why and answers without it. Nothing is retried, and a
 search ends at 60 s, so a call never hangs. The answer is the query and its results, each a URL, a title, a
 snippet of at most 3,000 characters and its date when Exa knows it, then a line asking the model to cite the URLs it
-relies on. claude-agent and codex do not bind `web_search` yet.
-
-Keyless Exa is the default for a harness with no native search when no search key is saved. There is no switch for
-it yet: turning it off comes with Settings → Tools, as the provider pick for each capability, in this order: your pick,
-then the harness's native search, then a saved Exa or Parallel key, then keyless Exa, or off.
+relies on. Keyless Exa is the default for a harness with no native search when no search key is picked; `off` turns
+`web_search` off, keyless Exa included.
 
 The `browser` tool runs Browserbase sessions, never a Chrome on this machine. The keys come from the server's
 environment and reach the run's process as the rest of it does. A session's custody (its lease, its tag, what it was
@@ -361,10 +437,9 @@ A tool's key comes from one of two places. The server's own environment, through
 `typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. `GET
 /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and each field's `set` and
 `source` (`server`, `stored` or null): never a value, nor any part of one. `unlocks` holds only what capabilities show
-this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): the Parallel key does not list
-`web_search`, which needs no key, and a key whose tools it binds none of still lists, with nothing in
-`unlocks`. A field the server is started with is the server's, and wins: saving it is `409 key_set_by_server`. A value
-is text of at most 1024 bytes with no control character (`422` otherwise).
+this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): a key whose tools it binds
+none of still lists, with nothing in `unlocks`. A field the server is started with is the server's, and wins: saving
+it is `409 key_set_by_server`. A value is text of at most 1024 bytes with no control character (`422` otherwise).
 
 A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
 name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal
@@ -436,7 +511,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -456,6 +531,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
+| `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search` and `web_fetch` ([search and fetch](#search-and-fetch)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
@@ -577,14 +653,49 @@ its harness. Any other shape is `422 input_invalid` on `definition.place`. A def
 host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one that names a place keeps
 it, `runner` included. An edit that names no place keeps the agent's.
 
-A run may narrow a sandbox agent to `runner`, never widen a runner agent into a sandbox. The run request's field for it
-comes later. A harness's own tools in the box, when they come, will be an option of `sandbox` (such as
-`native_tools: true`), never a third mode.
+A run may narrow a sandbox agent to `runner`, never widen a runner agent into a sandbox: `POST /agents/{id}/runs` takes
+`"place": "runner"`, and any other value is `422`. A narrowed run runs without `bash`, and is never refused for its box.
+The run keeps the place it resolved to, and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box,
+when they come, will be an option of `sandbox` (such as `native_tools: true`), never a third mode.
+
+`bash` may be named only by an agentic definition whose place is a sandbox (`422` on a runner, named or by default), and a
+workflow's place is `runner` or none (`422` on a sandbox).
 
 `GET /v2/capabilities` lists `places`: the modes, the default, and each box with `available` and, when not, the `reason`.
-This server has no box yet: a definition naming one saves with a warning on `definition.place`, and a run of it is
-`409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place` and `capabilities.places`
-`x-agentrun-serve: "place/1"`.
+A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
+`409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place`, the run
+request's `place` and `capabilities.places` `x-agentrun-serve: "place/1"`.
+
+### A run in a Docker box
+
+With `AGENTRUN_BOXES=docker` and a Docker daemon this server's user may use, a run whose place is
+`{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `read`, `write`, `edit` or `bash` call
+(a run with no such call gets none). Those four tools are pi's own, on every harness; their calls run in the container.
+`web_fetch` (and `fetch_page`, its legacy name), `web_search` and the `monid.*` tools stay on this server, and so do
+the run's loop, its log, its model calls and every key. What the server itself files in `work/` (monid's long answers,
+the browser's evidence) never goes through a link a box's command planted there: each directory is held open on the
+way (`/proc/self/fd`). On a host without it (macOS), where a link swapped in mid-walk could still turn a write, a sandbox run's `work/` gets none of
+these files: monid's long answers say they could not be saved, and the browser's evidence is not filed. `browser` is runner-only for now (`422` in a sandbox place): its downloads
+go through `work/` by path.
+
+- The container binds the run's `work/` alone, read-write, at `/run/agentrun/run/work`, where the tools start. Nothing
+  else of the data directory enters it. `read`, `write` and `edit` take a path in that directory, relative or absolute,
+  or under the run's own `work/` on this machine, which names the same file there (another harness's cwd may name
+  one); any other (another path of this machine, `..` out of it, `~`) is refused as outside the workspace, and their
+  errors name the box's paths, never this machine's. A mount source that is, or passes through, a link below the data directory is
+  refused: the tool call fails, and no container is made. The data directory is resolved to its real path once, at start.
+- It has no network (`--network none`); no setting opens it. Its environment is `LANG=C.UTF-8` and `HOME=/tmp` and the
+  image's own: never this server's, so no key or token is in it. It runs as this server's uid:gid, so what it writes in
+  `work/` stays this server's. `AGENTRUN_DOCKER_IMAGE` names the image (default `debian:bookworm-slim`, which has no
+  python or git). It has no CPU, memory or process limits yet.
+- `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
+  command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
+  shell in `work/`.
+- The container is labelled `agentrun.run=<run id>`, and the label is its only record. A run's process that starts again
+  after a crash finds it by the label and first kills the commands the dead process left running. It is destroyed when
+  the run ends (completed, failed or cancelled: a follow-up after a completed run gets a fresh one, with the same
+  `work/`) and when the run is archived. A start destroys every such container whose run has ended or is archived; one
+  of a run this data directory does not know is left to its 24-hour lifetime.
 
 ## Decision workflows
 
@@ -622,9 +733,9 @@ typed answers and their probabilities.
   failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
 - The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
   server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands the values to a workflow
-  run's process, and Parallel's alone to an agentic run whose revision names `web_fetch`, once, by name, on an
+  run's process, and Parallel's alone to an agentic run whose `web_fetch` or `web_search` resolves to Parallel, once, by name, on an
   inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each
-  launch, a resume after a restart included. The process reads them once into its decision providers and `web_fetch`,
+  launch, a resume after a restart included. The process reads them once into its decision providers and web tools,
   closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an
   environment, an argument list or a file, and no program the run starts inherits it. With no key, no descriptor is
   opened. On the OpenRouter route Jev's key comes on the same descriptor, never from the run's environment; that key is
@@ -832,6 +943,14 @@ no one knows.
 Pricing the whole output ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's
 worst case is about $0.96, so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
 
+A request carrying a native web search tool reads pages into its input that its body does not hold (the provider bills
+them as input): under a cap its input bound is its body's plus an allowance. Claude's own search does not run under a
+cap: each search has a per-use fee the cap cannot reserve yet, so a capped claude-agent run searches keyless Exa, as a
+capped codex run does; pi's own search request is held at its context
+plus 125,000 (5 searches) and its most fee, 5 searches at $0.01. What the request
+cost, booked once it answers, stops the next request through the cap, and a run whose booked spend passes its cap shows
+one timeline row saying by how much (`Spent $X, $Y over the run's cap of $Z`).
+
 The server also checks the run's cost after each response, as a backstop, and stops a run whose cost passed its cap.
 Either way the run keeps the answer it paid for: a run the cap stopped has `result: {output: null, final_answer}`, the
 newest answer it received, beside its `error`; one stopped before any answer has `result: null`.
@@ -856,7 +975,7 @@ export default function reply(context, faux) {
 
 `startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
 the `browser` tool's `{ provider, driver }` in place of Browserbase's (pi-browser's fake backend,
-`test/fixtures/faux-browser.mjs`), `fetch_page`'s `{ lookup, fetchImpl }` in place of the system's resolver and
+`test/fixtures/faux-browser.mjs`), `web_fetch`'s direct fetch's `{ lookup, fetchImpl }` in place of the system's resolver and
 undici (a table of names and pages, `test/fixtures/faux-web.mjs`), and, as `fauxMonid`, the fetch the monid tools send
 through in place of monid's API (`test/fixtures/faux-monid.mjs`). Each is honored only with `faux`.
 
@@ -871,7 +990,7 @@ carries no cost at all, as from a provider that does not price the model. The te
 
 - The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`) are never in a run's environment or files: a workflow run's
   process gets them on a pipe of their own, for its decision providers alone ([decision workflows](#decision-workflows)).
-- `fetch_page` dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this
+- `web_fetch`'s direct fetch dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this
   machine, its network or a cloud's metadata address through it.
 - A `browser` session runs at Browserbase, not on this machine: a page the model opens is reached from Browserbase's
   network, so what the model may reach there is the operator's choice of keys and project. Its downloads and uploads stay
