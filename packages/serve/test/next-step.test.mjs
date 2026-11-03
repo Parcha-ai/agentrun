@@ -125,7 +125,7 @@ test("a box this server does not enable names the setting that enables it: in ca
   const bash = tools.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason, bash.sandbox_only], [false, NO_BOX, true], JSON.stringify(bash));
   assert.equal(bash.summary, "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 300 s unless the call names a timeout.");
-  assert.ok(tools.filter((tool) => tool.name !== "bash").every((tool) => tool.reason === undefined), "only a sandbox-only tool has a reason");
+  assert.deepEqual(tools.filter((tool) => tool.reason?.startsWith("no box")).map((tool) => tool.name), ["bash"], "only a sandbox-only tool is unavailable for want of a box");
 
   const made = await api("POST", "/agents", agent("docked", { place: { mode: "sandbox", box: "docker" } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
