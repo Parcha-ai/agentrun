@@ -495,6 +495,8 @@ test("a reply that answers only once its turn is stopped leaves the run stopped,
   const two = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   const api = client(two.baseUrl, two.token);
   assert.deepEqual(await stateOf(api, run_id), ["input_required", "idle"]);
+  // Its process ended with the first server, so these rows are the stopped turn's last: the late reply left none.
+  assert.deepEqual((await follow(api, run_id, ["input_required"])).rows.filter((r) => r.kind === "final_answer" || r.kind === "text_block"), []);
   assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "go on" })).body.mode, "follow_up");
   await follow(api, run_id, ["completed"]);
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");

@@ -207,7 +207,7 @@ test("a home path takes only plain segments, and a host-owned name in another sp
     for (const method of ["GET", "PUT", "DELETE"]) check(method, await raw(server, method, "keeper", encoded(path), method === "PUT" ? "x" : undefined));
   };
   // A segment holding a default-ignorable code point, or not in its NFC form, is no plain segment.
-  for (const path of ["learn\u200Cing/notes.md", "learn\u200Bing/notes.md", "learn\u00ADing/notes.md", "\uFEFFlearning/notes.md", "learnin\u0301g/x", "\u212Aeeper/x"]) {
+  for (const path of ["learn\u200Cing/notes.md", "learn\u200Bing/notes.md", "learn\u00ADing/notes.md", "\uFEFFlearning/notes.md", "learnin\u0301g/x", "\u212Aeeper/x", "a\u2060b/x", "a\u034Fb/x"]) {
     await each(path, (method, answer) => {
       assert.deepEqual(refused(answer), [400, "invalid_file_path"], `${method} ${JSON.stringify(path)}: ${JSON.stringify(answer.body)}`);
       assert.equal(answer.body.error.message, "a path segment must be plain text (NFC, no invisible characters)");
