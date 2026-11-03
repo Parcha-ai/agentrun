@@ -822,7 +822,8 @@ the commit the merge was made on (once more on a `main` that moved meanwhile), a
 merged, never twice. The merge's own questions are asked again of `main` first: a name another run added since is
 refused as `exists`. A server that goes between steps picks the run up at its next start, once.
 
-The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run lists) says how it went: `seeded`, then
+The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in run lists, the detail cut to 140
+characters and no time) says how it went: `seeded`, then
 `reflecting` during the turn and until what it wrote is checked, `proposed` while it is graded, and `merged`, or
 `dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `no_write_tool`, `cancelled`,
 `crashed`, `reflect_timeout`, `reflect_failed`, `empty`, `propose_failed`, `checker`, `screen`, `screen_down`,

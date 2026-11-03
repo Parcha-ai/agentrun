@@ -333,7 +333,7 @@ test("learning is this server's own addition, learning/1: the definition's switc
     assert.deepEqual(read.learning && [read.learning.state, read.learning.reason], want[id], id);
     assert.deepEqual(schemaProblems(doc, schemas.Run.properties.learning, read.learning), [], `${id}: ${JSON.stringify(read.learning)}`);
     const listed = (await api("GET", `/agents/${id}/runs`)).body.runs[0];
-    assert.deepEqual(listed.learning, want[id] && { state: want[id][0], reason: want[id][1] }, `${id} in its list`);
+    assert.deepEqual(listed.learning, want[id] && { state: want[id][0], reason: want[id][1], detail: read.learning.detail }, `${id} in its list, in the same words`);
     assert.deepEqual(schemaProblems(doc, schemas.RunSummary.properties.learning, listed.learning), [], id);
     const row = rows.filter((r) => r.kind === "learning");
     assert.equal(row.length, want[id] ? 1 : 0, `${id}: its learning row`);
@@ -360,6 +360,9 @@ test("what a run read and learned and what learning changed for its agent are le
       assert.match(schema.properties[field].description, field === "used" ? /\.learning\/.*MEMORY\.md/s : /merged/, field);
     }
   }
+  // A list row says the run's learning in the same words, short: its detail at most 140 characters, and no time.
+  assert.ok(short.oneOf[0].required.includes("detail") && !("at" in short.oneOf[0].properties));
+  assert.equal(short.oneOf[0].properties.detail.maxLength, 140);
   const agentView = doc.paths["/agents/{agent_id}/learning"].get.responses["200"].content["application/json"].schema;
   assert.equal(agentView.properties.impact["x-agentrun-serve"], "learning/2");
   assert.ok(agentView.required.includes("impact"), "impact is always there, null until it can be said");
@@ -388,7 +391,8 @@ test("what a run read and learned and what learning changed for its agent are le
   const merged = views[1].learning;
   assert.notDeepEqual(schemaProblems(doc, whole, { ...merged, used: [] }), []);
   assert.notDeepEqual(schemaProblems(doc, whole, { ...merged, learned: [{ file: "a.md", name: "A" }] }), []);
-  assert.notDeepEqual(schemaProblems(doc, short, { state: "merged", reason: null, learned: merged.learned, detail: merged.detail }), [], "a list has no detail");
+  assert.notDeepEqual(schemaProblems(doc, short, { state: "merged", reason: null, detail: merged.detail, learned: merged.learned, at: merged.at }), [], "a list has no time");
+  assert.notDeepEqual(schemaProblems(doc, short, { state: "merged", reason: null, detail: "x".repeat(141) }), [], "a list's detail is short");
   assert.notDeepEqual(schemaProblems(doc, agentView, { ...agentLearning, impact: { ...agentLearning.impact, after: { runs: 2, median_duration_s: 1 } } }), []);
 });
 

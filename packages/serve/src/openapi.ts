@@ -728,7 +728,14 @@ const LEARNING = {
   description: `What the run learns from and what it learned: a run of an agent whose \`learning\` is true starts from its agent's learning folder, the index of its notes in its instructions and the notes in \`.learning/\` in its working directory. Once it answers or fails, the server asks the same harness one more turn, under the run's cap, to add notes there; what it adds is checked, graded by one grader on the agent's own model, and merged into the folder, or dropped. ${LEARNING_NULL}`,
   "x-agentrun-serve": "learning/1",
 };
-const LEARNING_SHORT = { oneOf: [closedWith({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON }, LEARNING_NOTES), { type: "null" }], description: `The run's learning, in short (GET /runs/{run_id} has it whole, with its detail and time). ${LEARNING_NULL}`, "x-agentrun-serve": "learning/1" };
+const LEARNING_SHORT = {
+  oneOf: [closedWith({
+    state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON,
+    detail: { type: ["string", "null"], maxLength: 140, description: "Run.learning's detail, in the same words, cut short: at most 140 characters, ending in an ellipsis when cut (a grader's long reason). Cut of the host's secrets first, so none is ever shown in part.", "x-agentrun-serve": "learning/2" },
+  }, LEARNING_NOTES), { type: "null" }],
+  description: `The run's learning, in short (GET /runs/{run_id} has it whole, with its whole detail and its time). ${LEARNING_NULL}`,
+  "x-agentrun-serve": "learning/1",
+};
 
 /** What this server's run answers carry beyond the contract's Run and RunSummary: added before they were marked, so
  *  `serve/1`. */

@@ -8,13 +8,16 @@ import { CAPS, type Problem } from "@parcha/agentrun-learn";
 /** `n` of `one`, said as a person says it: "1 note", "2 notes". */
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 /** `text` on one line, at most `max` characters, cut at a word with an ellipsis when it is longer. */
-function short(text: string, max: number): string {
+export function short(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length <= max) return flat;
   const cut = flat.slice(0, max - 1);
   const word = cut.lastIndexOf(" ");
   return `${(word > max / 2 ? cut.slice(0, word) : cut).replace(/[\s,;:.]+$/, "")}…`;
 }
+
+/** The most a run list's row says of a run's learning: its detail, cut short (learning.ts shortLearning). */
+export const LIST_DETAIL = 140;
 
 const SENTENCES = new Intl.Segmenter("en", { granularity: "sentence" });
 /** The first sentence of `text`, by Unicode's sentence rules (so "e.g." or a URL's dot does not end it), read as one

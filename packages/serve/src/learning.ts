@@ -24,6 +24,7 @@ import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join, relative } from "node:path";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, valueMatcher, type Verdict } from "@parcha/agentrun-learn";
 import { homeOf, writeDurable } from "./files.js";
+import { LIST_DETAIL, short } from "./learning-words.js";
 import { isObject } from "./validate.js";
 
 /** The server's learning switch (`--learning`, AGENTRUN_SERVE_LEARNING; capabilities.features.learning). `on`, the
@@ -96,8 +97,14 @@ export const learningView = (learning: Learning, shown: Shown, settled: boolean)
   const { state, reason, detail, at } = learning;
   return { state, reason, detail: detail === null ? null : shown.text(detail), at, ...notesView(learning, shown, settled) };
 };
-/** A run's learning as a list shows it: its state and reason, and the notes it read and learned (notesView). */
-export const shortLearning = (learning: Learning | null, shown: Shown, settled: boolean) => (learning ? { state: learning.state, reason: learning.reason, ...notesView(learning, shown, settled) } : null);
+/** A run's learning as a list shows it: its state and reason, its detail cut of the host's secrets and then short (at
+ *  most LIST_DETAIL characters, so a secret is never cut in half and shown), and the notes it read and learned
+ *  (notesView); never its time. */
+export const shortLearning = (learning: Learning | null, shown: Shown, settled: boolean) => (learning ? shortOf(learningView(learning, shown, settled)) : null);
+/** A run's learning as its view shows it, in short for a list: all of it but its time, its detail cut short. */
+export function shortOf<T extends { state: LearningState; reason: LearningReason | null; detail: string | null; at: string }>({ state, reason, detail, at: _, ...notes }: T) {
+  return { state, reason, detail: detail === null ? null : short(detail, LIST_DETAIL), ...notes };
+}
 /** The label of the end-of-run turn's timeline rows, and the kind and label of a run's learning row. */
 export const LEARNING_LABEL = "learning";
 
