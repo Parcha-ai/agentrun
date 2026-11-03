@@ -234,6 +234,33 @@ test("a note that holds a key the server saved through its settings API is refus
   assert.ok(!shown.includes(saved), "the key is nowhere the run's learning is shown");
 });
 
+// The check refuses what each launch handed the run, not only the keys as they are saved at its end: a person may
+// replace or delete a key while the run lives, and its process still holds the old one.
+test("a saved key a run was handed is refused in its notes though the person replaced it while the run lived: the check knows what each launch handed, the grader is never asked", { timeout: 150_000 }, async (t) => {
+  const handed = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
+  const replaced = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
+  const gate = join(await scratch(t), "answer");
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_CALLS: calls }, ["MONID_API_KEY"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: handed } })).status, 204);
+  await made(api, learner("keeper", { tools: ["write", "monid.discover", "monid.inspect", "monid.run"], instructions: `Answer once ${gate} exists.`, plan: [["call-monid.md", note("Call monid", "Call monid on its key", `Call monid with ${handed}.\n`)]] }));
+  const runId = await started(api, "keeper");
+  for (let i = 0; (await api("GET", `/runs/${runId}`)).body.status !== "working"; i++) {
+    assert.ok(i < 1200, "the run works");
+    await sleep(50);
+  }
+  // Replaced while the run lives: its process holds the key it was handed, and its end-of-run turn writes that one.
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: replaced } })).status, 204);
+  writeFileSync(gate, "");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "dropped", "checker");
+  const { learning } = await savedOf(data, runId);
+  assert.deepEqual(learning.problems, [{ rule: "secret_value", path: "call-monid.md", detail: "it holds a value the host named as secret" }]);
+  assert.equal(existsSync(calls) ? readFileSync(calls, "utf8").trim() : "", "", "the grader was never asked");
+  assert.ok(!objects(repoOf(data, "keeper")).includes(handed), "no git object holds the handed key");
+});
+
 test("under the launcher's custody, a note that holds the model key it handed over, base64-wrapped, is refused as secret_value: no git object holds the key, and nothing the run shows does", { timeout: 120_000 }, async (t) => {
   // Built at the run, from parts: a value no file of this repository holds.
   const key = ["canary", process.pid, Date.now().toString(36), "a1b2c3"].join("-");
