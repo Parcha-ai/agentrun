@@ -118,6 +118,10 @@ export default function reply(context, faux) {
     if (results === 0) return faux.message(faux.toolCall("write", { path: "a.md", content: "a" }), { stopReason: "toolUse" });
     return import("node:fs").then(({ writeFileSync }) => (writeFileSync(signalWait[1], ""), slow(faux, 60_000, "Done slowly.")));
   }
+  // Holds its first answer until the file exists; the person's follow-up, placed at that answer's end with it, is
+  // answered in a run of its own.
+  const held = /Hold the answer until (\S+)\./.exec(first)?.[1];
+  if (held) return users.length > 1 ? faux.message("Answer 2.") : untilExists(held).then(() => faux.message("Answer 1."));
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   if (first.includes("Write the report")) {
     if (answered) return faux.message("I wrote report.md.");

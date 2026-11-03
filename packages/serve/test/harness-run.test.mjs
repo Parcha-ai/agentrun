@@ -308,6 +308,60 @@ test("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) en
   assert.deepEqual(usageOf(rows), { usd: 0.003, requests: 3 }, "the follow-up's request counts");
 });
 
+const FAUX_WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
+
+/** Follows a run to completed, then checks it never read completed before `answer` was on its timeline: the rows of every
+ *  page up to the first completed one. */
+async function completesOnlyAfter(api, runId, answer) {
+  const { pages } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const seen = new Map();
+  for (const page of pages) {
+    if (page.reset) seen.clear();
+    for (const id of page.drop) seen.delete(id);
+    for (const row of page.rows) seen.set(row.id, row);
+    if (page.status === "completed") {
+      const rows = [...seen.values()];
+      assert.ok(rows.some((r) => (r.kind === "final_answer" || r.kind === "text_block") && r.summary === answer), `completed before the follow-up's answer: ${JSON.stringify(rows.map((r) => [r.kind, r.summary]))}`);
+      return rows;
+    }
+  }
+  assert.fail("never completed");
+}
+
+for (const harness of ["claude-agent", "codex"]) {
+  test(`${harness}: a follow-up sent while a turn works waits its turn; the run does not end when the first turn does, only once the follow-up is answered`, { timeout: 90_000 }, async (t) => {
+    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB_HOLD });
+    const go = join(await scratch(t), "go");
+    const runId = await started(api, `held-${harness}`, `Hold the answer until ${go}.`, harness, ["fetch_page"]);
+    for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_use"); i++) {
+      assert.ok(i < 300, "the turn holds on its fetch");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const sent = await api("POST", `/runs/${runId}/messages`, { content: "and then?" });
+    assert.deepEqual([sent.status, sent.body.mode], [202, "follow_up"], JSON.stringify(sent.body));
+    await writeFile(go, "");
+    const rows = await completesOnlyAfter(api, runId, "Answer 2.");
+    assert.deepEqual(rows.filter((r) => ["user_message", "final_answer", "text_block"].includes(r.kind)).map((r) => r.summary), ["You: hi", "Answer 1.", "You: and then?", "Answer 2."]);
+    assert.equal(await answer(api, runId), "Answer 2.");
+  });
+}
+
+test("pi: a message sent while a turn works is placed at that turn's end and answered in the next run; the run does not end between them", { timeout: 90_000 }, async (t) => {
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const go = join(await scratch(t), "go");
+  assert.equal((await api("POST", "/agents", agent("held-pi", { tools: [] }))).status, 201);
+  const run = await api("POST", "/agents/held-pi/runs", { input: { content: `Hold the answer until ${go}.` } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: "and then?" });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  await writeFile(go, "");
+  const rows = await completesOnlyAfter(api, runId, "Answer 2.");
+  assert.deepEqual(rows.filter((r) => ["final_answer", "text_block"].includes(r.kind)).map((r) => r.summary), ["Answer 1.", "Answer 2."]);
+  assert.equal(await answer(api, runId), "Answer 2.");
+});
+
 test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");

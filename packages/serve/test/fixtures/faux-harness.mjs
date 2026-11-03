@@ -22,6 +22,10 @@ export function script(spec) {
   // A follow-up whose turn makes one request and shows nothing, as the Claude CLI's /compact does (a summary request, no
   // text): the turn ends with no answer row after the person's message.
   if (/The second turn answers nothing\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
+  // A turn that holds in its own process (fetch_page waits for the file, faux-web-hold.mjs), answers, then answers the
+  // follow-up the person sent meanwhile in a turn of its own.
+  const held = /Hold the answer until (\S+)\./.exec(text)?.[1];
+  if (held) return [{ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(held)}` }, usd: 0.001 }, { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }];
   if (/Second turn unpriced\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: null }, { end: true, usd: 0.001 }];
   // A turn that waits as below, then a second turn that answers a chat sent while the first one worked.
   const chat = /Wait for (\S+), then answer the chat\./.exec(text)?.[1];

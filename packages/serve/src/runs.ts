@@ -155,9 +155,9 @@ export type Run = {
   feed?: AbortController;
   /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
-  /** The newest entry, by id, that a turn that ended had seen: the door said idle (run_end, or a snapshot of an idle run)
-   *  with it in. A person's message at or before it was answered by a turn that is over, whatever that turn showed. */
-  overThrough?: number;
+  /** Whether, in the run's entries, an answer that ended its request (stopReason "stop") comes after the person's newest
+   *  message: the turn that took the message answered it, though perhaps with nothing it shows (noteAnswer). */
+  answeredMessage?: boolean;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
   /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
@@ -224,8 +224,14 @@ export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
 /** Notes the whole text of the newest assistant message in `entries` (pi's stored entries). */
 function noteAnswer(run: Run, entries: readonly unknown[]): void {
   for (const value of entries) {
-    if (!isObject(value) || value.kind !== "pi.assistant" || !Array.isArray(value.model) || !isObject(value.model[0])) continue;
-    const content = value.model[0].content;
+    if (!isObject(value) || typeof value.kind !== "string") continue;
+    // The person's message, as the timeline shows one (a user entry: pi's, or a host's own kind), or their sign-in: no
+    // answer has followed it yet.
+    const first = Array.isArray(value.model) && isObject(value.model[0]) ? value.model[0] : undefined;
+    if (value.kind === "agent.handover" || (first?.role === "user" && (value.kind === "pi.user" || !value.kind.startsWith("pi.")))) run.answeredMessage = false;
+    if (value.kind !== "pi.assistant" || !first) continue;
+    if (first.stopReason === "stop") run.answeredMessage = true;
+    const content = first.content;
     const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "";
     if (text) run.answerText = text;
   }
@@ -607,9 +613,10 @@ export class Runs {
     if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
     if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
     if (stopped(run)) return undefined;
-    // Its newest row is the answer; or the person's message, which a turn that is over took and answered with nothing it
-    // shows (the Claude CLI's /compact: a summary request, no text), so the answer stands as it was.
-    if (answerOf(run.rows) || (last?.kind === "user_message" && run.overThrough !== undefined && placeOf(last.id) <= run.overThrough)) return { outcome: "completed" };
+    // Its newest row is the answer; or the person's message, which an answer that ended its request follows in the entries
+    // (the Claude CLI's /compact: a summary request, no text): its turn took it and is over, and the earlier answer stands.
+    // From the entries' own order, never from when the door said idle.
+    if (answerOf(run.rows) || (last?.kind === "user_message" && run.answeredMessage === true)) return { outcome: "completed" };
     return undefined;
   }
 
@@ -798,15 +805,7 @@ export class Runs {
         if (event === "end") return;
         const events = event === "snapshot" ? [value as Json] : event === "events" && Array.isArray(value) ? (value as Json[]) : [];
         if (event === "snapshot") run.working = Boolean((value as Json).run);
-        // In order: the entries an event brings, and the newest one in when the door says the turn is over.
-        let newest = run.overThrough ?? 0;
-        let seen = newest;
-        for (const e of events) {
-          for (const entry of Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : []) if (isObject(entry) && typeof entry.id === "number") seen = Math.max(seen, entry.id);
-          if (e.type === "run_start" || e.type === "run_end") run.working = e.type === "run_start";
-          if (e.type === "run_end" || (event === "snapshot" && !run.working)) newest = seen;
-        }
-        if (newest > (run.overThrough ?? 0)) run.overThrough = newest;
+        for (const e of events) if (e.type === "run_start" || e.type === "run_end") run.working = e.type === "run_start";
         noteAnswer(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])));
         reducer.apply(events as never);
         // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
