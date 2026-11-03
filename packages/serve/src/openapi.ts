@@ -28,7 +28,7 @@ export const UNSUPPORTED: Readonly<Record<string, string>> = {
 
 const ref = (name: string) => ({ $ref: `#/components/${name}` });
 const errors = (...codes: number[]) =>
-  Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 403: "Forbidden", 404: "NotFound", 409: "Conflict", 413: "PayloadTooLarge", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal", 501: "Unsupported" }[code]}`)]));
+  Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 403: "Forbidden", 404: "NotFound", 409: "Conflict", 413: "PayloadTooLarge", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal", 501: "Unsupported", 503: "Unavailable" }[code]}`)]));
 const json = (schema: unknown, description: string) => ({ description, content: { "application/json": { schema } } });
 /** GET /health's answer (host.ts Health). */
 const HEALTH = {
@@ -436,7 +436,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Each value is sealed under the server's seal key and kept in the data directory as ciphertext alone; the key's other fields stay as they are. The key (the first field) is first checked against its provider with one call that costs nothing, given 5 s: a key the provider refuses (401) is 422 input_invalid, its field's reason `refused_by_provider` and the message in plain words with the provider's first sentence (never any of the key), and nothing is kept; otherwise it is kept, and GET's `check` says `accepted` or `not_checked` and why (a 403 is not_checked: a key scoped away from the check's call may still work for its tools). A save whose check is still waiting when the server begins to close keeps nothing (503 unavailable, while its connection lasts). 422 also for an unknown key or field, or a value that is empty, holds a control character or is over 1024 bytes; 409 key_set_by_server for a field the server is started with; 409 no_sealing_key when the server was handed no seal key.",
       parameters: [KEY_ID],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["values"], properties: { values: { type: "object", minProperties: 1, additionalProperties: { type: "string", minLength: 1 } } } } } } },
-      responses: { "204": { description: "Saved." }, ...errors(400, 401, 409, 415, 422, 429, 500) },
+      responses: { "204": { description: "Saved." }, ...errors(400, 401, 409, 415, 422, 429, 500, 503) },
       "x-agentrun-serve": "toolkeys/1",
     },
     delete: {
