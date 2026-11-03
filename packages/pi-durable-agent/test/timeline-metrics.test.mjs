@@ -266,3 +266,14 @@ test("mapping runMetricsOf over runs' entries is safe: map's index is never read
   const entries = [answer([{ type: "text", text: "a" }], usage(10, 2)), answer([{ type: "text", text: "b" }], usage(5, 1))];
   assert.deepEqual([entries, entries].map(runMetricsOf), [runMetricsOf(entries), runMetricsOf(entries)]);
 });
+
+test("a result stored before its call (a harness that wrote it first) counts once, with that call: no call reads failed for it", () => {
+  const entries = [
+    user("Write the files.", 0),
+    result("w1", "write", "Successfully wrote a.md", 1),
+    assistant([call("w1", "write", { path: "a.md", content: "alpha" }), call("w2", "write", { path: "b.md", content: "beta" })], 2),
+    result("w2", "write", "Successfully wrote b.md", 3),
+    assistant([{ type: "text", text: "Wrote both." }], 4),
+  ];
+  assert.deepEqual(runMetricsOf(entries).tools, { write: { calls: 2, errors: 0 } });
+});

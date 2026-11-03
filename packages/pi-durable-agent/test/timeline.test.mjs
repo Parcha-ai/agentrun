@@ -571,6 +571,37 @@ test("a call an earlier process left open is interrupted in its place: the answe
   placed(rest(timelineOf(entries, { settled: true })));
 });
 
+test("a result stored before its call (a harness that wrote it first) reads as that call's: right after it, with its label, once, and the call never reads interrupted", () => {
+  // Two calls in one answer; the first one's result was stored before the answer that holds both.
+  const entries = [
+    user("Write the files.", 0),
+    result("w1", "write", "Successfully wrote a.md", 1),
+    assistant([call("w1", "write", { path: "a.md", content: "alpha" }), call("w2", "write", { path: "b.md", content: "beta" })], 2),
+    result("w2", "write", "Successfully wrote b.md", 3),
+    assistant([{ type: "text", text: "Wrote both." }], 4),
+  ];
+  const placed = (rows) => {
+    const shown = JSON.stringify(rows.map((r) => [r.id, r.kind, r.summary]));
+    assert.deepEqual(rows.filter((r) => r.id.includes(":interrupted:")), [], `no call reads interrupted: ${shown}`);
+    for (const [id, file] of [["w1", "a.md"], ["w2", "b.md"]]) {
+      const use = rows.findIndex((r) => r.kind === "tool_use" && r.tool_use_id === id);
+      const results = rows.filter((r) => r.kind === "tool_result" && r.tool_use_id === id);
+      assert.equal(results.length, 1, `${id}: one result: ${shown}`);
+      assert.ok(use >= 0 && rows.indexOf(results[0]) === use + 1, `${id}: its result right after its call: ${shown}`);
+      assert.match(results[0].summary, new RegExp(file.replace(".", "\\.")), `${id}: its result names ${file}: ${shown}`);
+      assert.equal(results[0].tool_status, "success", shown);
+    }
+    assert.equal(rows.filter((r) => r.kind !== "usage" && r.kind !== "phase").at(-1).kind, "final_answer", shown);
+  };
+  // Stored: the settled read.
+  placed(timelineOf(entries, { settled: true }));
+  // Live: the same store as a snapshot, then a turn that starts and ends.
+  const reducer = timelineReducer({ conversationId: 1 });
+  reducer.apply([{ type: "snapshot", entries }, { type: "run_start", inputs: [] }]);
+  reducer.apply([{ type: "run_end", inputs: [] }]);
+  placed(reducer.rows());
+});
+
 test("waits: a retry, a poll and a queue are live rows that clear", () => {
   const reducer = timelineReducer({ conversationId: 1, now: () => 1_000 });
   const rows = (events) => summaries(reducer.apply(events).rows);
