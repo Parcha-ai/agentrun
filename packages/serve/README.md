@@ -61,6 +61,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
+| `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -401,27 +402,43 @@ the sessions it still holds are released at Browserbase.
 `monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
 endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs
 it. Each run is paid per call from the monid workspace's wallet, and is sent once, never retried. An async provider's
-run is read until it ends, about two minutes at most, and asked to stop at monid when the run stops or it outlasts
-that. A refusal comes back as `{error, status?}` in words: the wallet too low (402), a workspace control such as its
-budget (`BLOCKED`), `FAILED`, `TIMED_OUT`, the provider's own error (not charged). The model reads each answer as JSON
-cut at 60,000 characters, the whole of it then filed under the run's `work/evidence/monid/`. An answer carries what
-monid charged (`cost`, in dollars); the run's own cost and its spend cap do not count it yet. They run on pi only for
-now (another harness saves a revision naming one with a warning, and refuses its runs), where the model and the run's
-timeline see them as `monid_discover`, `monid_inspect` and `monid_run`: a model API takes no dot in a tool's name. The
-key is a secret like the model keys: a run's process gets it over its pipe, never in its environment.
+run is read until it ends, about two minutes at most, and asked to stop at monid when the run stops or it outlasts that.
+A refusal comes back as `{error, status?}` in words: the wallet too low (402), a workspace control such as its budget
+(`BLOCKED`), `FAILED`, `TIMED_OUT`, the provider's own error (not charged). The model reads each answer as JSON cut at
+60,000 characters, the whole of it then filed under the run's `work/evidence/monid/`. An answer carries what monid
+charged (`cost`, in dollars), and that charge is the run's spend: booked once in the run's own records as a tool cost
+(`agentrun.tool_cost`: `tool` `monid.run`, `charged_by` `"monid"`, `usd`), shown in its timeline on a line of its own
+(`Tool cost: monid charged $0.0030 for monid.run`) and summed into its cost, the total its [spend cap](#spend-cap)
+reads, and `/usage` grouped by meter shows it as its own meter, `tools`, apart from `tokens`. Each run is marked in the
+run's records before it is sent, held at the price an earlier `monid.inspect` of the run quoted for that endpoint, else
+at an allowance of $1; its charge settles the mark. A mark a crash left unsettled leaves the run's cost unknown, as a
+model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
+no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
+never $0: the run's cost reads `null`, and under a cap every later request is refused, as for any spend no one knows;
+one monid says it did not charge (refused as sent, `BLOCKED`, `STOPPED`, the provider's error) books nothing. Under a
+cap, each `monid.run` is held as a model request is: unless what the run has spent plus what the run is held at (the
+price an inspect quoted, else the $1 allowance) fits its `max_cost_usd`, or when the spend is unknown, the call is
+refused with a `spend_cap_reached` error the model reads, naming its price and the cap (and, when the allowance was
+used, that `monid.inspect` gives a quote), and monid is never called. Runs go one at a time under a cap, and on
+claude-agent and codex the check holds each model request still in flight at its worst case. `discover` and `inspect`
+cost nothing and are never refused. They run on every harness: pi binds them, and claude-agent and codex call them as
+host tools in the run's process, where a `monid.run` call a crash cut off is answered interrupted, never sent again
+(`discover` and `inspect` may run again). On each, the model, the call's journal and the run's timeline name them
+`monid_discover`, `monid_inspect` and `monid_run`: a model API takes no dot in a tool's name. The key is a secret like
+the model keys: a run's process gets it over its pipe, never in its environment.
 
 ## Tool keys
 
 A tool's key comes from one of two places. The server's own environment, through its launcher: `PARALLEL_API_KEY`,
-`MONID_API_KEY` and `BROWSERBASE_API_KEY` are among the secrets it hands the server over its pipe. Or the page, by
-name: `PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one, field by field (`parallel` takes
-`PARALLEL_API_KEY`, `monid` `MONID_API_KEY`, `browserbase` `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`), and
-`DELETE` forgets it. `GET /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and
-each field's `set` and `source` (`server`, `stored` or null): never a value, nor any part of one. `unlocks` holds only
-what capabilities show this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): a
-key whose tools it binds none of still lists, with nothing in `unlocks`. A field the server is
-started with is the server's, and wins: saving it is `409 key_set_by_server`. A value is text of at most 1024 bytes
-with no control character (`422` otherwise).
+`MONID_API_KEY` and `BROWSERBASE_API_KEY` are among the secrets it hands the server over its pipe. Or the page, by name:
+`PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one, field by field (`parallel` takes
+`PARALLEL_API_KEY`, `monid` `MONID_API_KEY`, `browserbase` `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`,
+`typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. `GET
+/v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and each field's `set` and
+`source` (`server`, `stored` or null): never a value, nor any part of one. `unlocks` holds only what capabilities show
+this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): a key whose tools it binds
+none of still lists, with nothing in `unlocks`. A field the server is started with is the server's, and wins: saving
+it is `409 key_set_by_server`. A value is text of at most 1024 bytes with no control character (`422` otherwise).
 
 A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
 name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal
@@ -437,6 +454,17 @@ A stored value that does not open is never a reason not to start. It reads `set:
 shows as this) or `file_unreadable`. The log says so once, naming the condition and the file, never a value; a `PUT` of
 the value seals it again under the current key. In a container, `~/.config` is the container's own and goes with it:
 pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new container opens the keys the volume holds.
+
+A saved key is read by name like one the launcher hands over, and the launcher's value wins for a name it holds. A run
+gets the saved keys at its launch, over the pipe its secrets come on (a workflow run's `PARALLEL_API_KEY` on its
+decision descriptor), never in any process's environment, and never the seal key. No restart: after a `PUT` or
+`DELETE`, capabilities, the harnesses' offers, a save's checks and a run's checks see the change at once. A run already
+running keeps what it was handed; the next run started, or a run's process started again, takes what is saved then.
+`BROWSERBASE_PROJECT_ID` is on the launcher's list for this, as every field a person may save is. Capabilities name each
+tool's key (`tools[].key`, a `GET /settings/tool-keys` id, `browserbase` for `browser`), so a page can link a tool's
+missing names to where its key is saved. `agentrun-serve import` opens the saved keys in its data directory too and
+cuts each out of what it writes, as it cuts a key-shaped variable of its environment; one that does not open there is
+not known, so not cut, and the import says so.
 
 ## Webhooks
 
@@ -794,6 +822,49 @@ the answer is sent, so a retry after a restart gets the first answer.
 A completed agentic run's `result` is `{output: null, final_answer}`; a completed workflow run's is
 `{output: <the workflow's output>, final_answer: null}`.
 
+## Learning
+
+Learning is off unless an agent's definition says `learning: true` (an agentic one: a workflow refuses the field). A
+definition that sets it keeps it on its revision, `false` included, and an edit that leaves it out keeps the agent's; one
+that never sets it stores nothing, so its revision id is the one it had before the switch. The server's `--learning off`
+turns learning off for every run it starts, whatever the agent says.
+
+An agent that learns has a learning folder, `learning/` in its home (`DATA/homes/<key>/learning/`), in Claude Code's
+auto-memory format:
+
+- `MEMORY.md`, the index a run reads, one line per active note: `- [name](file.md) — description`, built by the server;
+- one file per note, `<slug>.md`: front matter with `name`, `description` and `type` (`user`, `feedback`, `project` or
+  `reference`), and optionally `status: superseded` or `retired` with `superseded_by` (no status: active), then the
+  note's text. The server parses it and builds the index (`src/notes.ts`).
+
+The folder is plain git with `main` checked out. The agent's first run that learns makes it, with one commit on `main`
+holding an empty `MEMORY.md`; an agent that does not learn never gets one. The server is its only writer. Every git
+call the server makes there runs with the folder's hooks and fsmonitor off, no replace refs, no lazy fetch and no system
+or global config, one at a time per agent.
+
+Each run of an agent that learns starts from `main` as it is when the run is made, whatever its harness:
+
+- `runs/<id>/learning.json` pins that commit (`seed`). It is written once: a resume or a follow-up reads the same
+  commit, however `main` moves on.
+- The first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own) go into the run's
+  instructions after the agent's, under `# Learned`, with one line saying the notes are in `.learning/` and to open one
+  when it applies. That is pi's system prompt and claude-agent's and codex's instructions: the same channel `CLAUDE.md`
+  and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project settings off, so a
+  `.claude/` in the work never loads), and no skill is learned.
+- `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh; a superseded or retired
+  note is not.
+
+The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
+1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
+run: when the folder cannot be made or read, or its notes copied, the run starts with nothing learned. A host without
+git 2.40 or later is one such fault, said once on stderr.
+
+The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run lists) says how it went:
+`{state: "seeded", reason: null, detail: null, at}` for a run that started from what its agent learned,
+`{state: "dropped", reason: "seed_failed", detail, at}` for one that started with nothing, and `null` for a run that does
+not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a workflow's or an
+imported run). Nothing writes to `main` after its first commit yet: what a run learns stays in the run.
+
 ## Spend cap
 
 An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process
@@ -808,7 +879,8 @@ a token of less than one byte, and an image's base64 is far more bytes than its 
 server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent and codex uses; there
 the proxy measures each request's body. A request in flight holds its worst case until it answers, so requests sent side
 by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
-survives a restart, plus each response since.
+survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
+refused once the spend reaches the cap; see [monid](#tools)).
 
 Under a cap, whatever cannot be priced is refused, never passed as $0:
 
@@ -895,7 +967,9 @@ carries no cost at all, as from a provider that does not price the model. The te
 - Each run's door listens on loopback and takes only the server's door token.
 - A run's process gets the server's environment (model keys and the `AGENT_MODEL` variables among it) without the
   server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token. It gets none of
-  the boxes' keys either ([Boxes](#boxes)).
+  the boxes' keys either ([Boxes](#boxes)). A tool key reaches it only when its revision names a tool the key unlocks
+  (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` `browser`; a workflow's tools are those its model and call nodes
+  name), read from the revision at each launch, a relaunch or a resume after a restart included.
 - A run's file tools (`read`, `write`, `edit`) reach its own `work/`, and two places of its own beside it: `read` also
   reaches the run's `tmp/` (next to `work/`, where a command's spilled output would go), and a write may also land in a
   temporary directory the run's environment made for a tool (`createTempDir`). Every other path, a link inside `work/`

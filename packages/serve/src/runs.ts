@@ -18,23 +18,25 @@ import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
+import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
-import { ASK_TOOL, FAUX_BROWSER_ENV, toolingOf } from "./tools.js";
+import { ASK_TOOL, FAUX_BROWSER_ENV, toolingOf, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
 import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, PARALLEL_KEY_ENV } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { FAUX_MONID_ENV } from "./monid.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, FAUX_ENV, FAUX_UPSTREAM_ENV, thinkingOf, withoutFaux } from "./model.js";
+import { EFFORT_ENV, FAUX_ENV, FAUX_UPSTREAM_ENV, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
+import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
-import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
+import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
 
 export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
@@ -106,7 +108,11 @@ type RunMeta = {
   launch_thinking?: { effort?: string; host?: string };
   /** Its tools' providers, resolved at its first launch and kept for its life (tool-plane.ts). */
   tool_plane?: Plane;
+  /** Where the run's learning stands (learning.ts); absent for a run that does not learn. */
+  learning?: Learning;
 };
+/** A run's learning as a list shows it: its state and reason. */
+const shortLearning = (learning: Learning | null) => (learning ? { state: learning.state, reason: learning.reason } : null);
 
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
@@ -262,6 +268,10 @@ export const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
+/** What a run's paid tools charged, from the same rows its cost is read from: each charge's line carries it (`usage` on a
+ *  `phase` row); null when one is unknown. A call still marked, in flight or cut, is no charge here. */
+export const toolCostOf = (rows: readonly TimelineEvent[]): number | null =>
+  rows.reduce<number | null>((sum, row) => (row.kind !== "phase" || !row.usage ? sum : sum === null || row.usage.usd === null ? null : sum + row.usage.usd), 0);
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */
@@ -345,7 +355,7 @@ export type StartOptions = { input: Json; title: string; effort?: string; maxCos
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxUpstream?: string; fauxExa?: string; fauxHarness?: string; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxUpstream?: string; fauxExa?: string; fauxHarness?: string; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
  *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
 export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => void;
@@ -356,6 +366,25 @@ const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEA
 /** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own and the decision
  *  keys, which go on their own descriptor. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
+type KeyRow = { kind: string; fields: readonly string[]; unlocks: readonly string[] };
+/** The fields a run gets only when its revision names what they unlock: a `tool` key's. Any other kind's (a model key's)
+ *  reach every run, as the rest of RUN_SECRETS does. */
+const scopedOf = (rows: readonly KeyRow[]): readonly string[] => rows.filter((row) => row.kind === "tool").flatMap((row) => row.fields);
+/** What a run whose revision was not read is handed: no tool key. */
+const NO_TOOL_KEYS = RUN_SECRETS.filter((name) => !scopedOf(TOOL_KEYS).includes(name));
+
+/** The secrets a run of `revision` is handed over its pipe: RUN_SECRETS but each field of a `tool` row of `rows`
+ *  (TOOL_KEYS) that unlocks none of the tools the run binds, named as its process binds them (app.ts): an agentic
+ *  revision's `tools`, a workflow's on its model nodes and its `call` nodes. A model key, or any other secret that is
+ *  no tool key's field, goes to every run. */
+export async function secretsFor(revision: Revision, rows: readonly KeyRow[] = TOOL_KEYS): Promise<string[]> {
+  const workflow = revision.kind === "workflow" ? revision.body.workflow : undefined;
+  const bound = workflow && workflowTools(workflowNodes(workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(workflow)));
+  const named = new Set(bound ? [...bound.nodes, ...bound.calls] : (revision.body.tools ?? []));
+  const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((name) => named.has(name))).flatMap((row) => row.fields));
+  const scoped = scopedOf(rows);
+  return RUN_SECRETS.filter((name) => !scoped.includes(name) || unlocked.has(name));
+}
 /** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
 const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
 /** A run's process's environment: no secret in it (they go over its pipe), nor the token by value; the AGENT_MODEL
@@ -433,6 +462,9 @@ export class Runs {
   private readonly runs = new Map<string, Run>();
   /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
   private readonly workflows = new Map<string, unknown>();
+  /** The secrets each revision's runs are handed (secretsFor), by revision id: read before a launch, from the revision
+   *  the run is pinned to, never from a request. */
+  private readonly secrets = new Map<string, readonly string[]>();
   /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
   private readonly graphs = new Map<string, object>();
   private readonly adopting = new Map<string, Promise<Run>>();
@@ -446,6 +478,8 @@ export class Runs {
   private starting = 0;
   /** The start sweep of the boxes runs left: once, before any run opens a box (sweepOnce). */
   private swept?: Promise<void>;
+  /** Why this host keeps no learning folder, said once. */
+  private learningOff?: string;
   constructor(private readonly options: RunsOptions) {}
 
   private get store() {
@@ -495,7 +529,15 @@ export class Runs {
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
       ...(isObject(stored?.tool_plane) ? { tool_plane: stored.tool_plane as Plane } : {}),
+      ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
     };
+    // A server that went down while it copied what the run's agent learned saved the run's input and no learning, and
+    // left the copy half made, or whole with its pin: the copy goes, so the run starts again with nothing learned.
+    if (row.state === "running" && stored && !meta.learning && (await dropSeed(dir, join(dir, "work")))) {
+      meta.learning = { state: "dropped", reason: "seed_failed", detail: "The server stopped while it copied what the agent learned into the run, so the run started with nothing learned.", at: new Date().toISOString() };
+      await writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`);
+      warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
+    }
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, known ? await toolingOf(known.revision) : undefined);
     this.runs.set(row.id, run);
@@ -827,6 +869,7 @@ export class Runs {
     const deadline = Date.now() + timeoutMs;
     // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
     await this.sweepOnce();
+    await this.pinSecrets(run);
     // And for its files, which its start copies before it launches it: within the time left.
     const copying = run.preparing;
     if (copying) {
@@ -902,10 +945,19 @@ export class Runs {
     }
   }
 
+  /** Reads the secrets runs of `run`'s revision are handed (secretsFor), once per revision: from `given` (a start's, read
+   *  from the store), else from the agent store, waiting out a busy one as a run's end does. */
+  private async pinSecrets(run: Pick<Run, "id" | "revision">, given?: Revision): Promise<void> {
+    if (this.secrets.has(run.revision)) return;
+    const revision = given ?? (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store")));
+    this.secrets.set(run.revision, await secretsFor(revision));
+  }
+
   private launch(run: Run): void {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing) return;
-    // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts).
-    const secrets = handover(RUN_SECRETS);
+    // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts). Each launch path
+    // reads its revision's first (pinSecrets); one that did not hands no tool key.
+    const secrets = handover(this.secrets.get(run.revision) ?? NO_TOOL_KEYS, this.options.storedKeys);
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
       [SECRETS_FD_ENV]: "3",
@@ -926,8 +978,9 @@ export class Runs {
     // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
     // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are
     // in the serve.json its start writes (start); resolving here is for a run made before that. A description with no secret
-    // in it, read by the run's process, never by a request.
-    const served = withSecrets(process.env);
+    // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
+    // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
+    const served = withSecrets(process.env, "all", this.options.storedKeys);
     const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served) : run.tooling ? planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined }) : {};
     if (!run.meta.tool_plane && Object.keys(plane).length) {
       run.meta.tool_plane = plane;
@@ -1079,7 +1132,10 @@ export class Runs {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
       const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
       if (!gone || !stalled || this.closing) return this.refresh(run);
-      if (run.relaunches < MAX_RELAUNCHES) return this.relaunch(run);
+      if (run.relaunches < MAX_RELAUNCHES) {
+        await this.pinSecrets(run);
+        return this.relaunch(run);
+      }
       run.error = { code: "run_failed", message: `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
     }
@@ -1259,23 +1315,76 @@ export class Runs {
     }
   }
 
+  /** What a run of `agentId` starts from: its learning folder's main (learning.ts), the folder made first when it is
+   *  absent; else why it starts with nothing learned. A learning fault never refuses a run: a host without the git
+   *  learning needs is said once, and a folder that cannot be made or read once per run. */
+  private async seedFor(agentId: string): Promise<{ seed: Seed } | { failed: string }> {
+    const blocked = await learningBlocker(process.env);
+    if (blocked) {
+      if (this.learningOff !== blocked) process.stderr.write(`agentrun-serve: runs start with nothing learned: ${blocked}\n`);
+      this.learningOff = blocked;
+      return { failed: "This host has no git that learning can use, so the run started with nothing learned." };
+    }
+    return seedOf(this.options.agents.dir, agentId).then((seed) => ({ seed }), (error: Error) => {
+      process.stderr.write(`agentrun-serve: the agent ${agentId}'s learning folder could not be read, so its run starts with nothing learned: ${error.message}\n`);
+      return { failed: "The agent's learning folder could not be read, so the run started with nothing learned." };
+    });
+  }
+
+  /** Writes the serve.json of a run being set up. When it fails, the store has the run as running and no process will
+   *  run it: it ends failed here, never left for a later start to open with half its files. */
+  private async setUp(runId: string, dir: string, meta: RunMeta): Promise<void> {
+    try {
+      await writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`);
+    } catch (error) {
+      const summary = `The run could not be set up: ${(error as Error).message}`;
+      await this.options.agents.request(() => this.store.carryBack(runId, { state: "failed", summary })).catch((undo: Error) => warn(runId, `not ended after its setup failed: ${undo.message}`));
+      throw error;
+    }
+  }
+
   private async start(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
-    // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in the serve.json its start writes once,
+    // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in the serve.json its start writes first,
     // so a launch after a crash reads them back, never the settings of that moment, and keeping them is no write of its own.
     const tooling = await toolingOf(revision);
-    const plane = tooling ? planeFor(withSecrets(process.env), tooling, this.options.toolSettings?.() ?? {}, { capped: options.maxCostUsd !== undefined }) : {};
+    const plane = tooling ? planeFor(withSecrets(process.env, "all", this.options.storedKeys), tooling, this.options.toolSettings?.() ?? {}, { capped: options.maxCostUsd !== undefined }) : {};
+    // A run learns when the server's switch (`--learning`) is on and its agent's definition says `learning: true`. Its
+    // seed is read before the run is made, so the folder is read once whatever the run's setup does.
+    const learns = this.options.learning !== "off" && revision.kind === "agentic" && revision.body.learning === true;
+    const seeded = learns ? await this.seedFor(entry.agent.id) : undefined;
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
+    const at = new Date().toISOString();
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
-      created_at: new Date().toISOString(),
+      created_at: at,
       input: options.input,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
       ...(Object.keys(plane).length ? { tool_plane: plane } : {}),
     };
-    await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
+    // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
+    // next one relaunches with its first message.
+    await this.setUp(started.runId, started.dir, meta);
+    if (seeded) {
+      let failed = "failed" in seeded ? seeded.failed : undefined;
+      if ("seed" in seeded) {
+        try {
+          await pinSeed(started.dir, started.workspace, seeded.seed);
+          for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
+        } catch (error) {
+          warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
+          failed = "What the agent learned could not be copied into the run, so it started with nothing learned.";
+        }
+      }
+      // Then its learning, once the copy is whole or gone. A server that goes down during the copy leaves none saved,
+      // and the next one takes the copy back (load).
+      meta.learning = failed === undefined ? { state: "seeded", reason: null, detail: null, at } : { state: "dropped", reason: "seed_failed", detail: failed, at };
+      await this.setUp(started.runId, started.dir, meta);
+    }
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, tooling);
     run.moment = "other";
+    // Before the run is known here, so nothing launches it first.
+    await this.pinSecrets(run, revision);
     this.runs.set(run.id, run);
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;
@@ -1375,6 +1484,7 @@ export class Runs {
    *  it meanwhile. An archived run, or a run of an archived agent, stays closed. */
   private async reopen(run: Run): Promise<void> {
     await this.sweepOnce();
+    await this.pinSecrets(run);
     const row = this.store.readRun(run.id);
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
@@ -1566,13 +1676,14 @@ export class Runs {
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
+      learning: run.meta.learning ?? null,
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
     };
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning: shortLearning(learning) };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -1600,6 +1711,7 @@ export class Runs {
       // A run read from its row alone has ended: it waits on nothing.
       pending: null,
       imported_from: row.importedFrom ?? null,
+      learning: shortLearning(isObject(meta?.learning) ? meta.learning : null),
     };
   }
 

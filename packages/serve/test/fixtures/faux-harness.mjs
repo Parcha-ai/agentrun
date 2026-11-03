@@ -31,6 +31,9 @@ export function script(spec) {
   if (page) return [{ call: page[2] ?? "fetch_page", args: { url: page[1] }, usd: 0.001 }, { say: "Fetched.", usd: 0.001 }];
   const query = /Search the web for (.+?) and say what you found\./.exec(text)?.[1];
   if (query) return [{ call: "web_search", args: { query, n: 3 }, usd: 0.001 }, { say: "Searched.", usd: 0.001 }];
+  // monid's run, called as a harness calls it: by its wire name.
+  const endpoint = /Run monid's (\S+) on Ada\./.exec(text)?.[1];
+  if (endpoint) return [{ call: "monid_run", args: { provider: "faux", endpoint, input: { name: "Ada" } }, usd: 0.001 }, { say: "Ran.", usd: 0.001 }];
   if (/Say your thinking\./.test(text)) return [{ say: `Thinking ${spec.thinking}.`, usd: 0.001 }];
   if (/Price unknown\./.test(text)) return [{ say: "Priced unknown.", usd: null }];
   // One request that costs more than its run's cap allows: a native search's input is held at an allowance, not a bound.
