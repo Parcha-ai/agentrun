@@ -5,11 +5,11 @@
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, providerMissing, providersNamed } from "./decisions.js";
 import { REPLAY } from "./host-tools.js";
-import type { InputIssue } from "./errors.js";
+import { type InputIssue, sentence } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
 import { chooseModel, llmTiers, type ModelRef, nodeTiers, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./boxes.js";
-import { boxAvailability } from "./place.js";
+import { boxAvailability, placeFix, RUN_BOXES } from "./place.js";
 import { BOUND_TOOLS, CALL_TOOLS, missingEnv, NODE_TOOLS, TOOLS, workflowTools } from "./tools.js";
 
 /** A revision's body as it is saved or stored. */
@@ -66,18 +66,20 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? `This server does not run ${harness}.`, host: true, harness });
   const { place } = revision;
   // A workflow's model and call nodes run on the runner here; in a box they do not run yet.
-  if (revision.kind === "workflow" && place && place.mode !== "runner") out.push({ field: "definition.place", reason: "not_an_option", message: `A workflow runs on the runner here: its place is runner (or none), not ${place.mode} on ${place.box ?? "no box"}.`, host: false });
+  if (revision.kind === "workflow" && place && place.mode !== "runner") out.push({ field: "definition.place", reason: "not_an_option", message: `A workflow runs on the runner here: its place is runner (or none), not ${place.mode} on ${place.box ?? "no box"}.`, fix: "Remove definition.place.", host: false });
   else if (place && place.mode !== "runner") {
     const box = boxAvailability(boxes).find((b) => b.id === place.box);
-    if (!box?.available) out.push({ field: "definition.place", reason: NOT_SET_UP, message: `This agent's place is ${place.mode} on ${place.box ?? "no box"}, and this server cannot run it there: ${box?.reason ?? "that is not a box this server has"}.`, host: true, ...(place.box ? { box: place.box } : {}) });
+    // A box's reason says what to do, with no full stop of its own: the sentence ends in one, whatever the reason ends in.
+    if (!box?.available) out.push({ field: "definition.place", reason: NOT_SET_UP, message: sentence(`This agent's place is ${place.mode} on ${place.box ?? "no box"}, and this server cannot run it there: ${box?.reason ?? "that is not a box this server has"}`), host: true, ...(place.box ? { box: place.box } : {}) });
   }
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {
       if (!BOUND_TOOLS.includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
       // A shell runs only in a box: no place, or the runner, has none (a run narrowed to the runner drops it, server.ts).
-      else if (TOOLS[tool]!.sandboxOnly && (place?.mode ?? "runner") === "runner") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} runs only in a box: name it on an agent whose place is sandbox. A runner place has no shell.`, host: false, tool });
-      else if (TOOLS[tool]!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} writes the run's files from this machine by paths a box's command could turn through a link: it runs on the runner only, not in a sandbox place yet.`, host: false, tool });
+      else if (TOOLS[tool]!.sandboxOnly && (place?.mode ?? "runner") === "runner") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} runs only in a box, and ${place ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner"}, which has no shell: give it a sandbox place.`, fix: placeFix({ mode: "sandbox", box: RUN_BOXES[0]! }), host: false, tool });
+      // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
+      else if (TOOLS[tool]!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
       // Another harness gets the host tools only (host-tools.ts: the file tools, fetch_page, web_fetch and monid's): any
       // other tool this host binds, ask_person among them, is pi's here and refuses the run, never runs without it.
       else if (harness !== DEFAULT_HARNESS && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
@@ -131,4 +133,4 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
 }
 
 /** A blocker as a field issue, for a 422 or a warning. */
-export const issueOf = ({ field, reason, message }: Blocker): InputIssue => ({ field, reason, message });
+export const issueOf = ({ field, reason, message, fix }: Blocker): InputIssue => ({ field, reason, message, ...(fix ? { fix } : {}) });

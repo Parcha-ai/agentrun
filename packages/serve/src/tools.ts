@@ -174,7 +174,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   read: fileTool("read", "Read a file in the run's work/."),
   write: fileTool("write", "Write a file in the run's work/."),
   edit: fileTool("edit", "Edit a file in the run's work/."),
-  bash: fileTool("bash", "Run a bash command in the run's box, from its work/: an agent whose place is a sandbox only (none runs on this machine). Its output's tail; 300 s unless the call names a timeout.", true),
+  bash: fileTool("bash", "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 300 s unless the call names a timeout.", true),
   [ASK_TOOL]: {
     summary: "Ask the person who started the run; the turn ends until a message answers.",
     needs: [],
@@ -279,9 +279,11 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
 }
 
 /** Every tool as capabilities show it: available here, or the variables it is missing (names only), and the harnesses
- *  that run it (another harness than pi runs only the host tools, host-tools.ts). */
-export const toolsView = (env: NodeJS.ProcessEnv) =>
+ *  that run it (another harness than pi runs only the host tools, host-tools.ts). `noBox`: why no box can run a
+ *  sandbox-only tool here (place.ts noBoxReason), which leaves it unavailable with that reason; undefined, a box can. */
+export const toolsView = (env: NodeJS.ProcessEnv, noBox?: string) =>
   Object.entries(TOOLS).map(([name, entry]) => {
     const missing = missingEnv(entry, env);
-    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available: missing.length === 0, ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS] };
+    const boxless = entry.sandboxOnly ? noBox : undefined;
+    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available: missing.length === 0 && boxless === undefined, ...(missing.length ? { missing } : {}), ...(boxless ? { reason: boxless } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS] };
   });

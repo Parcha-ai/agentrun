@@ -10,7 +10,13 @@ import { test } from "node:test";
 import { confineTestHooks as confineHooks } from "@parcha/pi-durable-disk/internals";
 import { homeKey, homeOf } from "../dist/files.js";
 import { workspaceTestHooks } from "../dist/workspace.js";
+import { ROUTES } from "../dist/server.js";
 import { agent, serve } from "./support.mjs";
+
+// A read under learning/ names the learning API only where this server has its route (next-step.test.mjs).
+const LEARNING_READ = ROUTES.some((route) => route.method === "GET" && route.pattern.test("/agents/keeper/learning"))
+  ? "the server keeps learning/ for itself: read it through /v2/agents/keeper/learning"
+  : "the server keeps learning/ for itself; this server has no learning API yet";
 
 /** A server with the agent `keeper`, and where its home is on disk. */
 async function served(t) {
@@ -170,7 +176,7 @@ test("learning/ is the server's in any case: a GET, PUT or DELETE there is 403 h
     for (const query of ["", "?download=1"]) {
       const read = await get(server, `${path}${query}`);
       assert.deepEqual([...refused(read), read.body.error?.details?.reason], [403, "system_file_forbidden", "host_owned"], `GET ${path}${query}`);
-      assert.equal(read.body.error.message, "read it through /v2/agents/keeper/learning");
+      assert.equal(read.body.error.message, LEARNING_READ);
       assert.ok(!read.bytes.toString().includes("Learned"), "no note is served");
     }
   }

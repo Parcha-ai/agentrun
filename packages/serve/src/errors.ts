@@ -72,5 +72,8 @@ export class ApiError extends Error {
 /** A feature this server does not offer: 501 naming its dotted path under `features`. */
 export const unsupported = (capability: string, message: string) => new ApiError("unsupported_here", message, { capability });
 
+/** `text` as one sentence: it ends in one full stop, whatever it ended in (a box's reason ends in none). */
+export const sentence = (text: string): string => `${text.trimEnd().replace(/[.?!;:,]+$/, "")}.`;
+
 /** `422 input_invalid` with each field that is missing or wrong. */
 export const invalid = (fields: InputIssue[], message = fields[0]?.message ?? "the request is not valid") => new ApiError("input_invalid", message, { fields });

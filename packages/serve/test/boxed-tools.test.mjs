@@ -18,7 +18,8 @@ const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
-const NO_SHELL = "<harness>\n[error] Tool bash is not available\n</harness>";
+// What a run narrowed to the runner answers bash with: the model is told why it has no shell.
+const NARROWED = "<harness>\n[error] bash is not available: this run's place is the runner\n</harness>";
 // Values planted in the server's environment, each one no box may hold: an unnamed key, a model key and a tool key.
 const planted = (name) => `planted-${name}-sentinel`;
 const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("model"), MONID_API_KEY: planted("tool") };
@@ -187,7 +188,10 @@ test("a run request's place \"runner\" narrows: the run is on the runner, has no
   const run = await probe(api, "boxed", [{ tool: "write", args: { path: "a.txt", content: "a" } }, { tool: "bash", args: { command: "printf hi > out.txt" } }], { place: "runner" });
   assert.deepEqual(run.place, { mode: "runner" });
   await follow(api, run.run_id, ["completed"]);
-  assert.deepEqual(answers(data, run.run_id).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to a.txt"], ["bash", true, NO_SHELL]]);
+  assert.deepEqual(answers(data, run.run_id).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to a.txt"], ["bash", true, NARROWED]]);
+  // The timeline's row names the error, not the tag it comes wrapped in.
+  const rows = (await api("GET", `/runs/${run.run_id}/timeline`)).body.rows;
+  assert.equal(rows.find((row) => row.kind === "tool_result" && row.tool_name === "bash")?.summary, "Ran `printf hi > out.txt` failed: bash is not available: this run's place is the runner");
   assert.equal(existsSync(join(data, "runs", run.run_id, "work", "out.txt")), false);
   assert.deepEqual(specs(data), [], "no box was made");
   assert.deepEqual((await api("GET", `/runs/${run.run_id}`)).body.place, { mode: "runner" });
@@ -207,7 +211,7 @@ test("a narrowed run of a box this server does not have runs, without bash; unna
   assert.deepEqual([refused.status, refused.body.error.code, refused.body.error.details.box], [409, "agent_not_runnable", "docker"]);
   const run = await probe(api, "boxed", [{ tool: "bash", args: { command: "true" } }], { place: "runner" });
   await follow(api, run.run_id, ["completed"]);
-  assert.deepEqual(answers(data, run.run_id).map((a) => [a.tool, a.text]), [["bash", NO_SHELL]]);
+  assert.deepEqual(answers(data, run.run_id).map((a) => [a.tool, a.text]), [["bash", NARROWED]]);
 });
 
 test("bash is a 422 on an agent whose place is the runner (named or by default); a workflow whose place is a box, and the browser in one, are 422", async (t) => {
@@ -222,7 +226,7 @@ test("bash is a 422 on an agent whose place is the runner (named or by default);
   // The browser writes work/ from this machine by path, which a box's command could turn through a link: runner only.
   const browser = await api("POST", "/agents", { definition: { id: "browsing", name: "browsing", instructions: "Probe.", tools: ["bash", "browser"], place: SANDBOX } });
   assert.deepEqual([browser.status, browser.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.tools[1]", "not_an_option"]]]);
-  assert.match(browser.body.error.fields[0].message, /runs on the runner only/);
+  assert.match(browser.body.error.fields[0].message, /^browser does not run in a sandbox place yet/);
   // And a place that tries to open the box's network is no place.
   const open = await api("POST", "/agents", { definition: { id: "open", name: "open", instructions: "Probe.", tools: ["bash"], place: { ...SANDBOX, network: "open" } } });
   assert.deepEqual([open.status, open.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.place", "not_allowed"]]]);
