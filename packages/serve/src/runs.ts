@@ -21,22 +21,27 @@ import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWho
 import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
-import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
+import { ASK_TOOL, FAUX_BROWSER_ENV, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
 import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, PARALLEL_KEY_ENV } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { FAUX_MONID_ENV } from "./monid.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, FAUX_ENV, thinkingOf, withoutFaux } from "./model.js";
+import { EFFORT_ENV, FAUX_ENV, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
+import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
-import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
+import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
+import { type Place, storedPlace } from "./place.js";
+import { destroyRunBoxes, FAUX_BOX_ENV, sweepRunBoxes } from "./run-box.js";
+import type { BoxProvider } from "@parcha/pi-transport";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 
 export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -74,6 +79,9 @@ const EXIT_AFTER_RELEASE_MS = 30_000;
 /** How many 500 ms ticks in a row a live run's record is unreadable before the server says so. */
 const UNREADABLE_TICKS = 10;
 const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
+/** How long serve's calls on a run's box (its destroy, the start's sweep) may take. */
+const BOX_CALL_MS = 60_000;
+const boxContext = () => withAbortSignal(AbortSignal.timeout(BOX_CALL_MS), BACKGROUND_CONTEXT);
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
 const holderPid = (record: Json | null) => (isObject(record?.holder) && Number.isSafeInteger(record.holder.pid) ? (record.holder.pid as number) : undefined);
@@ -105,6 +113,9 @@ type RunMeta = {
   /** What its newest process took its thinking level from (app.ts's thinkingOf), as its environment had them: `effort`,
    *  the run's effort, and `host`, the host's AGENT_THINKING. Absent for a process an older server started. */
   launch_thinking?: { effort?: string; host?: string };
+  /** Where it runs, as its start resolved it (place.ts): its process reads it. Absent for a run an older server started,
+   *  which ran on the runner. */
+  place?: Place;
   /** Where the run's learning stands (learning.ts); absent for a run that does not learn. */
   learning?: Learning;
 };
@@ -252,6 +263,10 @@ export const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
+/** What a run's paid tools charged, from the same rows its cost is read from: each charge's line carries it (`usage` on a
+ *  `phase` row); null when one is unknown. A call still marked, in flight or cut, is no charge here. */
+export const toolCostOf = (rows: readonly TimelineEvent[]): number | null =>
+  rows.reduce<number | null>((sum, row) => (row.kind !== "phase" || !row.usage ? sum : sum === null || row.usage.usd === null ? null : sum + row.usage.usd), 0);
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */
@@ -329,13 +344,13 @@ export function statusOf(run: Run): { status: Status; state: State } {
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 /** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. */
-export type StartOptions = { input: Json; title: string; effort?: string; maxCostUsd?: number; inputs?: (work: string) => Promise<unknown> };
+export type StartOptions = { input: Json; title: string; place: Place; effort?: string; maxCostUsd?: number; inputs?: (work: string) => Promise<unknown> };
 
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxExa?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; learning?: LearningMode; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; fauxBox?: string; runBoxes?: BoxProvider; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; fauxExa?: string; learning?: LearningMode };
 /** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
  *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
 export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => void;
@@ -346,6 +361,25 @@ const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEA
 /** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own and the decision
  *  keys, which go on their own descriptor. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
+type KeyRow = { kind: string; fields: readonly string[]; unlocks: readonly string[] };
+/** The fields a run gets only when its revision names what they unlock: a `tool` key's. Any other kind's (a model key's)
+ *  reach every run, as the rest of RUN_SECRETS does. */
+const scopedOf = (rows: readonly KeyRow[]): readonly string[] => rows.filter((row) => row.kind === "tool").flatMap((row) => row.fields);
+/** What a run whose revision was not read is handed: no tool key. */
+const NO_TOOL_KEYS = RUN_SECRETS.filter((name) => !scopedOf(TOOL_KEYS).includes(name));
+
+/** The secrets a run of `revision` is handed over its pipe: RUN_SECRETS but each field of a `tool` row of `rows`
+ *  (TOOL_KEYS) that unlocks none of the tools the run binds, named as its process binds them (app.ts): an agentic
+ *  revision's `tools`, a workflow's on its model nodes and its `call` nodes. A model key, or any other secret that is
+ *  no tool key's field, goes to every run. */
+export async function secretsFor(revision: Revision, rows: readonly KeyRow[] = TOOL_KEYS): Promise<string[]> {
+  const workflow = revision.kind === "workflow" ? revision.body.workflow : undefined;
+  const bound = workflow && workflowTools(workflowNodes(workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(workflow)));
+  const named = new Set(bound ? [...bound.nodes, ...bound.calls] : (revision.body.tools ?? []));
+  const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((name) => named.has(name))).flatMap((row) => row.fields));
+  const scoped = scopedOf(rows);
+  return RUN_SECRETS.filter((name) => !scoped.includes(name) || unlocked.has(name));
+}
 /** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
 const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
 /** A run's process's environment: no secret in it (they go over its pipe), nor the token by value; the AGENT_MODEL
@@ -423,6 +457,9 @@ export class Runs {
   private readonly runs = new Map<string, Run>();
   /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
   private readonly workflows = new Map<string, unknown>();
+  /** The secrets each revision's runs are handed (secretsFor), by revision id: read before a launch, from the revision
+   *  the run is pinned to, never from a request. */
+  private readonly secrets = new Map<string, readonly string[]>();
   /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
   private readonly graphs = new Map<string, object>();
   private readonly adopting = new Map<string, Promise<Run>>();
@@ -486,6 +523,7 @@ export class Runs {
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
+      ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
     };
     // A server that went down while it copied what the run's agent learned saved the run's input and no learning, and
@@ -683,10 +721,17 @@ export class Runs {
   /** Every run's box let go that nothing owns, and every run cgroup no record names: once, before any run of this server
    *  starts, opens again or relaunches, so a box or cgroup being made is never swept away. */
   private sweepOnce(): Promise<void> {
-    const box = this.options.box;
-    if (!box) return Promise.resolve();
+    const { box, runBoxes } = this.options;
+    if (!box && !runBoxes) return Promise.resolve();
     this.swept ??= (async () => {
       const rows = await this.options.agents.request(() => this.store.listRuns());
+      // The boxes of sandbox runs, by their label: one whose run has ended, or is archived, is destroyed. A failure only
+      // warns: the next start sweeps again, and a box's lifetime bounds it.
+      if (runBoxes) {
+        const ended = new Set(rows.filter((row) => row.state !== "running" || row.archivedAt).map((row) => row.id));
+        await sweepRunBoxes(runBoxes, (id) => ended.has(id), boxContext()).catch((error: Error) => warn("-", `its start's sweep of run boxes failed (${error.message}); the next start sweeps again`));
+      }
+      if (!box) return;
       const settled = await sweepBoxes(box.host, box.quarantine, rows.map((row) => ({ id: row.id, dir: join(this.options.agents.dir, "runs", row.id) })));
       for (const [id, how] of Object.entries(settled)) if (how === "quarantined") warn(id, "its box could not be emptied; it is quarantined, and tried again at each start");
     })().catch((error: unknown) => {
@@ -696,6 +741,18 @@ export class Runs {
       throw error;
     });
     return this.swept;
+  }
+
+  /** A sandbox run's box (run-box.ts), destroyed by its label: at every settle, a cancel included, and at archive. A
+   *  failure only warns: the next start's sweep tries again, and the box's lifetime bounds it. */
+  private async dropBox(run: Run): Promise<void> {
+    const { runBoxes } = this.options;
+    if (!runBoxes || run.meta.place?.mode !== "sandbox") return;
+    try {
+      await destroyRunBoxes(runBoxes, run.id, boxContext());
+    } catch (error) {
+      warn(run.id, `its box was not destroyed (${(error as Error).message}); the next start sweeps it`);
+    }
   }
 
   /** The run's box let go (archive, or its process gone after an archive): reaped by the box's own count. */
@@ -714,11 +771,16 @@ export class Runs {
   /** After an archive (a run's, or an agent's, which archives its runs): the box of every run now archived is let go,
    *  now when its process is gone, else when it exits. */
   async archived(): Promise<void> {
-    if (!this.options.box) return;
+    if (!this.options.box && !this.options.runBoxes) return;
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
       if (!row.archivedAt) continue;
-      const run = await this.get(row.id);
-      if (run) await this.teardown(run);
+      // A run's box needs only the runs this server holds: one it has not read has ended, or was swept at its start.
+      const run = this.options.box ? await this.get(row.id) : this.runs.get(row.id);
+      if (!run) continue;
+      // A run's box goes at its archive, its process live or not (an ended run's went at its end): an archived run takes
+      // no message, and a call it still makes gets a fresh box, which its end or the next start's sweep destroys.
+      if (!run.outcome) await this.dropBox(run);
+      await this.teardown(run);
     }
   }
 
@@ -826,6 +888,7 @@ export class Runs {
     const deadline = Date.now() + timeoutMs;
     // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
     await this.sweepOnce();
+    await this.pinSecrets(run);
     // And for its files, which its start copies before it launches it: within the time left.
     const copying = run.preparing;
     if (copying) {
@@ -901,10 +964,19 @@ export class Runs {
     }
   }
 
+  /** Reads the secrets runs of `run`'s revision are handed (secretsFor), once per revision: from `given` (a start's, read
+   *  from the store), else from the agent store, waiting out a busy one as a run's end does. */
+  private async pinSecrets(run: Pick<Run, "id" | "revision">, given?: Revision): Promise<void> {
+    if (this.secrets.has(run.revision)) return;
+    const revision = given ?? (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store")));
+    this.secrets.set(run.revision, await secretsFor(revision));
+  }
+
   private launch(run: Run): void {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing) return;
-    // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts).
-    const secrets = handover(RUN_SECRETS);
+    // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts). Each launch path
+    // reads its revision's first (pinSecrets); one that did not hands no tool key.
+    const secrets = handover(this.secrets.get(run.revision) ?? NO_TOOL_KEYS, this.options.storedKeys);
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
       [SECRETS_FD_ENV]: "3",
@@ -912,6 +984,7 @@ export class Runs {
       ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}), ...(this.options.fauxParallel ? { [FAUX_PARALLEL_ENV]: this.options.fauxParallel } : {}), ...(this.options.fauxOpenrouter ? { [FAUX_OPENROUTER_ENV]: this.options.fauxOpenrouter } : {}) } : {}),
       ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
       ...(this.options.faux && this.options.fauxMonid ? { [FAUX_MONID_ENV]: this.options.fauxMonid } : {}),
+      ...(this.options.faux && this.options.fauxBox ? { [FAUX_BOX_ENV]: this.options.fauxBox } : {}),
       ...(this.options.faux && this.options.fauxExa ? { [FAUX_EXA_ENV]: this.options.fauxExa } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
       ...(this.options.documents ? { [DOCUMENTS_ENV]: this.options.documents } : {}),
@@ -927,7 +1000,7 @@ export class Runs {
     // web_fetch.
     delete env[DECISION_KEY_FD_ENV];
     // Chosen from the secrets this server holds: out of its environment once its launcher hands them over (secrets.ts).
-    const offered = decisionKeysOf(withSecrets(process.env));
+    const offered = decisionKeysOf(withSecrets(process.env, "all", this.options.storedKeys));
     const decisionKeys = run.kind === "workflow" ? offered : run.webFetch && offered[PARALLEL_KEY_ENV] ? { [PARALLEL_KEY_ENV]: offered[PARALLEL_KEY_ENV] } : {};
     const handsKey = Object.keys(decisionKeys).length > 0;
     this.markLaunching(run);
@@ -1065,7 +1138,10 @@ export class Runs {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
       const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
       if (!gone || !stalled || this.closing) return this.refresh(run);
-      if (run.relaunches < MAX_RELAUNCHES) return this.relaunch(run);
+      if (run.relaunches < MAX_RELAUNCHES) {
+        await this.pinSecrets(run);
+        return this.relaunch(run);
+      }
       run.error = { code: "run_failed", message: `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
     }
@@ -1104,6 +1180,8 @@ export class Runs {
   /** Ends the run in the agent store, once: how it ended, its cost, a line for the list and its metrics. A store held by
    *  another writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
+    // Its process is gone: its box goes with its end, whatever the end (a follow-up after it gets a fresh box; work/ stays).
+    await this.dropBox(run);
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
@@ -1284,6 +1362,7 @@ export class Runs {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
       created_at: at,
       input: options.input,
+      place: options.place,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
     };
@@ -1308,6 +1387,8 @@ export class Runs {
     }
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
     run.moment = "other";
+    // Before the run is known here, so nothing launches it first.
+    await this.pinSecrets(run, revision);
     this.runs.set(run.id, run);
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;
@@ -1407,6 +1488,7 @@ export class Runs {
    *  it meanwhile. An archived run, or a run of an archived agent, stays closed. */
   private async reopen(run: Run): Promise<void> {
     await this.sweepOnce();
+    await this.pinSecrets(run);
     const row = this.store.readRun(run.id);
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
@@ -1587,6 +1669,7 @@ export class Runs {
       status,
       state,
       title: run.meta.title,
+      place: run.meta.place ?? { mode: "runner" },
       ...(run.meta.effort ? { effort: run.meta.effort } : {}),
       created_at: run.meta.created_at,
       updated_at: run.updatedAt,

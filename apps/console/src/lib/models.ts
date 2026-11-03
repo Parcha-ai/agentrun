@@ -17,7 +17,9 @@ export function modelLabel(id: string, models: ModelsInfo | undefined): { text: 
 }
 
 /** A harness as capabilities list it: `default_model`, the model it runs when a definition names none (null for none). */
-export type HarnessInfo = { id: string; default_model?: string | null };
+/** A harness as capabilities offer it: its default model, and whether this server runs it (`available` false, with
+ *  the server's `reason`, when it doesn't). */
+export type HarnessInfo = { id: string; default_model?: string | null; available?: boolean; reason?: string };
 
 /** The model a harness runs when a definition names none, as the server says (`harnesses[].default_model`). A server
  *  that does not say offers its default for pi alone, the harness it is defined for. */

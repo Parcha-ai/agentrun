@@ -19,9 +19,11 @@ import { readJson, RUN_META } from "./files.js";
 import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
 import { catalogPrices, type Listed } from "./model.js";
+import { logLine } from "./print.js";
 import { DEFAULT_PORT } from "./server.js";
 import { REDACTED, secretCut } from "./secret-cut.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
+import { ToolKeys } from "./tool-keys.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 
 /** A session file written to this recently may still be running: it is left for a later import. */
@@ -47,6 +49,8 @@ export type ImportOptions = {
   all?: boolean;
   /** The environment whose key-shaped values are cut out of everything written. */
   env: NodeJS.ProcessEnv;
+  /** The tool keys saved through the settings API, opened (tool-keys.ts' `values`): cut out by the same rule. */
+  stored?: Record<string, string>;
   now?: number;
   /** The temp directory whose projects are left out (default the OS's). */
   temp?: string;
@@ -754,7 +758,7 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
 /** The plan, into `store`: the agents it does not hold, and the runs it does not. A run an earlier import made whose
  *  transcript never landed (the process stopped between the two) has it written now. */
 export async function runImport(store: AgentStore, plan: Plan, options: ImportOptions): Promise<ImportReport> {
-  const { text, json } = secretCut(options.env, SECRET_NAMES);
+  const { text, json } = secretCut([options.env, options.stored ?? {}], SECRET_NAMES);
   const idOf = keptId(options.env);
   const report: ImportReport = { agents: [], skipped: [...plan.skipped], already: plan.already };
   let prices: Promise<Map<string, Listed[]>> | undefined;
@@ -923,11 +927,17 @@ export async function importCommand(
     return 2;
   }
   const dir = values.data ?? join(env.XDG_DATA_HOME || join(home, ".local", "share"), "agentrun", "agents");
+  // The tool keys the server keeps in this directory, opened here on the host with the seal key this process was handed:
+  // an imported transcript keeps none of them. One that does not open is not known here, so not cut: said, as the
+  // server says it at its start.
+  const keys = new ToolKeys(dir, env, (fields) => console.error(`agentrun-serve import: ${logLine("tool_keys", fields)}`));
+  keys.view();
   const options: ImportOptions = {
     home,
     sources: sources as Source[],
     all: values.all === true,
     env,
+    stored: keys.values(),
   };
   if (values["dry-run"]) {
     // A dry run writes nothing, not even a store: one there already is only read.
