@@ -44,8 +44,11 @@ async function research(api, id, definition) {
   const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: 55_000 });
   const results = Object.fromEntries(rows.filter((row) => row.kind === "tool_result").map((row) => [row.tool_name, row.tool_result_preview]));
   const report = await api("GET", `/runs/${started.body.run_id}/files/report.md`);
-  return { results, usage: rows.findLast((row) => row.kind === "usage")?.usage, report: report.body };
+  return { results, rows, usage: rows.findLast((row) => row.kind === "usage")?.usage, report: report.body };
 }
+/** What a search answers when Exa's free limit holds after its one retry: our words, never Exa's fix. */
+const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute, or add a Parallel key in Settings → Tool keys to search with a key.";
+const EXA_FIX = /exa\.ai|Fix:|MCP URL|exaApiKey|free MCP rate limit/;
 const HARNESS_RESEARCH = "Research widgets on the web, read http://public.example/ and write report.md.";
 
 test("with only model keys: native search on pi, claude-agent and codex, and the kernel's fetch, each run's report citing the page; then Parallel picked, the next runs go through Parallel", { timeout: 180_000 }, async (t) => {
@@ -116,6 +119,23 @@ test("with only model keys: native search on pi, claude-agent and codex, and the
   assert.deepEqual(calls.parallel.map((call) => [call.path, call.authorized]), [["/v1/search", true], ["/v1/extract", true], ["/v1/search", true], ["/v1/extract", true], ["/v1/search", true], ["/v1/extract", true]], "each run on the key the server handed it");
   assert.equal(calls.upstream.length, 2, "no further request to a model provider's search");
   assert.equal(calls.dialled.length, 4, "no direct fetch either");
+});
+
+test("a pi run on keyless Exa past its free limit: Exa is asked once more and its results answer; past it again, the model and the timeline read our words, never Exa's fix", { timeout: 90_000 }, async (t) => {
+  const { seen } = await setting(t, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENTRUN_TEST_FAUX_EXA: "limited,ok" });
+  const { api } = await serve(t, FAUX);
+  const retried = await research(api, "limited-once", {});
+  assert.match(retried.results.web_search, /^\{"provider":"exa-keyless","query":"widgets","results":\[\{"url":"http:\/\/public\.example\/"/);
+  assert.equal((await seen()).exa.filter((call) => call.method === "tools/call").length, 2, "Exa's notice, then the one more search");
+
+  process.env.AGENTRUN_TEST_FAUX_EXA = "limited";
+  const limited = await research(api, "limited-twice", {});
+  const row = limited.rows.find((entry) => entry.kind === "tool_result" && entry.tool_name === "web_search");
+  assert.deepEqual([row.tool_status, row.tool_result_preview], ["failed", JSON.stringify({ error: RATE_LIMITED })], "the model reads our words, as {error}");
+  assert.equal(row.summary, `Searched the web for "widgets": failed: ${RATE_LIMITED}`);
+  for (const entry of limited.rows) assert.doesNotMatch(JSON.stringify(entry), EXA_FIX, `row ${entry.id} holds none of Exa's fix`);
+  assert.equal((await seen()).exa.filter((call) => call.method === "tools/call").length, 4, "two searches each run, no more");
+  assert.deepEqual((await seen()).parallel, [], "no Parallel key here, so nothing else is searched");
 });
 
 test("a pi run whose model goes through a gateway searches keyless Exa; claude-agent stays native; a pick of Parallel without its key is unavailable, and refused", { timeout: 60_000 }, async (t) => {

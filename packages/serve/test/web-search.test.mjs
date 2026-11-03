@@ -18,7 +18,7 @@ import * as keyless from "../dist/exa-keyless.js";
 import { hostedSearch } from "../dist/hosted-search.js";
 import { runModels } from "../dist/model.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
-import fakeExa from "./fixtures/faux-exa.mjs";
+import fakeExa, { EXA_LIMIT_TEXT, resetFauxExa } from "./fixtures/faux-exa.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -35,6 +35,10 @@ function paidRecords(data, runId) {
     db.close();
   }
 }
+/** What the model and the timeline read when Exa's free limit holds after the one retry: our words, never Exa's. */
+const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute, or add a Parallel key in Settings → Tool keys to search with a key.";
+/** Exa's own fix, in any of its words: an API key put in its MCP URL, which means nothing to a person here. */
+const EXA_FIX = /exa\.ai|Fix:|MCP URL|exaApiKey|free MCP rate limit/;
 const MODE = "AGENTRUN_TEST_FAUX_PARALLEL_SEARCH";
 const EXTRACT_MODE = "AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT";
 
@@ -263,7 +267,7 @@ test("with the key and Parallel picked by the agent, web_search runs on pi: an a
   assert.deepEqual((await seen()).map((call) => [call.path, call.authorized, call.queries]), [["/v1/search", true, ["widgets delaware"]], ["/v1/search", true, ["acme registry"]]]);
 });
 
-test("keyless Exa: one MCP exchange with no key, its text read into results; a 429 says its free limit and the wait, a 403 the connection, an error its words; nothing is retried", async (t) => {
+test("keyless Exa: one MCP exchange with no key, its text read into results; a 429 naming a wait past 5 s is our words at once, a 403 the connection, an error its words; none is tried again", async (t) => {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_EXA"]);
   const sent = [];
   const send = async (url, init) => {
@@ -285,11 +289,16 @@ test("keyless Exa: one MCP exchange with no key, its text read into results; a 4
     return fakeExa(url, init);
   } });
   assert.deepEqual(asked, [{ query: "widgets", numResults: 8 }], "at most 8 results asked of Exa");
-  for (const [mode, error] of [["429", /^Exa's keyless search is rate-limited \(429\); it says to wait 30 s: answer without searching, or try again later$/], ["403", /refused keyless use from this connection \(403\).*only over IPv4.*not over IPv6 or through a proxy/], ["500", /^Exa's MCP endpoint answered 500 to the search$/]]) {
+  // The 429 names Retry-After 30: the limit does not lift within a search, so it is not tried again. Each refusal says
+  // which limit it met (limit), for the caller's fallback; the model never reads that field (searchFor drops it).
+  for (const [mode, error, limit] of [["429", /^Free web search is rate-limited right now\. Try again in a minute, or add a Parallel key in Settings → Tool keys to search with a key\.$/, { limit: "rate_limited", retryAfterS: 30 }], ["403", /refused keyless use from this connection \(403\).*only over IPv4.*not over IPv6 or through a proxy/, { limit: "connection_refused" }], ["500", /^Exa's MCP endpoint answered 500 to the search$/, {}]]) {
     sent.length = 0;
     process.env.AGENTRUN_TEST_FAUX_EXA = mode;
-    const answer = await exaSearch("widgets", 3, { send });
+    resetFauxExa();
+    const answer = await exaSearch("widgets", 3, { send, pause: async () => assert.fail(`${mode}: waited to try again`) });
     assert.match(answer.error, error, mode);
+    assert.deepEqual(Object.fromEntries(Object.entries(answer).filter(([key]) => key !== "error")), limit, mode);
+    assert.doesNotMatch(JSON.stringify(answer), EXA_FIX, `${mode}: none of Exa's fix`);
     assert.deepEqual(sent.map(([method]) => method), ["initialize", "notifications/initialized", "tools/call"], `${mode}: asked once, not again`);
   }
   const failing = async (url, init) => {
@@ -299,6 +308,55 @@ test("keyless Exa: one MCP exchange with no key, its text read into results; a 4
   };
   delete process.env.AGENTRUN_TEST_FAUX_EXA;
   assert.deepEqual(await exaSearch("widgets", 3, { send: failing }), { error: "Exa's search failed: the query is empty" }, "a JSON answer is read as well as a stream");
+});
+
+test("keyless Exa past its free limit (a 429, or Exa's own notice in a 200): tried once more after a short jittered wait, Retry-After's where it names 5 s or less; then our words, never Exa's fix", async (t) => {
+  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_EXA"]);
+  /** One search with Exa answering as `mode` says: its answer, the waits it chose, and how many searches Exa was sent. */
+  const search = async (mode, signal) => {
+    process.env.AGENTRUN_TEST_FAUX_EXA = mode;
+    resetFauxExa();
+    const waits = [];
+    const methods = [];
+    const send = async (url, init) => {
+      methods.push(JSON.parse(init.body).method);
+      return fakeExa(url, init);
+    };
+    const answer = await exaSearch("widgets", 2, { send, ...(signal ? { signal } : { pause: async (ms) => void waits.push(ms) }) });
+    return { answer, waits, searches: methods.filter((method) => method === "tools/call").length, exchanges: methods.filter((method) => method === "initialize").length };
+  };
+  const results = [{ url: "http://public.example/", title: "Public page", snippet: "The answer is forty-two. See the registry for more.", published: "2026-10-01T00:00:00.000Z" }, { url: "https://result.example/2", title: "Result 2 for widgets", snippet: "Excerpt 2." }];
+
+  // A 429 naming 2 s, then results: the retry's results, after the 2 s Exa named and under half a second more.
+  const retried = await search("429:2,ok");
+  assert.deepEqual(retried.answer, { provider: "exa-keyless", query: "widgets", results });
+  assert.deepEqual([retried.searches, retried.exchanges, retried.waits.length], [2, 2, 1], "one more exchange, after one wait");
+  assert.ok(retried.waits[0] >= 2_000 && retried.waits[0] < 2_500, `waited ${retried.waits[0]} ms`);
+  // Exa's own notice of its free limit inside a 200 (isError, marked ai.exa/rateLimited), as a real run met it: no
+  // Retry-After, so the wait is 1 to 3 s.
+  const notice = await search("limited,ok");
+  assert.deepEqual([notice.answer, notice.searches], [{ provider: "exa-keyless", query: "widgets", results }, 2]);
+  assert.ok(notice.waits.length === 1 && notice.waits[0] >= 1_000 && notice.waits[0] < 3_000, `waited ${notice.waits} ms`);
+
+  // Past the limit twice, either way: our words, tried twice and no more, none of Exa's text.
+  for (const [mode, limit] of [["429:1", { retryAfterS: 1 }], ["limited", {}]]) {
+    const twice = await search(mode);
+    assert.deepEqual(twice.answer, { error: RATE_LIMITED, limit: "rate_limited", ...limit }, mode);
+    assert.equal(twice.searches, 2, `${mode}: sent twice`);
+    assert.doesNotMatch(JSON.stringify(twice.answer), EXA_FIX, `${mode}: none of Exa's fix`);
+    assert.ok(EXA_FIX.test(EXA_LIMIT_TEXT), "the fake answers Exa's own fix text");
+  }
+  // A wait past 5 s (Exa's daily limit names hours): not tried again.
+  const daily = await search("429:3600,ok");
+  assert.deepEqual([daily.answer.error, daily.searches, daily.waits], [RATE_LIMITED, 1, []]);
+
+  // A search stopped while it waits ends then, stopped: it neither sleeps on nor searches again.
+  const stop = new AbortController();
+  setTimeout(() => stop.abort(), 100);
+  const started = Date.now();
+  const stopped = await search("limited", stop.signal);
+  assert.deepEqual([stopped.answer, stopped.searches], [{ error: "the search was stopped" }, 1]);
+  assert.ok(Date.now() - started < 900, `ended ${Date.now() - started} ms after it started, inside the shortest wait`);
 });
 
 test("keyless Exa is dialled over IPv4 alone: its name is looked up for family 4 and the connection goes to that address, on a host whose resolver answers IPv6 otherwise", async (t) => {
