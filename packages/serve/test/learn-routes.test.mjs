@@ -3,6 +3,7 @@
 // commit by a person with no grader, the structural checks still applied, and the next run starting from the result.
 // A write that names no version is 428, a stale one 412; MEMORY.md is the server's and never written.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -408,6 +409,49 @@ test("a note's name that holds a value made secret after it was written is never
   assert.deepEqual(learned.verdict.items, [{ file: "[redacted]", keep: true, why: "It holds as a general rule." }], "the grader's item names the note [redacted]");
   const shown = JSON.stringify([view, page1, page2, log, diff, learned, old.body, [...old.headers], [...own.headers], retire.body, [...retire.headers], after]);
   assert.ok(!shown.includes(value), "the value is nowhere a person reads");
+});
+
+test("a key a person saves on the server is cut like the server's own secrets, from the next read on: notes a run and a host commit put on main holding it read [redacted] in the view, the notes, the file, the log and the run's diff and learning, and a person's note holding it is refused", { timeout: 240_000 }, async (t) => {
+  // Built at the run: a value no file of this repository holds, saved as a tool key only once notes holding it are on main.
+  const value = ["saved", "store", "pass", process.pid, Date.now().toString(36)].join("-");
+  const named = `${value}.md`;
+  const KEPT = note("Saved", "Where the store's pass is kept", `The store's pass is ${value}.\n`);
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY", "PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("saver", { plan: [[named, KEPT]], once: true }));
+  const run = await ended(api, await started(api, "saver"));
+  settled(run.view, run.rows, "merged");
+  // A host commit too: a note whose text holds the value.
+  const repo = repoOf(data, "saver");
+  writeFileSync(join(repo, "host.md"), note("Host", "What the host wrote", `The pass is ${value}.\n`));
+  git(repo, ["add", "host.md"]);
+  git(repo, ["commit", "-q", "-m", "a host's hand"]);
+  assert.ok(JSON.stringify((await api("GET", "/agents/saver/learning")).body).includes(value), "shown as it is while no secret");
+
+  // Saved through the settings API, the server running on: each read after it cuts the value.
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: value } })).status, 204);
+  const view = (await api("GET", "/agents/saver/learning")).body;
+  assert.deepEqual(view.notes.items.map((n) => n.file).sort(), ["[redacted]", "host.md"]);
+  assert.ok(view.notes.items.every((n) => n.text.includes("[redacted]")), JSON.stringify(view.notes.items));
+  const notes = (await api("GET", "/agents/saver/learning/notes?limit=1")).body;
+  const log = (await api("GET", "/agents/saver/learning/log")).body;
+  assert.deepEqual(log.items.map((c) => c.files), [["MEMORY.md", "[redacted]"]]);
+  const own = await api("GET", `/agents/saver/learning/files/${named}`);
+  const host = await api("GET", "/agents/saver/learning/files/host.md");
+  assert.deepEqual([own.status, own.body, host.status, host.body], [200, KEPT.replace(value, "[redacted]"), 200, note("Host", "What the host wrote", "The pass is [redacted].\n")]);
+  const index = await api("GET", "/agents/saver/learning/files/MEMORY.md");
+  const diff = (await api("GET", `/runs/${run.view.run_id}/learning/diff`)).body;
+  assert.deepEqual(diff.files.map((f) => f.path).sort(), ["MEMORY.md", "[redacted]"]);
+  const learned = (await api("GET", `/runs/${run.view.run_id}/learning`)).body;
+  assert.deepEqual(learned.verdict.items.map((item) => item.file), ["[redacted]"]);
+  const shown = JSON.stringify([view, notes, log, own.body, [...own.headers], host.body, index.body, diff, learned]);
+  assert.ok(!shown.includes(value), "the value is nowhere a person reads");
+  // A person's note holding the saved value is refused, as one holding the server's own secrets is, and nothing is written.
+  const main = git(repo, ["rev-parse", "main"]);
+  const refused = await api("PUT", "/agents/saver/learning/files/leak.md", { text: note("Leak", "A leak", `It is ${value}.\n`) }, { "if-none-match": "*" });
+  assert.deepEqual([refused.status, refused.body?.error?.problems?.map((p) => p.rule)], [400, ["secret_value"]], JSON.stringify(refused.body));
+  assert.ok(!JSON.stringify(refused.body).includes(value), "the refusal holds no value");
+  assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing committed");
 });
 
 test("a retire is always the way out: a note at the 4 KB cap retires, and so does one whose text holds a value made secret after it was written, its answers and the log cut of it; only a note out of format is refused", { timeout: 120_000 }, async (t) => {

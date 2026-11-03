@@ -418,9 +418,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  /** The host's secrets as a run's notes are checked against (learning-run.ts): a person's note, and every learning
-   *  text read. */
-  const learningSecrets = () => [...hostSecrets(process.env), token, doorToken];
+  /** The host's secrets as a run's notes are checked against (learning-run.ts), and the keys a person saved on this
+   *  server (storedKeys, below), read at each call: a person's note, and every learning text read. */
+  const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken];
   const base = { ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted.
