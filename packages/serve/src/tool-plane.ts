@@ -82,10 +82,11 @@ export function resolveCapability(capability: Pickable, input: ResolveInput): Re
   // through the other harnesses' gateway; Codex's own search goes to OpenAI with its request, except behind a gateway
   // (no known hosted search) or under a spend cap (its request has no input bound, which a cap cannot admit); pi asks
   // Anthropic's or OpenAI's. Under a spend cap Claude's own search is not offered either: each search has a per-use fee
-  // the cap cannot reserve yet (its request's bound holds the pages' input tokens, not the fees). Where there is none,
-  // `auto` falls back to keyless Exa and `native` is unavailable.
+  // the cap cannot reserve yet (its request's bound holds the pages' input tokens, not the fees). OpenCode has none: its
+  // model requests carry no provider-hosted tool (its proxy policy refuses one). Where there is none, `auto` falls back
+  // to keyless Exa and `native` is unavailable.
   const vendor = input.model?.slice(0, Math.max(0, input.model.indexOf("/")));
-  const none = input.harness === "claude-agent" ? (input.capped ? CLAUDE_CAPPED : undefined) : input.harness === "codex" ? (input.gateway ? "codex behind a gateway" : input.capped ? "codex under a spend cap" : undefined) : input.gateway ? `${input.harness} behind a gateway` : vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor) ? undefined : input.model ?? "a model with none named";
+  const none = input.harness === "claude-agent" ? (input.capped ? CLAUDE_CAPPED : undefined) : input.harness === "codex" ? (input.gateway ? "codex behind a gateway" : input.capped ? "codex under a spend cap" : undefined) : input.harness === "opencode" ? "opencode, whose model requests carry no provider-hosted tool" : input.gateway ? `${input.harness} behind a gateway` : vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor) ? undefined : input.model ?? "a model with none named";
   if (none === undefined) return "native";
   return chosen === "native" ? `unavailable: no native search for ${none}` : "exa-keyless";
 }

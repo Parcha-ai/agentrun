@@ -1,11 +1,11 @@
 // The installed OpenCode checked against the pins (src/versions.ts) before anything runs, with the typed errors a host
 // maps to a run's failure line. Written for AgentRun.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { env } from "node:process";
+import { checkedOnce, sha256OfFile } from "@parcha/agentrun-kernel/host";
 import { findOpenCode, openCodePackages } from "./binary.js";
 import { OPENCODE_BINARY_SHA256, OPENCODE_VERSION, OpenCodeNotInstalled, OpenCodePinMismatch } from "./versions.js";
 
@@ -35,10 +35,18 @@ export function verifyOpenCodeBinary(found: { path: string; pkg?: string; packag
   // A binary from a platform package is checked against that package's pin; one named by OPENCODE_BIN (no package) against
   // the pins of every package this machine may run.
   const expected = (found.pkg ? [found.pkg] : openCodePackages()).map((pkg) => pins.sha256[pkg]).filter((sha): sha is string => typeof sha === "string");
+  // Hashed a chunk at a time, and checked once per binary in this process while it stays the same file, unchanged (the
+  // kernel's checkedOnce): a host that checks it for each model it resolves, and a run's process that makes its adapter,
+  // check it once.
+  return checkedOnce(path, JSON.stringify({ version: pins.version, expected }), () => checkBinary(path, pins.version, expected), (result) => !(result instanceof Error));
+}
+
+/** The binary at `path` (absolute, there) against the sha256 values it may have and the version it must report. */
+function checkBinary(path: string, version: string, expected: readonly string[]): { path: string } | OpenCodePinMismatch | OpenCodeNotInstalled {
   if (expected.length) {
     let sha256: string;
     try {
-      sha256 = createHash("sha256").update(readFileSync(path)).digest("hex");
+      sha256 = sha256OfFile(path);
     } catch (error) {
       return new OpenCodeNotInstalled(`${path} could not be read: ${String((error as Error)?.message ?? error).slice(0, 120)}`);
     }
@@ -56,8 +64,8 @@ export function verifyOpenCodeBinary(found: { path: string; pkg?: string; packag
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
-  const version = /^(\d+\.\d+\.\d+\S*)$/.exec(reported)?.[1] ?? JSON.stringify(reported.slice(0, 60));
-  if (version !== pins.version) return new OpenCodePinMismatch("version", pins.version, version, path);
+  const said = /^(\d+\.\d+\.\d+\S*)$/.exec(reported)?.[1] ?? JSON.stringify(reported.slice(0, 60));
+  if (said !== version) return new OpenCodePinMismatch("version", version, said, path);
   return { path };
 }
 
