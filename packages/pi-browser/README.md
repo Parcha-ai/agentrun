@@ -17,9 +17,9 @@ package has `import` entries and no `require` entry.
 ## Install
 
 ```sh
-pi install npm:@parcha/pi-browser@beta    # the pi coding agent's extension
-npm install @parcha/pi-browser@beta       # the library: providers, driver, durable adapter
-npm install @parcha/pi-browser@beta @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0 @earendil-works/pi-ai@1.3.0   # a pi-durable host: its peers, pinned to 1.3.0 (unpinned, npm takes 1.4.0 and stops with ERESOLVE)
+pi install npm:@parcha/pi-browser@latest    # the pi coding agent's extension
+npm install @parcha/pi-browser@latest       # the library: providers, driver, durable adapter
+npm install @parcha/pi-browser@latest @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0 @earendil-works/pi-ai@1.3.0   # a pi-durable host: its peers, pinned to 1.3.0 (unpinned, npm takes 1.4.0 and stops with ERESOLVE)
 ```
 
 `pi install` loads the extension. A Chrome starts on the model's first browser call, and not before. pi 1.4 is not supported yet; a later release widens the range.
