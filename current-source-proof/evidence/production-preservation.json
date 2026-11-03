@@ -1,0 +1,38 @@
+{
+  "provedHead": "23bf2743349e38461601fd6e959d6801b99df46e",
+  "currentHead": "cf668bea326996da873c755bab7dbc3e356932aa",
+  "main": "c8307c987088b174a42623635753bb2e27a9ac6b",
+  "changedPaths": [
+    "changes/serve-test-start-waits-on-ready-line.md",
+    "packages/serve/test/decision-key.test.mjs",
+    "packages/serve/test/harness-run.test.mjs",
+    "packages/serve/test/launch-loss.test.mjs",
+    "packages/serve/test/operability.test.mjs",
+    "packages/serve/test/run-metrics.test.mjs",
+    "packages/serve/test/secret-custody.test.mjs",
+    "packages/serve/test/server-lock.test.mjs",
+    "packages/serve/test/support.mjs",
+    "packages/serve/test/tool-keys.test.mjs"
+  ],
+  "productionSourceBuildInputsAndManifestsUnchanged": true,
+  "method": "Complete git diff contains only server tests and one changelog fragment; no runtime source, build inputs, manifests, dependency locks, UI source or exported declarations changed.",
+  "updatedNativeTestCommand": "npm test --workspace @parcha/agentrun-serve",
+  "nativeRuntime": "Ubuntu24.04 tools image, Node22.23.2/npm11.21.0, no model credentials",
+  "nativeTests": {
+    "tests": 781,
+    "passed": 780,
+    "failed": 0,
+    "skipped": 1,
+    "exitCode": 0
+  },
+  "legacyViewerHost": {
+    "tests": 408,
+    "passed": 403,
+    "failed": 0,
+    "skipped": 5,
+    "exitCode": 0,
+    "node": "22.23.1",
+    "chrome": "156.0.8078.79"
+  },
+  "nativeContainerAbsent": true
+}

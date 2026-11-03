@@ -1,0 +1,39 @@
+{
+  "observedAt": "2026-11-03T03:28:06.498682+00:00",
+  "main": "0ca81bce2d7cf7db398080efe2427d296a552a4d",
+  "candidate": "23bf2743349e38461601fd6e959d6801b99df46e",
+  "image": "node:24.21.0-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0",
+  "nativeBuildPassed": true,
+  "consoleBuildRun": false,
+  "dependencies": "shared native node_modules mounted read-only; baseline/candidate native lock identical",
+  "unchangedBlobs": {
+    "examples/reference-demo-hostlines.test.mjs": "acffa18537031d8c89b58c61bbbb2d493b4fc7fc",
+    "packages/harness/src/demo.ts": "efc2b632e679b7952079add2f12bfcd5b6d97b53",
+    "examples/reference/demo-fixture.ts": "a60fba6c13410ecffbefab22e4e9756fb21a24cf",
+    "examples/reference-demo-helpers.mjs": "f7285f84110a035387beaad5c75d619e09bbd665",
+    "package-lock.json": "572eb03b540414894e3ba4cef2fe2593911ce619"
+  },
+  "runs": [
+    {
+      "cpus": 2,
+      "memory": "4g",
+      "network": "none",
+      "node": "24.21.0",
+      "passed": 1,
+      "failed": 0,
+      "reportedTestDurationMs": 11750.352337,
+      "testUnmodified": true
+    },
+    {
+      "cpus": 1,
+      "memory": "4g",
+      "network": "none",
+      "node": "24.21.0",
+      "passed": 1,
+      "failed": 0,
+      "reportedTestDurationMs": 11967.227683,
+      "testUnmodified": true
+    }
+  ],
+  "conclusion": "No reproduction. These passes do not establish the CI failure cause or justify a baseline-failure waiver."
+}

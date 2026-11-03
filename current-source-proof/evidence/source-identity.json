@@ -1,0 +1,12 @@
+{
+  "currentHead": "cf668bea326996da873c755bab7dbc3e356932aa",
+  "status": "passed",
+  "archiveSha256": "2985cb4d3962ea4f0a11c0a3c9a8b1e6e3e1ceea3bdd418855b6b306a44d1e92",
+  "sourceTreeSha256": "e4a54a830e393043fa78c6c3e2cb2f908a2ac6e429a97e27ea18d877c051dc89",
+  "archiveBytes": 16904510,
+  "sourceFiles": 3098,
+  "runtimePackageVersionPairs": 327,
+  "licenseReviewFlags": 12,
+  "publicationReady": false,
+  "assembledFromExistingReceipts": true
+}

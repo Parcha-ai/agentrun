@@ -1,0 +1,59 @@
+{
+  "recordedCurrentCommit": "cf668bea326996da873c755bab7dbc3e356932aa",
+  "assembledFromExistingReceipts": true,
+  "archiveIncluded": false,
+  "files": [
+    {
+      "path": "evidence/source-export-receipt.json",
+      "sha256": "c97bed1596b6106c3a9581165e22e7d2b42db20b7aa7735f0a09585d8d9ad097",
+      "bytes": 767191,
+      "redactions": {},
+      "originalSha256": "c97bed1596b6106c3a9581165e22e7d2b42db20b7aa7735f0a09585d8d9ad097"
+    },
+    {
+      "path": "evidence/source-consumer.json",
+      "sha256": "0b15b65c1b8d5c72a8e2b38c89b852a8781d6d9552530e0c9827738c88057e0e",
+      "bytes": 628634,
+      "redactions": {
+        "machine_path": 23
+      },
+      "originalSha256": "6b48cd4d37efc7081624297cd29c5167dec051fbb38bbce2b3b87ce4f3a00fef"
+    },
+    {
+      "path": "evidence/production-preservation.json",
+      "sha256": "74290c1028157382680958fe5abc4998d77b722ccbfd96df9f67726c48b22e5e",
+      "bytes": 1425,
+      "redactions": {},
+      "originalSha256": "74290c1028157382680958fe5abc4998d77b722ccbfd96df9f67726c48b22e5e"
+    },
+    {
+      "path": "evidence/source-consumer.log",
+      "sha256": "a56d29deded6d556a660c5c0dd94337925074a0098646f92c6b881d881d4160a",
+      "bytes": 226,
+      "redactions": {},
+      "originalSha256": "a56d29deded6d556a660c5c0dd94337925074a0098646f92c6b881d881d4160a"
+    },
+    {
+      "path": "evidence/license-review-flags.json",
+      "sha256": "944f07eddcd60b60e789c69c994294c2b3689c5e3e28bb82e39677418305c8b6",
+      "bytes": 2276,
+      "redactions": {}
+    },
+    {
+      "path": "evidence/source-identity.json",
+      "sha256": "4ae8c8d1693d878689f238f0605f907af33230819492226a5ceb2d069aa5ad10",
+      "bytes": 449,
+      "redactions": {}
+    },
+    {
+      "path": "source-proof.md",
+      "sha256": "30793e23ae107f542139c04cbd2eb20c5b2eaed84c5571a48849e62ef46a9b9d",
+      "bytes": 2141,
+      "redactions": {}
+    }
+  ],
+  "limitations": [
+    "Sanitized evidence copies may differ from original digests.",
+    "Historical package proof receipts remain scoped to their original commit and were not overwritten."
+  ]
+}

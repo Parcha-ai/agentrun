@@ -1,0 +1,139 @@
+{
+  "head": "23bf2743349e38461601fd6e959d6801b99df46e",
+  "image": "sha256:1a4c3cf64815a4660d7ca3f3a667baa8b9c1c9128ce422170cf50404cc8298f0",
+  "node": "22.23.2",
+  "npm": "11.21.0",
+  "command": "npm run check",
+  "exitCode": 0,
+  "workspaceTypechecksAndBuilds": true,
+  "sections": [
+    {
+      "section": "@parcha/agentrun-decisions@0.1.0-beta.28 test",
+      "tests": 71,
+      "pass": 69,
+      "fail": 0,
+      "skipped": 2
+    },
+    {
+      "section": "@parcha/agentrun-dsl@0.1.0-beta.28 test",
+      "tests": 953,
+      "pass": 953,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "section": "@parcha/agentrun-jev@0.1.0-beta.28 test",
+      "tests": 112,
+      "pass": 111,
+      "fail": 0,
+      "skipped": 1
+    },
+    {
+      "section": "@parcha/agentrun-learn@0.1.0-beta.28 test",
+      "tests": 149,
+      "pass": 149,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "section": "@parcha/agentrun-pi@0.1.0-beta.28 test",
+      "tests": 616,
+      "pass": 613,
+      "fail": 0,
+      "skipped": 3
+    },
+    {
+      "section": "@parcha/pi-agent-learn@0.1.0-beta.28 test",
+      "tests": 486,
+      "pass": 485,
+      "fail": 0,
+      "skipped": 1
+    },
+    {
+      "section": "@parcha/pi-browser@0.1.0-beta.28 test",
+      "tests": 923,
+      "pass": 918,
+      "fail": 0,
+      "skipped": 5
+    },
+    {
+      "section": "@parcha/pi-durable-agent@0.1.0-beta.28 test",
+      "tests": 396,
+      "pass": 396,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "section": "@parcha/pi-durable-disk@0.1.0-beta.28 test",
+      "tests": 991,
+      "pass": 984,
+      "fail": 0,
+      "skipped": 7
+    },
+    {
+      "section": "@parcha/pi-git-remote@0.1.0-beta.28 test",
+      "tests": 198,
+      "pass": 198,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "section": "@parcha/pi-vision@0.1.0-beta.28 test",
+      "tests": 602,
+      "pass": 601,
+      "fail": 0,
+      "skipped": 1
+    },
+    {
+      "section": "@parcha/agentrun-kernel@0.1.0-beta.28 test",
+      "tests": 269,
+      "pass": 269,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "section": "@parcha/agentrun-harness-claude@0.1.0-beta.28 test",
+      "tests": 143,
+      "pass": 142,
+      "fail": 0,
+      "skipped": 1
+    },
+    {
+      "section": "@parcha/agentrun-harness-codex@0.1.0-beta.28 test",
+      "tests": 152,
+      "pass": 151,
+      "fail": 0,
+      "skipped": 1
+    },
+    {
+      "section": "@parcha/agentrun-serve@0.1.0-beta.28 test",
+      "tests": 781,
+      "pass": 780,
+      "fail": 0,
+      "skipped": 1
+    },
+    {
+      "section": "agentrun-dsl-workspace@0.1.0-beta.28 test:release",
+      "tests": 435,
+      "pass": 435,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "section": "agentrun-dsl-workspace@0.1.0-beta.28 test:examples",
+      "tests": 604,
+      "pass": 604,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "section": "agentrun-dsl-workspace@0.1.0-beta.28 test:viewer",
+      "tests": 408,
+      "pass": 343,
+      "fail": 0,
+      "skipped": 65
+    }
+  ],
+  "legacyViewerChromeSkipped": 65,
+  "containerAbsent": true
+}

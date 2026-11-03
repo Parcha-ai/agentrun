@@ -1,0 +1,2510 @@
+
+> agentrun-dsl-workspace@0.1.0-beta.28 test:viewer
+> tsc -p apps/viewer/tsconfig.json && node --test apps/viewer/test/*.test.ts
+
+TAP version 13
+# Subtest: a scripted recording with two box receipts sums the boxes at list price and names the scripted lead, never scripted, $0
+ok 1 - a scripted recording with two box receipts sums the boxes at list price and names the scripted lead, never scripted, $0
+  ---
+  duration_ms: 8.894503
+  type: 'test'
+  ...
+# Subtest: a box is counted once, whatever number of receipts name it
+ok 2 - a box is counted once, whatever number of receipts name it
+  ---
+  duration_ms: 0.358278
+  type: 'test'
+  ...
+# Subtest: a receipt whose kind has no published price makes the cost unknown, never 0
+ok 3 - a receipt whose kind has no published price makes the cost unknown, never 0
+  ---
+  duration_ms: 0.209951
+  type: 'test'
+  ...
+# Subtest: a box pi-transport started is unknown until its own receipt; a receipt the supervisor wrote is not that box's
+ok 4 - a box pi-transport started is unknown until its own receipt; a receipt the supervisor wrote is not that box's
+  ---
+  duration_ms: 0.465077
+  type: 'test'
+  ...
+# Subtest: started boxes named by label are matched to their own receipts; boxes named by the provider's id are counted against them
+ok 5 - started boxes named by label are matched to their own receipts; boxes named by the provider's id are counted against them
+  ---
+  duration_ms: 0.871374
+  type: 'test'
+  ...
+# Subtest: with no durable line the store's parts are not measured, so the boxes alone are not the cost
+ok 6 - with no durable line the store's parts are not measured, so the boxes alone are not the cost
+  ---
+  duration_ms: 0.138127
+  type: 'test'
+  ...
+# Subtest: a restore keeps the boxes: a box's time was spent whatever the store went back to
+ok 7 - a restore keeps the boxes: a box's time was spent whatever the store went back to
+  ---
+  duration_ms: 9.823934
+  type: 'test'
+  ...
+# Subtest: the label: a real run's boxes are named at list price; a scripted run's priced parts are named with their sum; no box, no change
+ok 8 - the label: a real run's boxes are named at list price; a scripted run's priced parts are named with their sum; no box, no change
+  ---
+  duration_ms: 0.181337
+  type: 'test'
+  ...
+# Subtest: the transport panel's cost row reads as the strip: its box at list price, its lead scripted
+ok 9 - the transport panel's cost row reads as the strip: its box at list price, its lead scripted
+  ---
+  duration_ms: 8.775812
+  type: 'test'
+  ...
+# (node:3781325) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the build is one classic script and the page, with a gallery of exactly the recordings in the directory it is given
+ok 10 - the build is one classic script and the page, with a gallery of exactly the recordings in the directory it is given
+  ---
+  duration_ms: 262.137991
+  type: 'test'
+  ...
+# Subtest: the command line builds when it is run through a symlinked path, as from macOS's temp directory
+ok 11 - the command line builds when it is run through a symlinked path, as from macOS's temp directory
+  ---
+  duration_ms: 304.553163
+  type: 'test'
+  ...
+# Subtest: a module imports names from the viewer's own modules only: no package, and no bare side-effect import
+ok 12 - a module imports names from the viewer's own modules only: no package, and no bare side-effect import
+  ---
+  duration_ms: 0.63362
+  type: 'test'
+  ...
+# Subtest: the page opens from file:// and draws the recording: the counters and the labelled kill
+ok 13 - the page opens from file:// and draws the recording: the counters and the labelled kill
+  ---
+  duration_ms: 1435.201508
+  type: 'test'
+  ...
+# Subtest: the page takes the manifest's chapters and baseline, marks a restore, and opens at a commit of a generation
+ok 14 - the page takes the manifest's chapters and baseline, marks a restore, and opens at a commit of a generation
+  ---
+  duration_ms: 4022.274168
+  type: 'test'
+  ...
+# Subtest: a panel with no line it is for is not drawn, its title included, at any stop
+ok 15 - a panel with no line it is for is not drawn, its title included, at any stop
+  ---
+  duration_ms: 1671.564589
+  type: 'test'
+  ...
+# Subtest: a run is its input as given, then its recorded conversation: the host's prompt is no entry, one card per tool call
+ok 16 - a run is its input as given, then its recorded conversation: the host's prompt is no entry, one card per tool call
+  ---
+  duration_ms: 78.641894
+  type: 'test'
+  ...
+# Subtest: a submitted result record is the answer: one row per field, its evidence paths as cites on the card that made them
+ok 17 - a submitted result record is the answer: one row per field, its evidence paths as cites on the card that made them
+  ---
+  duration_ms: 12.960379
+  type: 'test'
+  ...
+# Subtest: an answer field that is a list of flat records is a table: its columns as the records first name them, each cell in plain form, never markdown
+ok 18 - an answer field that is a list of flat records is a table: its columns as the records first name them, each cell in plain form, never markdown
+  ---
+  duration_ms: 2.094152
+  type: 'test'
+  ...
+# Subtest: with no result, the answer is the final assistant text
+ok 19 - with no result, the answer is the final assistant text
+  ---
+  duration_ms: 7.426708
+  type: 'test'
+  ...
+# Subtest: a failed call's line is its error's first line, not the markup around it
+ok 20 - a failed call's line is its error's first line, not the markup around it
+  ---
+  duration_ms: 20.663853
+  type: 'test'
+  ...
+# Subtest: the title is the artifact's, else the first line of the input's question
+ok 21 - the title is the artifact's, else the first line of the input's question
+  ---
+  duration_ms: 9.002144
+  type: 'test'
+  ...
+# Subtest: the timeline is spans from the events: LLM calls by model, tool calls by name, inner calls under their tool
+ok 22 - the timeline is spans from the events: LLM calls by model, tool calls by name, inner calls under their tool
+  ---
+  duration_ms: 11.389452
+  type: 'test'
+  ...
+# Subtest: every label comes from an event field: two different runs, the same kinds of labels, no constant titles
+ok 23 - every label comes from an event field: two different runs, the same kinds of labels, no constant titles
+  ---
+  duration_ms: 38.386966
+  type: 'test'
+  ...
+# Subtest: thinking is the run's own: none recorded means none shown; a recorded part is shown where it was written
+ok 24 - thinking is the run's own: none recorded means none shown; a recorded part is shown where it was written
+  ---
+  duration_ms: 4.050527
+  type: 'test'
+  ...
+# Subtest: a cited answer's cites land on the card that made each look
+ok 25 - a cited answer's cites land on the card that made each look
+  ---
+  duration_ms: 2.719919
+  type: 'test'
+  ...
+# Subtest: the agent's artifact (manifest.artifact) passes through with its files by hash
+ok 26 - the agent's artifact (manifest.artifact) passes through with its files by hash
+  ---
+  duration_ms: 0.33807
+  type: 'test'
+  ...
+# Subtest: a tool call reads as its name, the file or URL it acted on, then its short arguments
+ok 27 - a tool call reads as its name, the file or URL it acted on, then its short arguments
+  ---
+  duration_ms: 0.165749
+  type: 'test'
+  ...
+# Subtest: a command that opens a quote or a here-document on its first line is titled with the lines of its body
+ok 28 - a command that opens a quote or a here-document on its first line is titled with the lines of its body
+  ---
+  duration_ms: 0.365481
+  type: 'test'
+  ...
+# Subtest: a call whose title clips its one argument keeps it whole where its card opens; one its title shows whole needs no more
+ok 29 - a call whose title clips its one argument keeps it whole where its card opens; one its title shows whole needs no more
+  ---
+  duration_ms: 3.191998
+  type: 'test'
+  ...
+# Subtest: a look keeps what it asked in words, never a typed request
+ok 30 - a look keeps what it asked in words, never a typed request
+  ---
+  duration_ms: 1.833817
+  type: 'test'
+  ...
+# Subtest: a redacted thought keeps its mark and none of the provider's placeholder
+ok 31 - a redacted thought keeps its mark and none of the provider's placeholder
+  ---
+  duration_ms: 3.898954
+  type: 'test'
+  ...
+# Subtest: a look's answer says its first sentence with words: no lead-in, heading, marker or typed answer
+ok 32 - a look's answer says its first sentence with words: no lead-in, heading, marker or typed answer
+  ---
+  duration_ms: 0.214429
+  type: 'test'
+  ...
+# Subtest: a step that only ran a command or a script, with no look and no picture, is plumbing; the run's input splits its question and files
+ok 33 - a step that only ran a command or a script, with no look and no picture, is plumbing; the run's input splits its question and files
+  ---
+  duration_ms: 5.215939
+  type: 'test'
+  ...
+# Subtest: a cite's address keeps its file and fragment however the fragment is written
+ok 34 - a cite's address keeps its file and fragment however the fragment is written
+  ---
+  duration_ms: 0.150741
+  type: 'test'
+  ...
+# Subtest: a line with its own start is a span under the call it names as parent, or under the call holding its start
+ok 35 - a line with its own start is a span under the call it names as parent, or under the call holding its start
+  ---
+  duration_ms: 2.961107
+  type: 'test'
+  ...
+# Subtest: each model call inside a tool is its own entry under the tool's card: its name, its scores, the boxes it drew, its raw output
+ok 36 - each model call inside a tool is its own entry under the tool's card: its name, its scores, the boxes it drew, its raw output
+  ---
+  duration_ms: 6.031118
+  type: 'test'
+  ...
+# Subtest: every look of a write is a source, keyed by its own record, with the picture it was shown
+ok 37 - every look of a write is a source, keyed by its own record, with the picture it was shown
+  ---
+  duration_ms: 3.003066
+  type: 'test'
+  ...
+# Subtest: a look over several addresses opens at its first and keeps the rest in order
+ok 38 - a look over several addresses opens at its first and keeps the rest in order
+  ---
+  duration_ms: 5.107256
+  type: 'test'
+  ...
+# Subtest: a recording with no times keeps its timeline, placed by the file's order
+ok 39 - a recording with no times keeps its timeline, placed by the file's order
+  ---
+  duration_ms: 4.989587
+  type: 'test'
+  ...
+# Subtest: in a conversation no workflow node holds, the first user entry is the person's message as recorded
+ok 40 - in a conversation no workflow node holds, the first user entry is the person's message as recorded
+  ---
+  duration_ms: 4.746915
+  type: 'test'
+  ...
+# Subtest: a cite with no look keeps its own picture and says what it is; a row keeps its note
+ok 41 - a cite with no look keeps its own picture and says what it is; a row keeps its note
+  ---
+  duration_ms: 14.129137
+  type: 'test'
+  ...
+# Subtest: a takeaway is the result's first line with words, and an artifact's files are blobs the recording names
+ok 42 - a takeaway is the result's first line with words, and an artifact's files are blobs the recording names
+  ---
+  duration_ms: 11.040992
+  type: 'test'
+  ...
+# Subtest: an .mp4 blob is a video, opens in place like a .webm, and is found in a recording opened by its URL (?src=)
+ok 43 - an .mp4 blob is a video, opens in place like a .webm, and is found in a recording opened by its URL (?src=)
+  ---
+  duration_ms: 270.768292
+  type: 'test'
+  ...
+# Subtest: the Muse view: a frame joins the step that was running at its time, or the latest call before it; one that names no image or no step joins none
+ok 44 - the Muse view: a frame joins the step that was running at its time, or the latest call before it; one that names no image or no step joins none
+  ---
+  duration_ms: 6.176157
+  type: 'test'
+  ...
+# Subtest: the Muse view: a hold is read from the session rows and the handoff rows alone, with its ask and its answer, and a run that ends held is waiting
+ok 45 - the Muse view: a hold is read from the session rows and the handoff rows alone, with its ask and its answer, and a run that ends held is waiting
+  ---
+  duration_ms: 6.720733
+  type: 'test'
+  ...
+# Subtest: the Muse view: the agent is named by the host label, else the recording title, and is done when the run delivered
+ok 46 - the Muse view: the agent is named by the host label, else the recording title, and is done when the run delivered
+  ---
+  duration_ms: 3.19372
+  type: 'test'
+  ...
+# Subtest: the Muse view: a sign-in wait is read from the browser's profile document (the address it gains, then its verification), and a step says the host it was on
+ok 47 - the Muse view: a sign-in wait is read from the browser's profile document (the address it gains, then its verification), and a step says the host it was on
+  ---
+  duration_ms: 8.351341
+  type: 'test'
+  ...
+# Subtest: the Muse view: a step's browser says the host of ITS OWN session, never another session's, with two sessions on two hosts
+ok 48 - the Muse view: a step's browser says the host of ITS OWN session, never another session's, with two sessions on two hosts
+  ---
+  duration_ms: 0.939791
+  type: 'test'
+  ...
+# Subtest: the Muse view: a saved profile another run holds (a copy with its address, no verification, state held) opens no wait; a profile this run was asked to sign in to still does
+ok 49 - the Muse view: a saved profile another run holds (a copy with its address, no verification, state held) opens no wait; a profile this run was asked to sign in to still does
+  ---
+  duration_ms: 10.600302
+  type: 'test'
+  ...
+# Subtest: the Muse view: a profile already signed in the first time the run reads it is a remembered sign-in, not a wait
+ok 50 - the Muse view: a profile already signed in the first time the run reads it is a remembered sign-in, not a wait
+  ---
+  duration_ms: 0.6602
+  type: 'test'
+  ...
+# Subtest: the Muse option leaves the default model exactly as it was: the same model with or without it asked for, and none of its fields
+ok 51 - the Muse option leaves the default model exactly as it was: the same model with or without it asked for, and none of its fields
+  ---
+  duration_ms: 4.320039
+  type: 'test'
+  ...
+# (node:3781332) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: a call's forks are its conversations: under its card, named by their own label or the parent's and their place, opened by the tool
+ok 52 - a call's forks are its conversations: under its card, named by their own label or the parent's and their place, opened by the tool
+  ---
+  duration_ms: 9.717617
+  type: 'test'
+  ...
+# Subtest: a recording that ends after a fork's label and before its first message keeps the agent's own name in the header
+ok 53 - a recording that ends after a fork's label and before its first message keeps the agent's own name in the header
+  ---
+  duration_ms: 0.564161
+  type: 'test'
+  ...
+# Subtest: without the submissions a recording keeps, nothing in a fork a call made is You
+ok 54 - without the submissions a recording keeps, nothing in a fork a call made is You
+  ---
+  duration_ms: 0.49355
+  type: 'test'
+  ...
+# Subtest: in Chrome: the forks fold under the fork_threads card, labelled, opened by the tool, and only the person's steer reads You
+ok 55 - in Chrome: the forks fold under the fork_threads card, labelled, opened by the tool, and only the person's steer reads You
+  ---
+  duration_ms: 26598.099355
+  type: 'test'
+  ...
+# Subtest: in Chrome: a timeline jump to a message in a fork whose conversation is folded opens every fold around it and ends with the message in view
+ok 56 - in Chrome: a timeline jump to a message in a fork whose conversation is folded opens every fold around it and ends with the message in view
+  ---
+  duration_ms: 26032.444877
+  type: 'test'
+  ...
+# (node:3781333) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: a move between hosts is one card at the handoff, in words from fields: after the point's effect and its ordinal, on the host it left, then where it went
+ok 57 - a move between hosts is one card at the handoff, in words from fields: after the point's effect and its ordinal, on the host it left, then where it went
+  ---
+  duration_ms: 14.499527
+  type: 'test'
+  ...
+# Subtest: where the holder's label is the one it left, the card says it reopened, never that it moved; the labels are the recorded ones, and an ordinal follows its number
+ok 58 - where the holder's label is the one it left, the card says it reopened, never that it moved; the labels are the recorded ones, and an ordinal follows its number
+  ---
+  duration_ms: 11.400613
+  type: 'test'
+  ...
+# Subtest: a tab is a driver kind (draft 47, amendment 2): the card names a move from the tab, and a driver that is no kind is dropped from the card
+ok 59 - a tab is a driver kind (draft 47, amendment 2): the card names a move from the tab, and a driver that is no kind is dropped from the card
+  ---
+  duration_ms: 3.79992
+  type: 'test'
+  ...
+# Subtest: a point that is not an effect kept drops the "after" clause, and nothing else is read from it
+ok 60 - a point that is not an effect kept drops the "after" clause, and nothing else is read from it
+  ---
+  duration_ms: 1.87287
+  type: 'test'
+  ...
+# Subtest: a handoff.failed line draws no card, and a run with no handoff line draws none
+ok 61 - a handoff.failed line draws no card, and a run with no handoff line draws none
+  ---
+  duration_ms: 5.166827
+  type: 'test'
+  ...
+# Subtest: the card holds no kill, restart or process, no pid, boot id or id-shaped string, no prose of the handoff, and no value the recorder's scanner refuses
+ok 62 - the card holds no kill, restart or process, no pid, boot id or id-shaped string, no prose of the handoff, and no value the recorder's scanner refuses
+  ---
+  duration_ms: 6.694173
+  type: 'test'
+  ...
+# Subtest: the card goes in the conversation that was ACTIVE last at the handoff, not the one that started last
+ok 63 - the card goes in the conversation that was ACTIVE last at the handoff, not the one that started last
+  ---
+  duration_ms: 9.216523
+  type: 'test'
+  ...
+# Subtest: a run that moved before it recorded any chat keeps its card: one per handoff line, in the run's own timeline
+ok 64 - a run that moved before it recorded any chat keeps its card: one per handoff line, in the run's own timeline
+  ---
+  duration_ms: 3.60663
+  type: 'test'
+  ...
+# Subtest: in Chrome: the chat view draws one card per handoff line, in words of a move, and none without one; the Muse layout draws none
+ok 65 - in Chrome: the chat view draws one card per handoff line, in words of a move, and none without one; the Muse layout draws none
+  ---
+  duration_ms: 78157.633227
+  type: 'test'
+  ...
+# Subtest: in Chrome: a move that happened while a folded conversation was the active one is drawn after that fold, in the run's own timeline, where a closed fold cannot hide it
+ok 66 - in Chrome: a move that happened while a folded conversation was the active one is drawn after that fold, in the run's own timeline, where a closed fold cannot hide it
+  ---
+  duration_ms: 25642.289985
+  type: 'test'
+  ...
+# (node:3781339) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: in Chrome: an answer the run saved (manifest.result) is the agent's last bubble when the conversation does not already say it
+ok 67 - in Chrome: an answer the run saved (manifest.result) is the agent's last bubble when the conversation does not already say it
+  ---
+  duration_ms: 26671.842841
+  type: 'test'
+  ...
+# Subtest: in Chrome: a saved answer is always drawn as the last bubble, even when a message says the same words (a short row such as "Yes" is no reason to hide it)
+ok 68 - in Chrome: a saved answer is always drawn as the last bubble, even when a message says the same words (a short row such as "Yes" is no reason to hide it)
+  ---
+  duration_ms: 26109.267693
+  type: 'test'
+  ...
+# Subtest: in Chrome: a file an answer names only by its address still gets its chip, and the address is shortened to its host
+ok 69 - in Chrome: a file an answer names only by its address still gets its chip, and the address is shortened to its host
+  ---
+  duration_ms: 25608.680153
+  type: 'test'
+  ...
+# Subtest: in Chrome: What I remember keeps its headings, lists and notes when the page wraps them in layout containers, and its file-name and index rules hold for nested headings
+ok 70 - in Chrome: What I remember keeps its headings, lists and notes when the page wraps them in layout containers, and its file-name and index rules hold for nested headings
+  ---
+  duration_ms: 25708.05563
+  type: 'test'
+  ...
+# Subtest: in Chrome: a long last card does not mark the run Done while only its top is in view; Done comes when its end is
+ok 71 - in Chrome: a long last card does not mark the run Done while only its top is in view; Done comes when its end is
+  ---
+  duration_ms: 17938.733215
+  type: 'test'
+  ...
+# Subtest: in Chrome: a card that still says it is reading does not mark the run Done
+ok 72 - in Chrome: a card that still says it is reading does not mark the run Done
+  ---
+  duration_ms: 28595.373591
+  type: 'test'
+  ...
+# Subtest: in Chrome: a workflow run opens with its input as the person's first message: its fields, in the default view's words
+ok 73 - in Chrome: a workflow run opens with its input as the person's first message: its fields, in the default view's words
+  ---
+  duration_ms: 25520.584884
+  type: 'test'
+  ...
+# Subtest: in Chrome: the opening request is the question in words, its other fields as lines and its files as chips (an address is its file name, never the whole address, in the chip and in its title)
+ok 74 - in Chrome: the opening request is the question in words, its other fields as lines and its files as chips (an address is its file name, never the whole address, in the chip and in its title)
+  ---
+  duration_ms: 25490.368143
+  type: 'test'
+  ...
+# (node:3781345) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the Muse layout shortens every web address to its host, and takes the files a text names out as chips
+ok 75 - the Muse layout shortens every web address to its host, and takes the files a text names out as chips
+  ---
+  duration_ms: 24.142665
+  type: 'test'
+  ...
+# Subtest: a list of files an answer writes in markdown (backticked or bold names) folds into the chips, as a list of bare names does
+ok 76 - a list of files an answer writes in markdown (backticked or bold names) folds into the chips, as a list of bare names does
+  ---
+  duration_ms: 0.28458
+  type: 'test'
+  ...
+# Subtest: the Muse layout says a time as its date, never "today", and names memory files plainly
+ok 77 - the Muse layout says a time as its date, never "today", and names memory files plainly
+  ---
+  duration_ms: 27.444087
+  type: 'test'
+  ...
+# Subtest: the page's styles for the Muse layout are all its own: every rule it adds begins with .muse or .mu-, so the default view cannot take one
+ok 78 - the page's styles for the Muse layout are all its own: every rule it adds begins with .muse or .mu-, so the default view cannot take one
+  ---
+  duration_ms: 0.810811
+  type: 'test'
+  ...
+# Subtest: the Muse layout uses the page's own colours only: every colour in its rules is one of the viewer's tokens (the agentrun.ai palette) or the grid dot
+ok 79 - the Muse layout uses the page's own colours only: every colour in its rules is one of the viewer's tokens (the agentrun.ai palette) or the grid dot
+  ---
+  duration_ms: 0.441693
+  type: 'test'
+  ...
+# Subtest: the Muse layout is never rounded: no rule of its own sets a border radius but none or 0
+ok 80 - the Muse layout is never rounded: no rule of its own sets a border radius but none or 0
+  ---
+  duration_ms: 0.490504
+  type: 'test'
+  ...
+# Subtest: in Chrome: &muse is a phone chat over the same events, at 1440 and 390: the agent's avatar, bubbles, the browser inline, the sign-in card, the answer with file chips, What I remember; nothing of the analyst view
+ok 81 - in Chrome: &muse is a phone chat over the same events, at 1440 and 390: the agent's avatar, bubbles, the browser inline, the sign-in card, the answer with file chips, What I remember; nothing of the analyst view
+  ---
+  duration_ms: 26864.582255
+  type: 'test'
+  ...
+# (node:3781354) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: in Chrome: under connect-src 'self' an embedded recording's What I remember is read from its data: URL, not said unreadable
+ok 82 - in Chrome: under connect-src 'self' an embedded recording's What I remember is read from its data: URL, not said unreadable
+  ---
+  duration_ms: 26719.314575
+  type: 'test'
+  ...
+# Subtest: in Chrome: a page that cannot be read is said on the card, with the reason
+ok 83 - in Chrome: a page that cannot be read is said on the card, with the reason
+  ---
+  duration_ms: 26191.990823
+  type: 'test'
+  ...
+# Subtest: in Chrome: a finished run reads "is working" while the end of the conversation is out of view, and "Done" once it is in view
+ok 84 - in Chrome: a finished run reads "is working" while the end of the conversation is out of view, and "Done" once it is in view
+  ---
+  duration_ms: 26275.537765
+  type: 'test'
+  ...
+# Subtest: a reference in the agent's page resolves only to a file it holds
+ok 85 - a reference in the agent's page resolves only to a file it holds
+  ---
+  duration_ms: 2.535955
+  type: 'test'
+  ...
+# Subtest: a sheet the agent's page imports is rewritten from its own path, served once, and a loop of imports ends
+ok 86 - a sheet the agent's page imports is rewritten from its own path, served once, and a loop of imports ends
+  ---
+  duration_ms: 1.694738
+  type: 'test'
+  ...
+# (node:3781362) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: two sheets that start together and import one sheet read it once and share it
+ok 87 - two sheets that start together and import one sheet read it once and share it
+  ---
+  duration_ms: 10.812868
+  type: 'test'
+  ...
+# Subtest: an answer row that only says the title again is not drawn twice: its cites and note stay, its text goes
+ok 88 - an answer row that only says the title again is not drawn twice: its cites and note stay, its text goes
+  ---
+  duration_ms: 0.746321
+  type: 'test'
+  ...
+# Subtest: a region comes from the citation's address alone, and lands on the page or frame it names
+ok 89 - a region comes from the citation's address alone, and lands on the page or frame it names
+  ---
+  duration_ms: 1.283972
+  type: 'test'
+  ...
+# Subtest: a thought's title is the headline its model wrote (a wholly bold first line); with none it has no title and is all body
+ok 90 - a thought's title is the headline its model wrote (a wholly bold first line); with none it has no title and is all body
+  ---
+  duration_ms: 0.269592
+  type: 'test'
+  ...
+# Subtest: a region is drawn on the picture whose address holds it; of several, the cited one; of none, the cited one
+ok 91 - a region is drawn on the picture whose address holds it; of several, the cited one; of none, the cited one
+  ---
+  duration_ms: 0.392952
+  type: 'test'
+  ...
+# Subtest: a look over several addresses reads as one place: its pages as runs, its seconds as a span, else the first and how many more
+ok 92 - a look over several addresses reads as one place: its pages as runs, its seconds as a span, else the first and how many more
+  ---
+  duration_ms: 0.516473
+  type: 'test'
+  ...
+# Subtest: in Chrome: the chat beside the agent's page, its timeline, its citations and the public rules, at 1440 and 390
+ok 93 - in Chrome: the chat beside the agent's page, its timeline, its citations and the public rules, at 1440 and 390
+  ---
+  duration_ms: 29420.114868
+  type: 'test'
+  ...
+# Subtest: in Chrome: a timeline click to the last card of a long run lands on it, though the pictures above it load lazily, at 390 and 1440
+ok 94 - in Chrome: a timeline click to the last card of a long run lands on it, though the pictures above it load lazily, at 390 and 1440
+  ---
+  duration_ms: 29817.470465
+  type: 'test'
+  ...
+# Subtest: in Chrome: a reader who scrolls away while the pictures above a jumped-to card still load keeps their place, at 390 and 1440
+ok 95 - in Chrome: a reader who scrolls away while the pictures above a jumped-to card still load keeps their place, at 390 and 1440
+  ---
+  duration_ms: 33401.129936
+  type: 'test'
+  ...
+# Subtest: in Chrome: a look card passes over a near-black first picture to the first lit one, keeps the first when all are dark, and the opened look shows every picture
+ok 96 - in Chrome: a look card passes over a near-black first picture to the first lit one, keeps the first when all are dark, and the opened look shows every picture
+  ---
+  duration_ms: 27078.633836
+  type: 'test'
+  ...
+# Subtest: in Chrome: an answer that is a list of flat records and a pipe table in the agent's words are tables; at 390 a wide one scrolls in its own box, never the page
+ok 97 - in Chrome: an answer that is a list of flat records and a pipe table in the agent's words are tables; at 390 a wide one scrolls in its own box, never the page
+  ---
+  duration_ms: 1889.472642
+  type: 'test'
+  ...
+# (node:3781368) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: in Chrome: the dark palette goes only over a page that declares dark; any other page is drawn as authored
+ok 98 - in Chrome: the dark palette goes only over a page that declares dark; any other page is drawn as authored
+  ---
+  duration_ms: 28496.47449
+  type: 'test'
+  ...
+# (node:3781369) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the safety rule: in a session that had a credential on its page, every frame from its first to the gap's end is blurred, the video skips that span, and a page read inside it has no place to seek
+ok 99 - the safety rule: in a session that had a credential on its page, every frame from its first to the gap's end is blurred, the video skips that span, and a page read inside it has no place to seek
+  ---
+  duration_ms: 33.117668
+  type: 'test'
+  ...
+# Subtest: a run with no credential gap blurs nothing and plays whole
+ok 100 - a run with no credential gap blurs nothing and plays whole
+  ---
+  duration_ms: 8.167188
+  type: 'test'
+  ...
+# Subtest: the facts a look boxed are read as the recording's facts blob says: a box in the frame's pixels, none where the look found none, the look's own label and receipt; a fact on a frame the run does not have is dropped
+ok 101 - the facts a look boxed are read as the recording's facts blob says: a box in the frame's pixels, none where the look found none, the look's own label and receipt; a fact on a frame the run does not have is dropped
+  ---
+  duration_ms: 12.81052
+  type: 'test'
+  ...
+# Subtest: the files an artifact holds as PDFs are the report's thumbnails; no browser run, no report
+ok 102 - the files an artifact holds as PDFs are the report's thumbnails; no browser run, no report
+  ---
+  duration_ms: 9.664197
+  type: 'test'
+  ...
+# Subtest: in Chrome: the report holds the video, the chapters, the strip of screenshots; the sign-in frames are canvases (never the sharp picture) with no click, the others open enlarged
+ok 103 - in Chrome: the report holds the video, the chapters, the strip of screenshots; the sign-in frames are canvases (never the sharp picture) with no click, the others open enlarged
+  ---
+  duration_ms: 27029.925722
+  type: 'test'
+  ...
+# Subtest: in Chrome: a crop is the frame around its box, the box is the look's, no box means the whole frame said so, and an inference is not shown as text on the page
+ok 104 - in Chrome: a crop is the frame around its box, the box is the look's, no box means the whole frame said so, and an inference is not shown as text on the page
+  ---
+  duration_ms: 26013.440262
+  type: 'test'
+  ...
+# Subtest: in Chrome: a run that skipped its sign-in because it was remembered says so; without &visual the Muse layout draws no report at all
+ok 105 - in Chrome: a run that skipped its sign-in because it was remembered says so; without &visual the Muse layout draws no report at all
+  ---
+  duration_ms: 25797.804156
+  type: 'test'
+  ...
+# Subtest: in Chrome: without &visual the Muse layout draws no report
+ok 106 - in Chrome: without &visual the Muse layout draws no report
+  ---
+  duration_ms: 25696.896812
+  type: 'test'
+  ...
+# Subtest: chapters: one per distinct page visit; two that land at the same place in the video are the later page
+ok 107 - chapters: one per distinct page visit; two that land at the same place in the video are the later page
+  ---
+  duration_ms: 3.272147
+  type: 'test'
+  ...
+# Subtest: a crop holds its box with 24 px of air on every side (the frame's edge excepted), never a sliver; a box across a table row is the whole row with the lines above it
+ok 108 - a crop holds its box with 24 px of air on every side (the frame's edge excepted), never a sliver; a box across a table row is the whole row with the lines above it
+  ---
+  duration_ms: 0.291594
+  type: 'test'
+  ...
+# Subtest: in Chrome: a blank frame and a picture shown twice are no tiles of the strip of screenshots; a wide window breaks the report out of the chat column, three facts across
+ok 109 - in Chrome: a blank frame and a picture shown twice are no tiles of the strip of screenshots; a wide window breaks the report out of the chat column, three facts across
+  ---
+  duration_ms: 17464.216313
+  type: 'test'
+  ...
+# Subtest: in Chrome: with &visual the chat's own browser card shows a sign-in frame blurred; the plain Muse card is left as it was
+ok 110 - in Chrome: with &visual the chat's own browser card shows a sign-in frame blurred; the plain Muse card is left as it was
+  ---
+  duration_ms: 51147.468201
+  type: 'test'
+  ...
+# Subtest: in Chrome: a blank frame is no tile even when it is a sign-in frame (judged on its original pixels), and a near-identical frame of the same page is no second tile while another page's is
+ok 111 - in Chrome: a blank frame is no tile even when it is a sign-in frame (judged on its original pixels), and a near-identical frame of the same page is no second tile while another page's is
+  ---
+  duration_ms: 26712.443838
+  type: 'test'
+  ...
+# Subtest: a look's box that does not fit its frame is clamped into it, or dropped for the whole frame when nothing of it is left
+ok 112 - a look's box that does not fit its frame is clamped into it, or dropped for the whole frame when nothing of it is left
+  ---
+  duration_ms: 4.697884
+  type: 'test'
+  ...
+# Subtest: with more than one browser session the report has one video of the first, and no chapter that could seek into the wrong session
+ok 113 - with more than one browser session the report has one video of the first, and no chapter that could seek into the wrong session
+  ---
+  duration_ms: 2.471355
+  type: 'test'
+  ...
+# Subtest: in Chrome: the video plays only from the end of the blurred span, whatever the page does: nothing earlier is ever the current time, it loops back to the span's end, and a chapter seeks to its own frame
+ok 114 - in Chrome: the video plays only from the end of the blurred span, whatever the page does: nothing earlier is ever the current time, it loops back to the span's end, and a chapter seeks to its own frame
+  ---
+  duration_ms: 32569.455558
+  type: 'test'
+  ...
+# Subtest: fail closed by picture: a sign-in picture that comes back after the gap (a re-login's empty form) is blurred wherever it shows, and a video that would show it sharp is no video
+ok 115 - fail closed by picture: a sign-in picture that comes back after the gap (a re-login's empty form) is blurred wherever it shows, and a video that would show it sharp is no video
+  ---
+  duration_ms: 3.966562
+  type: 'test'
+  ...
+# Subtest: a chapter seeks to the frame it was read on by its time, not to the last appearance of that picture: the same picture kept at several times keeps each chapter at its own
+ok 116 - a chapter seeks to the frame it was read on by its time, not to the last appearance of that picture: the same picture kept at several times keeps each chapter at its own
+  ---
+  duration_ms: 3.389545
+  type: 'test'
+  ...
+# Subtest: a wait past its bound fails and names what it waited for
+ok 117 - a wait past its bound fails and names what it waited for
+  ---
+  duration_ms: 102.232019
+  type: 'test'
+  ...
+# Subtest: a Chrome that never starts listening is ended and started once more, then fails within twice the launch bound, every start and helper killed
+ok 118 - a Chrome that never starts listening is ended and started once more, then fails within twice the launch bound, every start and helper killed
+  ---
+  duration_ms: 2359.971932
+  type: 'test'
+  ...
+# Subtest: a test that ends aborts its signal, and Chrome and its helper go at once, its bound not yet passed
+ok 119 - a test that ends aborts its signal, and Chrome and its helper go at once, its bound not yet passed
+  ---
+  duration_ms: 590.206912
+  type: 'test'
+  ...
+# Subtest: in Chrome: a first start that never listens is ended, and the second start gives a page that works and closes
+ok 120 - in Chrome: a first start that never listens is ended, and the second start gives a page that works and closes
+  ---
+  duration_ms: 10793.441377
+  type: 'test'
+  ...
+# Subtest: a second start slower than the first start's bound still gives its page when it has its own, longer bound, and the same slow start fails with the first bound
+ok 121 - a second start slower than the first start's bound still gives its page when it has its own, longer bound, and the same slow start fails with the first bound
+  ---
+  duration_ms: 10960.078799
+  type: 'test'
+  ...
+# Subtest: the fixture obeys the format, and each invariant catches its own break
+ok 122 - the fixture obeys the format, and each invariant catches its own break
+  ---
+  duration_ms: 31.756091
+  type: 'test'
+  ...
+# Subtest: the manifest's chapters name a commit of a generation that is in the recording, and a baseline names a recording
+ok 123 - the manifest's chapters name a commit of a generation that is in the recording, and a baseline names a recording
+  ---
+  duration_ms: 17.744032
+  type: 'test'
+  ...
+# Subtest: no stop falls inside a commit, and a scrub to any stop equals a fresh reduce to it
+ok 124 - no stop falls inside a commit, and a scrub to any stop equals a fresh reduce to it
+  ---
+  duration_ms: 58.91685
+  type: 'test'
+  ...
+# Subtest: the counters at the end match the run's own ledger
+ok 125 - the counters at the end match the run's own ledger
+  ---
+  duration_ms: 0.518326
+  type: 'test'
+  ...
+# Subtest: the process lane comes from the supervisor's lines: two bands, the first ended by the labelled kill
+ok 126 - the process lane comes from the supervisor's lines: two bands, the first ended by the labelled kill
+  ---
+  duration_ms: 0.924793
+  type: 'test'
+  ...
+# Subtest: ?cite lands just after the commit that first wrote the citation
+ok 127 - ?cite lands just after the commit that first wrote the citation
+  ---
+  duration_ms: 0.923471
+  type: 'test'
+  ...
+# Subtest: a browser picture: the track when there is one, else the latest frame, and a gap as a gap
+ok 128 - a browser picture: the track when there is one, else the latest frame, and a gap as a gap
+  ---
+  duration_ms: 0.425172
+  type: 'test'
+  ...
+# Subtest: a recording that never committed an ask start shows re-asked turns as not measured, never 0
+ok 129 - a recording that never committed an ask start shows re-asked turns as not measured, never 0
+  ---
+  duration_ms: 0.676861
+  type: 'test'
+  ...
+# Subtest: a kill's crossing is { point, n } or null, and the lane shows its point
+ok 130 - a kill's crossing is { point, n } or null, and the lane shows its point
+  ---
+  duration_ms: 4.856308
+  type: 'test'
+  ...
+# Subtest: focus is a view input: the views dim what is outside the branch, keep lines with no path, and drop nothing
+ok 131 - focus is a view input: the views dim what is outside the branch, keep lines with no path, and drop nothing
+  ---
+  duration_ms: 1.511406
+  type: 'test'
+  ...
+# Subtest: the lines panel names the process a supervisor line is about from its data
+ok 132 - the lines panel names the process a supervisor line is about from its data
+  ---
+  duration_ms: 0.379417
+  type: 'test'
+  ...
+# Subtest: an extension's panel shows before the shell's own two, whatever order the modules load in
+ok 133 - an extension's panel shows before the shell's own two, whatever order the modules load in
+  ---
+  duration_ms: 0.553902
+  type: 'test'
+  ...
+# Subtest: a document is one per (doc, key, conv, task): two conversations each hold their own pi.live
+ok 134 - a document is one per (doc, key, conv, task): two conversations each hold their own pi.live
+  ---
+  duration_ms: 0.411997
+  type: 'test'
+  ...
+# Subtest: the result is the supervisor's line, a task is a durable string, and the manifest's cost is the lines' fold
+ok 135 - the result is the supervisor's line, a task is a durable string, and the manifest's cost is the lines' fold
+  ---
+  duration_ms: 4.794314
+  type: 'test'
+  ...
+# Subtest: with no durable line nothing from the store is measured, and cost is unknown until a durable line prices a part
+ok 136 - with no durable line nothing from the store is measured, and cost is unknown until a durable line prices a part
+  ---
+  duration_ms: 1.232557
+  type: 'test'
+  ...
+# Subtest: a recording's blob opens in a tab only when its type is passive; a page, an SVG or an unknown type downloads
+ok 137 - a recording's blob opens in a tab only when its type is passive; a page, an SVG or an unknown type downloads
+  ---
+  duration_ms: 0.167543
+  type: 'test'
+  ...
+# Subtest: ?cite lands after the whole commit, across a live line inside it
+ok 138 - ?cite lands after the whole commit, across a live line inside it
+  ---
+  duration_ms: 0.152424
+  type: 'test'
+  ...
+# Subtest: a folder is read until a batch comes back empty
+ok 139 - a folder is read until a batch comes back empty
+  ---
+  duration_ms: 0.162012
+  type: 'test'
+  ...
+# Subtest: playback: the clock runs on across the lines it reaches, and only a seek sets it
+ok 140 - playback: the clock runs on across the lines it reaches, and only a seek sets it
+  ---
+  duration_ms: 0.165448
+  type: 'test'
+  ...
+# Subtest: a cut answer's aborted entry is no completed turn in the lanes
+ok 141 - a cut answer's aborted entry is no completed turn in the lanes
+  ---
+  duration_ms: 0.1339
+  type: 'test'
+  ...
+# Subtest: a credential gap carries its detail, shown as the gap's tooltip
+ok 142 - a credential gap carries its detail, shown as the gap's tooltip
+  ---
+  duration_ms: 0.169396
+  type: 'test'
+  ...
+# (node:3781405) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: a scripted run says so, and its zero is $0
+ok 143 - a scripted run says so, and its zero is $0
+  ---
+  duration_ms: 0.729269
+  type: 'test'
+  ...
+# Subtest: a real run, or one whose manifest does not say, reads in dollars to four places; unknown is unknown
+ok 144 - a real run, or one whose manifest does not say, reads in dollars to four places; unknown is unknown
+  ---
+  duration_ms: 0.135071
+  type: 'test'
+  ...
+# Subtest: on the page, a scripted run reads scripted, $0 and says its providers
+ok 145 - on the page, a scripted run reads scripted, $0 and says its providers
+  ---
+  duration_ms: 1931.533422
+  type: 'test'
+  ...
+# Subtest: two effects with one tool and arguments, in different branches and processes, are two calls and no repeat
+ok 146 - two effects with one tool and arguments, in different branches and processes, are two calls and no repeat
+  ---
+  duration_ms: 2.746678
+  type: 'test'
+  ...
+# Subtest: an effect repeats when an applied call of its id lands in a later process than an earlier applied one; failed and unknown calls are not applied
+ok 147 - an effect repeats when an applied call of its id lands in a later process than an earlier applied one; failed and unknown calls are not applied
+  ---
+  duration_ms: 1.128683
+  type: 'test'
+  ...
+# Subtest: two applied calls of one effect inside one process are asked twice, not repeated
+ok 148 - two applied calls of one effect inside one process are asked twice, not repeated
+  ---
+  duration_ms: 0.248563
+  type: 'test'
+  ...
+# Subtest: an effect whose host reports no calls has its repeats not measured: never shown as 0
+ok 149 - an effect whose host reports no calls has its repeats not measured: never shown as 0
+  ---
+  duration_ms: 0.543954
+  type: 'test'
+  ...
+# Subtest: a snapshot of a completed effect in a later process is state: no repeat
+ok 150 - a snapshot of a completed effect in a later process is state: no repeat
+  ---
+  duration_ms: 0.153075
+  type: 'test'
+  ...
+# Subtest: a stateful tool the run does not pay for, called twice with the same arguments in one conversation, counts nothing
+ok 151 - a stateful tool the run does not pay for, called twice with the same arguments in one conversation, counts nothing
+  ---
+  duration_ms: 16.040268
+  type: 'test'
+  ...
+# Subtest: a paid call executed again is asked twice in one process and repeated in a later one, in any conversation, as the receipts are run-wide
+ok 152 - a paid call executed again is asked twice in one process and repeated in a later one, in any conversation, as the receipts are run-wide
+  ---
+  duration_ms: 0.859501
+  type: 'test'
+  ...
+# Subtest: one paid call is one call whatever the key order of its arguments, and a call with other arguments than the receipt's is not that paid call
+ok 153 - one paid call is one call whatever the key order of its arguments, and a call with other arguments than the receipt's is not that paid call
+  ---
+  duration_ms: 8.620453
+  type: 'test'
+  ...
+# Subtest: an answer from the receipt (effect_status reused, reused, refused) is neither a repeat nor a second ask, and other arguments are another call
+ok 154 - an answer from the receipt (effect_status reused, reused, refused) is neither a repeat nor a second ask, and other arguments are another call
+  ---
+  duration_ms: 0.796103
+  type: 'test'
+  ...
+# Subtest: a later process's list that starts with the earlier one adds only its new calls, so the earlier call is not counted again
+ok 155 - a later process's list that starts with the earlier one adds only its new calls, so the earlier call is not counted again
+  ---
+  duration_ms: 0.437325
+  type: 'test'
+  ...
+# Subtest: a snapshot is the base: a call first seen there happened in an earlier process, and a re-send after it is a repeat
+ok 156 - a snapshot is the base: a call first seen there happened in an earlier process, and a re-send after it is a repeat
+  ---
+  duration_ms: 0.233765
+  type: 'test'
+  ...
+# Subtest: a restore's snapshot that is shorter than the last list is the new base, and the lost branch's calls stay where they were first seen
+ok 157 - a restore's snapshot that is shorter than the last list is the new base, and the lost branch's calls stay where they were first seen
+  ---
+  duration_ms: 0.162904
+  type: 'test'
+  ...
+# Subtest: an ask the kill cut after its partial, asked again at the same position, is re-asked, proven; the cut answer's aborted entry is no committed turn
+ok 158 - an ask the kill cut after its partial, asked again at the same position, is re-asked, proven; the cut answer's aborted entry is no committed turn
+  ---
+  duration_ms: 0.481978
+  type: 'test'
+  ...
+# Subtest: a snapshot's generation is the ask already open, or a cut one whose start line was lost
+ok 159 - a snapshot's generation is the ask already open, or a cut one whose start line was lost
+  ---
+  duration_ms: 0.288988
+  type: 'test'
+  ...
+# Subtest: a cut ask with only its start marker, asked again, is re-asked possible, and shows as the later ask's first partial or its entry
+ok 160 - a cut ask with only its start marker, asked again, is re-asked possible, and shows as the later ask's first partial or its entry
+  ---
+  duration_ms: 11.658163
+  type: 'test'
+  ...
+# Subtest: asks at different positions or in different conversations are not re-asked
+ok 161 - asks at different positions or in different conversations are not re-asked
+  ---
+  duration_ms: 0.278699
+  type: 'test'
+  ...
+# Subtest: a recording that never committed an ask start, or whose pi.live version is unknown, has re-asked not measured
+ok 162 - a recording that never committed an ask start, or whose pi.live version is unknown, has re-asked not measured
+  ---
+  duration_ms: 0.16075
+  type: 'test'
+  ...
+# Subtest: committed turns skip aborted assistant entries
+ok 163 - committed turns skip aborted assistant entries
+  ---
+  duration_ms: 0.10756
+  type: 'test'
+  ...
+# Subtest: per extra payment: applied in gens 1, 2, 2 is one repeat and one asked twice; 1, 1, 1, 2 is one repeat and two asked twice
+ok 164 - per extra payment: applied in gens 1, 2, 2 is one repeat and one asked twice; 1, 1, 1, 2 is one repeat and two asked twice
+  ---
+  duration_ms: 0.22546
+  type: 'test'
+  ...
+# Subtest: a paid key executed in gens 1, 2, 2 is one repeat and one asked twice
+ok 165 - a paid key executed in gens 1, 2, 2 is one repeat and one asked twice
+  ---
+  duration_ms: 0.350724
+  type: 'test'
+  ...
+# Subtest: a snapshot's new calls take the snapshot's own generation, which is the earlier process's
+ok 166 - a snapshot's new calls take the snapshot's own generation, which is the earlier process's
+  ---
+  duration_ms: 0.829245
+  type: 'test'
+  ...
+# Subtest: conv 39 position 4 of the spacedeck recording: partial A (process 5), killed, process 6 commits a different partial B with no start line, killed, process 7 commits C and answers: 3 asks, 2 proven re-asks
+ok 167 - conv 39 position 4 of the spacedeck recording: partial A (process 5), killed, process 6 commits a different partial B with no start line, killed, process 7 commits C and answers: 3 asks, 2 proven re-asks
+  ---
+  duration_ms: 0.258752
+  type: 'test'
+  ...
+# Subtest: a bare marker that stays unchanged across several opens is one possible cut ask, counted when a later process answers
+ok 168 - a bare marker that stays unchanged across several opens is one possible cut ask, counted when a later process answers
+  ---
+  duration_ms: 0.185886
+  type: 'test'
+  ...
+# Subtest: a later process's partial that equals its snapshot's is the same ask, and one that differs is its own proven ask
+ok 169 - a later process's partial that equals its snapshot's is the same ask, and one that differs is its own proven ask
+  ---
+  duration_ms: 0.200714
+  type: 'test'
+  ...
+# Subtest: re-asks at a position are its asks minus one, split proven and possible by the cut asks that make them
+ok 170 - re-asks at a position are its asks minus one, split proven and possible by the cut asks that make them
+  ---
+  duration_ms: 0.24679
+  type: 'test'
+  ...
+# Subtest: conv 29 position 8 of the spacedeck recording: a bare cut marker, then 22 processes each with its own distinct partial and a bare snapshot, the answer in the last: 1 possible and 22 proven re-asks
+ok 171 - conv 29 position 8 of the spacedeck recording: a bare cut marker, then 22 processes each with its own distinct partial and a bare snapshot, the answer in the last: 1 possible and 22 proven re-asks
+  ---
+  duration_ms: 5.793054
+  type: 'test'
+  ...
+# Subtest: a 30-kill storm: 136 proven re-asks over 16 turns, and 9 possible
+ok 172 - a 30-kill storm: 136 proven re-asks over 16 turns, and 9 possible
+  ---
+  duration_ms: 30.05409
+  type: 'test'
+  ...
+# (node:3781480) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the page's policy comes before anything it governs, and allows only its own files, with data: and blob: pictures and videos
+ok 173 - the page's policy comes before anything it governs, and allows only its own files, with data: and blob: pictures and videos
+  ---
+  duration_ms: 0.927178
+  type: 'test'
+  ...
+# Subtest: in Chrome: under the page's own policy every view draws and nothing is refused, files or embedded; an inline script is refused
+ok 174 - in Chrome: under the page's own policy every view draws and nothing is refused, files or embedded; an inline script is refused
+  ---
+  duration_ms: 35867.462369
+  type: 'test'
+  ...
+# Subtest: a restore counts the same asks and cost in both forms when its snapshot starts with a decisions document
+ok 175 - a restore counts the same asks and cost in both forms when its snapshot starts with a decisions document
+  ---
+  duration_ms: 10.582377
+  type: 'test'
+  ...
+# Subtest: a restore counts the same asks and cost in both forms when its snapshot starts with the driver document
+ok 176 - a restore counts the same asks and cost in both forms when its snapshot starts with the driver document
+  ---
+  duration_ms: 0.637598
+  type: 'test'
+  ...
+# Subtest: a keyed run counts its answered, failed and re-asked decisions and their cost as the single document does
+ok 177 - a keyed run counts its answered, failed and re-asked decisions and their cost as the single document does
+  ---
+  duration_ms: 6.255606
+  type: 'test'
+  ...
+# Subtest: a snapshot at a process's open lists the keyed documents again, and none is counted twice
+ok 178 - a snapshot at a process's open lists the keyed documents again, and none is counted twice
+  ---
+  duration_ms: 3.842169
+  type: 'test'
+  ...
+# Subtest: the readers see a keyed document as one row, and the single document as its list
+ok 179 - the readers see a keyed document as one row, and the single document as its list
+  ---
+  duration_ms: 0.54757
+  type: 'test'
+  ...
+# Subtest: a process that opens on a store restored to before the last row counts the same rows and cost in either form, whichever document its snapshot starts with
+ok 180 - a process that opens on a store restored to before the last row counts the same rows and cost in either form, whichever document its snapshot starts with
+  ---
+  duration_ms: 0.732104
+  type: 'test'
+  ...
+# (node:3781692) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the page without the Muse layout's rules is byte for byte the page it was before: the default view's styles and markup are untouched
+ok 181 - the page without the Muse layout's rules is byte for byte the page it was before: the default view's styles and markup are untouched
+  ---
+  duration_ms: 0.772449
+  type: 'test'
+  ...
+# Subtest: in Chrome: the default view draws exactly what it drew before the Muse layout existed
+ok 182 - in Chrome: the default view draws exactly what it drew before the Muse layout existed
+  ---
+  duration_ms: 27345.894973
+  type: 'test'
+  ...
+# Subtest: the Cloudflare config is static assets and a build: no vars, secrets or bindings
+ok 183 - the Cloudflare config is static assets and a build: no vars, secrets or bindings
+  ---
+  duration_ms: 1.266911
+  type: 'test'
+  ...
+# Subtest: the Vercel config is a build and its output: no env
+ok 184 - the Vercel config is a build and its output: no env
+  ---
+  duration_ms: 0.200644
+  type: 'test'
+  ...
+# Subtest: each deploy button names the repository and the viewer, and asks for no env var
+ok 185 - each deploy button names the repository and the viewer, and asks for no env var
+  ---
+  duration_ms: 0.404674
+  type: 'test'
+  ...
+# Subtest: the README says what the buttons deploy
+ok 186 - the README says what the buttons deploy
+  ---
+  duration_ms: 0.200263
+  type: 'test'
+  ...
+# (node:3782232) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the disk panel is not a scroll box: it is as tall as its content
+ok 187 - the disk panel is not a scroll box: it is as tall as its content
+  ---
+  duration_ms: 1531.186948
+  type: 'test'
+  ...
+# Subtest: the fixture obeys the format as the viewer reads it, and the panel is one of the shell's panels
+ok 188 - the fixture obeys the format as the viewer reads it, and the panel is one of the shell's panels
+  ---
+  duration_ms: 9.727706
+  type: 'test'
+  ...
+# Subtest: a scrub to any stop equals a fresh reduce to it
+ok 189 - a scrub to any stop equals a fresh reduce to it
+  ---
+  duration_ms: 6.347447
+  type: 'test'
+  ...
+# Subtest: reduce does not change the state it was given, and view reads only its state and its context
+ok 190 - reduce does not change the state it was given, and view reads only its state and its context
+  ---
+  duration_ms: 1.52405
+  type: 'test'
+  ...
+# Subtest: the whole run: three claims, the box lost, the orphan seen, the revoke, the fence, the release and its sealed sequence
+ok 191 - the whole run: three claims, the box lost, the orphan seen, the revoke, the fence, the release and its sealed sequence
+  ---
+  duration_ms: 0.989323
+  type: 'test'
+  ...
+# Subtest: each paid call is marked: made once, made once in the generation that made it, and the call a kill cut is unknown and not sent again
+ok 192 - each paid call is marked: made once, made once in the generation that made it, and the call a kill cut is unknown and not sent again
+  ---
+  duration_ms: 0.490805
+  type: 'test'
+  ...
+# Subtest: at the kill the run has no holder, and the call in flight is unknown; before it, the call is in flight
+ok 193 - at the kill the run has no holder, and the call in flight is unknown; before it, the call is in flight
+  ---
+  duration_ms: 0.438978
+  type: 'test'
+  ...
+# Subtest: a call made twice shows as repeated, in the generations that made it, and is never shown as made once
+ok 194 - a call made twice shows as repeated, in the generations that made it, and is never shown as made once
+  ---
+  duration_ms: 0.498789
+  type: 'test'
+  ...
+# Subtest: what it does not know it skips: unknown kinds, a run.json with no generation, and a recording with no disk line draws nothing
+ok 195 - what it does not know it skips: unknown kinds, a run.json with no generation, and a recording with no disk line draws nothing
+  ---
+  duration_ms: 4.751884
+  type: 'test'
+  ...
+# Subtest: a kill names a process, and a claim is found through the process that holds it, not by the two numbers being equal
+ok 196 - a kill names a process, and a claim is found through the process that holds it, not by the two numbers being equal
+  ---
+  duration_ms: 1.564475
+  type: 'test'
+  ...
+# Subtest: a running claim that still carries the previous release's seal is not released; the release is the status, with its seal
+ok 197 - a running claim that still carries the previous release's seal is not released; the release is the status, with its seal
+  ---
+  duration_ms: 0.475506
+  type: 'test'
+  ...
+# Subtest: a release polled before its seal gets its seal from the next poll
+ok 198 - a release polled before its seal gets its seal from the next poll
+  ---
+  duration_ms: 0.357196
+  type: 'test'
+  ...
+# Subtest: a fence that arrives after the next claim replaces the ending the panel inferred
+ok 199 - a fence that arrives after the next claim replaces the ending the panel inferred
+  ---
+  duration_ms: 0.234347
+  type: 'test'
+  ...
+# Subtest: a kill or a fence stops the calls in flight at once, before any later line says so
+ok 200 - a kill or a fence stops the calls in flight at once, before any later line says so
+  ---
+  duration_ms: 0.489322
+  type: 'test'
+  ...
+# Subtest: a completed call whose outside calls were only failed or unknown is not shown as made once
+ok 201 - a completed call whose outside calls were only failed or unknown is not shown as made once
+  ---
+  duration_ms: 0.27928
+  type: 'test'
+  ...
+# Subtest: a call that recorded two applied calls and was cut before it completed shows the repeat
+ok 202 - a call that recorded two applied calls and was cut before it completed shows the repeat
+  ---
+  duration_ms: 0.302504
+  type: 'test'
+  ...
+# Subtest: a fence or a kill that arrives after the next generation wrote cuts only the calls of the generation it is about
+ok 203 - a fence or a kill that arrives after the next generation wrote cuts only the calls of the generation it is about
+  ---
+  duration_ms: 0.593045
+  type: 'test'
+  ...
+# Subtest: the shell draws the panel only for a recording with a disk claim line: the counters' lines alone do not make it appear
+ok 204 - the shell draws the panel only for a recording with a disk claim line: the counters' lines alone do not make it appear
+  ---
+  duration_ms: 3.637688
+  type: 'test'
+  ...
+# Subtest: a call whose paid answer was kept before a kill is credited to the generation that made it, and the generation that settled it from the kept answer is named
+ok 205 - a call whose paid answer was kept before a kill is credited to the generation that made it, and the generation that settled it from the kept answer is named
+  ---
+  duration_ms: 1.255348
+  type: 'test'
+  ...
+# Subtest: a kept answer settled by a later generation is a settlement, not a second payment: with a second applied call it is a repeat
+ok 206 - a kept answer settled by a later generation is a settlement, not a second payment: with a second applied call it is a repeat
+  ---
+  duration_ms: 4.629165
+  type: 'test'
+  ...
+# Subtest: a holder is shown by the label the recording gives it, verbatim, and two generations on the same label are still two claims
+ok 207 - a holder is shown by the label the recording gives it, verbatim, and two generations on the same label are still two claims
+  ---
+  duration_ms: 5.189088
+  type: 'test'
+  ...
+# Subtest: a delegation's client and inode ids are numbers or labels (non-empty strings), read as they come: repeats of either scheme make one orphan event, the two schemes are two claims, and an empty inode id is refused
+ok 208 - a delegation's client and inode ids are numbers or labels (non-empty strings), read as they come: repeats of either scheme make one orphan event, the two schemes are two claims, and an empty inode id is refused
+  ---
+  duration_ms: 0.605418
+  type: 'test'
+  ...
+# (node:3782605) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the cited pages, in the order first cited, each with its rows: a box where the fragment names a region, none where it does not, and no picture
+ok 209 - the cited pages, in the order first cited, each with its rows: a box where the fragment names a region, none where it does not, and no picture
+  ---
+  duration_ms: 2.435268
+  type: 'test'
+  ...
+# Subtest: each page a pdf-page node with its boxes over it, a caption that links the file at the page, and its rows listed, a box or not
+ok 210 - each page a pdf-page node with its boxes over it, a caption that links the file at the page, and its rows listed, a box or not
+  ---
+  duration_ms: 2.978039
+  type: 'test'
+  ...
+# Subtest: a selected citation lights its box and its row; a click on either selects it
+ok 211 - a selected citation lights its box and its row; a click on either selects it
+  ---
+  duration_ms: 0.674116
+  type: 'test'
+  ...
+# Subtest: a row that cites two regions of a page is one numbered row there; each of its boxes carries its number and selects the look its own cite names
+ok 212 - a row that cites two regions of a page is one numbered row there; each of its boxes carries its number and selects the look its own cite names
+  ---
+  duration_ms: 0.495523
+  type: 'test'
+  ...
+# Subtest: a recording whose result only its manifest names shows its pages at every stop; one with a result line, once it is delivered
+ok 213 - a recording whose result only its manifest names shows its pages at every stop; one with a result line, once it is delivered
+  ---
+  duration_ms: 0.955721
+  type: 'test'
+  ...
+# Subtest: rows that cite the same region share one box, with both numbers and both rows' words
+ok 214 - rows that cite the same region share one box, with both numbers and both rows' words
+  ---
+  duration_ms: 0.351014
+  type: 'test'
+  ...
+# Subtest: before the result, while it is read, and for a result that cites no page, the panel says so
+ok 215 - before the result, while it is read, and for a result that cites no page, the panel says so
+  ---
+  duration_ms: 0.329153
+  type: 'test'
+  ...
+# Subtest: PDF.js opens every PDF with no XFA, no WebAssembly and no code compiled from the file
+ok 216 - PDF.js opens every PDF with no XFA, no WebAssembly and no code compiled from the file
+  ---
+  duration_ms: 0.294839
+  type: 'test'
+  ...
+# Subtest: a recording draws the panel when its result cites a page, never for its lines alone, nor for a result that cites only pictures
+ok 217 - a recording draws the panel when its result cites a page, never for its lines alone, nor for a result that cites only pictures
+  ---
+  duration_ms: 3.118731
+  type: 'test'
+  ...
+# Subtest: a scrub to any point equals a fresh reduce to it
+ok 218 - a scrub to any point equals a fresh reduce to it
+  ---
+  duration_ms: 2.057233
+  type: 'test'
+  ...
+# Subtest: PDF.js and its JavaScript image decoders are their release files, unchanged, listed with their licenses, run no eval, and ship beside the page
+ok 219 - PDF.js and its JavaScript image decoders are their release files, unchanged, listed with their licenses, run no eval, and ship beside the page
+  ---
+  duration_ms: 154.47924
+  type: 'test'
+  ...
+# Subtest: in Chrome under a strict static host's policy, each cited page is drawn with its boxes over its marks: embedded, opened by URL, and followed
+ok 220 - in Chrome under a strict static host's policy, each cited page is drawn with its boxes over its marks: embedded, opened by URL, and followed
+  ---
+  duration_ms: 28613.218679
+  type: 'test'
+  ...
+# Subtest: from a file, where PDF.js cannot load, the page says so and links the file at the page; the rows stay
+ok 221 - from a file, where PDF.js cannot load, the page says so and links the file at the page; the rows stay
+  ---
+  duration_ms: 873.284507
+  type: 'test'
+  ...
+# Subtest: a document recording (DOCUMENT_RECORDING): the format holds, every page and box its result cites is drawn, and in Chrome each box lands at its percent under the strict policy
+ok 222 - a document recording (DOCUMENT_RECORDING): the format holds, every page and box its result cites is drawn, and in Chrome each box lands at its percent under the strict policy # SKIP DOCUMENT_RECORDING names no recording
+  ---
+  duration_ms: 0.148867
+  type: 'test'
+  ...
+# Subtest: a dropped SVG that carries a script is text, never a same-origin image/svg+xml blob: URL
+ok 223 - a dropped SVG that carries a script is text, never a same-origin image/svg+xml blob: URL
+  ---
+  duration_ms: 8.576641
+  type: 'test'
+  ...
+# Subtest: a dropped blob is read as the gallery publishes it: a picture as itself, a page as text, a style sheet as opaque bytes
+ok 224 - a dropped blob is read as the gallery publishes it: a picture as itself, a page as text, a style sheet as opaque bytes
+  ---
+  duration_ms: 3.227544
+  type: 'test'
+  ...
+# (node:3784606) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the chapter a point is in is the one with the greatest stop at or before it, whatever the order chapters are listed in
+ok 225 - the chapter a point is in is the one with the greatest stop at or before it, whatever the order chapters are listed in
+  ---
+  duration_ms: 1.691452
+  type: 'test'
+  ...
+# Subtest: every message names the viewer and its type
+ok 226 - every message names the viewer and its type
+  ---
+  duration_ms: 0.154308
+  type: 'test'
+  ...
+# Subtest: posts go to the framing page's origin when the browser says it, an http one; else any
+ok 227 - posts go to the framing page's origin when the browser says it, an http one; else any
+  ---
+  duration_ms: 0.273901
+  type: 'test'
+  ...
+# Subtest: &parent= names an http or https origin, written as one, or nothing
+ok 228 - &parent= names an http or https origin, written as one, or nothing
+  ---
+  duration_ms: 0.235078
+  type: 'test'
+  ...
+# Subtest: only seek, focus and theme are obeyed, each field checked
+ok 229 - only seek, focus and theme are obeyed, each field checked
+  ---
+  duration_ms: 0.562017
+  type: 'test'
+  ...
+# Subtest: a message steers only from the framing page itself, at the origin its URL named
+ok 230 - a message steers only from the framing page itself, at the origin its URL named
+  ---
+  duration_ms: 0.118301
+  type: 'test'
+  ...
+# Subtest: embedded, the page drops its header and fills its frame, and without &parent= it is steered by nothing
+ok 231 - embedded, the page drops its header and fills its frame, and without &parent= it is steered by nothing
+  ---
+  duration_ms: 5187.549058
+  type: 'test'
+  ...
+# Subtest: steered over http: the named parent's seek is obeyed; another type, and another origin, are ignored
+ok 232 - steered over http: the named parent's seek is obeyed; another type, and another origin, are ignored
+  ---
+  duration_ms: 27967.125309
+  type: 'test'
+  ...
+# (node:3789470) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the index lists each recording with its manifest and blob paths, and gallery.js embeds none of them
+ok 233 - the index lists each recording with its manifest and blob paths, and gallery.js embeds none of them
+  ---
+  duration_ms: 206.085242
+  type: 'test'
+  ...
+# Subtest: served over http: the gallery lists from the index, a run and its bundled baseline open from it with their blobs, and ?src= does without it
+ok 234 - served over http: the gallery lists from the index, a run and its bundled baseline open from it with their blobs, and ?src= does without it
+  ---
+  duration_ms: 102006.235627
+  type: 'test'
+  ...
+# Subtest: a blob still being written (.<sha>.<ext>.tmp-<pid>) is neither listed nor shipped, and the gate passes the build
+ok 235 - a blob still being written (.<sha>.<ext>.tmp-<pid>) is neither listed nor shipped, and the gate passes the build
+  ---
+  duration_ms: 284.180833
+  type: 'test'
+  ...
+# Subtest: in Chrome: a page or an SVG in a recording is published as plain text, so opened straight from the site it runs nothing
+ok 236 - in Chrome: a page or an SVG in a recording is published as plain text, so opened straight from the site it runs nothing
+  ---
+  duration_ms: 11136.726015
+  type: 'test'
+  ...
+# (node:3791215) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: a growing events.jsonl is read from its last byte, whole lines only, whether the server answers ranges or not
+ok 237 - a growing events.jsonl is read from its last byte, whole lines only, whether the server answers ranges or not
+  ---
+  duration_ms: 1.8354
+  type: 'test'
+  ...
+# Subtest: a replaced events.jsonl is read again from its start: one as long with other bytes, and one shorter
+ok 238 - a replaced events.jsonl is read again from its start: one as long with other bytes, and one shorter
+  ---
+  duration_ms: 1.112674
+  type: 'test'
+  ...
+# Subtest: a line written anew earlier in the file, the last bytes read unchanged, is found by the read that asks for the whole file again
+ok 239 - a line written anew earlier in the file, the last bytes read unchanged, is found by the read that asks for the whole file again
+  ---
+  duration_ms: 1.611292
+  type: 'test'
+  ...
+# Subtest: a test's cleanup tries every page when one does not end, still closes what the test held, and fails
+ok 240 - a test's cleanup tries every page when one does not end, still closes what the test held, and fails
+  ---
+  duration_ms: 1.062209
+  type: 'test'
+  ...
+# Subtest: the manifest says the run finished: absent while it goes, read once it is written
+ok 241 - the manifest says the run finished: absent while it goes, read once it is written
+  ---
+  duration_ms: 0.27912
+  type: 'test'
+  ...
+# Subtest: the file order is the recorder's merge: by t; a tie puts the kill, the next start, the durable lines, the live ones, then the result; then commit and order, a memo last in its commit; then seq
+ok 242 - the file order is the recorder's merge: by t; a tie puts the kill, the next start, the durable lines, the live ones, then the result; then commit and order, a memo last in its commit; then seq
+  ---
+  duration_ms: 0.443015
+  type: 'test'
+  ...
+# Subtest: new lines take their place in the format's order: appended when they come after, placed back when one arrived late or ties earlier
+ok 243 - new lines take their place in the format's order: appended when they come after, placed back when one arrived late or ties earlier
+  ---
+  duration_ms: 0.292675
+  type: 'test'
+  ...
+# Subtest: the page follows a run as two writers grow it, through a kill and a second process, and ends equal to a fresh load of the finished recording
+ok 244 - the page follows a run as two writers grow it, through a kill and a second process, and ends equal to a fresh load of the finished recording
+  ---
+  duration_ms: 83065.861673
+  type: 'test'
+  ...
+# Subtest: the page recovers: a run not started yet, a blob whose connection drops, blobs read with no new line, and a late line before a reader who scrubbed back
+ok 245 - the page recovers: a run not started yet, a blob whose connection drops, blobs read with no new line, and a late line before a reader who scrubbed back
+  ---
+  duration_ms: 33592.99109
+  type: 'test'
+  ...
+# Subtest: a run on another server is never followed
+ok 246 - a run on another server is never followed
+  ---
+  duration_ms: 25619.190778
+  type: 'test'
+  ...
+# (node:3798494) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: in Chrome: the list shows the lock's title and links in the lock's view; a run it does not name is as recorded; an unknown flag is never on a link (files: false)
+ok 247 - in Chrome: the list shows the lock's title and links in the lock's view; a run it does not name is as recorded; an unknown flag is never on a link (files: false)
+  ---
+  duration_ms: 25806.442367
+  type: 'test'
+  ...
+# Subtest: in Chrome: the list shows the lock's title and links in the lock's view; a run it does not name is as recorded; an unknown flag is never on a link (files: true)
+ok 248 - in Chrome: the list shows the lock's title and links in the lock's view; a run it does not name is as recorded; an unknown flag is never on a link (files: true)
+  ---
+  duration_ms: 25664.382072
+  type: 'test'
+  ...
+# (node:3801818) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the vision panel marks what a kill and a resume did: the kill and resume badges, and the kept, repeated and possible payments
+ok 249 - the vision panel marks what a kill and a resume did: the kill and resume badges, and the kept, repeated and possible payments
+  ---
+  duration_ms: 5.200289
+  type: 'test'
+  ...
+# Subtest: a public replay leads each look with its answer and the rows citing it, the picture below and closed; the debug view draws the picture first
+ok 250 - a public replay leads each look with its answer and the rows citing it, the picture below and closed; the debug view draws the picture first
+  ---
+  duration_ms: 5.878113
+  type: 'test'
+  ...
+# Subtest: a public replay keeps the meters and the look's receipt under Receipts; the debug view draws them open
+ok 251 - a public replay keeps the meters and the look's receipt under Receipts; the debug view draws them open
+  ---
+  duration_ms: 3.234456
+  type: 'test'
+  ...
+# Subtest: the vision panel marks every dollar figure it draws cost: its spend and a receipt's price, and nothing else
+ok 252 - the vision panel marks every dollar figure it draws cost: its spend and a receipt's price, and nothing else
+  ---
+  duration_ms: 2.361831
+  type: 'test'
+  ...
+# Subtest: the workflow map marks its kills, and the strip that says there are none
+ok 253 - the workflow map marks its kills, and the strip that says there are none
+  ---
+  duration_ms: 0.549464
+  type: 'test'
+  ...
+# Subtest: in Chrome: by default no kill, process or repeat is drawn and the payments and cost are under Receipts; ?debug=durability draws today's view
+ok 254 - in Chrome: by default no kill, process or repeat is drawn and the payments and cost are under Receipts; ?debug=durability draws today's view
+  ---
+  duration_ms: 2018.111508
+  type: 'test'
+  ...
+# Subtest: in Chrome: by default no dollar figure and no cost is drawn, Receipts opened included; ?debug=cost draws them, and ?debug=durability too
+ok 255 - in Chrome: by default no dollar figure and no cost is drawn, Receipts opened included; ?debug=cost draws them, and ?debug=durability too
+  ---
+  duration_ms: 7583.850008
+  type: 'test'
+  ...
+# Subtest: every host kind whose fields name gen must carry it, and passes with it
+ok 256 - every host kind whose fields name gen must carry it, and passes with it
+  ---
+  duration_ms: 5.973521
+  type: 'test'
+  ...
+# Subtest: a picture, a box receipt and a host kind this viewer does not know carry no gen and are not refused for it
+ok 257 - a picture, a box receipt and a host kind this viewer does not know carry no gen and are not refused for it
+  ---
+  duration_ms: 0.975608
+  type: 'test'
+  ...
+# (node:3802391) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the job and the store are blobs the recording names, and the format wants them in blobs/
+ok 258 - the job and the store are blobs the recording names, and the format wants them in blobs/
+  ---
+  duration_ms: 5.525265
+  type: 'test'
+  ...
+# Subtest: a job or store of the wrong shape is a format problem, never one that stops the run from playing
+ok 259 - a job or store of the wrong shape is a format problem, never one that stops the run from playing
+  ---
+  duration_ms: 2.176536
+  type: 'test'
+  ...
+# Subtest: a store is a SQLite file, which downloads; the job is JSON, which opens
+ok 260 - a store is a SQLite file, which downloads; the job is JSON, which opens
+  ---
+  duration_ms: 0.213609
+  type: 'test'
+  ...
+# Subtest: on the page, the header links the job, which opens in a tab, and the store, which downloads
+ok 261 - on the page, the header links the job, which opens in a tab, and the store, which downloads
+  ---
+  duration_ms: 1148.775926
+  type: 'test'
+  ...
+# Subtest: the mid-click chapter: a submit that reached the page, cut by a kill and refused in the next process, is one dispatch
+ok 262 - the mid-click chapter: a submit that reached the page, cut by a kill and refused in the next process, is one dispatch
+  ---
+  duration_ms: 9.816692
+  type: 'test'
+  ...
+# Subtest: dispatched again after it reached the page: in repeated in a later process, in asked twice in the same one
+ok 263 - dispatched again after it reached the page: in repeated in a later process, in asked twice in the same one
+  ---
+  duration_ms: 7.736956
+  type: 'test'
+  ...
+# Subtest: dispatched again after one that never showed reaching the page is possible, never proven; a denied send did not reach it
+ok 264 - dispatched again after one that never showed reaching the page is possible, never proven; a denied send did not reach it
+  ---
+  duration_ms: 0.940613
+  type: 'test'
+  ...
+# Subtest: a later revision that shows the first dispatch finished proves it reached the page
+ok 265 - a later revision that shows the first dispatch finished proves it reached the page
+  ---
+  duration_ms: 0.264523
+  type: 'test'
+  ...
+# Subtest: a dispatch first seen in a snapshot takes the snapshot's generation, an earlier process's
+ok 266 - a dispatch first seen in a snapshot takes the snapshot's generation, an earlier process's
+  ---
+  duration_ms: 0.277968
+  type: 'test'
+  ...
+# Subtest: an entry seen only as a later one's prior was dispatched before it, in the generation of the line that first shows it
+ok 267 - an entry seen only as a later one's prior was dispatched before it, in the generation of the line that first shows it
+  ---
+  duration_ms: 0.419442
+  type: 'test'
+  ...
+# Subtest: two conversations that number their calls the same way keep their dispatches apart
+ok 268 - two conversations that number their calls the same way keep their dispatches apart
+  ---
+  duration_ms: 0.219549
+  type: 'test'
+  ...
+# Subtest: a key is its conversation, its tool and its code: another conversation, tool or code is another action
+ok 269 - a key is its conversation, its tool and its code: another conversation, tool or code is another action
+  ---
+  duration_ms: 0.334844
+  type: 'test'
+  ...
+# Subtest: the reference recording's one page action per key adds nothing
+ok 270 - the reference recording's one page action per key adds nothing
+  ---
+  duration_ms: 5.627816
+  type: 'test'
+  ...
+# Subtest: the recorded fixtures read what their expected.json says
+ok 271 - the recorded fixtures read what their expected.json says
+  ---
+  duration_ms: 4.676304
+  type: 'test'
+  ...
+# Subtest: page actions are not measured only when every browser.sessions line carries no t: a bare export's
+ok 272 - page actions are not measured only when every browser.sessions line carries no t: a bare export's
+  ---
+  duration_ms: 2.19016
+  type: 'test'
+  ...
+# Subtest: a recording with no transport line draws no transport panel, though the panel accepts the strip's lines
+ok 273 - a recording with no transport line draws no transport panel, though the panel accepts the strip's lines
+  ---
+  duration_ms: 1.46511
+  type: 'test'
+  ...
+# Subtest: judged over the whole recording: a panel whose only line comes last is drawn for every stop
+ok 274 - judged over the whole recording: a panel whose only line comes last is drawn for every stop
+  ---
+  duration_ms: 0.419923
+  type: 'test'
+  ...
+# Subtest: without shows, a panel is drawn when it accepts a line of the recording; with shows, shows decides
+ok 275 - without shows, a panel is drawn when it accepts a line of the recording; with shows, shows decides
+  ---
+  duration_ms: 0.824266
+  type: 'test'
+  ...
+# Subtest: the latest picture at or before the stop, a gap before the first, and the last kept after the run ends
+ok 276 - the latest picture at or before the stop, a gap before the first, and the last kept after the run ends
+  ---
+  duration_ms: 1.767383
+  type: 'test'
+  ...
+# Subtest: a picture line that names no blob draws nothing: the picture before it stays
+ok 277 - a picture line that names no blob draws nothing: the picture before it stays
+  ---
+  duration_ms: 0.18813
+  type: 'test'
+  ...
+# Subtest: a recording with no picture line draws no picture panel; one with pictures shows it first
+ok 278 - a recording with no picture line draws no picture panel; one with pictures shows it first
+  ---
+  duration_ms: 0.289319
+  type: 'test'
+  ...
+# Subtest: the validator takes a picture line, which names no process, and checks its blob, label and commit
+ok 279 - the validator takes a picture line, which names no process, and checks its blob, label and commit
+  ---
+  duration_ms: 1.362138
+  type: 'test'
+  ...
+# Subtest: a scrub to any point equals a fresh reduce to it
+ok 280 - a scrub to any point equals a fresh reduce to it
+  ---
+  duration_ms: 0.261236
+  type: 'test'
+  ...
+# Subtest: the format takes providers real or scripted, or none, and refuses another value
+ok 281 - the format takes providers real or scripted, or none, and refuses another value
+  ---
+  duration_ms: 5.871641
+  type: 'test'
+  ...
+# Subtest: the shell hands a view the run's own providers beside the time, the focus and the baseline
+ok 282 - the shell hands a view the run's own providers beside the time, the focus and the baseline
+  ---
+  duration_ms: 0.481678
+  type: 'test'
+  ...
+# Subtest: a baseline view carries its own manifest's providers, its counters at its end and how long it ran
+ok 283 - a baseline view carries its own manifest's providers, its counters at its end and how long it ran
+  ---
+  duration_ms: 0.49374
+  type: 'test'
+  ...
+# Subtest: sha256 matches Node's on the known vectors, block boundaries and multi-byte text
+ok 284 - sha256 matches Node's on the known vectors, block boundaries and multi-byte text
+  ---
+  duration_ms: 5.343266
+  type: 'test'
+  ...
+# Subtest: a large blob is hashed in slices that give the page back between them, to the same digest
+ok 285 - a large blob is hashed in slices that give the page back between them, to the same digest
+  ---
+  duration_ms: 115.400617
+  type: 'test'
+  ...
+# Subtest: the arguments' hash ignores key order at every depth and keeps array order
+ok 286 - the arguments' hash ignores key order at every depth and keeps array order
+  ---
+  duration_ms: 0.409483
+  type: 'test'
+  ...
+# Subtest: a fetch wrapper is keyed as the gateway tool it names, and any other tool as itself
+ok 287 - a fetch wrapper is keyed as the gateway tool it names, and any other tool as itself
+  ---
+  duration_ms: 0.228827
+  type: 'test'
+  ...
+# Subtest: the same digests and receipt keys as the DSL, over a fixed vector set (the DSL must be built)
+ok 288 - the same digests and receipt keys as the DSL, over a fixed vector set (the DSL must be built)
+  ---
+  duration_ms: 2.712955
+  type: 'test'
+  ...
+# Subtest: in git, recordings/ holds only its README: a public run reaches the gallery from the release asset, never from git
+ok 289 - in git, recordings/ holds only its README: a public run reaches the gallery from the release asset, never from git
+  ---
+  duration_ms: 1.381284
+  type: 'test'
+  ...
+# Subtest: fixtures/reference-job: obeys the format, and its manifest's cost and processes are the fold's
+ok 290 - fixtures/reference-job: obeys the format, and its manifest's cost and processes are the fold's
+  ---
+  duration_ms: 6.819817
+  type: 'test'
+  ...
+# Subtest: fixtures/ten-kills-seed21: obeys the format, and its manifest's cost and processes are the fold's
+ok 291 - fixtures/ten-kills-seed21: obeys the format, and its manifest's cost and processes are the fold's
+  ---
+  duration_ms: 5.545132
+  type: 'test'
+  ...
+# Subtest: the supervisor's lines carry the process in data.gen and number their own seq
+ok 292 - the supervisor's lines carry the process in data.gen and number their own seq
+  ---
+  duration_ms: 7.58897
+  type: 'test'
+  ...
+# Subtest: a restore is accepted with its restore record, and any other drop in the commits is refused
+ok 293 - a restore is accepted with its restore record, and any other drop in the commits is refused
+  ---
+  duration_ms: 1.162476
+  type: 'test'
+  ...
+# Subtest: a move's head is one above the last commit seen, equals its seal.head, and is its process's first new commit
+ok 294 - a move's head is one above the last commit seen, equals its seal.head, and is its process's first new commit
+  ---
+  duration_ms: 0.640874
+  type: 'test'
+  ...
+# Subtest: a restore's head: its checkpoint.head, or replayed.to + 1; a replay to the last commit seen leaves no lost branch
+ok 295 - a restore's head: its checkpoint.head, or replayed.to + 1; a replay to the last commit seen leaves no lost branch
+  ---
+  duration_ms: 1.265618
+  type: 'test'
+  ...
+# Subtest: no stop splits a commit on either side of the restore, and a scrub equals a fresh reduce
+ok 296 - no stop splits a commit on either side of the restore, and a scrub equals a fresh reduce
+  ---
+  duration_ms: 0.949098
+  type: 'test'
+  ...
+# Subtest: the lost branch was paid, and its redo in the next process counts as repeated
+ok 297 - the lost branch was paid, and its redo in the next process counts as repeated
+  ---
+  duration_ms: 0.267679
+  type: 'test'
+  ...
+# Subtest: a (doc, key) the checkpoint does not carry no longer exists after the restore
+ok 298 - a (doc, key) the checkpoint does not carry no longer exists after the restore
+  ---
+  duration_ms: 0.191106
+  type: 'test'
+  ...
+# Subtest: the lanes take each process from data.gen and mark the restore
+ok 299 - the lanes take each process from data.gen and mark the restore
+  ---
+  duration_ms: 0.46737
+  type: 'test'
+  ...
+# Subtest: an effect the checkpoint held open, completed in the lost branch and again after the restore, is a redo
+ok 300 - an effect the checkpoint held open, completed in the lost branch and again after the restore, is a redo
+  ---
+  duration_ms: 0.373386
+  type: 'test'
+  ...
+# Subtest: an effect's calls are its own per process: a later process's list replaces the earlier one, and a stale list is no call
+ok 301 - an effect's calls are its own per process: a later process's list replaces the earlier one, and a stale list is no call
+  ---
+  duration_ms: 0.465397
+  type: 'test'
+  ...
+# Subtest: an open is a run of snapshot lines: a restore is found at the second open even when both share the driver's gen
+ok 302 - an open is a run of snapshot lines: a restore is found at the second open even when both share the driver's gen
+  ---
+  duration_ms: 0.368437
+  type: 'test'
+  ...
+# Subtest: a durable gen never goes back outside a restore, a snapshot's included
+ok 303 - a durable gen never goes back outside a restore, a snapshot's included
+  ---
+  duration_ms: 0.304477
+  type: 'test'
+  ...
+# Subtest: 3.2 goes by process: back-to-back opens are two snapshots, and only the restoring process's own record counts
+ok 304 - 3.2 goes by process: back-to-back opens are two snapshots, and only the restoring process's own record counts
+  ---
+  duration_ms: 0.37008
+  type: 'test'
+  ...
+# Subtest: a second restore to an older checkpoint still finds what the first one kept: no completion lost, no receipt counted twice
+ok 305 - a second restore to an older checkpoint still finds what the first one kept: no completion lost, no receipt counted twice
+  ---
+  duration_ms: 0.213117
+  type: 'test'
+  ...
+# Subtest: no stop falls inside a process's snapshot: its lines are one state
+ok 306 - no stop falls inside a process's snapshot: its lines are one state
+  ---
+  duration_ms: 0.122228
+  type: 'test'
+  ...
+# Subtest: a move record a later snapshot carries is state, not a move that process made
+ok 307 - a move record a later snapshot carries is state, not a move that process made
+  ---
+  duration_ms: 0.211534
+  type: 'test'
+  ...
+# Subtest: a restore keeps what the lost branch charged: a browser session's running total is not set back
+ok 308 - a restore keeps what the lost branch charged: a browser session's running total is not set back
+  ---
+  duration_ms: 0.584589
+  type: 'test'
+  ...
+# Subtest: a restore whose pi committed once at open (draft 37): the snapshot at the head, the first new commit head + 1; above that still fails
+ok 309 - a restore whose pi committed once at open (draft 37): the snapshot at the head, the first new commit head + 1; above that still fails
+  ---
+  duration_ms: 0.888595
+  type: 'test'
+  ...
+# Subtest: vars become custom properties: bare names, finite numbers only
+ok 310 - vars become custom properties: bare names, finite numbers only
+  ---
+  duration_ms: 1.699647
+  type: 'test'
+  ...
+# Subtest: the clock in the context is the time of the point at a stop and the playback clock while playing
+ok 311 - the clock in the context is the time of the point at a stop and the playback clock while playing
+  ---
+  duration_ms: 0.252691
+  type: 'test'
+  ...
+# Subtest: ?t= is a time in seconds, and anything else is no time
+ok 312 - ?t= is a time in seconds, and anything else is no time
+  ---
+  duration_ms: 0.21983
+  type: 'test'
+  ...
+# Subtest: a seek to a time lands on the last stop that had happened, never inside a commit, with the clock at the time asked for
+ok 313 - a seek to a time lands on the last stop that had happened, never inside a commit, with the clock at the time asked for
+  ---
+  duration_ms: 1.41684
+  type: 'test'
+  ...
+# Subtest: the first registered panel that says it is featured wins; the others are drawn as usual
+ok 314 - the first registered panel that says it is featured wins; the others are drawn as usual
+  ---
+  duration_ms: 0.35954
+  type: 'test'
+  ...
+# Subtest: animated is a flag a panel sets and the shell reads: absent means drawn at stops only
+ok 315 - animated is a flag a panel sets and the shell reads: absent means drawn at stops only
+  ---
+  duration_ms: 0.122418
+  type: 'test'
+  ...
+# Subtest: between stops only the animated panels are redrawn
+ok 316 - between stops only the animated panels are redrawn
+  ---
+  duration_ms: 0.221703
+  type: 'test'
+  ...
+# Subtest: a link keeps its time only while the screen is still at that time
+ok 317 - a link keeps its time only while the screen is still at that time
+  ---
+  duration_ms: 0.122819
+  type: 'test'
+  ...
+# Subtest: a details the reader opened stays open, with focus and scroll, across a redraw, even with an element added before it
+ok 318 - a details the reader opened stays open, with focus and scroll, across a redraw, even with an element added before it
+  ---
+  duration_ms: 0.996918
+  type: 'test'
+  ...
+# Subtest: a time far past the end of the run opens at the end of the run, not at that time
+ok 319 - a time far past the end of the run opens at the end of the run, not at that time
+  ---
+  duration_ms: 0.455379
+  type: 'test'
+  ...
+# Subtest: text parts are joined with a blank line; a string content is one part; a block with no text adds none
+ok 320 - text parts are joined with a blank line; a string content is one part; a block with no text adds none
+  ---
+  duration_ms: 2.675164
+  type: 'test'
+  ...
+# Subtest: a prompt of two text parts shows its first, with the second folded under one "more"; one of one part is shown as it is
+ok 321 - a prompt of two text parts shows its first, with the second folded under one "more"; one of one part is shown as it is
+  ---
+  duration_ms: 0.664298
+  type: 'test'
+  ...
+# Subtest: a long footer is folded whole, and a long first part shows its start with the rest folded: nothing is cut away
+ok 322 - a long footer is folded whole, and a long first part shows its start with the rest folded: nothing is cut away
+  ---
+  duration_ms: 0.248914
+  type: 'test'
+  ...
+# (node:3803572) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: a run's title: its artifact's, else its question's first line, else the recording's
+ok 323 - a run's title: its artifact's, else its question's first line, else the recording's
+  ---
+  duration_ms: 1.553093
+  type: 'test'
+  ...
+# Subtest: in Chrome: the gallery's list and the inspection view's header show each run's own title, not the recording's
+ok 324 - in Chrome: the gallery's list and the inspection view's header show each run's own title, not the recording's
+  ---
+  duration_ms: 25895.108186
+  type: 'test'
+  ...
+# Subtest: at every stop the token's lane, the lane's mark and the status line say the same thing
+ok 325 - at every stop the token's lane, the lane's mark and the status line say the same thing
+  ---
+  duration_ms: 264.60938
+  type: 'test'
+  ...
+# Subtest: a scrub is a replay: the screen at a stop is the same from a fresh reduce and from stepping, at the same clock
+ok 326 - a scrub is a replay: the screen at a stop is the same from a fresh reduce and from stepping, at the same clock
+  ---
+  duration_ms: 547.845567
+  type: 'test'
+  ...
+# Subtest: every var the stage sets is a finite number, and the token is always inside the rail
+ok 327 - every var the stage sets is a finite number, and the token is always inside the rail
+  ---
+  duration_ms: 162.315595
+  type: 'test'
+  ...
+# Subtest: the route's story in the lanes: six lanes, the rebuilt box in the same lane, the tile beside chrome, the film card at the end
+ok 328 - the route's story in the lanes: six lanes, the rebuilt box in the same lane, the tile beside chrome, the film card at the end
+  ---
+  duration_ms: 2.406163
+  type: 'test'
+  ...
+# Subtest: the kills read as the lead asked: a red flash and a ghost for a box, a blink in place for a process, the token popping back in the rebuilt box
+ok 329 - the kills read as the lead asked: a red flash and a ghost for a box, a blink in place for a process, the token popping back in the rebuilt box
+  ---
+  duration_ms: 2.743823
+  type: 'test'
+  ...
+# Subtest: a wait the film skips is a hatched band with its seconds
+ok 330 - a wait the film skips is a hatched band with its seconds
+  ---
+  duration_ms: 0.354771
+  type: 'test'
+  ...
+# Subtest: no motion: every animated rule of the stage is switched off under prefers-reduced-motion, and the states are told in words
+ok 331 - no motion: every animated rule of the stage is switched off under prefers-reduced-motion, and the states are told in words
+  ---
+  duration_ms: 4.949292
+  type: 'test'
+  ...
+# Subtest: the real recordings obey the format as the viewer reads it, and the panel is one of the shell's panels
+ok 332 - the real recordings obey the format as the viewer reads it, and the panel is one of the shell's panels
+  ---
+  duration_ms: 4.977425
+  type: 'test'
+  ...
+# Subtest: a scrub to any stop equals a fresh reduce to it, on every recording
+ok 333 - a scrub to any stop equals a fresh reduce to it, on every recording
+  ---
+  duration_ms: 36.110545
+  type: 'test'
+  ...
+# Subtest: reduce does not change the state it was given, and view reads only its state and its context
+ok 334 - reduce does not change the state it was given, and view reads only its state and its context
+  ---
+  duration_ms: 2.848297
+  type: 'test'
+  ...
+# Subtest: kinds it does not know are skipped: they change nothing it shows
+ok 335 - kinds it does not know are skipped: they change nothing it shows
+  ---
+  duration_ms: 0.372384
+  type: 'test'
+  ...
+# Subtest: the whole route: seven lanes, the token's flights, eight processes, two kills each answered by where the session came back
+ok 336 - the whole route: seven lanes, the token's flights, eight processes, two kills each answered by where the session came back
+  ---
+  duration_ms: 0.589008
+  type: 'test'
+  ...
+# Subtest: the screen says what is proven and what is only observed, and never makes a cost out of nothing
+ok 337 - the screen says what is proven and what is only observed, and never makes a cost out of nothing
+  ---
+  duration_ms: 1.832745
+  type: 'test'
+  ...
+# Subtest: a wait the film skips is a gap in the lane and a line of its own, with its length and its reason
+ok 338 - a wait the film skips is a gap in the lane and a line of its own, with its length and its reason
+  ---
+  duration_ms: 1.229361
+  type: 'test'
+  ...
+# Subtest: a durable transport.moves document proves the flight, replaces the live line of the same move, and names who chose it
+ok 339 - a durable transport.moves document proves the flight, replaces the live line of the same move, and names who chose it
+  ---
+  duration_ms: 2.010937
+  type: 'test'
+  ...
+# Subtest: a restore marks the flights of the lost branch as lost, and they are still shown
+ok 340 - a restore marks the flights of the lost branch as lost, and they are still shown
+  ---
+  duration_ms: 0.802345
+  type: 'test'
+  ...
+# Subtest: a cost that is null is unknown, never $0
+ok 341 - a cost that is null is unknown, never $0
+  ---
+  duration_ms: 0.482228
+  type: 'test'
+  ...
+# Subtest: the lane cells that carry the class token are styled by their own selector only, never by a bare .token rule
+ok 342 - the lane cells that carry the class token are styled by their own selector only, never by a bare .token rule
+  ---
+  duration_ms: 0.232373
+  type: 'test'
+  ...
+# Subtest: a box that ends or is killed closes the session's token there: the panel says it awaits recovery until a lease or a runner says where it came back
+ok 343 - a box that ends or is killed closes the session's token there: the panel says it awaits recovery until a lease or a runner says where it came back
+  ---
+  duration_ms: 1.595834
+  type: 'test'
+  ...
+# Subtest: a runner that starts while the session awaits a recovery is where it came back, with no lease line
+ok 344 - a runner that starts while the session awaits a recovery is where it came back, with no lease line
+  ---
+  duration_ms: 0.178943
+  type: 'test'
+  ...
+# Subtest: steps belong to their attempt: a move that failed before its line does not hand its steps to the next flight, with a restore between or without
+ok 345 - steps belong to their attempt: a move that failed before its line does not hand its steps to the next flight, with a restore between or without
+  ---
+  duration_ms: 0.313033
+  type: 'test'
+  ...
+# Subtest: shipped bytes: a total that includes a flight with no recorded size says so, and a recording with none recorded says not recorded
+ok 346 - shipped bytes: a total that includes a flight with no recorded size says so, and a recording with none recorded says not recorded
+  ---
+  duration_ms: 5.332706
+  type: 'test'
+  ...
+# Subtest: the checkpoint count from live lines is labelled observed, as the flights are
+ok 347 - the checkpoint count from live lines is labelled observed, as the flights are
+  ---
+  duration_ms: 0.977081
+  type: 'test'
+  ...
+# Subtest: a restore that left paths out of its checkpoint says which, and a checkpoint that left nothing out says nothing
+ok 348 - a restore that left paths out of its checkpoint says which, and a checkpoint that left nothing out says nothing
+  ---
+  duration_ms: 0.403271
+  type: 'test'
+  ...
+# Subtest: the panel and the shell's strip agree on a recording with no durable line: paid calls and repeats not measured, cost unknown, never $0
+ok 349 - the panel and the shell's strip agree on a recording with no durable line: paid calls and repeats not measured, cost unknown, never $0
+  ---
+  duration_ms: 2.024522
+  type: 'test'
+  ...
+# Subtest: a reference recording's plain process kills are process kills, never a box (the shell does not draw this panel for such a run: Panel.shows)
+ok 350 - a reference recording's plain process kills are process kills, never a box (the shell does not draw this panel for such a run: Panel.shows)
+  ---
+  duration_ms: 19.634155
+  type: 'test'
+  ...
+# Subtest: a kill line with kind box is a box kill, one with kind process or none is a process kill, and a recovery with no box does not say "at box ?"
+ok 351 - a kill line with kind box is a box kill, one with kind process or none is a process kill, and a recovery with no box does not say "at box ?"
+  ---
+  duration_ms: 1.994176
+  type: 'test'
+  ...
+# Subtest: a recording with transport lines still draws the panel, and its kills keep their kinds
+ok 352 - a recording with transport lines still draws the panel, and its kills keep their kinds
+  ---
+  duration_ms: 0.721725
+  type: 'test'
+  ...
+# (node:3804459) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the generic cited result reads as rows of a label, a value, a note and cites; a cite names a blob or a look
+ok 353 - the generic cited result reads as rows of a label, a value, a note and cites; a cite names a blob or a look
+  ---
+  duration_ms: 1.399107
+  type: 'test'
+  ...
+# Subtest: the panel draws a row a line: a look's chip selects its look, a file's chip links the file, a page known by its address is linked and not kept, and a row with no cite says so
+ok 354 - the panel draws a row a line: a look's chip selects its look, a file's chip links the file, a page known by its address is linked and not kept, and a row with no cite says so
+  ---
+  duration_ms: 5.153182
+  type: 'test'
+  ...
+# Subtest: a look chip opens the receipt, moves the pages lane to the page and draws the row's box over it
+ok 355 - a look chip opens the receipt, moves the pages lane to the page and draws the row's box over it
+  ---
+  duration_ms: 2.627045
+  type: 'test'
+  ...
+# Subtest: a cited result shows with no look at all, a box is drawn only over the page it names, and a file chip keeps its note
+ok 356 - a cited result shows with no look at all, a box is drawn only over the page it names, and a file chip keeps its note
+  ---
+  duration_ms: 3.153185
+  type: 'test'
+  ...
+# Subtest: the page from file:// reads a cited result from the result blob
+ok 357 - the page from file:// reads a cited result from the result blob
+  ---
+  duration_ms: 715.87028
+  type: 'test'
+  ...
+# Subtest: an address that is not a web page stays text, a fragment is encoded into its own link, and the link before its \# is the file's plain link
+ok 358 - an address that is not a web page stays text, a fragment is encoded into its own link, and the link before its \# is the file's plain link
+  ---
+  duration_ms: 800.208047
+  type: 'test'
+  ...
+# Subtest: a recording whose result is a cited result: the format holds, every look a row cites is filed, every file it cites is in blobs/, and a scrub equals a fresh reduce
+ok 359 - a recording whose result is a cited result: the format holds, every look a row cites is filed, every file it cites is in blobs/, and a scrub equals a fresh reduce # SKIP CITED_RECORDING names no recording
+  ---
+  duration_ms: 0.357596
+  type: 'test'
+  ...
+# Subtest: each filing that is not kept is a payment, and its price is cost; a filing every later revision carries counts once
+ok 360 - each filing that is not kept is a payment, and its price is cost; a filing every later revision carries counts once
+  ---
+  duration_ms: 3.814898
+  type: 'test'
+  ...
+# Subtest: a native look is no payment, charges nothing and never makes cost unknown
+ok 361 - a native look is no payment, charges nothing and never makes cost unknown
+  ---
+  duration_ms: 0.310749
+  type: 'test'
+  ...
+# Subtest: a kept filing after a payment adds nothing; a key whose first ok filing is kept adds one, priced from it
+ok 362 - a kept filing after a payment adds nothing; a key whose first ok filing is kept adds one, priced from it
+  ---
+  duration_ms: 2.335853
+  type: 'test'
+  ...
+# Subtest: each extra payment of a key counts once: repeated when its generation is later, asked twice when it is the same
+ok 363 - each extra payment of a key counts once: repeated when its generation is later, asked twice when it is the same
+  ---
+  duration_ms: 0.25219
+  type: 'test'
+  ...
+# Subtest: a failed look is no payment, but its price is cost: 0 when no request was sent, unknown when the request threw
+ok 364 - a failed look is no payment, but its price is cost: 0 when no request was sent, unknown when the request threw
+  ---
+  duration_ms: 0.281875
+  type: 'test'
+  ...
+# Subtest: a look started in a process that ended without filing it is a possible payment, and cost is a lower bound
+ok 365 - a look started in a process that ended without filing it is a possible payment, and cost is a lower bound
+  ---
+  duration_ms: 0.620867
+  type: 'test'
+  ...
+# Subtest: a native look's live line is no possible payment
+ok 366 - a native look's live line is no possible payment
+  ---
+  duration_ms: 0.13425
+  type: 'test'
+  ...
+# Subtest: a look started by a killed process is possible from the kill, before any next process starts
+ok 367 - a look started by a killed process is possible from the kill, before any next process starts
+  ---
+  duration_ms: 0.291463
+  type: 'test'
+  ...
+# Subtest: after a restore, the same look paid again at the same place in the list is a new payment, a repeat of the lost one
+ok 368 - after a restore, the same look paid again at the same place in the list is a new payment, a repeat of the lost one
+  ---
+  duration_ms: 0.580893
+  type: 'test'
+  ...
+# Subtest: the latest revision of a filing says what it cost: a look priced later replaces the unknown before it
+ok 369 - the latest revision of a filing says what it cost: a look priced later replaces the unknown before it
+  ---
+  duration_ms: 0.431915
+  type: 'test'
+  ...
+# (node:3805058) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: a picture a row cites is drawn small in its row, several make a strip, and any other file is a link
+ok 370 - a picture a row cites is drawn small in its row, several make a strip, and any other file is a link
+  ---
+  duration_ms: 9.557568
+  type: 'test'
+  ...
+# Subtest: a window of film with no picture of its own shows the keyframes a row pairs with it, labelled as the chapters' keyframes
+ok 371 - a window of film with no picture of its own shows the keyframes a row pairs with it, labelled as the chapters' keyframes
+  ---
+  duration_ms: 5.344829
+  type: 'test'
+  ...
+# Subtest: the page draws the chapters' keyframes in their rows and on the film, from the recording's own blobs
+ok 372 - the page draws the chapters' keyframes in their rows and on the film, from the recording's own blobs
+  ---
+  duration_ms: 793.868644
+  type: 'test'
+  ...
+# Subtest: over HTTP, with a host policy that fetches only from its own origin, the chapters draw with their keyframes: embedded, opened by URL, or followed
+ok 373 - over HTTP, with a host policy that fetches only from its own origin, the chapters draw with their keyframes: embedded, opened by URL, or followed
+  ---
+  duration_ms: 77371.344055
+  type: 'test'
+  ...
+# Subtest: the film recording: each chapter row draws its keyframe, and each window a chapter cites shows it, labelled
+ok 374 - the film recording: each chapter row draws its keyframe, and each window a chapter cites shows it, labelled # SKIP FILM_RECORDING names no recording
+  ---
+  duration_ms: 0.202638
+  type: 'test'
+  ...
+# (node:3806038) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: the hand recording obeys the format, and a scrub of every panel equals a fresh reduce
+ok 375 - the hand recording obeys the format, and a scrub of every panel equals a fresh reduce
+  ---
+  duration_ms: 121.443447
+  type: 'test'
+  ...
+# Subtest: the meters fold from the filed looks: paid once, kept after the kill, repeated 0, the spend, the misses by code
+ok 376 - the meters fold from the filed looks: paid once, kept after the kill, repeated 0, the spend, the misses by code
+  ---
+  duration_ms: 11.718785
+  type: 'test'
+  ...
+# Subtest: the panel and the counters strip fold the same looks: its spend is the strip's cost and the manifest's
+ok 377 - the panel and the counters strip fold the same looks: its spend is the strip's cost and the manifest's
+  ---
+  duration_ms: 3.432556
+  type: 'test'
+  ...
+# Subtest: a look its process started and never filed is a possible extra payment, observed, and spend is a lower bound
+ok 378 - a look its process started and never filed is a possible extra payment, observed, and spend is a lower bound
+  ---
+  duration_ms: 1.027404
+  type: 'test'
+  ...
+# Subtest: live lines show what is in flight and change no count but the observed possible payments
+ok 379 - live lines show what is in flight and change no count but the observed possible payments
+  ---
+  duration_ms: 7.14847
+  type: 'test'
+  ...
+# Subtest: a look only live lines tell of is listed, never "not looked at": a native one as the lead's own, and once the run delivered as never filed
+ok 380 - a look only live lines tell of is listed, never "not looked at": a native one as the lead's own, and once the run delivered as never filed
+  ---
+  duration_ms: 0.556306
+  type: 'test'
+  ...
+# Subtest: a citation opens its receipt and moves its lane: the page with the line's box, the film window, the photo
+ok 381 - a citation opens its receipt and moves its lane: the page with the line's box, the film window, the photo
+  ---
+  duration_ms: 75.882042
+  type: 'test'
+  ...
+# Subtest: ?cite= lands after the commit that filed the look it names
+ok 382 - ?cite= lands after the commit that filed the look it names
+  ---
+  duration_ms: 18.207035
+  type: 'test'
+  ...
+# Subtest: a miss shows by its code, and a failed look with no code says so
+ok 383 - a miss shows by its code, and a failed look with no code says so
+  ---
+  duration_ms: 2.763971
+  type: 'test'
+  ...
+# Subtest: a key paid again in a later generation is repeated, and twice in one is asked twice; an unknown price is unknown
+ok 384 - a key paid again in a later generation is repeated, and twice in one is asked twice; an unknown price is unknown
+  ---
+  duration_ms: 4.205886
+  type: 'test'
+  ...
+# Subtest: one document per look key, its filings in a growing list: each filing counts once, and an identical one paid again is repeated
+ok 385 - one document per look key, its filings in a growing list: each filing counts once, and an identical one paid again is repeated
+  ---
+  duration_ms: 0.427016
+  type: 'test'
+  ...
+# Subtest: after a restore, a look filed again in the restored list is a new filing, even one identical to a lost one
+ok 386 - after a restore, a look filed again in the restored list is a new filing, even one identical to a lost one
+  ---
+  duration_ms: 0.424701
+  type: 'test'
+  ...
+# Subtest: a look first filed kept and paid again after a restore is two payments, the later one repeated
+ok 387 - a look first filed kept and paid again after a restore is two payments, the later one repeated
+  ---
+  duration_ms: 0.406557
+  type: 'test'
+  ...
+# Subtest: a read in flight with a negative start still draws
+ok 388 - a read in flight with a negative start still draws
+  ---
+  duration_ms: 0.29499
+  type: 'test'
+  ...
+# Subtest: the account: entries with their chips, the photo sort against the captions, and the weaker eyes' dropped digits
+ok 389 - the account: entries with their chips, the photo sort against the captions, and the weaker eyes' dropped digits
+  ---
+  duration_ms: 17.135358
+  type: 'test'
+  ...
+# Subtest: the badges: the lead never sees an image, the eyes by their names, the kill, and the kept looks
+ok 390 - the badges: the lead never sees an image, the eyes by their names, the kill, and the kept looks
+  ---
+  duration_ms: 1.650506
+  type: 'test'
+  ...
+# Subtest: the page from file:// reads the account from the result blob, and ?cite= opens the look's receipt
+ok 391 - the page from file:// reads the account from the result blob, and ?cite= opens the look's receipt
+  ---
+  duration_ms: 2031.90791
+  type: 'test'
+  ...
+# Subtest: a redraw after a chip is chosen keeps the account where the reader scrolled it, and the focus on the chip
+ok 392 - a redraw after a chip is chosen keeps the account where the reader scrolled it, and the focus on the chip
+  ---
+  duration_ms: 1239.704908
+  type: 'test'
+  ...
+# Subtest: a recording of the program: the format holds, every cite resolves to a filed look, and a scrub equals a fresh reduce
+ok 393 - a recording of the program: the format holds, every cite resolves to a filed look, and a scrub equals a fresh reduce # SKIP VISION_RECORDING names no recording
+  ---
+  duration_ms: 0.168755
+  type: 'test'
+  ...
+# Subtest: a branch is a path: the map's item, nothing else; the plan comes from the workflow document
+ok 394 - a branch is a path: the map's item, nothing else; the plan comes from the workflow document
+  ---
+  duration_ms: 2.308311
+  type: 'test'
+  ...
+# Subtest: the grid is single glyphs that fill in: empty, working, done, finding
+ok 395 - the grid is single glyphs that fill in: empty, working, done, finding
+  ---
+  duration_ms: 8.38264
+  type: 'test'
+  ...
+# Subtest: a kill marks the branches whose calls it cut, and the strip names it
+ok 396 - a kill marks the branches whose calls it cut, and the strip names it
+  ---
+  duration_ms: 1.182804
+  type: 'test'
+  ...
+# Subtest: the camera zooms into one branch by path at its time code, and back
+ok 397 - the camera zooms into one branch by path at its time code, and back
+  ---
+  duration_ms: 2.085887
+  type: 'test'
+  ...
+# Subtest: the catch's evidence sits side by side: the box's network log, the repository page, the badge
+ok 398 - the catch's evidence sits side by side: the box's network log, the repository page, the badge
+  ---
+  duration_ms: 0.878257
+  type: 'test'
+  ...
+# Subtest: an install that did not run in a box says so, never a clean log
+ok 399 - an install that did not run in a box says so, never a clean log
+  ---
+  duration_ms: 0.561386
+  type: 'test'
+  ...
+# Subtest: the ledger sets the baseline recording's counters beside this run's, reads the cost as unknown and never as $0, and prices the kills
+ok 400 - the ledger sets the baseline recording's counters beside this run's, reads the cost as unknown and never as $0, and prices the kills
+  ---
+  duration_ms: 1.805223
+  type: 'test'
+  ...
+# Subtest: reduce never changes the state it is given, and a scrub equals a fresh reduce
+ok 401 - reduce never changes the state it is given, and a scrub equals a fresh reduce
+  ---
+  duration_ms: 6.252992
+  type: 'test'
+  ...
+# Subtest: a snapshot line is state: it does not reopen a completed effect
+ok 402 - a snapshot line is state: it does not reopen a completed effect
+  ---
+  duration_ms: 0.389896
+  type: 'test'
+  ...
+# Subtest: a real recording (AUDIT_FIXTURE): every branch lands, the kills are marked, a scrub equals a fresh reduce
+ok 403 - a real recording (AUDIT_FIXTURE): every branch lands, the kills are marked, a scrub equals a fresh reduce # SKIP
+  ---
+  duration_ms: 0.237803
+  type: 'test'
+  ...
+# Subtest: the price of the kills is computed when the run and the baseline both priced real providers
+ok 404 - the price of the kills is computed when the run and the baseline both priced real providers
+  ---
+  duration_ms: 1.027465
+  type: 'test'
+  ...
+# Subtest: the price of the kills reads not comparable for a scripted run, a scripted baseline, two scripted runs, or a manifest with no providers on either side
+ok 405 - the price of the kills reads not comparable for a scripted run, a scripted baseline, two scripted runs, or a manifest with no providers on either side
+  ---
+  duration_ms: 0.602803
+  type: 'test'
+  ...
+# Subtest: a look whose own line was lost in a kill is read from the next process's snapshot
+ok 406 - a look whose own line was lost in a kill is read from the next process's snapshot
+  ---
+  duration_ms: 0.258943
+  type: 'test'
+  ...
+# Subtest: a restore rebuilds the branches from the checkpoint: a discarded verdict goes, the kills stay
+ok 407 - a restore rebuilds the branches from the checkpoint: a discarded verdict goes, the kills stay
+  ---
+  duration_ms: 0.756379
+  type: 'test'
+  ...
+# Subtest: an itemsPath is a dotted state path: a nested input still lays out its planned cells
+ok 408 - an itemsPath is a dotted state path: a nested input still lays out its planned cells
+  ---
+  duration_ms: 0.182199
+  type: 'test'
+  ...
+1..408
+# tests 408
+# suites 0
+# pass 403
+# fail 0
+# cancelled 0
+# skipped 5
+# todo 0
+# duration_ms 242691.216634

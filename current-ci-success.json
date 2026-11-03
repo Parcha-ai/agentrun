@@ -1,0 +1,58 @@
+{
+  "observedAt": "2026-11-03T03:49:29.571429+00:00",
+  "head": "cf668bea326996da873c755bab7dbc3e356932aa",
+  "main": "c8307c987088b174a42623635753bb2e27a9ac6b",
+  "workflow": {
+    "id": 41572842831,
+    "url": "https://github.com/Parcha-ai/agentrun/actions/runs/41572842831",
+    "status": "completed",
+    "conclusion": "success",
+    "updatedAt": "2026-11-03T03:48:32Z"
+  },
+  "jobs": {
+    "total": 74,
+    "success": 74,
+    "failed": 0,
+    "pending": 0
+  },
+  "checkRuns": {
+    "total": 74,
+    "success": 74,
+    "failed": 0,
+    "pending": 0
+  },
+  "reviews": {
+    "inlineThreads": 5,
+    "resolved": 5,
+    "unresolved": 0,
+    "reviews": 7,
+    "issueComments": 3,
+    "freshGreptileScore": null,
+    "historicalGreptileHead": "3573f4a6f4f1a68b2a1c52161b0a363d2802315f",
+    "historicalGreptileScore": "5/5"
+  },
+  "stack": {
+    "currentMainClean": true,
+    "approvedOnly": [
+      1377
+    ],
+    "queue": [],
+    "unchangedReadback": {
+      "mainUnchanged": true,
+      "candidateUnchanged": true,
+      "approvedUnchanged": true,
+      "queueUnchanged": true,
+      "headsUnchanged": true,
+      "checkoutHeadUnchanged": true,
+      "trackedStatusUnchanged": true
+    }
+  },
+  "previousHeadCI": {
+    "head": "23bf2743349e38461601fd6e959d6801b99df46e",
+    "conclusion": "failure",
+    "passed": 70,
+    "failed": 4,
+    "baselineReproduced": false
+  },
+  "monitor": "Stopped after independently verifying terminal success; no extra trigger, CI rerun, merge or test performed."
+}

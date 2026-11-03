@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-11-03T03:07:17.058699+00:00",
+  "checkedAt": "2026-11-03T03:49:27.926464+00:00",
   "data": {
     "repository": {
       "pullRequests": {
@@ -95,9 +95,9 @@
           {
             "number": 1325,
             "title": "feat(serve, console): setup offers to import this machine's sessions",
-            "headRefOid": "edac1f80efe5709cebf20cd02e3593e15f4eafc6",
+            "headRefOid": "eacdcc5b643e2604997e4c0eca6c38cf2c27558a",
             "baseRefName": "main",
-            "reviewDecision": null,
+            "reviewDecision": "REVIEW_REQUIRED",
             "url": "https://github.com/Parcha-ai/agentrun/pull/1325"
           },
           {
@@ -175,7 +175,7 @@
           {
             "number": 1408,
             "title": "feat(console): complete standalone AgentRun administration",
-            "headRefOid": "23bf2743349e38461601fd6e959d6801b99df46e",
+            "headRefOid": "cf668bea326996da873c755bab7dbc3e356932aa",
             "baseRefName": "main",
             "reviewDecision": "REVIEW_REQUIRED",
             "url": "https://github.com/Parcha-ai/agentrun/pull/1408"
@@ -197,14 +197,6 @@
             "url": "https://github.com/Parcha-ai/agentrun/pull/1414"
           },
           {
-            "number": 1416,
-            "title": "test(serve): a started server is waited for by its ready line or its exit, never a clock",
-            "headRefOid": "dfc1ff72844381ad480d3b9a3dc54a17f289a384",
-            "baseRefName": "main",
-            "reviewDecision": null,
-            "url": "https://github.com/Parcha-ai/agentrun/pull/1416"
-          },
-          {
             "number": 1417,
             "title": "fix(dsl): a judge failing in a parallel fails its item, and a decision's deadline counts its image loads",
             "headRefOid": "385db9ef2bab15edb34c65eff445cf159d07ae2c",
@@ -215,10 +207,26 @@
           {
             "number": 1418,
             "title": "fix(serve): an import cuts the server's own keys out of what it keeps",
-            "headRefOid": "3ac39d653d25f0fbffc648e8018ae3c3943e88b7",
+            "headRefOid": "1e103cb7373bfea410e47f4961195f14e5b00c37",
             "baseRefName": "main",
             "reviewDecision": null,
             "url": "https://github.com/Parcha-ai/agentrun/pull/1418"
+          },
+          {
+            "number": 1419,
+            "title": "fix(timeline, serve): a row names a workspace file by its name there, not the data path",
+            "headRefOid": "daf2e6989e014455011a56735b8d188d0f870d5b",
+            "baseRefName": "main",
+            "reviewDecision": null,
+            "url": "https://github.com/Parcha-ai/agentrun/pull/1419"
+          },
+          {
+            "number": 1420,
+            "title": "fix(serve): pdf_pages draws each document under a page directory of its own",
+            "headRefOid": "ff685e22c45071ec6e1b95be6a7c21cde88b5070",
+            "baseRefName": "main",
+            "reviewDecision": "REVIEW_REQUIRED",
+            "url": "https://github.com/Parcha-ai/agentrun/pull/1420"
           }
         ],
         "pages": 1,
