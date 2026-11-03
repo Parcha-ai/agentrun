@@ -131,41 +131,58 @@ export function spentIn(storeFile: string): number | null {
   // The store's own entries, as read (without the answers written below for a stopped request): openFigures reads them.
   const read: EntryLike[] = [];
   let marked = false;
-  // End marks of requests that ended on an error after their response began (`error`), whose pi entry is still to come.
-  let erred = 0;
+  const rows: EntryLike[] = [];
   try {
-    for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) {
-      const entry = JSON.parse(String((row as { record: string }).record)) as EntryLike;
-      const data = (entry.data ?? {}) as Record<string, unknown>;
-      // A request this cap refused never left, and costs nothing: its mark and pi's error entry for it (an older store
-      // has the entry alone, which the timeline would count as answering an earlier request a crash cut). Nor did one
-      // whose start mark could not be written, whose error entry has no mark at all. A cancel's refusal is its mark
-      // (REQUEST_REFUSED) and pi's error for it, which close nothing together (openFigures, and the timeline).
-      if (refusedHere(entry) || notSentHere(entry) || (entry.kind === REQUEST_STARTED && data[CAP_REFUSED_FIELD] === true)) continue;
-      if (entry.kind === REQUEST_STARTED) marked = true;
-      // pi's entry for a marked request stopped before its end (what had streamed of it): the request is counted by its
-      // marks instead, at the figure its end holds, or cut. Before the first mark (an older run) it stays unknown.
-      if (marked && entry.kind === "pi.assistant" && (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason === "aborted") continue;
-      // So is pi's error entry for a request that ended on an error after its response began: its end mark (`error`, before
-      // the entry) counts it at its hold. An error with no such mark (before any event: a 429, a 5xx) is its answer.
-      if (entry.kind === REQUEST_ENDED && data.error === true) erred += 1;
-      else if (erred > 0 && entry.kind === "pi.assistant" && (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason === "error") {
-        erred -= 1;
-        continue;
-      }
-      entries.push(entry);
-      read.push(entry);
-      const held = data[HELD_FIELD];
-      // A summary that ended on an error after its response began (its cost mark says `failed`) counts at its hold.
-      if (entry.kind === REQUEST_COST && data.failed === true && figureOf(held) !== undefined) entries[entries.length - 1] = { ...entry, data: { ...data, usd: held } };
-      if (entry.kind !== REQUEST_ENDED || data.unsent === true || typeof held !== "number" || !Number.isFinite(held)) continue;
-      // The stopped request closed at what the cap held for it: a summary by its cost, a generation by an answer.
-      entries.push(data.request === "compaction"
-        ? { kind: REQUEST_COST, data: { request: "compaction", usd: held } }
-        : { kind: "pi.assistant", ...(entry.conversationId !== undefined ? { conversationId: entry.conversationId } : {}), model: [{ role: "assistant", content: [], stopReason: "stop", usage: { cost: { total: held } }, timestamp: 0 }] });
-    }
+    for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) rows.push(JSON.parse(String((row as { record: string }).record)) as EntryLike);
   } finally {
     db.close();
+  }
+  // pi's error entry for a request that ended on an error after its response began is left out, as an aborted one is: its
+  // end mark (`error`) counts it at its hold. pi writes the entry as the mark is written, before it or after, so each such
+  // mark takes the nearest error entry not yet taken; which one it takes, when errors overlap, moves no figure below what
+  // can have been spent, as an answer's choice of start does not (openFigures). An error with no such mark (before any
+  // event: a 429, a 5xx) is its request's answer.
+  // A cancel's refusal (REQUEST_REFUSED) answers the next error entry, as openFigures and the timeline read them: those are
+  // no request's, and no end mark takes one.
+  const stopOf = (entry: EntryLike) => (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason;
+  const errorsAt: number[] = [];
+  let refusals = 0;
+  rows.forEach((entry, at) => {
+    if (entry.kind === REQUEST_REFUSED) refusals += 1;
+    else if (entry.kind === "pi.assistant" && stopOf(entry) === "error" && !refusedHere(entry) && !notSentHere(entry)) {
+      if (refusals > 0) refusals -= 1;
+      else errorsAt.push(at);
+    }
+  });
+  const taken = new Set<number>();
+  rows.forEach((entry, at) => {
+    if (entry.kind !== REQUEST_ENDED || (entry.data as { error?: unknown } | undefined)?.error !== true) return;
+    let nearest = -1;
+    for (const error of errorsAt) if (!taken.has(error) && (nearest < 0 || Math.abs(error - at) < Math.abs(nearest - at))) nearest = error;
+    if (nearest >= 0) taken.add(nearest);
+  });
+  for (const [at, entry] of rows.entries()) {
+    const data = (entry.data ?? {}) as Record<string, unknown>;
+    // A request this cap refused never left, and costs nothing: its mark and pi's error entry for it (an older store
+    // has the entry alone, which the timeline would count as answering an earlier request a crash cut). Nor did one
+    // whose start mark could not be written, whose error entry has no mark at all. A cancel's refusal is its mark
+    // (REQUEST_REFUSED) and pi's error for it, which close nothing together (openFigures, and the timeline).
+    if (refusedHere(entry) || notSentHere(entry) || (entry.kind === REQUEST_STARTED && data[CAP_REFUSED_FIELD] === true)) continue;
+    if (entry.kind === REQUEST_STARTED) marked = true;
+    // pi's entry for a marked request stopped before its end (what had streamed of it): the request is counted by its
+    // marks instead, at the figure its end holds, or cut. Before the first mark (an older run) it stays unknown.
+    if (marked && entry.kind === "pi.assistant" && (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason === "aborted") continue;
+    if (taken.has(at)) continue;
+    entries.push(entry);
+    read.push(entry);
+    const held = data[HELD_FIELD];
+    // A summary that ended on an error after its response began (its cost mark says `failed`) counts at its hold.
+    if (entry.kind === REQUEST_COST && data.failed === true && figureOf(held) !== undefined) entries[entries.length - 1] = { ...entry, data: { ...data, usd: held } };
+    if (entry.kind !== REQUEST_ENDED || data.unsent === true || typeof held !== "number" || !Number.isFinite(held)) continue;
+    // The stopped request closed at what the cap held for it: a summary by its cost, a generation by an answer.
+    entries.push(data.request === "compaction"
+      ? { kind: REQUEST_COST, data: { request: "compaction", usd: held } }
+      : { kind: "pi.assistant", ...(entry.conversationId !== undefined ? { conversationId: entry.conversationId } : {}), model: [{ role: "assistant", content: [], stopReason: "stop", usage: { cost: { total: held } }, timestamp: 0 }] });
   }
   // A request still open is one a crash cut, with no answer and no end: it counts at what the cap held for it, as its start
   // mark says: its own figure when requests do not overlap, else one never less (openFigures). One still open with no

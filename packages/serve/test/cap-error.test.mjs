@@ -23,6 +23,9 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 const until = async (check) => {
   for (let i = 0; !check() && i < 200; i++) await new Promise((resolve) => setTimeout(resolve, 5));
 };
+/** `promise`'s value, or undefined when it has not settled in `ms`: a request the old code sends waits on a model that
+ *  never ends it, and the test fails on that instead of hanging. */
+const settled = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(undefined), ms))]);
 const NOT_WRITTEN = "the model request was not sent: its mark could not be written";
 const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
@@ -63,7 +66,7 @@ async function capped(models, cap, marks = []) {
   return out;
 }
 
-test("in this process, a request whose response began and then ended on an error counts at its hold: the next one is refused once that leaves no room, and its end is marked with the hold", async () => {
+test("a request whose response began and then ended on an error counts at its hold: in this process the next one is refused once that leaves no room, and after a crash its marks read the hold", async (t) => {
   const { models, sent } = streaming();
   const marks = [];
   const run = await capped(models, 0.0015, marks);
@@ -71,15 +74,20 @@ test("in this process, a request whose response began and then ended on an error
   await until(() => sent.length === 1);
   assert.equal(sent.length, 1);
   // Overloaded part way: pi-ai keeps the usage it had (the input), $0.00001 of a request that can have cost $0.001.
-  sent[0].end(message(0.00001, "error", "overloaded_error"));
+  const overloaded = message(0.00001, "error", "overloaded_error");
+  sent[0].end(overloaded);
   await first.result();
   await settle();
-  assert.deepEqual(marks.map((m) => m.kind), [REQUEST_STARTED, REQUEST_ENDED]);
+  // In this process: the next request is judged with the first at its hold.
+  const second = run.streamSimple(outputOnly, context);
+  const answer = await settled(second.result(), 300);
+  assert.equal(sent.length, 1, "not sent: $0.001 counted for the first and $0.001 held pass the cap");
+  assert.match(answer?.errorMessage ?? "(still waiting: it was sent)", /^spend_cap_reached: .*could cost up to \$0\.001000, and with \$0\.001000 spent/);
+  // After a crash: its marks and pi's error entry for it read back at the hold, never at the $0.00001 that had streamed.
+  assert.equal(round(spentIn(storeOf(t, [...marks, entryOf(overloaded)]))), 0.001);
+  assert.deepEqual(marks.map((m) => m.kind), [REQUEST_STARTED, REQUEST_ENDED], "its end is marked, before pi has its result");
   assert.equal(marks[1].data.error, true);
   assert.ok(Math.abs(marks[1].data.heldUsd - 0.001) < 1e-12, `its end holds the request's $0.001: ${marks[1].data.heldUsd}`);
-  const second = run.streamSimple(outputOnly, context);
-  assert.equal(sent.length, 1, "not sent: $0.001 counted for the first and $0.001 held pass the cap");
-  assert.match((await second.result()).errorMessage, /^spend_cap_reached: .*could cost up to \$0\.001000, and with \$0\.001000 spent/);
 });
 
 test("in this process, a request refused before any event (a 429) counts at its own usage, so a retry goes on, and its end is not marked", async () => {
@@ -97,6 +105,26 @@ test("in this process, a request refused before any event (a 429) counts at its 
   assert.equal(sent.length, 2, "the retry was sent: $0 spent and $0.001 held fit $0.0015");
   sent[1].end(message(0.0002));
   assert.equal((await retry.result()).stopReason, "stop");
+});
+
+test("a request's result waits at most a second on its end mark: a store whose write of that mark never settles does not hold the turn, for an error and for an abort", async () => {
+  for (const end of [message(0.00001, "error", "overloaded_error"), { ...message(0, "aborted"), errorMessage: undefined }]) {
+    const { models, sent } = streaming();
+    // The store takes the start mark, and never answers the write of the end mark.
+    const run = { harness: { commit: async (change) => {
+      const entries = [];
+      await change({ appendEntry: async (_conversation, entry) => void entries.push(entry) });
+      if (entries.some((entry) => entry.kind === REQUEST_ENDED)) await new Promise(() => {});
+    } } };
+    const marked = await markRequests(models);
+    const capped = await capModels(marked.models, 0.0015, 0);
+    marked.open(run);
+    const request = capped.streamSimple(outputOnly, context);
+    await until(() => sent.length === 1);
+    sent[0].end(end);
+    const answer = await settled(request.result(), 2_500);
+    assert.equal(answer?.stopReason, end.stopReason, `the ${end.stopReason} reached pi while its end mark was still being written`);
+  }
 });
 
 /** A model stream that throws while it is read, after a start event (`began`) or before any. */
@@ -175,6 +203,9 @@ test("after a crash, a request whose response began and that ended on an error c
   assert.equal(round(spentIn(storeOf(t, [started(0.4), erred(0.4), entryOf({ ...refusedAtHttp, errorMessage: "the model request failed: socket hang up" })]))), 0.4, "a stream that threw after its start");
   assert.equal(round(spentIn(storeOf(t, [started(0.4), erred(0.4), overloaded, started(0.1), entryOf(message(0.05))]))), 0.45, "then a request answered");
   assert.equal(round(spentIn(storeOf(t, [started(0.4), started(0.1), erred(0.4), entryOf(message(0.05)), overloaded]))), 0.45, "overlapping: the other's answer comes between the end mark and the error entry");
+  // pi's error entry may land before the end mark: the walk pairs them either way. Read with the entry first as an answer,
+  // it would close the other request's start, cut by the crash: 0.42 instead of 0.5.
+  assert.equal(round(spentIn(storeOf(t, [started(0.4), started(0.1), overloaded, erred(0.4)]))), 0.5, "the error entry before its end mark, another request cut");
   assert.equal(spentIn(storeOf(t, [started(undefined), erred(undefined), overloaded])), null, "a request with no figure (a store from before) is unknown");
   // Refused before any event: no end mark, and pi's error entry is its answer, at its own usage.
   assert.equal(round(spentIn(storeOf(t, [started(0.4), entryOf(refusedAtHttp), started(0.4), entryOf(message(0.05))]))), 0.05, "a 429, then its retry answered");
@@ -195,9 +226,10 @@ test("a summary that ended on an error after its response began counts at its ho
   const marked = await markRequests(failing);
   marked.open(runOf(marks));
   await marked.models.completeSimple(outputOnly, context, { [HELD_USD]: 0.3 });
+  // After a crash: read back at its hold, never at the $0.00002 that had streamed.
+  assert.equal(round(spentIn(storeOf(t, marks))), 0.3);
   const cost = marks.find((m) => m.kind === REQUEST_COST);
   assert.deepEqual([cost.data.usd, cost.data.failed, cost.data.heldUsd], [0.00002, true, 0.3], "its own cost as the run shows it, and the hold for the cap");
-  assert.equal(round(spentIn(storeOf(t, marks))), 0.3);
   // Refused before anything streamed: its cost mark is its own, no `failed`.
   const early = [];
   const refusedSummary = await markRequests({ completeSimple: async () => refusedAtHttp });
@@ -212,7 +244,7 @@ test("a summary that ended on an error after its response began counts at its ho
   sent[0].end({ ...message(0.00001, "error", "overloaded_error"), content: [] });
   await first;
   await settle();
-  const second = await run.completeSimple(outputOnly, context);
+  const second = await settled(run.completeSimple(outputOnly, context), 300);
   assert.equal(sent.length, 1, "not sent");
-  assert.match(second.errorMessage, /^spend_cap_reached: .*with \$0\.001000 spent/);
+  assert.match(second?.errorMessage ?? "(still waiting: it was sent)", /^spend_cap_reached: .*with \$0\.001000 spent/);
 });

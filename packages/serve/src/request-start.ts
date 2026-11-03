@@ -27,6 +27,9 @@ import { RESPONSE_BEGAN } from "./cap.js";
 /** Whether the run in `root` (its directory) was cancelled: the mark serve's cancel writes there first. */
 export const cancelledIn = (root: string) => () => existsSync(join(root, RUN_CANCELLED));
 
+/** How long a request's result waits for its end mark to be written, so it lands before pi's entry for the request. */
+export const END_MARK_WAIT_MS = 1_000;
+
 /** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). Once
  *  `cancelled` says the run was cancelled, no request is sent: each is refused here, before it is marked, or after its
  *  mark when the cancel came while the mark waited, and then its start is withdrawn (an end mark, `unsent`). */
@@ -45,6 +48,11 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     errorMessage: why,
   });
   const reason = (error: unknown) => String((error as Error)?.message ?? error).slice(0, 200);
+  /** Until `work` settles, or `ms` pass. */
+  const within = (work: Promise<unknown>, ms: number) => new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    void work.finally(() => (clearTimeout(timer), resolve()));
+  });
   /** What the run's cap held for a request (its options' HELD_USD), as an end mark's field; none without a cap. */
   const heldOf = (options: unknown): Record<string, number> => {
     const held = (options as Record<symbol, unknown> | undefined)?.[HELD_USD];
@@ -90,32 +98,45 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       let result: AssistantMessage;
       // Whether the provider's response had begun (an event came in) by the time the request ended.
       let began = false;
+      // The stream's error event, passed on once the request's end is marked (below): the outer stream's result, which
+      // pi writes as the entry and the cap counts, settles on that event.
+      let failure: Parameters<typeof outer.push>[0] | undefined;
       try {
         const inner = models.streamSimple(model, context, options);
         for await (const event of inner) {
-          if (event.type !== "error") began = true;
+          if (event.type === "error") {
+            failure = event;
+            continue;
+          }
+          began = true;
           outer.push(event);
         }
         result = await inner.result();
       } catch (error) {
         // A stream that throws instead of ending on an error event still ends the request, as an error, never a hang.
         result = failed(model, `the model request failed: ${reason(error)}`);
-        outer.push({ type: "error", reason: "error", error: result });
+        failure = { type: "error", reason: "error", error: result };
       }
       // An answer or a failure gets pi's own entry; an abort may get none, so its end is marked, with the provider's id
       // for the request when it named one before the cut (the request joins its record by it). A store that cannot
       // take the mark leaves the request unended, which the timeline also reads as cut, at an unknown cost: the
       // conservative reading, so the failure is swallowed here.
+      let ending: Promise<void> | undefined;
       if (result.stopReason === "aborted") {
         const responseId = (result as { responseId?: unknown }).responseId;
-        await mark(REQUEST_ENDED, { ...(typeof responseId === "string" ? { responseId } : {}), ...heldOf(options) }).catch(() => undefined);
+        ending = mark(REQUEST_ENDED, { ...(typeof responseId === "string" ? { responseId } : {}), ...heldOf(options) });
       } else if (result.stopReason === "error" && began) {
         // An error after its response began (an overload part way, a reset): its usage is what had streamed, not what the
-        // provider can have billed. Its end is marked with the hold (`error`) before pi writes its entry, and the cap counts
-        // it there, as a stop. One before any event (a 429, a 5xx) is refused unbilled, and counts at its own usage.
-        (result as unknown as Record<symbol, unknown>)[RESPONSE_BEGAN] = true;
-        await mark(REQUEST_ENDED, { error: true, ...heldOf(options) }).catch(() => undefined);
+        // provider can have billed. Its message is tagged, which the cap counts at its hold in this process, and its end is
+        // marked with the hold (`error`), which the spend read back counts. One before any event (a 429, a 5xx) is refused
+        // unbilled, and counts at its own usage.
+        for (const message of new Set([result, failure?.type === "error" ? failure.error : undefined])) if (message) (message as unknown as Record<symbol, unknown>)[RESPONSE_BEGAN] = true;
+        ending = mark(REQUEST_ENDED, { error: true, ...heldOf(options) });
       }
+      // The end mark goes in before pi has the result, so the store holds it before pi's entry; a store that refuses it, or
+      // has not answered in END_MARK_WAIT_MS, does not hold the turn: the result goes on, and the mark lands when it can.
+      if (ending) await within(ending.catch(() => undefined), END_MARK_WAIT_MS);
+      if (failure) outer.push(failure);
       outer.end(result);
     })();
     return outer;
