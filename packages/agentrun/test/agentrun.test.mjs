@@ -221,7 +221,7 @@ test("started directly by a shell that backgrounds it and exits, the command kee
  *  server's path, and the stub: it records its arguments, environment and parent, prints the server's lines, runs one
  *  agent child that counts the SIGTERMs it gets, and on a SIGTERM stops that agent once and waits for it, as the server's
  *  own close drains its runs. */
-function fetchedSetup(t) {
+function fetchedSetup(t, { fetchMs = 0 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-fetch-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
@@ -244,7 +244,8 @@ setInterval(() => {}, 1000);
   writeFileSync(join(dir, "fake", "npm"), `#!${process.execPath}
 const fs = require("node:fs");
 fs.writeFileSync(${JSON.stringify(files.npm)}, JSON.stringify({ argv: process.argv.slice(2), leaked: Object.keys(process.env).filter((name) => /^npm_config_(call|workspaces?|include_workspace_root)$/i.test(name)) }));
-console.log(${JSON.stringify(stub)});
+// The fetch takes ${fetchMs} ms, as a first run's download does.
+setTimeout(() => console.log(${JSON.stringify(stub)}), ${fetchMs});
 `);
   chmodSync(join(dir, "fake", "npm"), 0o755);
   return { dir, files, bin: join(dir, "pkg", "bin", "agentrun.mjs"), path: join(dir, "fake") };
@@ -305,4 +306,20 @@ test("with no server beside it, a SIGTERM or a SIGHUP to the command stops the s
     assert.ok(await gone(Number(readFileSync(setup.files.agentPid, "utf8"))), `${signal}: its agent stopped`);
     if (signal === "SIGTERM") assert.equal(readFileSync(setup.files.terms, "utf8"), "TERM\n", "the agent got one SIGTERM, the server's, and drained");
   }
+});
+
+test("started by npm exec with no server beside it, an npm gone while the server is fetched starts no server", { timeout: 90_000 }, async (t) => {
+  const setup = fetchedSetup(t, { fetchMs: 3000 });
+  const { env } = bare(t);
+  // npm as npx runs it, naming itself `npm exec …`, its `sh -c` waiting on the command.
+  const npm = spawn(process.execPath, ["-e", `process.title = "npm exec agentrun --no-open"; const c = require("node:child_process").spawn("sh", ["-c", ${JSON.stringify(`"${process.execPath}" "${setup.bin}" --no-open; :`)}], { stdio: "inherit" }); c.on("exit", (code) => process.exit(code ?? 1)); setInterval(() => {}, 1000);`], { env: { ...strip(env), ...NPM_ENV, PATH: `${setup.path}:${env.PATH}` }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  t.after(() => { try { process.kill(-npm.pid, "SIGKILL"); } catch {} });
+  // The fetch has begun: then only npm goes, as with a SIGKILL to it.
+  for (let i = 0; !existsSync(setup.files.npm) && i < 200; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(existsSync(setup.files.npm), "the fetch began");
+  npm.kill("SIGKILL");
+  await new Promise((resolve) => setTimeout(resolve, 6000));
+  const server = existsSync(setup.files.server) ? JSON.parse(readFileSync(setup.files.server, "utf8")) : null;
+  if (server) t.after(() => { try { process.kill(server.pid, "SIGKILL"); } catch {} });
+  assert.equal(server, null, "no server started once npm was gone");
 });
