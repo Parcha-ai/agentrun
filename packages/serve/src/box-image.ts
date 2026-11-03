@@ -60,6 +60,8 @@ export const INSPECT_TIMEOUT_MS = 5_000;
 /** How long past the pull's deadline a run still waits on a file that says preparing: the server's own timer ends the
  *  pull at the deadline, so only a server that is gone leaves the file saying preparing after it. */
 export const STALE_AFTER_MS = 30_000;
+/** How long the server's close waits for the image's last record to be saved, so a docker that hangs cannot hold it. */
+export const CLOSE_WAIT_MS = 5_000;
 /** How often a waiting run reads the file again. */
 const POLL_MS = 250;
 
@@ -75,8 +77,10 @@ export type DockerImage = {
   state(): ImageState;
   /** Settles with the state once it is ready or unavailable. */
   readonly settled: Promise<ImageState>;
-  /** Stops a pull in progress (the server's close). */
-  stop(): void;
+  /** Stops a build or pull in progress and waits, at most CLOSE_WAIT_MS, for its last record to be saved: the server's
+   *  close (and a start that failed) calls it before the data directory's lock goes, so no record of this server lands
+   *  after the next one took the lock. */
+  close(): Promise<void>;
 };
 
 type Answer = { code: number | string | undefined; stdout: string; stderr: string };
@@ -179,7 +183,7 @@ export async function dockerImage(env: NodeJS.ProcessEnv, data: string, image: s
   if (state.state !== "preparing") {
     await write();
     const settled = state;
-    return { image, state: () => settled, settled: Promise.resolve(settled), stop: () => undefined };
+    return { image, state: () => settled, settled: Promise.resolve(settled), close: async () => undefined };
   }
   const started = Date.now();
   await write({ until: started + timeoutMs, row: built ? `Preparing the box image: building it (${RECIPE_HAS})…` : `Preparing the box image: pulling ${image}…` });
@@ -199,7 +203,14 @@ export async function dockerImage(env: NodeJS.ProcessEnv, data: string, image: s
     options.onChange?.(state, Date.now() - started);
     return state;
   });
-  return { image, state: () => state, settled, stop: () => controller.abort() };
+  const close = async () => {
+    controller.abort();
+    // A build or pull that ended just before the abort may be saving its last record: that save ends first, within bound.
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([settled.then(() => undefined, () => undefined), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_WAIT_MS)))]);
+    clearTimeout(timer);
+  };
+  return { image, state: () => state, settled, close };
 }
 
 /** Docker's offer with the image's state on it: available while it is ready or preparing, else unavailable with why. */

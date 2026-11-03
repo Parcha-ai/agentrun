@@ -478,7 +478,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         void keysChanged().catch(() => undefined);
       },
     });
-    stops.push(async () => image?.stop());
+    stops.push(async () => void (await image?.close()));
   } else await clearImage(data);
   boxOffers = offersNow();
   const runBoxes = fauxBox ?? boxes.provider("docker");
@@ -1282,7 +1282,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     async close() {
       // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
       await runs.close();
-      image?.stop();
+      // Before the lock goes: the image's last record lands first (box-image.ts), never after the next server's start.
+      await image?.close();
       await webhooks.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();

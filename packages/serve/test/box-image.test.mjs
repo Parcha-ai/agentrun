@@ -7,7 +7,7 @@
 // Docker's output, refuses the next sandbox run naming it, and fails the call of a run that was waiting.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { awaitImage, BOX_RECIPE, DEFAULT_DOCKER_IMAGE, dockerImage, IMAGE_STATE_FILE, RECIPE_HASH, RECIPE_LABEL, STALE_AFTER_MS } from "../dist/box-image.js";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
+import { startServe } from "../dist/index.js";
 import { latestReading } from "../dist/server.js";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -366,6 +367,44 @@ test("a build that fails: the run waiting on it fails its call with the reason, 
   assert.equal(refused.body.error.code, "agent_not_runnable");
   assert.equal(refused.body.error.details.box, "docker");
   assert.match(refused.body.error.message, /the build of the box image could not reach the network/);
+});
+
+test("the server's close waits for the image's last record to be saved before it lets the data directory go, so a server started after it keeps its own record", { timeout: 120_000 }, async (t) => {
+  const docker = await fakeDocker(t, { "no-image": "", "pull-hold": "" }, OVERRIDE);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  assert.equal(recordOf(data).state, "preparing");
+  // The last save of the record goes through a file beside it: a FIFO there holds it, open, until something reads it.
+  const held = join(data, `${IMAGE_STATE_FILE}.partial`);
+  assert.equal(spawnSync("mkfifo", [held]).status, 0, "mkfifo");
+  await docker.release();
+  // The save is held once a thread of this process waits to open the FIFO (Linux names that wait `wait_for_partner`).
+  const saving = () => readdirSync("/proc/self/task").some((task) => {
+    try {
+      return readFileSync(`/proc/self/task/${task}/wchan`, "utf8").includes("wait_for_partner");
+    } catch {
+      return false;
+    }
+  });
+  await until(saving, "the last save, held");
+  const closing = first.close();
+  const pendingAfter = (promise, ms) => Promise.race([promise.then(() => false, () => false), new Promise((resolve) => setTimeout(() => resolve(true), ms))]);
+  let waited;
+  try {
+    waited = await pendingAfter(closing, 1_000);
+  } finally {
+    // Let the save land, whatever the close did, so nothing is left blocked on the FIFO.
+    await new Promise((resolve, reject) => createReadStream(held).on("data", () => undefined).on("end", resolve).on("error", reject));
+  }
+  assert.equal(waited, true, "the close waits while the image's last record is being saved");
+  await closing;
+  // A server started now, with another image Docker has, keeps its own record: nothing of the first lands after it.
+  await rm(join(docker.state, "no-image"));
+  withEnv(t, { AGENTRUN_DOCKER_IMAGE: "other:2" });
+  const second = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  t.after(() => second.close());
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.deepEqual(recordOf(data), { image: "other:2", state: "ready" });
 });
 
 test("with no Docker box (none listed, or the tests' faux box), no image is asked for, and a record an earlier start left is removed", async (t) => {
