@@ -393,15 +393,16 @@ test("under its launcher, setup's import cuts each of the server's own secrets o
   for (const [name, value] of Object.entries(keys)) assert.deepEqual(holding(data, value), [], `no file under the data directory holds ${name}'s value`);
 });
 
-test("a key saved on the Tool keys page, not in the server's environment, is cut out of everything setup's import writes: a session's text and title, its subagent's file, and a session named after its file, kept under a redacted- id that the next start's import finds again", { timeout: 90_000 }, async (t) => {
-  // Built here, so no scanner reads it as a credential.
+test("a key saved on the Tool keys page is cut out of everything setup's import writes, and so is the server's own key of the same name when it differs: a session's text and title, its subagent's file, and a session named after its file, kept under a redacted- id that the next start's import finds again", { timeout: 90_000 }, async (t) => {
+  // Built here, so no scanner reads either as a credential.
   const saved = ["not-a-secret", "monid", randomBytes(8).toString("hex")].join("-");
+  const own = ["not-a-secret", "monid-own", randomBytes(8).toString("hex")].join("-");
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["MONID_API_KEY"]);
   const root = await scratch(t);
   const home = join(root, "home");
   const site = join(home, "code", "acme-site");
   mkdirSync(site, { recursive: true });
-  claudeSession(home, site, 1, { prompt: `Use ${saved} to list the files.`, output: `README.md (with ${saved})` });
+  claudeSession(home, site, 1, { prompt: `Use ${saved} to list the files.`, output: `README.md (with ${saved}, then ${own})` });
   claudeSubagent(home, site, 1, 1, { answer: `It is ${saved}.` });
   // A session file whose records carry no session id, named with the key: the import names the session after its file.
   const unnamed = claudeSession(home, site, 2, { prompt: "Check the logs." });
@@ -419,6 +420,10 @@ test("a key saved on the Tool keys page, not in the server's environment, is cut
   t.after(() => server.close());
   const kept = await call(server.port, { method: "PUT", path: "/v2/settings/tool-keys/monid", headers: { ...json, authorization: `Bearer ${server.token}` }, body: { values: { MONID_API_KEY: saved } } });
   assert.equal(kept.status, 204, kept.text);
+  // The server starts again with a MONID_API_KEY of its own, a different value: the saved one stays in the page's file.
+  await server.close();
+  process.env.MONID_API_KEY = own;
+  server = await start();
   // Setup's count, by the ids as the import keeps them.
   const read = () => call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
   let counted = await read();
@@ -438,7 +443,7 @@ test("a key saved on the Tool keys page, not in the server's environment, is cut
       }
     };
     walk(data);
-    assert.deepEqual([holding(data, saved), names.filter((name) => name.includes(saved))], [[], []], `${when}: no file under the data directory holds the saved key, or is named after it`);
+    for (const [which, value] of [["the saved key", saved], ["the server's own", own]]) assert.deepEqual([holding(data, value), names.filter((name) => name.includes(value))], [[], []], `${when}: no file under the data directory holds ${which}, or is named after it`);
   };
   nowhere("the first import");
   assert.ok(holding(join(data, "runs"), "[redacted]").length > 0, "[redacted] where it was");
