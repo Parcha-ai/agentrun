@@ -1,7 +1,8 @@
 // What this server offers of opencode, as GET /v2/capabilities answers it (harnessOffers): available only when the
 // installed OpenCode is the pinned build (the OpenCode adapter's verifyOpenCode, src/harness-opencode: the platform package's
 // version, the binary's sha256 and the version it reports) and a model key or gateway is set. One that is missing or not
-// the pinned build is unavailable as that, with serve's install line. No network: nothing here reaches a provider.
+// the pinned build is unavailable as that, with serve's install line, then the restart that picks it up (the start's
+// check holds until a restart). No network: nothing here reaches a provider.
 //
 // The offer on the pinned build skips without it; with AGENTRUN_OPENCODE_REQUIRE_BINARY=1 (CI) it fails.
 import assert from "node:assert/strict";
@@ -41,7 +42,8 @@ test("an OpenCode that is not installed is unavailable as that, with serve's ins
   const offer = await withBin(t, join(tmpdir(), "agentrun-opencode-offer-none", "opencode"), () => opencodeOf({ OPENAI_API_KEY: "fake-test-key" }));
   assert.equal(offer.available, false, JSON.stringify(offer));
   assert.match(offer.reason, /OpenCode 1\.19\.5 is not installed/);
-  assert.ok(offer.reason.endsWith(INSTALL), offer.reason);
+  // The start's probe holds until a restart, so the reason says to restart once it is installed, as codex's does.
+  assert.ok(offer.reason.endsWith(`${INSTALL}; once it is installed, restart AgentRun to pick it up.`), offer.reason);
 });
 
 test("an OpenCode that is not the pinned build is unavailable as that, with serve's install line, even with a model key", { skip: !findOpenCode()?.pkg && "no pinned OpenCode platform package here" }, async (t) => {
@@ -53,5 +55,5 @@ test("an OpenCode that is not the pinned build is unavailable as that, with serv
   const offer = await withBin(t, bin, () => opencodeOf({ OPENAI_API_KEY: "fake-test-key" }));
   assert.equal(offer.available, false, JSON.stringify(offer));
   assert.match(offer.reason, /is not the pinned build: its binary sha256 is [0-9a-f]{64}, not [0-9a-f]{64}/);
-  assert.ok(offer.reason.endsWith(`(${INSTALL})`), offer.reason);
+  assert.ok(offer.reason.endsWith(`(${INSTALL}); once the pinned build is installed, restart AgentRun.`), offer.reason);
 });
