@@ -214,17 +214,21 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [pick, setPick] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  const agentsAsked = useRef(0);
   useEffect(() => {
     if (where.section !== "playground") return;
     setStartError(null);
+    // Only the newest read lands: an earlier one answering late (the list before an import ended) never replaces it.
+    const n = ++agentsAsked.current;
     allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents)
       .then((a) => {
+        if (n !== agentsAsked.current) return;
         setAgents(a);
         // Keep the pick only while it is an active agent: one archived since is not offered, so not picked either.
         const active = a.filter((x) => !x.archived_at);
         setPick((p) => (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
       })
-      .catch((e) => setStartError(e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)));
+      .catch((e) => { if (n === agentsAsked.current) setStartError(e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)); });
   }, [v2, where.section, retry, refreshed]);
   useEffect(() => {
     if (where.section !== "mission") return;

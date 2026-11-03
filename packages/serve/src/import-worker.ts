@@ -10,7 +10,9 @@ import { planImport, runImport } from "./import.js";
 
 /** `secrets`: the server's own, which the import cuts out of everything it writes; never put in an environment. */
 export type ImportTask = { task: "plan" | "import"; data: string; home: string; temp?: string; secrets?: Record<string, string> };
-export type ImportAnswer = { projects: number; sessions: number } | { took: { agents: number; runs: number; skipped: number } } | { stopped: true };
+/** `took`: what this start's import took (stopped too: what it took before it stopped), its agents by id, so the server
+ *  adds it to what earlier starts took. */
+export type ImportAnswer = { projects: number; sessions: number } | { took: { agents: string[]; runs: number; skipped: number }; stopped?: true } | { stopped: true };
 
 const { task, data, home, temp, secrets = {} } = workerData as ImportTask;
 const stop = new AbortController();
@@ -32,7 +34,8 @@ const answer = async (): Promise<ImportAnswer> => {
   const store = openStore(data);
   try {
     const report = await runImport(store, await planImport(options, store), options);
-    return stop.signal.aborted ? { stopped: true } : { took: { agents: report.agents.length, runs: report.agents.reduce((n, a) => n + a.runs + a.finished, 0), skipped: report.skipped.length } };
+    const took = { agents: report.agents.filter((a) => a.runs + a.finished > 0).map((a) => a.id), runs: report.agents.reduce((n, a) => n + a.runs + a.finished, 0), skipped: report.skipped.length };
+    return stop.signal.aborted ? { took, stopped: true } : { took };
   } finally {
     store.close();
   }

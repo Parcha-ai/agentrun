@@ -112,6 +112,46 @@ describe("App, setup's import of this machine's sessions", () => {
     location.hash = "";
   }, 15_000);
 
+  it("an earlier read of the playground's agents that answers after the import ended never replaces the newer list", async () => {
+    location.hash = "#/playground";
+    const agent = (id: string) => ({ agent_id: id, kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: id, instructions: "Answer.", harness: "pi", skills: [], tools: [] } });
+    let set = false;
+    let done = false;
+    let reads = 0;
+    const sent: unknown[] = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const u = new URL(url, "http://serve.test");
+      if (u.pathname === "/v2/auth/session") return json(200, { password_set: set, signed_in: set });
+      if (u.pathname === "/v2/setup") { set = true; sent.push(JSON.parse(String(init?.body))); return json(201, { signed_in: true, importing: true }); }
+      if (u.pathname === "/v2/setup/import") {
+        if (!set) return json(200, { projects: 1, sessions: 2 });
+        // Running at the first read after setup, done at the next.
+        reads += 1;
+        if (reads < 2) return json(200, { state: "running" });
+        done = true;
+        return json(200, { state: "done", agents: 1, runs: 2, skipped: 0 });
+      }
+      if (u.pathname === "/v2/agents") {
+        // A read made before the import ended answers late, with the agents from before it.
+        if (!done) { await new Promise((r) => setTimeout(r, 1500)); return json(200, { agents: [agent("before")], next_cursor: null }); }
+        return json(200, { agents: [agent("before"), agent("imported")], next_cursor: null });
+      }
+      return json(404, missing(u.pathname));
+    });
+    const host = await render();
+    await until(host, () => box(host));
+    await act(async () => { box(host)!.click(); });
+    await setPassword(host);
+    await submit(host);
+    await until(host, () => sent.length);
+    const options = () => [...host.querySelectorAll("option")].map((o) => o.textContent);
+    expect(await until(host, () => options().includes("imported"), 6000)).toBe(true);
+    // Past the late answer of the read made before the import ended.
+    await act(async () => { await new Promise((r) => setTimeout(r, 2000)); });
+    expect(options()).toContain("imported");
+    location.hash = "";
+  }, 15_000);
+
   it("shows the box at once while the server counts, and fills in the counts when they arrive", async () => {
     server({ offer: [[202, { counting: true }], [202, { counting: true }], [200, { projects: 3, sessions: 12 }]] });
     const host = await render();

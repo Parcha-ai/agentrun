@@ -498,9 +498,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       try {
         const answer = await onWorker("import");
         if (!("took" in answer)) return void (importState = { state: "stopped" });
+        // The whole import, every start's part of it: what earlier starts took is kept with the owner's yes.
+        // The yes as setup wrote it is empty: no earlier start took anything.
+        const before = (await readFile(importAsked, "utf8").then((text) => (text.trim() ? (JSON.parse(text) as unknown) : null)).catch(() => null)) as { agents?: unknown; runs?: unknown } | null;
+        const agents = [...new Set([...(Array.isArray(before?.agents) ? before.agents.filter((id): id is string => typeof id === "string") : []), ...answer.took.agents])];
+        const runs = (typeof before?.runs === "number" ? before.runs : 0) + answer.took.runs;
+        if (answer.stopped) {
+          await writeDurable(importAsked, JSON.stringify({ agents, runs }));
+          return void (importState = { state: "stopped" });
+        }
         await rm(importAsked, { force: true });
-        importState = { state: "done", ...answer.took };
-        process.stdout.write(`${logLine("import", answer.took)}\n`);
+        const took = { agents: agents.length, runs, skipped: answer.took.skipped };
+        importState = { state: "done", ...took };
+        process.stdout.write(`${logLine("import", took)}\n`);
       } catch (error) {
         importState = { state: "stopped" };
         if (!closing) process.stderr.write(`agentrun-serve: the import at setup stopped (the next start goes on with it): ${(error as Error).message}\n`);

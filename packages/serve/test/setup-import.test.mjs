@@ -429,3 +429,37 @@ test("a setup with the box ticked that cannot keep the owner's yes sets no owner
   for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
   assert.deepEqual(await state(), { state: "done", agents: 1, runs: 2, skipped: 0 });
 });
+
+test("an import at setup stopped part way and gone on with at the next start says what the whole import took", { timeout: 90_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const site = join(home, "code", "acme-site");
+  mkdirSync(site, { recursive: true });
+  for (let n = 1; n <= 60; n++) claudeSession(home, site, n, { prompt: `Task ${n}.` });
+  const data = join(root, "agents");
+  const options = { data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } };
+  const runs = () => {
+    if (!existsSync(join(data, "store.sqlite"))) return 0;
+    const reader = openStoreReader(data);
+    try {
+      return reader.listRuns().length;
+    } finally {
+      reader.close();
+    }
+  };
+  const first = await startServe(options);
+  const made = await call(first.port, { method: "POST", path: "/v2/setup", headers: page(first), body: { password: PASSWORD, import: true } });
+  assert.equal(made.status, 201, made.text);
+  // Stopped once some sessions are in, not all.
+  for (const deadline = Date.now() + 30_000; runs() === 0 && Date.now() < deadline; ) await sleep(20);
+  await first.close();
+  const before = runs();
+  assert.ok(before > 0 && before < 60, `stopped part way: ${before} of 60 in`);
+  const second = await startServe(options);
+  t.after(() => second.close());
+  const signedIn = await call(second.port, { method: "POST", path: "/v2/auth/sign-in", headers: page(second), body: { password: PASSWORD } });
+  assert.equal(signedIn.status, 200, signedIn.text);
+  const state = async () => (await call(second.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(signedIn) } })).json;
+  for (const deadline = Date.now() + 60_000; (await state())?.state !== "done" && Date.now() < deadline; ) await sleep(100);
+  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 60, skipped: 0 }, "every session, the first start's part included");
+});
