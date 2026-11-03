@@ -1,10 +1,13 @@
 // The values of an environment's key-shaped variables, cut out of text this server keeps: the rule of the harness log's
 // cut, for what the importer writes (a transcript can hold a key a tool printed or was given).
 
-/** Names whose values are secrets, whatever list names them or none does: `*_API_KEY`, `*_TOKEN`, and any with SECRET or
- *  PASSWORD in it, in any case. The one rule: this cut, the harness log's and a run's environment (secrets.ts'
- *  withoutSecrets) take it, so what one leaves out the others do. */
-export const SECRET_NAME = /(_API_KEY|_TOKEN)$|SECRET|PASSWORD/i;
+import { keyShaped } from "@parcha/pi-durable-disk/secret-name";
+
+/** Whether a name is a secret's, whatever list names it or none does: one of its `_`-separated segments, in any case, is
+ *  KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASS, PAT, CREDENTIAL, CREDENTIALS or DSN, or its last is PWD after another.
+ *  The one rule, pi-durable-disk's own: this cut, the harness log's and a run's environment (secrets.ts' withoutSecrets)
+ *  take it, so what one leaves out the others do. */
+export { keyShaped };
 export const REDACTED = "[redacted]";
 
 /** A cut of every value of the key-shaped variables (8 characters or more) of `envs`, one environment or several (the
@@ -15,7 +18,7 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
   // Every own name of each, enumerable or not: an environment object may hold a key it does not list.
   const secrets = (Array.isArray(envs) ? envs : [envs])
     .flatMap((env: NodeJS.ProcessEnv) => Object.getOwnPropertyNames(env).map((name) => [name, env[name]] as const))
-    .filter(([name, value]) => (SECRET_NAME.test(name) || names.includes(name)) && typeof value === "string" && value.length >= 8)
+    .filter(([name, value]) => (keyShaped(name) || names.includes(name)) && typeof value === "string" && value.length >= 8)
     .map(([, value]) => value as string)
     // The longest first: a key that holds a shorter one is cut whole.
     .sort((a, b) => b.length - a.length);

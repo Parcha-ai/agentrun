@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { PROVIDER_KEYS } from "../dist/model.js";
-import { SECRET_NAME } from "../dist/secret-cut.js";
+import { keyShaped } from "../dist/secret-cut.js";
 import { BOX_KEYS } from "../dist/boxes.js";
 import { ToolKeys } from "../dist/tool-keys.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
@@ -464,12 +464,12 @@ test("secretsFor: a run is handed exactly the model keys its model needs: a pi r
 test("every key pi-ai reads for a provider is one of the launcher's secrets: each in pi-ai's own table, each key-shaped name a provider's auth asks for, and Bedrock's, which that table leaves out", async () => {
   const keys = await piAiKeys();
   assert.ok(["google", "deepseek", "amazon-bedrock"].every((id) => id in keys), Object.keys(keys).join(" "));
-  const unlisted = Object.entries(keys).flatMap(([id, { table, asked }]) => [...new Set([...table, ...asked.filter((name) => SECRET_NAME.test(name))])].filter((name) => !SECRET_NAMES.includes(name)).map((name) => `${id} ${name}`));
+  const unlisted = Object.entries(keys).flatMap(([id, { table, asked }]) => [...new Set([...table, ...asked.filter((name) => keyShaped(name))])].filter((name) => !SECRET_NAMES.includes(name)).map((name) => `${id} ${name}`));
   assert.deepEqual(unlisted, [], "each is held as OPENAI_API_KEY is, so no environment holds it: add it to the launcher's SECRETS");
   assert.deepEqual(BEDROCK.filter((name) => !SECRET_NAMES.includes(name)), [], "Bedrock's keys are held too");
   // And each is handed to a run on its provider's model: model.ts' PROVIDER_KEYS names every one under its provider,
   // and only providers pi-ai has, every name on the launcher's list.
-  const unhanded = Object.entries(keys).flatMap(([id, { table, asked }]) => [...new Set([...table, ...asked.filter((name) => SECRET_NAME.test(name)), ...(id === "amazon-bedrock" ? BEDROCK : [])])].filter((name) => !(PROVIDER_KEYS[id] ?? []).includes(name)).map((name) => `${id} ${name}`));
+  const unhanded = Object.entries(keys).flatMap(([id, { table, asked }]) => [...new Set([...table, ...asked.filter((name) => keyShaped(name)), ...(id === "amazon-bedrock" ? BEDROCK : [])])].filter((name) => !(PROVIDER_KEYS[id] ?? []).includes(name)).map((name) => `${id} ${name}`));
   assert.deepEqual(unhanded, [], "add it to model.ts' PROVIDER_KEYS under its provider");
   assert.deepEqual(Object.keys(PROVIDER_KEYS).filter((id) => !(id in keys)), [], "a provider pi-ai does not have");
   assert.deepEqual(Object.values(PROVIDER_KEYS).flat().filter((name) => !SECRET_NAMES.includes(name)), [], "a provider's key the launcher does not hold");
@@ -505,8 +505,8 @@ function onlyTheServerHolds(root, canary) {
   return under.map((p) => p.cmdline.toString().replaceAll("\0", " "));
 }
 
-/** The names of `names` shaped like a key (secret-cut.ts' rule, the env cut's and the import cut's). */
-const keyShapedIn = (names) => names.filter((name) => SECRET_NAME.test(name));
+/** The names of `names` shaped like a key (the one rule: the env cut's, the import cut's and pi-durable-disk's). */
+const keyShapedIn = (names) => names.filter((name) => keyShaped(name));
 
 test("under its launcher, with every secret set, a pi run is handed exactly its model's provider's key over its pipe (Gemini's, OpenRouter's, OpenAI's), no other, and none is in any process's environment, a run's, a program's it starts and a tool's program included; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) reach no run", { timeout: 120_000 }, async (t) => {
   const { canary, secrets } = canaries();

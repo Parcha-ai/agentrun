@@ -9,7 +9,7 @@
 // With no launcher (a test that starts the server in its own process), a secret set in the environment is read from it.
 import { closeSync, existsSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
-import { SECRET_NAME } from "./secret-cut.js";
+import { keyShaped } from "./secret-cut.js";
 
 /** The pipe and how many bytes of it are the secrets: the launcher's, or serve's to a run's process. */
 export const SECRETS_FD_ENV = "AGENTRUN_SECRETS_FD";
@@ -105,21 +105,13 @@ export const withSecrets = (env: NodeJS.ProcessEnv, which: "all" | "own" = "all"
   return out;
 };
 
-/** The names shaped like a key (SECRET_NAME) that a child's environment may still hold: the only way past the rule, by
- *  name, never by a looser rule. Each is plumbing a run's process reads from its own environment, and holds no secret. */
-export const RUN_ENV_ALLOW: readonly string[] = [
-  // The descriptor of the pipe its secrets come on: this module reads it first thing, then takes it out.
-  SECRETS_FD_ENV,
-  // How many bytes of that pipe are its secrets: a number, read with the descriptor.
-  SECRETS_LEN_ENV,
-];
-
 /** The environment a child gets: `env` with every secret name taken out, and every other name shaped like a key
- *  (secret-cut.ts' SECRET_NAME) with them, a backstop for a key no list names, but those on RUN_ENV_ALLOW. The server
- *  holds only the names on the launcher's list, so such a key stays in its own environment, never in a run's or another
- *  child's. Every environment serve builds for a child from its own takes this cut. */
+ *  (secret-cut.ts' keyShaped) with them, a backstop for a key no list names. Nothing passes the rule by name: a run's own
+ *  descriptors (its secrets' pipe, its decision keys') are set on the environment after this cut. The server holds only
+ *  the names on the launcher's list, so such a key stays in its own environment, never in a run's or another child's.
+ *  Every environment serve builds for a child from its own takes this cut. */
 export const withoutSecrets = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(env).filter(([name]) => !SECRET_NAMES.includes(name) && (RUN_ENV_ALLOW.includes(name) || !SECRET_NAME.test(name))));
+  Object.fromEntries(Object.entries(env).filter(([name]) => !SECRET_NAMES.includes(name) && !keyShaped(name)));
 
 /** What a run's process is handed: the secrets named `names` that this process holds, or its server saved (`stored`),
  *  as its pipe carries them. */

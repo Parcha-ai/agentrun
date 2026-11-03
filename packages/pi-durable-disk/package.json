@@ -34,6 +34,10 @@
       "types": "./dist/internals.d.ts",
       "default": "./dist/internals.js"
     },
+    "./secret-name": {
+      "types": "./dist/secret-name.d.ts",
+      "default": "./dist/secret-name.js"
+    },
     "./bin/archil-scoped": "./bin/archil-scoped",
     "./package.json": "./package.json"
   },

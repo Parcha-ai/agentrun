@@ -891,7 +891,10 @@ carries no cost at all, as from a provider that does not price the model. The te
 - Each run's door listens on loopback and takes only the server's door token.
 - A run's process gets the server's environment (the `AGENT_MODEL` variables among it) without the server's token or any
   key: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key
-  (`*_API_KEY`, `*_TOKEN`, any with `SECRET` or `PASSWORD`), whether the launcher's list names it or not. The keys it
+  (one of its `_`-separated segments, in any case, is `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASS`, `PAT`,
+  `CREDENTIAL`, `CREDENTIALS` or `DSN`, or its last is `PWD` after another: `SERVICE_KEY`, `GITHUB_TOKEN_RO`, `DB_PASS`,
+  `SENTRY_DSN`, `DB_PWD`; never `PWD` or `OLDPWD`), whether the launcher's list names it or not. The rule is
+  pi-durable-disk's (`@parcha/pi-durable-disk/secret-name`), which an import's cut and a harness's log take too. The keys it
   needs come over its pipe. It gets none of the boxes' keys ([Boxes](#boxes)). A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
@@ -900,11 +903,14 @@ carries no cost at all, as from a provider that does not price the model. The te
   run's environment, but the launcher does not take it out of the server's: it stays in the server's own environment
   (`/proc/<pid>/environ`), which any process of the same user can read. Set only the keys the server needs where it
   starts.
-- Amazon Bedrock's credentials from a container role by full URI with the token itself
-  (`AWS_CONTAINER_CREDENTIALS_FULL_URI` and `AWS_CONTAINER_AUTHORIZATION_TOKEN`) are not supported for runs: the token
-  is named like a key, so no run's environment holds it, and the AWS SDK reads it from there alone. A profile, access
-  keys, a bearer token, a web identity token file, a token file (`AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`) or a role by
-  relative URI work.
+- A credential a provider's SDK finds through a variable named like a key is not supported for runs: no run's
+  environment holds the variable, and the SDK reads it from there alone. For Amazon Bedrock that is a web identity token
+  file (`AWS_WEB_IDENTITY_TOKEN_FILE`) and a container role (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`,
+  `AWS_CONTAINER_CREDENTIALS_FULL_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN` or its `_FILE`); for Vertex,
+  `GOOGLE_APPLICATION_CREDENTIALS`; for Anthropic's workload federation, `ANTHROPIC_IDENTITY_TOKEN_FILE`. Bedrock's access
+  keys or bearer token (held, and handed to a run on Bedrock), an `AWS_PROFILE`, `GOOGLE_CLOUD_API_KEY` or the default
+  application credentials file work. A credential file a provider reads by path (`AWS_PROFILE`'s `~/.aws` files, the
+  default application credentials) is the host's: a run's process reads it for its model, and its file tools cannot.
 - `TYPESAFE_API_KEY` is a decision key, handed to a workflow run's decision providers on a pipe of their own and never
   with a run's other secrets, so a pi run on a `typesafe/` model does not get it: its process finds no key for that
   model, and the run fails.

@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import type { ModelRef } from "./model.js";
-import { SECRET_NAME } from "./secret-cut.js";
+import { keyShaped } from "./secret-cut.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 
 /** The one line that installs each harness beside serve. */
@@ -52,7 +52,7 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
   // Every own name, enumerable or not: an environment object may hold a key it does not list.
   const secrets = Object.getOwnPropertyNames(env)
     .map((name) => [name, env[name]] as const)
-    .filter(([name, value]) => SECRET_NAME.test(name) && typeof value === "string" && value.length >= 8)
+    .filter(([name, value]) => keyShaped(name) && typeof value === "string" && value.length >= 8)
     .map(([, value]) => value as string);
   const cut = (text: string) => secrets.reduce((out, secret) => out.split(secret).join("[redacted]"), text);
   // Every string is cut before it is serialized, field names included: JSON escapes a quote or a backslash, and a
