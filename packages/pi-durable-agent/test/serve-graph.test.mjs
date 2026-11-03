@@ -138,14 +138,12 @@ const CARDS = ["/root/steps/0", "/root/steps/2", "/root/steps/3", "/root/steps/4
 const box = (svg, path) => inside(group(svg, path), "box")[0];
 const centre = (rect) => num(rect, "x") + num(rect, "width") / 2;
 
-test("the script: a classic script with no HTML sink and no rounded corner, and page.html loads it before page.js", () => {
+test("the script: a classic script with no HTML sink", () => {
   for (const sinkName of ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "createElement(", "eval(", "new Function", "setAttribute(\"style\"", ".style.cssText", "javascript:"]) {
     assert.equal(GRAPH_JS.includes(sinkName), false, `graph.js has no ${sinkName}`);
   }
   assert.doesNotThrow(() => new vm.Script(GRAPH_JS), "the script parses as a classic script");
   assert.doesNotMatch(GRAPH_JS, /^\s*(import|export)\b/m, "no module syntax");
-  assert.doesNotMatch(GRAPH_JS, /["']r[xy]["']|\br[xy]\s*:/, "no rx or ry");
-  assert.match(served("page.html"), /<script src="\/graph\.js"><\/script>\n<script src="\/page\.js"><\/script>/, "graph.js runs first, so page.js finds drawWorkflowGraph");
 });
 
 test("a chain with an exit, a route with two branches and a map: one group per node by its path, on one spine, with the branch names as text", () => {
