@@ -55,6 +55,33 @@ test("a host tool's answer keeps the tail of a long output within pi's limits, t
   }
 });
 
+test("a long output of multi-byte characters is cut at a character boundary, within maxBytes: its tail, its head, an exact boundary, and a character split across two chunks", async () => {
+  const run = { env: async () => ({}) };
+  /** The text a host tool answers when its tool writes `chunks` under `limits`. */
+  const answer = async (limits, chunks) => {
+    const tool = { name: "bash", description: "d", parameters: { type: "object" }, outputLimits: limits, async execute(_args, api) { for (const chunk of chunks) api.output(chunk); return {}; } };
+    const [host] = hostTools(run, ["bash"], ctx, new Map(), [tool]);
+    return (await host.call({}, { callId: "c", signal: new AbortController().signal })).text;
+  };
+  const kept = (text, marker) => text.replace(marker, "");
+  // 400 bytes of "é" (2 bytes each), its tail cut at 101 bytes: the cut falls inside a character.
+  const tail = await answer({ retain: "tail", maxBytes: 101 }, ["é".repeat(200)]);
+  assert.ok(!tail.includes("\uFFFD"), JSON.stringify(tail.slice(0, 40)));
+  assert.equal(kept(tail, "[earlier output omitted]\n"), "é".repeat(50), "the whole characters within 101 bytes");
+  // "日本語" (3 bytes a character), its head cut at 101 bytes: inside the 34th character.
+  const head = await answer({ retain: "head", maxBytes: 101 }, ["日本語".repeat(40)]);
+  assert.ok(!head.includes("\uFFFD"), JSON.stringify(head.slice(-40)));
+  const headKept = kept(head, "\n[later output omitted]");
+  assert.ok(Buffer.byteLength(headKept) <= 101);
+  assert.equal(headKept, "日本語".repeat(11), "33 characters, 99 bytes");
+  // A limit on a character boundary keeps every byte it allows.
+  assert.equal(kept(await answer({ retain: "head", maxBytes: 99 }, ["日本語".repeat(40)]), "\n[later output omitted]"), "日本語".repeat(11));
+  assert.equal(kept(await answer({ retain: "tail", maxBytes: 99 }, ["日本語".repeat(40)]), "[earlier output omitted]\n"), "日本語".repeat(11));
+  // A character whose bytes arrive in two chunks is one character.
+  const bytes = Buffer.from("a日b");
+  assert.equal(await answer({ retain: "tail" }, [bytes.subarray(0, 2), bytes.subarray(2)]), "a日b");
+});
+
 test("a tool answering as pi 1.2's bash does (its retained output asked for, its exit a result diagnostic) answers with that output and the diagnostic", async () => {
   const run = { env: async () => ({}) };
   const bash12 = {
