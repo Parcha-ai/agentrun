@@ -172,7 +172,7 @@ const TOOL_KEYS_VIEW = closed({
             type: "object", additionalProperties: false, required: ["state", "reason"],
             properties: {
               state: { const: "not_checked" },
-              reason: { type: "string", description: "Why, in plain words: the provider would not answer the check (403: the key may still work for its tools), did not answer in 5 s, could not be reached, or answered neither yes nor no (its status and first sentence); it has no call that costs nothing to check a key with; or the key was saved before this server checked keys." },
+              reason: { type: "string", description: "Why, in plain words: the provider would not answer the check (403: the key may still work for its tools), did not answer in 5 s, could not be reached, answered a redirect (never followed, so the key goes nowhere else), or answered neither yes nor no (its status and first sentence); it has no call that costs nothing to check a key with; or the key was saved before this server checked keys." },
               at: { type: "string", format: "date-time", description: "When it was saved. Absent for a key saved before this server checked keys." },
             },
           },
