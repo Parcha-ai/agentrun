@@ -277,9 +277,10 @@ go through `work/` by path.
   server's uid:gid, so what it writes in `work/` stays this server's. It starts from `AGENTRUN_DOCKER_IMAGE`
   ([the box's image](#the-boxs-image)). It may use 2 CPUs (fewer on a machine that has fewer), 4 GiB of memory, swap
   included, and 1,024 processes and threads (`--cpus 2 --memory 4g --memory-swap 4g --pids-limit 1024`), so a runaway
-  build or a fork bomb stops in the box. `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY` (with its unit, such as `8g`) and
-  `AGENTRUN_BOX_PIDS` change them, and `none` drops one (rootless Docker without the cpu controller refuses any CPU
-  limit); any other value refuses the start.
+  build or a fork bomb stops in the box. `AGENTRUN_BOX_CPUS` (at most this machine's count), `AGENTRUN_BOX_MEMORY` (with
+  its unit, such as `8g`, and at least `6m`) and `AGENTRUN_BOX_PIDS` change them, and `none` drops one:
+  `AGENTRUN_BOX_CPUS=none` is for a rootless Docker whose kernel or systemd gives it no CPU controller, which refuses any
+  `--cpus`. Any other value refuses the start.
 - `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
   command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
   shell in `work/`.
