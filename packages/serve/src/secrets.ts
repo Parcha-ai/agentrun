@@ -2,7 +2,9 @@
 // (launcher/agentrun-serve) hands them to serve over a pipe, and serve hands each run's process those it needs over a
 // pipe of its own; each side reads its pipe as this module loads, before anything else, and closes it. A value set on
 // process.env would be the default environment of every child, so none is: code that needs one asks `secret(name)`,
-// or gets an env object `withSecrets` made for its own use, which no spawn takes.
+// or gets an env object `withSecrets` made for its own use, which no spawn takes. In the server, a secret it was not
+// started with may be a tool key saved through the settings API (tool-keys.ts): read by the same name, opened when asked
+// for, and handed to a run's process over its pipe like the launcher's, at each launch.
 //
 // With no launcher (a test that starts the server in its own process), a secret set in the environment is read from it.
 import { closeSync, existsSync, readFileSync, readSync } from "node:fs";
@@ -72,16 +74,29 @@ function readExactly(fd: number, length: number): Buffer {
   }
 }
 
-/** A secret's value: as handed over, else (no launcher) as this process's environment has it now. */
-export const secret = (name: string): string | undefined => held.get(name) ?? process.env[name];
+/** Reads a tool key a person saved through a server's settings API (tool-keys.ts), by name, opened when asked for. Each
+ *  server hands its own to what reads for it (its reading, its runs' handover), never through this module, so two
+ *  servers in one process never read each other's saved keys. A run's process has none: it gets what it needs over its
+ *  pipe, as it gets the rest. */
+export type StoredKeys = (name: string) => string | undefined;
 
-/** `env` with the secrets this process holds, for this process's own reading. Each secret is a property that does not
- *  enumerate: `env.NAME` reads it, while a spread of the object, or a spawn given it (Node builds a child's environment
- *  from its enumerable keys), leaves it out. */
-export const withSecrets = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+/** A secret this process was started with: as handed over, else (no launcher) as its environment has it now. */
+const own = (name: string): string | undefined => held.get(name) ?? process.env[name];
+
+/** A secret's value: this process's own, which wins (tool-keys.ts' `source: "server"` is exactly these), else a key
+ *  saved on the server `stored` reads for, opened now. One that does not open is absent, never a crash. */
+export const secret = (name: string, stored?: StoredKeys): string | undefined => {
+  const value = own(name);
+  return value || (stored?.(name) ?? value);
+};
+
+/** `env` with the secrets this process holds, for this process's own reading: every one, or (`"own"`) only those it was
+ *  started with, none saved. Each secret is a property that does not enumerate: `env.NAME` reads it, while a spread of
+ *  the object, or a spawn given it (Node builds a child's environment from its enumerable keys), leaves it out. */
+export const withSecrets = (env: NodeJS.ProcessEnv, which: "all" | "own" = "all", stored?: StoredKeys): NodeJS.ProcessEnv => {
   const out: NodeJS.ProcessEnv = { ...env };
   for (const name of SECRET_NAMES) {
-    const value = secret(name);
+    const value = which === "own" ? own(name) : secret(name, stored);
     if (value !== undefined) Object.defineProperty(out, name, { value, enumerable: false, writable: false, configurable: false });
   }
   return out;
@@ -90,10 +105,11 @@ export const withSecrets = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
 /** The environment a child gets: `env` with every secret name taken out. */
 export const withoutSecrets = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !SECRET_NAMES.includes(name)));
 
-/** What a run's process is handed: the secrets named `names` that this process holds, as its pipe carries them. */
-export function handover(names: readonly string[]): Buffer {
+/** What a run's process is handed: the secrets named `names` that this process holds, or its server saved (`stored`),
+ *  as its pipe carries them. */
+export function handover(names: readonly string[], stored?: StoredKeys): Buffer {
   return encode(names.flatMap((name) => {
-    const value = secret(name);
+    const value = secret(name, stored);
     return value === undefined ? [] : [[name, value] as const];
   }));
 }
