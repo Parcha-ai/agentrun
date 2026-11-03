@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsOf, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
@@ -569,13 +569,14 @@ export class Runs {
     }
     const root = read.reduce((min, r) => Math.min(min, r.conversation), Infinity);
     const entries = read.flatMap((r) => (run.kind === "workflow" || r.conversation === root ? [r.entry] : []));
-    if (atEnd) run.metrics = runMetricsOf(read.map((r) => r.entry) as never);
     if (run.kind === "workflow") {
       const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
       // Decisions it cannot read add no rows: the run's cost read says unknown (readDecisionCost).
       try { run.decisions = durableDecisions(file); } catch { run.decisions = undefined; }
       run.llmRead = (await readNodeLog(run.dir)).filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done").length;
     }
+    // Its decision requests count with its model requests: each receipt's tokens, or unmetered without them.
+    if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteAnswer(run, entries);
     this.take(run, timelineOf(entries as never, { settled: true }));
@@ -1352,10 +1353,23 @@ export class Runs {
     }
   }
 
+  /** Waits, up to a request's deadline, until a live run's rows show every message sent to it, and any rows at all: its
+   *  record has caught up with its process. Its end, a cancel or its process going ends the wait. */
+  private async caughtUp(run: Run): Promise<void> {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.submitted > 0 || !run.rows.length; await sleep(100)) {
+      if (!this.live(run) || run.finishing || run.outcome || run.cancel || Date.now() > deadline) return;
+    }
+  }
+
   /** Abort the turn that is running; the run stays open, `input_required` and idle. A workflow run has no turn to stop. */
   async stop(run: Run): Promise<boolean> {
     // The contract's stop has no refusal: an imported run answers as any ended one, stopped false, and nothing moves.
     if (run.imported) return false;
+    // A message sent to the run shows in its rows only once its door's events bring it: until then the run reads queued
+    // (state working), or holds a message not shown, however far its process is into the turn. The stop waits for its
+    // rows first, so the mark it saves (the person's last message) covers the message the turn answers; then it stops
+    // the turn as it stops any working run.
+    if (run.kind !== "workflow") await this.caughtUp(run);
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.

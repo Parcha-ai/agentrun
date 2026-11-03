@@ -11,6 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { resolveDependency } from './pi-family-pins.mjs';
+import { isMain } from './is-main.mjs';
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -366,4 +367,4 @@ async function main() {
   else { console.error(`${name}: failed\n${outcome.problems.join('\n')}\n--- output (tail) ---\n${outcome.output ?? ''}`); process.exitCode = 1; }
 }
 
-if (import.meta.main) await main();
+if (isMain(import.meta)) await main();
