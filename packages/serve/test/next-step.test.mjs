@@ -18,7 +18,7 @@ import { agent, flowAgent, scratch, serve, withEnv } from "./support.mjs";
 const VM = VM_PROVIDER.id;
 const BOXES = BOX_IDS.join(", ");
 const DOCKER_PLACE = '"place": {"mode": "sandbox", "box": "docker"}';
-const ENABLE_DOCKER = "not enabled on this server: start it with AGENTRUN_BOXES=docker";
+const ENABLE_DOCKER = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker";
 const DAEMON = "docker version failed (exit 1): start Docker, or add this server's user to the docker group, then restart this server";
 const NO_BOX = `no box is set up on this server: docker is unavailable (${ENABLE_DOCKER})`;
 
@@ -119,13 +119,13 @@ test("a box this server does not enable names the setting that enables it: in ca
   assert.deepEqual(places.boxes, [
     { id: "bwrap", available: false, reason: "the bwrap box is not in this release yet: use the docker box" },
     { id: "docker", available: false, reason: ENABLE_DOCKER },
-    { id: VM, available: false, reason: `not enabled on this server: start it with AGENTRUN_BOXES=${VM}` },
-    { id: "daytona", available: false, reason: "not enabled on this server: start it with AGENTRUN_BOXES=daytona" },
+    { id: VM, available: false, reason: `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM}` },
+    { id: "daytona", available: false, reason: "not enabled on this server: start AgentRun with AGENTRUN_BOXES=daytona" },
   ]);
   const bash = tools.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason, bash.sandbox_only], [false, NO_BOX, true], JSON.stringify(bash));
   assert.equal(bash.summary, "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 300 s unless the call names a timeout.");
-  assert.ok(tools.filter((tool) => tool.name !== "bash").every((tool) => tool.reason === undefined), "only a sandbox-only tool has a reason");
+  assert.deepEqual(tools.filter((tool) => tool.reason?.startsWith("no box")).map((tool) => tool.name), ["bash"], "only a sandbox-only tool is unavailable for want of a box");
 
   const made = await api("POST", "/agents", agent("docked", { place: { mode: "sandbox", box: "docker" } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -137,8 +137,8 @@ test("a box this server does not enable names the setting that enables it: in ca
 
 test("the setting a box names keeps the boxes AGENTRUN_BOXES already lists", async () => {
   const registry = await boxRegistry({ AGENTRUN_BOXES: "daytona" });
-  assert.equal(registry.offers().find((offer) => offer.id === "docker").reason, "not enabled on this server: start it with AGENTRUN_BOXES=docker,daytona");
-  assert.equal(registry.offers().find((offer) => offer.id === VM).reason, `not enabled on this server: start it with AGENTRUN_BOXES=${VM},daytona`);
+  assert.equal(registry.offers().find((offer) => offer.id === "docker").reason, "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,daytona");
+  assert.equal(registry.offers().find((offer) => offer.id === VM).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM},daytona`);
 });
 
 test("docker enabled with no daemon answering: its reason says to start Docker or join the docker group, the 409 ends in one full stop, and the banner says no box is ready", async (t) => {
@@ -173,7 +173,7 @@ test("the banner says in words which boxes are ready: none with nothing enabled,
 test("the banner's words for each mix of boxes: ready, preparing (a box whose image is still pulled), listed and not ready", () => {
   const off = (id, reason) => ({ id, available: false, reason });
   const docker = { id: "docker", available: true };
-  const rest = [off("bwrap", "the bwrap box is not in this release yet: use the docker box"), off(VM, `not enabled on this server: start it with AGENTRUN_BOXES=docker,${VM}`), off("daytona", "needs DAYTONA_API_KEY")];
+  const rest = [off("bwrap", "the bwrap box is not in this release yet: use the docker box"), off(VM, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${VM}`), off("daytona", "needs DAYTONA_API_KEY")];
   assert.equal(boxesLine([docker, ...rest], new Set(["docker"])), "Boxes: docker is ready, so sandbox agents run their tools there.");
   assert.equal(boxesLine([docker, ...rest], new Set(["docker", "daytona"])), "Boxes: docker is ready, so sandbox agents run their tools there. daytona: needs DAYTONA_API_KEY.", "a listed box that is not ready says why");
   assert.equal(boxesLine([{ ...docker, state: "preparing", reason: "pulling debian:bookworm-slim" }, ...rest], new Set(["docker"])), "Boxes: docker is preparing (pulling debian:bookworm-slim).");

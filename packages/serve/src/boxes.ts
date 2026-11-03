@@ -45,7 +45,7 @@ export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys];
 export const PROBE_TIMEOUT_MS = 5_000;
 
 /** Why box `id` is unavailable when AGENTRUN_BOXES does not list it: the setting that does, keeping what it lists now. */
-const notEnabled = (id: BoxId, enabled: ReadonlySet<BoxId>) => `not enabled on this server: start it with ${BOXES_ENV}=${BOX_IDS.filter((box) => box === id || enabled.has(box)).join(",")}`;
+const notEnabled = (id: BoxId, enabled: ReadonlySet<BoxId>) => `not enabled on this server: start AgentRun with ${BOXES_ENV}=${BOX_IDS.filter((box) => box === id || enabled.has(box)).join(",")}`;
 const NOT_YET = "the bwrap box is not in this release yet: use the docker box";
 const NOT_PROBED = "configured; not probed at start";
 const TRANSPORT = "@parcha/pi-transport";
