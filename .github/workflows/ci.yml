@@ -157,7 +157,7 @@ jobs:
           # On 22.23.2 the lean pool's shards record every workflow their DSL, pi and example tests validate or run
           # (spec/lean/sweep, preloaded above), for the lean job's validator sweep. Empty elsewhere: no hook.
           LEAN_SWEEP_DIR: ${{ matrix.node == '22.23.2' && startsWith(matrix.shard, 'lean-') && format('{0}/lean-sweep', runner.temp) || '' }}
-      # The lean job reads these and fails on a missing one; this step never fails a test shard.
+      # The lean job reads these and fails on a missing one; a shard with none marks this step red, never the shard.
       - name: Keep the workflows the tests validated, for the lean job
         if: matrix.node == '22.23.2' && startsWith(matrix.shard, 'lean-')
         continue-on-error: true
@@ -165,7 +165,7 @@ jobs:
         with:
           name: lean-sweep-${{ matrix.shard }}
           path: ${{ runner.temp }}/lean-sweep/*.json
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
           overwrite: true
       - name: Retain package verification evidence

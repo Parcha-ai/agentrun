@@ -241,6 +241,7 @@ function main() {
     report.shard = { k: args.shard, n, units: part.units.map((unit) => unit.id) };
   }
   let failed = false;
+  if (part && !part.units.length) { console.log(`pi ${args.pi}: FAILED: part ${args.shard} of ${report.shard.n} has nothing to run`); failed = true; }
   for (const { name, needs } of plan.refused) { console.log(`pi ${args.pi}: REFUSED: ${name} depends on ${needs.join(', ')}, which is not in the leg; one process would load two pi-durable versions`); failed = true; }
   if (args.requireAll && plan.out.length) { console.log(`pi ${args.pi}: FAILED: --require-all, and ${plan.out.length} pi workspace(s) are not in the leg`); failed = true; }
   if (failed || args.plan || plan.leg.length === 0) { write(); process.exit(failed ? 1 : 0); }

@@ -182,6 +182,18 @@ test('--shard runs its part of the leg\'s type-checks and test files, planned by
   assert.match(both.stderr, /give --shard or --tests \/ --tests-except, not both/);
 });
 
+test('a part with nothing to run fails, before it installs anything, as an empty test shard does', () => {
+  // One pi workspace with one test file and no type-check, planned in two parts: the second gets nothing.
+  const root = repoOf('empty-part', [ws('@parcha/pi-vision', WIDE, {}, { test: "node --test 'test/*.test.mjs'" })]);
+  write(join(root, 'packages/pi-vision/test/only.test.mjs'), '');
+  write(join(root, 'scripts/ci-shards.json'), { pools: { any: { shards: 1 } }, pi: { shards: 2 } });
+  const first = leg(root, '--pi', '1.2.0', '--plan', '--shard', '1');
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  const empty = leg(root, '--pi', '1.2.0', '--plan', '--shard', '2');
+  assert.equal(empty.status, 1, empty.stdout + empty.stderr);
+  assert.match(empty.stdout, /^pi 1\.2\.0: FAILED: part 2 of 2 has nothing to run$/m);
+});
+
 test('an empty leg installs nothing and passes, saying so; an unread range shape, a missing version or no mode stops the script', () => {
   const none = repoOf('none', [ws('@parcha/agentrun-pi', PI)]);
   const empty = leg(none, '--pi', '1.2.0', '--scratch', '--npm', 'false');
