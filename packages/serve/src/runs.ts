@@ -649,7 +649,7 @@ export class Runs {
       run.llmRead = (await readNodeLog(run.dir)).filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done").length;
     }
     // Its decision requests count with its model requests: each receipt's tokens, or unmetered without them.
-    if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
+    if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : [], { workDir: workDirOf(run.dir) });
     run.working = false;
     noteAnswer(run, entries);
     // Paths show relative to the run's workspace, and a settled run's total says how long it took: its start to its end,

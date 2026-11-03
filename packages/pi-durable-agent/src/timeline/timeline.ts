@@ -360,12 +360,10 @@ export const missingOf = (tool: string, args: Obj, result: { text: string; isErr
   return result.isError && PROBES.has(tool) && NOT_FOUND.test(result.text) && !(file !== undefined && written.has(file));
 };
 
-/** One place turns entries into rows, whether they come from a released store or from live events. */
-function createProjector(options: TimelineOptions) {
-  const caps = { ...CAPS, ...options.caps };
-  const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, args, result, options.labels);
-  // The run's workspace: its paths show relative to it.
-  const works = [options.workDir ?? []].flat().map((dir) => dir.replace(/\/+$/, "")).filter(Boolean).sort((a, b) => b.length - a.length);
+/** A run's workspace (one path, or the paths it goes by): `rel` drops it from a text's paths, and `relArgs` makes a call's
+ *  path arguments relative to it, so a row, and a run's metrics, name each file one way. */
+function workspace(workDir: string | readonly string[] | undefined) {
+  const works = [workDir ?? []].flat().map((dir) => dir.replace(/\/+$/, "")).filter(Boolean).sort((a, b) => b.length - a.length);
   const rel = (text: string) => works.reduce((out, work) => out.split(`${work}/`).join(""), text);
   const relArgs = (args: Obj): Obj => {
     if (works.length === 0) return args;
@@ -377,6 +375,15 @@ function createProjector(options: TimelineOptions) {
     }
     return out;
   };
+  return { rel, relArgs };
+}
+
+/** One place turns entries into rows, whether they come from a released store or from live events. */
+function createProjector(options: TimelineOptions) {
+  const caps = { ...CAPS, ...options.caps };
+  const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, args, result, options.labels);
+  // The run's workspace: its paths show relative to it.
+  const { rel, relArgs } = workspace(options.workDir);
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
   // Paid tools' charges written before their call (a harness bridge books a charge as the call runs), by
@@ -434,7 +441,8 @@ function createProjector(options: TimelineOptions) {
   }
 
   const viewOf = (message: Obj): ToolResultView => ({ text: textOf(message), details: message.details, isError: message.isError === true });
-  const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? text)) || "no detail";
+  // A tool's error as words: its JSON's `message` or `error` (monid's), else its text.
+  const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? str(json(text)?.error) ?? text)) || "no detail";
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_status: "running", tool_input_preview: inputPreview(args, caps.preview), ended_at: null, ...fields });
@@ -730,8 +738,10 @@ export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
 }
 
 /** runMetricsOf, with a workflow run's decision receipts beside its entries: each a request, its `usage`
- *  (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, unmetered. */
-export function runMetricsWithDecisions(records: readonly EntryLike[], decisions: readonly DecisionLike[]): RunMetrics {
+ *  (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, unmetered. `workDir`: the run's
+ *  workspace, as timelineOf takes it, so a file is the same file whether a call named it absolute or relative. */
+export function runMetricsWithDecisions(records: readonly EntryLike[], decisions: readonly DecisionLike[], options: { workDir?: string | readonly string[] } = {}): RunMetrics {
+  const { relArgs } = workspace(options.workDir);
   const meter = createMeter();
   const seen = new Set<string>();
   // Each call by `conversation:id`, its tool's name as kept and as called, and whether a result closed it, as the timeline
@@ -766,7 +776,7 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
         if (block.type !== "toolCall" || !id || !wire) continue;
         const name = toolNameOf(wire);
         const key = metricName(name);
-        calls.set(`${conv}:${id}`, { name: key, called: name, args: obj(block.arguments) ?? {}, done: early.delete(`${conv}:${id}`) });
+        calls.set(`${conv}:${id}`, { name: key, called: name, args: relArgs(obj(block.arguments) ?? {}), done: early.delete(`${conv}:${id}`) });
         see(key);
       }
     } else if (entry.kind === "pi.tool-result" && message) {
