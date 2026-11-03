@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { unseal } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { secret } from "../dist/secrets.js";
+import { harnessOffers } from "../dist/harness.js";
+import { secret, withSecrets } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -357,4 +358,42 @@ test("TypeSafe's key unlocks Jev's decisions: saved, the jev provider is availab
   assert.equal((await api("DELETE", "/settings/tool-keys/typesafe")).status, 204);
   assert.equal(await jev(), false);
   await meetsDocument(api, (await api("GET", "/settings/tool-keys")).body);
+});
+
+test("a tool-settings PUT and a tool key's PUT and DELETE answer without probing the harnesses again, and capabilities read right after show each change", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, KEYS);
+  // What one probe of the harnesses costs here (each CLI's package and pins, codex's binary hashed): a write that probes
+  // them again cannot answer in less.
+  const started = performance.now();
+  await harnessOffers(withSecrets({ ...process.env, AGENTRUN_SERVE_FAUX: FAUX }));
+  const probe = performance.now() - started;
+  if (probe < 200) return t.skip(`this host probes its harnesses in ${Math.round(probe)} ms, too fast to tell a write that probes from one that does not`);
+  const lines = [];
+  const { api } = await serve(t, { log: (line) => void lines.push(line) });
+  const caps = async () => (await api("GET", "/capabilities")).body;
+  const tool = async (name) => (await caps()).tools.find((entry) => entry.name === name);
+  const parallel = async () => (await caps()).workflows.decisions.providers.find((provider) => provider.id === "parallel").available;
+  const harnesses = (await caps()).harnesses;
+
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "off" } })).status, 200);
+  const off = await tool("web_search");
+  assert.deepEqual([off.available, [...new Set(Object.values(off.resolves))]], [false, ["unavailable: web_search is turned off in settings"]], "off at once");
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "parallel" } })).status, 200);
+  assert.deepEqual([(await tool("web_search")).available, (await tool("web_search")).missing, await parallel()], [false, ["PARALLEL_API_KEY"], false], "Parallel picked, no key");
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: made() } })).status, 204);
+  const picked = await tool("web_search");
+  assert.deepEqual([picked.available, picked.missing, [...new Set(Object.values(picked.resolves))], await parallel()], [true, undefined, ["parallel"], true], "the key saved: Parallel resolves, and its decisions run, at once");
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: made() } })).status, 204);
+  assert.deepEqual([(await tool("monid.run")).available, (await tool("monid.run")).missing], [true, undefined], "monid at once");
+  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
+  assert.deepEqual([(await tool("monid.run")).available, (await tool("monid.run")).missing], [false, ["MONID_API_KEY"]], "deleted: missing at once");
+  assert.equal((await api("DELETE", "/settings/tool-keys/parallel")).status, 204);
+  assert.deepEqual([(await tool("web_search")).missing, await parallel()], [["PARALLEL_API_KEY"], false], "deleted: Parallel missing at once");
+  assert.deepEqual((await caps()).harnesses, harnesses, "no tool key and no tool setting changes what the harnesses offer");
+
+  // Each write's time as the server logged it: well under one probe of the harnesses, which none of them makes.
+  const writes = lines.filter((line) => / event=request method=(PUT|DELETE) path=\/v2\/settings\/tool/.test(line)).map((line) => [/path=(\S+)/.exec(line)[1], Number(/ ms=(\d+)/.exec(line)[1])]);
+  assert.equal(writes.length, 6, JSON.stringify(writes));
+  const bound = Math.max(50, probe / 4);
+  assert.deepEqual(writes.filter(([, ms]) => ms >= bound), [], `each write answers in under ${Math.round(bound)} ms (one probe here: ${Math.round(probe)} ms): ${JSON.stringify(writes)}`);
 });
