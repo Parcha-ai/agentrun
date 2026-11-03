@@ -56,6 +56,9 @@ const env = (jobs) => {
   const { npm_config_base, AGENTRUN_TEST_TOTAL, AGENTRUN_TEST_JOBS, ...rest } = process.env;
   return { ...rest, ...(typeof jobs === 'object' ? jobs : { AGENTRUN_TEST_JOBS: String(jobs) }) };
 };
+// For the tests that need workspaces running together: jobs with a total of their own (4 test files each), so a machine
+// with few cores, where the default total is the core count, never caps them below what the test waits on.
+const atOnce = (jobs) => ({ AGENTRUN_TEST_JOBS: String(jobs), AGENTRUN_TEST_TOTAL: String(jobs * 4) });
 const run = (root, jobs, ...args) => spawnSync(process.execPath, [runner, ...args], { cwd: root, env: env(jobs), encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL', maxBuffer: 1 << 26 });
 const logOf = (root) => readFileSync(join(root, 'log'), 'utf8').trim().split('\n');
 const pidsOf = (root) => {
@@ -84,9 +87,9 @@ test('with more jobs the slowest start first, a workspace with no time before th
   mkdirSync(join(root, 'node_modules', '.cache'), { recursive: true });
   const times = join(root, 'node_modules', '.cache', 'agentrun-test-times.json');
   writeFileSync(times, JSON.stringify({ '@fx/a': 1, '@fx/b': 30, '@fx/c': 20 }));
-  const listed = run(root, 2, '--list');
+  const listed = run(root, atOnce(2), '--list');
   assert.deepEqual([...listed.stdout.matchAll(/^ {2}(\S+) /gm)].map((m) => m[1]), ['@fx/d', '@fx/b', '@fx/c', '@fx/a']);
-  const result = run(root, 2);
+  const result = run(root, atOnce(2));
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(starts(result.stdout), ['@fx/d', '@fx/b', '@fx/c', '@fx/a']);
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(times, 'utf8'))).sort(), ['@fx/a', '@fx/b', '@fx/c', '@fx/d']);
@@ -95,11 +98,11 @@ test('with more jobs the slowest start first, a workspace with no time before th
 test('workspaces run at once, never more than AGENTRUN_TEST_JOBS', (t) => {
   // Each waits until all three have started, so this ends only if they ran together.
   const together = fixture(t, Object.fromEntries(['a', 'b', 'c'].map((name) => [name, { test: step(name, '--barrier 3') }])));
-  const result = run(together, 3);
+  const result = run(together, atOnce(3));
   assert.equal(result.status, 0, result.stdout + result.stderr);
 
   const bounded = fixture(t, Object.fromEntries(['a', 'b', 'c', 'd', 'e'].map((name) => [name, { test: step(name, '--hold 150') }])));
-  assert.equal(run(bounded, 2).status, 0);
+  assert.equal(run(bounded, atOnce(2)).status, 0);
   let now = 0;
   let most = 0;
   for (const line of logOf(bounded)) { now += line.startsWith('start ') ? 1 : -1; most = Math.max(most, now); }
@@ -109,7 +112,7 @@ test('workspaces run at once, never more than AGENTRUN_TEST_JOBS', (t) => {
 
 test('each workspace\'s output is printed whole, under a header with its result and time', (t) => {
   const root = fixture(t, { a: { test: step('a', '--lines 40') }, b: { test: step('b', '--lines 40') } });
-  const result = run(root, 2);
+  const result = run(root, atOnce(2));
   assert.equal(result.status, 0, result.stdout + result.stderr);
   for (const name of ['a', 'b']) {
     const block = result.stdout.split(/^(?=--- )/m).find((part) => part.startsWith(`--- @fx/${name}: passed in `));
@@ -121,7 +124,7 @@ test('each workspace\'s output is printed whole, under a header with its result 
 
 test('a run whose output fills the pipe still prints all of it and the table', (t) => {
   const root = fixture(t, { a: { test: `node -e "process.stdout.write('x'.repeat(8e6) + '\\n')"` }, b: { test: step('b') } });
-  const result = run(root, 2);
+  const result = run(root, atOnce(2));
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stdout.includes(`${'x'.repeat(8e6)}\n`));
   assert.match(result.stdout, /2 of 2 workspaces ran: 2 passed, 0 failed; .*; exit 0\n$/);
@@ -129,7 +132,7 @@ test('a run whose output fills the pipe still prints all of it and the table', (
 
 test('a failing workspace fails the run after the others ran, and the summary names it', (t) => {
   const root = fixture(t, { a: { test: step('a', '--exit 3') }, b: { test: step('b') }, c: { test: step('c') } });
-  const result = run(root, 2);
+  const result = run(root, atOnce(2));
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^@fx\/a\s+failed \(exit 3\)\s+\d+\.\d$/m);
   assert.match(result.stdout, /^@fx\/b\s+passed\s+\d+\.\d$/m);
@@ -144,10 +147,11 @@ test('a failing workspace fails the run after the others ran, and the summary na
 test('a workspace\'s node --test runs as its own suite under a node --test that started the runner', (t) => {
   const root = fixture(t, { a: { test: 'node --test x.test.mjs' }, b: { test: step('b') } });
   writeFileSync(join(root, 'packages', 'a', 'x.test.mjs'), "import test from 'node:test';\ntest('fails', () => { throw new Error('boom'); });\n");
-  const result = spawnSync(process.execPath, [runner], { cwd: root, env: { ...env(2), NODE_TEST_CONTEXT: 'child-v8' }, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL', maxBuffer: 1 << 26 });
+  const result = spawnSync(process.execPath, [runner], { cwd: root, env: { ...env(atOnce(2)), NODE_TEST_CONTEXT: 'child-v8' }, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL', maxBuffer: 1 << 26 });
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^@fx\/a\s+failed \(exit 1\)/m);
-  assert.match(result.stdout, /^# fail 1$/m);
+  // The workspace's own reporter: TAP's "# fail 1" (Node 22) or spec's "ℹ fail 1" (Node 24); under the leaked context it printed neither.
+  assert.match(result.stdout, /^(?:# |ℹ )fail 1$/m);
 });
 
 test('the test files of the workspaces running at once stay within the cores', (t) => {
@@ -200,7 +204,7 @@ function repo(t) {
   return { root, git, base: git('rev-parse', 'HEAD').trim() };
 }
 const picks = (root, base) => {
-  const result = run(root, 2, '--changed', '--base', base, '--list');
+  const result = run(root, atOnce(2), '--changed', '--base', base, '--list');
   assert.equal(result.status, 0, result.stdout + result.stderr);
   return result.stdout;
 };
@@ -231,7 +235,7 @@ test('test:changed runs every workspace for a root file their tests may read, an
   mkdirSync(join(root, 'changes'));
   writeFileSync(join(root, 'changes', 'x.md'), 'x\n');
   writeFileSync(join(root, 'README.md'), 'x\n');
-  const none = run(root, 2, '--changed', '--base', base);
+  const none = run(root, atOnce(2), '--changed', '--base', base);
   assert.equal(none.status, 0, none.stdout + none.stderr);
   assert.match(none.stdout, /not run for: README\.md, changes\/x\.md \(no workspace test reads them\)/);
   assert.match(none.stdout, /nothing to test/);
@@ -243,7 +247,7 @@ test('test:changed runs every workspace for a root file their tests may read, an
   assert.match(all, /^ {2}every workspace: package-lock\.json is outside the workspaces and their tests may read it$/m);
   assert.match(all, /4 workspaces, 2 at once/);
 
-  const lost = run(root, 2, '--changed', '--base', 'no-such-ref');
+  const lost = run(root, atOnce(2), '--changed', '--base', 'no-such-ref');
   assert.equal(lost.status, 2);
   assert.match(lost.stderr, /no merge base of HEAD and no-such-ref; .* pass --base <ref>/);
 });
@@ -253,7 +257,7 @@ test('a Ctrl-C stops every workspace\'s processes, and a process a script leaves
   // Killed at the end whatever happens; the fixtures' own cleanup removes the pid files first.
   const strays = new Set();
   const pids = () => { const all = Object.values(pidsOf(root)).flat(); for (const pid of all) strays.add(pid); return all; };
-  const child = spawn(process.execPath, [runner], { cwd: root, env: env(2), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [runner], { cwd: root, env: env(atOnce(2)), stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(() => { child.kill('SIGKILL'); for (const pid of strays) try { process.kill(pid, 'SIGKILL'); } catch {} });
   let stdout = '';
   child.stdout.on('data', (chunk) => { stdout += chunk; });
@@ -267,7 +271,7 @@ test('a Ctrl-C stops every workspace\'s processes, and a process a script leaves
   for (const pid of pids()) assert.ok(dead(pid), `pid ${pid} still running`);
 
   const left = fixture(t, { a: { test: step('a', '--orphan') }, b: { test: step('b', '--escape') } });
-  const result = run(left, 2);
+  const result = run(left, atOnce(2));
   const [orphan, escaped] = [pidsOf(left).a?.[1], pidsOf(left).b?.[1]];
   strays.add(orphan).add(escaped);
   assert.equal(result.status, 0, result.stdout + result.stderr);
