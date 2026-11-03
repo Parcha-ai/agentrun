@@ -1060,7 +1060,9 @@ carries no cost at all, as from a provider that does not price the model. The te
 ### Known gaps
 
 - The provider keys are checked against pi-ai when this package is tested, not derived when the server starts: the
-  launcher's list and `PROVIDER_KEYS` match pi-ai 1.1.0 to 1.3.0, the peer range. A pi-ai that reads a key neither
+  launcher's list and `PROVIDER_KEYS` match the pi-ai this package is tested with (its peer range is `*`, as Pi's
+  package guidance asks). The drift test fails, naming the provider and the key, on a pi-ai that reads a key neither
+  names. A pi-ai installed past that test that reads a key neither
   names would leave it in the server's environment and out of every run's, and a run on that provider would fail at
   its start for want of the key.
 - The cut is by name alone. A variable named like no key whose value is one reaches a run's environment and is not cut
