@@ -518,8 +518,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   /** What keeps `revision` from running here, checked before anything starts with the checks a save makes
    *  (runnable.ts): one a save refused, or one a setting of this host fixes that it does not have yet. */
-  async function runnable(revision: Revision): Promise<void> {
-    const blockers = await blockersOf(env, shapeOf(revision), settings.get());
+  async function runnable(revision: Revision, { capped = false }: { capped?: boolean } = {}): Promise<void> {
+    const blockers = await blockersOf(env, shapeOf(revision), settings.get(), { capped });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
@@ -571,7 +571,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const input = body.input as Json;
       const wrong = await inputIssuesOf(revision, input);
       if (wrong.length) throw invalid(wrong);
-      await runnable(revision);
+      await runnable(revision, { capped: body.max_cost_usd !== undefined });
       const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, input) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
       const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };

@@ -55,12 +55,12 @@ export const NOT_SET_UP = "not_set_up_here";
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}): Promise<Blocker[]> {
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false }: { capped?: boolean } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. */
   const unavailable = (field: string, tools: readonly string[], tool: string) => {
-    const resolved = planeFor(env, { tools, harness, ...(revision.kind === "agentic" && revision.model ? { model: revision.model } : {}), ...(revision.toolSettings ? { overrides: revision.toolSettings } : {}) }, settings)[capabilityOf(tool) as Pickable];
+    const resolved = planeFor(env, { tools, harness, ...(revision.kind === "workflow" ? { workflow: true as const } : {}), ...(revision.kind === "agentic" && revision.model ? { model: revision.model } : {}), ...(revision.toolSettings ? { overrides: revision.toolSettings } : {}) }, settings, { capped })[capabilityOf(tool) as Pickable];
     if (isUnavailable(resolved)) out.push({ field, reason: NOT_SET_UP, message: `The tool ${tool} does not run here on ${harness}: ${resolved.slice("unavailable: ".length)}.`, host: true, ...(resolved === NO_PARALLEL_KEY ? { missing: { tool, vars: [PARALLEL_KEY_ENV] } } : {}) });
   };
   /** A bound tool whose variables this host does not set: a warning at save, a 409 at a run. */
