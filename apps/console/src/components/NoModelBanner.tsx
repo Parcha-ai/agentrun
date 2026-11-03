@@ -10,7 +10,7 @@ export function NoModelBanner({ needs, settings }: { needs?: "key" | "model" | n
       ) : (
         <>
           No model yet. Set OPENROUTER_API_KEY (or ANTHROPIC_API_KEY or OPENAI_API_KEY) and restart
-          {settings ? <>, or <a href="#/settings/keys" className="underline underline-offset-2">add a key in Settings</a></> : null}.
+          {settings ? <>, or <a href="#/settings/keys" className="underline underline-offset-2">add a key in Settings → Model keys</a></> : null}.
         </>
       )}
     </p>
