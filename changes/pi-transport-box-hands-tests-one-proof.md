@@ -9,4 +9,4 @@ pi-transport's box and hands tests drop the cases another test already runs on t
 - The tests of the hosted sandbox provider's live suites' label helper, and of `waitNotRunning`'s positive path and bound; that helper's negative controls stay, and every leak guard calls it.
 - Two benchmarks with no assertion in live files no job runs.
 
-Repaired: Daytona's environment check plants Daytona's own variables and checks that no request or box carries them, in place of a source grep. The hands pool's receipts are counted per case against the boxes it made, so a ledger that receipts one box of several fails. The release-during-command case waits for the command to run, not 500 ms.
+Repaired: Daytona's environment check plants Daytona's own variables and checks that no request or box carries them, and that a provider given no URL sends every request to the built-in one, in place of a source grep. The hands pool's receipts are counted per case against the boxes it made, so a ledger that receipts one box of several fails. The release-during-command case waits for the command to run, not 500 ms.

@@ -319,6 +319,45 @@ describe("daytona boxes", () => {
 		expect(fake.requests.filter((r) => JSON.stringify(r).includes("planted-env")).map(describeRequest)).toEqual([]);
 	});
 
+	it("goes to the built-in URL when given none, whatever the process environment says", async () => {
+		const planted = {
+			DAYTONA_API_KEY: "planted-env-key",
+			DAYTONA_API_URL: "http://127.0.0.1:9/planted-env-url",
+			DAYTONA_TARGET: "planted-env-target",
+		};
+		const saved = Object.fromEntries(Object.keys(planted).map((name) => [name, process.env[name]]));
+		Object.assign(process.env, planted);
+		// Every request as the provider made it, then answered by the fake in the service's place.
+		const sent: { url: string; auth: string | null; body: string }[] = [];
+		const BUILT_IN = "https://app.daytona.io/api";
+		try {
+			const listed = await daytonaBoxes({
+				apiKey: API_KEY,
+				spoolDir: fake.path("spool-default-url"),
+				workspace: fake.path("workspace"),
+				fetch: async (input, init) => {
+					const url = String(input);
+					sent.push({
+						url,
+						auth: new Headers(init?.headers).get("authorization"),
+						body: typeof init?.body === "string" ? init.body : "",
+					});
+					return fetch(url.startsWith(BUILT_IN) ? `${fake.url}/api${url.slice(BUILT_IN.length)}` : url, init);
+				},
+			}).list({ suite: "default-url" }, context);
+			expect(listed.ok ? "ok" : listed.error.message).toBe("ok");
+		} finally {
+			for (const [name, value] of Object.entries(saved)) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
+		expect(sent.length).toBeGreaterThan(0);
+		expect(sent.filter((one) => !one.url.startsWith(`${BUILT_IN}/`)).map((one) => one.url)).toEqual([]);
+		expect(sent.filter((one) => one.auth !== `Bearer ${API_KEY}`).map((one) => one.url)).toEqual([]);
+		expect(sent.filter((one) => JSON.stringify(one).includes("planted-env")).map((one) => one.url)).toEqual([]);
+	});
+
 	it("labels the box, bounds its life and sets no resources", async () => {
 		await withBox(
 			async () => {
