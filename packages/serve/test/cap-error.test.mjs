@@ -10,6 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { copyJson } from "@earendil-works/chord";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { capModels, HELD_USD, spentIn } from "../dist/cap.js";
@@ -88,6 +89,26 @@ test("a request whose response began and then ended on an error counts at its ho
   assert.deepEqual(marks.map((m) => m.kind), [REQUEST_STARTED, REQUEST_ENDED], "its end is marked, before pi has its result");
   assert.equal(marks[1].data.error, true);
   assert.ok(Math.abs(marks[1].data.heldUsd - 0.001) < 1e-12, `its end holds the request's $0.001: ${marks[1].data.heldUsd}`);
+});
+
+test("pi's message for a request that ended on an error after its response began stays strict JSON, as pi writes it to the store: the stream's result, its error event's, a summary's", async () => {
+  const { models, sent } = streaming();
+  const run = await capped(models, 1);
+  const first = run.streamSimple(outputOnly, context);
+  const events = [];
+  const read = (async () => { for await (const event of first) events.push(event); })();
+  await until(() => sent.length === 1);
+  sent[0].end(message(0.00001, "error", "overloaded_error"));
+  const answer = await first.result();
+  await read;
+  const failure = events.find((event) => event.type === "error");
+  assert.ok(failure, "the error event is passed on");
+  assert.doesNotThrow(() => copyJson(answer), "the stream's result");
+  assert.doesNotThrow(() => copyJson(failure.error), "its error event's message");
+  const marked = await markRequests({ completeSimple: async () => ({ ...message(0.00002, "error", "overloaded_error"), content: [] }) });
+  marked.open(runOf([]));
+  const summary = await marked.models.completeSimple(outputOnly, context, { [HELD_USD]: 0.3 });
+  assert.doesNotThrow(() => copyJson(summary), "a summary's result");
 });
 
 test("in this process, a request refused before any event (a 429) counts at its own usage, so a retry goes on, and its end is not marked", async () => {

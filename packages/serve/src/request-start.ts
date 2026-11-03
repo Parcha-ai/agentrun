@@ -20,9 +20,8 @@ import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-wo
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
-import { CAP_REFUSED_FIELD, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN } from "./cap.js";
+import { CAP_REFUSED_FIELD, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
-import { RESPONSE_BEGAN } from "./cap.js";
 
 /** Whether the run in `root` (its directory) was cancelled: the mark serve's cancel writes there first. */
 export const cancelledIn = (root: string) => () => existsSync(join(root, RUN_CANCELLED));
@@ -127,10 +126,11 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
         ending = mark(REQUEST_ENDED, { ...(typeof responseId === "string" ? { responseId } : {}), ...heldOf(options) });
       } else if (result.stopReason === "error" && began) {
         // An error after its response began (an overload part way, a reset): its usage is what had streamed, not what the
-        // provider can have billed. Its message is tagged, which the cap counts at its hold in this process, and its end is
-        // marked with the hold (`error`), which the spend read back counts. One before any event (a 429, a 5xx) is refused
-        // unbilled, and counts at its own usage.
-        for (const message of new Set([result, failure?.type === "error" ? failure.error : undefined])) if (message) (message as unknown as Record<symbol, unknown>)[RESPONSE_BEGAN] = true;
+        // provider can have billed. Its message is recorded (markResponseBegan), which the cap counts at its hold in this
+        // process, and its end is marked with the hold (`error`), which the spend read back counts. One before any event
+        // (a 429, a 5xx) is refused unbilled, and counts at its own usage.
+        markResponseBegan(result);
+        if (failure?.type === "error") markResponseBegan(failure.error);
         ending = mark(REQUEST_ENDED, { error: true, ...heldOf(options) });
       }
       // The end mark goes in before pi has the result, so the store holds it before pi's entry; a store that refuses it, or
@@ -173,7 +173,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       // One that ended on an error after its response began (it holds content or a token count; a summary has no events
       // to read) counts at its hold: it says so, and carries it. One before any of that counts at its own usage.
       const began = result.stopReason === "error" && (usage !== undefined || result.content.length > 0);
-      if (began) (result as unknown as Record<symbol, unknown>)[RESPONSE_BEGAN] = true;
+      if (began) markResponseBegan(result);
       const failure = began ? { failed: true, ...heldOf(options) } : {};
       await mark(REQUEST_COST, usage ? { ...COMPACTION, usd, usage: usage as never, ...failure } : { ...COMPACTION, usd, ...failure }).catch(() => undefined);
     }

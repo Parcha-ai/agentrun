@@ -23,10 +23,14 @@ export const SPEND_CAP_REACHED = "spend_cap_reached";
 /** The option a request's worst case rides on from the cap to its marks (request-start.ts): what the cap held for it. A
  *  symbol, so no provider ever sends it. */
 export const HELD_USD = Symbol.for("agentrun.serve.held_usd");
-/** Set by the marks (request-start.ts) on pi's message for a request that ended on an error after its response had begun
- *  (an event came in first): it left and the provider may have billed what it generated, so it counts at its hold, as one
- *  stopped does. An error before any event (refused at the HTTP level: a 429, a 5xx) counts at its own usage. */
-export const RESPONSE_BEGAN = Symbol.for("agentrun.serve.response_began");
+/** pi's messages for requests that ended on an error after their response had begun (an event came in first), as the
+ *  marks (request-start.ts) saw them: each left and the provider may have billed what it generated, so it counts at its
+ *  hold, as one stopped does. An error before any event (refused at the HTTP level: a 429, a 5xx) counts at its own
+ *  usage. Kept by identity, never on the message: pi writes the message to the store as strict JSON, which fails on a
+ *  symbol key. */
+const responseBegan = new WeakSet<AssistantMessage>();
+/** Records that `message` ended on an error after its response began. */
+export const markResponseBegan = (message: AssistantMessage): void => void responseBegan.add(message);
 /** The field of a request's end mark (REQUEST_ENDED) that says what the cap held for it, when its stream ended aborted
  *  or its summary failed: the request counts at that figure. Optional: an end with none (an older store, a run with no
  *  cap) leaves the request cut, at an unknown cost. */
@@ -325,12 +329,12 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     errorMessage: why,
   });
   /** Adds what `answer` cost to what the run has spent once it settles. One stopped before its end, one that ended on an
-   *  error after its response began (RESPONSE_BEGAN: its usage is what had streamed, not what the provider can have
+   *  error after its response began (markResponseBegan: its usage is what had streamed, not what the provider can have
    *  billed), or that failed with no answer, counts at `worst`, what the cap held for it (as spentIn reads its end mark);
    *  without one (a deferred response) it is unknown, as is a cost that is not a number, from then on. */
   const count = (answer: Promise<AssistantMessage>, worst?: number) => {
     const add = (cost: unknown) => void (spent = spent !== null && typeof cost === "number" && Number.isFinite(cost) ? spent + cost : null);
-    const cut = (message: AssistantMessage) => message.stopReason === "aborted" || (message.stopReason === "error" && (message as unknown as Record<symbol, unknown>)[RESPONSE_BEGAN] === true);
+    const cut = (message: AssistantMessage) => message.stopReason === "aborted" || (message.stopReason === "error" && responseBegan.has(message));
     return answer.then((message) => add(cut(message) ? worst : message.usage?.cost?.total), () => add(worst));
   };
   /** Sends a request judged to fit at `worst`, holding that until `answer` settles. */
