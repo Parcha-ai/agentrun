@@ -91,6 +91,8 @@ export default function reply(context, faux) {
     const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
     return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
   }
+  // Runs monid's /slow, which holds until it is stopped; then says so.
+  if (first.includes("Run monid's /slow.")) return results === 0 ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/slow" }), { stopReason: "toolUse" }) : faux.message("Ran.");
   // Searches the web once for what follows "Search the web for ", then answers with the search's answer.
   if (first.includes("Search the web for ")) {
     const query = first.slice(first.indexOf("Search the web for ") + "Search the web for ".length).replace(/\.$/, "");
