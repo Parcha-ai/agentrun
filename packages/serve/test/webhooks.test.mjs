@@ -942,3 +942,16 @@ test("a run that ended before record-keeping began is continued at once, its old
   assert.notEqual(after, before);
   assert.deepEqual(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]), [noticeId(run.run_id, "run.ended", before), noticeId(run.run_id, "run.ended", after)], "the old end once, then the new one under its own id");
 });
+
+test("a fresh data directory has its since-time right after the first start, before any run, and at or before the first run's end", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const { api, data } = await serve(t);
+  const file = join(data, "end-notices-since");
+  assert.ok(existsSync(file), "written at the start");
+  const since = readFileSync(file, "utf8").trim();
+  assert.ok(Number.isFinite(Date.parse(since)), since);
+  const run = await startRun(api, "first", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  assert.ok(Date.parse(since) <= Date.parse(endedIn(data, run.run_id)), `${since} is at or before the first run's end`);
+  assert.equal(readFileSync(file, "utf8").trim(), since, "and never written again");
+});
