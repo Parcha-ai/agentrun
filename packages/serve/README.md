@@ -653,7 +653,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
-| `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts. The agent's runs, newest first. |
+| `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what it waits on, by `kind`, such as `{kind: "question", question, asked_at}` for a question it asked a person; else null) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
@@ -691,7 +691,12 @@ file is at most `limits.max_upload_bytes`, 50 MiB (`413`). The same bytes sent a
 `422` at `file_ids` before anything starts. Each is copied, never linked, into the run's `work/inputs/` at its `path`,
 folders kept, before the run's process starts; a name already taken gets a suffix (`notes-2.txt`, `docs-2/`), the same
 for the same files in the same order. The run reads them as any file of its workspace, and `GET /v2/runs/{id}/files`
-lists them. Each upload is kept in `DIR/files/<file_id>/`, 0600. `upload.expires_at`, which the contract requires, is
+lists them. An agentic run is told of them in its first message, on every harness: after the input's `content` and a
+blank line, one line, `Files for this run: inputs/notes.txt (32 B), inputs/docs/plan.md (1.5 KB).`, each file by the
+path the run's tools take and its size, at most 20 and then how many more, and never past what the run's door takes in
+one message (fewer named, then only how many). That is the message the harness gets, so it
+is the timeline's first `user_message`; the run's `input` stays as it was sent. A run given no files is sent its
+`content` as it is. Each upload is kept in `DIR/files/<file_id>/`, 0600. `upload.expires_at`, which the contract requires, is
 advisory and not enforced in this release: a `PUT` after it is still taken, and nothing deletes an upload.
 
 ## Agent home
