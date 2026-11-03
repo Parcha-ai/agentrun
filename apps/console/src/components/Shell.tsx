@@ -1,5 +1,6 @@
 import { Bot, History, LayoutDashboard, LogOut, Menu, Monitor, Moon, Settings, Sun, Terminal } from "lucide-react";
 import { type ReactNode, useState } from "react";
+import { ConnectionBanner } from "@/components/Connection";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
@@ -42,7 +43,8 @@ export function Wordmark() {
 
 /** The AgentRun shell: a 220px sidebar with the wordmark, the nav (the active item orange with a 2px inset bar),
  *  and sign out at its foot; under 700px a top bar with a menu that opens the nav. Settings shows only when `settings`
- *  (the server has a settings page to open). */
+ *  (the server has a settings page to open). Above every page, the one banner on the link to the server, while it is
+ *  away and as it comes back. */
 export function Shell({ active, settings = false, onNavigate, onSignOut, children }: { active: Section; settings?: boolean; onNavigate?: (s: Section) => void; onSignOut?: () => void; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
@@ -66,7 +68,10 @@ export function Shell({ active, settings = false, onNavigate, onSignOut, childre
           <LogOut className="size-4" aria-hidden /> Sign out
         </button>
       </aside>
-      <main className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <ConnectionBanner />
+        <main className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
+      </div>
     </div>
   );
 }

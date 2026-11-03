@@ -20,6 +20,7 @@ import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from ".
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
 import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
+import { rowPaths } from "./workspace-paths.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV, toolingOf, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
@@ -36,6 +37,7 @@ import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
+import { firstMessage } from "./run-manifest.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, storedPlace } from "./place.js";
@@ -648,7 +650,7 @@ export class Runs {
     if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteAnswer(run, entries);
-    this.take(run, timelineOf(entries as never, { settled: true }));
+    this.take(run, timelineOf(entries as never, { settled: true, path: rowPaths(run.dir) }));
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
@@ -869,7 +871,8 @@ export class Runs {
   }
 
   private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {
-    const reducer = timelineReducer();
+    // A file a call names by its absolute path in the run's workspace (a harness's CLI sends one) reads by its name there.
+    const reducer = timelineReducer({ path: rowPaths(run.dir) });
     const up = await fetch(new URL("/events", door), { signal, headers: { ...this.headers(), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
     const decoder = new TextDecoder();
@@ -1118,7 +1121,8 @@ export class Runs {
     if (run.kind !== "agentic" || usersOf(run.rows) > 0 || typeof first !== "string") return;
     run.submitted = 1;
     this.refresh(run);
-    void this.submit(run, first, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
+    // As it was first sent: the run never took it, so its work/inputs/ is as its start left it.
+    void firstMessage(first, join(run.dir, "work")).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS)).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
   }
 
   /** After the run's process exited, or was found gone: its rows from its released store, then, when it is over, its
@@ -1452,7 +1456,8 @@ export class Runs {
     }
     this.launch(run);
     if (revision.kind === "workflow") return run;
-    void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => {
+    // The first message names the files given to the run (run-manifest.ts), on every harness.
+    void firstMessage(options.input.content as string, started.workspace).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS)).catch((error: Error) => {
       run.submitted = 0;
       // The run ended before its first message reached it (a process that crashed at its start): how it ended stands.
       if (run.outcome || run.finishing || run.cancel) return;
