@@ -16,6 +16,10 @@
 // more, so a page it cut there shows as going on, and keeps what it gave, by the URL asked for and the final URL, for
 // EXTRACT_KEEP_MS within EXTRACT_KEEP_BYTES: every later part of the page is read from that copy, with no request. Its
 // whole length is known when Parallel gave less (or more) than it was asked for.
+//
+// A page's parts are one text's: Parallel's, or the page as fetched directly, never both. Where Parallel is picked and
+// gives no page, the page is read directly for the rest of the run (the client keeps which pages, `readsDirectly`), and a
+// part in its middle starts it again from its start (`restarted`), since its earlier parts were Parallel's text.
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -29,6 +33,8 @@ import { isUnavailable, planeOf } from "./tool-plane.js";
 export const WEB_FETCH_TOOL = "web_fetch";
 export const PARALLEL_EXTRACT_URL = "https://api.parallel.ai/v1/extract";
 const PARALLEL_TIMEOUT_MS = 60_000;
+/** The most pages a run's Parallel client remembers to read directly. */
+const DIRECT_PAGES_MAX = 1_000;
 /** How long a run's Parallel client keeps a page it extracted, and how much of them it keeps in all (their text, at two
  *  bytes a character in memory): the oldest go first. */
 export const EXTRACT_KEEP_MS = 10 * 60_000;
@@ -40,13 +46,15 @@ export type ExtractOptions = { now?: () => number; cacheMs?: number; cacheBytes?
 type Kept = { url: string; title: string; text: string; whole: boolean; links: string[]; at: number };
 const PORTS = new Set(["", "80", "443"]);
 
-/** `parallel`, on a page fetched directly where Parallel was asked for one: why Parallel gave none. */
-export type WebPage = Page & { via: "parallel" | "direct"; parallel?: string };
+/** `parallel`, on a page fetched directly where Parallel was asked for one: why Parallel gave none; `restarted`, on the
+ *  page read from its start in place of a later part, whose earlier parts were Parallel's text. */
+export type WebPage = Page & { via: "parallel" | "direct"; parallel?: string; restarted?: true };
 type GuardOptions = Omit<PublicFetchOptions, "maxBytes">;
 /** Parallel for one run, on one key: `read`, its extract of the part `part` names, a page it read or, for any failure,
  *  why it read none; `post`, one request to another of its endpoints (web_search's, web-search.ts). Neither retries, and
- *  each stops at 60 s. `live` is false once a 401 or 403 to either said the key is not served. */
-export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal, part?: Part): Promise<Page | string>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response> };
+ *  each stops at 60 s. `live` is false once a 401 or 403 to either said the key is not served. `readsDirectly` says
+ *  whether a page's parts are read directly in this run (`readDirectly` sets it), Parallel having given none of it. */
+export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal, part?: Part): Promise<Page | string>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response>; readsDirectly(url: string): boolean; readDirectly(url: string, direct: boolean): void };
 
 /** The absolute http(s) URLs a markdown text links to (`[text](url)`), each once and without its fragment, in order. A
  *  URL ends at whitespace or at the ")" that closes the link, so parentheses it holds in pairs (a wiki title's) stay. */
@@ -72,6 +80,8 @@ function linksOf(markdown: string): string[] {
  *  content). */
 export function parallelExtract(apiKey: string, send: typeof fetch = fetch, { now = Date.now, cacheMs = EXTRACT_KEEP_MS, cacheBytes = EXTRACT_KEEP_BYTES }: ExtractOptions = {}): Extract {
   let refused = false;
+  // The pages read directly in this run, Parallel having given none of them, oldest first.
+  const direct = new Set<string>();
   // The pages extracted, by the URL asked for and by the final URL, oldest first.
   const kept = new Map<string, Kept>();
   const forget = (page: Kept) => { for (const [key, held] of kept) if (held === page) kept.delete(key); };
@@ -104,6 +114,13 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch, { no
   return {
     live: () => !refused,
     post,
+    readsDirectly: (url) => direct.has(url),
+    readDirectly(url, yes) {
+      direct.delete(url);
+      if (!yes) return;
+      direct.add(url);
+      if (direct.size > DIRECT_PAGES_MAX) direct.delete(direct.values().next().value!);
+    },
     async read(url, signal, part = {}) {
       const known = fresh(url);
       if (known) return answer(known, part);
@@ -148,15 +165,29 @@ async function passes(url: string, options: GuardOptions, ms: number): Promise<b
  *  (`parallel`): a picked provider that fails is never a silent fallback. */
 export async function webFetch(url: unknown, { parallel, checkMs = TIMEOUT_MS, offset, maxChars, ...options }: GuardOptions & Part & { parallel?: Extract | null; checkMs?: number } = {}): Promise<WebPage> {
   const part = { offset, maxChars };
+  const later = typeof offset === "number" && offset > 0;
+  const named = typeof url === "string" ? url : undefined;
+  // A later part of a page this run reads directly stays direct: its parts are one text's.
+  const direct = later && named !== undefined && parallel?.readsDirectly(named) === true;
   let why: string | undefined;
-  if (parallel && !parallel.live()) why = "not tried: refused earlier in this run";
-  else if (parallel && !(typeof url === "string" && (await passes(url, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
+  if (parallel && direct) why = "not tried: this page's parts are read directly in this run";
+  else if (parallel && !parallel.live()) why = "not tried: refused earlier in this run";
+  else if (parallel && !(named !== undefined && (await passes(named, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
   else if (parallel) {
-    const read = await parallel.read(url as string, options.signal, part);
-    if (typeof read !== "string") return { ...read, via: "parallel" };
+    const read = await parallel.read(named!, options.signal, part);
+    if (typeof read !== "string") {
+      parallel.readDirectly(named!, false);
+      return { ...read, via: "parallel" };
+    }
     why = read;
   }
-  return { ...(await fetchPage(url, { ...options, ...part })), via: "direct", ...(why ? { parallel: why } : {}) };
+  if (!parallel) return { ...(await fetchPage(url, { ...options, ...part })), via: "direct" };
+  // Parallel was picked and gave none: the page is read directly from here on, and a later part that was not read so
+  // starts it again from its start, its earlier parts having been Parallel's text.
+  const restart = later && !direct;
+  const page = await fetchPage(url, { ...options, ...(restart ? { maxChars } : part) });
+  for (const read of [named, page.ok ? page.url : undefined]) if (read !== undefined) parallel.readDirectly(read, true);
+  return { ...page, via: "direct", parallel: why!, ...(restart && page.ok ? { restarted: true as const } : {}) };
 }
 
 let parallel: Extract | null | undefined;
@@ -200,6 +231,7 @@ function partLine(page: Page, name: string): string | undefined {
 export function webFetchText(page: WebPage | Page, name: string = WEB_FETCH_TOOL): string {
   const lines = [JSON.stringify(page)];
   if ("parallel" in page && page.parallel) lines.push(`Parallel was picked for web_fetch and gave no page (${page.parallel}); this one was fetched directly.`);
+  if ("restarted" in page && page.restarted) lines.push("Parallel's extract failed, so this is the page as fetched directly, from its start: the earlier parts came from Parallel's text.");
   const where = partLine(page, name);
   if (where) lines.push(where);
   return lines.join("\n");
