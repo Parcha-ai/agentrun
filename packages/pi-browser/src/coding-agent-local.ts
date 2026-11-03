@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { publicFetch } from "./core/public-fetch.js";
+import { READ_MAX_CHARS, readPage } from "./core/read-page.js";
 import type { EvidenceRecord, EvidenceSink } from "./core/evidence.js";
 import type { WebBackup } from "./core/web.js";
 
@@ -51,7 +52,8 @@ export function fileEvidenceSink(root: string, relativeTo: string): EvidenceSink
 export { isPrivateAddress, pinnedLookup } from "./core/public-fetch.js";
 
 /** Public hosts only, so a page-steered agent never reaches the owner's private network: each redirect hop is resolved
- *  once, checked and dialled at that address. No cookies or credentials; at most 5 MiB. */
+ *  once, checked and dialled at that address. No cookies or credentials; at most 5 MiB. An HTML page is read by
+ *  readPage, off the event loop: a page cut before it was read says so on its last line. */
 export function httpBackup(options: { lookup?: (host: string) => Promise<string[]>; fetchImpl?: (url: URL, init: Record<string, unknown>) => Promise<Response> } = {}): WebBackup {
   return {
     name: "http",
@@ -59,8 +61,8 @@ export function httpBackup(options: { lookup?: (host: string) => Promise<string[
       const answer = await publicFetch(url, { ...options, ...(signal ? { signal } : {}) });
       if (answer.status < 200 || answer.status >= 300) throw Object.assign(new Error(`the page answered ${answer.status}`), { status: answer.status });
       if (!/html/i.test(answer.contentType)) return answer.body!;
-      const { NodeHtmlMarkdown } = await import("node-html-markdown");
-      return NodeHtmlMarkdown.translate(answer.body!, { keepDataImages: false });
+      const page = await readPage(answer.body!, answer.url, signal ? { signal } : {});
+      return page.truncated ? `${page.text}\n\n(Cut: the page is ${page.html_chars!.toLocaleString("en-US")} characters of HTML, and only its first ${READ_MAX_CHARS.toLocaleString("en-US")}, scripts and styles aside, were read.)` : page.text;
     },
   };
 }
