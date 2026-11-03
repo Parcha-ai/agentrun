@@ -174,3 +174,12 @@ test("each pass says how far it has got: the index pass its rows and agents, the
   }
   assert.ok(seen.index.length >= 7, "a word after each run");
 });
+
+test("a timeline read says the transcript is importing while a run read before its transcript has none: while the import runs, and once the transcript has landed though the run read is older", async () => {
+  const { importingNow } = await import("../dist/runs.js");
+  assert.equal(importingNow(true, false, true), true, "awaited, not landed, the import running");
+  assert.equal(importingNow(true, true, true), true, "landed after the run was read: read it again, never final with no rows");
+  assert.equal(importingNow(true, true, false), true, "landed, the import over since: still read it again");
+  assert.equal(importingNow(true, false, false), false, "no import running and no transcript: the run has none");
+  assert.equal(importingNow(false, false, true), false, "a run read with its transcript");
+});

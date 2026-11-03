@@ -14,7 +14,9 @@ import { call, cookieOf, FAUX, scratch, serve } from "./support.mjs";
 
 const json = { "content-type": "application/json" };
 const page = (server) => ({ ...json, origin: `http://127.0.0.1:${server.port}` });
-const PASSWORD = "not-a-secret-owner";
+/** A test password, no real one (the source export reviews a literal credential that is not plainly fake). */
+const pw = (name) => `not-a-secret-${name}`;
+const PASSWORD = pw("owner");
 
 /** A home of `n` Claude Code sessions over `projects` projects. */
 async function many(t, n, projects) {

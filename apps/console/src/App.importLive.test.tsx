@@ -173,4 +173,54 @@ describe("App, the import at setup while it runs", () => {
     await act(async () => { await new Promise((r) => setTimeout(r, REFRESH_MS + 1000)); });
     expect(read.stats).toBe(after);
   }, 20_000);
+
+  it("Load more while a refresh of the list is under way keeps the rows it loaded", async () => {
+    let firstPage = 0;
+    const running = { state: "running", phase: "index", runs: 100, transcripts: 0, agents: 1, total: 200, started_at: ago(5) };
+    vi.stubGlobal("fetch", async (url: string) => {
+      const u = new URL(url, "http://serve.test");
+      if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (u.pathname === "/v2/setup/import") return json(200, running);
+      if (u.pathname === "/v2/agents") return json(200, { agents: [], next_cursor: null });
+      if (u.pathname === "/v2/stats") return json(200, stats(1, 100));
+      if (u.pathname === "/v2/runs") {
+        if (u.searchParams.get("cursor") === "c2") return json(200, { runs: range(100).slice(50).map(run), next_cursor: null });
+        // The import's refresh of the first page answers slowly.
+        if (++firstPage >= 2) await new Promise((r) => setTimeout(r, 2000));
+        return json(200, { runs: range(50).map(run), next_cursor: "c2" });
+      }
+      return json(404, missing(u.pathname));
+    });
+    const host = await open("#/runs");
+    const more = () => [...host.querySelectorAll("button")].find((b) => (b.textContent ?? "").trim() === "Load more");
+    expect(await until(() => /Session 50/.test(text(host)) && more())).toBeTruthy();
+    expect(await until(() => firstPage >= 2, REFRESH_MS + 2000)).toBe(true);
+    await act(async () => { more()!.click(); });
+    expect(await until(() => /Session 100/.test(text(host)))).toBe(true);
+    await act(async () => { await new Promise((r) => setTimeout(r, 2500)); });
+    expect(text(host)).toContain("Session 100");
+  }, 20_000);
+
+  it("a refresh that lands before a slower first read leaves Mission Control not busy once both are in", async () => {
+    let reads = 0;
+    const running = { state: "running", phase: "index", runs: 10, transcripts: 0, agents: 1, total: 100, started_at: ago(5) };
+    vi.stubGlobal("fetch", async (url: string) => {
+      const u = new URL(url, "http://serve.test");
+      if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (u.pathname === "/v2/setup/import") return json(200, running);
+      if (u.pathname === "/v2/stats") {
+        // The page's first read is slow: the import's refresh starts after it and lands first.
+        if (++reads === 1) await new Promise((r) => setTimeout(r, 4000));
+        return json(200, stats(1, 10));
+      }
+      if (u.pathname === "/v2/runs" || u.pathname === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, missing(u.pathname));
+    });
+    const host = await open();
+    expect(await until(() => /Total cost/.test(text(host)), REFRESH_MS + 3000)).toBe(true);
+    await act(async () => { await new Promise((r) => setTimeout(r, 4500)); });
+    expect(host.querySelector('[aria-busy="true"]')).toBeNull();
+  }, 20_000);
 });
