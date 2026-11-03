@@ -185,6 +185,15 @@ test("demo: run from npx, a missing Codex says the npx line that runs this serve
   const reason = async (npx) => codexOf({}, needs, absent, npx).then(() => assert.fail("refused"), (error) => (assert.ok(error instanceof HarnessUnavailable, String(error)), error.message));
   assert.ok((await reason(true)).endsWith(`; npx -p @parcha/agentrun-serve@${SERVE} -p ${spec} agentrun-serve`));
   assert.ok((await reason(false)).endsWith(`; ${codex.CODEX_INSTALL}`));
+  // As the start's probe says it (startReason): in a project, the restart that shows the install; under npx, the npx
+  // line alone, since running it is the restart.
+  const { startReason } = await import("../dist/adapters.js");
+  const said = async (npx) => startReason(await codexOf({}, needs, absent, npx).then(() => assert.fail("refused"), (error) => error));
+  assert.equal(await said(false), `${await reason(false)}; once it is installed, restart AgentRun to pick it up.`);
+  assert.equal(await said(true), await reason(true), "under npx: the npx line, no restart clause");
+  const unpinned = async () => ({ ...codex, verifyCodex: () => { throw new codex.CodexPinMismatch("version", codex.CODEX_VERSION, "0.0.1", "/x/codex"); } });
+  assert.match(startReason(await codexOf({}, needs, unpinned, false).catch((error) => error)), /is not the pinned build[^]*; once the pinned build is installed, restart AgentRun\.$/);
+  assert.equal(startReason(new HarnessUnavailable("codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.")), "codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.", "a reason a setting fixes: as it is");
 });
 
 test("npx is told by where serve's files are: under npm's _npx cache, not a project's node_modules, and not this checkout", () => {

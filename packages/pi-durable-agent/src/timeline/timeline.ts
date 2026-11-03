@@ -102,6 +102,9 @@ export type TimelineOptions = {
   settled?: boolean;
   /** The clock for retry and poll waits; live only. */
   now?: () => number;
+  /** How a row names a file path a call gave (`path`, `file_path`) or saved: a host's name for it, such as one relative
+   *  to its workspace. The entries, the call's arguments and its input preview, are not changed. Default: as given. */
+  path?: (path: string) => string;
 };
 
 /** A tool's calls in a run, and how many failed. */
@@ -331,7 +334,13 @@ function diagnosticOf(text: string): string | undefined {
 /** One place turns entries into rows, whether they come from a released store or from live events. */
 function createProjector(options: TimelineOptions) {
   const caps = { ...CAPS, ...options.caps };
-  const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, args, result, options.labels);
+  /** A call's arguments as its rows name them: its file path as the host names it (`options.path`). */
+  const shown = (args: Obj): Obj => {
+    if (!options.path) return args;
+    const named = (value: unknown) => (typeof value === "string" && value ? options.path!(value) : value);
+    return "path" in args || "file_path" in args ? { ...args, ...("path" in args ? { path: named(args.path) } : {}), ...("file_path" in args ? { file_path: named(args.file_path) } : {}) } : args;
+  };
+  const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, shown(args), result, options.labels);
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
   const previous = new Map<number, string>();
@@ -487,7 +496,7 @@ function createProjector(options: TimelineOptions) {
           browsers.delete(conv);
           add(make("phase", conv, `${base}:phase`, { summary: "Released the browser session" }));
         }
-        savedPaths(name, args, view).forEach((file, index) => add(make("phase", conv, `${base}:saved:${index}`, { summary: `Saved ${file}`, path: file })));
+        savedPaths(name, args, view).map((file) => (options.path ? options.path(file) : file)).forEach((file, index) => add(make("phase", conv, `${base}:saved:${index}`, { summary: `Saved ${file}`, path: file })));
         const child = obj(message.details)?.conversationId;
         if (typeof child === "number") {
           for (const row of adopt(conv, child, id, args, named)) touch(row);
