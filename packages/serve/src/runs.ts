@@ -505,6 +505,7 @@ export class Runs {
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
       ...(isObject(stored?.end_notice) && typeof stored.end_notice.ended_at === "string" ? { end_notice: { ended_at: stored.end_notice.ended_at, ...(stored.end_notice.queued === true ? { queued: true as const } : {}) } } : {}),
+      ...(isObject(stored?.wait_notice) && typeof stored.wait_notice.marker === "string" ? { wait_notice: { marker: stored.wait_notice.marker } } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
     };
     // A server that went down while it copied what the run's agent learned saved the run's input and no learning, and
