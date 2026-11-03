@@ -544,7 +544,9 @@ test("a run waiting for its person when its server dies gives no new notice from
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
   await follow(api, run.run_id, ["input_required"]);
-  await sleep(500);
+  // A notice of the wait is in the outbox by the time the run reads input_required: each one is sent before ids are counted.
+  const outbox = join(data, "webhook-outbox.json");
+  await until(() => JSON.parse(readFileSync(outbox, "utf8")).messages.every((m) => m.status !== "pending"), "the outbox sent");
   // No new notice for the same wait: one webhook-id. The kill can land before the first server records its delivery,
   // and the server that adopts its outbox then sends that same message again, under the same id (at-least-once; the
   // id is the receiver's idempotency key). So ids are counted, never receipts.
