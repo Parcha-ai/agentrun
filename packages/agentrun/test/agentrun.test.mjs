@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { DEFAULT_PORT, freePort, KEY_MODELS, modelEnv, openLineUrl, openUrl, server, shouldOpen } from "../lib/start.mjs";
+import { DEFAULT_PORT, FETCH, freePort, KEY_MODELS, modelEnv, openLineUrl, openUrl, server, shouldOpen } from "../lib/start.mjs";
 
 const PACKAGE = new URL("..", import.meta.url).pathname;
 const BIN = join(PACKAGE, "bin", "agentrun.mjs");
@@ -73,9 +73,10 @@ test("npm exec of the packed package runs this package's own agentrun bin", { ti
   assert.match(out, /^Usage: npx @parcha\/agentrun /);
 });
 
-test("an installed server runs its own launcher; with none, npm exec fetches the server's latest release and runs it by its own bin name, never this package's", () => {
+test("an installed server runs its own launcher; with none, npm exec fetches the server's latest release and names its own bin, never this package's", () => {
   const missing = () => { throw new Error("not installed"); };
-  assert.deepEqual(server(["--port", "7340"], missing), { command: "npm", args: ["exec", "--yes", "--package=@parcha/agentrun-serve@latest", "--", "agentrun-serve", "--port", "7340"], fetched: true });
+  assert.deepEqual(server(["--port", "7340"], missing), { command: undefined, args: ["--port", "7340"], fetched: true });
+  assert.deepEqual(FETCH, ["exec", "--yes", "--package=@parcha/agentrun-serve@latest", "--", "sh", "-c", "command -v agentrun-serve"]);
   const installed = () => join("/opt", "app", "node_modules", "@parcha", "agentrun-serve", "package.json");
   assert.deepEqual(server(["import"], installed), { command: join("/opt", "app", "node_modules", "@parcha", "agentrun-serve", "launcher", "agentrun-serve"), args: ["import"], fetched: false });
   assert.ok(existsSync(new URL("../../serve/launcher/agentrun-serve", import.meta.url)), "the server ships the launcher this runs");
