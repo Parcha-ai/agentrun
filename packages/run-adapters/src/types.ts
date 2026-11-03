@@ -78,6 +78,11 @@ export interface ModelRequest {
   /** The most input tokens the request can be billed for (the model proxy's `inputTokensMaxOf`: the body's UTF-8 bytes
    *  plus what the provider adds), undefined when it was not measured. */
   inputTokensMax?: number;
+  /** The most output tokens the request asks for, when its body says (the proxy's policy reads it). */
+  outputTokensAsked?: number;
+  /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
+   *  provider takes when it thinks (the proxy's policy says). Absent: 1,024. */
+  outputTokensLeast?: number;
 }
 
 /** What a paid request cost, once it completed. */
@@ -115,6 +120,9 @@ export interface ModelPort {
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
 export interface ModelTicket {
   turn: number;
+  /** The most output tokens, thinking included, the request may be sent with: what is left of its host's spend cap can
+   *  buy. The session's model proxy writes it into the body; absent, the request goes as asked. */
+  outputTokensMax?: number;
 }
 
 /** What the host lends a session. */

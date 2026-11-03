@@ -36,15 +36,17 @@ const ended = async (api, runId, until = ["completed", "failed", "cancelled"]) =
   return (await api("GET", `/runs/${runId}`)).body;
 };
 
-test("the worst case is the request's max output tokens at the model's output price: the ones the request is sent with", async (t) => {
+test("the worst case is the output the request is sent with at the model's output price: its own max output tokens, or what is left of the cap buys", async (t) => {
   // Output only, $1 per million: the worst case is exactly the max output tokens' price.
   const { api, endpoint, posts } = await gateway(t, { price: "0,1" });
   const worst = GATEWAY_MAX_OUTPUT / 1e6;
   const above = await ended(api, (await start(api, "above", "What is six times seven?", { max_cost_usd: worst * 1.01 })).run_id);
   assert.deepEqual([above.status, posts()], ["completed", 1], JSON.stringify(above));
   assert.equal(endpoint.bodies[0].max_output_tokens, GATEWAY_MAX_OUTPUT, "the request's own max output tokens are the ones priced");
+  // Under its worst case the request still goes, with the output what is left buys: 31,680 tokens of $0.03168.
   const below = await ended(api, (await start(api, "below", "What is six times seven?", { max_cost_usd: worst * 0.99 })).run_id);
-  assert.deepEqual([below.status, below.error?.code, posts()], ["failed", "spend_cap_reached", 1], JSON.stringify(below));
+  assert.deepEqual([below.status, posts()], ["completed", 2], JSON.stringify(below));
+  assert.ok(endpoint.bodies[1].max_output_tokens <= GATEWAY_MAX_OUTPUT * 0.99 && endpoint.bodies[1].max_output_tokens >= GATEWAY_MAX_OUTPUT * 0.99 - 1, String(endpoint.bodies[1].max_output_tokens));
 });
 
 test("the worst case prices the request's input: at $0 output, an input that passes the cap is not sent", async (t) => {
@@ -54,14 +56,15 @@ test("the worst case prices the request's input: at $0 output, an input that pas
 });
 
 /** A run that asks the person (one paid request, the ask) and then waits; its cost so far, and its cap for the next
- *  request: the worst case of one request plus half of what the first cost, so the second fits alone but not after it. */
+ *  request: one request's least (1,024 output tokens, at $100 a million) plus half of what the first cost, so the first
+ *  goes (limited to what the cap buys) and the second cannot buy its least after it. */
 async function asked(t) {
   const server = await serve(t, { faux: OUTPUT_PRICED });
   const probe = await start(server.api, "probe", "Pick a region.", {}, { tools: ["ask_person"] });
   await follow(server.api, probe.run_id, ["input_required"]);
   const first = (await server.api("GET", `/runs/${probe.run_id}`)).body.cost.usd;
   assert.ok(first > 0, "the ask was paid for");
-  const cap = (FAUX_MAX_OUTPUT * 100) / 1e6 + first / 2;
+  const cap = (1_024 * 100) / 1e6 + first / 2;
   const run = await start(server.api, "region", "Pick a region.", { max_cost_usd: cap }, { tools: ["ask_person"] });
   await follow(server.api, run.run_id, ["input_required"]);
   return { ...server, runId: run.run_id, first };
@@ -150,15 +153,16 @@ test("a response of unknown price leaves the run's cost unknown (null), not $0, 
 });
 
 test("a refused request is final: one refusal, never retried, and the model is never called for it", async (t) => {
-  // $0.015625 per million output tokens and 32,000 of them: the worst case reads $0.000500, digits pi-ai's retry takes
-  // for a server error unless the refusal says it is final.
+  // $0.015625 per million output tokens: one request's least (its answer and the medium thinking level's allowance, 9,216
+  // tokens) is $0.000144, over the $0.0001 cap. The refusal's code says the run is out of budget, which pi-ai's retry takes
+  // as final whatever digits its words hold (cap-final.test.mjs puts retry digits in them).
   const { api, posts } = await gateway(t, { price: "0,0.015625" });
   const from = Date.now();
   const { run_id } = await start(api, "final", "What is six times seven?", { max_cost_usd: 0.0001 });
   const { rows } = await follow(api, run_id, ["failed"]);
   const run = (await api("GET", `/runs/${run_id}`)).body;
   assert.equal(run.error.code, "spend_cap_reached");
-  assert.match(run.error.message, /\$0\.000500/, "the amount that reads as a 500");
+  assert.match(run.error.message, /^Not sent: this run's cap of \$0\.0001 can't cover one \S+ request \(at least \$0\.01\)\. Raise the cap to at least \$0\.01 to run it\.$/);
   assert.equal(rows.filter((r) => r.kind === "error").length, 1, "one refusal: the request was not tried again");
   assert.equal(posts(), 0);
   assert.equal(run.cost.usd, 0, "never sent: $0");

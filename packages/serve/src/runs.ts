@@ -678,7 +678,10 @@ export class Runs {
     if (run.working || run.submitted > 0) return undefined;
     const last = meaningful(run.rows);
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
-    if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
+    // Its code is `spend_cap_reached: `, or with a note after it (`spend_cap_reached (out of budget): `, cap.ts); the message is
+    // the words after it.
+    const capped = last?.kind === "error" ? /^spend_cap_reached(?: \([^)]*\))?: /.exec(last.text ?? "") : null;
+    if (capped) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last!.text!.slice(capped[0].length), retryable: false } };
     if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
     return !stopped(run) && answerOf(run.rows) ? { outcome: "completed" } : undefined;
   }
