@@ -371,6 +371,13 @@ on your own machine or network works. Two kinds of message are POSTed to it: `ru
 need its person (`input_required`: an `ask_person` question, or a stopped turn) and `run.ended` when it ends
 (completed, failed or cancelled, once carried back).
 
+A run's end and its `run.ended` are one durable step. The server chooses the end's time once and saves it with the run
+(`serve.json`) before it writes the end anywhere; the agent store's row (`ended_at`) and the message's `webhook-id`
+both come from it. `run.ended` is queued only once the agent store has the end, so a receiver that reads the run back
+on its message (`GET /v2/runs/{id}`) reads it ended; while the store refuses the end (a full disk, a busy store),
+nothing is sent, until a later try of the write or the next server stores it. A server killed between the two queues
+nothing, and the next one queues it at its start, under the same `webhook-id`, for an end within the last day.
+
 ```json
 { "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",
   "data": { "run_id": "…", "agent_id": "triage", "status": "input_required", "title": "…",

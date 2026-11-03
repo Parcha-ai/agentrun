@@ -85,8 +85,7 @@ export async function writeDurable(path: string, text: string | Uint8Array, mode
 
 /** writeDurable, synchronously: on disk, the file and then its directory synced, when it returns. For a record that
  *  must be durable before the next line runs, with nothing between them that could let anything else happen first. */
-export function writeDurableSync(path: string, text: string, mode = 0o600): void {
-  const temp = `${path}.tmp`;
+export function writeDurableSync(path: string, text: string, mode = 0o600, temp = `${path}.tmp`): void {
   const bytes = Buffer.from(text);
   const file = openSync(temp, "w", mode);
   try {

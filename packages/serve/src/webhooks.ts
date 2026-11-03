@@ -33,6 +33,10 @@ const FORMAT = "webhook/1";
 const MAX_URL = 2048;
 
 /** What a notice says of its run: never its tools' arguments, its output or its input, which a receiver reads through the API. */
+/** What `emit` did with a notice: `queued`, in the outbox on disk (or already there); `unsaved`, held here only, its
+ *  outbox write failed; `off`, no webhook set, or one a 410 turned off, so nothing is to be sent; `closed`, the server is
+ *  stopping. A caller that keeps a record of its notices keeps one only for `queued` and `off`. */
+export type Emitted = "queued" | "unsaved" | "off" | "closed";
 export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "stopped" } };
 type Config = { url: string; secret: string; updated_at: string; disabled?: { at: string; reason: string } };
 type Message = { id: string; type: MessageType; body: string; created_at: string; status: "pending" | "delivered" | "failed"; attempts: number; next_at: number | null };
@@ -125,13 +129,15 @@ export class Webhooks {
 
   /** A run's notice, queued when a webhook is set and on. `marker` makes its webhook-id: the same notice of the same
    *  moment, seen again after a restart, has the same id, which is a receiver's idempotency key. */
-  emit(type: (typeof WEBHOOK_EVENTS)[number], run: RunNotice, marker: string): void {
+  emit(type: (typeof WEBHOOK_EVENTS)[number], run: RunNotice, marker: string): Emitted {
+    if (this.closed) return "closed";
     const config = this.config();
-    if (this.closed || !config || config.disabled) return;
+    if (!config || config.disabled) return "off";
     const id = `msg_${createHash("sha256").update(`${run.run_id}\n${type}\n${marker}`).digest("hex").slice(0, 32)}`;
-    if (this.messages.some((m) => m.id === id)) return;
+    if (this.messages.some((m) => m.id === id)) return this.unsaved ? "unsaved" : "queued";
     const data = { run_id: run.run_id, agent_id: run.agent_id, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
     this.schedule(this.enqueue(id, type, data), 0);
+    return this.unsaved ? "unsaved" : "queued";
   }
 
   /** POST .../test: a `webhook.test` message tried once now, never again; its attempt. */

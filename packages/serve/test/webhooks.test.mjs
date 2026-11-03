@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, 
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { startServe } from "../dist/index.js";
@@ -632,4 +633,167 @@ test("a try that fails after a redelivery delivered the same message leaves it d
   await until(async () => (await api("GET", "/settings/webhook/deliveries")).body.attempts.length === 2, "both tries logged");
   await sleep(200);
   assert.equal(lines.filter((line) => line.includes("condition=delivery_failed")).length, 0, "no false failure");
+});
+
+// ---- a run's end and its run.ended, one durable step: the end's time is chosen once and saved first, run.ended is
+// queued only once the agent store has the end, and recorded as queued only once the outbox holds it on disk.
+
+const SERVE_END_HELD = new URL("./fixtures/serve-end-held.mjs", import.meta.url).pathname;
+/** The run's ended_at in the agent store, read from another connection; null while it runs. */
+const endedIn = (data, runId) => {
+  const store = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 2_000 });
+  try {
+    return store.prepare("SELECT ended_at FROM runs WHERE id = ?").get(runId)?.ended_at ?? null;
+  } finally {
+    store.close();
+  }
+};
+/** Another connection holding store.sqlite exclusively, so the server's writes of it are refused (store-busy.test's). */
+function hold(t, data) {
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  store.exec("BEGIN EXCLUSIVE");
+  const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
+  t.after(release);
+  return release;
+}
+const endNotice = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8")).end_notice;
+/** A server on `data` in a process of its own, started by `script` (the CLI's banner, or a fixture's address line). */
+async function processOn(t, data, args) {
+  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => child.kill("SIGKILL"));
+  let out = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  await until(() => /AGENTRUN_BASE_URL=/.test(out), "the server's address");
+  return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], readFileSync(join(data, ".token"), "utf8").trim()) };
+}
+const killed = async (child) => {
+  child.kill("SIGKILL");
+  await new Promise((resolve) => child.once("exit", resolve));
+};
+
+test("a run whose end is in the store, its server killed before run.ended is queued, gives its run.ended from the next server, once", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  // The fixture's read of the run after its end is written never comes back: the server is killed inside that window.
+  const first = await processOn(t, data, [SERVE_END_HELD, data, FAUX]);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(first.api, "ends", "Answer.");
+  const at = await until(() => endedIn(data, run.run_id), "its end in the store");
+  assert.deepEqual(endNotice(data, run.run_id), { ended_at: at }, "its end's time was saved first, and is the store's");
+  await killed(first.child);
+  assert.equal(ofType(hook.got, "run.ended").length, 0, "the first server never queued it");
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, from the next server");
+  assert.equal(JSON.parse(ofType(hook.got, "run.ended")[0].body).data.run_id, run.run_id);
+  await until(() => endNotice(data, run.run_id)?.queued, "recorded as queued");
+  await sleep(300);
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "once");
+});
+
+test("a run whose end the store refuses gives no run.ended while it does, then one, under one webhook-id, from the server that stores it; a receiver reading it back reads it ended", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  let api;
+  const read = [];
+  // The receiver reads the run back when its run.ended arrives, as a Standard Webhooks receiver may.
+  const hook = await receiver(t, async () => {
+    const id = JSON.parse(hook.got.at(-1).body).data.run_id;
+    read.push((await api("GET", `/runs/${id}`)).body.status);
+    return 200;
+  });
+  const data = join(await scratch(t), "agents");
+  const go = join(await scratch(t), "go");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", carryBackRetry: { delaysMs: [50] }, settleRetryMs: 600_000 });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "refused", `Answer once ${go} exists.`);
+  await follow(api, run.run_id, ["working"]);
+  const release = hold(t, data);
+  writeFileSync(go, "");
+  await until(async () => (await api("GET", `/runs/${run.run_id}`)).body.status === "completed", "ended here, from memory");
+  await sleep(500);
+  assert.equal(ofType(hook.got, "run.ended").length, 0, "no run.ended while the store has not the end");
+  const chosen = endNotice(data, run.run_id).ended_at;
+  release();
+  await first.close();
+  stopped = true;
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  api = client(next.baseUrl, next.token);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, once the store has the end");
+  assert.equal(endedIn(data, run.run_id), chosen, "the store took the time chosen first");
+  await sleep(500);
+  const ids = new Set(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]));
+  assert.equal(ids.size, 1, `one end, one webhook-id: ${[...ids]}`);
+  assert.deepEqual(read, ["completed"], "read back on its notice, it is ended");
+});
+
+test("a receiver that reads a run back on its run.ended reads it ended, in the run and in the list", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  let api;
+  const read = [];
+  const hook = await receiver(t, async () => {
+    const id = JSON.parse(hook.got.at(-1).body).data.run_id;
+    const one = (await api("GET", `/runs/${id}`)).body;
+    const listed = (await api("GET", "/runs")).body.runs.find((r) => r.run_id === id);
+    read.push([one.status, one.ended_at !== null, listed?.status]);
+    return 200;
+  });
+  ({ api } = await serve(t));
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "read-back", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => read.length === 1, "its run.ended, read back");
+  assert.deepEqual(read, [["completed", true, "completed"]]);
+});
+
+test("an end whose run.ended is in the outbox but not recorded as queued (a kill between the two) is queued again under the same id, and sent once", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  const api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "requeued", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1 && endNotice(data, run.run_id)?.queued, "sent and recorded");
+  await first.close();
+  stopped = true;
+  // The record as a kill right after the outbox write would leave it.
+  const file = join(data, "runs", run.run_id, "serve.json");
+  const meta = JSON.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, `${JSON.stringify({ ...meta, end_notice: { ended_at: meta.end_notice.ended_at } })}\n`);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => endNotice(data, run.run_id)?.queued, "recorded as queued again");
+  await sleep(500);
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "the outbox already held that id: not sent again");
+});
+
+test("a run.ended whose outbox write failed is not recorded as queued, so after a kill the next server queues and sends it", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await serverProcess(t, data);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  // The outbox's temporary file is a directory: its writes fail, as on a full disk.
+  const blocked = join(data, "webhook-outbox.json.tmp");
+  mkdirSync(blocked);
+  const run = await startRun(first.api, "unsaved-end", "Answer.");
+  await follow(first.api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its try, from memory");
+  assert.equal(endNotice(data, run.run_id)?.queued, undefined, "not recorded: the outbox never held it on disk");
+  await killed(first.child);
+  rmdirSync(blocked);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => endNotice(data, run.run_id)?.queued, "queued and recorded by the next server");
+  await until(() => ofType(hook.got, "run.ended").length === 2, "sent again, under the same id");
+  const ids = new Set(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]));
+  assert.equal(ids.size, 1, "one end, one webhook-id");
 });
