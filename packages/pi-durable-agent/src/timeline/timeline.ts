@@ -602,6 +602,15 @@ function createProjector(options: TimelineOptions) {
 }
 
 /** Rows of a stored conversation, in log order. Pure: the same entries give the same rows. */
+/** What a run's usage row says after its cost of how its requests reasoned (" · high effort · adaptive thinking · 412
+ *  thinking tokens"), from the same entries, as data: for a host that writes a usage row of its own, which must not read
+ *  it back out of the row's text. "" when no request said (a pi run's). */
+export function usageReasoningOf(entries: readonly EntryLike[]): string {
+  const meter = createMeter();
+  for (const entry of entries) meter.push(entry);
+  return meter.reasoning();
+}
+
 export function timelineOf(entries: readonly EntryLike[], options: TimelineOptions = {}): TimelineEvent[] {
   const projector = createProjector(options);
   for (const entry of entries) projector.push(entry);

@@ -72,8 +72,10 @@ export function decisionRows(receipts: readonly Receipt[]): TimelineEvent[] {
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
 /** `rows` with the decisions' rows among them by time, and their cost on the run's usage row, which stays last: one
- *  unknown cost makes the total unknown, never a lower figure. */
-export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly Receipt[]): TimelineEvent[] {
+ *  unknown cost makes the total unknown, never a lower figure. `reasoning`: what the run's own usage row says after its
+ *  cost of how its requests reasoned (pi's usageReasoningOf, from the run's entries), said after the decisions' count;
+ *  never read back out of that row's text, whose parts a settled row lays out differently. */
+export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly Receipt[], reasoning = ""): TimelineEvent[] {
   if (!receipts.length) return [...rows];
   const decisions = decisionRows(receipts);
   const at = rows.findLastIndex((row) => row.kind === "usage");
@@ -88,8 +90,6 @@ export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly
   // Rounded off float noise only: a decision costs millionths of a dollar, and the row agrees with the run's cost.
   const usd = models.usd === null || spent === null ? null : Math.round((models.usd + spent) * 1e12) / 1e12;
   const base = at < 0 ? { ...decisions.at(-1)!, id: "decisions:usage", agent_label: null, text: null } : rows[at]!;
-  // What the model requests' row said after its cost (their effort and thinking), kept after the decisions'.
-  const said = at < 0 ? "" : /( · .*)$/.exec(rows[at]!.summary ?? "")?.[1] ?? "";
-  const summary = `Cost so far: ${usd === null ? "unknown" : usd === 0 ? "$0" : usd < 0.0001 ? "<$0.0001" : `$${usd.toFixed(4)}`} over ${plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}${said}`;
+  const summary = `Cost so far: ${usd === null ? "unknown" : usd === 0 ? "$0" : usd < 0.0001 ? "<$0.0001" : `$${usd.toFixed(4)}`} over ${plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}${reasoning}`;
   return [...rest, { ...base, kind: "usage", summary, usage: { usd, requests: models.requests + decisions.length } }];
 }

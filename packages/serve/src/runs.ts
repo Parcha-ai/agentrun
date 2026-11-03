@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent, usageReasoningOf } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
@@ -192,6 +192,9 @@ export type Run = {
   decisionCost?: number | null;
   /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). */
   decisions?: Record<string, unknown>[];
+  /** How the run's requests reasoned, as its usage row says after its cost (usageReasoningOf), read with its rows: the
+   *  decisions' usage row says it from here, never from the row's text. */
+  reasoning?: string;
   /** How many of a workflow run's llm calls' answers its node log held when its rows were last read: their cost is in its
    *  rows (each a REQUEST_COST entry, committed before its answer is logged), so its graph counts only the later ones. */
   llmRead?: number;
@@ -638,6 +641,7 @@ export class Runs {
     if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteAnswer(run, entries);
+    run.reasoning = usageReasoningOf(entries as never);
     this.take(run, timelineOf(entries as never, { settled: true }));
   }
 
@@ -651,7 +655,7 @@ export class Runs {
     for (const row of arrived) run.users.add(row.id);
     run.submitted = Math.max(0, run.submitted - arrived.length);
     // The decisions' rows are the served view's only: the run's own rows, which its cost is read from, stay its model nodes'.
-    if (run.log.sync(run.decisions?.length ? withDecisions(run.rows, run.decisions) : run.rows, keep)) run.updatedAt = new Date().toISOString();
+    if (run.log.sync(run.decisions?.length ? withDecisions(run.rows, run.decisions, run.reasoning) : run.rows, keep)) run.updatedAt = new Date().toISOString();
     this.refresh(run);
   }
 
