@@ -55,12 +55,15 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
 }
 
 const SECRETLINT = { rules: [{ id: "@secretlint/secretlint-rule-preset-recommend", rule: recommended }] };
+/** How many passes `secretsIn` has made in this process: for a test that a path makes none. */
+export const secretlintCalls = { count: 0 };
 
 /** The keys secretlint's recommended rules find in `content`, in one pass: each as the rule names it (the secret
  *  itself where the rule gives it, else what it matched), and as a JSON string holding it would read it, decoded up to
  *  three times, so the cut finds it in a record's parsed text and in a shell's output kept in one as JSON. */
 export async function secretsIn(content: string): Promise<string[]> {
   if (!content) return [];
+  secretlintCalls.count += 1;
   const { messages } = await lintSource({ source: { content, filePath: "/import.txt", ext: ".txt", contentType: "text" }, options: { config: SECRETLINT, maskSecrets: false } });
   const decoded = (value: string): string | undefined => {
     try {

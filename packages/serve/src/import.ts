@@ -59,6 +59,9 @@ export type ImportOptions = {
   /** Stops the import between two session files, planned or taken (a server shutting down): what is written stays, and
    *  the next import goes on from there. */
   signal?: AbortSignal;
+  /** Read each session file through secretlint for the cut (default). Setup's count sets it false: a count keeps no
+   *  transcript, so it reads none, and a server's start never scans a whole history to say how many sessions it has. */
+  keys?: boolean;
   /** Read each session's turns while planning, and measure it (`Plan.found`): what a dry run's summary counts. */
   measure?: boolean;
 };
@@ -156,7 +159,7 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 /** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Keeps no turns
  *  (with `measure`, only until each session is measured), and reads no file `store`'s imports already read whole and
  *  that has not changed since. */
-export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, signal }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
+export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, signal, keys: scan = true }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
   // A session's id that holds a key (one named after its file can) is kept as a hash of it: every lookup of an earlier
   // import's run then goes by the id as kept.
   const idOf = keptId([env, stored ?? {}]);
@@ -196,8 +199,8 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
       const session = await readSession(file, source, { turns: false }).catch((error: unknown) => void skipped.push(unread(file, error)));
       if (!session) continue;
-      const found = await keysInFile(file);
-      keys.set(file, found);
+      const found = scan ? await keysInFile(file) : [];
+      if (scan) keys.set(file, found);
       session.id = idOf(session.id, found);
       if (session.parent) session.parent = idOf(session.parent, found);
       // A subagent's session is no run of its own: its usage is its parent's, when its file names the parent (a Codex
@@ -251,7 +254,7 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   }
   ownRuns(projects, rank);
   // Each subagent's file read through secretlint once too, for the run it is part of.
-  for (const files of children.values()) for (const file of files) if (!keys.has(file)) keys.set(file, await keysInFile(file));
+  if (scan) for (const files of children.values()) for (const file of files) if (!signal?.aborted && !keys.has(file)) keys.set(file, await keysInFile(file));
   const plan: Plan = { projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, keys, untied };
   if (!measure) return plan;
   const counting = secretCut(env, SECRET_NAMES);

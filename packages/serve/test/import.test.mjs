@@ -497,6 +497,22 @@ test("secretlint finds nothing in code that names keys and passwords", async () 
     assert.deepEqual(await secretsIn(line), [], line);
 });
 
+test("a plan for setup's count reads no session through secretlint; a plan for an import reads each session file once", async (t) => {
+  const { secretlintCalls } = await import("../dist/secret-cut.js");
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "count");
+  mkdirSync(site, { recursive: true });
+  for (let n = 1; n <= 5; n++) claudeSession(at, site, n);
+  const before = secretlintCalls.count;
+  // As setup's count asks for it (import-worker.ts): a listing, no transcript kept, so no scan.
+  const counted = await planImport({ home: at, env: { PATH: "/usr/bin" }, all: true, keys: false });
+  assert.equal(counted.projects[0].sessions.length, 5);
+  assert.equal(secretlintCalls.count, before, "the count read no session through secretlint");
+  await planImport({ home: at, env: { PATH: "/usr/bin" }, all: true });
+  assert.equal(secretlintCalls.count, before + 5, "an import's plan reads each session file once");
+});
+
 test("the README says what an import removes and what it leaves", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
   assert.ok(readme.includes("Known key formats are removed. Other secrets in your session history, like passwords in config files, are imported as they are."));
