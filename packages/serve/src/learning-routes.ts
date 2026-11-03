@@ -18,10 +18,11 @@
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, redactSecrets, retire, secretShapes, valueMatcher } from "@parcha/agentrun-learn";
+import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, retire } from "@parcha/agentrun-learn";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
-import { agentFolder, checkOut, git, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, withAgentRepo } from "./learning.js";
+import { agentFolder, checkOut, git, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, type Shown, withAgentRepo } from "./learning.js";
+import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
 
@@ -44,19 +45,7 @@ type NoteView = { file: string; name: string; description: string; type: string;
 type Change = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
 type Note = LearnedNote & { text: string };
 export type Counts = { merged: number; dropped: Record<string, number>; in_progress: number };
-/** What a text or a name that leaves shows of the host's secrets now: none (secretsShown). */
-export type Shown = { text: (text: string) => string; name: (name: string) => string; holds: (text: string) => boolean };
-/** What a name holding a secret reads: packages/learn redactSecrets' mark, the name's whole, never a part of it. */
-const REDACTED = "[redacted]";
-
-/** The host's secrets as a reader cuts them: a text holding a value or a shape is cut of it (whole when long:
- *  packages/learn redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
- *  route still answers the real name, to a caller who knows it); any other text or name is shown as it is. */
-export function secretsShown(values: readonly string[]): Shown {
-  const matches = valueMatcher(values);
-  const holds = (text: string) => matches(text) || secretShapes(text).length > 0;
-  return { holds, text: (text) => (holds(text) ? redactSecrets(text, values) : text), name: (name) => (holds(name) ? REDACTED : name) };
-}
+export { secretsShown, type Shown } from "./learning.js";
 
 /** The few values last kept, by key, oldest dropped first: at most `entries` of them, `bytes` in all by their sizes. */
 class Recent<T> {
@@ -225,14 +214,15 @@ async function pageRequest(home: string, repo: string, query: URLSearchParams, f
   return { limit, at: { sha: named[1]!, offset: Number(named[2]) } };
 }
 
-/** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and the runs' counts; an
- *  agent with no folder (its learning never on) has an empty one. */
-export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts) {
+/** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and how the agent's runs
+ *  fared and what learning changed for them (`counts`, `impact`: learning-run.ts, from the runs' rows and the learning
+ *  ledger); an agent with no folder (its learning never on) has an empty one. */
+export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts, impact: Impact) {
   const { home, repo } = await placeOf(data, agentId);
   const sha = await mainOf(home, repo);
-  if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, log: EMPTY, counts };
+  if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, log: EMPTY, counts, impact };
   const [{ index, notes }, log] = await Promise.all([notesAt(home, repo, sha), logPage(home, repo, sha, 0, LOG_PAGE, shown)]);
-  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => noteView(note, shown)), log, counts };
+  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => noteView(note, shown)), log, counts, impact };
 }
 
 /** GET /agents/{id}/learning/notes?cursor=&limit=&status=: a page of the notes, ordered as the view's, from what the

@@ -100,7 +100,7 @@ test("a new agent with learning on: its first run makes its folder, main checked
   assert.ok(prompt.includes("Answer the question.") && !prompt.includes("# Learned"), `an empty index adds no section: ${prompt}`);
   // Seeded, then, as its agent has no write tool, asked no end-of-run turn (learn-reflect.test.mjs).
   const { whole, short } = await learningOf(api, "fresh", runId);
-  assert.deepEqual({ ...whole, at: typeof whole.at }, { state: "dropped", reason: "no_write_tool", detail: "The agent has no write tool to add a note with.", at: "string" });
+  assert.deepEqual({ ...whole, at: typeof whole.at }, { state: "dropped", reason: "no_write_tool", detail: "Not kept: this agent can't write notes (give it the write tool).", at: "string" });
   assert.deepEqual(short, { state: "dropped", reason: "no_write_tool" });
   // A server started again reads the run's learning back from its serve.json, whole and in a list.
   await first.close();
@@ -272,7 +272,7 @@ async function seedFailed(api, data, id, runId, prompt) {
   assert.ok(prompt.includes("Answer the question.") && !prompt.includes("# Learned"), prompt);
   const { whole, short } = await learningOf(api, id, runId);
   assert.deepEqual([whole.state, whole.reason, short], ["dropped", "seed_failed", { state: "dropped", reason: "seed_failed" }]);
-  assert.match(whole.detail, /started with nothing learned/);
+  assert.match(whole.detail, /^Not kept: learning stopped \(.*, so the run started without (them|its notes)\)\.$/);
 }
 
 test("a folder the server cannot read: the run still completes, with nothing learned, and its learning is dropped for seed_failed", { timeout: 120_000, skip: process.getuid?.() === 0 && "root reads any folder" }, async (t) => {

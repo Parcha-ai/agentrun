@@ -828,11 +828,24 @@ The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run list
 `crashed`, `reflect_timeout`, `reflect_failed`, `empty`, `propose_failed`, `checker`, `screen`, `screen_down`,
 `grader`, `grade_failed`; `tool_denied` is reserved for a tool gate this server does not have yet). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
-workflow's or an imported run). Once it is proposed, merged or dropped (`seed_failed` included), the run's timeline has
-one row of kind `learning` that says so. Each run's learning end is written once to the learning ledger,
-`DATA/learning-usage.jsonl`, one line `{run, agent, state, reason, at, cost, tokens}` (`cost` and `tokens` the grade's,
-null when unknown, 0 when nothing was graded), after its `serve.json` holds it; a server that went between the two writes
-it at its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
+workflow's or an imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2
+notes.", "Looking back on this run…", "Checking 1 new note…", "Learned: Check units (replaces 1 older note)", "Nothing new
+to remember from this run.", "Not kept: <the grader's reason, its first sentence>", "Not kept: it held something that must
+not be stored (one of this server's secrets).", "Not kept: learning stopped (looking back took too long)." and so on
+(`learning-words.ts`); a client that acts on it reads `state` and `reason`. Once it is proposed, merged or dropped
+(`seed_failed` included), the run's timeline has one row of kind `learning` whose summary is that detail.
+
+Two more fields say what the run used and learned (`learning/2`), on its read and in run lists alike, each absent when it
+holds no note: `used`, `[{file, name}]`, the notes its job read from `.learning/`, found once as the run settles from its
+timeline (each `read` call on any harness whose result was a success, of a note the run started from: never `MEMORY.md`,
+nor a read its end-of-run turn made) and kept in `serve.json`, so a list never reads a timeline; and `learned`, `[{file,
+name, supersedes}]`, the notes its merge added, once `merged`. A name and a file are cut of the server's secrets as they
+are now, a file holding one `[redacted]`.
+
+Each run's learning end is written once to the learning ledger, `DATA/learning-usage.jsonl`, one line `{run, agent,
+state, reason, at, cost, tokens, seed_notes}` (`cost` and `tokens` the grade's, null when unknown, 0 when nothing was
+graded; `seed_notes` how many notes the run started from), after its `serve.json` holds it; a server that went between
+the two writes it at its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
 `agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
 `learning` meter on `GET /usage` reads the same lines.
 
@@ -845,7 +858,12 @@ with the token, an archived agent's too:
   newest first) and the first 20 changes on `main` (newest first, each `by: {run}` from its `Run-Id` trailer or
   `{user: true}`, with its commit, time, reason and files), and how the agent's runs that tried to learn fared
   (`merged`, `dropped` by reason, `in_progress`), counted as `GET /stats` counts them: from the learning ledger and the
-  runs the server holds, never a run's files. An agent with no folder answers `main: null` and empty pages.
+  runs the server holds, never a run's files; and `impact` (`learning/2`), what learning changed: the agent's completed
+  runs that started from at least one active note against those that started before its first note (the earlier of its
+  first merge and the start of its first run that started from a note, so a person's first note counts), each side's
+  `runs`, `median_duration_s` (ended less started, as each run's row holds it) and `median_cost_usd` (of the runs whose
+  cost is known, else null), from the same rows and ledger; null unless both sides count 2 runs. An agent with no
+  folder answers `main: null`, empty pages and `impact: null`.
   `GET .../learning/notes?cursor=&limit=&status=` and `GET .../learning/log?cursor=&limit=` page on, up to 200 at a
   time; a cursor reads the same commit its first page did.
 - `GET .../learning/files/{file}`: one note (or `MEMORY.md`) on `main` as `text/markdown`, with its `ETag`, the note's
