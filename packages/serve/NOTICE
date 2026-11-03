@@ -1,4 +1,7 @@
 AgentRun
 Copyright 2026 Parcha Labs, Inc.
 
+The console in dist/console bundles third-party software. dist/console/THIRD-PARTY-NOTICES.txt names each
+package it holds, with its version, its license and its license text.
+
 This product includes material adapted from frontend-slides (https://github.com/zarazhangrui/frontend-slides), Copyright (c) 2025 Zara Zhang, licensed under the MIT License: the slides skill of the default profile pack (packs/default/skills/slides), whose LICENSE.txt carries that license.

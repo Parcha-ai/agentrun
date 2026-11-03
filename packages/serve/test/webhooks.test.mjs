@@ -539,7 +539,12 @@ test("a run waiting for its person when its server dies gives no new notice from
   const api = client(next.baseUrl, next.token);
   await follow(api, run.run_id, ["input_required"]);
   await sleep(500);
-  assert.equal(ofType(hook.got, "run.needs_input").length, 1, "the same wait, no new notice");
+  // No new notice for the same wait: one webhook-id. The kill can land before the first server records its delivery,
+  // and the server that adopts its outbox then sends that same message again, under the same id (at-least-once; the
+  // id is the receiver's idempotency key). So ids are counted, never receipts.
+  const waits = ofType(hook.got, "run.needs_input");
+  assert.equal(new Set(waits.map((r) => r.headers["webhook-id"])).size, 1, "the same wait, no new notice");
+  assert.ok(waits.every((r) => r.body === waits[0].body), "a try again is the same message");
   assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" })).status, 202);
   await follow(api, run.run_id, ["completed"]);
   await until(() => ofType(hook.got, "run.ended").length === 1, "its end's notice");

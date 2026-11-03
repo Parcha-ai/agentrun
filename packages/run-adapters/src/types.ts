@@ -126,6 +126,10 @@ export interface SessionIO {
   signal: AbortSignal;
   /** The session's private directory, when the host gives one: its HOME and the harness's own files. */
   dir?: string;
+  /** The session's working directory, when the host gives one: the workspace its file tools confine to, absolute. A
+   *  harness runs there, so a path the model builds from its working directory is one the host's tools take. Without it,
+   *  a harness works in an empty directory of its own. */
+  cwd?: string;
   onEvent(event: AdapterEvent): void;
 }
 
