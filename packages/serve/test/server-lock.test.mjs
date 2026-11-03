@@ -8,7 +8,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ServerLockHeldError, startServe, takeServerLock } from "../dist/index.js";
-import { client, FAUX, scratch } from "./support.mjs";
+import { client, FAUX, printed, scratch } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -24,13 +24,7 @@ async function bin(t, data, { started = true, env = {} } = {}) {
   // "close", not "exit": a child's stdio can still be open at "exit", and the lines read here are its last ones.
   const exited = new Promise((resolve) => child.once("close", (code) => resolve(code)));
   if (!started) return { child, seen, code: await exited };
-  // Its address line, or its exit: a start under load takes seconds (13 s measured beside other suites), so the deadline
-  // is far past that, and an exit fails at once.
-  for (const until = Date.now() + 60_000; !/AGENTRUN_BASE_URL=\S+/.test(seen.out); ) {
-    assert.ok(child.exitCode === null && child.signalCode === null, `the server exited before it started: ${seen.out}${seen.err}`);
-    assert.ok(Date.now() < until, `the server printed no address in 60 s: ${seen.out}${seen.err}`);
-    await sleep(50);
-  }
+  await printed(child, /^AGENTRUN_BASE_URL=\S+$/m);
   return { child, seen, exited, base: /AGENTRUN_BASE_URL=(\S+)/.exec(seen.out)[1] };
 }
 
