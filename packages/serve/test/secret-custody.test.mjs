@@ -461,18 +461,37 @@ test("secretsFor: a run is handed exactly the model keys its model needs: a pi r
   assert.deepEqual(await held(drafting, { ...GATEWAY, AGENT_MODEL: "m-1" }), ["AGENT_MODEL_API_KEY"], "a workflow behind a gateway: the gateway's");
 });
 
-test("every key pi-ai reads for a provider is one of the launcher's secrets: each in pi-ai's own table, each key-shaped name a provider's auth asks for, and Bedrock's, which that table leaves out", async () => {
+/** The names a provider's auth asks for that no run is handed, each with why. Every other name pi-ai reads for a provider
+ *  is a held key. */
+const NOT_HANDED = {
+  // Settings, no secret: they pass into a run's environment.
+  AWS_PROFILE: "a profile's name; its credentials are the host's ~/.aws files",
+  GOOGLE_CLOUD_PROJECT: "Vertex's project", GCLOUD_PROJECT: "Vertex's project", GOOGLE_CLOUD_LOCATION: "Vertex's region",
+  CLOUDFLARE_ACCOUNT_ID: "an account's id", CLOUDFLARE_GATEWAY_ID: "a gateway's id",
+  ANTHROPIC_FEDERATION_RULE_ID: "a federation rule's id",
+  // Pointers to a credential, named like a key: cut from every run's environment, where the SDK alone reads them, so not
+  // supported for runs (the README's Safety).
+  AWS_WEB_IDENTITY_TOKEN_FILE: "a web identity token's file, which the AWS SDK finds in the environment alone",
+  AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: "a container role's credentials, which the AWS SDK finds in the environment alone",
+  AWS_CONTAINER_CREDENTIALS_FULL_URI: "a container role's credentials, which the AWS SDK finds in the environment alone",
+  GOOGLE_APPLICATION_CREDENTIALS: "a service account's file, which Google's SDK finds in the environment alone",
+};
+
+test("every name pi-ai's providers read is a held key handed by provider, or named here as no run's with its reason: pi-ai's own table, each name a provider's auth asks for, and Bedrock's AWS keys, which that table leaves out", async () => {
   const keys = await piAiKeys();
   assert.ok(["google", "deepseek", "amazon-bedrock"].every((id) => id in keys), Object.keys(keys).join(" "));
-  const unlisted = Object.entries(keys).flatMap(([id, { table, asked }]) => [...new Set([...table, ...asked.filter((name) => keyShaped(name))])].filter((name) => !SECRET_NAMES.includes(name)).map((name) => `${id} ${name}`));
-  assert.deepEqual(unlisted, [], "each is held as OPENAI_API_KEY is, so no environment holds it: add it to the launcher's SECRETS");
-  assert.deepEqual(BEDROCK.filter((name) => !SECRET_NAMES.includes(name)), [], "Bedrock's keys are held too");
+  /** What a provider reads, but the names no run is handed. */
+  const reads = (id, { table, asked }) => [...new Set([...table, ...asked, ...(id === "amazon-bedrock" ? BEDROCK : [])])].filter((name) => !(name in NOT_HANDED));
+  const unlisted = Object.entries(keys).flatMap(([id, read]) => reads(id, read).filter((name) => !SECRET_NAMES.includes(name)).map((name) => `${id} ${name}`));
+  assert.deepEqual(unlisted, [], "each is held as OPENAI_API_KEY is, so no environment holds it: add it to the launcher's SECRETS, or to NOT_HANDED with its reason");
   // And each is handed to a run on its provider's model: model.ts' PROVIDER_KEYS names every one under its provider,
   // and only providers pi-ai has, every name on the launcher's list.
-  const unhanded = Object.entries(keys).flatMap(([id, { table, asked }]) => [...new Set([...table, ...asked.filter((name) => keyShaped(name)), ...(id === "amazon-bedrock" ? BEDROCK : [])])].filter((name) => !(PROVIDER_KEYS[id] ?? []).includes(name)).map((name) => `${id} ${name}`));
+  const unhanded = Object.entries(keys).flatMap(([id, read]) => reads(id, read).filter((name) => !(PROVIDER_KEYS[id] ?? []).includes(name)).map((name) => `${id} ${name}`));
   assert.deepEqual(unhanded, [], "add it to model.ts' PROVIDER_KEYS under its provider");
   assert.deepEqual(Object.keys(PROVIDER_KEYS).filter((id) => !(id in keys)), [], "a provider pi-ai does not have");
   assert.deepEqual(Object.values(PROVIDER_KEYS).flat().filter((name) => !SECRET_NAMES.includes(name)), [], "a provider's key the launcher does not hold");
+  // A name no run is handed and named like a key is cut from every run's environment; a setting passes.
+  assert.deepEqual(Object.keys(NOT_HANDED).filter((name) => keyShaped(name)), ["AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "GOOGLE_APPLICATION_CREDENTIALS"]);
 });
 
 /** A run of agent `id` (started, followed to its end) and what its process reported (faux-custody.mjs). */
