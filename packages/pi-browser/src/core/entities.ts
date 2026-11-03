@@ -29,13 +29,26 @@ const NAMED = new Map<string, string>([
 ].filter(([name]) => name));
 /** The names a page may write without their ";" (HTML's legacy references), when no letter, digit or "=" follows. */
 const BARE = new Set(["amp", "lt", "gt", "quot", "nbsp", "copy", "reg"]);
-const REFERENCE = /&(?:#(\d{1,8})|#[xX]([0-9a-fA-F]{1,7})|([A-Za-z][A-Za-z0-9]{1,31}))(;?)/g;
+/** A numeric reference takes its whole run of digits, leading zeroes and all (`&#000000065;` is "A"), as a browser
+ *  reads it: a run cut at a fixed width would read the rest of it as text. */
+const REFERENCE = /&(?:#(\d+)|#[xX]([0-9a-fA-F]+)|([A-Za-z][A-Za-z0-9]{1,31}))(;?)/g;
+/** What a numeric reference to U+0080 to U+009F stands for, as a browser reads it (windows-1252's character; 0 where
+ *  it stands for itself). node-html-parser's decoder, in the worker, reads them the same. */
+const C1 = [
+  0x20ac, 0, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017d, 0,
+  0, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0, 0x017e, 0x0178,
+];
 
-/** A numeric reference's character: U+FFFD for 0, a surrogate or a code point past U+10FFFF. */
-const character = (code: number) => (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ? "�" : String.fromCodePoint(code));
+/** A numeric reference's character, as a browser reads it: U+FFFD for 0, a surrogate or a code point past U+10FFFF (a
+ *  run of digits too long for a number among them), windows-1252's for U+0080 to U+009F. */
+function character(code: number): string {
+  if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return "\uFFFD";
+  if (code >= 0x80 && code <= 0x9f) return String.fromCharCode(C1[code - 0x80] || code);
+  return String.fromCodePoint(code);
+}
 
-/** `text` with its character references decoded; one this does not know is left as written. Linear: each try of the
- *  pattern is bounded by the longest reference it can match. */
+/** `text` with its character references decoded; one this does not know is left as written. Linear: a try of the
+ *  pattern reads at most a name's 32 characters, or one run of digits, which the match then passes. */
 export function decodeEntities(text: string): string {
   if (!text.includes("&")) return text;
   return text.replace(REFERENCE, (whole, decimal: string | undefined, hex: string | undefined, name: string | undefined, semi: string, at: number) => {
