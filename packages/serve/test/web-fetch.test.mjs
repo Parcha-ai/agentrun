@@ -37,7 +37,7 @@ test("with a key, a public page is read through Parallel's extract: via parallel
   const page = await webFetch(PUBLIC, { ...net, parallel: parallelExtract(CANARY, send) });
   assert.deepEqual(withoutText(page), { ok: true, url: PUBLIC, status: 200, title: "Read by Parallel", chars: page.text.length, links: ["https://other.example/y"], via: "parallel" }, "the absolute links of its markdown, without fragments");
   assert.match(page.text, /^# Read by Parallel\n\nThe page at http:\/\/public\.example\//);
-  assert.deepEqual(sent, [{ url: PARALLEL_EXTRACT_URL, key: CANARY, body: { urls: [PUBLIC], advanced_settings: { full_content: { max_chars_per_result: 20_001 } } } }], "one character past the page's text it reads (20,000 by default), so a page Parallel cut shows as cut");
+  assert.deepEqual(sent, [{ url: PARALLEL_EXTRACT_URL, key: CANARY, body: { urls: [PUBLIC], advanced_settings: { full_content: { max_chars_per_result: 1_000_001 } } } }], "one character past the most of a page web_fetch reads, so a page Parallel cut there shows as cut");
   assert.deepEqual(net.dialled, [], "the guard checked the URL without dialling it, and the direct fetch never ran");
 });
 
@@ -227,21 +227,87 @@ test("at the minimum, a page whose parts end before a quote, a line break, a bac
   assert.equal(parts.join(""), body, "the whole page, no repeats, no gaps");
 });
 
-test("through Parallel a page is read in parts too: Parallel is asked for one character past the part, and the page's whole length is known only when it gave less", async () => {
-  const long = `${"forty-two ".repeat(7_000)}end`;
+/** A Parallel that answers each extract with `pages[url]` up to what it was asked for (a function of the call's number
+ *  gives each call its own answer), and every max_chars_per_result it was asked for. */
+function paging(pages) {
   const asked = [];
   const send = async (_url, init) => {
-    const want = JSON.parse(init.body).advanced_settings.full_content.max_chars_per_result;
+    const body = JSON.parse(init.body);
+    const want = body.advanced_settings.full_content.max_chars_per_result;
     asked.push(want);
-    return new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Long", full_content: long.slice(0, want) }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    const page = pages(asked.length, body.urls[0]);
+    if (typeof page === "number") return new Response(JSON.stringify({ error: { message: "faux" } }), { status: page, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ results: [{ url: page.url ?? body.urls[0], title: "Long", full_content: page.text.slice(0, want) }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
   };
+  return { asked, send };
+}
+
+test("through Parallel the parts of one page cost one extract in a run: the first asks for the most of a page web_fetch reads (1,000,000 characters and one), and each later part is read from what it gave, with no request", async () => {
+  const long = `${"forty-two ".repeat(7_000)}end`;
+  const { asked, send } = paging(() => ({ text: long, url: `${PUBLIC}final` }));
+  assert.equal(pages.PAGE_READ_MAX_CHARS, 1_000_000);
   const extract = parallelExtract(CANARY, send);
-  const first = await webFetch(PUBLIC, { ...network(), parallel: extract });
-  assert.deepEqual([first.via, first.text, first.chars, first.truncated, "original_chars" in first, first.next_offset], ["parallel", long.slice(0, 20_000), 20_000, true, false, 20_000], "cut by Parallel at what it was asked for: its whole length unknown");
-  assert.equal(where(first), "Characters 0-20000 of a longer page: call web_fetch again with offset=20000 for the rest.");
-  const last = await webFetch(PUBLIC, { ...network(), parallel: extract, offset: 60_000, maxChars: 20_000 });
-  assert.deepEqual([last.text, last.chars, last.offset, "truncated" in last, last.original_chars], [long.slice(60_000), 10_003, 60_000, false, 70_003], "less than it was asked for: its length is known");
-  assert.deepEqual(asked, [20_001, 80_001]);
+  const parts = [];
+  for (const offset of [0, 20_000, 40_000, 60_000]) parts.push(await webFetch(PUBLIC, { ...network(), parallel: extract, offset }));
+  assert.deepEqual(asked, [1_000_001], "one billed extract, asked for the most a read reaches");
+  assert.deepEqual(parts.map((page) => [page.via, page.url, page.chars, page.offset, page.truncated, page.original_chars, page.next_offset]), [
+    ["parallel", `${PUBLIC}final`, 20_000, undefined, true, 70_003, 20_000],
+    ["parallel", `${PUBLIC}final`, 20_000, 20_000, true, 70_003, 40_000],
+    ["parallel", `${PUBLIC}final`, 20_000, 40_000, true, 70_003, 60_000],
+    ["parallel", `${PUBLIC}final`, 10_003, 60_000, undefined, 70_003, undefined],
+  ], "Parallel gave less than it was asked for: the page's whole length is known from the first part");
+  assert.equal(parts.map((page) => page.text).join(""), long, "the parts are the page, no repeats, no gaps");
+  // By the final URL too, the page is the one read.
+  assert.equal((await webFetch(`${PUBLIC}final`, { ...network(), parallel: extract, offset: 10_000 })).text, long.slice(10_000, 30_000));
+  assert.equal(asked.length, 1);
+  // Another run's client asks again; and so does this one once its copy is ten minutes old.
+  let now = 0;
+  const timed = paging(() => ({ text: long }));
+  const clocked = parallelExtract(CANARY, timed.send, { now: () => now });
+  await webFetch(PUBLIC, { ...network(), parallel: clocked });
+  now = 9 * 60_000;
+  await webFetch(PUBLIC, { ...network(), parallel: clocked, offset: 20_000 });
+  now = 10 * 60_000 + 1;
+  await webFetch(PUBLIC, { ...network(), parallel: clocked, offset: 40_000 });
+  assert.equal(timed.asked.length, 2, "a copy is kept ten minutes");
+  // A page past the copies' bound (a few MB) is not kept: each part asks again.
+  const big = paging(() => ({ text: long }));
+  const small = parallelExtract(CANARY, big.send, { cacheChars: 50_000 });
+  for (const offset of [0, 20_000]) await webFetch(PUBLIC, { ...network(), parallel: small, offset });
+  assert.equal(big.asked.length, 2);
+});
+
+test("web_fetch reads a page's first 1,000,000 characters: an offset at or past them is refused before anything is fetched, and the part that reaches them says the page goes on", async () => {
+  const net = network();
+  const past = await fetchFor({}, PUBLIC, { ...net, offset: 1_000_000 });
+  assert.deepEqual([past.ok, past.error, net.dialled], [false, "offset must be under 1,000,000: web_fetch reads a page's first 1,000,000 characters (it was 1000000)", []]);
+  const body = "x".repeat(1_000_050);
+  const last = await webFetch(PUBLIC, { ...network(), fetchImpl: async () => new Response(body, { status: 200, headers: { "content-type": "text/plain" } }), offset: 980_000, maxChars: 50_000 });
+  assert.deepEqual([last.chars, last.offset, "truncated" in last, last.original_chars, last.beyond_read], [20_000, 980_000, false, 1_000_050, true]);
+  assert.equal(where(last), "Characters 980000-1000000 of 1000050: the page goes on, but web_fetch reads only a page's first 1,000,000 characters.");
+});
+
+test("a Parallel failure in the middle of a page's parts restarts the page from its start, fetched directly, saying so; its later parts are fetched directly too, so every part is one text's", async () => {
+  const fromParallel = `${"parallel ".repeat(5_000)}end`;
+  const direct = `${"direct ".repeat(6_000)}end`;
+  let now = 0;
+  const { asked, send } = paging((n) => (n === 1 ? { text: fromParallel } : 500));
+  const extract = parallelExtract(CANARY, send, { now: () => now });
+  const fetchImpl = async () => new Response(direct, { status: 200, headers: { "content-type": "text/plain" } });
+  const first = await webFetch(PUBLIC, { ...network(), fetchImpl, parallel: extract });
+  assert.deepEqual([first.via, first.text], ["parallel", fromParallel.slice(0, 20_000)]);
+  now = 11 * 60_000;
+  const second = await webFetch(PUBLIC, { ...network(), fetchImpl, parallel: extract, offset: 20_000 });
+  assert.deepEqual([second.via, second.parallel, second.text, "offset" in second, second.restarted, second.next_offset], ["direct", "answered 500", direct.slice(0, 20_000), false, true, 20_000], "the direct page from its start");
+  const lines = web.webFetchText(second, "web_fetch").split("\n").slice(1);
+  assert.deepEqual(lines, [
+    "Parallel was picked for web_fetch and gave no page (answered 500); this one was fetched directly.",
+    "Parallel's extract failed, so this is the page as fetched directly, from its start: the earlier parts came from Parallel's text.",
+    `Characters 0-20000 of ${direct.length}: call web_fetch again with offset=20000 for the rest.`,
+  ]);
+  const third = await webFetch(PUBLIC, { ...network(), fetchImpl, parallel: extract, offset: 20_000 });
+  assert.deepEqual([third.via, third.text, third.offset, "restarted" in third, third.parallel], ["direct", direct.slice(20_000, 40_000), 20_000, false, "not tried: this page's parts are read directly in this run"], "the next part goes on from the direct page");
+  assert.equal(asked.length, 2, "Parallel was not asked for the third part");
 });
 
 test("a page's links come with its first part only, at most 200 of them in 20,000 characters; a URL longer than 4,096 characters is refused before anything is fetched", async () => {
@@ -254,8 +320,10 @@ test("a page's links come with its first part only, at most 200 of them in 20,00
   assert.ok(first.links.reduce((n, link) => n + JSON.stringify(link).length + 1, 0) <= 20_000, "in 20,000 characters of the answer");
   assert.ok(!first.links.some((link) => link.includes("/3/")), "one too long for them is left out");
   assert.deepEqual(first.links.slice(0, 3), [0, 1, 2].map((i) => `https://l.example/${i}/${"q".repeat(80)}`), "in page order");
+  assert.equal(first.links_omitted, 400 - first.links.length, "the links left out are counted");
   const later = await webFetch(PUBLIC, { ...network(), fetchImpl, offset: first.next_offset });
-  assert.deepEqual(later.links, [], "a later part has none");
+  assert.deepEqual([later.links, "links_omitted" in later], [[], false], "a later part has none, and counts none");
+  assert.equal("links_omitted" in (await webFetch(PUBLIC, network())), false, "a page whose links all fit counts none");
   const net = network();
   const long = await webFetch(`${PUBLIC}${"a".repeat(4_097 - PUBLIC.length)}`, net);
   assert.deepEqual([long.ok, long.error, long.url.length <= 4_096], [false, "url is longer than 4,096 characters", true]);
