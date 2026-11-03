@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { ServerLockHeldError, startServe } from "../dist/index.js";
@@ -130,4 +131,43 @@ test("a stop adds no entry to the data root: a caller that removes it as soon as
   const after = entries(data);
   assert.deepEqual(stopping.filter((name) => !before.includes(name)), [], "an entry made as the stop began");
   assert.deepEqual(after.filter((name) => !before.includes(name)), [], "an entry made while the server stopped");
+});
+
+test("a start waits as long as the stopping server's close runs, past its runs' drain: a carry back the store holds, then it starts", { timeout: 120_000 }, async (t) => {
+  // Greptile P1: close() waits on its runs' carry backs (retried while the agent store is held) and their boxes' cleanup,
+  // which can outlast the runs' drain by more than any fixed margin. A start meanwhile must wait, not be refused.
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "2s", carryBackRetry: { delaysMs: Array(60).fill(1_000) } });
+  let closed;
+  const close = () => (closed ??= first.close());
+  t.after(close);
+  const api = client(first.baseUrl, first.token);
+  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
+  const run = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  // Then another writer holds the agent store (the start writes it, so not before), and the run's carry back waits: it
+  // reads completed before its end is written.
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  t.after(() => store.isOpen && store.close());
+  store.exec("BEGIN IMMEDIATE");
+  await until(async () => (await api("GET", `/runs/${run.body.run_id}`)).body.status === "completed", "the run answers");
+  const began = Date.now();
+  const closing = close();
+  let refused;
+  const said = [];
+  const starting = startServe({ data, port: 0, faux: FAUX, notice: (line) => said.push(line) }).then(
+    (next) => (t.after(() => next.close()), next),
+    (error) => void (refused = error),
+  );
+  // Past the runs' own bound (their 2 s drain and a second, none here: the run's process is gone) and 10 s more: a close
+  // this slow is still one stop, and the start keeps waiting.
+  await until(() => refused !== undefined || Date.now() - began > 3_000 + 12_000, "the hold", 60_000);
+  assert.equal(refused, undefined, `the start was refused while the first server still closed: ${refused?.message}`);
+  store.exec("ROLLBACK");
+  store.close();
+  await closing;
+  const next = await starting;
+  assert.ok(next, `the start: ${refused?.message}`);
+  assert.equal(said.length, 1, JSON.stringify(said));
+  assert.equal((await client(next.baseUrl, next.token)("GET", `/runs/${run.body.run_id}`)).body.status, "completed");
 });
