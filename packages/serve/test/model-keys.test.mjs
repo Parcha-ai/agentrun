@@ -39,7 +39,7 @@ test("the host's model counts for a harness only when that harness runs it: clau
   assert.equal(hostModel({ ...gateway, ...keyed("anthropic") }, "default", "pi"), "gpt-6-luna");
   assert.equal(hostModel({ ...gateway, ...keyed("anthropic") }, "default", "codex"), "gpt-6-luna");
   assert.equal(hostModel({ ...gateway, ...keyed("anthropic") }, "default", "claude-agent"), "anthropic/claude-sonnet-5-5");
-  assert.equal(hostModel({ ...gateway, ANTHROPIC_API_KEY: "placeholder", ANTHROPIC_BASE_URL: "http://127.0.0.1:8" }, "default", "claude-agent"), "anthropic/claude-sonnet-5-5", "the broker case");
+  assert.equal(hostModel({ ...gateway, ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: "http://127.0.0.1:8" }, "default", "claude-agent"), "anthropic/claude-sonnet-5-5", "the broker case");
   assert.equal(hostModel(gateway, "default", "claude-agent"), undefined, "no Anthropic key: none");
   // A provider's id runs on its own harness and on pi only.
   assert.equal(hostModel({ AGENT_MODEL: "openai/gpt-6-luna" }, "default", "claude-agent"), undefined);
