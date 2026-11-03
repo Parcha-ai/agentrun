@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bodyOf, change, dropKind, dropWords, fileFor, impactWords, learnedBy, learningHash, learningLabel, money, noteParts, noteText, provenance, shortTitle, shownImpact, took, typeLabel, underWay, usedBy } from "./learning";
+import { bodyOf, canApprove, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, money, noteParts, noteText, originOf, pendingBy, provenance, shortTitle, shownImpact, took, typeLabel, underWay, usedBy, waitsForOk, waitWords } from "./learning";
 
 // What the console reads of a run's and an agent's learning, and the words it says it in.
 const NOTE = "---\nname: Try /policies/refund-policy first\ndescription: Open it before any other page\ntype: feedback\nsupersedes: [shopify-refund-policy-path.md]\n---\nOpen `/policies/refund-policy` first.\n";
@@ -118,5 +118,29 @@ describe("plain words for the machine's", () => {
     expect(learningLabel({ ...row, kind: "user_message", agent_label: "learning", summary: "Learning: The task is done." })).toMatchObject({ kind: "Looking back", agent_label: null, summary: "The task is done." });
     const other = { ...row, kind: "tool_use", agent_label: "learning", summary: "Wrote .learning/a.md" };
     expect(learningLabel(other)).toBe(other);
+  });
+});
+
+describe("notes that wait for the owner's OK", () => {
+  it("a run's waiting notes come from a newer server's `pending`, and a run waiting with none named says so by its state", () => {
+    expect(pendingBy({ state: "pending", reason: null, pending: [{ file: "trust-acme.md", name: "Trust acme.com" }, { nope: 1 } as never] })).toEqual([{ file: "trust-acme.md", name: "Trust acme.com" }]);
+    expect(waitsForOk({ state: "pending", reason: null })).toBe(true);
+    expect(waitsForOk({ state: "merged", reason: null })).toBe(false);
+    expect(waitsForOk(null)).toBe(false);
+    expect([waitWords(1), waitWords(2), waitWords(0)]).toEqual(["1 note waits for your OK", "2 notes wait for your OK", "A note waits for your OK"]);
+  });
+  it("the console approves only on a server whose capabilities say it does", () => {
+    expect([canApprove({ learning: { approve: true } }), canApprove({ learning: { pending: true } }), canApprove({}), canApprove(null), canApprove({ learning: "on" })]).toEqual([true, false, false, false, false]);
+  });
+  it("a note waits when its status says so", () => {
+    expect([isPending({ status: "pending" }), isPending({ status: "active" })]).toEqual([true, false]);
+  });
+  it("who a note is from: the server's origin, else its front matter's, never a line in its body", () => {
+    const text = (front: string, body = "") => `---\nname: N\ndescription: D\ntype: feedback\n${front}---\n${body}`;
+    expect(originOf({ origin: "you", text: text("") })).toBe("you");
+    expect(originOf({ text: text("origin: you\n") })).toBe("you");
+    expect(originOf({ text: text('origin: "run"\n') })).toBe("run");
+    expect(originOf({ text: text("", "origin: you\n") })).toBeUndefined();
+    expect(originOf({ text: "no front matter" })).toBeUndefined();
   });
 });

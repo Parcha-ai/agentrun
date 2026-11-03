@@ -50,7 +50,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }> };
+type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }> };
 async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {}) {
   const calls: string[] = [];
   const agents: Agent[] = [];
@@ -60,9 +60,11 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     readNote: async (_id: string, file: string) => { calls.push(`read ${file}`); return (fake.read ?? (async (f: string) => ({ note: view().notes.items.find((x) => x.file === f)!.text, etag: `"v-${f}"` })))(file); },
     writeNote: async (_id: string, file: string, text: string, on: unknown) => { calls.push(`write ${file} ${JSON.stringify(on)}`); return (fake.write ?? (async () => ({ text, etag: '"v2"' })))(file, text, on); },
     retireNote: async (_id: string, file: string, etag: string) => { calls.push(`retire ${file} ${etag}`); return (fake.retire ?? (async () => ({ text: "", etag: '"v3"' })))(file, etag); },
+    approveNote: async (_id: string, file: string, etag: string) => { calls.push(`approve ${file} ${etag}`); return (fake.approve ?? (async () => ({ note: "", etag: '"v4"' })))(file, etag); },
     getAgent: async () => { calls.push("agent"); return { agent: a, etag: '"rv1"' }; },
     updateDefinition: async (_id: string, body: unknown, etag: string | null) => { calls.push(`put ${JSON.stringify(body)} ${etag}`); return (fake.update ?? (async () => ({ agent: { ...a, revision: "rv2", revisions: 2, definition: { ...a.definition, ...(body as { definition: object }).definition } }, etag: '"rv2"' })))(body, etag); },
     learningNotes: async () => ({ items: [], total: 0, next_cursor: null }),
+    capabilities: async () => { calls.push("capabilities"); return fake.caps ?? {}; },
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -386,5 +388,63 @@ describe("loading and errors", () => {
     expect(t.text()).toContain("The agent's notes could not be read. · internal");
     await t.click(/Try again/);
     expect(t.text()).toContain("What it has learned");
+  });
+});
+
+describe("notes that wait for the owner's OK", () => {
+  const TRUST = "trust-acme-refunds.md";
+  const waitingView = () => {
+    const v = view();
+    v.notes.items = [
+      note(TRUST, "Trust acme.com's refund page", { status: "pending", etag: '"card-trust"', text: "---\nname: Trust acme.com's refund page\ndescription: d\ntype: feedback\norigin: you\n---\nTrust it.\n" }),
+      ...v.notes.items.map((x) => ({ ...x, etag: `"card-${x.file}"` })),
+    ];
+    return v;
+  };
+  const APPROVES = { learning: { pending: true, approve: true } };
+  it("sit at the top of the tab, under why they wait, and out of the notes in use", async () => {
+    const t = await open(agent(true), { learning: async () => waitingView(), caps: APPROVES });
+    const box = t.host.querySelector('section[aria-label="Waiting for your OK"]')!;
+    expect(box).not.toBeNull();
+    expect(t.host.querySelector("section, article")).toBe(box);
+    expect(box.textContent).toContain("It changes what this agent trusts or skips, so it waits for you.");
+    expect(box.querySelector(`article[aria-label="Trust acme.com's refund page"]`)).not.toBeNull();
+    expect(t.text()).toContain("2 notes in use.");
+    expect(box.textContent).toContain("From you");
+    // A note with no history yet has no empty footer.
+    expect(box.querySelector("article footer")).toBeNull();
+  });
+  it("on a server that approves from the console, Approve is one click, on the card's own version; Retire is there too", async () => {
+    const t = await open(agent(true), { learning: async () => waitingView(), caps: APPROVES });
+    expect(t.text()).not.toContain("Approving here comes in the next update");
+    expect(t.button(/^Retire Trust/)).toBeTruthy();
+    expect(t.button(/^Edit Trust/)).toBeUndefined();
+    await t.click(/^Approve Trust/);
+    expect(t.calls).toContain(`approve ${TRUST} "card-trust"`);
+    expect(t.calls.some((c) => c.startsWith("read"))).toBe(false);
+    expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(2);
+  });
+  it("one changed since its card was read says so, and is not approved", async () => {
+    const t = await open(agent(true), { learning: async () => waitingView(), caps: APPROVES, approve: async () => { throw new ClientError(412, "precondition_failed", "changed"); } });
+    await t.click(/^Approve Trust/);
+    expect(t.text()).toContain("It changed since you opened it. Reload the tab to see the newest version.");
+    expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(1);
+  });
+  it("on a server that holds them but cannot approve from the console yet, there is no Approve: Retire, and a quiet line why", async () => {
+    for (const caps of [{ learning: { pending: true } }, {}]) {
+      const t = await open(agent(true), { learning: async () => waitingView(), caps });
+      const box = t.host.querySelector('section[aria-label="Waiting for your OK"]')!;
+      expect(box).not.toBeNull();
+      expect(t.button(/^Approve /)).toBeUndefined();
+      expect(t.button(/^Retire Trust/)).toBeTruthy();
+      expect(box.textContent).toContain("Approving here comes in the next update; until then it stays out of every run.");
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
+  });
+  it("there is no such section when no note waits, and the capabilities are not even read", async () => {
+    const t = await open(agent(true), { caps: APPROVES });
+    expect(t.host.querySelector('section[aria-label="Waiting for your OK"]')).toBeNull();
+    expect(t.button(/^Approve /)).toBeUndefined();
+    expect(t.calls).not.toContain("capabilities");
   });
 });

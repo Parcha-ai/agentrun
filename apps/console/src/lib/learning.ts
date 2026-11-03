@@ -8,9 +8,12 @@ import { cost } from "./format";
 import { elapsed } from "./runGraph";
 import type { TimelineRow } from "./v2";
 
-export type LearningState = "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
+/** `pending` (a newer server's): the run kept a note that waits for the owner's OK before any run reads it. */
+export type LearningState = "seeded" | "reflecting" | "proposed" | "merged" | "dropped" | "pending";
 export type NoteType = "user" | "feedback" | "project" | "reference";
-export type NoteStatus = "active" | "superseded" | "retired";
+/** `pending` (a newer server's): a note that changes what the agent trusts or skips (a site it trusts, an approval it
+ *  skips, where money or data goes). No run reads it until the owner approves it. */
+export type NoteStatus = "active" | "superseded" | "retired" | "pending";
 export type Page<T> = { items: T[]; total: number; next_cursor: string | null };
 
 /** A note a run read (`used`) or kept (`learned`, with the older notes it replaces), by its file and its name. */
@@ -26,11 +29,13 @@ export type RunLearning = {
   at?: string;
   used?: NoteRef[];
   learned?: LearnedRef[];
+  /** A newer server's: the notes the run kept that wait for the owner's OK. */
+  pending?: NoteRef[];
 } | null;
 
 /** `etag`: the note's version, the same value as the file read's ETag, so an edit or a retire is made on the version a
  *  card showed without reading it again (absent from an older server's). */
-export type LearningNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; superseded_by: string | null; text: string; etag?: string };
+export type LearningNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; superseded_by: string | null; text: string; etag?: string; origin?: "you" | "run" };
 /** One change to what the agent learned, newest first: a run's (`by.run`; `reason`, why it was kept) or a person's. */
 export type LearningChange = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
 export type LearningCounts = { merged: number; dropped: Record<string, number>; in_progress: number };
@@ -88,9 +93,35 @@ const refs = <T extends NoteRef>(raw: unknown): T[] => (Array.isArray(raw) ? raw
 /** The notes a run read, and the notes it kept: empty from a server that does not say. */
 export const usedBy = (l: RunLearning | undefined): NoteRef[] => refs(l?.used);
 export const learnedBy = (l: RunLearning | undefined): LearnedRef[] => (l?.state === "merged" ? refs<LearnedRef>(l.learned) : []);
+/** The notes a run kept that wait for the owner's OK; a run waiting with none named says so by its state alone. */
+export const pendingBy = (l: RunLearning | undefined): NoteRef[] => refs(l?.pending);
+export const waitsForOk = (l: RunLearning | undefined) => pendingBy(l).length > 0 || l?.state === "pending";
+
+/** Whether a note waits for the owner's OK before any run reads it. */
+export const isPending = (n: Pick<LearningNote, "status">) => n.status === "pending";
+/** Who a note is from: the server's `origin` when it sends one, else its front matter's `origin:` line. A note from the
+ *  person themselves reads "From you". */
+export function originOf(n: Pick<LearningNote, "origin" | "text">): "you" | "run" | undefined {
+  if (n.origin === "you" || n.origin === "run") return n.origin;
+  for (const line of noteParts(n.text).rest) {
+    const m = /^origin:\s*["']?(you|run)["']?\s*$/.exec(line);
+    if (m) return m[1] as "you" | "run";
+  }
+  return undefined;
+}
+/** Whether this server approves a waiting note from the console (capabilities `learning.approve`). A server that holds
+ *  notes for the OK without the route says nothing, and the console offers no Approve. */
+export const canApprove = (caps: unknown) => !!caps && typeof caps === "object" && (caps as { learning?: { approve?: unknown } }).learning?.approve === true;
+/** Said on a waiting note while the server has no approve route. */
+export const APPROVE_LATER = "Approving here comes in the next update; until then it stays out of every run.";
+/** Why a note waits, in one line. */
+export const WAITS_WHY = "It changes what this agent trusts or skips, so it waits for you.";
 
 /** What a file name the server cut of a secret reads: shown, never linked. */
 export const REDACTED = "[redacted]";
+
+/** "1 note waits for your OK", "2 notes wait for your OK". */
+export const waitWords = (n: number) => (n === 1 ? "1 note waits for your OK" : n > 1 ? `${n} notes wait for your OK` : "A note waits for your OK");
 
 /** "1 note", "3 notes". */
 export const notes = (n: number) => `${n} ${n === 1 ? "note" : "notes"}`;

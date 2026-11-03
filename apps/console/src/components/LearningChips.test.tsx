@@ -65,4 +65,21 @@ describe("LearningChips", () => {
     expect(html).toContain('href="#/agents/refunds/learning?note=try-policies-refund-policy-first.md"');
     expect(text(html)).toContain("Learned 1 note");
   });
+  it("a note the run kept for the owner's OK says so, linking to it in the Learning tab", () => {
+    const html = renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "pending", reason: null, pending: [{ file: "trust-acme.md", name: "Trust acme.com for refunds" }] }), link: true }));
+    expect(text(html)).toContain("1 note waits for your OK");
+    expect(html).toContain('href="#/agents/refunds/learning?note=trust-acme.md"');
+    expect(html).toContain('aria-label="1 note waits for your OK: Trust acme.com for refunds"');
+    expect(text(html)).toContain("Waits for your OK before any run reads it");
+  });
+  it("a run waiting with no note named still links to the agent's Learning tab", () => {
+    const html = renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "pending", reason: null }), link: true }));
+    expect(text(html)).toContain("A note waits for your OK");
+    expect(html).toContain('href="#/agents/refunds/learning"');
+  });
+  it("in a row, it is text that says the same in its title", () => {
+    const html = renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "merged", reason: null, pending: [{ file: "a.md", name: "A" }, { file: "b.md", name: "B" }] }) }));
+    expect(html).toContain('title="2 notes wait for your OK: A, B"');
+    expect(html).not.toContain("<a ");
+  });
 });

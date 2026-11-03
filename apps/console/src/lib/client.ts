@@ -139,6 +139,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       asNote(await callTagged<string>("PUT", note(id, file), { body: { text }, headers: { ...noteAccept, ...("etag" in on ? { "if-match": on.etag } : { "if-none-match": "*" }) }, text: true })),
     /** Retires a note: out of every later run's instructions, its record kept. 412 when it changed since `etag`. */
     retireNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/retire`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
+    /** Approves a note that waits for the owner's OK, so later runs read it; 412 when it changed since `etag`. */
+    approveNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/approve`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
     getRun: (id: string) => call<Run>("GET", run(id)),
     /** Hides a run from the runs list (or shows it again), its history kept. The answer is the run. */
     archiveRun: (id: string) => call<Run>("POST", `${run(id)}/archive`, { body: {} }),

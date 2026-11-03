@@ -9,7 +9,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
-  CHANGED, NO_VERSION, type NoteProblem, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
+  APPROVE_LATER, canApprove, CHANGED, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
 } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
@@ -57,7 +57,17 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   const readOnly = !!agent.archived_at;
   const all = useMemo(() => [...(view?.notes.items ?? []), ...later.items], [view, later.items]);
   const active = all.filter((x) => x.status === "active");
-  const earlier = all.filter((x) => x.status !== "active");
+  const waiting = all.filter(isPending);
+  // Whether this server approves from the console, read once a note waits: until it says so, no Approve.
+  const [approves, setApproves] = useState<boolean | undefined>(undefined);
+  const anyWaiting = waiting.length > 0;
+  useEffect(() => {
+    if (!anyWaiting || approves !== undefined) return;
+    let live = true;
+    Promise.resolve().then(() => v2.capabilities()).then((c) => { if (live) setApproves(canApprove(c)); }, () => { if (live) setApproves(false); });
+    return () => { live = false; };
+  }, [anyWaiting]); // eslint-disable-line react-hooks/exhaustive-deps
+  const earlier = all.filter((x) => x.status === "superseded" || x.status === "retired");
   const byRun = useMemo(() => new Map(runs.map((r) => [r.run_id, r])), [runs]);
   const from = useMemo(() => provenance(view?.log.items ?? []), [view]);
   // How many of the runs read here used each note: shown only by a server that says what a run read.
@@ -81,6 +91,19 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
 
   return (
     <div className="space-y-6">
+      {waiting.length > 0 && (
+        <section className="border border-warning/50" aria-label="Waiting for your OK">
+          <h2 className="caps flex items-baseline gap-2 border-b border-warning/50 px-4 py-3 text-[12px] font-semibold">Waiting for your OK<span className="font-mono font-normal text-muted-foreground">{waiting.length}</span></h2>
+          <p className="px-4 pt-3 text-[13px] text-muted-foreground">{WAITS_WHY}</p>
+          <ul className="space-y-3 p-4">
+            {waiting.map((x) => (
+              <li key={x.file}>
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} onChanged={read} approves={approves} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <section className="min-w-0 space-y-3" aria-label="Notes">
@@ -239,12 +262,31 @@ function Empty({ on, lookedBack, switchRow, onAdd }: { on: boolean; lookedBack: 
 type From = { run?: { id: string; at: string; reason: string }; edited?: string } | undefined;
 
 /** One note: its name, type and description, its body, where it came from and how often runs used it; Edit and Retire. */
-function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, onChanged }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; usedIn?: number; onChanged: () => void }) {
+/** `approves`: for a note that waits, whether the server approves from the console (undefined while that is read). */
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; usedIn?: number; onChanged: () => void; approves?: boolean }) {
   const [editing, setEditing] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [flash, setFlash] = useState(focused);
   const [saved, setSaved] = useState<string | null>(null);
+  const [approving, setApproving] = useState(false);
+  const [said, setSaid] = useState<ReactNode>(null);
   const ref = useRef<HTMLElement>(null);
+  const waits = isPending(note);
+  // Approve, in one click, on the version the card shows, as an edit or a retire is made.
+  const approve = async () => {
+    const words = (text: string) => <p className="text-[12px] text-destructive-text" role="alert">{text}</p>;
+    setApproving(true); setSaid(null);
+    try {
+      const seen = await seenVersion(note, () => v2.readNote(agentId, note.file));
+      if (seen.kind === "changed") { setSaid(words(`${CHANGED} Reload the tab to see the newest version.`)); setApproving(false); return; }
+      if (seen.kind === "unknown") { setSaid(words(NO_VERSION)); setApproving(false); return; }
+      await v2.approveNote(agentId, note.file, seen.etag);
+      onChanged();
+    } catch (e) {
+      setApproving(false);
+      setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? words(`${CHANGED} Reload the tab to see the newest version.`) : <ProblemCard problem={failed(e, "the note", "The note was not approved.")} className="" />);
+    }
+  };
   useEffect(() => {
     if (!focused) return;
     setFlash(true);
@@ -262,19 +304,23 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, on
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 break-words text-[15px] font-semibold leading-snug">{note.name}</h3>
             <Chip>{typeLabel(note.type)}</Chip>
+            {originOf(note) === "you" && <Chip tone="muted">From you</Chip>}
             {saved && <span className="caps text-[10px] text-success-text" role="status">{saved}</span>}
           </div>
           <p className="mt-1 text-[13px] text-muted-foreground">{note.description}</p>
+          {waits && approves === false && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{APPROVE_LATER}</p>}
         </div>
         {!readOnly && !retiring && (
           <div className="-ml-3 flex shrink-0 items-center gap-1 sm:ml-0">
-            <Button size="sm" variant="ghost" onClick={() => setEditing(true)} aria-label={`Edit ${note.name}`}><Pencil aria-hidden /> Edit</Button>
+            {waits ? approves && <Button size="sm" variant="solid" onClick={() => void approve()} disabled={approving} aria-label={`Approve ${note.name}`}>{approving ? "Approving" : "Approve"}</Button>
+              : <Button size="sm" variant="ghost" onClick={() => setEditing(true)} aria-label={`Edit ${note.name}`}><Pencil aria-hidden /> Edit</Button>}
             <Button size="sm" variant="destructive" onClick={() => setRetiring(true)} aria-label={`Retire ${note.name}`}>Retire</Button>
           </div>
         )}
       </header>
+      {said && <div className="px-5 pt-3">{said}</div>}
       {body.trim() && <Body text={body} />}
-      <footer className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
+      {(from?.run || from?.edited || (usedIn ?? 0) > 0) && <footer className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
         {from?.run ? (
           <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={`Kept because: ${from.run.reason}`}><Sparkles className="size-3 shrink-0 text-primary" aria-hidden />Learned in</span>
             <a href={`#/runs/${encodeURIComponent(from.run.id)}`} className="min-w-0 truncate text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, from.run.id)}>{shortTitle(runTitle(runs, from.run.id))}</a>
@@ -283,7 +329,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, on
         ) : from?.edited ? <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />Written by you · {when(from.edited)}</span> : null}
         {from?.run && from.edited && <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />Edited by you · {when(from.edited)}</span>}
         {usedIn !== undefined && usedIn > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Used in {runsWord(usedIn)}</span>}
-      </footer>
+      </footer>}
       {retiring && <RetireConfirm note={note} v2={v2} agentId={agentId} onDone={(ok) => { setRetiring(false); if (ok) onChanged(); }} />}
     </article>
   );
