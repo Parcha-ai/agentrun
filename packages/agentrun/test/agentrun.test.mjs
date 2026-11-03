@@ -209,3 +209,55 @@ test("the setup skill's start step ends with the command's error when it fails, 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// npx runs the command through `npm exec`, which runs it through `sh -c`. A signal to npm alone (a process manager's
+// SIGTERM or SIGKILL) ended npm and left the command, and the server, with nobody to stop them. Now, started by npm exec,
+// the command watches that npm and stops the server when it is gone. Started any other way it watches nothing: a shell
+// that backgrounds it and exits (`&`, nohup, a tool call's shell) leaves it running, as a shell's rules say.
+const NPM_ENV = { npm_command: "exec", npm_lifecycle_event: "npx", npm_execpath: "/usr/lib/node_modules/npm/bin/npm-cli.js" };
+const strip = (env) => Object.fromEntries(Object.entries(env).filter(([name]) => !/^npm_/i.test(name)));
+async function healthUntil(base, wanted, tries) {
+  for (let i = 0; i < tries; i++) {
+    const up = await fetch(`${base}/v2/health`).then((r) => r.ok, () => false);
+    if (up === wanted) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
+
+test("started by npm exec, the command stops the server once that npm is gone, though the shell npm started it with waits on", { timeout: 90_000 }, async (t) => {
+  const { env } = bare(t);
+  // npm as npx runs it: it names itself `npm exec …` and runs the command through a waiting `sh -c`.
+  const npm = spawn(process.execPath, ["-e", `process.title = "npm exec agentrun --no-open"; const c = require("node:child_process").spawn("sh", ["-c", ${JSON.stringify(`"${process.execPath}" "${BIN}" --no-open; :`)}], { stdio: "inherit" }); c.on("exit", (code) => process.exit(code ?? 1)); setInterval(() => {}, 1000);`], { env: { ...strip(env), ...NPM_ENV }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  t.after(() => { try { process.kill(-npm.pid, "SIGKILL"); } catch {} });
+  let out = "";
+  npm.stdout.on("data", (chunk) => (out += chunk));
+  for (let i = 0; !out.includes("\n") && i < 600; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  const base = /^AgentRun is running at (http:\/\/127\.0\.0\.1:\d+)\//.exec(out)?.[1];
+  assert.ok(base, `the command started: ${out}`);
+  // Only npm goes, as with a SIGKILL to it; its shell and the command are left.
+  npm.kill("SIGKILL");
+  assert.ok(await healthUntil(base, false, 300), "the server stopped within 30 s of npm ending");
+});
+
+test("started directly by a shell that backgrounds it and exits, the command keeps the server running", { timeout: 90_000 }, async (t) => {
+  const { env, home } = bare(t);
+  const log = join(home, "agentrun.log");
+  const pidFile = join(home, "agentrun.pid");
+  // No npm here: the shell starts it in the background, writes its pid, and is gone a little later, once the command is up
+  // and has taken the shell for its parent (as a tool call's shell does).
+  const shell = spawnSync("sh", ["-c", `"${process.execPath}" "${BIN}" --no-open > "${log}" 2>&1 & echo $! > "${pidFile}"; sleep 2`], { env: strip(env) });
+  assert.equal(shell.status, 0);
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  t.after(() => { try { process.kill(pid, "SIGTERM"); } catch {} });
+  let base;
+  for (let i = 0; !base && i < 600; i++) {
+    base = /^AgentRun is running at (http:\/\/127\.0\.0\.1:\d+)\//.exec(existsSync(log) ? readFileSync(log, "utf8") : "")?.[1];
+    if (!base) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(base, "the command started");
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  assert.ok(await healthUntil(base, true, 10), "the server is still up 3 s after the shell that started it ended");
+  process.kill(pid, "SIGTERM");
+  assert.ok(await healthUntil(base, false, 300), "and stops when its command is stopped");
+});
