@@ -14,6 +14,9 @@ export const LONG_ANSWER = `${"The long answer goes on. ".repeat(119)}The end.`;
  *  admitted: the faux adapter asks whether an action is a cut right after the request's beforeRequest has passed (and
  *  asks "hang" and "halt" before it), so the file exists only once the session holds the request. */
 const cutSignalled = (signal) => new Proxy({ cut: true }, { has(target, key) { if (key === "cut") writeFileSync(signal, ""); return key in target; } });
+/** The faux harness's `{ cutBooked: true }` (a request held until the turn is stopped, then booked at `usd`) that writes
+ *  `signal` once the request is admitted, as cutSignalled does. */
+const cutBookedSignalled = (signal, usd) => new Proxy({ cutBooked: true, usd }, { has(target, key) { if (key === "cutBooked") writeFileSync(signal, ""); return key in target; } });
 
 export function script(spec) {
   const text = spec.system.join("\n");
@@ -70,6 +73,26 @@ export function script(spec) {
   if (chat) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(chat) ? [] : [{ hang: true }]), { say: "Done after the wait.", usd: 0.004 }, { end: true, usd: 0.001 }, { say: "Answered the chat.", usd: 0.001 }, { end: true, usd: 0.001 }];
   const wait = /Wait for (\S+) before the answer\./.exec(text)?.[1];
   if (wait) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(wait) ? [] : [{ hang: true }]), { say: "Done after the wait.", usd: 0.004 }];
+  // A run's end read from its turn's end, not from its rows (turn-record.test.mjs).
+  // One answer asks for two fetches, both fail (no such tool here: the bridge has no result text for them, "The tool
+  // failed."), and the turn then ends with no text. `booked late`: the answer's cost comes in after its calls ran, as the
+  // Claude CLI's does when a tool ends before its response: the results are written before their calls.
+  const fetches = /Fetch two pages at once and both fail( \(booked late\))?, then stop\./.exec(text);
+  if (fetches) return [{ calls: [{ call: "web_fetch", args: { url: "http://a.example/" } }, { call: "web_fetch", args: { url: "http://b.example/" } }], usd: 0.001, ...(fetches[1] ? { bookAfter: true } : {}) }, { end: true, usd: 0.001 }];
+  // A turn the harness ends interrupted on its own, no stop or cancel asked for it, after a call and no text.
+  if (/The turn ends interrupted\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { end: true, turn: "interrupted", usd: 0.001 }];
+  // A long tool phase: two fetches, each held until its file exists (faux-web-hold.mjs), then the answer.
+  const gated = /Fetch the pages held until (\S+) and (\S+)\./.exec(text);
+  if (gated) return [1, 2].map((n) => ({ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(gated[n])}` }, usd: 0.001 })).concat([{ say: "Fetched both.", usd: 0.001 }]);
+  // A turn held mid-way (a read, then nothing until the file exists), then its answer: a drain cuts it, the next open resumes it.
+  const resumed = /Hold mid-turn until (\S+)\./.exec(text)?.[1];
+  if (resumed) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, ...(existsSync(resumed) ? [] : [{ hang: true }]), { say: "Resumed and done.", usd: 0.001 }];
+  // A cancel's race: an answer, then a request held unanswered (signal written when it is admitted): the answer's row is in, the turn not over.
+  const after = /Answer, then hold a request unanswered \(signal (\S+)\)\./.exec(text)?.[1];
+  if (after) return [{ say: "Done.", usd: 0.002 }, cutSignalled(after)];
+  // The same with a cap: an answer under the cap, then a request held until the cancel cuts it, booked then at $0.002 (over it).
+  const booked = /Answer, then hold a request the cancel cuts and books \(signal (\S+)\)\./.exec(text)?.[1];
+  if (booked) return [{ say: "Done.", usd: 0.0005 }, cutBookedSignalled(booked, 0.002)];
   // A request admitted and never answered, until the file exists: a crash then cuts it.
   const cut = /Cut until (\S+)\./.exec(text)?.[1];
   if (cut) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(cut) ? [] : [{ cut: true }]), { say: "After the cut.", usd: 0.004 }];

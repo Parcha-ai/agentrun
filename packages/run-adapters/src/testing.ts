@@ -35,12 +35,15 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
   | { say: string; usd?: number | null }
-  | { call: string; args?: unknown; usd?: number | null }
+  /** `bookAfter`: the request's cost is booked only once its calls have run, as a streaming harness (the Claude CLI)
+   *  runs a host tool while its response still streams, before the response's usage comes in. */
+  | { call: string; args?: unknown; usd?: number | null; bookAfter?: true }
   /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls. */
-  | { calls: { call: string; args?: unknown }[]; usd?: number | null }
+  | { calls: { call: string; args?: unknown }[]; usd?: number | null; bookAfter?: true }
   | { submit: unknown; usd?: number | null }
-  /** The reply ends the turn without a submission. */
-  | { end: true; usd?: number | null }
+  /** The reply ends the turn without a submission: `completed`, or the status `turn` names (a harness that ends its own
+   *  turn interrupted, with no stop asked for, ends it so). */
+  | { end: true; usd?: number | null; turn?: TurnStatus }
   /** The request fails: the turn ends failed. */
   | { fail: string }
   /** The process stops here: nothing resolves until the session's signal aborts. */
@@ -48,7 +51,10 @@ export type FauxAction =
   /** The harness halts the drive with this reason (a spend cap, a mirror it cannot keep): the turn ends failed, naming it. */
   | { halt: string }
   /** A paid request leaves (its beforeRequest passes) and the process dies before it answers: nothing more resolves. */
-  | { cut: true };
+  | { cut: true }
+  /** A paid request leaves and holds unanswered until the turn is stopped: the stop cuts it, and its cost (what had
+   *  streamed) is still booked, as a provider bills a response cut short. */
+  | { cutBooked: true; usd?: number | null };
 
 export const FAUX_RECORDS = { request: "faux.request", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result" } as const;
 
@@ -132,13 +138,20 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
             await io.models.beforeRequest({ model: "faux", inputTokensMax: Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8") });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
+            if ("cutBooked" in action) {
+              stats.requests += 1;
+              await append(FAUX_RECORDS.request, { index: cursor++ });
+              try { return await hang(signal); } finally { await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd }); }
+            }
             stats.requests += 1;
             const index = cursor++;
             await append(FAUX_RECORDS.request, { index });
             if ("fail" in action) return await end("failed", action.fail);
-            await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
+            const book = () => io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
+            const late = "bookAfter" in action && action.bookAfter === true;
+            if (!late) await book();
             if ("say" in action) io.onEvent({ type: "text", delta: action.say });
-            else if ("end" in action) return await end("completed");
+            else if ("end" in action) return await end(action.turn ?? "completed");
             else {
               const asked = "calls" in action ? action.calls.map((c) => ({ name: c.call, args: c.args ?? {} }))
                 : [{ name: "call" in action ? action.call : "submit", args: "call" in action ? action.args ?? {} : { value: action.submit } }];
@@ -152,6 +165,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                 await append(FAUX_RECORDS.result, { callId, isError: result.isError === true });
                 io.onEvent({ type: "tool_end", callId, name, isError: result.isError === true });
               }
+              if (late) await book();
             }
           }
         } catch (error) {

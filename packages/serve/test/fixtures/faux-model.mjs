@@ -177,6 +177,18 @@ export default function reply(context, faux) {
   if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
   // A follow-up whose answer stops at its length (max output tokens): text, no tool call, stopReason "length".
   if (first.includes("Stop the follow-up at its length") && users.length > 1) return faux.message("The follow-up's answer, cut at its length", { stopReason: "length" });
+  // A final stop of the model's own with no text (turn-record.test.mjs): only a thinking block, or no content at all; as
+  // the first answer, or as a follow-up's after an answer with text.
+  if (first.includes("Answer only by thinking.") || last === "Now answer only by thinking.") return faux.message([faux.thinking("Nothing to add.")]);
+  if (first.includes("Answer with no content.") || last === "Now answer with no content.") return faux.message([]);
+  // One answer asks for two fetches (no such tool here, so both fail), then the turn stops with no text.
+  if (first.includes("Fetch two pages at once and both fail")) {
+    if (results === 0) return faux.message([faux.toolCall("web_fetch", { url: "http://a.example/" }), faux.toolCall("web_fetch", { url: "http://b.example/" })], { stopReason: "toolUse" });
+    return faux.message([]);
+  }
+  // A long tool phase on pi: two fetches, each held until its file exists (faux-web-hold.mjs), then the answer.
+  const gated = /Fetch the pages held until (\S+) and (\S+)\./.exec(first);
+  if (gated) return results < 2 ? faux.message(faux.toolCall("fetch_page", { url: `http://public.example/hold?until=${encodeURIComponent(gated[results + 1])}` }), { stopReason: "toolUse" }) : faux.message("Fetched both.");
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
   if (first.includes("as JSON")) return faux.message(first.includes("wrongly") ? '{"answer": "forty-two"}' : '```json\n{"answer": 42}\n```');
   return faux.message(`On ${last}: done.`);
