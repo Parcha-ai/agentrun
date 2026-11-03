@@ -448,3 +448,83 @@ describe("App, the playground when its agents can't be read", () => {
     expect(host.querySelector('[role="alert"] p')?.textContent).toBe("The agents could not be read: invalid_cursor: that cursor is not one this server gave");
   });
 });
+
+// QA's first run with no model key gave no sign until a run failed: every page but the first screen (which has the key
+// card) shows a bar while capabilities say no model is ready, and it goes by itself once they say ready.
+describe("App, the no-model bar", () => {
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const serve = (models: () => Record<string, unknown>, routes = true) => {
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      asked.push(`${init?.method ?? "GET"} ${path}`);
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(routes ? { tool_keys: { routes: true, at_rest: "sealed" } } : {}) }, models: models() });
+      if (path === "/v2/settings/tool-keys") return json(200, { keys: [], reenter: null });
+      if (path === "/v2/stats") return json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    return asked;
+  };
+  const mount = async (hash: string) => {
+    location.hash = hash;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    return host;
+  };
+  const until = async (done: () => boolean) => { const end = Date.now() + 4000; while (!done() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); };
+  const bar = (host: HTMLElement) => host.querySelector('[aria-label="No model"]');
+
+  it("says what to set on a page that is not the first screen, links to Settings, and goes once the server says ready, read again when the page comes back into view", async () => {
+    let ready = false;
+    const asked = serve(() => ({ source: "providers", default: ready ? "anthropic/claude-sonnet-5-5" : null, ready, needs: ready ? null : "key" }));
+    const host = await mount("#/runs");
+    await until(() => !!bar(host));
+    expect(bar(host)?.textContent).toBe("No model yet. Set ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY and restart, or add a key in Settings.");
+    expect(bar(host)?.querySelector("a")?.getAttribute("href")).toBe("#/settings/keys");
+    ready = true;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await until(() => !bar(host));
+    expect(bar(host)).toBeNull();
+    expect(asked.filter((a) => a === "GET /v2/capabilities").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("reads the capabilities again on its own while no model is ready, and stops once one is", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let ready = false;
+    const asked = serve(() => ({ source: "providers", default: null, ready, needs: ready ? null : "key" }));
+    const host = await mount("#/agents");
+    await until(() => !!bar(host));
+    const reads = () => asked.filter((a) => a === "GET /v2/capabilities").length;
+    const before = reads();
+    ready = true;
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+    await until(() => !bar(host));
+    expect(reads()).toBe(before + 1);
+    await act(async () => { vi.advanceTimersByTime(30_000); });
+    expect(reads()).toBe(before + 1);
+    vi.useRealTimers();
+  });
+
+  it("names AGENT_MODEL when it is the problem, has no Settings link where the server keeps no keys, and is not on the first screen, which has the key card", async () => {
+    serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), false);
+    const host = await mount("#/runs");
+    await until(() => !!bar(host));
+    expect(bar(host)?.textContent).toBe("This server's default model doesn't run here: set AGENT_MODEL to a model it knows, and restart.");
+    expect(bar(host)?.querySelector("a")).toBeNull();
+    act(() => root!.unmount()); root = undefined;
+    const first = await mount("");
+    await until(() => !!first.querySelector('section[aria-label="Model key"]'));
+    expect(bar(first)).toBeNull();
+  });
+
+  it("shows nothing while a model is ready", async () => {
+    const asked = serve(() => ({ source: "providers", default: "anthropic/claude-sonnet-5-5", ready: true, needs: null }));
+    const host = await mount("#/runs");
+    await until(() => asked.includes("GET /v2/capabilities"));
+    await act(async () => { await new Promise((r) => setTimeout(r, 200)); });
+    expect(bar(host)).toBeNull();
+  });
+});
