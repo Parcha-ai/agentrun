@@ -209,12 +209,8 @@ registerOutcome(INSPECT, ({ text }) => {
   const amount = isObject(price) ? money(price.amount) : undefined;
   return amount && isObject(price) ? { failed: false, text: `${dollars(amount.value)}${price.type === "PER_CALL" ? " a call" : ""}` } : undefined;
 });
+// A run's charge shows on its own row from its booking (TOOL_COST, below), as every paid tool's does.
 registerLabel(RUN, (a, result) => `${result ? "Ran" : "Running"} ${endpointOf(a)}`, undefined, { name: "Run a monid endpoint" });
-// A run's charge on its own row: the call's cost, as its result's details carry it (booked once, on the tools' meter).
-registerOutcome(RUN, ({ details }) => {
-  const cost = money(isObject(details) ? details.cost : undefined);
-  return cost && cost.value > 0 ? { failed: false, text: `ok · charged ${dollars(cost.value)}` } : undefined;
-});
 const named = { provider: { type: "string", minLength: 1, description: `The provider's slug, as ${DISCOVER} gave it.` }, endpoint: { type: "string", minLength: 1, description: `The endpoint's path, as ${DISCOVER} gave it.` } };
 const SPECS: Record<Kind, { summary: string; description: string; properties: Json; required: string[]; replay: "safe" | "unsafe" }> = {
   discover: {

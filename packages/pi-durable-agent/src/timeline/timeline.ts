@@ -74,7 +74,8 @@ export const REQUEST_COST_PENDING = "agentrun.request_cost_pending";
 export const REQUEST_COST_LATE = "agentrun.request_cost_late";
 /** What a paid tool's call charged, written apart from any request as the tool reports it: `tool` and `charged_by` name
  *  it, `usd` is the charge, or null when the call may have charged and did not say how much. It adds to the run's cost,
- *  which is then unknown on a null, and shows as a row of its own; it is no model request. */
+ *  which is then unknown on a null, and shows on its call's own row (a row of its own when its call never shows); it is no
+ *  model request. */
 export const TOOL_COST = "agentrun.tool_cost";
 /** A paid tool's call marked before it is sent (`call`, and `heldUsd`, the most it is held to charge): the TOOL_COST of
  *  the same `call` settles it. Unsettled, it is in flight while the run is; once the run is settled it was cut (a crash),
@@ -313,7 +314,9 @@ function createMeter() {
   return { push, decide, usage, settled };
 }
 
-type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean };
+/** `charge`: what a paid tool's call charged (TOOL_COST), shown on its row. */
+type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean; charge?: Charge };
+type Charge = { text: string; usd: number | null };
 
 const TAG = /^[\w.-]{1,64}$/;
 const blocksOf = (message: Obj | undefined): Obj[] => {
@@ -376,6 +379,18 @@ function createProjector(options: TimelineOptions) {
   };
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
+  // Paid tools' charges written before their call (a harness bridge books a charge as the call runs), by
+  // `conversation:id`: the call takes it when it comes; one whose call never comes keeps a line of its own.
+  const charges = new Map<string, { charge: Charge; conv: number; base: string; tool: string; by: string; id: string }>();
+  /** A charge on its call's row: said after its outcome, and its usage, the charge alone (no request), so a host sums a
+   *  run's paid tools from the same rows as its cost. */
+  const chargeOn = (call: OpenCall, charge: Charge) => {
+    call.charge = charge;
+    call.use.usage = { usd: charge.usd, requests: 0 };
+    if (call.done) call.use.summary = clean(`${call.use.summary} · charged ${charge.text}`, caps.summary);
+  };
+  const chargeRow = (held: { charge: Charge; conv: number; base: string; tool: string; by: string; id: string }) =>
+    make("phase", held.conv, held.base, { summary: `Tool cost: ${held.by} charged ${held.charge.text} for ${held.tool}`, tool_name: held.tool, tool_use_id: held.id || null, usage: { usd: held.charge.usd, requests: 0 } });
   // Results stored before their call (a harness bridge once wrote one before the answer that held its call), by
   // `conversation:id`: the call takes it when it comes; one whose call never comes is an action of its own.
   const early = new Map<string, { conv: number; id: string; name: string; view: ToolResultView; base: string }>();
@@ -436,7 +451,8 @@ function createProjector(options: TimelineOptions) {
     const probed = missingOf(call.name, call.args, view, written);
     const status = probed || (outcome?.missing === true && !view.isError) ? "missing" : failedWith(view, outcome) ? "failed" : "success";
     const said = outcome?.text === undefined ? undefined : `${named}${outcome.sep ?? ": "}${scrubUrls(firstLine(rel(outcome.text)))}`;
-    const line = probed ? `${named}: not found` : (outcome?.line ?? said ?? (view.isError ? `${named} failed: ${failure(rel(view.text))}` : `${named}: ok`));
+    const ended = probed ? `${named}: not found` : (outcome?.line ?? said ?? (view.isError ? `${named} failed: ${failure(rel(view.text))}` : `${named}: ok`));
+    const line = call.charge ? `${ended} · charged ${call.charge.text}` : ended;
     const preview = outcome?.preview ?? (view.text ? readable(view.text) : undefined);
     Object.assign(call.use, {
       summary: clean(line, caps.summary), tool_status: status, ended_at: endOf(call),
@@ -488,13 +504,17 @@ function createProjector(options: TimelineOptions) {
     if (metered === "mark") {
       // A request's mark or cost, or pi's answer to a request that never left: counted, nothing to show.
     } else if (metered === "charge") {
-      // A paid tool's charge: counted in the cost, and shown on a line of its own.
+      // A paid tool's charge: counted in the cost, and shown on its call's own row, whenever the call shows.
       const data = obj(entry.data);
-      const [tool, by, usd] = [str(data?.tool) ?? "a tool", str(data?.charged_by) ?? "its provider", data?.usd];
-      const amount = typeof usd === "number" && Number.isFinite(usd) ? dollars(usd) : "an unknown amount";
-      // Its `usage` is the charge alone (no request): a host sums a run's paid tools from the same rows as its cost.
-      const charge = typeof usd === "number" && Number.isFinite(usd) ? usd : null;
-      add(make("phase", conv, base, { summary: `Tool cost: ${by} charged ${amount} for ${tool}`, tool_name: tool, tool_use_id: str(data?.call) ?? null, usage: { usd: charge, requests: 0 } }));
+      const [tool, by, usd, id] = [str(data?.tool) ?? "a tool", str(data?.charged_by) ?? "its provider", data?.usd, str(data?.call) ?? ""];
+      const known = typeof usd === "number" && Number.isFinite(usd) ? usd : null;
+      const charge = { text: known === null ? "an unknown amount" : dollars(known), usd: known };
+      const call = id ? calls.get(`${conv}:${id}`) : undefined;
+      if (call) {
+        chargeOn(call, charge);
+        touch(call.use);
+      } else if (id) charges.set(`${conv}:${id}`, { charge, conv, base, tool, by, id });
+      else add(chargeRow({ charge, conv, base, tool, by, id }));
     } else if ((metered === "answer" || metered === "continued") && message) {
       const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
       if (metered === "answer") answers.set(conv, entry.id);
@@ -527,6 +547,12 @@ function createProjector(options: TimelineOptions) {
           const call: OpenCall = { conv, name, args, round, use, done: false };
           calls.set(`${conv}:${id}`, call);
           add(use);
+          // Its charge came first: it is this call's.
+          const paid = charges.get(`${conv}:${id}`);
+          if (paid) {
+            charges.delete(`${conv}:${id}`);
+            chargeOn(call, paid.charge);
+          }
           // Its result came first: it is this call's.
           const before = early.get(`${conv}:${id}`);
           if (before) {
@@ -625,8 +651,9 @@ function createProjector(options: TimelineOptions) {
     // Labelled as a call that ended (it did, with nothing): "Searched the web for …: interrupted", not "Searching".
     // It ended when the run did, when a settled read is told; else at the latest entry read.
     const runEnd = options.settled && options.run?.endedAt ? Date.parse(options.run.endedAt) : Number.NaN;
+    const charged = call.charge ? ` · charged ${call.charge.text}` : "";
     Object.assign(call.use, {
-      summary: clean(`${label(call.name, call.args, { text: "", details: undefined, isError: true })}: interrupted`, caps.summary), tool_status: "interrupted",
+      summary: clean(`${label(call.name, call.args, { text: "", details: undefined, isError: true })}: interrupted${charged}`, caps.summary), tool_status: "interrupted",
       ended_at: endOf(call, Number.isFinite(runEnd) ? Math.max(runEnd, stamp) : stamp),
     });
     return call.use;
@@ -638,8 +665,11 @@ function createProjector(options: TimelineOptions) {
     early.delete(`${held.conv}:${held.id}`);
     return callless(held.conv, held.base, held.id, held.name, held.view);
   }
-  const releaseAll = () => [...early.values()].map((held) => {
-    const row = release(held);
+  /** Each result and each charge still waiting for a call that never came, as the row of its own it is. */
+  const releaseAll = () => [
+    ...[...early.values()].map(release),
+    ...[...charges.values()].map((held) => (charges.delete(`${held.conv}:${held.id}`), chargeRow(held))),
+  ].map((row) => {
     rows.push(row);
     return row;
   });
