@@ -4,8 +4,6 @@
 // holds one chunk at most, and checks a binary once per identity: its path, the file it names (device and inode), its
 // size and its modification and change times, with the pins it met. Replaced or touched, it is checked again; a check
 // that failed is never kept, so the next one runs again.
-// The codex adapter keeps a copy of this code (run-adapters-codex/src/pinned-binary.ts), line for line, since its check
-// must import nothing outside its own package; a test there holds the two the same.
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 

@@ -1,20 +1,22 @@
-// CI's test shards: `node scripts/ci-shard.mjs <shard>` runs one shard's suites, each in turn, and fails if any failed.
-// `rest` runs every workspace suite no other shard names, so a new package is tested without editing this file, and
-// `examples-<n>` each run every third file of `npm run test:examples`'s globs, so a new example file is tested too.
-// `node scripts/ci-shard.mjs --list` prints each shard's suites.
+// CI's test shards: `node scripts/ci-shard.mjs <shard>` runs one shard's tests, a command per suite, and fails if any
+// failed. scripts/ci-plan.mjs names the shards (`<pool>-<k>`, the pools in scripts/ci-shards.json) and assigns each suite's
+// files to them by time; every shard job plans every shard and fails unless they cover every test file once, so a new
+// package or test file is tested without editing this file. `node scripts/ci-shard.mjs --list` prints each shard's
+// commands.
 //
 // Two limits make a stall fail by name, its log kept, before the test job's 30 minutes (ci.yml) cancel it:
-// - A `node --test` a shard runs gets --test-timeout, 10 min (CI_SHARD_TEST_TIMEOUT_MS). On Node 24 a test still running
-//   then fails, named; Node 22 applies the flag to each test file instead, and names the file. On main's CI the slowest test
-//   takes 45 s and the slowest file (serve's recovery.test.mjs) 4 min. A test's own `timeout` holds on Node 24. The kill
-//   below names no test: on SIGTERM node --test 24 names the file still running, and 22 nothing.
+// - A `node --test` a shard runs gets --test-timeout, 10 min (CI_SHARD_TEST_TIMEOUT_MS), unless its script sets its own.
+//   On Node 24 a test still running then fails, named; Node 22 applies the flag to each test file instead, and names the
+//   file. On main's CI the slowest test takes 45 s and the slowest file (serve's recovery.test.mjs) 4 min. A test's own
+//   `timeout` holds on Node 24. The kill below names no test: on SIGTERM node --test 24 names the file still running, and
+//   22 nothing.
 // - A shard's suites get 24 min in all (CI_SHARD_TIMEOUT_MS): the suite still running then is killed with every process it
 //   started, those after it are not run, and an ::error:: line names each. This catches a suite whose tests all end but
-//   whose process stays alive. The slowest shard takes 9 min; the steps before this one, up to 3.
+//   whose process stays alive. The slowest shard takes 5 min; the steps before this one, up to 3.
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, globSync, readdirSync, readFileSync } from 'node:fs';
 import { constants } from 'node:os';
+import { commandsOf, testShards } from './ci-plan.mjs';
 
 const limit = (name, fallback) => {
   const value = process.env[name] ?? String(fallback);
@@ -24,68 +26,21 @@ const limit = (name, fallback) => {
 const TEST_TIMEOUT_MS = limit('CI_SHARD_TEST_TIMEOUT_MS', 10 * 60_000);
 const SHARD_TIMEOUT_MS = limit('CI_SHARD_TIMEOUT_MS', 24 * 60_000);
 
-const shards = {
-  transport: { workspaces: ['@parcha/pi-transport'] },
-  browser: { workspaces: ['@parcha/pi-browser'] },
-  durable: { workspaces: ['@parcha/pi-durable-disk', '@parcha/pi-durable-agent', '@parcha/agentrun-serve'] },
-  core: { workspaces: ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi'] },
-  viewer: { scripts: ['test:viewer'] },
-  rest: { scripts: ['test:release'] },
-};
-
-const rootScripts = JSON.parse(readFileSync('package.json', 'utf8')).scripts;
-const examplesScript = rootScripts['test:examples'];
-if (!examplesScript.startsWith('node --test ')) throw new Error(`test:examples is no longer a plain node --test: ${examplesScript}`);
-const exampleFiles = examplesScript.slice('node --test '.length).split(/\s+/).flatMap((pattern) => globSync(pattern)).sort();
-const EXAMPLE_SHARDS = 3;
-for (let n = 1; n <= EXAMPLE_SHARDS; n += 1) {
-  shards[`examples-${n}`] = { files: exampleFiles.filter((_, index) => index % EXAMPLE_SHARDS === n - 1) };
-}
-
-const manifests = readdirSync('packages')
-  .map((name) => `packages/${name}/package.json`)
-  .filter((path) => existsSync(path))
-  .map((path) => JSON.parse(readFileSync(path, 'utf8')));
-const testScripts = new Map(manifests.filter((manifest) => manifest.scripts?.test).map((manifest) => [manifest.name, manifest.scripts.test]));
-const tested = [...testScripts.keys()];
-const named = new Set(Object.values(shards).flatMap((shard) => shard.workspaces ?? []));
-for (const name of named) if (!tested.includes(name)) throw new Error(`shard names ${name}, which has no test script`);
-shards.rest.workspaces = tested.filter((name) => !named.has(name));
-
-// The one script shape that gets --test-timeout: `node --test`, an optional --test-concurrency=<n>, then file patterns, and
-// nothing else. It runs through `npm exec -c` with the flag after `node --test`, in the script's directory with npm's PATH as
-// `npm run` gives them (NODE_OPTIONS refuses the flag, and node ignores one npm appends after the files).
-const nodeTest = /^node --test(?: --test-concurrency=\d+)?(?: (?:'[\w./*-]+'|[\w./*-]+))+$/;
-// The scripts that run as they are, each pinned to its text.
-const asIs = {
-  '@parcha/pi-durable-disk': "node --test --test-timeout=240000 'test/*.test.ts' 'test/examples/*.test.ts'", // its own limit
-  '@parcha/pi-transport': 'vitest --run', // vitest.config.ts sets testTimeout
-  '@parcha/pi-browser': 'node scripts/run-tests.mjs', // its own runner starts node --test
-  '@parcha/pi-vision': 'node scripts/run-tests.mjs',
-  'test:viewer': 'tsc -p apps/viewer/tsconfig.json && node --test apps/viewer/test/*.test.ts', // tsc first
-};
-// Any other script fails the shard, so a script that changes shape is looked at here, never run without the limit unseen.
-const npmScript = (owner, script, text, where = []) => {
-  if (nodeTest.test(text)) return ['npm', 'exec', ...where, '-c', text.replace('node --test', `node --test --test-timeout=${TEST_TIMEOUT_MS}`)];
-  if (asIs[owner] === text) return ['npm', 'run', script, ...where];
-  throw new Error(`${owner}'s ${script} script, ${JSON.stringify(text)}, is neither \`node --test [--test-concurrency=<n>] <files>\` (which gets --test-timeout) nor one scripts/ci-shard.mjs runs as it is; add it to one of them there`);
-};
-const commands = (shard) => [
-  ...(shard.workspaces ?? []).map((name) => npmScript(name, 'test', testScripts.get(name), ['-w', name])),
-  ...(shard.scripts ?? []).map((script) => npmScript(script, script, rootScripts[script])),
-  ...(shard.files?.length ? [[process.execPath, '--test', `--test-timeout=${TEST_TIMEOUT_MS}`, ...shard.files]] : []),
-];
+let shards;
+try { shards = testShards(process.cwd()); } catch (error) { console.error(`ci-shard: ${error.message}`); process.exit(1); }
+const commands = (shard) => commandsOf(shard.suites, shard.units, { timeoutMs: TEST_TIMEOUT_MS }).map(({ command }) => command);
 // A command as the log shows it, one a shell runs as it is.
 const shown = (command) => command.map((arg) => (arg === process.execPath ? 'node' : /\s/.test(arg) ? JSON.stringify(arg) : arg)).join(' ');
 
 const [wanted] = process.argv.slice(2);
 if (wanted === '--list') {
-  for (const [name, shard] of Object.entries(shards)) console.log(`${name}: ${commands(shard).map(shown).join('; ')}`);
+  for (const [name, shard] of Object.entries(shards)) console.log(`${name} (${shard.seconds} s modelled): ${commands(shard).map(shown).join('; ')}`);
   process.exit(0);
 }
 const shard = shards[wanted];
 if (!shard) { console.error(`usage: node scripts/ci-shard.mjs <${Object.keys(shards).join('|')}> | --list`); process.exit(2); }
 if (!commands(shard).length) { console.error(`shard ${wanted} has nothing to run`); process.exit(1); }
+console.log(`ci-shard: ${wanted} runs ${shard.units.length} test files and suites, ${shard.seconds} s modelled`);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // A signal to a command's process group; false when nothing in it is left.

@@ -27,6 +27,12 @@ export function script(spec) {
   if (/Comment, say nothing, then write\./.test(text)) return [{ say: "I'll check first.", usd: 0.001 }, { say: " ", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
   if (/Say nothing, then write\./.test(text)) return [{ say: " ", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
   if (/Comment, then write\./.test(text)) return [{ say: "I'll write note.md.", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
+  // As the Claude CLI sends a path (F25): absolute, under its working directory, which is the run's work/ (the run's
+  // process runs with --dir <run dir>); then one outside the run's directory, which the tool refuses.
+  if (/Write by the absolute path\./.test(text)) {
+    const runDir = process.argv[process.argv.indexOf("--dir") + 1];
+    return [{ call: "write", args: { path: `${runDir}/work/hello.md`, content: "hello" }, usd: 0.001 }, { call: "write", args: { path: "/elsewhere/away.md", content: "x" }, usd: 0.001 }, { say: "Wrote hello.md.", usd: 0.001 }];
+  }
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
   if (/Write then read\./.test(text)) return [{ call: "write", args: { path: "note.txt", content: "hello from the tool" }, usd: 0.001 }, { call: "read", args: { path: "note.txt" }, usd: 0.001 }, { say: "Read back.", usd: 0.001 }];
   // Paths at the workspace's edge: one out of it, a file that is not there, then a write into it.
