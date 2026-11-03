@@ -742,6 +742,8 @@ export class Runs {
 
   async recover(): Promise<void> {
     await this.sweepOnce();
+    // Read, or written at this first start, before anything ends here: a run that ends later is after it.
+    if (this.options.notify) this.noticesFrom ??= this.noticesSince();
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
       if (row.importedFrom) continue;
       if (row.state !== "running") {
