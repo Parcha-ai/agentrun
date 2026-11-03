@@ -34,6 +34,11 @@ test("the resolver: the agent's pick over the server's; auto is native where the
   assert.equal(search({ harness: "pi" }), "exa-keyless", "no model named");
   assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-4-5", gateway: true }), "exa-keyless", "behind a gateway");
   assert.equal(search({ harness: "codex", gateway: true }), "exa-keyless");
+  // OpenCode has no search of its own (its model requests carry no provider-hosted tool), whatever its model: keyless Exa.
+  assert.equal(search({ harness: "opencode", model: "openai/gpt-5" }), "exa-keyless", "OpenCode has no native search");
+  assert.equal(search({ harness: "opencode", model: "openai/gpt-5", pick: "native" }), "unavailable: no native search for opencode, whose model requests carry no provider-hosted tool");
+  assert.equal(search({ harness: "opencode", model: "openai/gpt-5", parallelKey: true }), "exa-keyless", "auto takes no saved Parallel key here, on any harness");
+  assert.equal(search({ harness: "opencode", model: "openai/gpt-5", pick: "parallel", parallelKey: true }), "parallel", "Parallel when picked, with its key");
   assert.equal(search({ harness: "claude-agent", gateway: true }), "native", "Claude's model never goes through the other gateway");
   assert.equal(search({ harness: "claude-agent", pick: "exa-keyless" }), "exa-keyless", "a pick over the native one");
   assert.equal(search({ harness: "pi", pick: "parallel" }), "unavailable: parallel picked, no PARALLEL_API_KEY", "never a silent fallback");
@@ -98,8 +103,8 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   const catalog = (await api("GET", "/capabilities")).body;
   meets("/capabilities", "get", catalog);
   assert.deepEqual(catalog.tools.filter((tool) => tool.providers).map((tool) => [tool.name, tool.providers, tool.provider, tool.default_provider, tool.resolves]), [
-    ["web_fetch", ["kernel", "parallel"], "kernel", "kernel", { pi: "kernel", "claude-agent": "kernel", codex: "kernel" }],
-    ["web_search", ["auto", "native", "exa-keyless", "parallel", "off"], "auto", "auto", { pi: "native", "claude-agent": "native", codex: "native" }],
+    ["web_fetch", ["kernel", "parallel"], "kernel", "kernel", { pi: "kernel", "claude-agent": "kernel", codex: "kernel", opencode: "kernel" }],
+    ["web_search", ["auto", "native", "exa-keyless", "parallel", "off"], "auto", "auto", { pi: "native", "claude-agent": "native", codex: "native", opencode: "exa-keyless" }],
   ]);
 
   for (const [body, fields] of [
@@ -116,7 +121,7 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   assert.deepEqual([put.status, put.body], [200, { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "kernel" } }]);
   meets("/settings/tools", "put", put.body);
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.resolves]));
-  assert.deepEqual(tools.web_search, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "exa-keyless" }, "recomputed with no restart");
+  assert.deepEqual(tools.web_search, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "exa-keyless", opencode: "exa-keyless" }, "recomputed with no restart");
   assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.providers).map((tool) => [tool.provider, tool.default_provider]), [["kernel", "kernel"], ["exa-keyless", "auto"]], "the server's pick, and the built-in default");
   assert.equal(tools.read, undefined, "a tool with no provider choice resolves nothing");
   assert.equal("fetch_page" in tools, false, "fetch_page, web_fetch's legacy name, is not in the table");
@@ -148,9 +153,9 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   process.env.AGENT_MODEL_BASE_URL = "https://gateway.example/v1";
   const gateway = await serve(t);
   assert.equal((await gateway.api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
-  assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "unavailable: no native search for pi behind a gateway", "claude-agent": "native", codex: "unavailable: no native search for codex behind a gateway" });
+  assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "unavailable: no native search for pi behind a gateway", "claude-agent": "native", codex: "unavailable: no native search for codex behind a gateway", opencode: "unavailable: no native search for opencode, whose model requests carry no provider-hosted tool" });
   assert.equal((await gateway.api("PUT", "/settings/tools", {})).status, 200);
-  assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "exa-keyless", "claude-agent": "native", codex: "exa-keyless" }, "auto falls back to keyless Exa");
+  assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "exa-keyless", "claude-agent": "native", codex: "exa-keyless", opencode: "exa-keyless" }, "auto falls back to keyless Exa");
   delete process.env.AGENT_MODEL_BASE_URL;
 
   // Kept across a restart: the next server on the same data reads them.

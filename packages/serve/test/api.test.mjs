@@ -268,7 +268,7 @@ test("the tool table is closed: a name outside it is refused by name, and a tool
   assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["bash", undefined], ["ask_person", undefined], ["web_fetch", undefined], ["web_search", undefined], ["browser", ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"]], ["monid.discover", ["MONID_API_KEY"]], ["monid.inspect", ["MONID_API_KEY"]], ["monid.run", ["MONID_API_KEY"]], ["pdf_pages", undefined], ["llm", undefined]]);
   // web_search needs no key: Claude's and Codex's own search; pi with no model named, Exa's keyless search; Parallel picked
   // without its key, missing.
-  assert.deepEqual(toolsView({}).find((t) => t.name === "web_search").resolves, { pi: "exa-keyless", "claude-agent": "native", codex: "native" });
+  assert.deepEqual(toolsView({}).find((t) => t.name === "web_search").resolves, { pi: "exa-keyless", "claude-agent": "native", codex: "native", opencode: "exa-keyless" });
   assert.deepEqual(toolsView({}, { web_search: { provider: "parallel" } }).filter((t) => t.resolves).map((t) => [t.name, t.available, t.missing]), [["web_fetch", true, undefined], ["web_search", false, ["PARALLEL_API_KEY"]]]);
   // An unavailable tool always says why: a provider pick's own words, or the variables it needs.
   const off = toolsView({}, { web_search: { provider: "off" } }).find((t) => t.name === "web_search");

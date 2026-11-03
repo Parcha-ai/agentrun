@@ -17,8 +17,9 @@ const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathnam
 const FAUX = { fauxHarness: fixture("faux-harness.mjs"), fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs"), fauxUpstream: fixture("faux-upstream.mjs"), fauxExa: fixture("faux-exa.mjs") };
 const PAGE = "http://public.example/";
 const ANTHROPIC_TOOL = { type: "web_search_20250305", name: "web_search", max_uses: 5 };
-const NATIVE = { pi: "native", "claude-agent": "native", codex: "native" };
-const each = (value) => ({ pi: value, "claude-agent": value, codex: value });
+// OpenCode has no native search: it searches keyless Exa wherever the others search natively.
+const NATIVE = { pi: "native", "claude-agent": "native", codex: "native", opencode: "exa-keyless" };
+const each = (value) => ({ pi: value, "claude-agent": value, codex: value, opencode: value });
 
 /** The environment of test `t` (model keys only, unless `extra` says more), and the lines each fake files. */
 async function setting(t, extra = {}) {
@@ -121,7 +122,7 @@ test("with only model keys: native search on pi, claude-agent and codex, and the
 test("a pi run whose model goes through a gateway searches keyless Exa; claude-agent stays native; a pick of Parallel without its key is unavailable, and refused", { timeout: 60_000 }, async (t) => {
   const { seen } = await setting(t, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1" });
   const { api } = await serve(t, FAUX);
-  assert.deepEqual((await resolves(api)).web_search, { pi: "exa-keyless", "claude-agent": "native", codex: "exa-keyless" });
+  assert.deepEqual((await resolves(api)).web_search, { pi: "exa-keyless", "claude-agent": "native", codex: "exa-keyless", opencode: "exa-keyless" });
   const run = await research(api, "gateway-pi", {});
   assert.match(run.results.web_search, /^\{"provider":"exa-keyless","query":"widgets","results":\[\{"url":"http:\/\/public\.example\/","title":"Public page","snippet":"The answer is forty-two\. See the registry for more\.","published":"2026-10-01T00:00:00.000Z"\},\{"url":"https:\/\/result\.example\/2","title":"Result 2 for widgets","snippet":"Excerpt 2\."\}\]\}\nCite the URL of each result you rely on\.$/);
   assert.match(run.report, /Public page, http:\/\/public\.example\//);
