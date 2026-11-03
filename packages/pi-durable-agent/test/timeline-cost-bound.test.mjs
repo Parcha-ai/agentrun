@@ -89,6 +89,18 @@ test("a cost unknown because its model has no price says so in the usage row's s
   assert.equal(summaryOf([user("go"), started(0.2), unpriced("gateway-model-x")]), "Cost so far: unknown over 1 model request", "an answer with no price whose request had a figure: bounded, so the bound speaks, not this");
 });
 
+test("a request that ended on an error after its response began (its end mark says `error`) counts at its hold, its entry's partial cost aside, and never takes another open request's figure out of the bound", () => {
+  // pi's error entry for it, at the partial cost its stream reported, and its end mark at what was held for it, in either
+  // order (pi writes the entry as the mark is written), as a cap that marks such an end reads them.
+  const erred = (usd) => assistant([], 0, { stopReason: "error", errorMessage: "overloaded_error", usage: { input: 10, output: 1, cost: { total: usd } } });
+  const errorEnd = (held) => custom(REQUEST_ENDED, { error: true, heldUsd: held });
+  // A, held 0.4, erred after its response began; B, held 0.4, was cut: each can have cost up to its hold.
+  assert.deepEqual(usageOf([user("go"), started(0.4), erred(0.02), errorEnd(0.4), started(0.4)]), { usd: null, requests: 2, at_most_usd: 0.8 });
+  assert.deepEqual(usageOf([user("go"), started(0.4), errorEnd(0.4), erred(0.02), started(0.4)]), { usd: null, requests: 2, at_most_usd: 0.8 }, "its end mark before its entry");
+  // An error entry with no such end mark (an error before any event: a 429, a 5xx) counts at its own cost, as before.
+  assert.deepEqual(usageOf([user("go"), started(0.4), erred(0.02), started(0.4)]), { usd: null, requests: 2, at_most_usd: 0.42 });
+});
+
 test("a known cost has no bound", () => {
   assert.deepEqual(usageOf([user("go"), started(0.2), priced("one"), started(0.5), priced("two", 0.02)]), { usd: 0.03, requests: 2 });
 });
