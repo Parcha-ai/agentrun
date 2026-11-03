@@ -156,6 +156,19 @@ test("under a spend cap, a page read through Parallel's extract is a paid call: 
   assert.deepEqual([sent.length, added, web.dialled], [1, [0.001], ["http://public.example/"]], "Parallel was not asked; the host was");
 }));
 
+test("a Parallel request whose settle record cannot be written still answers, and the run's process counts its price as spent: its mark stands", async (t) => {
+  withEnv(t, {}, [MODE]);
+  t.after(() => useSpend(undefined));
+  const added = [];
+  useSpend({ cap: 1, spent: () => 0, add: (usd) => added.push(usd) });
+  const written = [];
+  const ledger = { call: "c1", record: async (kind, data) => { if (kind === "agentrun.tool_cost") throw new Error("the store is busy"); written.push([kind, data.heldUsd]); } };
+  const { send } = parallel();
+  const found = await bookedIn(ledger, () => webSearch({ query: "widgets", n: 2 }, parallelExtract(CANARY, send)));
+  assert.equal(found.provider, "parallel", "the search answers");
+  assert.deepEqual([written, added], [[["agentrun.tool_started", PARALLEL_SEARCH_USD]], [PARALLEL_SEARCH_USD]], "its mark at the price stands, and the process counts the price");
+});
+
 test("a request to Parallel with no call to book it under is never sent, nor one to an endpoint with no price here: a search answers the refusal, a page read is the guarded direct fetch saying so, and nothing reaches Parallel", async (t) => {
   withEnv(t, {}, [MODE, EXTRACT_MODE]);
   const { sent, send } = parallel();
