@@ -1,0 +1,214 @@
+{
+  "origin": "http://127.0.0.1:37839",
+  "build": {
+    "asset": "assets/index-bLQbTIIJ.js",
+    "sha256": "da22a54cff6a4641bc19504e649f146d987b816e3636ba7a5e26eca9f86e257c",
+    "sourceHash": "8ff5e87f9691422965089c986e9484025ec33f1bcaf59c31c170c9b6265a93c4",
+    "stylesheet": "assets/index-MZWl1iOl.css",
+    "cssSha256": "bf50c1d29c09f394dbd98026fef8f8c8cae60514718ac97b42d0ea5b6daf512f"
+  },
+  "checks": [
+    {
+      "row": "00-loading",
+      "status": "PASS"
+    },
+    {
+      "row": "01-empty-and-auth",
+      "status": "PASS"
+    },
+    {
+      "row": "02a-agent-skills-narrow",
+      "status": "PASS"
+    },
+    {
+      "row": "02-agent-created",
+      "status": "PASS"
+    },
+    {
+      "row": "02b-coding-agent-handoff",
+      "status": "PASS"
+    },
+    {
+      "row": "03-report-preview",
+      "status": "PASS"
+    },
+    {
+      "row": "04-binary-preview-download",
+      "status": "PASS"
+    },
+    {
+      "row": "05-sandboxed-html",
+      "status": "PASS"
+    },
+    {
+      "row": "06-file-error",
+      "status": "PASS"
+    },
+    {
+      "row": "07-input-required",
+      "status": "PASS"
+    },
+    {
+      "row": "08-answer-result",
+      "status": "PASS"
+    },
+    {
+      "row": "09-disconnected",
+      "status": "PASS"
+    },
+    {
+      "row": "10-stopped-continuable",
+      "status": "PASS"
+    },
+    {
+      "row": "11-cancelled",
+      "status": "PASS"
+    },
+    {
+      "row": "12-mission-desktop",
+      "status": "PASS",
+      "waiting": "01a19ee7-181c-7890-8c5b-1983fd9bb2ed",
+      "active": "01a19ee7-2ed0-7111-9398-77398b2a361c",
+      "failed": "01a19ee7-2d0f-71b3-a635-bf3120b8840e",
+      "metricCardRadius": "12px"
+    },
+    {
+      "row": "12a-mission-activity",
+      "status": "PASS"
+    },
+    {
+      "row": "13-mission-pagination",
+      "status": "PASS"
+    },
+    {
+      "row": "14-mission-narrow",
+      "status": "PASS",
+      "metricCardRadius": "12px"
+    },
+    {
+      "row": "14a-keyboard-navigation",
+      "status": "PASS"
+    },
+    {
+      "row": "15-run-narrow",
+      "status": "PASS"
+    },
+    {
+      "row": "15a-file-narrow",
+      "status": "PASS"
+    },
+    {
+      "row": "16-mission-disconnected-retained",
+      "status": "PASS"
+    },
+    {
+      "row": "17-server-settings",
+      "status": "PASS"
+    }
+  ],
+  "resources": [
+    {
+      "agent": "01a19ee6-a360-75fd-8156-ffd355732421"
+    },
+    {
+      "run": "01a19ee6-a47a-79f4-a4a7-f2da59346cb6",
+      "agent": "01a19ee6-a360-75fd-8156-ffd355732421"
+    },
+    {
+      "agent": "browser-regions"
+    },
+    {
+      "run": "01a19ee6-a8f5-7266-a2e4-67864870c109",
+      "agent": "browser-regions"
+    },
+    {
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee6-ac92-79fa-ae97-c85b0fdc3155",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-1779-7d3d-adf4-8ef11892a5ff",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-181c-7890-8c5b-1983fd9bb2ed",
+      "agent": "browser-regions"
+    },
+    {
+      "run": "01a19ee7-1827-7200-a7e5-04982b2869d8",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-19e7-7824-a4a3-ec30c9ea0fca",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-1ba9-7487-a1aa-7e1b12e934dd",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-1d67-784b-a6a0-b564ea01dcca",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-1f27-70d1-8b64-49a9e1f33f99",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-20e3-7e8f-8580-44b2e49eb78d",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-22a0-77c6-ada7-6f23cb5a8b08",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-245e-7152-ac90-cf74466a3988",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-261b-7490-bdf0-2739b30707e2",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-27d9-7576-b150-a18a179862d3",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-2995-7ff5-87fb-d2ddab536923",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-2b52-7317-8e62-0967e3bea870",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-2d0f-71b3-a635-bf3120b8840e",
+      "agent": "browser-slow"
+    },
+    {
+      "run": "01a19ee7-2ed0-7111-9398-77398b2a361c",
+      "agent": "browser-slow"
+    }
+  ],
+  "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Executing inline event handler violates the following Content Security Policy directive 'script-src 'self''. Either the 'unsafe-inline' keyword, a hash ('sha256-...'), or a nonce ('nonce-...') is required to enable inline execution. Note that hashes do not apply to event handlers, style attributes and javascript: navigations unless the 'unsafe-hashes' keyword is present. The action has been blocked.",
+    "Executing inline event handler violates the following Content Security Policy directive 'script-src 'self''. Either the 'unsafe-inline' keyword, a hash ('sha256-...'), or a nonce ('nonce-...') is required to enable inline execution. Note that hashes do not apply to event handlers, style attributes and javascript: navigations unless the 'unsafe-hashes' keyword is present. The action has been blocked.",
+    "Loading the image 'http://127.0.0.1:37839/x' violates the following Content Security Policy directive: \"img-src data:\". The action has been blocked.",
+    "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+    "Failed to load resource: net::ERR_INTERNET_DISCONNECTED",
+    "Failed to load resource: net::ERR_FAILED"
+  ],
+  "cleanup": "Final browser and server exited; all final synthetic data removed. Aborted loading-only attempt data moved to trash reversibly; no orphan processes.",
+  "consoleErrorTriage": {
+    "benignFavicon404": 1,
+    "expectedUnsafeHtmlCspRefusals": 3,
+    "expectedInjectedFile503": 1,
+    "expectedOfflineDisconnect": 1,
+    "expectedMissionNetworkFailure": 1,
+    "unexpectedPageExceptions": 0
+  }
+}
