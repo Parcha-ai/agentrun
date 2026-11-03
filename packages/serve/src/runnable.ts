@@ -85,7 +85,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {
       if (!allows(BOUND_TOOLS, tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
-      // A shell runs only in a box: no place, or the runner, has none (a run narrowed to the runner drops it, server.ts).
+      // A shell runs only in a box: no place, or the runner, has none.
       else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} runs only in a box: name it on an agent whose place is sandbox. A runner place has no shell.`, host: false, tool });
       else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} writes the run's files from this machine by paths a box's command could turn through a link: it runs on the runner only, not in a sandbox place yet.`, host: false, tool });
       // Another harness gets the host tools only (host-tools.ts: the file tools, fetch_page, web_fetch, web_search and
