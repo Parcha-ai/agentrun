@@ -53,7 +53,7 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
     ["monid", ["monid.discover", "monid.inspect", "monid.run"], ["pi", "claude-agent", "codex"]],
     ["browserbase", ["browser"], ["pi"]],
     ["typesafe", ["decisions.jev"], []],
-  ], "only what this server binds: no web_search; the monid tools on every harness, as capabilities run them");
+  ], "only what this server binds: never web_search (keyless); the monid tools on every harness, as capabilities run them");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
   const file = join(data, "tool-keys.json");
@@ -93,9 +93,9 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
       await meetsDocument(api, view);
     });
   }
-  // Bound later: once capabilities list web_search, the key table's own name shows it.
+  // web_search is keyless (Exa): bound or not, Parallel's key never claims it.
   const later = [{ name: "web_fetch", harnesses: ["pi", "claude-agent", "codex"] }, { name: "web_search", harnesses: ["pi"] }];
-  assert.deepEqual(unlockedBy(TOOL_KEYS[0].unlocks, later, [{ id: "jev" }]), { unlocks: ["web_fetch", "web_search"], harnesses: ["pi", "claude-agent", "codex"] }, "no parallel provider, no decisions.parallel");
+  assert.deepEqual(unlockedBy(TOOL_KEYS[0].unlocks, later, [{ id: "jev" }]), { unlocks: ["web_fetch"], harnesses: ["pi", "claude-agent", "codex"] }, "no parallel provider, no decisions.parallel, never web_search");
   // A key of another kind (a model's; none yet) unlocks no tool, and is for the harnesses this server offers.
   const offers = [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: false }];
   assert.deepEqual(rowUnlocks({ kind: "model", unlocks: [] }, later, [], offers), { unlocks: [], harnesses: ["pi", "claude-agent"] });

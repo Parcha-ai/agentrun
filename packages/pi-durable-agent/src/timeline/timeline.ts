@@ -525,14 +525,17 @@ function createProjector(options: TimelineOptions) {
     return [call.use, row];
   }
 
-  /** A call with no result that will never get one. */
+  /** A call with no result that will never get one. Its row takes the call's place, right after it, whenever the
+   *  interruption is found: at this turn's end, or at a later process's (a call a stop or a crash cut off, which the next
+   *  process resumes past) or a settled read. What came after the call, such as that process's answer, stays after it. */
   function interrupt(call: OpenCall, id: string): TimelineEvent {
     call.done = true;
     const row = make("tool_result", call.conv, `${call.conv}:interrupted:${id}`, {
       summary: `${label(call.name, call.args)} interrupted`, tool_name: call.name, tool_use_id: id, tool_status: "failed", round: call.round,
-      parent_tool_use_id: call.use.parent_tool_use_id,
+      parent_tool_use_id: call.use.parent_tool_use_id, seq: call.use.seq,
     });
-    rows.push(row);
+    const at = rows.indexOf(call.use);
+    rows.splice(at < 0 ? rows.length : at + 1, 0, row);
     return row;
   }
 

@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { claudeAgentAdapter } from "@parcha/agentrun-harness-claude";
 import { codexAdapter } from "@parcha/agentrun-harness-codex";
-import { hostTools } from "../dist/host-tools.js";
+import { hostTools, workspaceRelative } from "../dist/host-tools.js";
 import { withEnv } from "./support.mjs";
 
 /** The run a host tool is built for: only its work directory is read, and nothing here calls a tool. */
@@ -36,4 +36,27 @@ test("both CLI adapters take the three as they are: names in their alphabet, sch
   const provider = { origin: "https://api.example", credential: () => "" };
   assert.deepEqual(codexAdapter({ model: "gpt-5.4-mini", provider, standIn: { command: "true" } }).check(spec), []);
   assert.deepEqual(claudeAgentAdapter({ model: "claude-haiku-4-5", provider, standIn: { command: "true" }, sdk: {} }).check(spec), []);
+});
+
+test("an error, a refusal and a write's result name a path in the run's directory relative to the workspace (../ beside it); a path outside the run's directory stays as given", () => {
+  const work = "/data/runs/01a/work";
+  const real = "/real/data/runs/01a/work";
+  const cases = [
+    [`${work}/../escape.md: outside the workspace ${work}`, "../escape.md: outside the workspace"],
+    [`/data/runs/01a/escape.md: outside the workspace ${work}`, "../escape.md: outside the workspace"],
+    [`link: outside the workspace ${real} (it resolves to /etc/passwd)`, "link: outside the workspace (it resolves to /etc/passwd)"],
+    [`ENOENT: no such file or directory, open '${real}/notes/three.md'`, "ENOENT: no such file or directory, open 'notes/three.md'"],
+    [`Successfully wrote to ${work}/hello.md`, "Successfully wrote to hello.md"],
+    [`in ${work}`, "in ."],
+    // In the run's directory beside the workspace, a longer name than work/ among them: relative to the workspace.
+    ["/data/runs/01a/workers/a", "../workers/a"],
+    ["/data/runs/01a/store/run.sqlite: outside the workspace", "../store/run.sqlite: outside the workspace"],
+    // Outside the run's directory: another run's, a longer name than the run's own, the same path under another
+    // directory, and a path elsewhere, each exactly as given.
+    ["/data/runs/01b/work/a.md: outside the workspace", "/data/runs/01b/work/a.md: outside the workspace"],
+    ["/data/runs/01ab/x", "/data/runs/01ab/x"],
+    [`/x${work}/a`, `/x${work}/a`],
+    ["/elsewhere/x.md: outside the workspace", "/elsewhere/x.md: outside the workspace"],
+  ];
+  for (const [given, said] of cases) assert.equal(workspaceRelative(given, [work, real]), said, given);
 });
