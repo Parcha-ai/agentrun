@@ -1,19 +1,24 @@
 // A key saved through /v2/settings/tool-keys is checked against its provider before it is kept, with one call that costs
 // nothing: a key the provider refuses (401) is not kept, and the PUT says so in the provider's words, never the key's;
 // one it accepts is kept, and GET says when it was checked; one that could not be checked (a 403, which a key scoped
-// away from the check's call gets, no answer, no free call, no fake for it under faux) is kept, and GET says why. On faux monid and recording fetches: no network, no real key.
+// away from the check's call gets, no answer, no free call, no fake for it under faux) is kept, and GET says why. A 401
+// refuses whatever its body does, and a save still waiting on its provider when the server closes stores nothing. On
+// faux monid, recording fetches and a provider on loopback: no network, no real key.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
+import { setImmediate as turn } from "node:timers/promises";
+import { startServe } from "../dist/index.js";
 import { ToolKeys } from "../dist/tool-keys.js";
-import { calls as monidCalls, KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
+import { calls as monidCalls, KEY as MONID_KEY, release as releaseMonid, stalled as monidStalled } from "./fixtures/faux-monid.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { scratch, serve, withEnv } from "./support.mjs";
+import { client, FAUX, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
-const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TEST_FAUX_MONID_CALLS", "AGENTRUN_TEST_FAUX_MONID_KEY", "AGENTRUN_TEST_FAUX_MONID_DOWN", "AGENTRUN_TEST_FAUX_MONID_STATUS"];
+const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TEST_FAUX_MONID_CALLS", "AGENTRUN_TEST_FAUX_MONID_KEY", "AGENTRUN_TEST_FAUX_MONID_DOWN", "AGENTRUN_TEST_FAUX_MONID_STATUS", "AGENTRUN_TEST_FAUX_MONID_STALL"];
 const sealKey = () => randomBytes(32).toString("base64");
 /** A throwaway value shaped like the one a QA pass saved: built here, never a real key. */
 const fake = () => ["mk", "qa7", "fake", randomBytes(8).toString("hex")].join("_");
@@ -125,6 +130,23 @@ test("a key monid answers 403 for is kept as not checked: a key scoped away from
   await meetsDocument(api, view);
 });
 
+test("a save still waiting on its provider when the server closes stores nothing, and close cuts the wait: by then the directory may be another server's", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_TEST_FAUX_MONID_STALL: "1" }, KEYS);
+  t.after(releaseMonid);
+  const data = join(await scratch(t), "agents");
+  const server = await startServe({ data, port: 0, faux: FAUX, fauxMonid: FAUX_MONID, drainTimeout: "5s" });
+  const put = client(server.baseUrl, server.token)("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: MONID_KEY } }).catch((error) => ({ error }));
+  const signal = await monidStalled();
+  await server.close();
+  // The fake answers only now, its signal ignored, and accepts the key: what the save does next runs on the promises
+  // that answer resolves, all done before the next turn of the event loop.
+  releaseMonid();
+  await put;
+  for (let i = 0; i < 3; i++) await turn();
+  assert.equal(existsSync(join(data, "tool-keys.json")), false, "a save the server closed under wrote nothing");
+  assert.equal(signal.aborted, true, "close cut the check's wait");
+});
+
 /** A fetch that files each request and answers with `answer(request, init)`: a Response, or a throw. */
 function recorder(answer) {
   const sent = [];
@@ -135,6 +157,27 @@ function recorder(answer) {
   return Object.assign(fetcher, { sent });
 }
 const json = (status, body) => () => new Response(body === null || typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "content-type": typeof body === "object" ? "application/json" : "text/plain" } });
+/** A provider on loopback answering each request with `answer(res)` once it has read the request: the fetch a check makes,
+ *  sent there whatever the provider's address, over a real socket. */
+async function onLoopback(t, answer) {
+  const server = createServer((req, res) => req.resume().on("end", () => answer(res)));
+  await new Promise((listening) => server.listen(0, "127.0.0.1", listening));
+  t.after(() => new Promise((closed) => (server.closeAllConnections(), server.close(closed))));
+  const at = `http://127.0.0.1:${server.address().port}/`;
+  return (_url, init) => fetch(at, init);
+}
+
+test("a 401 refuses the key whatever its body does: a provider that sends its headers and then drops the connection, or stalls past the deadline, refuses with no quote", async (t) => {
+  const { checkKey } = await import("../dist/key-check.js");
+  const row = { id: "monid", label: "Monid" };
+  // The headers and the first of the body, then (`then`, once that is written) nothing more.
+  const headers = (res, then) => (res.writeHead(401, { "content-type": "application/json", "content-length": "200" }), res.write('{"code": 401, "message": "Invalid API', then));
+  const dropped = await onLoopback(t, (res) => headers(res, () => res.socket.destroy()));
+  assert.deepEqual(await checkKey(row, fake(), {}, dropped), { state: "refused", message: "Monid refused this key (401)" }, "the connection dropped in the body");
+  const stalled = await onLoopback(t, (res) => headers(res));
+  assert.deepEqual(await checkKey(row, fake(), {}, stalled, 200), { state: "refused", message: "Monid refused this key (401)" }, "the body stalled past the deadline");
+});
+
 const ROWS = { monid: "Monid", parallel: "Parallel", browserbase: "Browserbase", typesafe: "TypeSafe (Jev)", anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter" };
 
 test("each provider's check is one documented call that costs nothing, on the key, at the base this server sends that provider's calls to", async () => {
