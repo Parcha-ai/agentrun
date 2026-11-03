@@ -117,6 +117,21 @@ test("capabilities say why each web tool resolves as it does on each harness, on
   assert.equal(caps.tools.filter((tool) => tool.why).length, 2, "web_search and web_fetch, where resolves is");
 });
 
+test("with no box on the server, a sandbox-only tool reads unavailable for that reason, and each web tool keeps its resolves and its why beside it", () => {
+  const noBox = "no box is set up on this server: docker is unavailable (not enabled on this server)";
+  const each = (text) => ({ pi: text, "claude-agent": text, codex: text });
+  const boxless = toolsView({}, {}, noBox);
+  const bash = boxless.find((tool) => tool.name === "bash");
+  assert.deepEqual([bash.available, bash.reason, bash.sandbox_only], [false, noBox, true], "a sandbox-only tool no box can run is unavailable, with the box's reason");
+  assert.deepEqual(boxless.filter((tool) => tool.reason === noBox).map((tool) => tool.name), ["bash"], "only a sandbox-only tool");
+  const keyless = "Exa's free keyless search, no key";
+  assert.deepEqual(boxless.filter((tool) => tool.resolves).map((tool) => [tool.name, tool.available, tool.resolves, tool.why]), [
+    ["web_fetch", true, each("kernel"), each("the guarded direct fetch")],
+    ["web_search", true, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "native" }, { pi: `no model is named, so there is no hosted search; ${keyless}`, "claude-agent": `${keyless}; Claude's own search is an explicit pick`, codex: "Codex's own search" }],
+  ], "no box takes a web tool away, or the words for how it resolves");
+  assert.equal(toolsView({}).find((tool) => tool.name === "bash").available, true, "where a box can run it, bash is available");
+});
+
 test("a run's plane: each web tool its revision names, resolved in the server's environment, with the model pi's native search asks", () => {
   const env = { AGENT_MODEL: "anthropic/claude-sonnet-4-5", PARALLEL_API_KEY: "not-a-secret" };
   assert.deepEqual(planeFor(env, { tools: ["read", "web_search", "web_fetch"] }, {}), { web_search: "native", web_fetch: "kernel", model: "anthropic/claude-sonnet-4-5" });
