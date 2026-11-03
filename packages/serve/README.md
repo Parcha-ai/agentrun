@@ -404,8 +404,10 @@ $0.001 a URL; on a 4xx other than a 408 nothing (Parallel refused it), and on a 
 connection its price (Parallel may have billed it). Under a [spend cap](#spend-cap) each is a paid call: sent only when
 what the run has spent and holds, plus its price, fits the cap. Otherwise nothing reaches Parallel: a search answers the
 cap's refusal (`spend_cap_reached: Parallel's search was not sent. It could cost up to $0.001 …`) and a page is the
-guarded direct fetch, with `parallel` giving the same words. A workflow's `call` node naming either tool is booked the
-same way, under the node's own call (its execution path).
+guarded direct fetch, with `parallel` giving the same words. One sent holds its price until Parallel answers: a model
+request checked meanwhile, from any branch, tool round or harness, counts it beside what the run has spent, so the two
+never pass the cap together. A workflow's `call` node naming either tool is booked the same way, under the node's own
+call (its execution path).
 
 Keyless Exa, where `web_search` resolves to it, searches through Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its
 `web_search_exa` tool), with no key. What leaves the server is
