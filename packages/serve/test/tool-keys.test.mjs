@@ -89,9 +89,9 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
       await meetsDocument(api, view);
     });
   }
-  // web_search is keyless (Exa): bound or not, Parallel's key never claims it.
+  // Bound later: once capabilities list web_search, the key table's own name shows it.
   const later = [{ name: "web_fetch", harnesses: ["pi", "claude-agent", "codex"] }, { name: "web_search", harnesses: ["pi"] }];
-  assert.deepEqual(unlockedBy(TOOL_KEYS[0].unlocks, later, [{ id: "jev" }]), { unlocks: ["web_fetch"], harnesses: ["pi", "claude-agent", "codex"] }, "no parallel provider, no decisions.parallel, never web_search");
+  assert.deepEqual(unlockedBy(TOOL_KEYS[0].unlocks, later, [{ id: "jev" }]), { unlocks: ["web_fetch", "web_search"], harnesses: ["pi", "claude-agent", "codex"] }, "no parallel provider, no decisions.parallel");
 });
 
 test("a sealed value moved to another field's name does not open there: it is asked for again as a damaged entry", async (t) => {
