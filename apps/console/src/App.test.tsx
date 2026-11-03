@@ -482,7 +482,7 @@ describe("App, the no-model bar", () => {
     const asked = serve(() => ({ source: "providers", default: ready ? "anthropic/claude-sonnet-5-5" : null, ready, needs: ready ? null : "key" }));
     const host = await mount("#/runs");
     await until(() => !!bar(host));
-    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (or ANTHROPIC_API_KEY or OPENAI_API_KEY) and restart, or add a key in Settings.");
+    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (or ANTHROPIC_API_KEY or OPENAI_API_KEY) and restart, or add a key in Settings → Model keys.");
     expect(bar(host)?.querySelector("a")?.getAttribute("href")).toBe("#/settings/keys");
     ready = true;
     await act(async () => { window.dispatchEvent(new Event("focus")); });
