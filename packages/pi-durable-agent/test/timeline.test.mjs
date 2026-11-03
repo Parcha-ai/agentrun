@@ -86,6 +86,13 @@ test("an answer the same turn goes on from is what the agent said, not its answe
     // with nothing in it (a harness's side request, cost only), ends nothing it said.
     const kept = [user("Hi", 0), assistant([{ type: "text", text: "Hello." }], 1), assistant([], 2), user("Again", 3), assistant([{ type: "text", text: "Hello again." }], 4)];
     assert.deepEqual(said(view(kept)), [["final_answer", "Hello."], ["final_answer", "Hello again."]]);
+    // Commentary, then an answer of only whitespace, then a call and the real answer: every earlier answer of the turn
+    // is what the agent said, the commentary too, and only the last is its answer.
+    const quiet = [
+      user("Write it.", 0), assistant([{ type: "text", text: "I'll check first." }], 1), assistant([{ type: "text", text: " " }], 2),
+      assistant([call("w1", "write", { path: "note.md", content: "noted" })], 3), result("w1", "write", "ok", 4), assistant([{ type: "text", text: "Wrote note.md." }], 5),
+    ];
+    assert.deepEqual(said(view(quiet)), [["text_block", "I'll check first."], ["text_block", ""], ["final_answer", "Wrote note.md."]]);
   }
   // The live view hears of the change: the row comes again, under its id, as a text_block.
   const reducer = timelineReducer();

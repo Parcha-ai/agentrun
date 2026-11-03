@@ -23,6 +23,8 @@ export function script(spec) {
   // Codex's shape (F22): a request that only says something (its tool call is the harness's own, which the host never
   // sees), then the host's tool, then the answer.
   // The same turn, its first answer empty (only whitespace, which the timeline reads as an empty answer).
+  // The same turn, its commentary first, then an empty answer, then the call: every earlier answer is a text_block.
+  if (/Comment, say nothing, then write\./.test(text)) return [{ say: "I'll check first.", usd: 0.001 }, { say: " ", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
   if (/Say nothing, then write\./.test(text)) return [{ say: " ", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
   if (/Comment, then write\./.test(text)) return [{ say: "I'll write note.md.", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];

@@ -362,6 +362,19 @@ test("a turn whose first answer is empty and that then calls a tool and answers:
   assert.equal(await answer(api, runId), "Wrote note.md.");
 });
 
+test("a turn that comments, then answers with nothing, then calls a tool and answers: both earlier answers are text_blocks, the real answer the only final_answer", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "comment-empty", "Comment, say nothing, then write.", "codex", ["write"]);
+  const { rows, last } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const shown = JSON.stringify(rows.map((r) => [r.kind, r.summary, r.text]));
+  assert.equal(await readFile(join(data, "runs", runId, "work", "note.md"), "utf8"), "noted", "the write after the empty answer ran");
+  // The empty answer held the turn's place as its answer for a moment; the commentary before it never stays one either.
+  assert.deepEqual(rows.filter((r) => ["text_block", "final_answer", "tool_use"].includes(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "I'll check first."], ["text_block", ""], ["tool_use", "Wrote note.md"], ["final_answer", "Wrote note.md."]], shown);
+  assert.equal(rows.filter((r) => r.kind === "final_answer").length, 1, shown);
+  assert.deepEqual([last.status, last.final], ["completed", true], shown);
+  assert.equal(await answer(api, runId), "Wrote note.md.");
+});
+
 test("another harness's file tools name the workspace's paths relative to it: a path out of it, a missing file and a write, with no result naming the server's data directory", { timeout: 60_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "edges", "Touch the edges.", "claude-agent", ["read", "write"]);
