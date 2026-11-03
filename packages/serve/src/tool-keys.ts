@@ -31,13 +31,16 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
  *  promised, and one shows by itself once the server binds it. A `tool` key's fields reach only the runs that name a
  *  tool it unlocks (runs.ts' secretsFor); a key of any other kind (a model's) reaches every run. */
 export const TOOL_KEYS = [
-  { id: "parallel", kind: "tool", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "decisions.parallel"] },
+  { id: "parallel", kind: "tool", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "web_search", "decisions.parallel"] },
   { id: "monid", kind: "tool", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid.discover", "monid.inspect", "monid.run"] },
   { id: "browserbase", kind: "tool", label: "Browserbase", fields: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], unlocks: ["browser"] },
   // Jev's decision provider (decisions.ts' `jev`), on TypeSafe's key: a workflow's judges, as Parallel's key unlocks its.
   { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: ["TYPESAFE_API_KEY"], unlocks: ["decisions.jev"] },
 ] as const;
 const FIELDS: readonly string[] = TOOL_KEYS.flatMap((row) => row.fields);
+/** The fields of the `tool` rows: keys a tool or a decision provider reads, and no harness (the harnesses read their
+ *  packages, their pins and their models' keys). A row of another kind (a model's) is outside them. */
+export const TOOL_FIELDS: readonly string[] = TOOL_KEYS.filter((row) => row.kind === "tool").flatMap((row) => row.fields);
 
 /** What `candidates` unlock here, as capabilities show it: the tools of `tools` (capabilities' `tools`, available or
  *  not) and the providers of `providers` (its `workflows.decisions.providers`) named among them, and the harnesses

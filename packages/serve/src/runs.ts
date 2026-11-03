@@ -21,23 +21,27 @@ import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWho
 import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
-import { ASK_TOOL, FAUX_BROWSER_ENV, workflowTools } from "./tools.js";
+import { ASK_TOOL, FAUX_BROWSER_ENV, toolingOf, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
 import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, PARALLEL_KEY_ENV } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { FAUX_MONID_ENV } from "./monid.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, FAUX_ENV, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
+import { EFFORT_ENV, FAUX_ENV, FAUX_UPSTREAM_ENV, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
+import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
+import { type Place, storedPlace } from "./place.js";
+import { destroyRunBoxes, FAUX_BOX_ENV, sweepRunBoxes } from "./run-box.js";
+import type { BoxProvider } from "@parcha/pi-transport";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 
 export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -75,6 +79,9 @@ const EXIT_AFTER_RELEASE_MS = 30_000;
 /** How many 500 ms ticks in a row a live run's record is unreadable before the server says so. */
 const UNREADABLE_TICKS = 10;
 const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
+/** How long serve's calls on a run's box (its destroy, the start's sweep) may take. */
+const BOX_CALL_MS = 60_000;
+const boxContext = () => withAbortSignal(AbortSignal.timeout(BOX_CALL_MS), BACKGROUND_CONTEXT);
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
 const holderPid = (record: Json | null) => (isObject(record?.holder) && Number.isSafeInteger(record.holder.pid) ? (record.holder.pid as number) : undefined);
@@ -106,11 +113,17 @@ type RunMeta = {
   /** What its newest process took its thinking level from (app.ts's thinkingOf), as its environment had them: `effort`,
    *  the run's effort, and `host`, the host's AGENT_THINKING. Absent for a process an older server started. */
   launch_thinking?: { effort?: string; host?: string };
+  /** Its tools' providers, resolved at its first launch and kept for its life (tool-plane.ts). */
+  tool_plane?: Plane;
+  /** Where it runs, as its start resolved it (place.ts): its process reads it. Absent for a run an older server started,
+   *  which ran on the runner. */
+  place?: Place;
   /** Where the run's learning stands (learning.ts); absent for a run that does not learn. */
   learning?: Learning;
 };
 /** A run's learning as a list shows it: its state and reason. */
 const shortLearning = (learning: Learning | null) => (learning ? { state: learning.state, reason: learning.reason } : null);
+
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */
@@ -137,8 +150,8 @@ export type Run = {
   revision: string;
   /** The harness its revision names, read at its first message. */
   harness?: string;
-  /** Its agentic revision names web_fetch: its process is handed Parallel's key for it (web-fetch.ts). */
-  webFetch?: true;
+  /** What its pinned revision's tools resolve from (tool-plane.ts), resolved again at each launch. */
+  tooling?: Tooling;
   /** Imported history (`agentrun-serve import`): the source it was run in, and its id there. It takes no message, and a
    *  stop or a cancel moves nothing. */
   imported?: { source: string; session: string };
@@ -170,6 +183,10 @@ export type Run = {
   cancel: boolean;
   /** Set when the run has answered or failed and is being let go; the outcome it gets. */
   finishing?: Status;
+  /** A stop on its way: from its mark to its abort's answer, or a server's abort of a saved stop's turn that outlived the
+   *  server before it (finishStop). The abort withdraws every input queued behind that turn, so a message meanwhile waits
+   *  for it (stopAnswered). */
+  stopping?: true;
   endedAt?: string;
   outcome?: Status;
   error?: RunError;
@@ -222,6 +239,18 @@ export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
     }
   }
   return out;
+}
+
+/** The row that says a run's booked spend passed its cap, and by how much, after its usage row: a request's cost is
+ *  booked once it answers, and one carrying a native web search is held at an allowance, not a bound (cap.ts), so a run
+ *  can pass its cap by its last request. The next request is then refused, and the run ends spend_cap_reached. */
+export function withOverCap(rows: TimelineEvent[], cap: number | undefined): TimelineEvent[] {
+  const at = rows.findLastIndex((row) => row.kind === "usage");
+  const usd = rows[at]?.usage?.usd;
+  if (cap === undefined || typeof usd !== "number" || usd <= cap) return rows;
+  const { usage: _, ...usage } = rows[at]!;
+  const over: TimelineEvent = { ...usage, id: `${usage.id}:over_cap`, kind: "phase", summary: `Spent $${usd.toFixed(4)}, $${(usd - cap).toFixed(4)} over the run's cap of $${cap}`, text: null };
+  return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
 
 /** Notes the whole text of the newest assistant message in `entries` (pi's stored entries). */
@@ -334,13 +363,13 @@ export function statusOf(run: Run): { status: Status; state: State } {
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 /** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. */
-export type StartOptions = { input: Json; title: string; effort?: string; maxCostUsd?: number; inputs?: (work: string) => Promise<unknown> };
+export type StartOptions = { input: Json; title: string; place: Place; effort?: string; maxCostUsd?: number; inputs?: (work: string) => Promise<unknown> };
 
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; fauxExa?: string; learning?: LearningMode };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxUpstream?: string; fauxExa?: string; fauxHarness?: string; fauxBox?: string; runBoxes?: BoxProvider; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
  *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
 export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => void;
@@ -467,6 +496,10 @@ export class Runs {
   private learningOff?: string;
   constructor(private readonly options: RunsOptions) {}
 
+  /** A test's seam (startServe's `beforeAbort`): awaited by a stop between its mark and its abort, so a test can hold a
+   *  stop in flight there. */
+  beforeAbort?: (runId: string) => Promise<void> | void;
+
   private get store() {
     return this.options.agents.store;
   }
@@ -513,6 +546,8 @@ export class Runs {
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
+      ...(isObject(stored?.tool_plane) ? { tool_plane: stored.tool_plane as Plane } : {}),
+      ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
     };
     // A server that went down while it copied what the run's agent learned saved the run's input and no learning, and
@@ -523,7 +558,7 @@ export class Runs {
       warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
     }
     const known = await this.options.agents.revision(row.agent, row.revision);
-    const run = this.blank(row, dir, meta, known?.version ?? 0, known?.revision);
+    const run = this.blank(row, dir, meta, known?.version ?? 0, known ? await toolingOf(known.revision) : undefined);
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
@@ -549,11 +584,11 @@ export class Runs {
     return run;
   }
 
-  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number, revision?: Revision): Run {
+  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number, tooling?: Tooling): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
       working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
-      ...(revision?.kind === "agentic" && revision.body.tools.includes(WEB_FETCH_TOOL) ? { webFetch: true as const } : {}),
+      ...(tooling ? { tooling } : {}),
     };
   }
 
@@ -617,7 +652,7 @@ export class Runs {
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
   /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
   private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
-    run.rows = withAsks(rows.filter((r) => !QUIET.test(r.id)));
+    run.rows = withOverCap(withAsks(rows.filter((r) => !QUIET.test(r.id))), run.meta.max_cost_usd);
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
@@ -639,7 +674,7 @@ export class Runs {
     if (run.kind === "workflow") return undefined;
     const cap = run.meta.max_cost_usd;
     const cost = costOf(run.rows);
-    if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, over its cap of $${cap}.`, retryable: false } };
+    if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
     if (run.working || run.submitted > 0) return undefined;
     const last = meaningful(run.rows);
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
@@ -710,10 +745,17 @@ export class Runs {
   /** Every run's box let go that nothing owns, and every run cgroup no record names: once, before any run of this server
    *  starts, opens again or relaunches, so a box or cgroup being made is never swept away. */
   private sweepOnce(): Promise<void> {
-    const box = this.options.box;
-    if (!box) return Promise.resolve();
+    const { box, runBoxes } = this.options;
+    if (!box && !runBoxes) return Promise.resolve();
     this.swept ??= (async () => {
       const rows = await this.options.agents.request(() => this.store.listRuns());
+      // The boxes of sandbox runs, by their label: one whose run has ended, or is archived, is destroyed. A failure only
+      // warns: the next start sweeps again, and a box's lifetime bounds it.
+      if (runBoxes) {
+        const ended = new Set(rows.filter((row) => row.state !== "running" || row.archivedAt).map((row) => row.id));
+        await sweepRunBoxes(runBoxes, (id) => ended.has(id), boxContext()).catch((error: Error) => warn("-", `its start's sweep of run boxes failed (${error.message}); the next start sweeps again`));
+      }
+      if (!box) return;
       const settled = await sweepBoxes(box.host, box.quarantine, rows.map((row) => ({ id: row.id, dir: join(this.options.agents.dir, "runs", row.id) })));
       for (const [id, how] of Object.entries(settled)) if (how === "quarantined") warn(id, "its box could not be emptied; it is quarantined, and tried again at each start");
     })().catch((error: unknown) => {
@@ -723,6 +765,18 @@ export class Runs {
       throw error;
     });
     return this.swept;
+  }
+
+  /** A sandbox run's box (run-box.ts), destroyed by its label: at every settle, a cancel included, and at archive. A
+   *  failure only warns: the next start's sweep tries again, and the box's lifetime bounds it. */
+  private async dropBox(run: Run): Promise<void> {
+    const { runBoxes } = this.options;
+    if (!runBoxes || run.meta.place?.mode !== "sandbox") return;
+    try {
+      await destroyRunBoxes(runBoxes, run.id, boxContext());
+    } catch (error) {
+      warn(run.id, `its box was not destroyed (${(error as Error).message}); the next start sweeps it`);
+    }
   }
 
   /** The run's box let go (archive, or its process gone after an archive): reaped by the box's own count. */
@@ -741,11 +795,16 @@ export class Runs {
   /** After an archive (a run's, or an agent's, which archives its runs): the box of every run now archived is let go,
    *  now when its process is gone, else when it exits. */
   async archived(): Promise<void> {
-    if (!this.options.box) return;
+    if (!this.options.box && !this.options.runBoxes) return;
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
       if (!row.archivedAt) continue;
-      const run = await this.get(row.id);
-      if (run) await this.teardown(run);
+      // A run's box needs only the runs this server holds: one it has not read has ended, or was swept at its start.
+      const run = this.options.box ? await this.get(row.id) : this.runs.get(row.id);
+      if (!run) continue;
+      // A run's box goes at its archive, its process live or not (an ended run's went at its end): an archived run takes
+      // no message, and a call it still makes gets a fresh box, which its end or the next start's sweep destroys.
+      if (!run.outcome) await this.dropBox(run);
+      await this.teardown(run);
     }
   }
 
@@ -842,7 +901,12 @@ export class Runs {
         this.take(run, rows, keepCommitted(run.live, rows, reducer.isLive));
         if (event === "snapshot" && run.finishStop) {
           run.finishStop = false;
-          if (run.working && stopped(run) && run.submitted === 0) void this.abortTurn(run);
+          if (run.working && stopped(run) && run.submitted === 0) {
+            // The run reads stopped already, so a message sent now would go in behind the turn this abort ends, and be
+            // withdrawn with it: it waits for the abort, as for a stop in flight.
+            run.stopping = true;
+            void this.abortTurn(run).catch(() => undefined).finally(() => (run.stopping = undefined));
+          }
         }
       }
     }
@@ -946,9 +1010,10 @@ export class Runs {
       ...childEnv(process.env, this.options.token),
       [SECRETS_FD_ENV]: "3",
       [SECRETS_LEN_ENV]: String(secrets.length),
-      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}), ...(this.options.fauxParallel ? { [FAUX_PARALLEL_ENV]: this.options.fauxParallel } : {}), ...(this.options.fauxOpenrouter ? { [FAUX_OPENROUTER_ENV]: this.options.fauxOpenrouter } : {}) } : {}),
+      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}), ...(this.options.fauxParallel ? { [FAUX_PARALLEL_ENV]: this.options.fauxParallel } : {}), ...(this.options.fauxOpenrouter ? { [FAUX_OPENROUTER_ENV]: this.options.fauxOpenrouter } : {}), ...(this.options.fauxUpstream ? { [FAUX_UPSTREAM_ENV]: this.options.fauxUpstream } : {}), ...(this.options.fauxExa ? { [FAUX_EXA_ENV]: this.options.fauxExa } : {}) } : {}),
       ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
       ...(this.options.faux && this.options.fauxMonid ? { [FAUX_MONID_ENV]: this.options.fauxMonid } : {}),
+      ...(this.options.faux && this.options.fauxBox ? { [FAUX_BOX_ENV]: this.options.fauxBox } : {}),
       ...(this.options.faux && this.options.fauxExa ? { [FAUX_EXA_ENV]: this.options.fauxExa } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
       ...(this.options.documents ? { [DOCUMENTS_ENV]: this.options.documents } : {}),
@@ -958,14 +1023,28 @@ export class Runs {
     void this.saveMeta(run).catch((error: Error) => warn(run.id, `what its process thinks at is not saved: ${error.message}`));
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
+    // Its tools' providers (tool-plane.ts): resolved at its first launch from its pinned revision and this server's
+    // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
+    // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are
+    // in the serve.json its start writes (start); resolving here is for a run made before that. A description with no secret
+    // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
+    // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
+    const served = withSecrets(process.env, "all", this.options.storedKeys);
+    const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served) : run.tooling ? planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined }) : {};
+    if (!run.meta.tool_plane && Object.keys(plane).length) {
+      run.meta.tool_plane = plane;
+      void this.saveMeta(run).catch(() => undefined);
+    }
+    delete env[TOOL_PLANE_ENV];
+    if (Object.keys(plane).length) env[TOOL_PLANE_ENV] = JSON.stringify(plane);
     // The decision keys are never in a run's environment, which its tools and its model's provider read (childEnv leaves
     // out every secret): a workflow run's process gets them once on an inherited pipe, by name, for its decision
-    // providers and web_fetch alone (decisions.ts), and an agentic run's process Parallel's alone when it names
-    // web_fetch.
+    // providers (decisions.ts), and an agentic run's process Parallel's alone when one of its capabilities resolves to
+    // Parallel. A web tool reaches Parallel only where its own capability resolves there.
     delete env[DECISION_KEY_FD_ENV];
     // Chosen from the secrets this server holds: out of its environment once its launcher hands them over (secrets.ts).
-    const offered = decisionKeysOf(withSecrets(process.env, "all", this.options.storedKeys));
-    const decisionKeys = run.kind === "workflow" ? offered : run.webFetch && offered[PARALLEL_KEY_ENV] ? { [PARALLEL_KEY_ENV]: offered[PARALLEL_KEY_ENV] } : {};
+    const offered = decisionKeysOf(served);
+    const decisionKeys = run.kind === "workflow" ? offered : handsParallel(plane) && offered[PARALLEL_KEY_ENV] ? { [PARALLEL_KEY_ENV]: offered[PARALLEL_KEY_ENV] } : {};
     const handsKey = Object.keys(decisionKeys).length > 0;
     this.markLaunching(run);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
@@ -1144,6 +1223,8 @@ export class Runs {
   /** Ends the run in the agent store, once: how it ended, its cost, a line for the list and its metrics. A store held by
    *  another writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
+    // Its process is gone: its box goes with its end, whatever the end (a follow-up after it gets a fresh box; work/ stays).
+    await this.dropBox(run);
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
@@ -1314,6 +1395,10 @@ export class Runs {
   }
 
   private async start(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
+    // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in the serve.json its start writes first,
+    // so a launch after a crash reads them back, never the settings of that moment, and keeping them is no write of its own.
+    const tooling = await toolingOf(revision);
+    const plane = tooling ? planeFor(withSecrets(process.env, "all", this.options.storedKeys), tooling, this.options.toolSettings?.() ?? {}, { capped: options.maxCostUsd !== undefined }) : {};
     // A run learns when the server's switch (`--learning`) is on and its agent's definition says `learning: true`. Its
     // seed is read before the run is made, so the folder is read once whatever the run's setup does.
     const learns = this.options.learning !== "off" && revision.kind === "agentic" && revision.body.learning === true;
@@ -1324,8 +1409,10 @@ export class Runs {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
       created_at: at,
       input: options.input,
+      place: options.place,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
+      ...(Object.keys(plane).length ? { tool_plane: plane } : {}),
     };
     // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
     // next one relaunches with its first message.
@@ -1346,7 +1433,7 @@ export class Runs {
       meta.learning = failed === undefined ? { state: "seeded", reason: null, detail: null, at } : { state: "dropped", reason: "seed_failed", detail: failed, at };
       await this.setUp(started.runId, started.dir, meta);
     }
-    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
+    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, tooling);
     run.moment = "other";
     // Before the run is known here, so nothing launches it first.
     await this.pinSecrets(run, revision);
@@ -1414,16 +1501,26 @@ export class Runs {
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
-    // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
-    // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
-    if (run.finishing && !run.outcome) await this.endWritten(run);
-    if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
+    let steers: boolean;
+    // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
+    // to the count below nothing awaits, so no stop can begin in between.
+    do {
+      // A stop in flight is answered first. Sent between its mark and its abort, a message would read the run stopped, go
+      // to the turn the abort is cutting, and be dropped with it, its row never coming.
+      if (run.stopping) await this.stopAnswered(run);
+      // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
+      // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
+      if (run.finishing && !run.outcome) await this.endWritten(run);
+      if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
+      // Its harness, read from the agent store at the run's first message.
+      steers = await this.steers(run);
+    } while (run.stopping);
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
     // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
     // the same run, which the contract calls follow_up, never a steer it does not do.
     const working = status === "queued" || (status === "working" && state === "working");
-    const mode = working ? ((await this.steers(run)) ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
+    const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
     run.submitted++;
     this.refresh(run);
@@ -1435,6 +1532,13 @@ export class Runs {
       throw error;
     }
     return { mode, messageId };
+  }
+
+  /** Waits, up to a request's deadline, for a stop in flight to answer. */
+  private async stopAnswered(run: Run): Promise<void> {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.stopping; await sleep(50)) {
+      if (Date.now() > deadline) throw new ApiError("unavailable", "The run is being stopped; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+    }
   }
 
   /** Waits, up to a request's deadline, for the end of a run that is finishing to be written. */
@@ -1498,12 +1602,23 @@ export class Runs {
     if (run.kind !== "workflow") await this.caughtUp(run);
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
+    run.stopping = true;
+    try {
+      return await this.stopTurn(run);
+    } finally {
+      run.stopping = undefined;
+    }
+  }
+
+  /** stop()'s mark and abort, once it took the stop. */
+  private async stopTurn(run: Run): Promise<boolean> {
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.
     const before = { stopped_at: run.meta.stopped_at, stopped_after: run.meta.stopped_after };
     delete run.meta.stopped_at;
     delete run.meta.stopped_after;
     Object.assign(run.meta, stopMark(run.rows));
     await this.saveMeta(run).catch((error: Error) => warn(run.id, `its stop is not saved, so a restart will not keep it: ${error.message}`));
+    await this.beforeAbort?.(run.id);
     const answer = await this.toDoor(run, "/abort", {}).catch(() => null);
     if (!answer || answer.status >= 400) {
       if (before.stopped_at === undefined) delete run.meta.stopped_at;
@@ -1630,6 +1745,7 @@ export class Runs {
       status,
       state,
       title: run.meta.title,
+      place: run.meta.place ?? { mode: "runner" },
       ...(run.meta.effort ? { effort: run.meta.effort } : {}),
       created_at: run.meta.created_at,
       updated_at: run.updatedAt,

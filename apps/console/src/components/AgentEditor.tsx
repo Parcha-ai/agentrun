@@ -1,12 +1,14 @@
 import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
-import { type Agent, type AgentFields, DECISION, defaultTools, harnessOptions, isStarter, reachesWeb, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, DECISION, defaultTools, harnessOptions, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
+import type { ToolChoice } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
@@ -35,6 +37,8 @@ export type EditorProps = {
   draft?: string;
   /** The server's check of a workflow as it is typed (POST /v2/workflows/validate). */
   validate?: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => Promise<WorkflowCheck>;
+  /** The capabilities with a provider choice (capabilities.tools): the Tools step's tool settings, for those the agent grants. */
+  providerChoices?: ToolChoice[];
 };
 type Step = "context" | "workflow" | "tools" | "settings" | "history";
 
@@ -57,12 +61,15 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [] }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
   // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own.
   const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools) : d?.tools ?? [], ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
+  // The form as it is now, for a save's answer to compare with what that save sent.
+  const formNow = useRef(f);
+  formNow.current = f;
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
@@ -102,7 +109,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
     }
     const p = await onSave(fields, note);
-    setSaving(false); setProblem(p); setSaved(!p); if (!p) setNote("");
+    // A provider picked while the save was under way is not in it: the form keeps that pick, unsaved. Saved and unchanged
+    // since, the tool settings are the agent's own: the form shows them as the definition has them.
+    const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
+    setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
+    if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
   };
   // The tools that reach the web which this agent's harness runs here, for the notice when it has none of them.
   // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
@@ -207,7 +218,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     // names shows as such, to untick.
                     const runs = (workflow && t.call_only) || toolsFor(f.harness ?? "pi", caps.tools).some((x) => x.name === t.name);
                     const on = f.tools?.includes(t.name) ?? false;
-                    const why = t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : !t.available ? `Needs ${(t.missing ?? []).join(", ")}` : undefined;
+                    // A tool the server's provider leaves unavailable runs here once this agent picks a provider of its own.
+                    const choice = providerChoices.find((c) => c.name === t.name);
+                    const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
+                    const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
+                    const why = t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : sandboxReason(t, d?.place) ?? (!t.available && !pickedOver ? (choice?.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
                     return (
                       <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
                         <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-[hsl(var(--primary))]" />
@@ -218,6 +233,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   })}
                 </ul>
               </Field>
+              {!workflow && (
+                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={providerChoices}
+                  value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
+                  onChange={(next) => (same(next, d?.tool_settings ?? {}) ? (setF(({ tool_settings: _gone, ...rest }) => rest), setSaved(false)) : set({ tool_settings: next }))} />
+              )}
               <Field label="Skills" note="Skill files are saved with each revision and kept as they are by an edit.">
                 {d?.skills?.length ? <ul className="border">{d.skills.map((s) => <li key={s} className="border-b px-3 py-2 font-mono text-[13px] last:border-b-0">{s}</li>)}</ul>
                   : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">No skills.</p>}

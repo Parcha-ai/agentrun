@@ -349,6 +349,20 @@ test("cost: a compaction's summary is a paid request: its cost is summed; one ab
   assert.deepEqual(timelineOf([started, a, compacting], { settled: true }).at(-1).usage, { usd: null, requests: 2 }, "open when the run settled");
 });
 
+test("cost: a tool's own request, marked with its label as a compaction is, is a side request: its cost is summed, and one open when the run settles makes the cost unknown", () => {
+  const started = { kind: REQUEST_STARTED, data: {} };
+  const searching = { kind: REQUEST_STARTED, data: { request: "web_search" } };
+  const a = assistant([{ type: "text", text: "a" }], 0);
+  assert.deepEqual(timelineOf([started, a, searching, { kind: REQUEST_COST, data: { request: "web_search", usd: 0.012 } }]).at(-1).usage, { usd: 0.022, requests: 2 });
+  assert.deepEqual(timelineOf([started, searching, a]).at(-1).usage, { usd: 0.01, requests: 2 }, "a search in flight beside its generation");
+  assert.deepEqual(timelineOf([started, a, searching], { settled: true }).at(-1).usage, { usd: null, requests: 2 }, "open when the run settled");
+  assert.deepEqual(timelineOf([{ kind: REQUEST_STARTED, data: { request: 3 } }, a]).at(-1).usage, { usd: 0.01, requests: 1 }, "a harness's numbered request is a generation's");
+  const priced = (usd) => ({ kind: REQUEST_COST, data: { request: "web_search", usd } });
+  assert.deepEqual(timelineOf([started, a, searching, searching]).at(-1).usage, { usd: 0.01, requests: 3 }, "two searches in flight at once, neither cut");
+  assert.deepEqual(timelineOf([started, a, searching, searching, priced(0.012)]).at(-1).usage, { usd: 0.022, requests: 3 }, "one priced, the other still in flight");
+  assert.deepEqual(timelineOf([started, a, searching, searching, priced(0.012)], { settled: true }).at(-1).usage, { usd: null, requests: 3 }, "settled with one never priced");
+});
+
 test("cost: a paid tool's charge is summed with the requests and shown on a line of its own; an unknown one makes the cost unknown; it is no request", () => {
   const a = assistant([{ type: "text", text: "a" }], 0);
   const charged = (usd) => custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", usd, call: "c1" });
@@ -615,18 +629,6 @@ test("previews keep a URL's origin, path and query keys; values, fragment and us
   for (const secret of ["SECRET1", "SECRET2", "SECRET3", "SECRET4", "SECRET5", "SECRET6", "frag-secret", userinfo("pw")]) assert.ok(!all.includes(secret), `a row holds ${secret}`);
 });
 
-test("a nested call's result is scrubbed too", () => {
-  const reducer = timelineReducer({ conversationId: 1 });
-  reducer.apply([
-    { type: "message_end", entry: assistant([call("p", "codemode", {})], 0) },
-    { type: "tool_execution_start", toolCallId: "p/1", toolName: "web_fetch", args: { url: "https://x.example/a?token=SECRET7" }, parentToolCallId: "p" },
-    { type: "tool_execution_end", toolCallId: "p/1", toolName: "web_fetch", parentToolCallId: "p", result: { taskId: 2, isError: false, structuredOutput: "https://x.example/b?sig=SECRET8", diagnostics: [] } },
-  ]);
-  const all = JSON.stringify(reducer.rows());
-  assert.ok(!all.includes("SECRET7") && !all.includes("SECRET8"));
-  assert.ok(all.includes("https://x.example/b?sig=\u2026"));
-});
-
 test("a saved file's phase row carries its path", () => {
   const rows = timelineOf([
     assistant([call("w", "write", { path: "invoices/summary.md", content: "x" }), call("d", "browser_downloads")], 0),
@@ -703,6 +705,7 @@ test("no URL value reaches a row, whichever path wrote it; only a user's own tex
     { type: "message_update", usage: {}, changes: [{ type: "thinking_delta", contentIndex: 0, delta: `Think ${at(15)}` }, { type: "text_delta", contentIndex: 1, delta: `Say ${at(16)}` }] },
     { type: "tool_execution_start", toolCallId: "s/1", toolName: "browser_read", args: {}, parentToolCallId: "s" },
     { type: "tool_execution_end", toolCallId: "s/1", toolName: "browser_read", parentToolCallId: "s", result: { taskId: 3, isError: false, structuredOutput: `title: ${at(17)}`, diagnostics: [] } },
+    { type: "tool_execution_start", toolCallId: "s/2", toolName: "web_fetch", args: { url: at(21) }, parentToolCallId: "s" },
     { type: "auto_retry_start", attempt: 1, at: 0, errorMessage: `limit at ${at(18)}` },
     { type: "task_failed", taskId: 4, kind: "tool", message: `crashed at ${at(19)}` },
     { type: "compaction_end", taskId: 5, reason: "threshold", error: `no summary at ${at(20)}` },
@@ -714,6 +717,8 @@ test("no URL value reaches a row, whichever path wrote it; only a user's own tex
     assert.deepEqual(rest.match(/SECRET\d+/g), null);
     assert.ok(rest.includes("https://x.example/14?token=…"));
   }
+  const nested = JSON.stringify(reducer.rows());
+  for (const id of [17, 21]) assert.ok(nested.includes(`https://x.example/${id}?token=…`), `a nested call's ${id === 17 ? "result" : "args"} keep the URL's path`);
 });
 
 test("a provider wait clears when the answer comes, fails, retries, or the run ends", () => {
