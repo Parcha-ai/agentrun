@@ -59,6 +59,10 @@ export async function freePort(from = DEFAULT_PORT) {
 
 export const USAGE = "Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open], or a server command: import, reset-password";
 
+/** The environment for this command's own `npm exec`: without the settings an outer npm hands down to what it runs (a
+ *  `-c` command, a workspace), which would make that `npm exec` refuse its arguments or look for a workspace. */
+export const fetchEnv = (env) => Object.fromEntries(Object.entries(env).filter(([name]) => !/^npm_config_(call|workspaces?|include_workspace_root)$/i.test(name)));
+
 /** The server's command: an installed server's launcher, else `npm exec` of the latest release, by its own bin name: the
  *  package named with --package, the bin after `--`, so the server gets only its own arguments. */
 export function server(args, resolve = createRequire(import.meta.url).resolve) {
@@ -78,8 +82,8 @@ export async function main(argv, env = process.env) {
   const childEnv = { AGENTRUN_LOG: "quiet", ...env, ...modelEnv(env) };
   // A subcommand (import, reset-password) is the server's own, on the same data directory.
   if (rest[0] && !rest[0].startsWith("-")) {
-    const { command, args } = server([rest[0], "--data", dir, ...rest.slice(1)]);
-    return new Promise((resolve) => spawn(command, args, { stdio: "inherit", env: childEnv }).on("exit", (code) => resolve(code ?? 1)));
+    const { command, args, fetched } = server([rest[0], "--data", dir, ...rest.slice(1)]);
+    return new Promise((resolve) => spawn(command, args, { stdio: "inherit", env: fetched ? fetchEnv(childEnv) : childEnv }).on("exit", (code) => resolve(code ?? 1)));
   }
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const p = rest.indexOf("--port");
@@ -89,7 +93,7 @@ export async function main(argv, env = process.env) {
   if (fetched) console.error(`Starting AgentRun (the first run fetches its server, ${SERVE_SPEC})...`);
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line.
-  const child = spawn(command, args, { stdio: ["ignore", "pipe", "inherit"], env: childEnv });
+  const child = spawn(command, args, { stdio: ["ignore", "pipe", "inherit"], env: fetched ? fetchEnv(childEnv) : childEnv });
   const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
   let timer;

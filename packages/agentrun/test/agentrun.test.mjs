@@ -65,7 +65,9 @@ test("a subcommand is the server's own, on ~/.agentrun: import --dry-run", { tim
 test("npm exec of the packed package runs this package's own agentrun bin", { timeout: 120_000 }, (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-pack-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const npm = (args) => execFileSync("npm", args, { cwd: dir, encoding: "utf8", env: { ...process.env, npm_config_cache: join(dir, "cache"), npm_config_update_notifier: "false" } });
+  // npm's own settings from the npm that runs this suite (a workspace, a -c command) are not this npm's.
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^npm_/i.test(name)));
+  const npm = (args) => execFileSync("npm", args, { cwd: dir, encoding: "utf8", env: { ...clean, npm_config_cache: join(dir, "cache"), npm_config_update_notifier: "false" } });
   const tarball = npm(["pack", PACKAGE, "--pack-destination", dir, "--silent"]).trim().split("\n").at(-1);
   const out = npm(["exec", "--offline", "--yes", `--package=file:${join(dir, tarball)}`, "--", "agentrun", "--help"]);
   assert.match(out, /^Usage: npx @parcha\/agentrun /);
@@ -127,7 +129,7 @@ test("a server whose output ends with no \"Open \" line gives no address", async
   assert.equal(await openUrl(silent.stdout), undefined);
 });
 
-// The repository's Node rule, at the top of the bin and not behind an import.meta.main guard (Node 20 has none, and a guarded
+// The repository's Node rule, at the top of the bin and not behind a main-module guard (Node 20 has none, and a guarded
 // check there would pass by doing nothing): an older Node gets one line saying what to install, and exit 1.
 test("on Node 20 the bin says, in one line, which Node it needs, and exits 1 before it loads anything", () => {
   for (const node of ["20.20.0", "22.18.0", "23.11.0", "24.1.0"]) {
@@ -152,6 +154,7 @@ test("with no server beside it, the command runs npm exec --package=<server> -- 
 const fs = require("node:fs");
 const argv = process.argv.slice(2);
 fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(argv));
+fs.writeFileSync(${JSON.stringify(record)} + ".env", JSON.stringify(Object.keys(process.env).filter((name) => /^npm_config_(call|workspaces?|include_workspace_root)$/i.test(name))));
 const at = argv.indexOf("--");
 const [bin, ...args] = at < 0 ? [] : argv.slice(at + 1);
 const named = argv.slice(0, at < 0 ? argv.length : at).some((arg) => arg === "--package" || arg.startsWith("--package="));
@@ -166,7 +169,9 @@ setInterval(() => {}, 1000);
 `);
   chmodSync(join(dir, "fake", "npm"), 0o755);
   const { env } = bare(t);
-  const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), "--no-open"], { env: { ...env, PATH: `${join(dir, "fake")}:${env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+  // Started from inside another npm command (`npm exec -c …`, a workspace), whose settings npm hands down in its environment.
+  const outer = { npm_config_call: "node --test", npm_config_workspace: "@parcha/agentrun", npm_config_workspaces: "true" };
+  const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), "--no-open"], { env: { ...env, ...outer, PATH: `${join(dir, "fake")}:${env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
   t.after(async () => { child.kill("SIGTERM"); await exited; });
   let out = "";
@@ -181,6 +186,7 @@ setInterval(() => {}, 1000);
   assert.ok(argv.indexOf("--package=@parcha/agentrun-serve@latest") >= 0 && argv.indexOf("--package=@parcha/agentrun-serve@latest") < argv.indexOf("--"), `--package names the server before --: ${JSON.stringify(argv)}`);
   assert.equal(argv[argv.indexOf("--") + 1], "agentrun-serve", "the server's own bin runs");
   assert.ok(!argv.slice(argv.indexOf("--") + 2).includes("agentrun-serve"), "the server gets no stray argument");
+  assert.deepEqual(existsSync(`${record}.env`) ? JSON.parse(readFileSync(`${record}.env`, "utf8")) : null, [], "an outer npm's -c command and workspace do not reach this npm exec");
   assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, `${out}${err}`);
   child.kill("SIGTERM");
   assert.equal(await exited, 0, err);
