@@ -104,6 +104,16 @@ curl -s "$AGENTRUN_BASE_URL/runs/$run/files" -H "$H"
 curl -s "$AGENTRUN_BASE_URL/runs/$run/messages" -H "$H" -H 'content-type: application/json' -d '{"content":"..."}'
 ```
 
+To give a run a file, upload it in one call, its bytes the body, then name it in the run's `file_ids`; the run finds it
+at `inputs/<path>` in its workspace (MCP has no upload tool: use the API):
+
+```sh
+file=$(curl -s "$AGENTRUN_BASE_URL/files?path=notes.md" -H "$H" --data-binary @notes.md \
+  | node -p 'JSON.parse(require("fs").readFileSync(0)).file.file_id')
+curl -s "$AGENTRUN_BASE_URL/agents/calc/runs" -H "$H" -H 'content-type: application/json' \
+  -d '{"input":{"content":"Summarize inputs/notes.md."},"file_ids":["'"$file"'"]}'
+```
+
 The whole API is in `GET $AGENTRUN_BASE_URL/openapi.json`, and in brief at `/llms.txt` on the server's root
 (`curl -s "${AGENTRUN_BASE_URL%/v2}/llms.txt"`). The run's page for a person is `${AGENTRUN_BASE_URL%/v2}/#/runs/$run`.
 
