@@ -100,7 +100,22 @@ function fixOf(error: unknown): InstallFix | undefined {
 
 /** How a reason found at the start's probe ends (harness.ts' harnessOffers), which is the only one: what is installed
  *  after it shows once AgentRun restarts. */
-const RESTART: Record<InstallFix, string> = { install: "install it, then restart AgentRun to pick it up", pins: "install the pinned build, then restart AgentRun" };
+const RESTART: Record<InstallFix, string> = { install: "once it is installed, restart AgentRun to pick it up", pins: "once the pinned build is installed, restart AgentRun" };
+
+/** The reason the start's probe gives for `error`: its message, ending with the restart (RESTART) where installing is
+ *  the fix. A message whose install line is npx's has no `fix`: running that line is the restart. */
+export function startReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const fix = error instanceof HarnessUnavailable ? error.fix : undefined;
+  return fix ? `${message.replace(/\.$/, "")}; ${RESTART[fix]}.` : message;
+}
+
+/** A HarnessUnavailable for an adapter's own setup `error`, said as `said` with its install line made npx's where serve
+ *  runs from npx (installHint): installing is its fix unless the line became npx's, which restarts AgentRun itself. */
+function unavailable(error: unknown, said: string, npmLine: string | undefined, spec: string, npx: boolean): HarnessUnavailable {
+  const hinted = npmLine ? installHint(said, npmLine, spec, npx) : said;
+  return new HarnessUnavailable(hinted, hinted === said ? fixOf(error) : undefined);
+}
 
 type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite: number };
 /** A child's command under the run's confinement (pi-durable-disk's confinePrefix): only added in front. */
@@ -247,7 +262,7 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   } catch (error) {
     const message = (error as Error).message;
     const said = message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`;
-    throw new HarnessUnavailable(claude.CLAUDE_AGENT_SDK_INSTALL && claude.CLAUDE_AGENT_SDK_VERSION ? installHint(said, claude.CLAUDE_AGENT_SDK_INSTALL, `@anthropic-ai/claude-agent-sdk@${claude.CLAUDE_AGENT_SDK_VERSION}`, npx) : said, fixOf(error));
+    throw unavailable(error, said, claude.CLAUDE_AGENT_SDK_VERSION ? claude.CLAUDE_AGENT_SDK_INSTALL : undefined, `@anthropic-ai/claude-agent-sdk@${claude.CLAUDE_AGENT_SDK_VERSION}`, npx);
   }
   if (refused !== undefined) throw refused;
   return adapter;
@@ -270,7 +285,7 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
     } catch (error) {
       const message = (error as Error).message;
       const said = message.includes("npm install") ? message : `${message} (${INSTALL.codex})`;
-      throw new HarnessUnavailable(installHint(said, codex.CODEX_INSTALL, `@openai/codex@${codex.CODEX_VERSION}`, npx), fixOf(error));
+      throw unavailable(error, said, codex.CODEX_INSTALL, `@openai/codex@${codex.CODEX_VERSION}`, npx);
     }
   }
   // The id as model.ts chose it: a gateway's own name for the model, whole (AGENT_MODEL_GATEWAY_IDS says whether it is
@@ -295,7 +310,7 @@ export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs:
 /** Why `harness` cannot run here, or undefined when it can: its package and pins, its provider, and the adapter's own
  *  check of the model `given` names (with none, a model of the harness's own provider: whether it runs here at all).
  *  `atStart`: asked by the start's probe, whose offers hold until a restart, so a reason installing fixes ends saying
- *  to restart AgentRun after it (RESTART). */
+ *  to restart AgentRun once it is installed (startReason). */
 export async function harnessReason(harness: string, env: NodeJS.ProcessEnv, given: AdapterNeeds | undefined, { atStart = false }: { atStart?: boolean } = {}): Promise<string | undefined> {
   if (env[FAUX_HARNESS_ENV]) return undefined;
   const needs = given ?? { model: { provider: harness === "claude-agent" ? "anthropic" : "openai", modelId: "default" }, models: { getModel: () => undefined } };
@@ -304,8 +319,6 @@ export async function harnessReason(harness: string, env: NodeJS.ProcessEnv, giv
     const problems = adapter.check({ key: "capabilities", label: "capabilities", system: [], tools: [], context: "fresh" });
     return problems.length ? problems.join(" ") : undefined;
   } catch (error) {
-    const message = (error as Error).message;
-    const fix = atStart && error instanceof HarnessUnavailable ? error.fix : undefined;
-    return fix ? `${message.replace(/\.$/, "")}; ${RESTART[fix]}.` : message;
+    return atStart ? startReason(error) : (error as Error).message;
   }
 }

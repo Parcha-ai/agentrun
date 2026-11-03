@@ -765,8 +765,9 @@ harness this server does not run yet saves with a warning on `definition.harness
 `claude-agent` and `codex` when each adapter's package, pins and provider endpoint check out; the harness's `reason`
 says what is missing. The packages and pins are checked once, at the start (`event=harness_offers why=start`): a harness
 installed after it, or put back on its pinned build, stays unavailable until AgentRun restarts, and its reason ends
-saying so, `install it, then restart AgentRun to pick it up` or `install the pinned build, then restart AgentRun`. A
-reason a setting fixes (a model key, say) names no restart.
+saying so, `once it is installed, restart AgentRun to pick it up` or `once the pinned build is installed, restart
+AgentRun`. Run from npx, a reason whose install line is the npx line that starts the server with what is missing needs
+no such clause: running that line is the restart. A reason a setting fixes (a model key, say) names no restart.
 
 `claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with Anthropic's own model id, and prices the run
 by it: a revision's `anthropic/<model-id>`, its dots as dashes. A gateway such as OpenRouter names the same models with
