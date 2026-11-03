@@ -269,7 +269,9 @@ const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
-const answerOf = (rows: readonly TimelineEvent[]) => {
+/** An import's answer, the one row reading of an answer left: its records hold no turn's end (it ran elsewhere), so its
+ *  last meaningful row is its answer when that row is one, a final answer's or a text row's. */
+const importAnswerOf = (rows: readonly TimelineEvent[]) => {
   const last = meaningful(rows);
   return last?.kind === "final_answer" || last?.kind === "text_block" ? last : undefined;
 };
@@ -301,8 +303,8 @@ const lastAnswer = (run: Run) => run.turns.newestText ?? run.rows.findLast((r) =
 /** A row's store entry, from its id (`<conversation>:<entry>[:...]`). */
 const entryOfRow = (id: string) => Number(id.split(":")[1]);
 /** The answer of a run that completed: the whole text of the entry its turn's end names, "" when that turn showed no text,
- *  never an earlier turn's. A run whose records hold no turn's end (a workflow, an import, a store an older server wrote)
- *  answers as those servers did: its newest answer row, whole. */
+ *  never an earlier turn's. Without such an end (a run still working, a workflow, a store an older server wrote): the
+ *  newest answer it gave, whole (lastAnswer); an import's, its last row's when that row is its answer. */
 function answerOfRun(run: Run): string | null {
   const end = run.turns.end();
   if (end?.status === "answered") {
@@ -310,8 +312,8 @@ function answerOfRun(run: Run): string | null {
     // The entry's row when its text was not read here: a final answer's, or a text row's (a stop at the length limit).
     return run.turns.text(end.answer) ?? run.rows.findLast((r) => (r.kind === "final_answer" || r.kind === "text_block") && entryOfRow(r.id) === end.answer)?.text ?? "";
   }
-  const answer = answerOf(run.rows);
-  return answer ? (lastAnswer(run) ?? answer.text ?? answer.summary ?? null) : lastAnswer(run);
+  const imported = run.imported ? importAnswerOf(run.rows) : undefined;
+  return lastAnswer(run) ?? imported?.text ?? imported?.summary ?? null;
 }
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
 const lastUserMessage = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "user_message")?.id;
