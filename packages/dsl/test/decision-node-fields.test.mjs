@@ -379,3 +379,17 @@ test('T6: the published schema and the author guide carry the four fields', () =
 });
 
 void DecisionProviderError;
+
+test('T7d: a provider that says its cut call was never sent (unsent) keeps its own code: a failed decision, not one for review', async () => {
+  // Cut by the node's timeoutMs before it sent anything (a check before the request, say): the provider says so.
+  const early = { ...provider('parallel'), sent: 0, decide: async (_request, ctx) => {
+    await new Promise((resolve) => { if (ctx.signal.aborted) resolve(); else ctx.signal.addEventListener('abort', resolve, { once: true }); });
+    throw new DecisionProviderError('timeout', 'cut before the request was sent', { attempts: 0, unsent: true });
+  } };
+  const error = new DecisionProviderError('timeout', 'x', { unsent: true });
+  assert.equal(error.unsent, true, 'the error carries it');
+  assert.equal(new DecisionProviderError('timeout', 'x').unsent, undefined, 'and only when the provider says so');
+  const outcome = await outcomeOf(runWorkflow(doc([judge({ provider: 'parallel', timeoutMs: 200 })]), INPUT, hosted([early], { deadlineMs: 60_000 })));
+  assert.equal(outcome.status, 'threw', JSON.stringify(outcome).slice(0, 300));
+  assert.match(outcome.message, /cut before the request was sent/, 'the provider\'s timeout, not an interrupted decision');
+});

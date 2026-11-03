@@ -238,3 +238,23 @@ test('an object state with several images names, in order, the field each image 
     validateAnswers(request.questions, outcome.answers);
   } finally { delete process.env.AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS; }
 });
+
+test("through judgeFromProviders, a node's timeoutMs that cuts the image check is timeout and unsent, never a decision for review", async () => {
+  const posts = [];
+  const silent = (url, init) => {
+    if (String(url).includes('/v1/models')) return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+    posts.push(String(url));
+    return Promise.reject(new Error('sent'));
+  };
+  const provider = openrouterProvider({ ...settings, takesImages: undefined, fetch: silent });
+  const judge = judgeFromProviders({ providers: { openrouter: provider }, default: 'openrouter', deadlineMs: 60_000, loadImage: async () => ({ bytes: PNG, mime: 'image/png' }) });
+  const ask = { label: 'x', kind: 'judge', state: { page: '<p>' }, questions: QUESTIONS, model: 'liquid/d1', images: { '<p>': 'pages/acme/1.png' } };
+  let caught;
+  assert.equal(await within(1500, judge({ ...ask, timeoutMs: 50 }).catch((error) => { caught = error; throw error; })), 'rejected timeout');
+  assert.equal(caught.unsent, true, 'it says nothing was sent');
+  // The run's own cancel there is aborted, and unsent too.
+  const cancel = new AbortController(); setTimeout(() => cancel.abort(), 50);
+  assert.equal(await within(1500, judge({ ...ask, signal: cancel.signal }).catch((error) => { caught = error; throw error; })), 'rejected aborted');
+  assert.equal(caught.unsent, true);
+  assert.deepEqual(posts, [], 'nothing was sent');
+});
