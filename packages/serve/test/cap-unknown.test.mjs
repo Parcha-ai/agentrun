@@ -12,9 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
-import { CAP_REFUSED_FIELD, capBefore, capModels, HELD_FIELD, HELD_USD, spentIn } from "../dist/cap.js";
-import { agent, follow, serve } from "./support.mjs";
+import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, metersIn, spentIn } from "../dist/cap.js";
+import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
 const NO_CEILING = /^spend_cap_reached: .*no output ceiling.*out of budget/;
@@ -51,6 +52,52 @@ test("the spend read from a run's store is each known cost summed, a compaction'
   assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), refused])), 0.001, "a request the cap refused never left: it costs nothing");
   assert.equal(spentIn(join(tmpdir(), `cap-unknown-none-${process.pid}`, "run.sqlite")), 0, "no store yet: nothing spent");
   assert.equal(spentIn(storeOf(t, [])), 0, "an empty store: nothing spent");
+  const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", usd } });
+  assert.equal(Math.round(spentIn(storeOf(t, [started, answer({ total: 0.001 }), charged(0.003)])) * 1e6) / 1e6, 0.004, "a paid tool's charge is spent too");
+  assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), charged(null)])), null, "an unknown charge leaves the spend unknown");
+});
+
+test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the cap's spend, leaves the run's reported cost unknown, and is no reported tool charge; settled, its charge alone", async (t) => {
+  const marked = (heldUsd) => ({ kind: TOOL_STARTED, data: { tool: "monid.run", charged_by: "monid", call: "c1", heldUsd } });
+  const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", call: "c1", usd } });
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  // A monid call held at the $1 allowance, cut, beside a model request of $0.002.
+  const cut = [started, answer({ total: 0.002 }), marked(1)];
+  assert.equal(round(spentIn(storeOf(t, cut))), 1.002, "the cap counts the held figure");
+  assert.equal(capToolSpend(cut), 1, "and so does another harness's, read at its open");
+  assert.equal(timelineOf(cut, { settled: true }).at(-1).usage.usd, null, "the run's cost is unknown, never 1.002");
+  assert.deepEqual(metersIn(storeOf(t, cut)), { tools: null, tokens: 0.002 }, "a cut call: the tools meter unknown, the tokens known, never the held $1");
+  const settled = [...cut, charged(0.003)];
+  assert.equal(round(spentIn(storeOf(t, settled))), 0.005, "its charge, not both");
+  assert.equal(capToolSpend(settled), 0.003);
+  assert.equal(timelineOf(settled, { settled: true }).at(-1).usage.usd, 0.005);
+  assert.deepEqual(metersIn(storeOf(t, settled)), { tools: 0.003, tokens: 0.002 });
+  assert.equal(metersIn(storeOf(t, [...settled, { kind: TOOL_COST, data: { call: "c2", usd: null } }])).tools, null, "an unknown charge is unknown");
+  // A live run's tools, from the same rows as its cost: the charge's line, never a mark.
+  const { toolCostOf } = await import("../dist/runs.js");
+  assert.equal(toolCostOf(timelineOf(cut)), 0);
+  assert.equal(toolCostOf(timelineOf(settled)), 0.003);
+  assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), marked(undefined)])), null, "cut with no figure: unknown, never $0");
+});
+
+test("/usage by meter for a run whose monid call a crash cut: its cost is unknown, filed under tools as unpriced; its tokens are known", { timeout: 120_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname, fauxMonid: new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"] }))).status, 201);
+  const { body } = await api("POST", "/agents/slow/runs", { input: { content: "Run monid's /slow." } });
+  for (let i = 0; !(existsSync(log) && readFileSync(log, "utf8").includes('"path":"/v1/run"')); i++) {
+    assert.ok(i < 400, "the monid call is sent");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  // The run's process dies mid-call: the next one answers the call interrupted, never sends it again, and ends.
+  process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
+  await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
+  assert.equal((await api("GET", `/runs/${body.run_id}`)).body.cost.usd, null, "what the cut call charged no one knows");
+  const { tokens } = metersIn(join(data, "runs", body.run_id, "store", "run.sqlite"));
+  assert.ok(tokens > 0, `the model requests are priced: ${tokens}`);
+  const meters = (await api("GET", "/usage?group_by=meter")).body.lines.map((line) => [line.meter, line.usd, line.unpriced_runs]);
+  assert.deepEqual(meters, [["tokens", tokens, 0], ["tools", 0, 1]]);
 });
 
 test("a spend the store cannot say is unknown (null), never $0: a request a crash cut, a stopped answer, a cost that is not a number, a cut compaction, a cut request the cap's refusal follows", (t) => {

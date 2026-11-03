@@ -84,10 +84,10 @@ async function withKeys(t, which) {
   return async () => ({ jev: await read(files.jev), parallel: await read(files.parallel) });
 }
 
-async function startFlow(api, steps, output, { schemas = {}, tools } = {}) {
+async function startFlow(api, steps, output, { schemas = {}, tools, tool_settings } = {}) {
   const doc = flow(steps, output);
   Object.assign(doc.schemas, schemas);
-  const made = await api("POST", "/agents", flowAgent("coi", doc, tools ? { tools } : {}));
+  const made = await api("POST", "/agents", flowAgent("coi", doc, { ...(tools ? { tools } : {}), ...(tool_settings ? { tool_settings } : {}) }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const started = await api("POST", "/agents/coi/runs", { input: { question: QUESTION } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -634,13 +634,15 @@ test("a decision whose cost the provider reports is on its row, and the run's to
   assert.equal(storeRun(data, runId).costUsd, 0.00003, "and the store keeps the same total");
 });
 
-test("only a run that asks Parallel or names a web tool holds the Parallel key, in memory: never in its environment, a child process or a file; an agentic run naming no web tool gets no key at all", async (t) => {
+test("only a run that asks Parallel or whose web tool resolves to Parallel holds the Parallel key, in memory: never in its environment, a child process or a file; an agentic run whose web tools resolve native or to the kernel gets no key at all", async (t) => {
   const seen = await withKeys(t, { parallel: true });
+  // pi's web_search resolves native on a direct Anthropic model: the server's default here.
+  withEnv(t, { AGENT_MODEL: "anthropic/claude-sonnet-4-5" });
   const gate = join(await scratch(t), "go");
   const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL, fauxWeb: FAUX_WEB });
-  // A workflow asking Parallel on one read of the key: a decision node, then web_fetch in a call node.
+  // A workflow asking Parallel on one read of the key: a decision node, then web_fetch in a call node, Parallel picked.
   const read = { node: "call", label: "read", via: "tool", tool: "web_fetch", args: { url: "http://public.example/" }, out: "Page", as: "page", deadline_s: 60 };
-  const runId = await startFlow(api, [onParallel, read, probe(gate)], undefined, { tools: ["web_fetch"], schemas: { Page: { type: "object", required: ["via"], properties: { via: { const: "parallel" } } } } });
+  const runId = await startFlow(api, [onParallel, read, probe(gate)], undefined, { tools: ["web_fetch"], tool_settings: { web_fetch: { provider: "parallel" } }, schemas: { Page: { type: "object", required: ["via"], properties: { via: { const: "parallel" } } } } });
   // While the run's process waits at the probe, after it read the key: as the kernel shows that process.
   const pid = await processOf(data, runId);
   const environ = await readFile(`/proc/${pid}/environ`, "utf8");
@@ -653,19 +655,22 @@ test("only a run that asks Parallel or names a web tool holds the Parallel key, 
   assert.equal(last.status, "completed", JSON.stringify(run.error));
   assert.deepEqual(run.result.output, CLEAN, "the model node's process, and an sh and a node -e it starts, see neither the key nor its descriptor");
   assert.deepEqual((await seen()).parallel.map((c) => [c.path, c.authorized]), [["/v1/decisions", true], ["/v1/extract", true]], "Parallel got the key from the decision node and from web_fetch, on the one read");
-  // Agentic runs, each held in its first turn: one naming web_fetch holds the key as the workflow does, one naming no web
+  // Agentic runs, each held in its first turn: one whose web_fetch or web_search resolves to Parallel holds the key as the
+  // workflow does; one whose web_search resolves native, whose web_fetch resolves to the kernel, or that names no web
   // tool was never handed it.
-  for (const tool of ["web_fetch", "read"]) {
+  const parallel = (tool) => ({ [tool]: { provider: "parallel" } });
+  for (const [tool, picked, handed] of [["web_fetch", parallel("web_fetch"), true], ["web_search", parallel("web_search"), true], ["web_search", undefined, false], ["web_fetch", undefined, false], ["read", undefined, false]]) {
     const hold = join(await scratch(t), "go");
-    const id = `holds-${tool.replace("_", "-")}`;
-    assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: "Hold.", tools: [tool] } })).status, 201);
+    const id = `holds-${tool.replace("_", "-")}${picked ? "-parallel" : ""}`;
+    assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: "Hold.", tools: [tool], ...(picked ? { tool_settings: picked } : {}) } })).status, 201);
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: `Answer once ${hold} exists.` } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const pid = await processOf(data, started.body.run_id);
     const environ = await readFile(`/proc/${pid}/environ`, "utf8");
-    assert.equal(environ.includes(PARALLEL_CANARY), false, `${tool}: the run's process environment holds no copy of the key`);
-    assert.equal(keyFdIn(environ), tool === "web_fetch" ? KEY_FD : undefined, `${tool}: handed the key only when it names web_fetch`);
-    assert.equal(await handedSocket(pid, KEY_FD), false, `${tool}: no key descriptor open`);
+    assert.equal(environ.includes(PARALLEL_CANARY), false, `${id}: the run's process environment holds no copy of the key`);
+    assert.equal(keyFdIn(environ), handed ? KEY_FD : undefined, `${id}: handed the key only when a web tool resolves to Parallel`);
+    assert.match(environ, handed ? /AGENTRUN_SERVE_TOOL_PLANE=\{"web_\w+":"parallel"\}/ : tool === "read" ? /^(?![\s\S]*AGENTRUN_SERVE_TOOL_PLANE)/ : /AGENTRUN_SERVE_TOOL_PLANE=\{"web_\w+":"(native|kernel)"/, `${id}: its plane, a description with no key in it`);
+    assert.equal(await handedSocket(pid, KEY_FD), false, `${id}: no key descriptor open`);
     await writeFile(hold, "");
     await follow(api, started.body.run_id, ["completed"]);
   }

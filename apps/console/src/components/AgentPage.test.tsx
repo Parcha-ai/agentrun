@@ -38,7 +38,7 @@ type Answer = { run: Run } | { refused: string };
 const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
 const endedPage = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run> };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run> };
 /** By default the server's stats carry the sample analytics. `followed` lists the latest run's reads (its
  *  timeline's pages and its record), apart from the page's own reads in `asked`. */
 async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses, hold, strict = false, timeline, reread }: Opts = {}) {
@@ -166,14 +166,16 @@ describe("AgentPage", () => {
 
   it("follows a running latest run: its timeline grows as the agent works, and its status and row move when it ends", async () => {
     const { done, release, latest, row, id, ...page } = await splitRun();
-    expect(latest().querySelectorAll("ol > li")).toHaveLength(3);
+    // Three rows, two steps: the tool's call and its result are one step.
+    expect(latest().querySelectorAll("ol > li")).toHaveLength(2);
     expect(latest().textContent).toContain("Working");
     expect(latest().textContent).toContain("Steps appear as the agent takes them.");
     expect(row().textContent).toContain("Working");
     release();
     await until(() => latest().textContent!.includes("Completed"));
-    // Seven steps now: the newest six shown, the first folded, as on the run page.
-    expect(latest().textContent).toContain("1 earlier steps");
+    // Seven rows, five steps now (each tool once, the cost so far at the end): all shown, as on the run page.
+    expect(latest().querySelectorAll("ol > li")).toHaveLength(5);
+    expect(latest().textContent).not.toContain("earlier steps");
     expect(latest().textContent).toContain(done.page.rows[6].summary);
     expect(latest().textContent).not.toContain("Steps appear as the agent takes them.");
     expect(row().textContent).toContain("Completed");
@@ -484,5 +486,40 @@ describe("AgentPage, the model on a gateway server", () => {
     const page = await open(on("claude-agent"), { models: gateway });
     expect(modelOf(page).textContent).toBe("no default: choose a model");
     expect(page.host.textContent).not.toContain("gpt-6-luna");
+  });
+});
+
+// A harness the server can't run says why on the agent's page, where its Run would fail: the reason the server gives
+// (capabilities' harnesses[].reason), and a Run that does not send.
+describe("AgentPage, an agent whose harness the server can't run", () => {
+  const on = (harness: string): Agent => {
+    const a = agentFixture("invoice-checker");
+    return { ...a, definition: { ...a.definition, harness } };
+  };
+  const harnesses = [{ id: "pi", available: true }, { id: "claude-agent", available: false, reason: "claude-agent needs ANTHROPIC_API_KEY." }, { id: "codex", available: false }];
+
+  it("says why, in place of a run that would fail, and its Run sends nothing", async () => {
+    const page = await open(on("claude-agent"), { harnesses });
+    const why = page.host.querySelector('[aria-label="Harness not available"]');
+    expect(why?.textContent).toBe("claude-agent doesn't run on this server: claude-agent needs ANTHROPIC_API_KEY.");
+    await page.set(page.input(), "Check this invoice.");
+    const run = page.button(/^Run$/)!;
+    expect(run.disabled).toBe(true);
+    await page.click(/^Run$/);
+    // Ctrl or Cmd with Enter in the message starts a run without the button: the guard holds there too.
+    for (const key of [{ ctrlKey: true }, { metaKey: true }]) {
+      await act(async () => { page.input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, ...key })); });
+    }
+    expect(page.starts).toEqual([]);
+  });
+
+  it("names the harness when the server gives no reason, and says nothing for a harness that runs", async () => {
+    const codex = await open(on("codex"), { harnesses });
+    expect(codex.host.querySelector('[aria-label="Harness not available"]')?.textContent).toBe("codex doesn't run on this server.");
+    act(() => root!.unmount()); root = undefined;
+    const pi = await open(on("pi"), { harnesses });
+    expect(pi.host.querySelector('[aria-label="Harness not available"]')).toBeNull();
+    await pi.set(pi.input(), "Check this invoice.");
+    expect(pi.button(/^Run$/)!.disabled).toBe(false);
   });
 });

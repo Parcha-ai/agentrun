@@ -117,7 +117,7 @@ test("a call a harness answer asked for, written after that answer as its contin
   const rows = timelineOf(entries, { settled: true });
   assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => [r.tool_use_id, r.round]), [["c1", first.id], ["c2", first.id]], "the continuation's call shows under the answer it continues");
   assert.deepEqual(rows.findLast((r) => r.kind === "usage")?.usage, { usd: 0.02, requests: 2 }, "no request, and no unknown cost, of its own");
-  assert.deepEqual(rows.filter((r) => r.kind === "tool_result" && r.tool_status !== "success"), [], "no call reads as interrupted");
+  assert.deepEqual(rows.filter((r) => r.kind === "tool_use" && r.tool_status !== "success"), [], "no call reads as interrupted");
   assert.equal(rows.find((r) => r.kind === "final_answer")?.text, "Wrote both.");
 });
 
