@@ -395,17 +395,25 @@ export function adapterRun(
       // The requests already written on the root, and the messages accepted and never sent, from any earlier process.
       const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
       const accepted = new Map<string, Message>();
+      // The turn that took the last message sent, while the root has no end for it (runTurns writes the end last, in a
+      // commit of its own): whether the bridge wrote that turn's error.
+      let unended: { failed: boolean } | undefined;
       for (let cursor: Cursor | undefined; root; ) {
         const page = await root.entries({ order: "ascending" }, 500, cursor, context);
         for (const entry of page.items) {
-          const data = entry.data as { key?: unknown; request?: unknown; unpriced?: unknown; id?: unknown; content?: unknown } | undefined;
+          const data = entry.data as { key?: unknown; request?: unknown; unpriced?: unknown; id?: unknown; content?: unknown; sent?: unknown } | undefined;
+          const message = (entry as { model?: { api?: unknown; stopReason?: unknown }[] }).model?.[0];
+          if (unended && message?.api === ADAPTER_API && message.stopReason === "error") unended.failed = true;
           if (data?.key !== spec.key) continue;
           if (entry.kind === BOOKED && typeof data.request === "number") {
             written.add(data.request);
             (data.unpriced === true ? unpriced : priced).add(data.request);
           } else if (entry.kind === PRICED_LATE && typeof data.request === "number") priced.add(data.request);
           else if (entry.kind === MESSAGE && typeof data.id === "string") accepted.set(data.id, { id: data.id, content: String(data.content ?? ""), recorded: Promise.resolve() });
-          else if (entry.kind === MESSAGE_END && typeof data.id === "string") accepted.delete(data.id);
+          else if (entry.kind === MESSAGE_END && typeof data.id === "string") {
+            accepted.delete(data.id);
+            if (data.sent === true) unended = { failed: false };
+          } else if (entry.kind === TURN_END) unended = undefined;
         }
         if (page.next === undefined) break;
         cursor = page.next;
@@ -441,6 +449,13 @@ export function adapterRun(
       for (const [request, usage] of inSession(await writer.read()).booked) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
       session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      // That turn is over in the session, and an earlier process died before it wrote the turn's end: written now, after
+      // what this open wrote and before any new turn, so the message the turn took reads answered (runs.ts noteAnswer).
+      // The session says only that the turn is over: completed, or failed when the bridge wrote its error.
+      if (session.state === "idle" && unended) {
+        const status: TurnStatus = unended.failed ? "failed" : "completed";
+        await later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, status } }))));
+      }
       queue.push(...accepted.values());
       openedDone();
       if (session.state === "open_turn") runTurns(() => session!.recover());
