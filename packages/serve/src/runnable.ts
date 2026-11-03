@@ -6,7 +6,7 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, providerMissing, providersNamed } from "./decisions.js";
 import { REPLAY } from "./host-tools.js";
 import { type InputIssue, sentence } from "./errors.js";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
 import { chooseModel, llmTiers, type ModelRef, nodeTiers, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./boxes.js";
 import { boxAvailability, placeFix, RUN_BOXES } from "./place.js";
@@ -56,8 +56,9 @@ export const NOT_SET_UP = "not_set_up_here";
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
- *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [] }: { capped?: boolean; boxes?: readonly BoxOffer[] } = {}): Promise<Blocker[]> {
+ *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
+ *  the server already holds (its reading); none given, they are probed here. */
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[] } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. */
@@ -71,7 +72,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (vars.length) out.push({ field, reason: NOT_SET_UP, message: `This server's environment does not set what the tool needs: the tool ${tool} needs ${vars.join(" and ")}.`, host: true, missing: { tool, vars } });
   };
   const harness = revision.harness ?? DEFAULT_HARNESS;
-  const offer = (await harnessOffers(env)).find((h) => h.id === harness);
+  const offer = (offers ?? (await harnessOffers(env))).find((h) => h.id === harness);
   if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? `This server does not run ${harness}.`, host: true, harness });
   const { place } = revision;
   // A workflow's model and call nodes run on the runner here; in a box they do not run yet. Its fix names the runner: an
