@@ -426,6 +426,10 @@ export class Runs {
   private swept?: Promise<void>;
   constructor(private readonly options: RunsOptions) {}
 
+  /** A test's seam (startServe's `beforeAbort`): awaited by a stop between its mark and its abort, so a test can hold a
+   *  stop in flight there. */
+  beforeAbort?: (runId: string) => Promise<void> | void;
+
   private get store() {
     return this.options.agents.store;
   }
@@ -1329,6 +1333,7 @@ export class Runs {
     delete run.meta.stopped_after;
     Object.assign(run.meta, stopMark(run.rows));
     await this.saveMeta(run).catch((error: Error) => warn(run.id, `its stop is not saved, so a restart will not keep it: ${error.message}`));
+    await this.beforeAbort?.(run.id);
     const answer = await this.toDoor(run, "/abort", {}).catch(() => null);
     if (!answer || answer.status >= 400) {
       if (before.stopped_at === undefined) delete run.meta.stopped_at;
