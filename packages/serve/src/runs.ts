@@ -23,7 +23,7 @@ import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/swee
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
-import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, PARALLEL_KEY_ENV } from "./decisions.js";
+import { DECISION_KEY_FD_ENV, decisionKeysFor, type DecisionNeeds, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, providersNamed } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { FAUX_MONID_ENV } from "./monid.js";
@@ -137,8 +137,6 @@ export type Run = {
   revision: string;
   /** The harness its revision names, read at its first message. */
   harness?: string;
-  /** Its agentic revision names web_fetch: its process is handed Parallel's key for it (web-fetch.ts). */
-  webFetch?: true;
   /** Imported history (`agentrun-serve import`): the source it was run in, and its id there. It takes no message, and a
    *  stop or a cancel moves nothing. */
   imported?: { source: string; session: string };
@@ -379,6 +377,15 @@ export async function secretsFor(revision: Revision, rows: readonly KeyRow[] = T
   const needs = new Set(harness !== DEFAULT_HARNESS ? harnessModelKeys(harness, env) : nodes ? modelKeys(env, undefined, llmTiers(nodes, nodeTiers(nodes))) : modelKeys(env, revision.kind === "agentic" ? revision.body.model : undefined));
   return RUN_SECRETS.filter((name) => (!scoped.includes(name) || unlocked.has(name)) && (!MODEL_KEYS.includes(name) || needs.has(name)));
 }
+/** What a run of `revision` needs decision keys for (decisions.ts' decisionKeysFor): its workflow's decision nodes'
+ *  providers (providersNamed, Jev for a node that names none), and whether it binds web_fetch, which reads Parallel's key
+ *  for its extract: an agentic revision's tools, a workflow's on its model nodes and its call nodes. */
+export async function decisionNeedsFor(revision: Revision): Promise<DecisionNeeds> {
+  if (revision.kind !== "workflow") return { providers: [], webFetch: (revision.body.tools ?? []).includes(WEB_FETCH_TOOL) };
+  const nodes = workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow));
+  const bound = workflowTools(nodes);
+  return { providers: providersNamed(nodes), webFetch: [...bound.nodes, ...bound.calls].includes(WEB_FETCH_TOOL) };
+}
 /** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
 const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
 /** A run's process's environment: no secret in it (they go over its pipe), nor the token by value; the AGENT_MODEL
@@ -459,6 +466,8 @@ export class Runs {
   /** The secrets each revision's runs are handed (secretsFor), by revision id: read before a launch, from the revision
    *  the run is pinned to, never from a request. */
   private readonly secrets = new Map<string, readonly string[]>();
+  /** What each revision's runs need decision keys for (decisionNeedsFor), by revision id, read with its secrets. */
+  private readonly decisionNeeds = new Map<string, DecisionNeeds>();
   /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
   private readonly graphs = new Map<string, object>();
   private readonly adopting = new Map<string, Promise<Run>>();
@@ -532,7 +541,7 @@ export class Runs {
       warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
     }
     const known = await this.options.agents.revision(row.agent, row.revision);
-    const run = this.blank(row, dir, meta, known?.version ?? 0, known?.revision);
+    const run = this.blank(row, dir, meta, known?.version ?? 0);
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
@@ -558,11 +567,10 @@ export class Runs {
     return run;
   }
 
-  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number, revision?: Revision): Run {
+  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
       working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
-      ...(revision?.kind === "agentic" && revision.body.tools.includes(WEB_FETCH_TOOL) ? { webFetch: true as const } : {}),
     };
   }
 
@@ -943,6 +951,7 @@ export class Runs {
   private async pinSecrets(run: Pick<Run, "id" | "revision">, given?: Revision): Promise<void> {
     if (this.secrets.has(run.revision)) return;
     const revision = given ?? (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store")));
+    this.decisionNeeds.set(run.revision, await decisionNeedsFor(revision));
     this.secrets.set(run.revision, await secretsFor(revision));
   }
 
@@ -968,13 +977,13 @@ export class Runs {
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
     // The decision keys are never in a run's environment, which its tools and its model's provider read (childEnv leaves
-    // out every secret): a workflow run's process gets them once on an inherited pipe, by name, for its decision
-    // providers and web_fetch alone (decisions.ts), and an agentic run's process Parallel's alone when it names
-    // web_fetch.
+    // out every secret): a run's process gets those its revision needs (decisionNeedsFor) once on an inherited pipe, by
+    // name, for its decision providers and web_fetch alone (decisions.ts), and a run that needs none no pipe at all. One
+    // whose revision was not read gets none.
     delete env[DECISION_KEY_FD_ENV];
     // Chosen from the secrets this server holds: out of its environment once its launcher hands them over (secrets.ts).
-    const offered = decisionKeysOf(withSecrets(process.env, "all", this.options.storedKeys));
-    const decisionKeys = run.kind === "workflow" ? offered : run.webFetch && offered[PARALLEL_KEY_ENV] ? { [PARALLEL_KEY_ENV]: offered[PARALLEL_KEY_ENV] } : {};
+    const needs = this.decisionNeeds.get(run.revision);
+    const decisionKeys = needs ? decisionKeysFor(withSecrets(process.env, "all", this.options.storedKeys), needs) : {};
     const handsKey = Object.keys(decisionKeys).length > 0;
     this.markLaunching(run);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
@@ -1355,7 +1364,7 @@ export class Runs {
       meta.learning = failed === undefined ? { state: "seeded", reason: null, detail: null, at } : { state: "dropped", reason: "seed_failed", detail: failed, at };
       await this.setUp(started.runId, started.dir, meta);
     }
-    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
+    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version);
     run.moment = "other";
     // Before the run is known here, so nothing launches it first.
     await this.pinSecrets(run, revision);

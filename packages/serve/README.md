@@ -233,8 +233,8 @@ the models come from:
   process is handed a model key only when its model needs it: a pi run its model's provider's (a run on Gemini
   `GEMINI_API_KEY`, one on `openrouter/...` `OPENROUTER_API_KEY`; a workflow each of its tiers'), or `AGENT_MODEL_API_KEY`
   through the gateway; a codex run `OPENAI_API_KEY`, or `AGENT_MODEL_API_KEY` through the gateway; a claude-agent run
-  `ANTHROPIC_API_KEY`. No run gets another's. A workflow's judges get their keys (`TYPESAFE_API_KEY`,
-  `OPENROUTER_API_KEY`, `PARALLEL_API_KEY`) on a descriptor of their own, whatever its model.
+  `ANTHROPIC_API_KEY`. No run gets another's. A workflow's decision nodes get their providers' keys on a descriptor of
+  their own, whatever its model, and only those ([Safety](#safety)).
 
 A definition is checked for what keeps it from running here when it is saved, with the same checks a run makes before
 it starts:
@@ -874,8 +874,11 @@ carries no cost at all, as from a provider that does not price the model. The te
 
 ## Safety
 
-- The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`) are never in a run's environment or files: a workflow run's
-  process gets them on a pipe of their own, for its decision providers alone ([decision workflows](#decision-workflows)).
+- The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`, `OPENROUTER_API_KEY` as Jev's or OpenRouter's) are never in
+  a run's environment or files: a run's process gets on a pipe of their own only those its revision needs, for its
+  decision providers ([decision workflows](#decision-workflows)) and `web_fetch`: Jev's (by its route) for a node that
+  names Jev or none, Parallel's for a node that names Parallel or for `web_fetch`, OpenRouter's for a node that names
+  OpenRouter. A run that needs none gets no pipe.
 - `fetch_page` dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this
   machine, its network or a cloud's metadata address through it.
 - A `browser` session runs at Browserbase, not on this machine: a page the model opens is reached from Browserbase's

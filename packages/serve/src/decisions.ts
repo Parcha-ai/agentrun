@@ -80,6 +80,25 @@ export function decisionKeysOf(env: NodeJS.ProcessEnv): Record<string, string> {
   };
 }
 
+/** What a run's decision keys are for: the providers of its workflow's typed questions (providersNamed), and web_fetch,
+ *  which reads Parallel's key for its extract (web-fetch.ts). */
+export type DecisionNeeds = { providers: readonly string[]; webFetch: boolean };
+
+/** The decision keys the server hands a run's process for `needs`, of those it holds (decisionKeysOf): Jev's by its route
+ *  (TypeSafe's, or OpenRouter's), OpenRouter's for an OpenRouter decision node, Parallel's for a Parallel one or for
+ *  web_fetch. None else: a run with no decision node and no web_fetch gets no descriptor at all. */
+export function decisionKeysFor(env: NodeJS.ProcessEnv, needs: DecisionNeeds): Record<string, string> {
+  const names = new Set<string>();
+  for (const id of needs.providers) {
+    const route = id === DEFAULT_DECISION_PROVIDER ? jevRoute(env) : undefined;
+    if (route) names.add(route === "typesafe" ? JEV_KEY_ENV : JEV_OPENROUTER_KEY_ENV);
+    if (id === "openrouter") names.add(JEV_OPENROUTER_KEY_ENV);
+    if (id === "parallel") names.add(PARALLEL_KEY_ENV);
+  }
+  if (needs.webFetch) names.add(PARALLEL_KEY_ENV);
+  return Object.fromEntries(Object.entries(decisionKeysOf(env)).filter(([name]) => names.has(name)));
+}
+
 /** Why Jev does not run here, naming the variable to set. */
 export const jevMissing = `This server's environment does not set ${JEV_KEY_ENV} (or, for Jev through OpenRouter, ${JEV_OPENROUTER_KEY_ENV}, or ${JEV_GATEWAY_KEY_ENV} with AGENT_MODEL_BASE_URL on openrouter.ai), which a workflow's judge, pick, sift, route and ask nodes need.`;
 
