@@ -164,14 +164,18 @@ export const PROVIDER_KEYS: Readonly<Record<string, readonly string[]>> = {
  *  context: Bedrock's, whose request builds its AWS credentials itself. */
 const REQUEST_KEYS = PROVIDER_KEYS["amazon-bedrock"]!;
 
-/** The providers of pi-ai whose keys a run takes, by the models chooseModel picks for it: the default tier's from `ref`
- *  (an agentic revision's own), else the host's default; each other tier's, the host's model of that tier. None through
- *  a gateway (`AGENT_MODEL_BASE_URL`), where every model is the gateway's, on its own key. Asked as chooseModel is, faux
- *  or not, so a run on the faux model is handed what a run on its model would be. */
-export function modelProviders(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"]): string[] {
-  if (env.AGENT_MODEL_BASE_URL) return [];
+/** The gateway's key (AGENT_MODEL_BASE_URL's), which its every model is reached on. */
+export const GATEWAY_KEY_ENV = "AGENT_MODEL_API_KEY";
+
+/** The model keys a pi run takes, by the models chooseModel picks for it: the keys of each one's provider (PROVIDER_KEYS),
+ *  the default tier's from `ref` (an agentic revision's own) else the host's default, each other tier's the host's model
+ *  of that tier; through a gateway (`AGENT_MODEL_BASE_URL`), where every model is the gateway's, its key alone. Asked as
+ *  chooseModel is, faux or not, so a run on the faux model is handed what a run on its model would be. */
+export function modelKeys(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"]): string[] {
+  if (env.AGENT_MODEL_BASE_URL) return [GATEWAY_KEY_ENV];
   const named = tiers.map((tier) => (tier === "default" ? ref : undefined) ?? tierModel(env, tier));
-  return [...new Set(named.flatMap((name) => (name && name.indexOf("/") > 0 ? [name.slice(0, name.indexOf("/"))] : [])))];
+  const providers = named.flatMap((name) => (name && name.indexOf("/") > 0 ? [name.slice(0, name.indexOf("/"))] : []));
+  return [...new Set(providers.flatMap((provider) => PROVIDER_KEYS[provider] ?? []))];
 }
 
 /** A run's thinking level: its `effort`, else its revision's `thinking`, else the host's `AGENT_THINKING`, else medium.
@@ -292,7 +296,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   models.setProvider(createProvider({
     id: MODEL_PROVIDER,
     baseUrl,
-    auth: { apiKey: { name: "AGENT_MODEL_API_KEY", resolve: async () => ({ auth: { apiKey: env.AGENT_MODEL_API_KEY || "none" }, source: "AGENT_MODEL_API_KEY" }) } },
+    auth: { apiKey: { name: GATEWAY_KEY_ENV, resolve: async () => ({ auth: { apiKey: env[GATEWAY_KEY_ENV] || "none" }, source: GATEWAY_KEY_ENV }) } },
     models: ids.map((id) => ({
       id, name: id, api: "openai-responses", provider: MODEL_PROVIDER, baseUrl, reasoning: true, input: ["text", "image"] as ("text" | "image")[],
       cost: priceOf(id), contextWindow: 128_000, maxTokens: 32_000, compat: { supportsDeveloperRole: false },

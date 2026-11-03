@@ -122,6 +122,15 @@ export function gatewayBase(setting: string, value: string): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;
 }
 
+/** The model keys a run on `harness` takes, by what its provider below reads: codex OpenAI's, or the gateway's when
+ *  AGENT_MODEL_BASE_URL is set; claude-agent Anthropic's, for api.anthropic.com or ANTHROPIC_BASE_URL alike. None for pi,
+ *  whose keys are its models' (model.ts' modelKeys). */
+export function harnessModelKeys(harness: string, env: NodeJS.ProcessEnv): string[] {
+  if (harness === "codex") return [env.AGENT_MODEL_BASE_URL ? "AGENT_MODEL_API_KEY" : "OPENAI_API_KEY"];
+  if (harness === "claude-agent") return ["ANTHROPIC_API_KEY"];
+  return [];
+}
+
 /** Where Codex's model requests go: OpenAI with its key, or a gateway at AGENT_MODEL_BASE_URL's base (gatewayBase: the
  *  proxy sends the Responses API to <base>/v1/responses). */
 export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origin: string; credential: () => string } {

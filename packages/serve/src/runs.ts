@@ -14,7 +14,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
+import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
@@ -28,7 +28,7 @@ import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { FAUX_MONID_ENV } from "./monid.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, FAUX_ENV, llmTiers, modelProviders, nodeTiers, PROVIDER_KEYS, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
+import { EFFORT_ENV, FAUX_ENV, GATEWAY_KEY_ENV, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
@@ -353,23 +353,21 @@ const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEA
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
 type KeyRow = { kind: string; fields: readonly string[]; unlocks: readonly string[] };
 /** The fields a run gets only when its revision names what they unlock: a `tool` key's. Any other kind's (a model key's)
- *  reach every run, as the rest of RUN_SECRETS does. */
+ *  is the model's to need, as every model key is. */
 const scopedOf = (rows: readonly KeyRow[]): readonly string[] => rows.filter((row) => row.kind === "tool").flatMap((row) => row.fields);
-/** The model keys every run gets, whatever its model: the gateway's, codex's and claude-agent's own (OpenAI's,
- *  Anthropic's), and OpenRouter's, which a workflow's Jev judges may answer on (decisions.ts). */
-const EVERY_RUN_MODEL_KEYS: readonly string[] = ["AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"];
-/** The other keys of pi-ai's providers (model.ts' PROVIDER_KEYS): a run gets one only when its model is that
- *  provider's. */
-const BY_PROVIDER: readonly string[] = [...new Set(Object.values(PROVIDER_KEYS).flat())].filter((name) => !EVERY_RUN_MODEL_KEYS.includes(name));
-/** What a run whose revision was not read is handed: no tool key, and no key of a provider's. */
-const NO_TOOL_KEYS = RUN_SECRETS.filter((name) => !scopedOf(TOOL_KEYS).includes(name) && !BY_PROVIDER.includes(name));
+/** The model keys: every key of pi-ai's providers (model.ts' PROVIDER_KEYS) and the gateway's. A run gets those its model
+ *  needs and no other (secretsFor). A workflow's decision keys, OpenRouter's among them, go on its decision descriptor
+ *  (decisions.ts), whatever its model. */
+const MODEL_KEYS: readonly string[] = [...new Set([...Object.values(PROVIDER_KEYS).flat(), GATEWAY_KEY_ENV])];
+/** What a run whose revision was not read is handed: no tool key, and no model key. */
+const NO_TOOL_KEYS = RUN_SECRETS.filter((name) => !scopedOf(TOOL_KEYS).includes(name) && !MODEL_KEYS.includes(name));
 
 /** The secrets a run of `revision` is handed over its pipe: RUN_SECRETS but each field of a `tool` row of `rows`
  *  (TOOL_KEYS) that unlocks none of the tools the run binds, named as its process binds them (app.ts): an agentic
- *  revision's `tools`, a workflow's on its model nodes and its `call` nodes; and but each key of a provider of pi-ai's
- *  that none of its models is on (model.ts' modelProviders, from the host's model settings in `env`): a pi revision's
- *  own model, or the host's of each tier it runs. A run on codex or claude-agent takes its model's key from the model
- *  keys, which go to every run, as does any other secret that is neither. */
+ *  revision's `tools`, a workflow's on its model nodes and its `call` nodes; and but each model key its model does not
+ *  need, from the host's model settings in `env`: a pi run's, its models' providers' keys or the gateway's (model.ts'
+ *  modelKeys: its own model, or the host's of each tier it runs); codex's and claude-agent's, what their providers read
+ *  (adapters.ts' harnessModelKeys). */
 export async function secretsFor(revision: Revision, rows: readonly KeyRow[] = TOOL_KEYS, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
   const workflow = revision.kind === "workflow" ? revision.body.workflow : undefined;
   const nodes = workflow ? workflowNodes(workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(workflow)) : undefined;
@@ -377,10 +375,9 @@ export async function secretsFor(revision: Revision, rows: readonly KeyRow[] = T
   const named = new Set(bound ? [...bound.nodes, ...bound.calls] : (revision.body.tools ?? []));
   const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((name) => named.has(name))).flatMap((row) => row.fields));
   const scoped = scopedOf(rows);
-  const onPi = (revision.body.harness ?? DEFAULT_HARNESS) === DEFAULT_HARNESS;
-  const providers = !onPi ? [] : nodes ? modelProviders(env, undefined, llmTiers(nodes, nodeTiers(nodes))) : modelProviders(env, revision.kind === "agentic" ? revision.body.model : undefined);
-  const theirs = new Set(providers.flatMap((provider) => PROVIDER_KEYS[provider] ?? []));
-  return RUN_SECRETS.filter((name) => (!scoped.includes(name) || unlocked.has(name)) && (!BY_PROVIDER.includes(name) || theirs.has(name)));
+  const harness = revision.body.harness ?? DEFAULT_HARNESS;
+  const needs = new Set(harness !== DEFAULT_HARNESS ? harnessModelKeys(harness, env) : nodes ? modelKeys(env, undefined, llmTiers(nodes, nodeTiers(nodes))) : modelKeys(env, revision.kind === "agentic" ? revision.body.model : undefined));
+  return RUN_SECRETS.filter((name) => (!scoped.includes(name) || unlocked.has(name)) && (!MODEL_KEYS.includes(name) || needs.has(name)));
 }
 /** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
 const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;

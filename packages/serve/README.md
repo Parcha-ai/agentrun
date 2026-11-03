@@ -230,9 +230,11 @@ the models come from:
 - Otherwise pi-ai's providers serve them, each with its key from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
   `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, Bedrock's `AWS_*` keys, ...), and its catalog prices the run. The `AGENT_MODEL`
   variables are then `provider/model-id` too. The launcher holds every key pi-ai reads, as it holds the rest, and a run's
-  process is handed a provider's key only when its model is that provider's: a run on Gemini gets `GEMINI_API_KEY`, and
-  no other run does. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` and `AGENT_MODEL_API_KEY` go to every
-  run, as codex, claude-agent, the gateway and Jev's judges take them.
+  process is handed a model key only when its model needs it: a pi run its model's provider's (a run on Gemini
+  `GEMINI_API_KEY`, one on `openrouter/...` `OPENROUTER_API_KEY`; a workflow each of its tiers'), or `AGENT_MODEL_API_KEY`
+  through the gateway; a codex run `OPENAI_API_KEY`, or `AGENT_MODEL_API_KEY` through the gateway; a claude-agent run
+  `ANTHROPIC_API_KEY`. No run gets another's. A workflow's judges get their keys (`TYPESAFE_API_KEY`,
+  `OPENROUTER_API_KEY`, `PARALLEL_API_KEY`) on a descriptor of their own, whatever its model.
 
 A definition is checked for what keeps it from running here when it is saved, with the same checks a run makes before
 it starts:
@@ -892,8 +894,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   (`*_API_KEY`, `*_TOKEN`, any with `SECRET` or `PASSWORD`), whether the launcher's list names it or not. The keys it
   needs come over its pipe. It gets none of the boxes' keys ([Boxes](#boxes)). A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` `browser`; a workflow's
-  tools are those its model and call nodes name), and a provider's key only when its model is that provider's
-  ([Models](#models)), read from the revision at each launch, a relaunch or a resume after a restart included.
+  tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
+  from the revision at each launch, a relaunch or a resume after a restart included.
 - A variable named like a key that is not on the launcher's list (`capabilities.secrets.names`) is left out of every
   run's environment, but the launcher does not take it out of the server's: it stays in the server's own environment
   (`/proc/<pid>/environ`), which any process of the same user can read. Set only the keys the server needs where it
