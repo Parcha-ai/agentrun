@@ -16,6 +16,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { awaitImage, BOX_RECIPE, DEFAULT_DOCKER_IMAGE, dockerImage, IMAGE_STATE_FILE, RECIPE_HASH, RECIPE_LABEL, STALE_AFTER_MS } from "../dist/box-image.js";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
+import { latestReading } from "../dist/server.js";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
@@ -209,6 +210,42 @@ test("a docker that is Podman, saying `image not known`, has the image pulled (o
   assert.equal(docker.pulls().length, 1);
   assert.deepEqual(await (await dockerImage(process.env, await scratch(t), DEFAULT_DOCKER_IMAGE)).settled, { state: "ready" });
   assert.equal(docker.builds().length, 1);
+});
+
+test("the start's first reading is applied even when a newer one begun while it ran (an image that came in) ends after it, so capabilities are never left unset; a reading a later one overtook is dropped once one is applied", async () => {
+  const applied = [];
+  const ends = [];
+  const read = latestReading(() => new Promise((resolve) => ends.push(resolve)), (value) => void applied.push(value));
+  const start = read();
+  const image = read();
+  ends[0]("start");
+  await start;
+  assert.deepEqual(applied, ["start"], "the first that ends is applied: the start reads capabilities right after it");
+  ends[1]("image");
+  await image;
+  assert.deepEqual(applied, ["start", "image"], "and the newer one when it ends");
+  const older = read();
+  const newer = read();
+  ends[3]("newer");
+  await newer;
+  ends[2]("older");
+  await older;
+  assert.deepEqual(applied, ["start", "image", "newer"], "an older reading that ends after a newer one is dropped");
+});
+
+test("a final state that cannot be written removes the record, so no run waits on a stale `preparing`, and says so", async (t) => {
+  const docker = await fakeDocker(t, { "no-image": "", "pull-hold": "" });
+  const data = await scratch(t);
+  const warned = [];
+  const image = await dockerImage(process.env, data, IMAGE, { warn: (message) => void warned.push(message) });
+  assert.equal(recordOf(data).state, "preparing");
+  // The record is written whole or not at all, through a file beside it: with a directory there, the next write fails.
+  await mkdir(join(data, `${IMAGE_STATE_FILE}.partial`));
+  await docker.release();
+  assert.deepEqual(await image.settled, { state: "ready" }, "the server's own state is right");
+  assert.equal(existsSync(join(data, IMAGE_STATE_FILE)), false, "the stale record is gone: a waiting run makes its box as before");
+  assert.equal(warned.length, 1, JSON.stringify(warned));
+  assert.match(warned[0], /^the record of the box image's state could not be written \(EISDIR\), so it was removed: runs make their boxes without waiting on it$/);
 });
 
 test("a pull that fails makes the box unavailable with a reason that holds none of Docker's output", async (t) => {

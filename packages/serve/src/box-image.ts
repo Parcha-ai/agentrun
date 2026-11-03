@@ -155,7 +155,7 @@ const labelsOf = (stdout: string): Record<string, string> => {
  * for the default, has one of another recipe), built from BOX_RECIPE or pulled, in the background, once, within its
  * bound. `onChange` is told each state after the first. The record in the data directory follows the state.
  */
-export async function dockerImage(env: NodeJS.ProcessEnv, data: string, image: string, options: { pullTimeoutMs?: number; buildTimeoutMs?: number; inspectTimeoutMs?: number; onChange?: (state: ImageState, ms: number) => void } = {}): Promise<DockerImage> {
+export async function dockerImage(env: NodeJS.ProcessEnv, data: string, image: string, options: { pullTimeoutMs?: number; buildTimeoutMs?: number; inspectTimeoutMs?: number; onChange?: (state: ImageState, ms: number) => void; warn?: (message: string) => void } = {}): Promise<DockerImage> {
   const built = image === DEFAULT_DOCKER_IMAGE;
   const timeoutMs = built ? (options.buildTimeoutMs ?? BUILD_TIMEOUT_MS) : (options.pullTimeoutMs ?? PULL_TIMEOUT_MS);
   let state: ImageState;
@@ -183,7 +183,12 @@ export async function dockerImage(env: NodeJS.ProcessEnv, data: string, image: s
   const settled = made.then(async (answer) => {
     if (controller.signal.aborted) return state;
     state = answer.code === 0 ? { state: "ready" } : { state: "unavailable", reason: built ? buildFailure(answer, timeoutMs) : pullFailure(image, answer, timeoutMs) };
-    await write();
+    // A final state that cannot be written leaves no record: a run then makes its box as it would with none, never
+    // waiting on the `preparing` the record last said.
+    await record(data, { image, state: state.state, ...("reason" in state ? { reason: state.reason } : {}) }).catch(async (error: NodeJS.ErrnoException) => {
+      await clearImage(data).catch(() => undefined);
+      options.warn?.(`the record of the box image's state could not be written (${error.code ?? error.name}), so it was removed: runs make their boxes without waiting on it`);
+    });
     options.onChange?.(state, Date.now() - started);
     return state;
   });

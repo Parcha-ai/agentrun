@@ -241,6 +241,22 @@ export function workflowTitle(name: string, input: Record<string, unknown>): str
   return words.length ? `${name}${/[?!:.]$/.test(name) ? "" : ":"} ${words.join(", ")}` : name;
 }
 
+/** Readings made one after another (`make`), each given to `apply` unless a later one has overtaken it; but the first
+ *  to end is always applied, even when a later one is still being made (the box's image came in during the start's),
+ *  since the start reads what it applied right after it. */
+export function latestReading<T>(make: () => Promise<T>, apply: (value: T) => void): () => Promise<void> {
+  let latest = 0;
+  let applied = false;
+  return async () => {
+    const mine = ++latest;
+    const next = await make();
+    if (mine === latest || !applied) {
+      apply(next);
+      applied = true;
+    }
+  };
+}
+
 /** The server's reading of `base` with its secrets, saved keys among them, and its capabilities on it, the harnesses'
  *  offers included: made at the start and again at each save or delete of a key, so a key saved later can make a harness
  *  available with no restart. `boxes`: what the box registry set up at the start (boxes.ts), the same in every reading. */
@@ -420,14 +436,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // once saved keys are read (below), so the offers are checked once at the start.
   let env = withSecrets(base, "all", storedKeys);
   let caps!: Awaited<ReturnType<typeof readingOf>>["caps"];
-  let latest = 0;
-  const keysChanged = async () => {
-    const mine = ++latest;
-    // The box offers are probed once, below, before the first reading is made, and read again when the Docker box's
-    // image comes in or its pull fails (box-image.ts), which makes a reading too.
-    const next = await readingOf(base, maxRuns, storedKeys, learning, boxOffers);
-    if (mine === latest) ({ env, caps } = next);
-  };
+  // The box offers are probed once, below, before the first reading is made, and read again when the Docker box's
+  // image comes in or its build or pull fails (box-image.ts), which makes a reading too.
+  const keysChanged = latestReading(() => readingOf(base, maxRuns, storedKeys, learning, boxOffers), (next) => void ({ env, caps } = next));
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
   // box stands in for Docker, and nothing asks Docker.
   const boxes = await boxRegistry(env);
@@ -442,6 +453,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const boxImage = !fauxBox && boxes.provider("docker") ? boxImageOf(env) : undefined;
   if (boxImage) {
     image = await dockerImage(env, data, boxImage, {
+      warn: (message) => (log ? log(logLine("box_image", { image: boxImage, warning: message })) : void process.stderr.write(`agentrun-serve: ${message}\n`)),
       onChange: (state, ms) => {
         boxOffers = offersNow();
         imageLog(state, { ms });
