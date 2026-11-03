@@ -222,7 +222,7 @@ test("bash is a 422 on an agent whose place is the runner (named or by default);
   // The browser writes work/ from this machine by path, which a box's command could turn through a link: runner only.
   const browser = await api("POST", "/agents", { definition: { id: "browsing", name: "browsing", instructions: "Probe.", tools: ["bash", "browser"], place: SANDBOX } });
   assert.deepEqual([browser.status, browser.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.tools[1]", "not_an_option"]]]);
-  assert.match(browser.body.error.fields[0].message, /runs on the runner only/);
+  assert.match(browser.body.error.fields[0].message, /^browser does not run in a sandbox place yet/);
   // And a place that tries to open the box's network is no place.
   const open = await api("POST", "/agents", { definition: { id: "open", name: "open", instructions: "Probe.", tools: ["bash"], place: { ...SANDBOX, network: "open" } } });
   assert.deepEqual([open.status, open.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.place", "not_allowed"]]]);
