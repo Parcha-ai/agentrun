@@ -67,8 +67,8 @@ function quoted(text: string, key: string): string {
 }
 
 /** `row`'s key checked against its provider through `fetcher` (undefined: a faux server with no fake for it, so no call
- *  is made), in at most `ms`. */
-export async function checkKey(row: { id: string; label: string }, key: string, env: NodeJS.ProcessEnv, fetcher: typeof fetch | undefined | null, ms = CHECK_MS): Promise<CheckOutcome> {
+ *  is made), in at most `ms`, and no longer than `stop` (the server closing) lets it wait. */
+export async function checkKey(row: { id: string; label: string }, key: string, env: NodeJS.ProcessEnv, fetcher: typeof fetch | undefined | null, ms = CHECK_MS, stop?: AbortSignal): Promise<CheckOutcome> {
   const at = new Date().toISOString();
   const notChecked = (reason: string): KeyCheck => ({ state: "not_checked", reason, at });
   const check = Object.hasOwn(KEY_CHECKS, row.id) ? KEY_CHECKS[row.id] : undefined;
@@ -77,7 +77,7 @@ export async function checkKey(row: { id: string; label: string }, key: string, 
   const { url, ...init } = check(key, env);
   let res: Response;
   try {
-    res = await fetcher(url, { ...init, signal: AbortSignal.timeout(ms) });
+    res = await fetcher(url, { ...init, signal: stop ? AbortSignal.any([AbortSignal.timeout(ms), stop]) : AbortSignal.timeout(ms) });
   } catch (error) {
     if ((error as Error)?.name === "TimeoutError") return notChecked(`${row.label} did not answer in ${ms / 1000} s`);
     const cause = (error as { cause?: { code?: unknown } })?.cause?.code;

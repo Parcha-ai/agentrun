@@ -465,6 +465,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const fake = fakes[id];
     return fake ? ((await import(pathToFileURL(resolve(fake)).href)) as { default: typeof fetch }).default : undefined;
   };
+  // Aborted as close() begins: a key's check still waiting on its provider stops waiting, and its save stores nothing.
+  const stopping = new AbortController();
   // This server's saved keys, read by name: handed to its own reading and its own runs, never shared with another server.
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
@@ -1312,7 +1314,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         // Never through `idempotent`: its record keeps the body, and this body is the values. Checked against its
         // provider before it is kept: a key the provider refuses is 422, and nothing is kept.
         const body = await bodyOf(req);
-        toolKeys.save(id, body, await toolKeys.check(id, body, checkFetch));
+        const check = await toolKeys.check(id, body, checkFetch, stopping.signal);
+        // A server that began to close stores nothing: it may have released its lock, and another server may hold this
+        // directory and its keys by now.
+        if (stopping.signal.aborted) throw new ApiError("unavailable", "The server is shutting down: the key was not saved.");
+        toolKeys.save(id, body, check);
         await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       }
@@ -1423,6 +1429,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
       // after close.
       closing = true;
+      stopping.abort();
       for (const worker of workers.keys()) worker.postMessage("stop");
       await Promise.all([...workers.values()].map((w) => w.exit));
       await importing;

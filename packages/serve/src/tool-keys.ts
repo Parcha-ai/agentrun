@@ -178,14 +178,15 @@ export class ToolKeys {
   }
 
   /** A PUT's check, before save(): the key it sends (its row's first field; Browserbase's project id is no key) checked
-   *  against its provider (key-check.ts), the fetch `fetchFor` gives for the row (undefined: none, so not checked). The
-   *  body is held to what save() takes first, so a save that would be refused sends nothing. A key the provider refuses
-   *  is 422 in its words, and nothing is kept; undefined when the body sends no key: the row's check stays as it was. */
-  async check(id: string, body: Record<string, unknown>, fetchFor: (id: string) => Promise<typeof fetch | undefined>): Promise<KeyCheck | undefined> {
+   *  against its provider (key-check.ts), the fetch `fetchFor` gives for the row (undefined: none, so not checked), its
+   *  wait cut by `stop`. The body is held to what save() takes first, so a save that would be refused sends nothing. A
+   *  key the provider refuses is 422 in its words, and nothing is kept; undefined when the body sends no key: the row's
+   *  check stays as it was. */
+  async check(id: string, body: Record<string, unknown>, fetchFor: (id: string) => Promise<typeof fetch | undefined>, stop?: AbortSignal): Promise<KeyCheck | undefined> {
     const { row, values } = this.admit(id, body);
     const name = row.fields[0];
     if (values[name] === undefined) return undefined;
-    const outcome = await checkKey(row, values[name] as string, this.env, await fetchFor(row.id));
+    const outcome = await checkKey(row, values[name] as string, this.env, await fetchFor(row.id), undefined, stop);
     if (outcome.state === "refused") throw invalid([{ field: `values.${name}`, reason: "refused_by_provider", message: outcome.message }]);
     return outcome;
   }
