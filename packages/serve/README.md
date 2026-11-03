@@ -61,6 +61,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
+| `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -427,7 +428,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
-| `POST /files`, `PUT /files/{id}` | [Uploads](#uploads): a file reserved, then its bytes sent. |
+| `POST /files`, `PUT /files/{id}` | [Uploads](#uploads): a file reserved (`POST /v2/files`), then its bytes sent (`PUT /v2/files/{id}`). |
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
 | `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. The query bounds `analytics` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; a poll never answers `home_busy` (`stale: true` marks a last whole view). An agentic run has none (`404`). |
@@ -446,7 +447,9 @@ above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap
 ## Uploads
 
 A run's input files. `POST /v2/files` with `{path, size_bytes, content_type?, sha256?}` reserves one, `pending`, and
-answers where to send its bytes: `upload.url`, relative to `/v2`. `PUT` them there as the raw body, any content type.
+answers where to send its bytes: `upload.url`, relative to `/v2`, which is `PUT /v2/files/{id}`. `PUT` them there as the
+raw body, any content type. With no `content_type`, the file's type is its path's extension's, as a run's files are
+served (`plan.md` is `text/markdown; charset=utf-8`), and `application/octet-stream` for an extension not known.
 They are streamed to disk, never held whole, so `max_body_bytes` does not apply; their length must be `size_bytes` and
 their SHA-256 the `sha256` given (`422 input_invalid` at that field), and then the file is `ready`, with its `sha256`. A
 file is at most `limits.max_upload_bytes`, 50 MiB (`413`). The same bytes sent again change nothing; other bytes are a
@@ -454,8 +457,8 @@ file is at most `limits.max_upload_bytes`, 50 MiB (`413`). The same bytes sent a
 `422` at `file_ids` before anything starts. Each is copied, never linked, into the run's `work/inputs/` at its `path`,
 folders kept, before the run's process starts; a name already taken gets a suffix (`notes-2.txt`, `docs-2/`), the same
 for the same files in the same order. The run reads them as any file of its workspace, and `GET /v2/runs/{id}/files`
-lists them. Each upload is kept in `DIR/files/<file_id>/`, 0600. Nothing deletes one yet: `upload.expires_at` is a day
-after the reservation, and a later `PUT` is still taken.
+lists them. Each upload is kept in `DIR/files/<file_id>/`, 0600. `upload.expires_at`, which the contract requires, is
+advisory and not enforced in this release: a `PUT` after it is still taken, and nothing deletes an upload.
 
 ## Agent home
 
@@ -724,6 +727,49 @@ the answer is sent, so a retry after a restart gets the first answer.
 
 A completed agentic run's `result` is `{output: null, final_answer}`; a completed workflow run's is
 `{output: <the workflow's output>, final_answer: null}`.
+
+## Learning
+
+Learning is off unless an agent's definition says `learning: true` (an agentic one: a workflow refuses the field). A
+definition that sets it keeps it on its revision, `false` included, and an edit that leaves it out keeps the agent's; one
+that never sets it stores nothing, so its revision id is the one it had before the switch. The server's `--learning off`
+turns learning off for every run it starts, whatever the agent says.
+
+An agent that learns has a learning folder, `learning/` in its home (`DATA/homes/<key>/learning/`), in Claude Code's
+auto-memory format:
+
+- `MEMORY.md`, the index a run reads, one line per active note: `- [name](file.md) — description`, built by the server;
+- one file per note, `<slug>.md`: front matter with `name`, `description` and `type` (`user`, `feedback`, `project` or
+  `reference`), and optionally `status: superseded` or `retired` with `superseded_by` (no status: active), then the
+  note's text. The server parses it and builds the index (`src/notes.ts`).
+
+The folder is plain git with `main` checked out. The agent's first run that learns makes it, with one commit on `main`
+holding an empty `MEMORY.md`; an agent that does not learn never gets one. The server is its only writer. Every git
+call the server makes there runs with the folder's hooks and fsmonitor off, no replace refs, no lazy fetch and no system
+or global config, one at a time per agent.
+
+Each run of an agent that learns starts from `main` as it is when the run is made, whatever its harness:
+
+- `runs/<id>/learning.json` pins that commit (`seed`). It is written once: a resume or a follow-up reads the same
+  commit, however `main` moves on.
+- The first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own) go into the run's
+  instructions after the agent's, under `# Learned`, with one line saying the notes are in `.learning/` and to open one
+  when it applies. That is pi's system prompt and claude-agent's and codex's instructions: the same channel `CLAUDE.md`
+  and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project settings off, so a
+  `.claude/` in the work never loads), and no skill is learned.
+- `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh; a superseded or retired
+  note is not.
+
+The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
+1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
+run: when the folder cannot be made or read, or its notes copied, the run starts with nothing learned. A host without
+git 2.40 or later is one such fault, said once on stderr.
+
+The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run lists) says how it went:
+`{state: "seeded", reason: null, detail: null, at}` for a run that started from what its agent learned,
+`{state: "dropped", reason: "seed_failed", detail, at}` for one that started with nothing, and `null` for a run that does
+not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a workflow's or an
+imported run). Nothing writes to `main` after its first commit yet: what a run learns stays in the run.
 
 ## Spend cap
 
