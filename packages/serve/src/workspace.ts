@@ -7,9 +7,18 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, openSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
 import { access, type FileHandle, lstat, readdir, unlink } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { Confinement } from "@parcha/pi-durable-disk/internals";
 import { syncDir, writeDurable } from "./files.js";
+
+/** The type a file is served as, by its extension: a run's files, a home's, and an upload whose reservation names none.
+ *  A Map, so only its own extensions resolve: an object's would also give its prototype's (`.constructor`, `.__proto__`). */
+const TYPES: ReadonlyMap<string, string> = new Map(Object.entries({
+  txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8", csv: "text/csv; charset=utf-8", json: "application/json", jsonl: "application/x-ndjson",
+  html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf",
+}));
+/** The type of a file at `path`, by its extension; undefined for one the table does not know. */
+export const typeOf = (path: string): string | undefined => TYPES.get(extname(path).slice(1).toLowerCase());
 
 /** Why a path under work/ is not read: it is missing, a link is on the way (or is the entry), it is not a regular file,
  *  it has another hard link, it is larger than the reader takes, or it is unreadable to this server (a tool in the box
