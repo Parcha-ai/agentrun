@@ -919,18 +919,6 @@ test("a server that cannot write when it first started takes now, says so, and s
 
 const waitNotice = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8")).wait_notice;
 
-/** Whether the run's own store holds its ask_person call: it asked, whatever server is or is not up. */
-function asked(data, runId) {
-  let store;
-  try {
-    store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 1000 });
-    return store.prepare("SELECT record FROM entries ORDER BY id DESC LIMIT 10").all().some((row) => row.record.includes('"ask_person"'));
-  } catch {
-    return false;
-  } finally {
-    store?.close();
-  }
-}
 
 test("a run that comes to wait for its person while no server is up gives exactly one run.needs_input from the server that adopts it, under the wait's own id", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
@@ -946,9 +934,9 @@ test("a run that comes to wait for its person while no server is up gives exactl
   const { holder } = JSON.parse(readFileSync(join(data, "runs", run.run_id, "run.json"), "utf8"));
   t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   assert.ok(processAlive(holder.pid), "its process outlived the server");
-  // The run asks with no server up: its process commits the question to its own store.
+  // The run asks with no server up: the faux model says so by a file, as its store is its process's alone.
   writeFileSync(gate, "");
-  await until(() => asked(data, run.run_id), "the run's question, in its own store");
+  await until(() => existsSync(`${gate}.asked`), "the run's question, asked");
   assert.deepEqual(ofType(hook.got, "run.needs_input"), [], "no server was up to notice it");
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => next.close());
