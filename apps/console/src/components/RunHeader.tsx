@@ -5,30 +5,34 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { bounded, cost, CUT_NOTE, isEstimate, when } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
+import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
 export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive?: () => void; busy?: "stop" | "cancel" | "archive" | null };
 
 /** The run's title bar: back to its agent, the title, its status, what it cost so far, stop versus cancel, and archive.
  *  Stop ends the turn and keeps the run open (it waits for a message); cancel ends the run for good, after a confirm.
- *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
-export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
+ *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it.
+ *  `compact` (the run page sets it once its steps scroll): on a phone, the title on one line beside the status and the
+ *  actions, without the breadcrumb and the details, so the steps get the screen. A wider screen shows it whole. */
+export function RunHeader({ run, agentName, actions = {}, costText, compact = false }: { run: Run; agentName: string; actions?: RunActions; costText?: string; compact?: boolean }) {
   const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
   return (
-    <header className="border-b px-5 py-4 md:px-8">
-      <nav className="caps flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground" aria-label="Breadcrumb">
+    <header className={cn("border-b px-5 py-4 md:px-8", compact && "max-md:py-2")}>
+      <nav className={cn("caps flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground", compact && "max-md:hidden")} aria-label="Breadcrumb">
         <ArrowLeft className="size-3.5 shrink-0" aria-hidden />
         <span className="truncate">{agentName}</span>
         <span aria-hidden>/</span>
         <span className="truncate">Run {run.run_id.slice(0, 8)}</span>
       </nav>
-      <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
+      <div className={cn("mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row", compact && "max-md:mt-0 max-md:flex-row max-md:items-center max-md:gap-x-3")}>
         <div className="min-w-0 flex-1 self-stretch">
           {/* A workflow run's title can be its input as JSON: then the agent's name reads better. */}
-          <h1 className="break-words text-2xl font-semibold leading-tight" title={run.title}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : run.title}</h1>
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-muted-foreground">
+          <h1 className={cn("break-words text-2xl font-semibold leading-tight", compact && "max-md:truncate max-md:text-base")} title={run.title}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : run.title}</h1>
+          {/* Compact on a phone: the details (kind, time, cost) go, from here, and the status and any chips stay. */}
+          <div className={cn("mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-muted-foreground", compact && "max-md:mt-1 max-md:[&>.font-mono]:hidden")}>
             <StatusBadge run={run} />
             {archived && <Chip tone="muted">Archived</Chip>}
             <span className="font-mono">{run.kind} · rev {run.agent_version}</span>
