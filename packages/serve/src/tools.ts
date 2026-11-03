@@ -294,13 +294,17 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
  *  (names only), and the harnesses that run it (another harness than pi runs only the host tools, host-tools.ts). A tool
  *  a user picks a provider for (tool-plane.ts) gives the providers offered, the server's (`provider`, the default where it
  *  sets none), the default, and what it resolves to on each harness under the server's `settings`: available where any
- *  is not unavailable, and missing PARALLEL_API_KEY where Parallel is picked without it. */
+ *  is not unavailable, and missing PARALLEL_API_KEY where Parallel is picked without it. An unavailable tool says why
+ *  (`reason`). */
 export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}) => {
   const resolves = resolvesView(env, settings);
   return Object.entries(TOOLS).map(([name, entry]) => {
     const plane = (PICKABLE as readonly string[]).includes(name) ? resolves[name as Pickable] : undefined;
     const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
     const available = plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0;
-    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: settings[name as Pickable]?.provider ?? PROVIDERS[name as Pickable][0], default_provider: PROVIDERS[name as Pickable][0], resolves: plane } : {}) };
+    // Unavailable says why: on a tool a user picks a provider for, the resolutions' own words (`web_search is turned off in
+    // settings`), else the variables it needs.
+    const reason = available ? undefined : plane ? [...new Set(Object.values(plane).filter(isUnavailable).map((resolution) => resolution.slice("unavailable: ".length)))].join("; ") : `Needs ${missing.join(", ")}`;
+    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: settings[name as Pickable]?.provider ?? PROVIDERS[name as Pickable][0], default_provider: PROVIDERS[name as Pickable][0], resolves: plane } : {}) };
   });
 };

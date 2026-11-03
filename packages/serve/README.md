@@ -22,7 +22,7 @@ JS
 node packages/serve/dist/cli.js --faux faux.mjs
 ```
 
-Installed, `agentrun-serve` is a launcher that needs a POSIX `sh` with a builtin `printf` (Linux, macOS; not Windows). It hands the server its keys and token over a pipe, so none is in any process's environment, the run's processes included. Started as `node dist/cli.js`, as above, the server reads them from its own environment. `GET /v2/capabilities`' `secrets` says how they are held, and what that does not cover.
+Installed, `agentrun-serve` is a launcher that needs a POSIX `sh` with a builtin `printf` (Linux, macOS; not Windows). It hands the server its keys and token over a pipe, so none is in any process's environment, the run's processes included. Started as `node dist/cli.js`, as above, the server reads them from its own environment. `GET /v2/capabilities`' `secrets` says how they are held, and what that does not cover. Started with `npx @parcha/agentrun`, your shell and npm keep the keys you exported in their environment, as they always do; the server itself, and its runs, hold none. For the strictest custody, start this launcher directly, with each key set for that one command and not exported: once the launcher has handed a key to the server, no process holds it in its environment. The launcher takes keys from its environment only, not from a file or standard input.
 
 It prints where it listens and, at the start that made it, the token:
 
@@ -309,8 +309,8 @@ it is keyless Exa, or Parallel where picked, and a pick of `native` alone is una
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
-| `web_search`, `auto` (the default) | Claude's own WebSearch | Codex's own search, each search booked; behind a gateway or under a spend cap, keyless Exa, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, keyless Exa |
-| `web_search`, `native` | the same | the same, unavailable behind a gateway or under a spend cap | the same, unavailable where there is none: never keyless Exa |
+| `web_search`, `auto` (the default) | Claude's own WebSearch; under a spend cap, keyless Exa | Codex's own search, each search booked; behind a gateway or under a spend cap, keyless Exa, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, keyless Exa |
+| `web_search`, `native` | the same, unavailable under a spend cap | the same, unavailable behind a gateway or under a spend cap | the same, unavailable where there is none: never keyless Exa |
 | `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
 | `web_search`, `exa-keyless` | Exa's public MCP search, a host tool | the same | the same |
 | `web_fetch`, `kernel` (the default) | the guarded direct fetch | the same | the same |
@@ -943,9 +943,9 @@ Pricing the whole output ceiling is strict: on a model with 64,000 max output to
 worst case is about $0.96, so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
 
 A request carrying a native web search tool reads pages into its input that its body does not hold (the provider bills
-them as input): under a cap its input bound is its body's plus an allowance. On claude-agent that is 200,000 input
-tokens, which serve hands its adapter (Claude's CLI asks for at most 8 searches, about 25,000 tokens of results each, a
-working estimate); pi's own search request is held at its context
+them as input): under a cap its input bound is its body's plus an allowance. Claude's own search does not run under a
+cap: each search has a per-use fee the cap cannot reserve yet, so a capped claude-agent run searches keyless Exa, as a
+capped codex run does; pi's own search request is held at its context
 plus 125,000 (5 searches) and its most fee, 5 searches at $0.01. What the request
 cost, booked once it answers, stops the next request through the cap, and a run whose booked spend passes its cap shows
 one timeline row saying by how much (`Spent $X, $Y over the run's cap of $Z`).
