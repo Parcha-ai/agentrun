@@ -15,8 +15,8 @@ import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, ownedByIdentity } from "./home-path.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
-import { FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
-import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
+import { healthOf, hostMemory, maxRunsOf, memoryLog, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { type LearningMode, learningOf } from "./learning.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
@@ -112,7 +112,8 @@ export type ServeOptions = {
   console?: string;
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
-  /** The most runs at once (default: AGENTRUN_MAX_RUNS, else from this host's memory: host.ts); over it, 429. */
+  /** The most runs at once (default: AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds: host.ts),
+   *  beside the memory each run's harness reserves; over either, 429. */
   maxRuns?: number;
   /** Free disk under the data directory below which GET /v2/health fails (default 64 MiB, or AGENTRUN_MIN_FREE_MB). */
   minFreeBytes?: number;
@@ -245,13 +246,15 @@ export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.
 /** The capabilities document from offers already resolved: the route builds it once, at start. */
 function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode) {
   const models = modelSource(env);
+  // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
+  const memory = hostMemory();
   return {
     backend: "local",
     contract: CONTRACT,
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
-    /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
-    harnesses,
+    /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
+    harnesses: harnesses.map((offer) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(env),
     models,
@@ -306,7 +309,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       max_upload_bytes: MAX_UPLOAD_BYTES,
       max_files_per_run: MAX_FILES_PER_RUN,
       max_message_chars: MAX_MESSAGE,
-      max_concurrent_runs: maxRuns,
+      // pi's: the smallest run, so the most at once. A heavier harness fits fewer (harnesses[].max_concurrent_runs).
+      max_concurrent_runs: Math.min(maxRuns, runsThatFit(DEFAULT_HARNESS, memory)),
       timeline_max_wait_ms: MAX_WAIT_MS,
       timeline_page_rows: PAGE_ROWS,
       idempotency_ttl_s: IDEMPOTENCY_TTL_S,
@@ -389,6 +393,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const { token: doorToken } = await tokenIn(doorTokenFile);
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
+  // The memory runs are admitted by (host.ts), and each harness one of whose runs never fits in it, said once.
+  log?.(logLine("memory", memoryLog(hostMemory())));
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   const env = withSecrets({ ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
   const caps = await capabilities(env, maxRuns, learning);

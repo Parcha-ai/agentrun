@@ -15,7 +15,8 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOfBody, steersMidTurn } from "./harness.js";
+import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
 import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
@@ -434,6 +435,10 @@ export class Runs {
   private closed = false;
   /** Runs past the cap's check whose process is not started yet. */
   private starting = 0;
+  /** The memory the starts counted in `starting` reserve, in MiB. */
+  private startingMib = 0;
+  /** This host's memory, out of which each live run reserves what its harness takes (host.ts), beside `maxRuns`. */
+  private readonly memory = hostMemory();
   /** The start sweep of the boxes runs left: once, before any run opens a box (sweepOnce). */
   private swept?: Promise<void>;
   /** Why this host keeps no learning folder, said once. */
@@ -526,6 +531,7 @@ export class Runs {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
       working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
+      ...(revision ? { harness: harnessOfBody(revision.body) } : {}),
       ...(revision?.kind === "agentic" && revision.body.tools.includes(WEB_FETCH_TOOL) ? { webFetch: true as const } : {}),
     };
   }
@@ -1214,34 +1220,51 @@ export class Runs {
 
   /** Start a run of `revision` (number `version`) of `entry`'s agent: `startRun` in the store, then its process, then an
    *  agentic run's first message, `input.content`. */
-  /** A place for one more live run, taken for this start (counted in `starting` from here, so two starts at once cannot
-   *  both take the last place), or 429 rate_limited. A run that has ended (failed, completed, cancelled) still holds its
-   *  place until its process exits; a start that needs that place waits for it, up to that process's drain and kill,
-   *  never refused for a place already being given back. */
-  private async takePlace(): Promise<void> {
-    const max = this.options.maxRuns;
-    for (const deadline = Date.now() + this.killAfterMs() + 1_000; max !== undefined; await sleep(50)) {
+  /** A place for one more live run of `harness`, taken for this start (counted in `starting` and `startingMib` from
+   *  here, so two starts at once cannot both take the last place), or 429 rate_limited; the function returned gives it
+   *  back once the run holds it as a live run, or did not start. A place is one under the cap on the count and the
+   *  memory a run of its harness reserves (host.ts): both must be free. A run that has ended (failed, completed,
+   *  cancelled) still holds its place until its process exits; a start that needs that place waits for it, up to that
+   *  process's drain and kill, never refused for a place already being given back. A harness whose one run is more than
+   *  the whole memory for runs is refused at once, never a 429 (capabilities say so too). */
+  private async takePlace(harness: string): Promise<() => void> {
+    const { memory, options: { maxRuns: max } } = this;
+    const need = runMibOf(harness);
+    const never = neverFits(harness, memory);
+    if (never) throw new ApiError("agent_not_runnable", never, { details: { harness } });
+    for (const deadline = Date.now() + this.killAfterMs() + 1_000; ; await sleep(50)) {
       const holding = [...this.runs.values()].filter((run) => this.live(run));
-      if (holding.length + this.starting < max) break;
+      const counted = max === undefined || holding.length + this.starting < max;
+      let held = this.startingMib;
+      for (const run of holding) held += runMibOf(await this.harnessOf(run));
+      // With nothing held, a run that fits at all starts: pi's one place on a host smaller than a pi run (host.ts).
+      const fits = held === 0 || held + need <= runsMemoryMib(memory);
+      if (counted && fits) break;
       const leaving = holding.some((run) => run.outcome || run.finishing || run.cancel);
       if (!leaving || Date.now() > deadline) {
-        throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
+        if (!counted) throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
+        throw new ApiError("rate_limited", memoryFull(harness, memory, held), { retry_after_ms: 5_000, details: { max_concurrent_runs: max ?? null, harness, needs_mb: need, free_mb: Math.max(0, runsMemoryMib(memory) - held) } }, { "retry-after": "5" });
       }
     }
     this.starting++;
+    this.startingMib += need;
+    return () => {
+      this.starting--;
+      this.startingMib -= need;
+    };
   }
 
   /** `inputs` copies the run's files into its work/ (uploads.ts), after the store made it and before its process starts. */
   async create(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
     await this.sweepOnce();
-    await this.takePlace();
+    const release = await this.takePlace(harnessOfBody(revision.body));
     try {
       // Read again: the place may have been waited for, and the agent archived meanwhile.
       const now = await this.options.agents.get(entry.agent.id);
       if (now?.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${entry.agent.id} is archived: unarchive it to run it.`, { details: { archived_at: now.agent.archivedAt } });
       return await this.start(entry, revision, version, options);
     } finally {
-      this.starting--;
+      release();
     }
   }
 
@@ -1362,11 +1385,16 @@ export class Runs {
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
 
+  /** The harness its revision names, read once. */
+  private async harnessOf(run: Run): Promise<string> {
+    run.harness ??= ((await this.options.agents.revision(run.agentId, run.revision))?.revision.body as { harness?: string } | undefined)?.harness ?? DEFAULT_HARNESS;
+    return run.harness;
+  }
+
   /** Whether the run's harness takes a message mid-turn. */
   private async steers(run: Run): Promise<boolean> {
     if (run.kind !== "agentic") return true;
-    run.harness ??= ((await this.options.agents.revision(run.agentId, run.revision))?.revision.body as { harness?: string } | undefined)?.harness ?? DEFAULT_HARNESS;
-    return steersMidTurn(run.harness);
+    return steersMidTurn(await this.harnessOf(run));
   }
 
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
@@ -1411,7 +1439,7 @@ export class Runs {
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
     if (row?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
-    await this.takePlace();
+    const release = await this.takePlace(await this.harnessOf(run));
     try {
       // Read again: the place may have been waited for, and the run (or its agent) archived meanwhile.
       const now = this.store.readRun(run.id);
@@ -1432,7 +1460,7 @@ export class Runs {
       this.launch(run);
     } finally {
       // Launched, it holds its place as a live run.
-      this.starting--;
+      release();
     }
   }
 

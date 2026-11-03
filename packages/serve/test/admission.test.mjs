@@ -56,7 +56,7 @@ test("a 384 MB server: claude-agent is unavailable with why, in capabilities and
   assert.equal(caps.limits.max_concurrent_runs, 2, "the count is pi's, the smallest run");
   const said = lines.filter((line) => line.includes("event=memory"));
   assert.equal(said.length, 1, `said once at start:\n${lines.join("\n")}`);
-  assert.match(said[0], /memory_mb=384 for_runs_mb=256 per_run_mb=pi=128,claude-agent=288,codex=192 claude-agent="This server has 384 MB/);
+  assert.match(said[0], /memory_mb=384 for_runs_mb=256 per_run_mb=pi:128,claude-agent:288,codex:192 claude-agent="This server has 384 MB/);
   // Saved with a warning, as any harness this host does not run; its run is refused at once, never a 429 to try again.
   const made = await api("POST", "/agents", agent("big", { harness: "claude-agent", instructions: "Answer the question." }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -88,9 +88,12 @@ test("a 512 MB server holds one claude-agent run: a second, and a pi run with to
   const small = await api("POST", "/agents/small/runs", { input: { content: "hi" } });
   assert.deepEqual([small.status, small.body.error?.details?.harness, small.body.error?.details?.free_mb], [429, "pi", 96], JSON.stringify(small.body));
   assert.equal((await api("GET", "/runs")).body.runs.length, 1, "nothing more started");
-  await writeFile(go, "");
-  await follow(api, first.body.run_id, ["completed"]);
-  const next = await api("POST", "/agents/big/runs", { input: { content: "hi" } });
+  // The faux harness's wait holds for the life of the run's process: the run is cancelled, and its process gives the
+  // memory back as it exits.
+  assert.equal((await api("POST", `/runs/${first.body.run_id}/cancel`)).status, 202);
+  await follow(api, first.body.run_id, ["cancelled"]);
+  assert.equal((await api("POST", "/agents", agent("chat", { harness: "claude-agent", instructions: "Answer the question." }))).status, 201);
+  const next = await api("POST", "/agents/chat/runs", { input: { content: "hi" } });
   assert.equal(next.status, 202, `the first run gave its memory back: ${JSON.stringify(next.body)}`);
   await follow(api, next.body.run_id, ["completed"]);
 });

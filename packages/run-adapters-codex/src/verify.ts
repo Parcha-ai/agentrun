@@ -2,7 +2,7 @@
 // to a run's failure line. Written for AgentRun.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 import { env } from "node:process";
 import { codexTarget, findCodex } from "./binary.js";
@@ -15,6 +15,20 @@ export interface CodexPins {
   sha256?: string;
   /** The platform package's version (`<version>-<platform>`), when the binary came from one. */
   packageVersion?: string;
+}
+
+/** The sha256 of the file at `path`, read a megabyte at a time: the binary is hundreds of megabytes, and read whole it
+ *  stays in the host's memory until a collection, on a small host for as long as the host runs. */
+function fileSha256(path: string): string {
+  const hash = createHash("sha256");
+  const chunk = Buffer.allocUnsafe(2 ** 20);
+  const fd = openSync(path, "r");
+  try {
+    for (let n = 0; (n = readSync(fd, chunk, 0, chunk.length, null)) > 0; ) hash.update(chunk.subarray(0, n));
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest("hex");
 }
 
 /** The pins for this platform's binary. */
@@ -39,7 +53,7 @@ export function verifyCodexBinary(found: { path: string; packageVersion?: string
   if (pins.sha256) {
     let sha256: string;
     try {
-      sha256 = createHash("sha256").update(readFileSync(path)).digest("hex");
+      sha256 = fileSha256(path);
     } catch (error) {
       return new CodexNotInstalled(`${path} could not be read: ${String((error as Error)?.message ?? error).slice(0, 120)}`);
     }
