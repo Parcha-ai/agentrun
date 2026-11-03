@@ -1149,3 +1149,66 @@ test("an upgrade from a serve.json that still holds the old notice record (end_n
   assert.equal(ofType(hook.got, "run.ended").length, 1, "once");
   assert.equal(ofType(hook.got, "run.needs_input").length, 0, "the old wait record sends nothing");
 });
+
+test("a cancelled run whose last row is an open question, its wait no longer in the ledger, gives no run.needs_input when a later server reads it: an ended run never asks", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  let api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "asks-then-cancelled", "Pick a region.", { tools: ["ask_person"] });
+  await until(() => ofType(hook.got, "run.needs_input").length === 1, "the wait's notice");
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+  await follow(api, run.run_id, ["cancelled"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its end's notice");
+  await first.close();
+  stopped = true;
+  // The ledger as an upgrade, or a pruning, leaves it: no wait of the run, and its messages gone from the outbox.
+  const file = join(data, "webhook-outbox.json");
+  const outbox = JSON.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, `${JSON.stringify({ ...outbox, messages: [], attempts: [], notices: { [run.run_id]: { ended: outbox.notices[run.run_id].ended } } })}\n`);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  api = client(next.baseUrl, next.token);
+  // Read by the next server, rows and all: its last row still asks, and the run is cancelled.
+  const view = (await api("GET", `/runs/${run.run_id}`)).body;
+  assert.equal(view.status, "cancelled");
+  await follow(api, run.run_id, ["cancelled"]);
+  await sleep(500);
+  assert.equal(ofType(hook.got, "run.needs_input").length, 1, "no wait notice for an ended run");
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "and its end once");
+});
+
+test("a run still waiting on the same question a day later, its message gone from the outbox, is not asked about again: the ledger keeps a wait until the run moves past it", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const day = 24 * 3_600_000;
+  writeFileSync(join(dir, "end-notices-since"), `${new Date(Date.now() - 3 * day).toISOString()}\n`);
+  const setup = new Webhooks(dir, env, () => undefined, []);
+  setup.save({ url: hook.url });
+  await setup.close();
+  // Queued two days ago, delivered, and pushed out of the outbox's log since: the ledger alone has the wait.
+  const asked = new Date(Date.now() - 2 * day).toISOString();
+  writeFileSync(join(dir, "webhook-outbox.json"), `${JSON.stringify({ v: 3, messages: [], attempts: [], notices: { waiting: { wait: "row_9", wait_at: asked } } })}\n`);
+  const webhooks = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => webhooks.close());
+  const waiting = { run_id: "waiting", agent_id: "a", status: "input_required", title: "t", pending: { kind: "question" } };
+  // Another run's notice prunes the ledger; then the waiting run is seen again (an adoption, a refresh).
+  webhooks.emit("run.ended", { run_id: "other", agent_id: "a", status: "completed", title: "o" }, new Date().toISOString());
+  webhooks.emit("run.needs_input", waiting, "row_9");
+  await until(() => hook.got.length >= 1, "the other run's end");
+  await sleep(300);
+  assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).type), ["run.ended"], "the same wait is not sent again");
+  // A new question of the run is a wait of its own; its end clears the wait.
+  webhooks.emit("run.needs_input", waiting, "row_12");
+  webhooks.emit("run.ended", { ...waiting, status: "completed", pending: undefined }, new Date().toISOString());
+  await until(() => hook.got.length >= 3, "the new wait and the end");
+  await sleep(300);
+  assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).type), ["run.ended", "run.needs_input", "run.ended"]);
+  assert.equal(ledgerOf(dir).waiting.wait, undefined, "an end moves the run past its wait");
+});
