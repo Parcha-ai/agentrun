@@ -145,5 +145,7 @@ describe("Timeline, the recorded run in both shapes", () => {
     expect(h).toContain("Read AGENTS.md: not found");
     expect(h).toMatch(/>Interrupted</);
     expect(h.match(/>Error</g)).toHaveLength(1);
+    // The interrupted write ran to the run's end: 8 s.
+    expect(h).toContain("8.0 s");
   });
 });

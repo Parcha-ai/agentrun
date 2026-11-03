@@ -131,6 +131,19 @@ describe("steps, over the recorded run in both shapes", () => {
     expect(actions.map((x) => x.row.tool_status).filter(Boolean)).toEqual(["missing", "success", "success", "success", "success", "success", "failed", "success", "success", "interrupted", "success"]);
     expect(actions.at(-1)!.row.summary).toMatch(/^Total: /);
   });
+  it("runs an interrupted write's duration to the run's end, the latest moment the run's rows hold", () => {
+    const rows = rowsOf("timeline.actions.completed");
+    const cut = steps(rows).find((x) => x.row.tool_status === "interrupted")!;
+    const latest = Math.max(...rows.flatMap((r) => [Date.parse(r.timestamp), r.ended_at ? Date.parse(r.ended_at) : 0]));
+    expect(Date.parse(cut.row.ended_at!)).toBe(latest);
+    expect(cut.ms).toBe(latest - Date.parse(cut.row.timestamp));
+    expect(cut.ms).toBe(8000);
+  });
+  it("gives every ended action its duration, never one before it started", () => {
+    const ended = steps(rowsOf("timeline.actions.completed")).filter((x) => x.row.kind === "tool_use");
+    expect(ended).toHaveLength(11);
+    for (const x of ended) expect(x.ms, x.row.summary).toBeGreaterThanOrEqual(0);
+  });
   it("shows the live run's write as running, with no duration yet", () => {
     const live = steps(rowsOf("timeline.actions.working"));
     const write = live.find((x) => x.row.tool_status === "running")!;
