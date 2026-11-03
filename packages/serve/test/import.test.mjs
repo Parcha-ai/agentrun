@@ -5,7 +5,7 @@
 // are left out by name; an imported run takes no message, and a stop, a cancel or a restart moves nothing of it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -16,6 +16,7 @@ import { startServe } from "../dist/index.js";
 import { agentIdOf, importCommand, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { summaryLines } from "../dist/import-summary.js";
+import { ToolKeys } from "../dist/tool-keys.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, scratch } from "./support.mjs";
@@ -303,6 +304,9 @@ test("the CLI's --dry-run lists each project and writes nothing; the import itse
   assert.equal(real.status, 0, real.stderr);
   assert.match(real.stdout, /runs imported into/);
   assert.ok(!real.stdout.includes(CANARY));
+  // OPENAI_API_KEY is one of the launcher's secrets, out of process.env once the CLI starts: still read by name, and cut.
+  const written = readdirSync(data, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
+  for (const file of written) assert.ok(!readFileSync(file).includes(CANARY), `no key value in ${file}`);
 });
 
 test("the CLI's import cuts the server's own keys out of what it keeps, wherever a session holds one: its text, a subagent's, its first message (the run's title), its project's path and its file's name", async (t) => {
@@ -942,6 +946,24 @@ test("a subagent whose file names no parent is no session and no run: its tokens
   const store = openStoreReader(data);
   t.after(() => store.close());
   assert.equal(store.listRuns().length, 1, "no run for the subagent");
+});
+
+test("a tool key saved through the settings API is cut from every file the import writes, opened on the host with the seal key; with no seal key it is not known, so not cut", async (t) => {
+  const root = await scratch(t);
+  const h = home(root);
+  const seal = randomBytes(32).toString("base64");
+  const saved = `not-a-secret-saved-${randomBytes(8).toString("hex")}`;
+  assert.ok(readFileSync(claudeSession(h.at, h.site, 13, { prompt: "Which key?", output: `MONID_API_KEY=${saved}` })).includes(saved));
+  const into = async (name, env) => {
+    const data = join(root, name);
+    mkdirSync(data, { recursive: true });
+    new ToolKeys(data, { AGENTRUN_SEAL_KEY: seal }, () => undefined).save("monid", { values: { MONID_API_KEY: saved } });
+    assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: h.at, env, out: () => undefined }), 0);
+    const files = readdirSync(data, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name !== "tool-keys.json").map((entry) => join(entry.parentPath, entry.name));
+    return files.filter((file) => readFileSync(file).includes(saved));
+  };
+  assert.deepEqual(await into("agents", { ...ENV, AGENTRUN_SEAL_KEY: seal }), [], "cut from every file the import writes");
+  assert.notDeepEqual(await into("unsealed", ENV), [], "the control: the same import with no seal key keeps it");
 });
 
 test("one number per run: an imported run's timeline usage row counts its subagents' requests, as its stored metrics do, and its transcript gives the same totals", async (t) => {
