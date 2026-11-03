@@ -301,6 +301,59 @@ test("costs that trail their requests by more than a turn: each request still ge
   assert.equal(spend(after), 0.007);
 });
 
+test("a booking that comes in as the run ends: before its process lets the store go it is written, after that it is refused, and either way the next open books it once", { timeout: BOOKING_WAIT_MS * 8 }, async () => {
+  // Turn 1 asks requests 1 and 2: 2 is booked in the turn, 1 only after it, as the server decides the run is done and
+  // stops its process. The process lets its store go by closing its Harness, which the release does first; the next
+  // open reads the store as a new process opens it.
+  const turn = async ({ ask, book, say }) => {
+    await ask();
+    say("Calling.");
+    const second = await ask();
+    say(" Done.");
+    await book(second, 0.002);
+  };
+  const ended = async (storage, script) => {
+    const first = await opened(storage, script.adapter);
+    assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
+    await until(() => first.events.includes("run_end"), BOOKING_WAIT_MS * 3);
+    return first;
+  };
+  const reopened = async (storage) => {
+    // A stand-in for the next process: MemoryStorage refuses every call once closed, a store file does not.
+    storage.closed = false;
+    return rootOf((await opened(storage, scripted([]).adapter)).harness);
+  };
+  // (i) Booked once the run's last turn ended, before the store is let go: written by this process, and not again.
+  {
+    const storage = new MemoryStorage();
+    const script = scripted([turn]);
+    const first = await ended(storage, script);
+    await script.book(1, 0.001);
+    for (const at = Date.now(); !requestsOf(await rootOf(first.harness), BOOKED).includes(1); ) {
+      assert.ok(Date.now() - at < 1_000, "written as it came in, with no turn running");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await first.harness.close(ctx);
+    const entries = await reopened(storage);
+    assert.deepEqual(requestsOf(entries, BOOKED).sort((a, b) => a - b), [1, 2], "each request once");
+    assert.deepEqual(pricings(entries), { 1: 1, 2: 1 }, "each cost once");
+    assert.equal(spend(entries), 0.003, "the run's spend, as the store the release sealed has it");
+  }
+  // (ii) Booked after the store was let go: nothing is written, the booking included, and the next open books the request
+  // once, cut, at a cost no one knows: never $0, never twice.
+  {
+    const storage = new MemoryStorage();
+    const script = scripted([turn]);
+    const first = await ended(storage, script);
+    await first.harness.close(ctx);
+    await assert.rejects(script.book(1, 0.001), "the closed store records nothing");
+    const entries = await reopened(storage);
+    assert.deepEqual(requestsOf(entries, BOOKED).sort((a, b) => a - b), [1, 2], "each request once: the cut one booked by the next open");
+    assert.deepEqual(pricings(entries), { 1: 1, 2: 1 }, "each once");
+    assert.deepEqual(usage(entries, true), { usd: null, requests: 2 }, "its cost unknown, never $0");
+  }
+});
+
 test("the next open re-books what the session booked with its tokens and model; a journal from before bookings kept tokens re-books with none", async () => {
   const storage = new MemoryStorage();
   const key = "run:1";
