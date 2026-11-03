@@ -1,13 +1,18 @@
 // The DSL entry point with the validation entry points wrapped to record their workflows.
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { types } from "node:util";
 import * as dsl from "../../../packages/dsl/dist/index.js";
 
 export * from "../../../packages/dsl/dist/index.js";
 
 const directory = process.env.LEAN_SWEEP_DIR;
-const source = process.argv[1] ?? "unknown";
+// Relative to the repository, so captures made on one runner read the same on another.
+const root = fileURLToPath(new URL("../../..", import.meta.url));
+const source = process.argv[1] ? relative(root, resolve(process.argv[1])) : "unknown";
+let written = 0;
 
 /** Plain JSON data, decided without running accessors or entering proxy traps (the
  *  admission tests assert neither happens). Anything else is not recorded. */
@@ -33,7 +38,11 @@ function record(workflow, inputKeys) {
   const entry = JSON.parse(text);
   const id = createHash("sha256").update(text).digest("hex").slice(0, 24);
   mkdirSync(directory, { recursive: true });
-  writeFileSync(`${directory}/${id}.json`, JSON.stringify({ source, ...entry }));
+  // Test files that validate the same workflow at once share this name. A direct write lets one writer's
+  // truncate land between another's and leaves a torn file; a rename is atomic, so the last writer wins whole.
+  const temporary = `${directory}/${id}.${process.pid}.${written += 1}.tmp`;
+  writeFileSync(temporary, JSON.stringify({ source, ...entry }));
+  renameSync(temporary, `${directory}/${id}.json`);
 }
 
 const keysOf = (value) => (value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value) : null);

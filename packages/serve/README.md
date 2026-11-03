@@ -206,8 +206,11 @@ gets them, in its environment or on its pipe.
 An agentic revision names its model as `provider/model-id` (`"model"` in its definition), or names none and runs on
 this host's default, `AGENT_MODEL`. A workflow revision names no model: each model node names a tier (`fast`, `default`
 or `strong`), and the host maps it, `fast` to `AGENT_MODEL_FAST` and `strong` to `AGENT_MODEL_STRONG`, each falling back
-to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, fast, default, strong}`). Where the models come
-from:
+to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_prefix, fast, default, strong}`):
+`source` is `gateway`, `providers` or `faux` (the published document marks these as `models/2`, beyond the contract's
+`managed`, `chatgpt`, `env` and `faux`), and `route_prefix` is the routing prefix this server puts before a gateway's
+model ids (`agent-model`), which a client takes off to show the gateway's own id, and null with any other source. Where
+the models come from:
 
 - `--faux MODULE`: every model is the module's (below), with no key and no network: `faux-1`, or for a tier the model
   id its variable names.
@@ -509,7 +512,10 @@ A definition names the harness that runs it: `pi` (the default, and what a defin
 `claude-agent` or `codex`; any other is `422 input_invalid` on `definition.harness`. Every answer names it. An edit
 (`PUT /agents/{id}/definition`) that names no harness keeps the agent's, as it keeps its skill files; name `pi` to move it
 back.
-`GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`. A definition naming a
+`GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`, and `default_model`: the
+model the harness runs when a definition names none (`provider/model-id`, as a save and a run resolve it), or null where
+it runs none (the harness does not run here, or no default model here runs on it: claude-agent never takes a gateway's
+model). A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent` and `codex` when each adapter's package, pins and provider endpoint check out; the harness's `reason`
