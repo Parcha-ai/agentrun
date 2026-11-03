@@ -210,6 +210,15 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   const plan: Plan = { projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, untied };
   if (!measure) return plan;
   const counting = secretCut(env, SECRET_NAMES);
+  // A new agent's own text (its name, its path, its instructions and skills) is the import's to cut too: counted here.
+  for (const project of plan.projects) {
+    if (store?.readAgent(project.agentId)) continue;
+    counting.text(project.name);
+    counting.text(project.cwd);
+    const files = await projectFiles(project.cwd, []);
+    for (const text of Object.values(files.instructions)) counting.text(text);
+    for (const [path, text] of Object.entries(files.skills)) (counting.text(path), counting.text(text));
+  }
   // Measured in the import's own order, a record or response counted once across files, each session with its
   // subagents; a session the store holds already from its run, as the import counts it, not from its file now.
   const heldBy = store ? importedIn(store) : undefined;
@@ -720,7 +729,7 @@ async function revisionFor(
   const revision: NewRevision = {
     kind: "agentic",
     instructions: cut(instructions),
-    skills: Object.fromEntries(Object.entries(files.skills).map(([path, text]) => [cut(path), cut(text)])),
+    skills: Object.fromEntries(Object.entries(files.skills).map(([path, text]) => [keptPath(path, cut), cut(text)])),
     tools: [],
     ...(model ? { model } : {}),
     ...(harness !== "pi" ? { harness } : {}),
@@ -798,7 +807,10 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       if (!read) continue;
       const session = merged(parts);
       // Its id as the plan has it.
-      session.id = idOf(session.id);
+      // Its id as the plan keeps it; one holding a key counts among the keys removed.
+      const keptAs = idOf(session.id);
+      if (keptAs !== session.id) text(session.id);
+      session.id = keptAs;
       const subagents = await readChildren(plan, session, searched, seen(listed.source));
       // The transcript is whole before its run is: written beside the store, then moved into the run's directory.
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
@@ -878,6 +890,10 @@ export async function importCommand(
     out?: (line: string) => void;
   } = {},
 ): Promise<number> {
+  // What it prints goes through the cut what it keeps does: a file or project named after a key is printed cut.
+  const printed = secretCut(env, SECRET_NAMES).text;
+  const print = out;
+  out = (line: string) => print(printed(line));
   let values;
   try {
     ({ values } = parseArgs({
@@ -969,4 +985,13 @@ function openAt(env: NodeJS.ProcessEnv, port: number): string {
   const parsed = given && URL.canParse(given) ? new URL(given) : undefined;
   if (parsed && /^https?:$/.test(parsed.protocol)) return parsed.href.replace(/\/+$/, "");
   return `http://${LOCAL}:${port === 0 ? "<the port the server picks>" : port}`;
+}
+
+/** A skill's path as an import keeps it: each segment as it is, unless it holds a key, then `redacted-` and a hash of
+ *  it (as `keptId` keeps a session's id), so two folders named after two keys stay two. */
+function keptPath(path: string, cut: (text: string) => string): string {
+  return path
+    .split("/")
+    .map((segment) => (cut(segment) === segment ? segment : `redacted-${hash(segment).slice(0, 12)}`))
+    .join("/");
 }

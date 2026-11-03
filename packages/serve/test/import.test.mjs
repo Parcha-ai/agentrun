@@ -371,6 +371,9 @@ function shapedKeys() {
     pem: { block: [`-----BEGIN RSA ${"PRIVATE"} KEY-----`, ...lines, `-----END RSA ${"PRIVATE"} KEY-----`].join("\n"), lines },
     assigned: `${pick(26, ALNUM)}9z`,
     bearer: [pick(36, ALNUM), pick(120, ALNUM), pick(43, ALNUM)].join("."),
+    // An AWS key pair pasted with no name beside the secret.
+    awsIdBare: `${["AS", "IA"].join("")}${pick(16, UPPER)}`,
+    awsSecretBare: pick(40, B64),
   };
 }
 
@@ -381,17 +384,24 @@ test("an import cuts every key or token of a known shape that no environment hol
   const k = shapedKeys();
   // The project's instructions and a skill, its content and its folder's name.
   mkdirSync(join(site, ".claude", "skills", `rotate-${k.githubFine}`), { recursive: true });
+  // A second folder named after another token: the two stay two skills.
+  mkdirSync(join(site, ".claude", "skills", `rotate-${k.github}`), { recursive: true });
+  writeFileSync(join(site, ".claude", "skills", `rotate-${k.github}`, "SKILL.md"), "---\nname: rotate-again\n---\nThe second one.\n");
   writeFileSync(join(site, "CLAUDE.md"), `Deploy with ${k.stripe}.\n${k.pem.block}\n`);
   writeFileSync(join(site, ".claude", "skills", `rotate-${k.githubFine}`, "SKILL.md"), `---\nname: rotate\n---\nThe old id was ${k.awsId}, aws_secret_access_key = ${k.awsSecret}\n`);
   // A session's text (a .env an agent printed), its first message (the run's title), a subagent's answer, and a
   // session file named after a key (its records carry no session id, so the import names the session after its file).
-  claudeSession(at, site, 1, { prompt: `Rotate ${k.anthropic} and ${k.github} today.`, output: `cat .env:\nOPENAI_API_KEY=${k.openai}\nDATABASE_PASSWORD=${k.assigned}\nSLACK=${k.slack}\ncurl -H "Authorization: ${"Bearer"} ${k.bearer}" https://api.example.com/v1/me` });
+  claudeSession(at, site, 1, { prompt: `Rotate ${k.anthropic} and ${k.github} today.`, output: `cat .env:\nOPENAI_API_KEY=${k.openai}\nDATABASE_PASSWORD=${k.assigned}\nSLACK=${k.slack}\ncurl -H "Authorization: ${"Bearer"} ${k.bearer}" https://api.example.com/v1/me\nRotate these: ${k.awsIdBare} ${k.awsSecretBare}` });
   claudeSubagent(at, site, 1, 1, { answer: `The colleague's key is ${k.openai} and the bot's ${k.slack}.` });
   const named = claudeSession(at, site, 2, { prompt: "Check the logs.", output: `Found ${k.openaiProject} in the logs.` });
   const records = readFileSync(named, "utf8").trimEnd().split("\n").map((line) => { const { sessionId: _, ...rest } = JSON.parse(line); return JSON.stringify(rest); });
   rmSync(named);
   writeFileSync(join(dirname(named), `${k.openaiProject}.jsonl`), `${records.join("\n")}\n`);
   utimesSync(join(dirname(named), `${k.openaiProject}.jsonl`), new Date(minute(10)), new Date(minute(10)));
+  // A file named after a token that is no session: skipped, and its name printed in the skipped line.
+  const unnamed = `${["gh", "s"].join("")}_${randomBytes(18).toString("hex")}`;
+  writeFileSync(join(dirname(named), `${unnamed}.jsonl`), "not a session\n");
+  utimesSync(join(dirname(named), `${unnamed}.jsonl`), new Date(minute(10)), new Date(minute(10)));
   const data = join(root, "agents");
   // No environment holds any of them.
   const run = async (...args) => {
@@ -410,13 +420,38 @@ test("an import cuts every key or token of a known shape that no environment hol
   const left = Object.entries(values).flatMap(([kind, value]) => (Array.isArray(value) ? value : [value]).flatMap((v) => kept.filter(([path, bytes]) => bytes.includes(v) || path.includes(v)).map(([path]) => `${kind} in ${path.slice(data.length + 1)}`)));
   assert.deepEqual(left, [], "no key or token is anywhere in what the import kept");
   assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
-  assert.match(dry.find((l) => / would be removed$/.test(l)) ?? "", /^[1-9]\d* secrets? would be removed$/, "the dry run says what it would remove");
-  // Each is counted once, however many places held it: the 12 values (the PEM block one of them).
+  assert.ok(dry.includes(`${kinds} secrets would be removed`), `the dry run counts what the import removes: ${dry.filter((l) => /removed/.test(l))}`);
+  // Nothing it printed names a key: the skipped file's name is cut where it is printed.
+  for (const [kind, value] of [...Object.entries(values).flatMap(([kind, v]) => (Array.isArray(v) ? v : [v]).map((x) => [kind, x])), ["skipped file", unnamed]]) assert.ok(![...dry, ...lines].some((l) => l.includes(value)), `${kind} printed`);
+  assert.ok(lines.some((l) => l.startsWith("skipped ") && l.includes("[redacted].jsonl")), "the skipped line, its name cut");
+  // Each is counted once, however many places held it: the 14 values (the PEM block one of them).
   assert.ok(lines.includes(`${kinds} secrets removed`), `the import says it removed ${kinds}: ${lines.filter((l) => /removed/.test(l))}`);
   const reader = openStoreReader(data);
   t.after(() => reader.close());
   assert.equal(reader.listRuns().length, 2, "both sessions are in, the one named after a key under its id as kept");
   assert.ok(reader.listRuns().some((r) => /^redacted-[0-9a-f]{16}$/.test(r.importedFrom.session)));
+  const skills = Object.keys(reader.readAgent(agentIdOf(site)).revisions.find((r) => r.current).body.skills).filter((path) => path.endsWith("SKILL.md"));
+  assert.equal(skills.length, 2, `the two folders named after keys stay two skills: ${skills}`);
+  assert.ok(skills.every((path) => /redacted-[0-9a-f]{12}\//.test(path)), skills.join(" "));
+});
+
+test("the shape rules cut a prefixed key whatever its body, an AWS pair with no name, and a field named for its secret", async () => {
+  const { secretCut, shapedCut } = await import("../dist/secret-cut.js");
+  const letters = (n) => Array.from(randomBytes(n), (b) => "abcdefghijklmnopqrstuvwxyz"[b % 26]).join("");
+  const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+";
+  const b64 = (n) => Array.from(randomBytes(n), (b) => B64[b % B64.length]).join("");
+  const project = ["sk", "proj", letters(48)].join("-");
+  assert.deepEqual(shapedCut(`the key is ${project}`), { text: "the key is [redacted]", cut: [project] }, "a prefixed key with no digit in its body");
+  const id = `${["AK", "IA"].join("")}${letters(16).toUpperCase()}`;
+  const secret = b64(40);
+  assert.deepEqual(shapedCut(`Rotate these: ${id} ${secret} today`).text, "Rotate these: [redacted] [redacted] today", "the pair, the secret after its id");
+  assert.equal(shapedCut(`${secret}\n${id}`).text, "[redacted]\n[redacted]", "the secret before its id");
+  const sha = "9fe2d9110a1b2c3d4e5f60718293a4b5c6d7e8f9";
+  assert.equal(shapedCut(`commit ${sha} merged`).text, `commit ${sha} merged`, "a git SHA with no id near it");
+  const cut = secretCut({ PATH: "/usr/bin" });
+  const password = `${b64(22)}9z`;
+  assert.deepEqual(cut.json({ aws_secret_access_key: secret, DATABASE_PASSWORD: password, cacheKey: "a1", token_url: "https://auth.example.com/oauth/token", note: "ok" }), { aws_secret_access_key: "[redacted]", DATABASE_PASSWORD: "[redacted]", cacheKey: "a1", token_url: "https://auth.example.com/oauth/token", note: "ok" }, "a tool's structured input");
+  assert.equal(cut.text.removed, 2);
 });
 
 test("the shape rules leave ordinary text alone: ids, hashes, an image, a placeholder, prose", async () => {

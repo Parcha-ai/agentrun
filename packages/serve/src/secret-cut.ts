@@ -38,7 +38,19 @@ export function secretCut(env: NodeJS.ProcessEnv, names: readonly string[] = [])
   const json = (value: unknown): unknown => {
     if (typeof value === "string") return text(value);
     if (Array.isArray(value)) return value.map(json);
-    if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, inner]) => [text(name), json(inner)]));
+    if (value !== null && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value).map(([name, inner]) => {
+          // A field whose name says its value is a secret (a tool's structured input): its value, the name beside it.
+          const named = typeof inner === "string" ? namedSecret(name, inner) : undefined;
+          if (named !== undefined) {
+            removed.add(named);
+            text.removed = removed.size;
+            return [text(name), REDACTED];
+          }
+          return [text(name), json(inner)];
+        }),
+      );
     return value;
   };
   return { text, json };
@@ -66,6 +78,9 @@ const SHAPED = new RegExp(
 );
 /** An AWS secret access key: 40 characters of base64, only beside its name, the shape alone being too common. */
 const AWS_SECRET = /(aws_?secret_?access_?key|aws_?secret_?key|aws_secret)(["']?\s{0,3}[:=]\s{0,3}["']?)([A-Za-z0-9/+]{40})(?![A-Za-z0-9/+=])/gi;
+/** An AWS access key id, and a 40-character run of base64 (an AWS secret access key's shape) near one. */
+const AWS_ID = /(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])/g;
+const KEY_40 = /[A-Za-z0-9/+]{40}/g;
 /** A bearer token (`Authorization: Bearer …`, a curl -H line, a JWT): its value, when it looks like a key. */
 const BEARER = /(?<![A-Za-z0-9_])(bearer\s{1,3})([A-Za-z0-9._~+/=-]{20,2000})/gi;
 /** `NAME=value` or `name: value` where the name says key, token, secret or password and the value looks like one. */
@@ -88,9 +103,28 @@ function keyLike(value: string): boolean {
 export function shapedCut(value: string): { text: string; cut: string[] } {
   const cut: string[] = [];
   if (value.length < 16) return { text: value, cut };
-  let out = value.replace(SHAPED, (found) => {
-    // A classic OpenAI key holds a digit; a long hyphenated slug after `sk-` holds none.
-    if (found.startsWith("sk-") && !/[0-9]/.test(found)) return found;
+  let out = value;
+  // An AWS secret access key pasted beside its access key id (within 100 characters, either side), its name nowhere:
+  // trufflehog's pairing, before the id itself is cut below. Only the text around each id is looked at.
+  if (/A[KS]IA/.test(out)) {
+    const pairs = new Set<string>();
+    for (const id of out.matchAll(AWS_ID)) {
+      const from = Math.max(0, id.index - 140);
+      for (const key of out.slice(from, id.index + id[0].length + 140).matchAll(KEY_40)) {
+        const at = from + key.index;
+        // Whole in the text itself, not a cut through a longer run at the window's edge.
+        if (!/[A-Za-z0-9/+]/.test(out[at - 1] ?? "") && !/[A-Za-z0-9/+=]/.test(out[at + 40] ?? "")) pairs.add(key[0]);
+      }
+    }
+    for (const secret of pairs) {
+      cut.push(secret);
+      out = out.split(secret).join(REDACTED);
+    }
+  }
+  out = out.replace(SHAPED, (found) => {
+    // A classic OpenAI key holds a digit; a long hyphenated slug after a bare `sk-` holds none. A key under a known
+    // prefix (`sk-ant-`, `sk-proj-`, `sk-svcacct-`, `sk-admin-`) is cut whatever its body.
+    if (/^sk-(?!ant-|proj-|svcacct-|admin-)/.test(found) && !/[0-9]/.test(found)) return found;
     cut.push(found);
     return REDACTED;
   });
@@ -112,4 +146,12 @@ export function shapedCut(value: string): { text: string; cut: string[] } {
       return `${name}${between}${REDACTED}`;
     });
   return { text: out, cut };
+}
+
+/** The value of a field named for a secret, when the value reads as one: an AWS secret access key under its name, or a
+ *  key-like value under a KEY / TOKEN / SECRET / PASSWORD name, as `name=value` in text would be cut. */
+function namedSecret(name: string, value: string): string | undefined {
+  if (/^(?:aws_?secret_?access_?key|aws_?secret_?key|aws_secret)$/i.test(name) && /^[A-Za-z0-9/+]{40}$/.test(value)) return value;
+  if (value.length >= 16 && value.length <= 300 && /^[A-Za-z0-9_]{0,40}(?:api_?key|access_?key|secret|token|password|passwd|private_?key)[A-Za-z0-9_]{0,20}$/i.test(name) && !/[\s"'`<>,;]/.test(value) && keyLike(value)) return value;
+  return undefined;
 }
