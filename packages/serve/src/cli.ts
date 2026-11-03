@@ -6,20 +6,25 @@ import { secret } from "./secrets.js";
 // Then, before anything loads node:sqlite, the filter for its ExperimentalWarning (quiet-sqlite-warning.ts).
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
+import { spawn } from "node:child_process";
 import { defaultData } from "./files.js";
+import { canOpen, freePort } from "./host.js";
+import { keyModel } from "./model.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--all] [--port N]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
                     is the only lock, so put TLS in front of it
-  --port N          the port (default ${DEFAULT_PORT}; 0 is any free port)
+  --port N          the port (default: the first free one from ${DEFAULT_PORT}; 0 is any free port)
+  --open            open the console in this machine's browser once the server listens (not in CI, nor on Linux with no
+                    display)
   --faux MODULE     answer every model request from MODULE's default export: no key, no network
   --allow-host NAME another Host name to accept (repeatable)
   --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else from this host's memory: (memory - 128 MiB)
@@ -35,8 +40,9 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
-keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Responses gateway (AGENT_MODEL_API_KEY when
-it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's, and is never printed; DIR/.token's is
+keys from the environment (with no AGENT_MODEL and no gateway, the first key of ANTHROPIC_API_KEY, OPENAI_API_KEY and
+OPENROUTER_API_KEY sets AGENT_MODEL to a current model of that provider), or, with AGENT_MODEL_BASE_URL, by that one
+OpenAI Responses gateway (AGENT_MODEL_API_KEY when it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's, and is never printed; DIR/.token's is
 printed only by the start that made it. AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
 published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
@@ -83,6 +89,7 @@ try {
       data: { type: "string" },
       listen: { type: "string" },
       port: { type: "string" },
+      open: { type: "boolean", default: false },
       faux: { type: "string" },
       "allow-host": { type: "string", multiple: true, default: [] },
       "max-runs": { type: "string" },
@@ -101,7 +108,7 @@ if (values.help) {
   console.log(USAGE);
   process.exit(0);
 }
-const port = values.port === undefined ? DEFAULT_PORT : Number(values.port);
+const port = values.port === undefined ? await freePort(DEFAULT_PORT, values.listen ?? "127.0.0.1") : Number(values.port);
 if (!Number.isInteger(port) || port < 0 || port > 65_535) {
   console.error(`--port takes a port number\n\n${USAGE}`);
   process.exit(2);
@@ -120,6 +127,9 @@ if (publicName) {
 }
 const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
+// A provider key and no model: the server runs a current model of that provider, which every run and capabilities read.
+const keyed = keyModel(process.env, (name) => Boolean(secret(name)));
+if (keyed) process.env.AGENT_MODEL = keyed;
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
 const accounts = process.env.AGENTRUN_ACCOUNTS !== "0";
@@ -140,6 +150,8 @@ const source = given ? "env" : serve.tokenMade ? "made" : "file";
 for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
 // With a public address the setup link and its code are printed as the code is made (owner.ts).
 if (serve.setupUrl && !publicUrl) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
+// The address the banner's Open line names, once the server listens.
+if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
 const stop = () => void serve.close().then(() => process.exit(0));
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);

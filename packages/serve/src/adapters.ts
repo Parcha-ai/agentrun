@@ -53,7 +53,7 @@ const shellWord = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? wor
 
 /**
  * The one command that starts this same AgentRun again with `spec` beside it: the command the person ran
- * (`npx @parcha/agentrun`, which NPX_PACKAGE_ENV names, or the server's own), this server's version, every other
+ * (`npx @parcha/agentrun`, which NPX_PACKAGE_ENV names, or the server's own at this server's version), every other
  * harness's package already here (so following one harness's hint never takes another away), and `--data` when this
  * server's store is not the default one, so the command opens this same store.
  */
@@ -65,7 +65,8 @@ export function npxLine(spec: string, env: NodeJS.ProcessEnv = {}, installed: (n
     const version = installed(name);
     return version ? [`${name}@${version}`] : [];
   });
-  const packages = [...(command ? [command] : []), `@parcha/agentrun-serve@${SERVE_VERSION}`, ...kept, spec];
+  // That command depends on this server at its exact version, so naming it names this server.
+  const packages = [command ?? `@parcha/agentrun-serve@${SERVE_VERSION}`, ...kept, spec];
   const data = env[DATA_ENV];
   const named = data && resolve(data) !== resolve(defaultData(env)) ? ` --data ${shellWord(data)}` : "";
   return `npx ${packages.map((name) => `-p ${name}`).join(" ")} ${command ? "agentrun" : "agentrun-serve"}${named}`;
