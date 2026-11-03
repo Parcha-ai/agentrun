@@ -542,8 +542,8 @@ test("the API's shapes: the agent, the runs newest first, a run's rows, and what
     assert.deepEqual(live.rows.slice(0, 3).map((row) => [row.kind, row.summary]), [["user_message", "You: message 1"], ["user_message", "You: message 2"], ["user_message", "You: message 3"]]);
     assert.deepEqual(live.rows.slice(3).map((row) => row.kind), ["tool_use", "usage"], "a live run's open call is running: no result row");
     const ended = JSON.parse((await request(served.url, { target: `/api/runs/${seeded.runId}` })).body);
-    assert.deepEqual(ended.rows.map((row) => row.kind), ["tool_use", "tool_result", "usage"], "an ended run's open call is settled");
-    assert.deepEqual([ended.rows[1].tool_status, ended.rows[1].summary], ["failed", "Read notes.md interrupted"]);
+    assert.deepEqual(ended.rows.map((row) => row.kind), ["tool_use", "usage"], "an ended run's open call is settled, on its own row");
+    assert.deepEqual([ended.rows[0].tool_status, ended.rows[0].summary], ["interrupted", "Read notes.md: interrupted"]);
     assert.equal(ended.run.id, "signed-in");
 
     const missing = await request(served.url, { target: "/api/runs/none" });

@@ -41,7 +41,7 @@ test("every row carries Grep's 13 fields, a known kind, an ISO time and Grep's c
     assert.ok((row.text ?? "").length <= CAPS.text);
     assert.ok(row.tool_status === null || row.tool_status === "success" || row.tool_status === "failed");
   }
-  assert.equal(rows.find((row) => row.kind === "tool_result").tool_result_size_bytes, 5000);
+  assert.equal(rows.find((row) => row.kind === "tool_use").tool_result_size_bytes, 5000);
 });
 
 test("thinking collapses to its first sentence and keeps the full text", () => {
@@ -85,8 +85,8 @@ test("a round of different tools has a header and one line per call", () => {
   ]);
   const out = lines(rows);
   assert.match(out[0], /Ran 2 tools$/);
-  assert.match(out[1], /^ {12}Acted on the page \(1 request sent: GET portal\.example\/billing\) +ok$/);
-  assert.match(out[2], /^ {12}Took a screenshot +ok$/);
+  assert.match(out[1], /^ {12}Acted on the page \(1 request sent: GET portal\.example\/billing\): ok$/);
+  assert.match(out[2], /^ {12}Took a screenshot: ok$/);
 });
 
 test("rounds of one call of one tool fold across rounds; thinking, a row or a failure ends the fold", () => {
@@ -108,7 +108,7 @@ test("rounds of one call of one tool fold across rounds; thinking, a row or a fa
 test("retries are never deduped", () => {
   const attempt = (id, t, isError) => [assistant([call(id, "web_fetch", { url: "https://x.example/a?q=1" })], t), result(id, "web_fetch", isError ? "boom" : "fine", t, { isError })];
   const rows = timelineOf([...attempt("a", 0, true), ...attempt("b", 1, true), ...attempt("c", 2, false)]);
-  assert.equal(text(rows).split("\n").filter((line) => /Fetched x\.example\/a +(ok|failed)$/.test(line)).length, 3);
+  assert.equal(text(rows).split("\n").filter((line) => /x\.example\/a(: ok| failed: boom)$/.test(line)).length, 3);
   assert.equal(rows.filter((row) => row.kind === "tool_use").length, 3);
 });
 
@@ -122,15 +122,14 @@ test("a fetch whose page says it was refused, or failed, reads as that and as fa
     assistant([call("c", "web_fetch", { url: "https://example.com" })], 2),
     result("c", "web_fetch", JSON.stringify({ ok: true, url: "https://example.com/", status: 200, title: "Example Domain", text: "x", links: [], via: "direct" }), 2),
   ]);
-  assert.deepEqual(rows.filter((row) => row.kind === "tool_result").map((row) => [row.summary, row.tool_status]), [
-    ["Tried to fetch x.example:8080/health: refused: port 8080 is not 80 or 443", "failed"],
-    ["Tried to fetch down.example/x: failed: timed out after 15000 ms", "failed"],
-    ["Fetched example.com: ok", "success"],
+  assert.deepEqual(rows.filter((row) => row.kind === "tool_use").map((row) => [row.summary, row.tool_status]), [
+    ["Read x.example:8080/health: refused, port 8080 is not 80 or 443", "failed"],
+    ["Read down.example/x: timed out after 15 s", "failed"],
+    ['Read example.com: "Example Domain" · 1 character', "success"],
   ]);
-  assert.deepEqual(rows.filter((row) => row.kind === "tool_use").map((row) => row.summary), ["Tried to fetch x.example:8080/health", "Tried to fetch down.example/x", "Fetched example.com"]);
   const rendered = text(rows);
-  assert.match(rendered, /Tried to fetch x\.example:8080\/health +failed$/m);
-  assert.match(rendered, /Fetched example\.com +ok$/m);
+  assert.match(rendered, /Read x\.example:8080\/health: refused, port 8080 is not 80 or 443$/m);
+  assert.match(rendered, /Read example\.com: "Example Domain" · 1 character$/m);
 });
 
 test("a result closes its call by id, whatever its order", () => {
@@ -156,12 +155,12 @@ test("a nested call sits under its parent, and its result closes it", () => {
   ]);
   const rows = reducer.rows();
   const inner = rows.filter((row) => row.parent_tool_use_id === "p");
-  assert.deepEqual(inner.map((row) => [row.kind, row.tool_use_id]), [["tool_use", "p/1"], ["tool_result", "p/1"], ["tool_use", "p/2"], ["tool_result", "p/2"]]);
+  assert.deepEqual(inner.map((row) => [row.kind, row.tool_use_id, row.tool_status]), [["tool_use", "p/1", "success"], ["tool_use", "p/2", "failed"]]);
   const [group] = groupTimeline(rows);
   assert.equal(group.calls.length, 1);
   assert.equal(group.calls[0].inner[0].calls.length, 2);
   assert.deepEqual(text(rows).split("\n").map(norm), [
-    "Ran a script ok",
+    "Ran a script: ok",
     "  Read 2 files: a.md, b.md 1 ok, 1 failed",
     "    Read b.md failed: no such file",
   ]);
@@ -181,9 +180,9 @@ test("a subagent's rows sit under the call that spawned it", () => {
   assert.deepEqual(groups.map((g) => g.type), ["row", "calls", "row"]);
   assert.deepEqual(lines(rows).map(norm), [
     "You: Find the invoice",
-    "Using tool: subagent ok",
+    "Used subagent: ok",
     "  Subagent: Find the invoice",
-    "  Read inv.md ok",
+    "  Read inv.md: ok",
     "  Subagent done: found INV-1",
   ]);
 });
@@ -363,22 +362,26 @@ test("cost: a tool's own request, marked with its label as a compaction is, is a
   assert.deepEqual(timelineOf([started, a, searching, searching, priced(0.012)], { settled: true }).at(-1).usage, { usd: null, requests: 3 }, "settled with one never priced");
 });
 
-test("cost: a paid tool's charge is summed with the requests and shown on a line of its own; an unknown one makes the cost unknown; it is no request", () => {
-  const a = assistant([{ type: "text", text: "a" }], 0);
+test("cost: a paid tool's charge is summed with the requests and shown on its call's own row, whichever came first; an unknown one makes the cost unknown; it is no request", () => {
+  const asked = () => assistant([call("c1", "monid_run", { provider: "faux", endpoint: "/e" })], 0);
+  const ran = () => result("c1", "monid_run", "{}", 1);
+  const answered = () => assistant([{ type: "text", text: "a" }], 2);
   const charged = (usd) => custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", usd, call: "c1" });
-  const rows = timelineOf([a, charged(0.003)]);
-  assert.deepEqual(rows.map((r) => [r.kind, r.summary, r.tool_name, r.tool_use_id]), [
-    ["final_answer", "a", null, null],
-    ["phase", "Tool cost: monid charged $0.0030 for monid.run", "monid.run", "c1"],
-    ["usage", "Cost so far: $0.0130 over 1 model request and 1 paid tool call", null, null],
-  ]);
-  assert.deepEqual(rows.at(-1).usage, { usd: 0.013, requests: 1 });
-  assert.deepEqual(rows[1].usage, { usd: 0.003, requests: 0 }, "its line carries the charge alone, no request");
-  const unknown = timelineOf([a, charged(null)]);
-  assert.deepEqual(unknown.find((r) => r.kind === "phase").usage, { usd: null, requests: 0 });
-  assert.equal(unknown.find((r) => r.kind === "phase").summary, "Tool cost: monid charged an unknown amount for monid.run");
-  assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 1 }, "never $0");
-  assert.deepEqual(timelineOf([charged(0.003)]).at(-1).usage, { usd: 0.003, requests: 0 }, "a charge alone makes the row");
+  for (const entries of [[asked(), charged(0.003), ran(), answered()], [charged(0.003), asked(), ran(), answered()], [asked(), ran(), charged(0.003), answered()]]) {
+    const rows = timelineOf(entries);
+    assert.deepEqual(rows.map((r) => [r.kind, r.summary, r.tool_use_id]), [
+      ["tool_use", "Used monid_run: ok · charged $0.0030", "c1"],
+      ["final_answer", "a", null],
+      ["usage", "Cost so far: $0.0230 over 2 model requests and 1 paid tool call", null],
+    ], "no row of its own, before or after its call");
+    assert.deepEqual(rows[0].usage, { usd: 0.003, requests: 0 }, "the call's row carries the charge alone, no request");
+  }
+  const unknown = timelineOf([asked(), ran(), charged(null), answered()]);
+  assert.deepEqual([unknown[0].summary, unknown[0].usage], ["Used monid_run: ok · charged an unknown amount", { usd: null, requests: 0 }]);
+  assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 2 }, "never $0");
+  const alone = timelineOf([charged(0.003)]);
+  assert.deepEqual(alone.map((r) => [r.kind, r.summary]), [["phase", "Tool cost: monid charged $0.0030 for monid.run"], ["usage", "Cost so far: $0.0030 over 0 model requests and 1 paid tool call"]], "a charge whose call never shows keeps a line of its own");
+  assert.deepEqual(alone.at(-1).usage, { usd: 0.003, requests: 0 });
 });
 
 test("cost: a paid tool call marked before it is sent is in flight while the run is; settled unsettled, a crash cut it and the cost is unknown, never its held figure; its charge settles it", () => {
@@ -387,7 +390,7 @@ test("cost: a paid tool call marked before it is sent is in flight while the run
   const charged = (usd, call = "c1") => custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", call, usd });
   assert.deepEqual(timelineOf([a, marked(0.05)]).at(-1).usage, { usd: 0.01, requests: 1 }, "in flight: the sum so far");
   const cut = timelineOf([a, marked(1)], { settled: true }).at(-1);
-  assert.deepEqual([cut.usage, cut.summary], [{ usd: null, requests: 1 }, "Cost so far: unknown over 1 model request and 1 paid tool call"], "never 1.01: the allowance is no charge");
+  assert.deepEqual([cut.usage, cut.summary], [{ usd: null, requests: 1 }, "Total: unknown · 1 model request · 1 paid tool call"], "never 1.01: the allowance is no charge");
   assert.deepEqual(timelineOf([a, marked(1), charged(0.003)], { settled: true }).at(-1).usage, { usd: 0.013, requests: 1 }, "settled by its charge");
   assert.deepEqual(timelineOf([marked(0.05)], { settled: true }).at(-1).usage, { usd: null, requests: 0 });
 });
@@ -436,7 +439,7 @@ test("a tool result that asks the person to sign in is a waiting row", () => {
     result("s", "request_sign_in", "Waiting for the person.", 1),
   ]);
   assert.deepEqual(rows.filter((r) => r.kind === "waiting").map((r) => r.summary), ["Waiting for you: Sign in to the supplier portal"]);
-  assert.match(text(rows), /Asked you to sign in +ok\n.{8}  Waiting for you: Sign in to the supplier portal$/);
+  assert.match(text(rows), /Asked you to sign in: ok\n.{8}  Waiting for you: Sign in to the supplier portal$/);
 });
 
 test("a hand-over entry gives waiting, then the person's answer, and keeps only a session tag", () => {
@@ -506,11 +509,11 @@ test("a call that ended with no entry is interrupted; so is one still open when 
     { type: "message_end", entry: assistant([call("a", "bash", { command: "sleep 9" }), call("b", "read", { path: "x" })], 0) },
     { type: "tool_execution_end", toolCallId: "a", toolName: "bash" },
   ]);
-  assert.deepEqual(lines(reducer.rows()).map(norm), ["Ran 2 tools", "  Ran `sleep 9` interrupted", "  Read x running"]);
+  assert.deepEqual(lines(reducer.rows()).map(norm), ["Ran 2 tools", "  Ran `sleep 9`: interrupted", "  Read x running"]);
   reducer.apply([{ type: "run_end", inputs: [] }]);
-  assert.deepEqual(lines(reducer.rows()).map(norm), ["Ran 2 tools", "  Ran `sleep 9` interrupted", "  Read x interrupted", "Run finished"]);
+  assert.deepEqual(lines(reducer.rows()).map(norm), ["Ran 2 tools", "  Ran `sleep 9`: interrupted", "  Read x: interrupted", "Run finished"]);
   const stored = timelineOf([assistant([call("a", "read", { path: "x" })], 0)], { settled: true });
-  assert.match(text(stored), /Read x +interrupted/);
+  assert.match(text(stored), /Read x: interrupted/);
   assert.match(text(timelineOf([assistant([call("a", "read", { path: "x" })], 0)])), /Read x +running/);
 });
 
@@ -525,9 +528,10 @@ test("a call an earlier process left open is interrupted in its place: the answe
   ];
   const rest = (rows) => rows.filter((r) => r.kind !== "usage" && r.kind !== "phase");
   const placed = (rows) => {
-    const at = rows.findIndex((r) => r.id.endsWith(":interrupted:w3"));
-    assert.ok(at > 0, "the cut call reads interrupted");
-    assert.deepEqual([rows[at - 1].kind, rows[at - 1].tool_use_id], ["tool_use", "w3"], "right after its call");
+    const at = rows.findIndex((r) => r.tool_use_id === "w3");
+    assert.deepEqual([rows[at].kind, rows[at].tool_status], ["tool_use", "interrupted"], "the cut call reads interrupted, on its own row");
+    assert.deepEqual(rows.filter((r) => r.tool_use_id === "w3").length, 1, "and on no second row");
+    assert.deepEqual([rows[at - 1].kind, rows[at + 1].tool_use_id], ["tool_use", "w4"], "in its place, between the calls around it");
     assert.equal(rows.at(-1).kind, "final_answer", "the answer is still the last row");
   };
   // Live: the next process's turn ends, which interrupts every call still open.
@@ -586,8 +590,8 @@ test("a host labels its own tools; agent_label names the conversation", () => {
     result("a", "ati_search", "x", 1), result("b", "ati_search", "y", 1), result("c", "custom_tool", "z", 1),
   ], { agentLabel: (conv) => `agent ${conv}`, labels: { custom_tool: () => "Did the custom thing" } });
   assert.ok(rows.every((r) => r.agent_label === "agent 1"));
-  assert.deepEqual(lines(rows).map(norm), ["Ran 3 tools", "  Searched 2 times: acme ltd, acme plc 2 ok", "  Did the custom thing ok"]);
-  assert.equal(timelineOf([assistant([call("a", "mystery")], 0)])[0].summary, "Using tool: mystery");
+  assert.deepEqual(lines(rows).map(norm), ["Ran 3 tools", "  Searched 2 times: acme ltd, acme plc 2 ok", "  Did the custom thing: ok"]);
+  assert.equal(timelineOf([assistant([call("a", "mystery")], 0)])[0].summary, "Used mystery");
 });
 
 test("a snapshot taken mid-run shows its partial answer, its wait, its queue and its nested calls", () => {
@@ -620,7 +624,7 @@ test("previews keep a URL's origin, path and query keys; values, fragment and us
   assert.equal(byId("a").tool_input_preview, "https://x.example/a/b?token=\u2026&q=\u2026");
   assert.equal(byId("b").tool_input_preview, 'await page.goto("https://x.example/login?session=\u2026&next=\u2026")');
   assert.equal(byId("c").tool_input_preview, "curl -s 'http://localhost:8080/v1?key=\u2026' | head");
-  const results = rows.filter((row) => row.kind === "tool_result");
+  const results = ["a", "b", "c"].map(byId);
   assert.equal(results[0].tool_result_preview, "see (https://y.example/p?sig=\u2026&n=\u2026). Also a=b&c=d stays.");
   assert.equal(results[0].tool_result_size_bytes, FETCHED.length);
   assert.equal(results[1].tool_result_preview, "url: https://x.example/home?code=\u2026");
@@ -641,15 +645,15 @@ test("a nested call's result is scrubbed too", () => {
   assert.ok(all.includes("https://x.example/b?sig=\u2026"));
 });
 
-test("a saved file's phase row carries its path", () => {
+test("a saved file is its call's row: the row carries its path, and no Saved row follows", () => {
   const rows = timelineOf([
     assistant([call("w", "write", { path: "invoices/summary.md", content: "x" }), call("d", "browser_downloads")], 0),
     result("w", "write", "wrote 1 line", 1),
     result("d", "browser_downloads", JSON.stringify({ fetched: [{ name: "INV-1.pdf", path: "downloads/INV-1.pdf", sizeBytes: 9, sha256: "00" }], already_fetched: [], skipped: [] }), 2),
   ]);
-  const saved = rows.filter((row) => row.kind === "phase" && row.path !== undefined);
-  assert.deepEqual(saved.map((row) => [row.summary, row.path]), [["Saved invoices/summary.md", "invoices/summary.md"], ["Saved downloads/INV-1.pdf", "downloads/INV-1.pdf"]]);
-  assert.ok(rows.filter((row) => row.kind !== "phase" || !row.summary.startsWith("Saved")).every((row) => !("path" in row)));
+  const saved = rows.filter((row) => row.path !== undefined);
+  assert.deepEqual(saved.map((row) => [row.kind, row.tool_use_id, row.path]), [["tool_use", "w", "invoices/summary.md"], ["tool_use", "d", "downloads/INV-1.pdf"]]);
+  assert.deepEqual(rows.filter((row) => (row.summary ?? "").startsWith("Saved")), []);
 });
 
 test("calls nested three levels deep all show, each under its own parent", () => {
@@ -666,7 +670,7 @@ test("calls nested three levels deep all show, each under its own parent", () =>
     end("a/1", "a", "codemode", "z"),
     { type: "tool_execution_end", toolCallId: "a", toolName: "codemode", entry: result("a", "codemode", "done", 2) },
   ]);
-  assert.deepEqual(lines(reducer.rows()).map(norm), ["Ran a script ok", "  Ran 2 tools", "    Ran a script ok", "      Read deep.md ok", "    Ran `ls` ok"]);
+  assert.deepEqual(lines(reducer.rows()).map(norm), ["Ran a script: ok", "  Ran 2 tools", "    Ran a script: ok", "      Read deep.md: ok", "    Ran `ls`: ok"]);
   const [group] = groupTimeline(reducer.rows().filter((row) => row.kind !== "usage"));
   const [round] = group.calls[0].inner;
   assert.deepEqual(round.calls.map((c) => c.use.tool_use_id), ["a/1", "a/2"]);
@@ -685,11 +689,11 @@ test("a subagent's subagent shows under the call that spawned it", () => {
   ]);
   assert.deepEqual(lines(rows).map(norm), [
     "You: Find it",
-    "Using tool: subagent ok",
+    "Used subagent: ok",
     "  Subagent: outer",
-    "  Using tool: subagent ok",
+    "  Used subagent: ok",
     "    Subagent: inner",
-    "    Read inner.md ok",
+    "    Read inner.md: ok",
     "    Subagent done: inner done",
     "  Subagent done: outer done",
   ]);
@@ -757,14 +761,13 @@ test("a live thinking summary follows the thinking cap, as a stored one does", (
   assert.equal(stored.summary, live.summary);
 });
 
-test("a tool result carries the round of its call, and a result with no call id has a null tool_use_id and no round", () => {
+test("a call's row carries its round, and a result with no call id is an action of its own: a null tool_use_id and no round", () => {
   const entries = [assistant([call("c1", "read", { path: "a.md" })]), result("c1", "read", "x"), result(undefined, "read", "orphan")];
   const rows = timelineOf(entries);
-  const use = rows.find((row) => row.kind === "tool_use");
-  const [paired, orphan] = rows.filter((row) => row.kind === "tool_result");
-  assert.equal(typeof use.round, "number");
-  assert.deepEqual([paired.tool_use_id, paired.round], ["c1", use.round]);
-  assert.deepEqual([orphan.tool_use_id, orphan.round], [null, undefined]);
+  const [paired, orphan] = rows.filter((row) => row.kind === "tool_use");
+  assert.equal(typeof paired.round, "number");
+  assert.deepEqual([paired.tool_use_id, paired.tool_status], ["c1", "success"]);
+  assert.deepEqual([orphan.tool_use_id, orphan.round, orphan.tool_status], [null, undefined, "success"]);
   assert.equal("round" in orphan, false, "an absent round is not a key");
 });
 
@@ -773,13 +776,13 @@ test("web_search reads as a search, in the past tense: the query scrubbed and cu
     assistant([call("s1", "web_search", { query: "acme anvils" }), call("s2", "web_search", { query: `see https://x.example/a?token=SECRET9 for ${"details ".repeat(20)}` }), call("s3", "web_search", {})], 0),
     result("s1", "web_search", "3 results", 1), result("s2", "web_search", "3 results", 1), result("s3", "web_search", "3 results", 1),
   ]);
-  const [one, two, none] = rows.filter((row) => row.kind === "tool_use").map((row) => row.summary);
+  const [one, two, none] = rows.filter((row) => row.kind === "tool_use").map((row) => row.summary.replace(/: ok$/, ""));
   assert.equal(one, 'Searched the web for "acme anvils"');
   assert.match(two, /^Searched the web for "see https:\/\/x\.example\/a\?token=… for details details/);
   assert.doesNotMatch(two, /SECRET9/);
   assert.ok(two.length <= "Searched the web for \"\"".length + 60, "the query is cut to 60 characters");
   assert.equal(none, "Searched the web");
-  assert.equal(rows.filter((row) => row.kind === "tool_result").map((row) => row.summary).join("|"), `${one}: ok|${two}: ok|${none}: ok`);
+  assert.equal(rows.filter((row) => row.kind === "tool_use").map((row) => row.summary).join("|"), `${one}: ok|${two}: ok|${none}: ok`);
   const [first] = text(rows).split("\n");
   assert.match(first, /^\S+\s+Searched the web 3 times: "acme anvils", "see https:\/\/x\.example\/a\?token=… for d\.\.\."\s+3 ok$/);
   assert.equal(foldLabel("web_search", [{ input: "a", output: null }]), 'Searched the web 1 times: "a"');

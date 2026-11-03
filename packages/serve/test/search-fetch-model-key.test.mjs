@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -37,12 +38,25 @@ async function setting(t, extra = {}) {
 const resolves = async (api) => Object.fromEntries((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.resolves).map((tool) => [tool.name, tool.resolves]));
 
 /** Runs agent `id` (made from `definition`) to its end: its tool results, its usage row and its report.md. */
-async function research(api, id, definition) {
+/** Each tool's result as the model read it, from the run's store: the row shows it for a person, readable. */
+function toolResults(data, runId) {
+  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  try {
+    const entries = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record)));
+    return Object.fromEntries(entries.filter((entry) => entry.kind === "pi.tool-result").map((entry) => entry.model[0]).map((message) => [String(message.toolName).replace(/^mcp__hands__/, ""), (message.content ?? []).map((block) => block.text ?? "").join("")]));
+  } finally {
+    db.close();
+  }
+}
+
+async function research({ api, data }, id, definition) {
   assert.equal((await api("POST", "/agents", agent(id, { tools: ["web_search", "web_fetch", "write"], ...definition }))).status, 201);
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Research widgets on the web and write report.md." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: 55_000 });
-  const results = Object.fromEntries(rows.filter((row) => row.kind === "tool_result").map((row) => [row.tool_name, row.tool_result_preview]));
+  const results = toolResults(data, started.body.run_id);
+  // One row per call: each call's row has its outcome.
+  assert.ok(rows.filter((row) => row.kind === "tool_use").every((row) => row.tool_status !== "running"), JSON.stringify(rows.map((row) => [row.kind, row.summary, row.tool_status])));
   const report = await api("GET", `/runs/${started.body.run_id}/files/report.md`);
   return { results, usage: rows.findLast((row) => row.kind === "usage")?.usage, report: report.body };
 }
@@ -50,12 +64,13 @@ const HARNESS_RESEARCH = "Research widgets on the web, read http://public.exampl
 
 test("with only model keys: native search on pi, claude-agent and codex, and the kernel's fetch, each run's report citing the page; then Parallel picked, the next runs go through Parallel", { timeout: 180_000 }, async (t) => {
   const { seen } = await setting(t, { PARALLEL_API_KEY: PARALLEL_CANARY });
-  const { api } = await serve(t, FAUX);
+  const served = await serve(t, FAUX);
+  const { api } = served;
   assert.deepEqual(await resolves(api), { web_search: NATIVE, web_fetch: each("kernel") }, "native search where there is one, keyless Exa on codex, the kernel's fetch; Parallel's key held but not picked");
   assert.equal((await api("GET", "/capabilities")).body.features.tool_permissions, false);
 
   // pi on Anthropic: its search is one request to the provider with exactly the hosted tool, booked with its fee.
-  const pi = await research(api, "pi-anthropic", {});
+  const pi = await research(served, "pi-anthropic", {});
   assert.match(pi.results.web_search, /^\{"provider":"native","query":"widgets","results":\[\{"url":"http:\/\/public\.example\/","title":"Public page","snippet":"The answer is forty-two\.","published":"October 1, 2026"\}/);
   assert.match(pi.results.web_search, /"text":"The public page says the answer is forty-two\."\}\nCite the URL of each result you rely on\.$/, "the provider's answer, then the line asking for citations");
   assert.match(pi.results.web_fetch, /"title":"Public page".*"via":"direct"/s, "the kernel's guarded fetch");
@@ -72,7 +87,7 @@ test("with only model keys: native search on pi, claude-agent and codex, and the
   assert.deepEqual(pi.usage, { usd: 0.0706, requests: 5 }, "four turns and the search's request, its fee booked");
 
   // pi on OpenAI: the Responses hosted tool, its sources asked for.
-  const openai = await research(api, "pi-openai", { model: "openai/gpt-5" });
+  const openai = await research(served, "pi-openai", { model: "openai/gpt-5" });
   assert.match(openai.results.web_search, /"results":\[\{"url":"http:\/\/public\.example\/","title":"Public page","snippet":"The public page says the answer is forty-two\."\},\{"url":"https:\/\/result\.example\/2"/);
   assert.match(openai.report, /http:\/\/public\.example\//);
   sent = (await seen()).upstream.slice(1);
@@ -84,7 +99,7 @@ test("with only model keys: native search on pi, claude-agent and codex, and the
   // claude-agent and codex: each its own search, on the adapter it was opened with, and no web_search host tool.
   for (const [harness, option, tools] of [["claude-agent", { webSearch: true, webSearchAllowance: 200_000 }, ["web_fetch", "write"]], ["codex", { webSearch: "live" }, ["web_fetch", "write"]]]) {
     const before = (await seen()).opened.length;
-    const run = await research(api, `on-${harness}`, { harness, instructions: HARNESS_RESEARCH });
+    const run = await research(served, `on-${harness}`, { harness, instructions: HARNESS_RESEARCH });
     const opened = (await seen()).opened.slice(before);
     assert.deepEqual(opened.filter((line) => line.harness), [{ harness, options: option }], `${harness}: the options its adapter was opened with`);
     assert.deepEqual(opened.filter((line) => line.tools).map((line) => line.tools), [tools], `${harness}: its host tools`);
@@ -101,12 +116,12 @@ test("with only model keys: native search on pi, claude-agent and codex, and the
   const put = await api("PUT", "/settings/tools", { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } });
   assert.deepEqual([put.status, put.body], [200, { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } }]);
   assert.deepEqual(await resolves(api), { web_search: each("parallel"), web_fetch: each("parallel") });
-  const viaParallel = await research(api, "pi-parallel", {});
+  const viaParallel = await research(served, "pi-parallel", {});
   assert.match(viaParallel.results.web_search, /^\{"provider":"parallel","query":"widgets","results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results, in the one shape");
   assert.match(viaParallel.results.web_fetch, /"title":"Read by Parallel".*"via":"parallel"/s);
   for (const harness of ["claude-agent", "codex"]) {
     const before = (await seen()).opened.length;
-    const run = await research(api, `parallel-${harness}`, { harness, instructions: HARNESS_RESEARCH });
+    const run = await research(served, `parallel-${harness}`, { harness, instructions: HARNESS_RESEARCH });
     const opened = (await seen()).opened.slice(before);
     assert.deepEqual(opened.filter((line) => line.harness), [{ harness, options: {} }], `${harness}: its own search off`);
     assert.deepEqual(opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write"]], `${harness}: web_search a host tool`);
@@ -120,9 +135,10 @@ test("with only model keys: native search on pi, claude-agent and codex, and the
 
 test("a pi run whose model goes through a gateway searches keyless Exa; claude-agent stays native; a pick of Parallel without its key is unavailable, and refused", { timeout: 60_000 }, async (t) => {
   const { seen } = await setting(t, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1" });
-  const { api } = await serve(t, FAUX);
+  const served = await serve(t, FAUX);
+  const { api } = served;
   assert.deepEqual((await resolves(api)).web_search, { pi: "exa-keyless", "claude-agent": "native", codex: "exa-keyless" });
-  const run = await research(api, "gateway-pi", {});
+  const run = await research(served, "gateway-pi", {});
   assert.match(run.results.web_search, /^\{"provider":"exa-keyless","query":"widgets","results":\[\{"url":"http:\/\/public\.example\/","title":"Public page","snippet":"The answer is forty-two\. See the registry for more\.","published":"2026-10-01T00:00:00.000Z"\},\{"url":"https:\/\/result\.example\/2","title":"Result 2 for widgets","snippet":"Excerpt 2\."\}\]\}\nCite the URL of each result you rely on\.$/);
   assert.match(run.report, /Public page, http:\/\/public\.example\//);
   const exa = (await seen()).exa;

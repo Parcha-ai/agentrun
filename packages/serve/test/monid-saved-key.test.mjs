@@ -58,7 +58,7 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
   assert.ok(sent().every((call) => call.pid !== process.pid), "from the run's process");
   // Booked once in the run's own records, as a tool cost, and summed with its two requests ($0.001 each).
   assert.deepEqual(entries(data, run.body.run_id, "agentrun.tool_cost").map(({ data: { tool, charged_by, usd } }) => ({ tool, charged_by, usd })), [{ tool: "monid.run", charged_by: "monid", usd: 0.003 }]);
-  assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.tool_name === "monid.run").map((row) => row.summary), ["Tool cost: monid charged $0.0030 for monid.run"]);
+  assert.deepEqual(rows.filter((row) => row.kind === "tool_use" && row.tool_name === "monid_run").map((row) => row.summary.replace(/^.*: ok/, "ok")), ["ok · charged $0.0030"], "on the call's own row");
   assert.equal(rows.findLast((row) => row.kind === "usage")?.usage.usd, 0.005);
   assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd, 0.005, "the run's cost has monid's charge");
   // Marked before it was sent, at the allowance (no inspect quoted its price), and settled by its charge.
@@ -82,7 +82,7 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
   const capped = await api("POST", "/agents/enrich/runs", { input: { content: "hi" }, max_cost_usd: 0.001 });
   assert.equal(capped.status, 202, JSON.stringify(capped.body));
   const ended = await follow(api, capped.body.run_id, ["completed", "failed"], { deadlineMs: 55_000 });
-  const result = ended.rows.find((row) => row.kind === "tool_result" && row.tool_name === "monid_run");
+  const result = ended.rows.find((row) => row.kind === "tool_use" && row.tool_name === "monid_run");
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(result.tool_result_preview, /spend_cap_reached: monid_run was not sent\. It could cost up to \$1 \(no monid_inspect in this run quoted its price, so it is held at the \$1 allowance; monid_inspect gives its quote\), and with \$0\.001000 spent the run would pass its cap of \$0\.001/);
   assert.equal(sent().length, before, "monid saw no request");

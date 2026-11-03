@@ -658,7 +658,7 @@ async function referenceStore(dir) {
  *  model requests and names no dollar figure. */
 async function unpricedGolden() {
   const golden = await readFile(GOLDEN, "utf8");
-  const shown = golden.replace("Cost so far: $0 over 4 model requests", "4 model requests");
+  const shown = golden.replace("Total: $0 · 4 model requests", "4 model requests");
   assert.notEqual(shown, golden, "the golden ends on the usage row");
   return shown;
 }

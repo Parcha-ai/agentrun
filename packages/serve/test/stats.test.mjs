@@ -284,7 +284,7 @@ test("a refused fetch is a failed call in a run's metrics and in GET /v2/stats, 
   const started = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify(["http://127.0.0.1/"])}` } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const { rows } = await follow(api, started.body.run_id, ["completed"]);
-  assert.deepEqual(rows.filter((r) => r.kind === "tool_result").map((r) => [r.tool_name, r.tool_status]), [["web_fetch", "failed"]], "the timeline reads it failed");
+  assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => [r.tool_name, r.tool_status]), [["web_fetch", "failed"]], "the timeline reads it failed");
   const { body } = await api("GET", "/stats?agent=reader");
   assert.deepEqual(body.analytics.tools, [{ tool: "web_fetch", label: "Fetch web pages", calls: 1, errors: 1 }], "and so do the run's metrics, under the tool's own name");
   const { doc, schema } = await statsSchema(baseUrl);

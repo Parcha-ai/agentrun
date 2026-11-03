@@ -122,7 +122,7 @@ test("a live run's timeline is its door's events as rows, a released run's store
   assert.equal(waiting.summary, "Waiting for you: Sign in to the practice site to read its secure area");
   assert.equal(stored.rows.find((r) => r.kind === "waiting").summary, waiting.summary);
   const goto = live.rows.find((r) => r.tool_use_id === "c1" && r.kind === "tool_use");
-  assert.deepEqual([goto.summary, goto.tool_input_preview, goto.tool_name], ['Opened the-internet.herokuapp.com/secure', 'await page.goto("https://the-internet.herokuapp.com/secure")', "run"]);
+  assert.deepEqual([goto.summary, goto.tool_input_preview, goto.tool_name, goto.tool_status], ['Opened the-internet.herokuapp.com/secure: ok', 'await page.goto("https://the-internet.herokuapp.com/secure")', "run", "success"]);
   assert.equal((await json("/runs/after")).state, "waiting");
 });
 
@@ -229,10 +229,10 @@ test("rows group the way the page draws them: rounds, pairs by call id, saved fi
   const groups = groupTimeline(rows.filter((r) => r.kind !== "usage"));
   assert.deepEqual(
     groups.map((g) => (g.type === "row" ? g.row.kind : `calls:${g.calls.map((c) => c.use.tool_name)}`)),
-    ["user_message", "thinking", "text_block", "phase", "calls:run", "thinking", "calls:snapshot,screenshot", "text_block", "calls:request_sign_in", "waiting", "user_message", "thinking", "calls:write", "phase", "final_answer"],
+    ["user_message", "thinking", "text_block", "phase", "calls:run", "thinking", "calls:snapshot,screenshot", "text_block", "calls:request_sign_in", "waiting", "user_message", "thinking", "calls:write", "final_answer"],
   );
-  assert.deepEqual(rows.filter((r) => r.kind === "phase").map((r) => r.summary), ["Opened a live browser session", "Saved notes.md"]);
-  assert.equal(rows.find((r) => r.summary === "Saved notes.md").path, "notes.md", "the page links a saved file by its path, not by its summary");
+  assert.deepEqual(rows.filter((r) => r.kind === "phase").map((r) => r.summary), ["Opened a live browser session"]);
+  assert.equal(rows.find((r) => r.kind === "tool_use" && r.tool_name === "write").path, "notes.md", "the page links a saved file by its write's path, not by its summary");
   const round = groups[6];
   assert.deepEqual(round.calls.map((c) => [c.use.tool_use_id, c.result.tool_status]), [["c2", "success"], ["c3", "success"]], "each call is paired with its result by id");
   assert.deepEqual(foldCalls(round.calls).map((f) => f.tool), ["snapshot", "screenshot"]);
@@ -244,8 +244,8 @@ test("a call that never got a result is interrupted in a released run", async (t
   const { home, root, json } = await app(t);
   await makeRun(home, "cut", { status: "sleeping", entries: transcript.slice(0, 4) });
   const { rows } = await json("/runs/cut/timeline");
-  const results = rows.filter((r) => r.kind === "tool_result" && ["c2", "c3"].includes(r.tool_use_id));
-  assert.deepEqual(results.map((r) => [r.tool_status, r.tool_result_size_bytes]), [["failed", null], ["failed", null]]);
+  const calls = rows.filter((r) => ["c2", "c3"].includes(r.tool_use_id));
+  assert.deepEqual(calls.map((r) => [r.kind, r.tool_status, r.tool_result_size_bytes]), [["tool_use", "interrupted", null], ["tool_use", "interrupted", null]], "each on its call's own row");
 });
 
 test("a person's answer ends the wait: the run is idle again", async (t) => {

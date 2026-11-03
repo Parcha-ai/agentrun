@@ -5,8 +5,15 @@ import type { TimelineEvent } from "./timeline.js";
 type Line = { at?: string; depth: number; text: string };
 
 const clock = (row: TimelineEvent) => row.timestamp.slice(11, 19);
-const statusOf = (call: Call): string =>
-  !call.result ? "running" : call.result.tool_status === "success" ? "ok" : call.result.tool_result_size_bytes === null ? "interrupted" : "failed";
+function statusOf(call: Call): string {
+  const status = call.result?.tool_status;
+  if (!call.result || status === "running") return "running";
+  if (status === "success") return "ok";
+  if (status === "missing") return "not found";
+  return status === "interrupted" || call.result.tool_result_size_bytes === null ? "interrupted" : "failed";
+}
+/** A call whose own row has its outcome: its summary is the action and its result, so its line needs no status. */
+const ended = (call: Call) => call.result === call.use;
 
 function rowText(row: TimelineEvent): string {
   const summary = row.summary ?? row.kind;
@@ -15,6 +22,7 @@ function rowText(row: TimelineEvent): string {
 
 function foldEntry(fold: Fold): { text: string; status: string; reasons: Call[] } {
   const [only] = fold.calls;
+  if (fold.calls.length === 1 && only && ended(only)) return { text: only.use.summary ?? fold.tool, status: "", reasons: [] };
   if (fold.calls.length === 1 && only) return { text: only.use.summary ?? fold.tool, status: statusOf(only), reasons: statusOf(only) === "failed" ? [only] : [] };
   const counts = new Map<string, number>();
   for (const call of fold.calls) counts.set(statusOf(call), (counts.get(statusOf(call)) ?? 0) + 1);
@@ -37,7 +45,7 @@ function linesOf(groups: readonly Group[], depth: number, fold: boolean): Line[]
     for (const entry of folds) {
       const { text, status, reasons } = foldEntry(entry);
       const inner = nested ? depth + 1 : depth;
-      lines.push({ at: nested ? undefined : at, depth: inner, text: `${text.padEnd(58)}  ${status}` });
+      lines.push({ at: nested ? undefined : at, depth: inner, text: status ? `${text.padEnd(58)}  ${status}` : text });
       for (const call of reasons) lines.push({ depth: inner + 1, text: call.result?.summary ?? statusOf(call) });
       for (const call of entry.calls) lines.push(...linesOf(call.inner, inner + 1, fold));
     }

@@ -134,10 +134,13 @@ for (const [key, picked, mode] of [[true, true, ""], [true, true, "errors"], [tr
     const started = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify([PUBLIC])}` } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const { rows } = await follow(api, started.body.run_id, ["completed"]);
-    const results = rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_result_preview);
+    const results = rows.filter((row) => row.kind === "tool_use").map((row) => row.tool_result_preview);
     assert.equal(results.length, 1, JSON.stringify(results));
     if (picked && mode) assert.match(results[0], /"title":"Public page".*"via":"direct","parallel":"listed the URL in errors"\}\nParallel was picked for web_fetch and gave no page \(listed the URL in errors\); this one was fetched directly\.$/s);
-    else assert.match(results[0], picked ? /"title":"Read by Parallel".*"via":"parallel"\}$/s : /"title":"Public page".*"via":"direct"\}$/s, "no word of Parallel where it read the page or was never picked");
+    else {
+      assert.match(results[0], picked ? /^title: Read by Parallel$.*^via: parallel$/ms : /^title: Public page$.*^via: direct$/ms);
+      assert.doesNotMatch(results[0], /^parallel: /m, "no word of Parallel where it read the page or was never picked");
+    }
     const { parallel: sent, dialled } = await seen();
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.urls]), picked ? [["/v1/extract", true, [PUBLIC]]] : []);
     assert.deepEqual(dialled, picked && !mode ? [] : [PUBLIC]);

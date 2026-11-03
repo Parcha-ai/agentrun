@@ -460,7 +460,9 @@
         return;
       }
       var under = within(row.tool_use_id, Object.create(null)).sort(function (a, b) { return lead(a) - lead(b); });
-      var call = { use: row, result: results[row.tool_use_id], inner: groupRows(under) };
+      // The call's own row, once it has an outcome, is its result; an older timeline's result row too.
+      var ended = row.tool_status && row.tool_status !== "running" ? row : undefined;
+      var call = { use: row, result: results[row.tool_use_id] || ended, inner: groupRows(under) };
       var last = groups[groups.length - 1];
       if (last && last.type === "calls" && row.round !== undefined && last.round === row.round && last.conv === row.conversation_id) last.calls.push(call);
       else groups.push({ type: "calls", round: row.round, conv: row.conversation_id, rounds: 1, calls: [call] });
@@ -479,7 +481,7 @@
   }
 
   function failedCall(c) {
-    return !!(c.result && c.result.tool_status === "failed");
+    return !!(c.result && (c.result.tool_status === "failed" || c.result.tool_status === "interrupted"));
   }
 
   function foldCalls(calls) {
@@ -494,6 +496,8 @@
   }
 
   function callState(c) {
+    if (c.result && c.result.tool_status === "interrupted") return "interrupted";
+    if (c.result && c.result.tool_status === "missing") return "not found";
     return !c.result ? "running" : !failedCall(c) ? "ok" : c.result.tool_result_size_bytes === null ? "interrupted" : "error";
   }
 
@@ -502,7 +506,7 @@
     var body = [];
     if (c.use.tool_input_preview) body.push(el("div", { class: "io" }, el("span", { class: "label" }, "input"), el("pre", null, c.use.tool_input_preview)));
     if (c.result && c.result.tool_result_preview) body.push(el("div", { class: "io" }, el("span", { class: "label" }, "result"), el("pre", null, c.result.tool_result_preview)));
-    if (failedCall(c) && c.result.summary) body.push(el("pre", { class: "bad" }, c.result.summary));
+    if (failedCall(c) && c.result.summary && c.result !== c.use) body.push(el("pre", { class: "bad" }, c.result.summary));
     if (c.inner.length) body.push(el("div", { class: "kids" }, c.inner.map(item)));
     return el("details", { class: "call " + state }, el("summary", null, pill(state, state === "ok" ? "done" : state), el("b", null, c.use.summary || c.use.tool_name || "call"), el("span", { class: "tool" }, c.use.tool_name || "")), body);
   }

@@ -323,7 +323,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       home: { export: false, import: false, check: false },
       runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true },
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
-      timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
+      /** `actions`: a tool call is one row, its call's `tool_use` row, changed in place from running to its outcome
+       *  (`tool_status`, a one-line result in `summary`); no `tool_result` row and no "Saved" row follows it. */
+      timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false, actions: true },
       files: { upload: true, read: true, range: false, during_run: true },
       quotes: false,
       usage: { basis: "estimate", meters: ["tokens", "tools"] },

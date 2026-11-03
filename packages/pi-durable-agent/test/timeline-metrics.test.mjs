@@ -117,7 +117,7 @@ test("a call a harness answer asked for, written after that answer as its contin
   const rows = timelineOf(entries, { settled: true });
   assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => [r.tool_use_id, r.round]), [["c1", first.id], ["c2", first.id]], "the continuation's call shows under the answer it continues");
   assert.deepEqual(rows.findLast((r) => r.kind === "usage")?.usage, { usd: 0.02, requests: 2 }, "no request, and no unknown cost, of its own");
-  assert.deepEqual(rows.filter((r) => r.kind === "tool_result" && r.tool_status !== "success"), [], "no call reads as interrupted");
+  assert.deepEqual(rows.filter((r) => r.kind === "tool_use" && r.tool_status !== "success"), [], "no call reads as interrupted");
   assert.equal(rows.find((r) => r.kind === "final_answer")?.text, "Wrote both.");
 });
 
@@ -132,8 +132,8 @@ test("tools: each result counts a call of its call's tool, an error result a fai
   ];
   assert.deepEqual(runMetricsOf(entries).tools, { read: { calls: 2, errors: 1 }, write: { calls: 1, errors: 1 }, bash: { calls: 1, errors: 0 } });
   // The timeline reads the same: c3 interrupted, c2 failed.
-  const failed = timelineOf(entries, { settled: true }).filter((row) => row.kind === "tool_result" && row.tool_status === "failed").map((row) => row.tool_use_id);
-  assert.deepEqual(failed.sort(), ["c2", "c3"]);
+  const failed = timelineOf(entries, { settled: true }).filter((row) => row.kind === "tool_use" && row.tool_status !== "success").map((row) => [row.tool_use_id, row.tool_status]);
+  assert.deepEqual(failed, [["c2", "failed"], ["c3", "interrupted"]]);
 });
 
 test("a failed model request is a request with its tokens; it ran no calls", () => {

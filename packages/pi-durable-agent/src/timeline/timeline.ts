@@ -18,7 +18,10 @@ export type TimelineEvent = {
   agent_label: string | null;
   tool_name: string | null;
   tool_use_id: string | null;
-  tool_status: "success" | "failed" | null;
+  /** A tool_use row's state, one row per call: `running` until the call ends, then `success`, `failed`, `missing` (a
+   *  read of a path the run never wrote found nothing: a probe) or `interrupted` (no result ever came). Null otherwise;
+   *  an older timeline's tool_result rows say `success` or `failed`. */
+  tool_status: "running" | "success" | "failed" | "missing" | "interrupted" | null;
   tool_input_preview: string | null;
   tool_result_preview: string | null;
   tool_result_size_bytes: number | null;
@@ -32,8 +35,11 @@ export type TimelineEvent = {
   parent_tool_use_id?: string;
   /** The browser session a hand-over is about, as a tag; never a URL. */
   session?: string;
-  /** The file a "Saved" phase row is about. */
+  /** The file a write's row is about (or, in an older timeline, its "Saved" phase row). */
   path?: string;
+  /** A tool_use row's end: when the call's outcome came (an interrupted call's, when its run ended), at or after its
+   *  `timestamp`; null while it runs. Absent on other rows. */
+  ended_at?: string | null;
   usage?: { usd: number | null; requests: number };
 };
 
@@ -68,7 +74,8 @@ export const REQUEST_COST_PENDING = "agentrun.request_cost_pending";
 export const REQUEST_COST_LATE = "agentrun.request_cost_late";
 /** What a paid tool's call charged, written apart from any request as the tool reports it: `tool` and `charged_by` name
  *  it, `usd` is the charge, or null when the call may have charged and did not say how much. It adds to the run's cost,
- *  which is then unknown on a null, and shows as a row of its own; it is no model request. */
+ *  which is then unknown on a null, and shows on its call's own row (a row of its own when its call never shows); it is no
+ *  model request. */
 export const TOOL_COST = "agentrun.tool_cost";
 /** A paid tool's call marked before it is sent (`call`, and `heldUsd`, the most it is held to charge): the TOOL_COST of
  *  the same `call` settles it. Unsettled, it is in flight while the run is; once the run is settled it was cut (a crash),
@@ -100,6 +107,11 @@ export type TimelineOptions = {
   caps?: Partial<typeof CAPS>;
   /** Nothing is running: a call with no result is interrupted. */
   settled?: boolean;
+  /** The run's workspace: a path under it shows relative to it, in labels, previews and results. A list when the
+   *  workspace goes by more than one path (a link and its target). */
+  workDir?: string | readonly string[];
+  /** When the run started and ended: a settled run's usage row says how long it took. */
+  run?: { startedAt?: string; endedAt?: string };
   /** The clock for retry and poll waits; live only. */
   now?: () => number;
 };
@@ -302,7 +314,9 @@ function createMeter() {
   return { push, decide, usage, settled };
 }
 
-type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean };
+/** `charge`: what a paid tool's call charged (TOOL_COST), shown on its row. */
+type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean; charge?: Charge };
+type Charge = { text: string; usd: number | null };
 
 const TAG = /^[\w.-]{1,64}$/;
 const blocksOf = (message: Obj | undefined): Obj[] => {
@@ -314,13 +328,74 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
 const dollars = (usd: number) => (usd === 0 ? "$0" : `$${usd.toFixed(4)}`);
+/** A host tool's wire name (`mcp__hands__write`, as Claude Code names the host's tools) is the tool's own name here. */
+const WIRE = "mcp__hands__";
+export const toolNameOf = (name: string): string => (name.startsWith(WIRE) ? name.slice(WIRE.length) : name);
+/** A result's text, readable: a JSON object one field per line, its strings with their own line breaks, an array one item
+ *  per line; anything else as it is. */
+export function readable(text: string): string {
+  const t = text.trim();
+  if (!t.startsWith("{") && !t.startsWith("[")) return text;
+  let value: unknown;
+  try {
+    value = JSON.parse(t);
+  } catch {
+    return text;
+  }
+  const line = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
+  if (Array.isArray(value)) return value.map(line).join("\n");
+  if (value && typeof value === "object") return Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k}: ${line(v)}`).join("\n");
+  return text;
+}
+const duration = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+};
+/** A read that found nothing. One of a path the run never wrote is a probe (`missing`), not a failure. */
+const NOT_FOUND = /ENOENT|no such file or directory/i;
+const PROBES = new Set(["read", "ls"]);
+/** Whether a finished call is a probe that found nothing: a read of a path nothing in this run wrote. */
+export const missingOf = (tool: string, args: Obj, result: { text: string; isError: boolean }, written: ReadonlySet<string>): boolean => {
+  const file = str(args.path) ?? str(args.file_path);
+  return result.isError && PROBES.has(tool) && NOT_FOUND.test(result.text) && !(file !== undefined && written.has(file));
+};
 
 /** One place turns entries into rows, whether they come from a released store or from live events. */
 function createProjector(options: TimelineOptions) {
   const caps = { ...CAPS, ...options.caps };
   const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, args, result, options.labels);
+  // The run's workspace: its paths show relative to it.
+  const works = [options.workDir ?? []].flat().map((dir) => dir.replace(/\/+$/, "")).filter(Boolean).sort((a, b) => b.length - a.length);
+  const rel = (text: string) => works.reduce((out, work) => out.split(`${work}/`).join(""), text);
+  const relArgs = (args: Obj): Obj => {
+    if (works.length === 0) return args;
+    const out = { ...args };
+    for (const key of ["path", "file_path", "filePath", "cwd"]) {
+      const value = str(out[key]);
+      const work = value === undefined ? undefined : works.find((dir) => value === dir || value.startsWith(`${dir}/`));
+      if (value !== undefined && work !== undefined) out[key] = value === work ? "." : value.slice(work.length + 1);
+    }
+    return out;
+  };
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
+  // Paid tools' charges written before their call (a harness bridge books a charge as the call runs), by
+  // `conversation:id`: the call takes it when it comes; one whose call never comes keeps a line of its own.
+  const charges = new Map<string, { charge: Charge; conv: number; base: string; tool: string; by: string; id: string }>();
+  /** A charge on its call's row: said after its outcome, and its usage, the charge alone (no request), so a host sums a
+   *  run's paid tools from the same rows as its cost. */
+  const chargeOn = (call: OpenCall, charge: Charge) => {
+    call.charge = charge;
+    call.use.usage = { usd: charge.usd, requests: 0 };
+    if (call.done) call.use.summary = clean(`${call.use.summary} · charged ${charge.text}`, caps.summary);
+  };
+  const chargeRow = (held: { charge: Charge; conv: number; base: string; tool: string; by: string; id: string }) =>
+    make("phase", held.conv, held.base, { summary: `Tool cost: ${held.by} charged ${held.charge.text} for ${held.tool}`, tool_name: held.tool, tool_use_id: held.id || null, usage: { usd: held.charge.usd, requests: 0 } });
+  // Results stored before their call (a harness bridge once wrote one before the answer that held its call), by
+  // `conversation:id`: the call takes it when it comes; one whose call never comes is an action of its own.
+  const early = new Map<string, { conv: number; id: string; name: string; view: ToolResultView; base: string }>();
+  // Paths this run wrote: a later read that finds nothing there failed; one of any other path only probed.
+  const written = new Set<string>();
   const previous = new Map<number, string>();
   // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
   // the person's next message, not a steer.
@@ -362,18 +437,39 @@ function createProjector(options: TimelineOptions) {
   const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? text)) || "no detail";
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
-    make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
-  /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
-  /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. Its
-   *  outcome is read once, for the summary and the status both. */
-  const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, parent?: string) => {
-    const outcome = outcomeOf(tool.name, view);
-    return make("tool_result", conv, rowId, {
-      summary: view.isError ? `${named} failed: ${failure(view.text)}` : outcome ? `${named}: ${scrubUrls(firstLine(outcome.text))}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
-      tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: view.text ? cut(scrubUrls(view.text), caps.preview) : null,
-      tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
+    make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_status: "running", tool_input_preview: inputPreview(args, caps.preview), ended_at: null, ...fields });
+  /** When a call ended: `at` (the entry being read, else its own time), never before the call's row. */
+  const endOf = (call: OpenCall, at = stamp) => new Date(Math.max(at, Date.parse(call.use.timestamp))).toISOString();
+  /** A call's outcome, on its own row: its status, the action and a one-line result as its summary, the result readable
+   *  as its preview, and a write's path. A call that returned but whose result says it did not do its work (a refused
+   *  fetch) reads as that, failed; a read that found nothing of a path the run never wrote is a quiet "not found". */
+  function finish(call: OpenCall, view: ToolResultView): void {
+    call.done = true;
+    const named = label(call.name, call.args, view);
+    const outcome = outcomeOf(call.name, view);
+    // A probe that found nothing (a read of a path the run never wrote, a search with no results) is quiet: missing.
+    const probed = missingOf(call.name, call.args, view, written);
+    const status = probed || (outcome?.missing === true && !view.isError) ? "missing" : failedWith(view, outcome) ? "failed" : "success";
+    const said = outcome?.text === undefined ? undefined : `${named}${outcome.sep ?? ": "}${scrubUrls(firstLine(rel(outcome.text)))}`;
+    const ended = probed ? `${named}: not found` : (outcome?.line ?? said ?? (view.isError ? `${named} failed: ${failure(rel(view.text))}` : `${named}: ok`));
+    const line = call.charge ? `${ended} · charged ${call.charge.text}` : ended;
+    const preview = outcome?.preview ?? (view.text ? readable(view.text) : undefined);
+    Object.assign(call.use, {
+      summary: clean(line, caps.summary), tool_status: status, ended_at: endOf(call),
+      tool_result_preview: preview ? clean(rel(preview), caps.preview) : null, tool_result_size_bytes: utf8Bytes(view.text),
     });
-  };
+    if (status !== "success") return;
+    for (const file of savedPaths(call.name, call.args, view)) {
+      written.add(file);
+      call.use.path ??= rel(file);
+    }
+  }
+  /** A result whose call never came: an action of its own, at its place; with no call id, its `tool_use_id` is null. */
+  function callless(conv: number, base: string, id: string, name: string, view: ToolResultView): TimelineEvent {
+    const call: OpenCall = { conv, name, args: {}, use: useRow(conv, base, id, name, {}, { tool_use_id: id || null }), done: false };
+    finish(call, view);
+    return call.use;
+  }
 
   /** A call that spawned a conversation: its rows, and the child's, now name it as their parent. */
   function adopt(conv: number, child: number, callId: string, args: Obj, fallback: string): TimelineEvent[] {
@@ -408,13 +504,17 @@ function createProjector(options: TimelineOptions) {
     if (metered === "mark") {
       // A request's mark or cost, or pi's answer to a request that never left: counted, nothing to show.
     } else if (metered === "charge") {
-      // A paid tool's charge: counted in the cost, and shown on a line of its own.
+      // A paid tool's charge: counted in the cost, and shown on its call's own row, whenever the call shows.
       const data = obj(entry.data);
-      const [tool, by, usd] = [str(data?.tool) ?? "a tool", str(data?.charged_by) ?? "its provider", data?.usd];
-      const amount = typeof usd === "number" && Number.isFinite(usd) ? dollars(usd) : "an unknown amount";
-      // Its `usage` is the charge alone (no request): a host sums a run's paid tools from the same rows as its cost.
-      const charge = typeof usd === "number" && Number.isFinite(usd) ? usd : null;
-      add(make("phase", conv, base, { summary: `Tool cost: ${by} charged ${amount} for ${tool}`, tool_name: tool, tool_use_id: str(data?.call) ?? null, usage: { usd: charge, requests: 0 } }));
+      const [tool, by, usd, id] = [str(data?.tool) ?? "a tool", str(data?.charged_by) ?? "its provider", data?.usd, str(data?.call) ?? ""];
+      const known = typeof usd === "number" && Number.isFinite(usd) ? usd : null;
+      const charge = { text: known === null ? "an unknown amount" : dollars(known), usd: known };
+      const call = id ? calls.get(`${conv}:${id}`) : undefined;
+      if (call) {
+        chargeOn(call, charge);
+        touch(call.use);
+      } else if (id) charges.set(`${conv}:${id}`, { charge, conv, base, tool, by, id });
+      else add(chargeRow({ charge, conv, base, tool, by, id }));
     } else if ((metered === "answer" || metered === "continued") && message) {
       const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
       if (metered === "answer") answers.set(conv, entry.id);
@@ -430,24 +530,41 @@ function createProjector(options: TimelineOptions) {
         const final = message.stopReason === "stop" && !blocks.some((block) => block.type === "toolCall");
         // A final stop's text block is its answer even when empty: the model ended its turn on purpose, with nothing to
         // say. A message with no text block (a request the adapter bridge writes without content) shows none.
+        // A result held for a call this answer does not hold never gets one: it is an action of its own, before this answer.
+        const asked = new Set(blocks.flatMap((block) => (block.type === "toolCall" && str(block.id) ? [str(block.id)!] : [])));
+        for (const held of [...early.values()]) if (held.conv === conv && !asked.has(held.id)) add(release(held));
         if (text || (final && first("text") >= 0)) add(make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text }));
         blocks.forEach((block, index) => {
-          const [id, name] = [str(block.id), str(block.name)];
-          if (block.type !== "toolCall" || !id || !name) return;
-          const args = obj(block.arguments) ?? {};
+          const [id, wire] = [str(block.id), str(block.name)];
+          if (block.type !== "toolCall" || !id || !wire) return;
+          const name = toolNameOf(wire);
+          const args = relArgs(obj(block.arguments) ?? {});
           if (BROWSER_OPENERS.has(name) && !browsers.has(conv)) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "Opened a live browser session" }));
           }
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
-          calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: false });
+          const call: OpenCall = { conv, name, args, round, use, done: false };
+          calls.set(`${conv}:${id}`, call);
           add(use);
+          // Its charge came first: it is this call's.
+          const paid = charges.get(`${conv}:${id}`);
+          if (paid) {
+            charges.delete(`${conv}:${id}`);
+            chargeOn(call, paid.charge);
+          }
+          // Its result came first: it is this call's.
+          const before = early.get(`${conv}:${id}`);
+          if (before) {
+            early.delete(`${conv}:${id}`);
+            finish(call, before.view);
+          }
         });
       }
     } else if (entry.kind === "pi.tool-result" && message) {
       const id = str(message.toolCallId) ?? "";
       const call = calls.get(`${conv}:${id}`);
-      const name = call?.name ?? str(message.toolName) ?? "tool";
+      const name = call?.name ?? toolNameOf(str(message.toolName) ?? "tool");
       const view = viewOf(message);
       // A call that failed ended nothing: the agent goes on after it, so a message then is still a steer.
       ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name) && !view.isError);
@@ -457,12 +574,12 @@ function createProjector(options: TimelineOptions) {
       else cutTurns.delete(conv);
       const args = call?.args ?? {};
       const named = label(name, args, view);
+      // The call's own row takes the outcome; a result with no call yet waits for it, and one with no id is an action.
       if (call) {
-        call.done = true;
-        call.use.summary = clean(named, caps.summary);
+        finish(call, view);
         touch(call.use);
-      }
-      add(resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view));
+      } else if (id) early.set(`${conv}:${id}`, { conv, id, name, view, base });
+      else add(callless(conv, base, "", name, view));
       if (!view.isError) {
         const answer = str(args.answer);
         if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: firstLine(answer), text: answer }));
@@ -474,7 +591,6 @@ function createProjector(options: TimelineOptions) {
           browsers.delete(conv);
           add(make("phase", conv, `${base}:phase`, { summary: "Released the browser session" }));
         }
-        savedPaths(name, args, view).forEach((file, index) => add(make("phase", conv, `${base}:saved:${index}`, { summary: `Saved ${file}`, path: file })));
         const child = obj(message.details)?.conversationId;
         if (typeof child === "number") {
           for (const row of adopt(conv, child, id, args, named)) touch(row);
@@ -511,8 +627,10 @@ function createProjector(options: TimelineOptions) {
   /** A nested call: seen live only, since pi drops its result when the caller settles. */
   function nested(conv: number, id: string, parent: string, name: string, args: Obj): TimelineEvent {
     const round = calls.get(`${conv}:${parent}`)?.round;
-    const use = useRow(conv, `${conv}:n:${id}`, id, name, args, { round, parent_tool_use_id: parent });
-    calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: false });
+    const tool = toolNameOf(name);
+    const given = relArgs(args);
+    const use = useRow(conv, `${conv}:n:${id}`, id, tool, given, { round, parent_tool_use_id: parent });
+    calls.set(`${conv}:${id}`, { conv, name: tool, args: given, round, use, done: false });
     rows.push(use);
     return use;
   }
@@ -523,28 +641,38 @@ function createProjector(options: TimelineOptions) {
     const output = result.structuredOutput;
     const diagnostic = Array.isArray(result.diagnostics) ? str(obj(result.diagnostics[0])?.message) : undefined;
     const text = typeof output === "string" ? output : output !== undefined ? JSON.stringify(output) : (diagnostic ?? "");
-    const failed = result.isError === true;
-    const named = label(call.name, call.args, { text, details: result.details, isError: failed });
-    call.done = true;
-    call.use.summary = clean(named, caps.summary);
-    const row = resultRow(conv, `${conv}:n:${id}:result`, { name: call.name, callId: id, round: call.round }, named, { text, isError: failed }, parent);
-    rows.push(row);
-    return [call.use, row];
+    finish(call, { text, details: result.details, isError: result.isError === true });
+    return [call.use];
   }
 
-  /** A call with no result that will never get one. Its row takes the call's place, right after it, whenever the
-   *  interruption is found: at this turn's end, or at a later process's (a call a stop or a crash cut off, which the next
-   *  process resumes past) or a settled read. What came after the call, such as that process's answer, stays after it. */
-  function interrupt(call: OpenCall, id: string): TimelineEvent {
+  /** A call with no result that will never get one: its own row says so, at the call; no row is added. */
+  function interrupt(call: OpenCall, _id: string): TimelineEvent {
     call.done = true;
-    const row = make("tool_result", call.conv, `${call.conv}:interrupted:${id}`, {
-      summary: `${label(call.name, call.args)} interrupted`, tool_name: call.name, tool_use_id: id, tool_status: "failed", round: call.round,
-      parent_tool_use_id: call.use.parent_tool_use_id, seq: call.use.seq,
+    // Labelled as a call that ended (it did, with nothing): "Searched the web for …: interrupted", not "Searching".
+    // It ended when the run did, when a settled read is told; else at the latest entry read.
+    const runEnd = options.settled && options.run?.endedAt ? Date.parse(options.run.endedAt) : Number.NaN;
+    const charged = call.charge ? ` · charged ${call.charge.text}` : "";
+    Object.assign(call.use, {
+      summary: clean(`${label(call.name, call.args, { text: "", details: undefined, isError: true })}: interrupted${charged}`, caps.summary), tool_status: "interrupted",
+      ended_at: endOf(call, Number.isFinite(runEnd) ? Math.max(runEnd, stamp) : stamp),
     });
-    const at = rows.indexOf(call.use);
-    rows.splice(at < 0 ? rows.length : at + 1, 0, row);
-    return row;
+    return call.use;
   }
+
+  /** Each result still waiting for a call that never came, as the action of its own it is (at the end of a read, or of a
+   *  turn). */
+  function release(held: { conv: number; id: string; name: string; view: ToolResultView; base: string }): TimelineEvent {
+    early.delete(`${held.conv}:${held.id}`);
+    return callless(held.conv, held.base, held.id, held.name, held.view);
+  }
+  /** Each result and each charge still waiting for a call that never came, as the row of its own it is. */
+  const releaseAll = () => [
+    ...[...early.values()].map(release),
+    ...[...charges.values()].map((held) => (charges.delete(`${held.conv}:${held.id}`), chargeRow(held))),
+  ].map((row) => {
+    rows.push(row);
+    return row;
+  });
 
   function open(conv?: number): Array<[string, OpenCall]> {
     return [...calls].filter(([, call]) => (conv === undefined || call.conv === conv) && !call.done).map(([key, call]) => [key.slice(key.indexOf(":") + 1), call]);
@@ -554,15 +682,20 @@ function createProjector(options: TimelineOptions) {
     const counted = meter.usage(options.settled === true);
     if (!counted || root === undefined) return undefined;
     const { usd, requests, charges } = counted;
-    const paid = charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : "";
-    return make("usage", root, `${root}:usage`, {
-      summary: `Cost so far: ${usd === null ? "unknown" : dollars(usd)} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
-      usage: { usd, requests },
-    });
+    const cost = usd === null ? "unknown" : dollars(usd);
+    const count = `${requests} model request${requests === 1 ? "" : "s"}`;
+    const paid = charges ? `${charges} paid tool call${charges === 1 ? "" : "s"}` : "";
+    // A settled run's total: its cost, its requests and paid tool calls, and the time from its start to its end, when the
+    // host gives them.
+    const span = options.run?.startedAt && options.run?.endedAt ? Date.parse(options.run.endedAt) - Date.parse(options.run.startedAt) : Number.NaN;
+    const summary = options.settled
+      ? `Total: ${cost} · ${count}${paid ? ` · ${paid}` : ""}${Number.isFinite(span) ? ` · ${duration(span)}` : ""}`
+      : `Cost so far: ${cost} over ${count}${paid ? ` and ${paid}` : ""}`;
+    return make("usage", root, `${root}:usage`, { summary, usage: { usd, requests } });
   }
 
   return {
-    push, nested, nestedEnd, interrupt, open, usage,
+    push, nested, nestedEnd, interrupt, open, usage, releaseAll,
     call: (conv: number, id: string) => calls.get(`${conv}:${id}`),
     adoptLive: (conv: number, id: string, child: number) => {
       const call = calls.get(`${conv}:${id}`);
@@ -578,6 +711,7 @@ function createProjector(options: TimelineOptions) {
 export function timelineOf(entries: readonly EntryLike[], options: TimelineOptions = {}): TimelineEvent[] {
   const projector = createProjector(options);
   for (const entry of entries) projector.push(entry);
+  projector.releaseAll();
   if (options.settled) for (const [id, call] of projector.open()) projector.interrupt(call, id);
   const usage = projector.usage();
   return usage ? [...projector.rows(), usage] : [...projector.rows()];
@@ -601,7 +735,11 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
   const seen = new Set<string>();
   // Each call by `conversation:id`, its tool's name as kept and as called, and whether a result closed it, as the timeline
   // pairs them.
-  const calls = new Map<string, { name: string; called: string; done: boolean }>();
+  const calls = new Map<string, { name: string; called: string; args: Obj; done: boolean }>();
+  // Results counted before their call came (stored first): that call is done, and counts once.
+  const early = new Set<string>();
+  // Paths the run wrote: a read that finds nothing at one of them failed; at any other it only probed.
+  const written = new Set<string>();
   const tools = new Map<string, ToolMetrics>();
   // Each tool's place by its first call, or its first result with no call: a tie for the last kept place goes by it.
   const order = new Map<string, number>();
@@ -623,19 +761,26 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
     const metered = meter.push(entry);
     if ((metered === "answer" || metered === "continued") && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
       for (const block of blocksOf(message)) {
-        const [id, name] = [str(block.id), str(block.name)];
-        if (block.type !== "toolCall" || !id || !name) continue;
+        const [id, wire] = [str(block.id), str(block.name)];
+        if (block.type !== "toolCall" || !id || !wire) continue;
+        const name = toolNameOf(wire);
         const key = metricName(name);
-        calls.set(`${conv}:${id}`, { name: key, called: name, done: false });
+        calls.set(`${conv}:${id}`, { name: key, called: name, args: obj(block.arguments) ?? {}, done: early.delete(`${conv}:${id}`) });
         see(key);
       }
     } else if (entry.kind === "pi.tool-result" && message) {
-      const call = calls.get(`${conv}:${str(message.toolCallId) ?? ""}`);
+      const id = str(message.toolCallId);
+      const call = calls.get(`${conv}:${id ?? ""}`);
       if (call) call.done = true;
-      const named = str(message.toolName);
-      // Failed as the call's row reads it (callFailed): an error, or a result its tool reads as failed (a refused fetch).
+      else if (id) early.add(`${conv}:${id}`);
+      const named = str(message.toolName) === undefined ? undefined : toolNameOf(str(message.toolName)!);
+      // Failed as the call's row reads it (callFailed): an error, or a result its tool reads as failed (a refused fetch);
+      // a read that found nothing of a path the run never wrote only probed.
       const called = call?.called ?? named ?? "";
-      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), callFailed(called, { text: textOf(message), isError: message.isError === true }));
+      const result = { text: textOf(message), details: message.details, isError: message.isError === true };
+      const args = call?.args ?? {};
+      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), !missingOf(called, args, result, written) && callFailed(called, result));
+      if (!result.isError) for (const file of savedPaths(called, args, result)) written.add(file);
     }
   }
   for (const call of calls.values()) if (!call.done) tally(call.name, true);
@@ -779,6 +924,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
           live("phase", `${conv()}:run:start`, "Run started");
           break;
         case "run_end":
+          for (const row of projector.releaseAll()) put(row);
           for (const [id, call] of projector.open(conv())) put(projector.interrupt(call, id));
           wait("poll", undefined);
           wait("retry", undefined);

@@ -122,9 +122,10 @@ test("with the key and Parallel picked by the agent, web_search runs on pi: an a
   const started = await api("POST", "/agents/searcher/runs", { input: { content: "Search the web for widgets delaware" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const { rows } = await follow(api, started.body.run_id, ["completed"]);
-  const results = rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_result_preview);
-  assert.equal(results.length, 1, JSON.stringify(results));
-  assert.match(results[0], /^\{"provider":"parallel","query":"widgets delaware","results":\[\{"url":"https:\/\/registry\.example\/widgets"/);
+  const searches = rows.filter((row) => row.kind === "tool_use");
+  assert.equal(searches.length, 1, JSON.stringify(searches));
+  assert.match(searches[0].summary, /^Searched the web for "widgets delaware": \d+ sources? · registry\.example(, [^·]+)? · Parallel$/, "Parallel's results, in the one shape");
+  assert.match(searches[0].tool_result_preview, /^1\. .+ — registry\.example\n.*^https:\/\/registry\.example\/widgets$/ms);
   const Search = { type: "object", required: ["query", "results"], properties: { query: { type: "string" }, results: { type: "array", minItems: 2, maxItems: 2 } } };
   const flow = { v: 2, name: "search", schemas: { In: { type: "object", required: ["q"], properties: { q: { type: "string" } } }, Search }, input: { schemaId: "In" }, output: { schemaId: "Search", path: "found" }, root: { node: "chain", steps: [{ node: "call", label: "Search", via: "tool", tool: "web_search", args: { query: "{q}", n: 2 }, out: "Search", as: "found", deadline_s: 60 }] } };
   assert.equal((await api("POST", "/agents", { definition: { id: "flow", name: "flow", workflow: flow, tools: ["web_search"], tool_settings: parallel } })).status, 201);

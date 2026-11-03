@@ -407,8 +407,8 @@ A refusal comes back as `{error, status?}` in words: the wallet too low (402), a
 (`BLOCKED`), `FAILED`, `TIMED_OUT`, the provider's own error (not charged). The model reads each answer as JSON cut at
 60,000 characters, the whole of it then filed under the run's `work/evidence/monid/`. An answer carries what monid
 charged (`cost`, in dollars), and that charge is the run's spend: booked once in the run's own records as a tool cost
-(`agentrun.tool_cost`: `tool` `monid.run`, `charged_by` `"monid"`, `usd`), shown in its timeline on a line of its own
-(`Tool cost: monid charged $0.0030 for monid.run`) and summed into its cost, the total its [spend cap](#spend-cap)
+(`agentrun.tool_cost`: `tool` `monid.run`, `charged_by` `"monid"`, `usd`), shown in its timeline on its call's own row
+(`Ran faux /person/enrich: ok · charged $0.0030`) and summed into its cost, the total its [spend cap](#spend-cap)
 reads, and `/usage` grouped by meter shows it as its own meter, `tools`, apart from `tokens`. Each run is marked in the
 run's records before it is sent, held at the price an earlier `monid.inspect` of the run quoted for that endpoint, else
 at an allowance of $1; its charge settles the mark. A mark a crash left unsettled leaves the run's cost unknown, as a

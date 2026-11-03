@@ -205,7 +205,7 @@ test("a run keeps the tools its first launch resolved: a PUT between its launche
   const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
   const { api } = await serve(t, { fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs") });
   assert.equal((await api("POST", "/agents", agent("reader", { tools: ["web_fetch"] }))).status, 201);
-  const via = (rows) => rows.filter((row) => row.kind === "tool_result").map((row) => /"via":"(\w+)"/.exec(row.tool_result_preview)?.[1]);
+  const via = (rows) => rows.filter((row) => row.kind === "tool_use").map((row) => /^via: (\w+)$/m.exec(row.tool_result_preview)?.[1]);
   const first = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify(["http://public.example/"])}` } });
   assert.equal(first.status, 202, JSON.stringify(first.body));
   assert.deepEqual(via((await follow(api, first.body.run_id, ["completed"])).rows), ["direct"]);

@@ -92,15 +92,15 @@ export const lastRow = (rows) => rows.findLast((r) => r.kind !== "usage" && r.ki
 
 /**
  * working while a run is in flight. Otherwise waiting when the newest row is a wait for the person. A live run that
- * ended on a successful tool result is waiting too: a run that is not working and has no answer after its last result
- * was ended by that tool (request_sign_in does this). A released run's rows cannot tell that apart from a run parked
+ * ended on a call that succeeded is waiting too: a run that is not working and has no answer after its last call was
+ * ended by that tool (request_sign_in does this). A released run's rows cannot tell that apart from a run parked
  * between steps, so there only a wait row counts.
  */
 export function stateOf(rows, working, live = false) {
   if (working) return "working";
   const last = lastRow(rows);
   if (last?.kind === "waiting") return "waiting";
-  return live && last?.kind === "tool_result" && last.tool_status === "success" ? "waiting" : "idle";
+  return live && (last?.kind === "tool_use" || last?.kind === "tool_result") && last.tool_status === "success" ? "waiting" : "idle";
 }
 
 export const costOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage?.usd ?? null;

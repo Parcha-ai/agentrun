@@ -19,7 +19,7 @@ test("a call is counted failed by the rule its row reads: an error, or a result 
     answer([{ type: "text", text: "Fetched one." }], usage(20, 3)),
   ];
   assert.deepEqual(runMetricsOf(entries).tools, { web_fetch: { calls: 3, errors: 2 } }, "a refused and a failed fetch are errors, as their rows say");
-  const rows = timelineOf(entries, { settled: true }).filter((r) => r.kind === "tool_result").map((r) => r.tool_status);
+  const rows = timelineOf(entries, { settled: true }).filter((r) => r.kind === "tool_use").map((r) => r.tool_status);
   assert.deepEqual(rows, ["failed", "failed", "success"], "the same three, row by row");
   assert.deepEqual([callFailed("web_fetch", { text: refused, isError: false }), callFailed("read", { text: refused, isError: false }), callFailed("read", { text: "", isError: true })], [true, false, true], "a tool without an outcome fails only on an error");
 });
@@ -38,10 +38,10 @@ test("serve's web tools by the same rule: a page followed by a line for the mode
     answer([{ type: "text", text: "Done." }], usage(20, 3)),
   ];
   assert.deepEqual(runMetricsOf(entries).tools, { web_search: { calls: 2, errors: 1 }, web_fetch: { calls: 1, errors: 1 } });
-  assert.deepEqual(timelineOf(entries, { settled: true }).filter((r) => r.kind === "tool_result").map((r) => r.tool_status), ["failed", "success", "failed"], "the rows say the same");
+  assert.deepEqual(timelineOf(entries, { settled: true }).filter((r) => r.kind === "tool_use").map((r) => r.tool_status), ["failed", "missing", "failed"], "the rows say the same: a search that found nothing is missing, not an error");
 });
 
-test("a result row reads its outcome once, for its summary and its status both: a fetch's outcome parses its whole page", () => {
+test("a call's row reads its outcome once, for its summary and its status both: a fetch's outcome parses its whole page", () => {
   const read = [];
   registerOutcome("outcome_once_probe", (result) => {
     read.push(result.text);
@@ -56,8 +56,8 @@ test("a result row reads its outcome once, for its summary and its status both: 
     result("p1", "outcome_once_probe", refused), result("p2", "outcome_once_probe", fetched),
     answer([{ type: "text", text: "Fetched one." }], usage(20, 3)),
   ];
-  const rows = timelineOf(entries, { settled: true }).filter((r) => r.kind === "tool_result");
-  assert.deepEqual(rows.map((r) => [r.tool_status, r.summary]), [["failed", "Using tool: outcome_once_probe: refused http://127.0.0.1/"], ["success", "Using tool: outcome_once_probe: fetched https://example.com/"]], "the status and the summary from the same outcome");
+  const rows = timelineOf(entries, { settled: true }).filter((r) => r.kind === "tool_use");
+  assert.deepEqual(rows.map((r) => [r.tool_status, r.summary]), [["failed", "Used outcome_once_probe: refused http://127.0.0.1/"], ["success", "Used outcome_once_probe: fetched https://example.com/"]], "the status and the summary from the same outcome");
   assert.deepEqual(read, [refused, fetched], "each result's outcome read once, by its row");
 });
 

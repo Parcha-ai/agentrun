@@ -52,6 +52,12 @@ test("a decision's cost joins the run's usage row; one unknown makes the total u
   assert.deepEqual(withDecisions([usageRow(0.01, 1)], []), [usageRow(0.01, 1)], "no decisions: the rows as they were");
 });
 
+test("a settled run's usage row is its total: the decisions join it, and it keeps the time the run took", () => {
+  const total = { ...usageRow(0.01, 1), summary: "Total: $0.0100 · 1 model request · 1 min 2 s" };
+  assert.equal(withDecisions([total], [receipt(), receipt({ id: "d2", cost_usd: 0.002 })]).at(-1).summary, "Total: $0.0160 · 1 model request · 2 decisions · 1 min 2 s");
+  assert.equal(withDecisions([usageRow(0.01, 1)], [receipt()]).at(-1).summary, "Cost so far: $0.0140 over 1 model request and 1 decision");
+});
+
 test("decision rows sit among the run's rows by time, the usage row last", () => {
   const at = (id, timestamp) => ({ ...usageRow(0, 0), id, kind: "text_block", timestamp, usage: undefined });
   const rows = withDecisions([at("a", "2026-10-29T22:59:00.000Z"), at("b", "2026-10-29T23:01:00.000Z"), usageRow(0.01, 1)], [receipt()]);

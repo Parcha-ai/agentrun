@@ -164,8 +164,9 @@ test("a claude-agent run writes where its CLI works: a relative path, the CLI's 
   const work = join(data, "runs", runId, "work");
   assert.ok(cwd, "the CLI told its model its working directory");
   assert.equal(realpathSync(cwd), realpathSync(work), "the CLI's working directory is the run's workspace");
-  const calls = rows.filter((r) => r.kind === "tool_result").map((r) => [r.tool_name, r.tool_status]);
-  assert.deepEqual(calls, [["write", "success"], ["read", "success"], ["write", "success"], ["write", "success"], ["write", "failed"], ["read", "failed"]], JSON.stringify(rows.filter((r) => r.kind === "tool_result").map((r) => r.tool_result_preview)));
+  // One row per call; the read of a file the run never wrote is a quiet "missing", not a failure.
+  const calls = rows.filter((r) => r.kind === "tool_use").map((r) => [r.tool_name, r.tool_status]);
+  assert.deepEqual(calls, [["write", "success"], ["read", "success"], ["write", "success"], ["write", "success"], ["write", "failed"], ["read", "missing"]], JSON.stringify(rows.filter((r) => r.kind === "tool_use").map((r) => r.tool_result_preview)));
   // What the model was told of each call: the CLI sends each tool's result back in the next request.
   const results = fake.messages().flatMap((m) => m.messages ?? []).flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "tool_result").map((b) => (Array.isArray(b.content) ? b.content.map((c) => c.text ?? "").join("") : String(b.content)));
   const told = [...new Set(results)];
@@ -178,8 +179,8 @@ test("a claude-agent run writes where its CLI works: a relative path, the CLI's 
   assert.ok(told.some((text) => /missing\.md/.test(text) && /ENOENT|no such file/i.test(text)), `the missing file is named: ${told.join(" | ")}`);
   for (const root of new Set([data, realpathSync(data)])) {
     assert.deepEqual(told.filter((text) => text.includes(root)), [], "no tool result names the server's data directory");
-    // A row's summary quotes the call's own arguments (the model's absolute path, here): its result is the tool's words.
-    assert.deepEqual(rows.filter((r) => r.kind === "tool_result" && String(r.tool_result_preview ?? "").includes(root)).map((r) => r.tool_result_preview), [], "nor does any tool result on the timeline");
+    // The model wrote an absolute path under the workspace: the call's row names it relative to the workspace.
+    assert.deepEqual(rows.filter((r) => JSON.stringify(r).includes(root)).map((r) => [r.summary, r.tool_input_preview, r.tool_result_preview]), [], "nor does any row on the timeline");
   }
 });
 

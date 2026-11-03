@@ -159,9 +159,10 @@ test("an agentic run: its row, agent and note, and its own store's entries as th
   try {
     const done = (await get(`/api/runs/${ids.a1}`)).json;
     assert.deepEqual([done.run.id, done.run.state, done.agent, done.note], [ids.a1, "completed", "Company researcher", "Prompt A: the first brief"]);
-    assert.deepEqual(done.rows.filter((row) => row.kind !== "usage").map((row) => row.kind), ["user_message", "thinking", "tool_use", "tool_result", "tool_use", "tool_use", "tool_result", "tool_result", "tool_use", "tool_result", "phase", "final_answer"]);
+    assert.deepEqual(done.rows.filter((row) => row.kind !== "usage").map((row) => row.kind), ["user_message", "thinking", "tool_use", "tool_use", "tool_use", "tool_use", "final_answer"]);
+    assert.ok(done.rows.filter((row) => row.kind === "tool_use").every((row) => row.tool_status !== "running"), "each call's row has its outcome");
     const live = (await get(`/api/runs/${ids.t1}`)).json;
-    assert.deepEqual(live.rows.map((row) => row.kind), ["user_message", "thinking", "tool_use", "usage"], "no result yet for a running run's call");
+    assert.deepEqual(live.rows.map((row) => [row.kind, row.tool_status]), [["user_message", null], ["thinking", null], ["tool_use", "running"], ["usage", null]], "a running run's call is running");
     const gone = (await get(`/api/runs/${ids.m2}`)).json;
     assert.deepEqual([gone.gone, gone.rows, gone.workflow], [true, undefined, undefined]);
 
