@@ -89,6 +89,7 @@ test("an escalated workflow run is completed on /v2 with no error and a review, 
   await follow(api, started.run_id, ["completed"]);
   const run = (await api("GET", `/runs/${started.run_id}`)).body;
   const review = { kind: "review", node: "too big", reason: "needs a person", at: run.review?.at };
+  assert.ok(Number.isFinite(Date.parse(run.review?.at)), `review.at is a time: ${run.review?.at}`);
   assert.deepEqual([run.state, run.result?.output ?? null], ["idle", null], "it waits for review, with no output");
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.review, run.review), [], "the review meets the served document");
