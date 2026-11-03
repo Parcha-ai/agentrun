@@ -12,8 +12,9 @@
 //
 // A page is read once a run and given in parts (fetch-page.ts): the tool's `offset` and `max_chars` name the part. The
 // first call for a URL reads the page, through Parallel or the direct fetch, and the run keeps what it read by the URL
-// asked for (Pages, the last PAGES_HELD pages): every later part of that URL comes from it, with no request and, through
-// Parallel, no bill. So a page's parts are always one read's, by one provider. Parallel's extract has no offset (its full
+// asked for (Pages, the last PAGES_HELD pages), from the moment the read starts: every later part of that URL, and a call
+// made while it is read, comes from it, with no request and, through Parallel, no bill. A read that fails is not kept.
+// So a page's parts are always one read's, by one provider. Parallel's extract has no offset (its full
 // content always starts at the page's start), so it is asked once for the most of a page web_fetch reads
 // (PAGE_READ_MAX_CHARS) and one character more, so a page it cut there shows as going on; the page's whole length is
 // known when Parallel gave less (or more) than it was asked for.
@@ -38,8 +39,11 @@ export const PAGES_HELD = 8;
 export type WebPage = Page & { via: "parallel" | "direct"; parallel?: string };
 /** A page web_fetch read, and how (WebPage's `via` and `parallel`). */
 export type WebRead = Read & Pick<WebPage, "via" | "parallel">;
-/** The pages a run read, by the URL asked for, the last used last: at most PAGES_HELD of them. */
-export type Pages = Map<string, WebRead>;
+/** A page web_fetch could not read, and how it tried. */
+type WebUnread = Unread & Pick<WebPage, "via" | "parallel">;
+/** The pages a run reads, by the URL asked for, each from its read's start (so calls at once share it), the last used
+ *  last: at most PAGES_HELD of them. */
+export type Pages = Map<string, Promise<WebRead | WebUnread>>;
 type GuardOptions = Omit<PublicFetchOptions, "maxBytes">;
 /** Parallel for one run, on one key: `read`, its extract of a page (one billed request), the page it read or, for any
  *  failure, why it read none; `post`, one request to another of its endpoints (web_search's, web-search.ts). Neither
@@ -123,7 +127,7 @@ async function passes(url: string, options: GuardOptions, ms: number): Promise<b
  *  `checkMs` (default fetch_page's 30 s), else (or when it answers no page) through fetch_page's guarded fetch. A page
  *  fetched directly where `parallel` was given says why Parallel gave none (`parallel`): a picked provider that fails is
  *  never a silent fallback. */
-async function readOnce(url: unknown, parallel: Extract | null | undefined, checkMs: number, options: GuardOptions): Promise<WebRead | (Unread & Pick<WebPage, "via" | "parallel">)> {
+async function readOnce(url: unknown, parallel: Extract | null | undefined, checkMs: number, options: GuardOptions): Promise<WebRead | WebUnread> {
   let why: string | undefined;
   if (parallel && !parallel.live()) why = "not tried: refused earlier in this run";
   else if (parallel && !(typeof url === "string" && (await passes(url, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
@@ -135,22 +139,29 @@ async function readOnce(url: unknown, parallel: Extract | null | undefined, chec
   return { ...(await readDirect(url, options)), via: "direct", ...(why ? { parallel: why } : {}) };
 }
 
-/** The part (`offset`, `maxChars`) of the page at `url` as a WebPage: from `pages`, the run's, where it holds the URL,
- *  with no request; else read once (readOnce) and kept there. */
+/** The part (`offset`, `maxChars`) of the page at `url` as a WebPage: from `pages`, the run's, where it holds the URL
+ *  (read, or being read), with no request of its own; else read once (readOnce), kept there from the read's start. A read
+ *  that fails leaves `pages`, so a later call reads again. */
 export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOUT_MS, offset, maxChars, ...options }: GuardOptions & Part & { parallel?: Extract | null; pages?: Pages; checkMs?: number } = {}): Promise<WebPage> {
   const named = typeof url === "string" ? url : undefined;
-  let read = named === undefined ? undefined : pages?.get(named);
-  if (!read) {
-    const fresh = await readOnce(url, parallel, checkMs, options);
-    if (!fresh.ok) return fresh;
-    read = fresh;
+  let reading = named === undefined ? undefined : pages?.get(named);
+  if (!reading) {
+    const started = readOnce(url, parallel, checkMs, options);
+    if (pages && named !== undefined) {
+      // Ahead of any caller's await, so no call sees a failed read kept.
+      const drop = () => void (pages.get(named) === started && pages.delete(named));
+      void started.then((read) => { if (!read.ok) drop(); }, drop);
+    }
+    reading = started;
   }
   if (pages && named !== undefined) {
     // The last used last: the oldest goes past PAGES_HELD.
     pages.delete(named);
-    pages.set(named, read);
+    pages.set(named, reading);
     if (pages.size > PAGES_HELD) pages.delete(pages.keys().next().value!);
   }
+  const read = await reading;
+  if (!read.ok) return read;
   const { via, parallel: why, ...page } = read;
   return { ...partOfRead(page, { offset, maxChars }), via, ...(why ? { parallel: why } : {}) };
 }
