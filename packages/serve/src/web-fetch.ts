@@ -18,7 +18,7 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
-import { clip, fetchOptions, fetchPage, LINKS_CAP, linksWithin, PAGE_CHARS, type Page, pageText, type Part, partOf, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
+import { clip, fetchOptions, fetchPage, LINKS_CAP, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, type Page, pageText, type Part, partOf, partProblem, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 import { isUnavailable, planeOf } from "./tool-plane.js";
@@ -136,8 +136,11 @@ export function parallelOf(env: NodeJS.ProcessEnv): Extract | null {
 
 /** The part `options` names of the page at `url` by the provider the run's plane resolves web_fetch to: Parallel's
  *  extract (with the direct fetch behind it) where it resolves to parallel, the guarded direct fetch otherwise, and a
- *  failed Page saying why where it is unavailable. */
+ *  failed Page saying why where it is unavailable or the part is one a call may not ask for (partProblem), before
+ *  anything is fetched. */
 export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: GuardOptions & Part = {}): Promise<WebPage | Page> {
+  const problem = partProblem(options);
+  if (problem) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: problem };
   const resolved = planeOf(env).web_fetch;
   if (isUnavailable(resolved)) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: `web_fetch does not run here: ${resolved.slice("unavailable: ".length)}` };
   const extract = resolved === "parallel" ? parallelOf(env) : null;
@@ -174,7 +177,7 @@ export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): Too
   if (planeOf(env).web_fetch === "parallel") parallelOf(env);
   return defineTool({
     name,
-    description: `Read one web page from a public host, a part at a time. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page). A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
+    description: `Read one web page from a public host, a part at a time. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page). A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {

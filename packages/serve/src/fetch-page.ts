@@ -24,9 +24,11 @@ export const FETCH_PAGE_TOOL = "fetch_page";
 /** Under `--faux` only: a module whose default export gives `{ lookup, fetchImpl }` for the fetch (the tests' fake
  *  network), in place of the system's resolver and undici. */
 export const FAUX_WEB_ENV = "AGENTRUN_SERVE_FAUX_WEB";
-/** The most of a page's text one answer holds (max_chars at most), and what it holds when max_chars is not given. */
+/** The most of a page's text one answer holds (max_chars at most), what it holds when max_chars is not given, and the
+ *  least max_chars a tool's call may ask for (a smaller one is refused, saying so). */
 export const TEXT_CAP = 50_000;
 export const PAGE_CHARS = 20_000;
+export const MAX_CHARS_MIN = 200;
 /** A page's links, with its first part only: at most LINKS_CAP of them, in at most LINKS_CHARS characters of the answer. */
 export const LINKS_CAP = 200;
 export const LINKS_CHARS = 20_000;
@@ -40,6 +42,15 @@ export const clip = (text: string, max: number) => (text.length > max ? `${text.
 /** Which part of a page's text an answer holds: from `offset` (0 by default), about `maxChars` characters (PAGE_CHARS by
  *  default, at most TEXT_CAP). */
 export type Part = { offset?: number; maxChars?: number };
+/** Why a tool's call may not read `part`, or undefined: an offset that is not a whole number of 0 or more, a maxChars that
+ *  is not a number of MAX_CHARS_MIN or more (one past TEXT_CAP reads TEXT_CAP). */
+export function partProblem({ offset, maxChars }: Part): string | undefined {
+  const shown = (value: unknown) => (typeof value === "number" ? String(value) : String(JSON.stringify(value)).slice(0, 40));
+  if (offset !== undefined && !(Number.isInteger(offset) && offset >= 0)) return `offset must be a whole number, 0 or more (it was ${shown(offset)})`;
+  if (maxChars !== undefined && !(typeof maxChars === "number" && maxChars >= MAX_CHARS_MIN)) return `max_chars must be ${typeof maxChars === "number" ? "" : "a number, "}at least ${MAX_CHARS_MIN} (it was ${shown(maxChars)})`;
+  return undefined;
+}
+
 /** `part` in range: a whole offset of 0 or more, a whole maxChars of 1 to TEXT_CAP. */
 export const partOf = (part: Part = {}): Required<Part> => ({
   offset: Math.max(0, Math.floor(Number(part.offset) || 0)),
@@ -48,7 +59,8 @@ export const partOf = (part: Part = {}): Required<Part> => ({
 
 /** Where the longest run of `text` from `start` ends whose JSON string takes at most `budget` characters (less its
  *  quotes): a character takes one, a quote, a backslash or a control character JSON writes short (\n, \t) two, any other
- *  control character or a lone surrogate six. A surrogate pair is never split. */
+ *  control character or a lone surrogate six. A surrogate pair is never split. While a character is left the run holds
+ *  one at least, whatever it takes, so a part always advances (only a budget under six can be passed, by that one). */
 export function partEnd(text: string, start: number, budget: number): number {
   let at = start;
   for (let used = 0; at < text.length; ) {
@@ -59,7 +71,7 @@ export function partEnd(text: string, start: number, budget: number): number {
     else if ((unit & 0xf800) === 0xd800) cost = 6;
     else if (unit === 0x22 || unit === 0x5c || unit === 0x08 || unit === 0x09 || unit === 0x0a || unit === 0x0c || unit === 0x0d) cost = 2;
     else if (unit < 0x20) cost = 6;
-    if (used + cost > budget) break;
+    if (used + cost > budget && at > start) break;
     used += cost;
     at += width;
   }
@@ -136,7 +148,7 @@ export const URL_PARAMETERS = {
   properties: {
     url: { type: "string", minLength: 1, description: "An absolute http(s) URL." },
     offset: { type: "integer", minimum: 0, description: "Where in the page's text to start, in characters (default 0). An answer that stops short of the page's end gives the offset that reads on." },
-    max_chars: { type: "integer", minimum: 1, maximum: TEXT_CAP, description: `About how many characters of the page's text to read (default ${PAGE_CHARS.toLocaleString("en-US")}, at most ${TEXT_CAP.toLocaleString("en-US")}).` },
+    max_chars: { type: "integer", minimum: MAX_CHARS_MIN, maximum: TEXT_CAP, description: `About how many characters of the page's text to read (default ${PAGE_CHARS.toLocaleString("en-US")}, at least ${MAX_CHARS_MIN}, at most ${TEXT_CAP.toLocaleString("en-US")}).` },
   },
   required: ["url"],
 } as unknown as TSchema;
