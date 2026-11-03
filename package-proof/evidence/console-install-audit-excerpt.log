@@ -1,0 +1,15 @@
+Existing final-commit clean-container install output; not a new audit run.
+
+#8 13.34 added 353 packages, and audited 354 packages in 7s
+#8 13.34 
+#8 13.34 95 packages are looking for funding
+#8 13.34   run `npm fund` for details
+#8 13.39 
+#8 13.39 14 vulnerabilities (7 moderate, 3 high, 4 critical)
+#8 13.39 
+#8 13.39 To address all issues (including breaking changes), run:
+#8 13.39   npm audit fix --force
+#8 13.39 
+#8 13.39 Run `npm audit` for details.
+#8 13.48 
+#8 13.48 > @parcha/agentrun-ui@0.1.0-beta.28 build

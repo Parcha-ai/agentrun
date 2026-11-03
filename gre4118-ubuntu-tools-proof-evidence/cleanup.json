@@ -1,0 +1,10 @@
+[
+  {
+    "name": "gre4118-ubuntu24-environment",
+    "absent": true
+  },
+  {
+    "name": "gre4118-ubuntu24-frame-proof",
+    "absent": true
+  }
+]

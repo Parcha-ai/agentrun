@@ -1,0 +1,136 @@
+{
+  "recordedCommit": "23bf2743349e38461601fd6e959d6801b99df46e",
+  "assembledFromExistingReceipts": true,
+  "archivesIncluded": false,
+  "files": [
+    {
+      "path": "evidence/ui-consumer.log",
+      "sha256": "6b0fb7889a9b9f7dc59a27d1807e9df40bfc9bd865c7772e325db1ac84b32914",
+      "bytes": 325,
+      "redactions": {},
+      "originalSha256": "6b0fb7889a9b9f7dc59a27d1807e9df40bfc9bd865c7772e325db1ac84b32914"
+    },
+    {
+      "path": "evidence/native-packages.log",
+      "sha256": "a8fccd1738a1e54f3a1d1f341b7611111d3571c8b89476ebeff5495fd6b93643",
+      "bytes": 2519,
+      "redactions": {},
+      "originalSha256": "a8fccd1738a1e54f3a1d1f341b7611111d3571c8b89476ebeff5495fd6b93643"
+    },
+    {
+      "path": "evidence/source-consumer.log",
+      "sha256": "a56d29deded6d556a660c5c0dd94337925074a0098646f92c6b881d881d4160a",
+      "bytes": 226,
+      "redactions": {},
+      "originalSha256": "a56d29deded6d556a660c5c0dd94337925074a0098646f92c6b881d881d4160a"
+    },
+    {
+      "path": "evidence/ui-pack.json",
+      "sha256": "dfde4ce83c2c89fb6fcbb17dc9129a857ca6d2fe2d5375efabb158178f6aa12e",
+      "bytes": 9029,
+      "redactions": {},
+      "originalSha256": "4b979688427eeb9f6bec96c829d33699888a16804db61658231c4b9ee447d8d2"
+    },
+    {
+      "path": "evidence/native-identity.json",
+      "sha256": "d6ca2b3699d1bc4acf2928039afc6dfb8d1c53afbfb2e6c9328f1c899ebbcfaf",
+      "bytes": 174,
+      "redactions": {},
+      "originalSha256": "d6ca2b3699d1bc4acf2928039afc6dfb8d1c53afbfb2e6c9328f1c899ebbcfaf"
+    },
+    {
+      "path": "evidence/native-verification.json",
+      "sha256": "6ce2dcb0addfab5f9a0cc18613673b6c832b17501afa76dd8921635f7ac8b325",
+      "bytes": 70544,
+      "redactions": {
+        "machine_path": 2
+      },
+      "originalSha256": "1b109c985d8b12d1ae0f1b84bb274099206a07a34fbddbb942111897e177a266"
+    },
+    {
+      "path": "evidence/source-export-receipt.json",
+      "sha256": "62c53fd9bb4ed872dabd83574f012db6e53091e4b1868363f18c5a27a40d9f62",
+      "bytes": 766989,
+      "redactions": {},
+      "originalSha256": "62c53fd9bb4ed872dabd83574f012db6e53091e4b1868363f18c5a27a40d9f62"
+    },
+    {
+      "path": "evidence/source-consumer.json",
+      "sha256": "2d60cf60735f372217039e9921c1be802b06056b5548b1d062153c820dda479f",
+      "bytes": 628448,
+      "redactions": {
+        "machine_path": 23
+      },
+      "originalSha256": "222d4d26a9e25defbd8efb7520e732603e03e7401b1bf32c61d9fa1eab7901fe"
+    },
+    {
+      "path": "evidence/ui-consumer/consumer.tsx",
+      "sha256": "b5899af05cfc4cf774d0f88fe1eaef9caef61f60e05d36850bb4f7bba9f85913",
+      "bytes": 586,
+      "redactions": {},
+      "originalSha256": "b5899af05cfc4cf774d0f88fe1eaef9caef61f60e05d36850bb4f7bba9f85913"
+    },
+    {
+      "path": "evidence/ui-consumer/tsconfig.json",
+      "sha256": "7683897c613616b6959a8e39220178e7da80c6e3231e2301ee6b4f410cd50fb9",
+      "bytes": 204,
+      "redactions": {},
+      "originalSha256": "7683897c613616b6959a8e39220178e7da80c6e3231e2301ee6b4f410cd50fb9"
+    },
+    {
+      "path": "evidence/ui-manifest.json",
+      "sha256": "046b0ee6897d496b0fde1ef8afef5eba5851ee7a7c28f94db30aac79eb10bbdd",
+      "bytes": 1942,
+      "redactions": {
+        "private_address": 2
+      },
+      "originalSha256": "133eb26e426231c38482088aa47d1cb5907333745d306b7ef27eb1ec76e81741"
+    },
+    {
+      "path": "evidence/ui-identity.json",
+      "sha256": "9868d42424d82389d3f490224fc4e7bd72fff9973b501505cbc6d87ca8f2e049",
+      "bytes": 234,
+      "redactions": {}
+    },
+    {
+      "path": "evidence/license-review-flags.json",
+      "sha256": "944f07eddcd60b60e789c69c994294c2b3689c5e3e28bb82e39677418305c8b6",
+      "bytes": 2276,
+      "redactions": {}
+    },
+    {
+      "path": "evidence/native-audit.json",
+      "sha256": "12aa930cc7059c21735f5ed3ffa3ee99b1104688faebcf7d2ce152e593019fe5",
+      "bytes": 1386,
+      "redactions": {}
+    },
+    {
+      "path": "evidence/ui-consumer/toolchain.json",
+      "sha256": "5eb98004046bd061453c683ccef29e727184bd18b872ba11e5b344aad5a9d31c",
+      "bytes": 135,
+      "redactions": {}
+    },
+    {
+      "path": "evidence/ui-consumer/recorded-commands.txt",
+      "sha256": "8f87af75ba2d19f2f518906b639e0c3471b68a09cff62c759c6c30a0884e88c5",
+      "bytes": 584,
+      "redactions": {}
+    },
+    {
+      "path": "evidence/console-install-audit-excerpt.log",
+      "sha256": "0a22d9922d843f39d30325aef9a7e2730b1f233edc53ae63725155bf97af1677",
+      "bytes": 518,
+      "redactions": {}
+    },
+    {
+      "path": "package-proof.md",
+      "sha256": "3a048b03ca446f3c4dd71f92a8b0e824d04c15c6e2249dcabe619b1a4bad76c6",
+      "bytes": 3211,
+      "redactions": {}
+    }
+  ],
+  "limitations": [
+    "Evidence copies are sanitized; original and copied digests differ where noted.",
+    "No build, test, dependency install, source edit, registry publication or external notification was performed while assembling this bundle."
+  ]
+}

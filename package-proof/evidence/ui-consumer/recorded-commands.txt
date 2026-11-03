@@ -1,0 +1,8 @@
+The existing final consumer log records these commands, run from an isolated installed consumer:
+
+npm install --ignore-scripts --no-audit --no-fund <UI archive>
+./node_modules/.bin/tsc -p tsconfig.json
+./node_modules/.bin/tsc -p tsconfig.json --module NodeNext --moduleResolution NodeNext
+node --input-type=module -e <public ESM exports and configured-base client assertions>
+
+The copied tsconfig uses strict=true, skipLibCheck=false, noEmit=true and no repository aliases. The NodeNext run overrides only module/moduleResolution. No commands were rerun while assembling this bundle.

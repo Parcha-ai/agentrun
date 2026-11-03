@@ -1,0 +1,341 @@
+[
+  {
+    "id": "@parcha/agentrun-ui@0.1.0-beta.28",
+    "name": "@parcha/agentrun-ui",
+    "version": "0.1.0-beta.28",
+    "size": 575691,
+    "unpackedSize": 1320430,
+    "shasum": "68e4c2c09a5735ed212cc057b5074650d25ad027",
+    "integrity": "sha512-NlTdnMRnDxTvmYyX5zaP09yv/FqCsIhA8IPdsbel5Xp145kcrVpTL/sNxipvLnZV5Fd0+4p7m3Wg2fCBMPCVdA==",
+    "filename": "parcha-agentrun-ui-0.1.0-beta.28.tgz",
+    "files": [
+      {
+        "path": "LICENSE",
+        "size": 11358,
+        "mode": 420
+      },
+      {
+        "path": "NOTICE",
+        "size": 334,
+        "mode": 420
+      },
+      {
+        "path": "README.md",
+        "size": 5522,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/asset-manifest.json",
+        "size": 67,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/index.js",
+        "size": 419371,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/style.css",
+        "size": 539637,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/THIRD-PARTY-NOTICES.txt",
+        "size": 42295,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/AgentRunProvider.d.ts",
+        "size": 1744,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/App.d.ts",
+        "size": 1304,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/AgentAnalytics.d.ts",
+        "size": 812,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/AgentEditor.d.ts",
+        "size": 2852,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/AgentPage.d.ts",
+        "size": 939,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/AgentsList.d.ts",
+        "size": 896,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/AgentsPage.d.ts",
+        "size": 890,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/CodingAgentHandoff.d.ts",
+        "size": 408,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/Composer.d.ts",
+        "size": 478,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/KeysPage.d.ts",
+        "size": 687,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/LatestRun.d.ts",
+        "size": 920,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/LiveRun.d.ts",
+        "size": 516,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/MissionAnalytics.d.ts",
+        "size": 1009,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/MissionControl.d.ts",
+        "size": 1273,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/NeedsYou.d.ts",
+        "size": 391,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/NodeDrawer.d.ts",
+        "size": 1528,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/Playground.d.ts",
+        "size": 1882,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/RunBar.d.ts",
+        "size": 313,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/RunDetail.d.ts",
+        "size": 1812,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/RunError.d.ts",
+        "size": 393,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/RunFiles.d.ts",
+        "size": 752,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/RunGraphView.d.ts",
+        "size": 1636,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/RunHeader.d.ts",
+        "size": 848,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/RunResult.d.ts",
+        "size": 404,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/RunsList.d.ts",
+        "size": 893,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/SettingsPage.d.ts",
+        "size": 603,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/Shell.d.ts",
+        "size": 1038,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/SignIn.d.ts",
+        "size": 780,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/StatusBadge.d.ts",
+        "size": 420,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/Timeline.d.ts",
+        "size": 559,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/ui/button.d.ts",
+        "size": 640,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/ui/chip.d.ts",
+        "size": 277,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/WorkflowEditor.d.ts",
+        "size": 1613,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/components/WorkflowGraph.d.ts",
+        "size": 993,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/index.d.ts",
+        "size": 926,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/agentForm.d.ts",
+        "size": 7138,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/auth.d.ts",
+        "size": 1080,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/client.d.ts",
+        "size": 11608,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/codingAgentHandoff.d.ts",
+        "size": 1617,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/contract.generated.d.ts",
+        "size": 191316,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/decisionStarter.d.ts",
+        "size": 5790,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/format.d.ts",
+        "size": 1521,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/idempotency.d.ts",
+        "size": 1229,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/liveRun.d.ts",
+        "size": 1618,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/mission.d.ts",
+        "size": 7835,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/models.d.ts",
+        "size": 1364,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/runGraph.d.ts",
+        "size": 7321,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/runStart.d.ts",
+        "size": 2338,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/runState.d.ts",
+        "size": 2586,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/timeline.d.ts",
+        "size": 378,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/utils.d.ts",
+        "size": 102,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/v2.d.ts",
+        "size": 4959,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/viewing.d.ts",
+        "size": 877,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/wfGraph.d.ts",
+        "size": 1703,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/workflowDoc.d.ts",
+        "size": 2711,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/apps/console/src/lib/workflowStarter.d.ts",
+        "size": 1844,
+        "mode": 420
+      },
+      {
+        "path": "dist/library/types/packages/dsl/src/graph.d.ts",
+        "size": 9564,
+        "mode": 420
+      },
+      {
+        "path": "package.json",
+        "size": 1918,
+        "mode": 420
+      }
+    ],
+    "entryCount": 65,
+    "bundled": []
+  }
+]

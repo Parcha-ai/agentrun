@@ -1,0 +1,5 @@
+
+> agentrun-dsl-workspace@0.1.0-beta.28 verify:source
+> node scripts/verify-source.mjs
+
+Downloaded source: install, build, demos, graph export/inspection, and native Pi discovery passed. Receipt: .release/source-consumer.json

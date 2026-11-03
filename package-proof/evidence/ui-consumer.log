@@ -1,0 +1,4 @@
+
+changed 1 package in 241ms
+PASS strict Bundler, NodeNext, public ESM exports and configured-base client
+{"head": "23bf2743349e38461601fd6e959d6801b99df46e", "archive_sha256": "84d0402939387f8efbb73d88fad5250cb9c9d6c56c4fd9bf5e0519e466ea84e0", "files": 65, "declarations": 57, "portable_declarations": true, "notices": true}

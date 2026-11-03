@@ -1,0 +1,63 @@
+{
+  "name": "@parcha/agentrun-ui",
+  "private": true,
+  "type": "module",
+  "description": "Shared AgentRun administration console and native v2 client, with a standalone server entry.",
+  "scripts": {
+    "generate:contract": "node scripts/generate-contract.mjs",
+    "dev": "vite --host redacted-host.invalid",
+    "build": "tsc -p tsconfig.json && vite build && npm run build:library && node ../../scripts/build-console.mjs --stamp",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "storybook": "storybook dev --host redacted-host.invalid -p 6006 --no-open",
+    "build-storybook": "storybook build -o dist/storybook",
+    "build:library": "vite build --config vite.library.config.ts && tsc -p tsconfig.library.json && node build-library.mjs"
+  },
+  "dependencies": {
+    "@fontsource/jetbrains-mono": "5.1.1",
+    "@fontsource/schibsted-grotesk": "5.1.1",
+    "clsx": "2.1.1",
+    "dompurify": "3.2.3",
+    "lucide-react": "0.468.0",
+    "marked": "15.0.6",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@storybook/addon-viewport": "8.6.14",
+    "@storybook/react": "8.6.14",
+    "@storybook/react-vite": "8.6.14",
+    "@types/react": "18.3.18",
+    "@types/react-dom": "18.3.5",
+    "@vitejs/plugin-react": "4.3.4",
+    "autoprefixer": "10.4.20",
+    "jsdom": "25.0.1",
+    "openapi-typescript": "6.7.6",
+    "postcss": "8.4.49",
+    "storybook": "8.6.14",
+    "tailwindcss": "3.4.17",
+    "typescript": "5.7.3",
+    "vite": "5.4.21",
+    "vitest": "2.1.9"
+  },
+  "version": "0.1.0-beta.28",
+  "license": "Apache-2.0",
+  "files": [
+    "dist/library",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/library/types/apps/console/src/index.d.ts",
+      "import": "./dist/library/index.js"
+    },
+    "./styles.css": "./dist/library/style.css"
+  },
+  "overrides": {
+    "openapi-typescript": {
+      "undici": "6.29.1"
+    }
+  }
+}

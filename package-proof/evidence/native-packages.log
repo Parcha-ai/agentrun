@@ -1,0 +1,34 @@
+{"head": "23bf2743349e38461601fd6e959d6801b99df46e", "npm": "11.21.0", "cleanBefore": true}
+
+> agentrun-dsl-workspace@0.1.0-beta.28 verify:packages
+> node scripts/verify-packages.mjs --console
+
+Packed and inspected @parcha/agentrun-dsl@0.1.0-beta.28 (123 files)
+Packed and inspected @parcha/agentrun-jev@0.1.0-beta.28 (6 files)
+Packed and inspected @parcha/agentrun-pi@0.1.0-beta.28 (116 files)
+Packed and inspected @parcha/pi-durable-disk@0.1.0-beta.28 (66 files)
+Packed and inspected @parcha/pi-browser@0.1.0-beta.28 (164 files)
+Packed and inspected @parcha/pi-vision@0.1.0-beta.28 (110 files)
+Packed and inspected @parcha/pi-transport@0.1.0-beta.28 (137 files)
+Packed and inspected @parcha/pi-durable-agent@0.1.0-beta.28 (64 files)
+Packed and inspected @parcha/agentrun-serve@0.1.0-beta.28 (162 files)
+Packed and inspected @parcha/pi-git-remote@0.1.0-beta.28 (23 files)
+Packed and inspected @parcha/pi-agent-learn@0.1.0-beta.28 (39 files)
+Packed and inspected @parcha/agentrun-learn@0.1.0-beta.28 (28 files)
+Packed and inspected @parcha/agentrun-decisions@0.1.0-beta.28 (13 files)
+Packed and inspected @parcha/agentrun-kernel@0.1.0-beta.28 (78 files)
+Packed and inspected @parcha/agentrun-harness-claude@0.1.0-beta.28 (50 files)
+Packed and inspected @parcha/agentrun-harness-codex@0.1.0-beta.28 (40 files)
+Packed and inspected @parcha/agentrun-harness@0.1.0-beta.28 (47 files)
+Consumer holds @earendil-works/chord@1.1.0 at node_modules/@earendil-works/chord
+Consumer holds @earendil-works/pi-agent-core@1.1.0 at node_modules/@earendil-works/pi-agent-core
+Consumer holds @earendil-works/pi-ai@1.1.0 at node_modules/@earendil-works/pi-ai
+Consumer holds @earendil-works/pi-codemode@1.1.0 at node_modules/@earendil-works/pi-codemode
+Consumer holds @earendil-works/pi-coding-agent@1.1.0 at node_modules/@earendil-works/pi-coding-agent
+Consumer holds @earendil-works/pi-durable@1.1.0 at node_modules/@earendil-works/pi-durable
+Consumer holds @earendil-works/pi-mcp@1.1.0 at node_modules/@earendil-works/pi-mcp
+Consumer holds @earendil-works/pi-telemetry@1.1.0 at node_modules/@earendil-works/pi-telemetry
+Consumer holds @earendil-works/pi-tui@1.1.0 at node_modules/@earendil-works/pi-tui
+Standalone starter: installed packages, strict compilation, tests, evidence selection and missing-evidence exit 2 passed without runtime network.
+Installed CLI: billing, technical, and ambiguous scenarios passed without network.
+Clean consumer execution, declarations, and dependency audit passed. Receipt: .release/verification.json
