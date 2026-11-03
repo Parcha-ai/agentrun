@@ -245,7 +245,8 @@ describe("AgentPage", () => {
     expect(count()).toBe(5);
     await page.click(/^Load more$/);
     expect(count()).toBe(5);
-    expect(page.host.textContent).toContain("More runs could not be read: the network went away");
+    expect(page.host.textContent).toContain("More runs could not be read.");
+    expect(page.host.textContent).toContain("the network went away");
     fail = false;
     await page.click(/^Load more$/);
     expect(count()).toBe(runs.length);
@@ -536,24 +537,30 @@ describe("AgentPage, where it runs", () => {
   });
 });
 
-// Each failed read says the server's refusal as `code: message`, and any other failure by its message.
+// Each failed read says what failed and what to do next in words: an agent this server has no record of, a server that
+// can't be reached, and anything else thrown, with what was said kept small.
 describe("AgentPage, a failed read's problem", () => {
   it("says the agent's read failing: a refusal, an error and anything else thrown", async () => {
     const refused = await open(agentFixture("invoice-checker"), { agentError: new ClientError(404, "agent_not_found", "no agent invoice-checker") });
-    expect(refused.host.querySelector('[role="alert"]')?.textContent).toBe("The agent could not be read: agent_not_found: no agent invoice-checker");
+    const r = refused.host.querySelector('[role="alert"]')!;
+    expect(r.textContent).toContain("No agent with this id.");
+    expect(r.querySelector('a[href="#/agents"]')?.textContent).toBe("Open the agents list");
     act(() => root?.unmount());
     const failed = await open(agentFixture("invoice-checker"), { agentError: new TypeError("Failed to fetch") });
-    expect(failed.host.querySelector('[role="alert"]')?.textContent).toBe("The agent could not be read: Failed to fetch");
+    expect(failed.host.querySelector('[role="alert"]')?.textContent).toContain("The agent could not be read.Can't reach agentrun-serve.");
+    expect(failed.host.querySelector('[role="alert"]')?.textContent).not.toContain("TypeError");
     act(() => root?.unmount());
     const thrown = await open(agentFixture("invoice-checker"), { agentError: "offline" });
-    expect(thrown.host.querySelector('[role="alert"]')?.textContent).toBe("The agent could not be read: offline");
+    expect(thrown.host.querySelector('[role="alert"]')?.textContent).toContain("Something went wrong in the console. Reload the page.");
+    expect(thrown.host.querySelector('[role="alert"]')?.textContent).toContain("offline");
   });
 
   it("says the next page of runs refused", async () => {
     const runs = runsOf("invoice-checker");
     const page = await open(agentFixture("invoice-checker"), { runs: runs.slice(0, 5), next: "c2", more: async () => { throw new ClientError(400, "invalid_cursor", "that cursor is not one this server gave"); } });
     await page.click(/^Load more$/);
-    expect(page.host.textContent).toContain("More runs could not be read: invalid_cursor: that cursor is not one this server gave");
+    expect(page.host.textContent).toContain("More runs could not be read.");
+    expect(page.host.textContent).toContain("that cursor is not one this server gave · invalid_cursor");
   });
 
   it("says the latest run's record refused on every try, and its timeline refused", async () => {

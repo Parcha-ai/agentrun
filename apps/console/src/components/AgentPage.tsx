@@ -3,17 +3,20 @@ import { ArrowLeft, Bot, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
 import { LatestRun } from "@/components/LatestRun";
+import { NotHere, ProblemCard } from "@/components/Problem";
 import { RunBar } from "@/components/RunBar";
+import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import type { Agent } from "@/lib/agentForm";
-import { type Client, problemOf } from "@/lib/client";
+import { type Client, ClientError } from "@/lib/client";
 import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel } from "@/lib/models";
 import { placeLabel, placeOf } from "@/lib/place";
+import { type Problem, problem } from "@/lib/problem";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import { rangeFrom, type Stats } from "@/lib/mission";
@@ -40,20 +43,24 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
  *  agent, which takes no runs), and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`). */
 export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix, harnesses, efforts = [], go, tab }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string }) {
   const [agent, setAgent] = useState<Agent | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The agent's read failed: a 404 is an agent this server has no record of; anything else is said in words.
+  const [error, setError] = useState<{ cause: unknown } | null>(null);
+  const [tries, setTries] = useState(0);
   // The agent's stats over the Analytics tab's first range: undefined until read, null when the read failed. A read that
   // landed gives the tab, which opens on this answer, never a second read of it.
   const [stats, setStats] = useState<Stats | null | undefined>(undefined);
   useEffect(() => {
     let live = true;
     setAgent(null); setError(null); setStats(undefined);
-    v2.getAgent(agentId).then((r) => { if (live) setAgent(r.agent); }, (e) => { if (live) setError(problemOf(e)); });
+    v2.getAgent(agentId).then((r) => { if (live) setAgent(r.agent); }, (e) => { if (live) setError({ cause: e }); });
     v2.statsOver({ from: rangeFrom(FIRST_RANGE), agent: agentId }).then((r) => { if (live) setStats(r); }, () => { if (live) setStats(null); });
     return () => { live = false; };
-  }, [v2, agentId]);
+  }, [v2, agentId, tries]);
   const analytics = stats === undefined ? undefined : stats !== null;
-  if (error) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">The agent could not be read: {error}</p>;
-  if (!agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
+  if (error) return error.cause instanceof ClientError && error.cause.status === 404
+    ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
+    : <ProblemCard problem={problem(error.cause, "the agent")} onRetry={() => setTries((n) => n + 1)} />;
+  if (!agent) return <AgentSkeleton />;
   const d = agent.definition;
   const workflow = agent.kind === "workflow";
   const Icon = workflow ? Workflow : Bot;
@@ -109,7 +116,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
         ))}
       </div>
       <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
-        {waiting ? <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading...</p> : <at.Body agent={agent} v2={v2} go={go} stats={stats} />}
+        {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} />}
       </div>
     </div>
   );
@@ -122,7 +129,7 @@ function RunsTab({ agent, v2 }: TabProps) {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Problem | null>(null);
   const asked = useRef(0);
   const read = (after: string | null) => {
     const n = ++asked.current;
@@ -131,12 +138,12 @@ function RunsTab({ agent, v2 }: TabProps) {
     // An archived agent's runs are archived with it: the server lists them only when asked for the archived ones.
     v2.listAgentRuns(agent.agent_id, 50, after, !!agent.archived_at)
       .then((r) => { if (n === asked.current) { setRuns((x) => (after ? appendRuns(x ?? [], r.runs) : r.runs)); setCursor(r.next_cursor); } })
-      .catch((e) => { if (n === asked.current) setError(problemOf(e)); })
+      .catch((e) => { if (n === asked.current) setError(problem(e, after ? "more runs" : "the runs")); })
       .finally(() => { if (n === asked.current) setMore(false); });
   };
   useEffect(() => { read(null); }, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (error && !runs) return <p className="border p-4 font-mono text-[13px] text-destructive-text" role="alert">The runs could not be read: {error}</p>;
-  if (!runs) return <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading runs...</p>;
+  if (error && !runs) return <ProblemCard problem={error} onRetry={() => read(null)} className="" />;
+  if (!runs) return <ListSkeleton label="Loading the runs" rows={5} />;
   if (!runs.length) return (
     <div className="border px-4 py-12 text-center">
       <p className="font-mono text-[13px] text-muted-foreground">No runs of this agent yet.</p>
@@ -162,7 +169,7 @@ function RunsTab({ agent, v2 }: TabProps) {
         ))}
       </ul>
       {/* A failed Load more keeps the runs already read, and the button to try again. */}
-      {error && <p className="mt-4 border p-3 font-mono text-[13px] text-destructive-text" role="alert">More runs could not be read: {error}</p>}
+      {error && <ProblemCard problem={error} className="mt-4" />}
       {cursor && <div className="mt-4 flex justify-center"><button type="button" onClick={() => read(cursor)} disabled={more} className="caps border px-4 py-2 text-[12px] hover:bg-accent disabled:opacity-45">{more ? "Loading" : "Load more"}</button></div>}
     </>
   );
