@@ -180,7 +180,7 @@ const searchOutcome: OutcomeFn = (result) => {
       const url = str(hit.url) ?? "";
       // One line of its snippet: the preview is capped (CAPS.preview), and more results beat more of one.
       const snippet = firstLine(str(hit.snippet) ?? "");
-      return [`${i + 1}. ${str(hit.title) ?? url} — ${domainOf(url) ?? url}`, ...(snippet ? [cut(snippet, 120)] : []), url].join("\n");
+      return [`${i + 1}. ${str(hit.title)?.trim() || url} — ${domainOf(url) ?? url}`, ...(snippet ? [cut(snippet, 120)] : []), url].join("\n");
     }),
     `Provider: ${provider}${paid}`,
   ].join("\n");
