@@ -912,6 +912,7 @@ test("a server that cannot write when it first started takes now, says so, and s
   assert.ok(lines.some((line) => line.includes("condition=notices_since_unwritable")), "and said so");
   await sleep(1_500);
   assert.equal(ofType(hook.got, "run.ended").length, 1, "nothing ended before it is sent again");
+});
 
 // ---- a wait's run.needs_input is a notice until the run's record says the outbox holds it, so a server that adopts the
 // run queues a wait no server queued, under its one webhook-id.
