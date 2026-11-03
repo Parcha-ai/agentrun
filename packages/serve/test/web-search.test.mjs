@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { spentIn, useSpend } from "../dist/cap.js";
-import { PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
+import { bookedIn, PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
 import { parallelExtract, webFetch } from "../dist/web-fetch.js";
 import { PARALLEL_SEARCH_URL, webSearch } from "../dist/web-search.js";
 import { exaSearch } from "../dist/exa-keyless.js";
@@ -42,6 +42,10 @@ const EXA_FIX = /exa\.ai|Fix:|MCP URL|exaApiKey|free MCP rate limit/;
 const MODE = "AGENTRUN_TEST_FAUX_PARALLEL_SEARCH";
 const EXTRACT_MODE = "AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT";
 
+/** Runs a test as a tool call does: inside a call its requests to Parallel are booked under, as paid-calls.ts requires
+ *  (a request outside one is refused unsent). */
+const inCall = (fn) => (t) => bookedIn({ call: "test-call", record: async () => undefined }, () => fn(t));
+
 /** The fake Parallel answering as `mode` says (each test puts its variable back), and every request it was sent. */
 function parallel(mode = "") {
   process.env[MODE] = mode;
@@ -53,7 +57,7 @@ function parallel(mode = "") {
   return { sent, send };
 }
 
-test("results are mapped and clipped into the one search shape: excerpts joined into one snippet of at most 3,000 characters, links as their text, published only where Parallel dates a page", async (t) => {
+test("results are mapped and clipped into the one search shape: excerpts joined into one snippet of at most 3,000 characters, links as their text, published only where Parallel dates a page", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   const { sent, send } = parallel();
   const answer = await webSearch({ query: "  widgets delaware ", n: 3 }, parallelExtract(CANARY, send));
@@ -68,18 +72,18 @@ test("results are mapped and clipped into the one search shape: excerpts joined 
   assert.equal(long.query, "q".repeat(200), "the query is cut at 200 characters");
   assert.deepEqual(await webSearch({ query: "  " }, parallelExtract(CANARY, send)), { error: "web_search needs a query" });
   assert.equal(sent.length, 2, "an empty query is not sent");
-});
+}));
 
-test("n is 1 to 25, 10 when it is not a number above zero", async (t) => {
+test("n is 1 to 25, 10 when it is not a number above zero", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   for (const [n, asked] of [[undefined, 10], [0, 10], ["many", 10], [-3, 1], [0.5, 1], [2.7, 2], ["7", 7], [25, 25], [99, 25]]) {
     const { sent, send } = parallel();
     const answer = await webSearch({ query: "widgets", n }, parallelExtract(CANARY, send));
     assert.deepEqual([sent[0].body.advanced_settings.max_results, answer.results.length], [asked, asked], String(n));
   }
-});
+}));
 
-test("a 5xx, a timeout or a request that fails answers {error}, and Parallel is asked again next time: there is nothing else to search", async (t) => {
+test("a 5xx, a timeout or a request that fails answers {error}, and Parallel is asked again next time: there is nothing else to search", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   const failing = (error) => async () => { throw error; };
   for (const [mode, error] of [["500", /^Parallel's search answered 500$/], ["503", /^Parallel's search answered 503$/], ["timeout", /did not answer within 60 s/], ["reset", /^Parallel's search failed: socket hang up$/]]) {
@@ -92,9 +96,9 @@ test("a 5xx, a timeout or a request that fails answers {error}, and Parallel is 
     assert.equal(sent.length, thrown ? 0 : 1, mode);
     assert.equal(client.live(), true, `${mode} is not the key refused`);
   }
-});
+}));
 
-test("a 401 or 403 stops Parallel for the rest of the run, for both web tools: neither asks it again", async (t) => {
+test("a 401 or 403 stops Parallel for the rest of the run, for both web tools: neither asks it again", inCall(async (t) => {
   withEnv(t, {}, [MODE, EXTRACT_MODE]);
   for (const [key, mode] of [["not-the-key", ""], [CANARY, "403"]]) {
     const { sent, send } = parallel(mode);
@@ -111,9 +115,9 @@ test("a 401 or 403 stops Parallel for the rest of the run, for both web tools: n
   await webFetch("http://public.example/", { ...network(), parallel: client });
   assert.match((await webSearch({ query: "widgets" }, client)).error, /refused this run's key/);
   assert.deepEqual(sent.map((call) => new URL(call.url).pathname), ["/v1/extract"]);
-});
+}));
 
-test("under a spend cap, a search through Parallel is a paid call: sent only when what the run spent and holds plus its price fits the cap, then counted; else refused in the cap's words and never sent", async (t) => {
+test("under a spend cap, a search through Parallel is a paid call: sent only when what the run spent and holds plus its price fits the cap, then counted; else refused in the cap's words and never sent", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   t.after(() => useSpend(undefined));
   const { sent, send } = parallel();
@@ -134,9 +138,9 @@ test("under a spend cap, a search through Parallel is a paid call: sent only whe
   assert.deepEqual([sent.length, added], [2, [0.001, 0.016]], "only the two that fit were sent, each counted at its price");
   useSpend(undefined);
   assert.equal((await webSearch({ query: "widgets" }, client)).provider, "parallel", "no cap: it just runs");
-});
+}));
 
-test("under a spend cap, a page read through Parallel's extract is a paid call: past the cap nothing is sent to Parallel, and the page is the guarded direct fetch, saying why", async (t) => {
+test("under a spend cap, a page read through Parallel's extract is a paid call: past the cap nothing is sent to Parallel, and the page is the guarded direct fetch, saying why", inCall(async (t) => {
   withEnv(t, {}, [EXTRACT_MODE]);
   t.after(() => useSpend(undefined));
   const { sent, send } = parallel();
@@ -150,6 +154,20 @@ test("under a spend cap, a page read through Parallel's extract is a paid call: 
   const direct = await webFetch("http://public.example/", { ...web, parallel: client });
   assert.deepEqual([direct.via, direct.title, direct.parallel], ["direct", "Public page", capRefusal("Parallel's extract", 0.001, "Parallel's list price for one URL", 0.0005, 0.001)]);
   assert.deepEqual([sent.length, added, web.dialled], [1, [0.001], ["http://public.example/"]], "Parallel was not asked; the host was");
+}));
+
+test("a request to Parallel with no call to book it under is never sent, nor one to an endpoint with no price here: a search answers the refusal, a page read is the guarded direct fetch saying so, and nothing reaches Parallel", async (t) => {
+  withEnv(t, {}, [MODE, EXTRACT_MODE]);
+  const { sent, send } = parallel();
+  const client = parallelExtract(CANARY, send);
+  // Outside any tool call: nothing to book it under.
+  assert.deepEqual(await webSearch({ query: "widgets" }, client), { error: "Parallel's search was not sent: this request has no call to book it under" });
+  const page = await webFetch("http://public.example/", { ...network(), parallel: client });
+  assert.deepEqual([page.via, page.title, page.parallel], ["direct", "Public page", "Parallel's extract was not sent: this request has no call to book it under"]);
+  await assert.rejects(client.post(PARALLEL_SEARCH_URL, { search_queries: ["widgets"] }), (error) => error.name === "PaidRefused" && /no call to book it under/.test(error.message));
+  // Inside one, an endpoint the web tools have no price for is not sent either.
+  await inCall(async () => assert.rejects(client.post("https://api.parallel.ai/v1/tasks/runs", { input: "widgets" }), (error) => error.name === "PaidRefused" && /no price here/.test(error.message)))();
+  assert.deepEqual(sent, [], "nothing reached Parallel");
 });
 
 test("a pi run's search and page read through Parallel are booked as its tool costs: each marked at its price before it is sent and settled after, a line of its own on the timeline, in the run's cost and under /usage's tools meter", { timeout: 60_000 }, async (t) => {
