@@ -72,6 +72,9 @@ export class Webhooks {
   private notices: Record<string, Noticed>;
   /** When this data directory's ledger began (END_NOTICES_SINCE). */
   private readonly since: number;
+  /** The runs told of since this server started: their ledger entries are this server's news, which a start's catch-up
+   *  never drops. */
+  private readonly told = new Set<string>();
   private base = "";
   private readonly timers = new Set<NodeJS.Timeout>();
   /** The tries in flight, which close() stops and waits for: nothing is written once it is closed. */
@@ -151,6 +154,7 @@ export class Webhooks {
    *  before the webhook was set, or past the outbox's day counts as sent. */
   emit(type: (typeof WEBHOOK_EVENTS)[number], run: RunNotice, marker: string): Emitted {
     if (this.closed) return "closed";
+    this.told.add(run.run_id);
     const ends = type === "run.ended";
     const seen = this.notices[run.run_id];
     if ((ends ? seen?.ended : seen?.wait) === marker) return this.unsaved ? "unsaved" : "queued";
@@ -174,15 +178,27 @@ export class Webhooks {
     return this.unsaved ? "unsaved" : "queued";
   }
 
-  /** A start's catch-up, once its runs are read: each end the agent store holds (`ends`, its rows) that the ledger does
-   *  not, and that is still due, queued now under the store's end time, so under the same webhook-id. Such an end's server
-   *  was killed between the store's end and the outbox write, or that write never reached the disk. `describe` gives
-   *  its notice. */
-  async catchUp(ends: Iterable<{ id: string; endedAt?: string }>, describe: (id: string) => Promise<RunNotice | null>): Promise<void> {
+  /** A start's catch-up, once its runs are read (`rows`, the agent store's: a row with no state is an ended one). First,
+   *  before anything is awaited, the ledger as the store now stands: a run the store no longer has goes, and a wait of a
+   *  run it holds as ended goes (an end the webhook was off for never moved it past). Then each end the store holds that
+   *  the ledger does not, and that is still due, is queued under the store's end time, so under the same webhook-id: its
+   *  server was killed between the store's end and the outbox write, or that write never reached the disk. `describe`
+   *  gives its notice. */
+  async catchUp(rows: Iterable<{ id: string; state?: string; endedAt?: string }>, describe: (id: string) => Promise<RunNotice | null>): Promise<void> {
     const config = this.config();
     if (this.closed || !config || config.disabled) return;
-    for (const { id, endedAt } of ends) {
-      if (!endedAt || this.notices[id]?.ended === endedAt || !this.due(endedAt, config)) continue;
+    const store = new Map([...rows].map((row) => [row.id, row]));
+    let dropped = false;
+    for (const [id, noticed] of Object.entries(this.notices)) {
+      const row = store.get(id);
+      if (this.told.has(id) || (row && (row.state === "running" || noticed.wait === undefined))) continue;
+      if (row && noticed.ended) this.notices[id] = { ended: noticed.ended };
+      else delete this.notices[id];
+      dropped = true;
+    }
+    if (dropped) this.writeOutbox();
+    for (const { id, state, endedAt } of store.values()) {
+      if (state === "running" || !endedAt || this.notices[id]?.ended === endedAt || !this.due(endedAt, config)) continue;
       const run = await describe(id).catch((error: Error) => (this.say({ condition: "notice_unread", run: id, error: error.message }), null));
       if (run) this.emit("run.ended", run, endedAt);
     }
