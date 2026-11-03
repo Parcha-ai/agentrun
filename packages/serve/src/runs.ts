@@ -192,8 +192,9 @@ export type Run = {
   costUsd?: number | null;
   /** A workflow run's decisions' cost, from its receipts once its end is read: null when one is unknown. */
   decisionCost?: number | null;
-  /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). */
-  decisions?: Record<string, unknown>[];
+  /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). Null
+   *  when they cannot be read: its timeline's usage row then reads unknown. */
+  decisions?: Record<string, unknown>[] | null;
   /** How many of a workflow run's llm calls' answers its node log held when its rows were last read: their cost is in its
    *  rows (each a REQUEST_COST entry, committed before its answer is logged), so its graph counts only the later ones. */
   llmRead?: number;
@@ -641,8 +642,9 @@ export class Runs {
     const entries = read.flatMap((r) => (run.kind === "workflow" || r.conversation === root ? [r.entry] : []));
     if (run.kind === "workflow") {
       const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
-      // Decisions it cannot read add no rows: the run's cost read says unknown (readDecisionCost).
-      try { run.decisions = durableDecisions(file); } catch { run.decisions = undefined; }
+      // Decisions it cannot read add no rows, and leave the served usage row's total unknown, as the run's cost read
+      // does (readDecisionCost): never its model nodes' total alone.
+      try { run.decisions = durableDecisions(file); } catch { run.decisions = null; }
       run.llmRead = llmAnswers(await readNodeLog(run.dir)).length;
     }
     // Its decision requests count with its model requests: each receipt's tokens, or unmetered without them.
@@ -662,7 +664,7 @@ export class Runs {
     for (const row of arrived) run.users.add(row.id);
     run.submitted = Math.max(0, run.submitted - arrived.length);
     // The decisions' rows are the served view's only: the run's own rows, which its cost is read from, stay its model nodes'.
-    if (run.log.sync(run.decisions?.length ? withDecisions(run.rows, run.decisions) : run.rows, keep)) run.updatedAt = new Date().toISOString();
+    if (run.log.sync(run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions), keep)) run.updatedAt = new Date().toISOString();
     this.refresh(run);
   }
 
