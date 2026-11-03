@@ -295,6 +295,19 @@ test("another harness's file tools name the workspace's paths relative to it: a 
   for (const root of new Set([data, realpathSync(data)])) assert.deepEqual(results.filter(([, , text]) => text.includes(root)), [], `no result names ${root}`);
 });
 
+test("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) ends the run completed, its answer the earlier one, without waiting for another message", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "answerless", "The second turn answers nothing.");
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(await answer(api, runId), "Answer 1.");
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
+  // Well inside the 60 s a message-less run sat working/idle before (key-custody probe, run3/run4).
+  const { rows, last } = await follow(api, runId, ["completed"], { deadlineMs: 20_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.map((r) => [r.kind, r.summary])));
+  assert.equal(await answer(api, runId), "Answer 1.", "the earlier answer stands");
+  assert.deepEqual(usageOf(rows), { usd: 0.003, requests: 3 }, "the follow-up's request counts");
+});
+
 test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");

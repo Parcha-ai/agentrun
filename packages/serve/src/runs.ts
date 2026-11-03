@@ -155,6 +155,9 @@ export type Run = {
   feed?: AbortController;
   /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
+  /** The newest entry, by id, that a turn that ended had seen: the door said idle (run_end, or a snapshot of an idle run)
+   *  with it in. A person's message at or before it was answered by a turn that is over, whatever that turn showed. */
+  overThrough?: number;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
   /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
@@ -603,7 +606,11 @@ export class Runs {
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
     if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
-    return !stopped(run) && answerOf(run.rows) ? { outcome: "completed" } : undefined;
+    if (stopped(run)) return undefined;
+    // Its newest row is the answer; or the person's message, which a turn that is over took and answered with nothing it
+    // shows (the Claude CLI's /compact: a summary request, no text), so the answer stands as it was.
+    if (answerOf(run.rows) || (last?.kind === "user_message" && run.overThrough !== undefined && placeOf(last.id) <= run.overThrough)) return { outcome: "completed" };
+    return undefined;
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
@@ -791,7 +798,15 @@ export class Runs {
         if (event === "end") return;
         const events = event === "snapshot" ? [value as Json] : event === "events" && Array.isArray(value) ? (value as Json[]) : [];
         if (event === "snapshot") run.working = Boolean((value as Json).run);
-        for (const e of events) if (e.type === "run_start" || e.type === "run_end") run.working = e.type === "run_start";
+        // In order: the entries an event brings, and the newest one in when the door says the turn is over.
+        let newest = run.overThrough ?? 0;
+        let seen = newest;
+        for (const e of events) {
+          for (const entry of Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : []) if (isObject(entry) && typeof entry.id === "number") seen = Math.max(seen, entry.id);
+          if (e.type === "run_start" || e.type === "run_end") run.working = e.type === "run_start";
+          if (e.type === "run_end" || (event === "snapshot" && !run.working)) newest = seen;
+        }
+        if (newest > (run.overThrough ?? 0)) run.overThrough = newest;
         noteAnswer(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])));
         reducer.apply(events as never);
         // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
