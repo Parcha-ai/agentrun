@@ -10,7 +10,8 @@
 // instead. The query is cut at 200 characters, 1 to 25 results (10 by default), and a result's snippet (its excerpts
 // joined, links reduced to their text) is cut at 3,000 characters.
 // Parallel is asked through the run's one client (web-fetch.ts), on the key the server handed the run's process: a 401
-// or 403 to either web tool stops both for the rest of the run. No request is retried.
+// or 403 to either web tool stops both for the rest of the run. No request is retried. Each is a paid request, held by
+// the run's cap and booked as the call's cost at Parallel's price (paid-calls.ts): one the cap refuses answers its words.
 import type { TSchema } from "@earendil-works/pi-ai";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -20,6 +21,7 @@ import { fauxFetch } from "./decisions.js";
 import { FAUX_ENV } from "./model.js";
 import { exaSearch, FAUX_EXA_ENV } from "./exa-keyless.js";
 import { hostedSearch } from "./hosted-search.js";
+import { PaidRefused } from "./paid-calls.js";
 import { planeOf } from "./tool-plane.js";
 import { type Extract, parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
 
@@ -74,6 +76,7 @@ export async function webSearch(args: Record<string, unknown>, parallel: Extract
     });
     return { provider: "parallel", query, results: hits.slice(0, n) };
   } catch (error) {
+    if (error instanceof PaidRefused) return { error: error.message };
     return { error: (error as Error)?.name === "TimeoutError" ? "Parallel's search did not answer within 60 s" : `Parallel's search failed: ${(error as Error)?.message ?? String(error)}` };
   }
 }

@@ -17,6 +17,7 @@ import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
+import { booking } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import { fetchFor, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
@@ -103,7 +104,7 @@ const webFetchEntry = (name: string): ToolEntry => ({
   needs: [],
   nodes: true,
   bind: async (host) => {
-    const tool = webFetchTool(host.env, name) as unknown as ToolRegistration;
+    const tool = booking(webFetchTool(host.env, name)) as unknown as ToolRegistration;
     const extension = defineExtension({ name: name.replaceAll("_", "-"), tools: [tool] });
     host.install(extension);
     return { tools: [tool], extensions: [extension] };
@@ -208,7 +209,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     needs: [],
     nodes: true,
     bind: async (host) => {
-      const tool = webSearchTool(host.env) as unknown as ToolRegistration;
+      const tool = booking(webSearchTool(host.env)) as unknown as ToolRegistration;
       const extension = defineExtension({ name: "web-search", tools: [tool] });
       host.install(extension);
       return { tools: [tool], extensions: [extension] };
