@@ -20,7 +20,7 @@ import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCE
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
 import { catalogPrices, type Listed } from "./model.js";
 import { DEFAULT_PORT } from "./server.js";
-import { secretCut } from "./secret-cut.js";
+import { REDACTED, secretCut } from "./secret-cut.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 
@@ -729,7 +729,7 @@ async function revisionFor(
   const revision: NewRevision = {
     kind: "agentic",
     instructions: cut(instructions),
-    skills: Object.fromEntries(Object.entries(files.skills).map(([path, text]) => [keptPath(path, cut), cut(text)])),
+    skills: keptSkills(files.skills, cut),
     tools: [],
     ...(model ? { model } : {}),
     ...(harness !== "pi" ? { harness } : {}),
@@ -987,19 +987,30 @@ function openAt(env: NodeJS.ProcessEnv, port: number): string {
   return `http://${LOCAL}:${port === 0 ? "<the port the server picks>" : port}`;
 }
 
-/** A skill's path as an import keeps it: as it is when it holds no key; else each segment that holds one as `redacted-`
- *  and a hash of it (as `keptId` keeps a session's id), so two folders named after two keys stay two. A key across
- *  segments (an environment's value holding "/") takes the folders whole into one hash. */
-function keptPath(path: string, cut: (text: string) => string): string {
-  if (cut(path) === path) return path;
-  const kept = path
-    .split("/")
-    .map((segment) => (cut(segment) === segment ? segment : `redacted-${hash(segment).slice(0, 12)}`))
-    .join("/");
-  if (cut(kept) === kept) return kept;
-  const at = path.lastIndexOf("/");
-  const file = path.slice(at + 1);
-  const keptFile = cut(file) === file ? file : `redacted-${hash(file).slice(0, 12)}`;
-  const whole = at > 0 ? `redacted-${hash(path.slice(0, at)).slice(0, 12)}/${keptFile}` : keptFile;
-  return cut(whole) === whole ? whole : `redacted-${hash(path).slice(0, 12)}`;
+/** A project's skills as an import keeps them: each file's text cut, and its path as it is when it holds no key. Else
+ *  every segment a key touches (one, or several when an environment's value holds "/") is kept as `redacted-` and a hash
+ *  of it (as `keptId` keeps a session's id), so two folders named after two keys stay two and no part of a key is left.
+ *  A folder kept so is kept so for every file under it, so a skill's files stay one skill. */
+function keptSkills(skills: Record<string, string>, cut: (text: string) => string): Record<string, string> {
+  const redacted = (segment: string) => `redacted-${hash(segment).slice(0, 12)}`;
+  const keys = (text: string) => cut(text).split(REDACTED).length;
+  // The folders (and files) a key touches, by their path from the skills' root.
+  const touched = new Set<string>();
+  for (const path of Object.keys(skills)) {
+    if (cut(path) === path) continue;
+    const parts = path.split("/");
+    const held = keys(path);
+    parts.forEach((segment, at) => {
+      // A segment a key touches is one whose blanking (with a character no key holds) takes that key out of the path.
+      const blanked = [...parts.slice(0, at), "\u0000".repeat(segment.length), ...parts.slice(at + 1)].join("/");
+      if (keys(blanked) < held) touched.add(parts.slice(0, at + 1).join("/"));
+    });
+  }
+  return Object.fromEntries(
+    Object.entries(skills).map(([path, text]) => {
+      const parts = path.split("/");
+      const kept = parts.map((segment, at) => (touched.has(parts.slice(0, at + 1).join("/")) ? redacted(segment) : segment)).join("/");
+      return [cut(kept) === kept ? kept : redacted(path), cut(text)];
+    }),
+  );
 }

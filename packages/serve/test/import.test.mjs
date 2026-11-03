@@ -458,23 +458,38 @@ test("the shape rules cut a prefixed key whatever its body, an AWS pair with no 
   assert.equal(cut.text.removed, 2);
 });
 
-test("a key of the environment's that holds a slash, across a skill's folders, is cut out of the path the import keeps", async (t) => {
+test("a key of the environment's that holds a slash, across a skill's folders, leaves no part of itself in what the import keeps, and the skill stays one skill", async (t) => {
   const root = await scratch(t);
   const at = join(root, "home");
   const site = join(at, "code", "deploys");
-  const [head, tail] = [randomBytes(6).toString("hex"), randomBytes(6).toString("hex")];
+  // A 65-character key, two 32-character halves around its "/", as a base64 secret can hold one: the first half ends the
+  // skill's folder name and the second names a folder in it.
+  const [head, tail] = [randomBytes(16).toString("hex"), randomBytes(16).toString("hex")];
   mkdirSync(join(site, ".claude", "skills", `push-${head}`, tail), { recursive: true });
   writeFileSync(join(site, ".claude", "skills", `push-${head}`, "SKILL.md"), "---\nname: push\n---\nPush it.\n");
   writeFileSync(join(site, ".claude", "skills", `push-${head}`, tail, "notes.md"), "Notes.\n");
   claudeSession(at, site, 1, { prompt: "Push the release." });
   const data = join(root, "agents");
   const key = `${head}/${tail}`;
-  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", OPENAI_API_KEY: key }, out: () => {} }), 0);
+  const printed = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", OPENAI_API_KEY: key }, out: (line) => printed.push(line) }), 0);
   const reader = openStoreReader(data);
   t.after(() => reader.close());
-  const paths = Object.keys(reader.readAgent(agentIdOf(site)).revisions.find((r) => r.current).body.skills);
+  const paths = Object.keys(reader.readAgent(agentIdOf(site)).revisions.find((r) => r.current).body.skills).sort();
+  // No half of the key is left: not in a kept path, not in any byte of the data directory, not in what the CLI printed.
+  for (const half of [head, tail]) {
+    assert.ok(paths.every((path) => !path.includes(half)), `no kept path holds a half of the key: ${paths.join(" ")}`);
+    for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(half), `${file} holds a half of the key`);
+    assert.ok(!printed.join("\n").includes(half), printed.join("\n"));
+  }
+  // And the skill stays one skill: its SKILL.md and its notes under the one folder, kept as `redacted-` and a hash.
   assert.equal(paths.length, 2, paths.join(" "));
-  assert.ok(paths.every((path) => !path.includes(key)), `no kept path holds the key: ${paths.join(" ")}`);
+  const folders = new Set(paths.map((path) => path.split("/")[0]));
+  assert.equal(folders.size, 1, paths.join(" "));
+  const [folder] = folders;
+  assert.match(folder, /^redacted-[0-9a-f]{12}$/);
+  assert.ok(paths.includes(`${folder}/SKILL.md`), paths.join(" "));
+  assert.ok(printed.includes("1 secret removed"), printed.join("\n"));
 });
 
 test("the shape rules leave ordinary text alone: ids, hashes, an image, a placeholder, prose", async () => {
