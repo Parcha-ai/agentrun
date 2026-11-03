@@ -1,44 +1,47 @@
-// What a host asks of an agent once its run has answered or failed: one more turn in the same session, in which the agent
-// may add notes to its run's copy of its learning folder, with its own tools. The host checks what it added (check.ts),
-// a grader judges it (grade.ts), and the host merges it, rebuilding the index; the agent never edits what is there.
-import { INDEX_FILE, INDEX_LINES } from "./notes.js";
+// What a host asks of an agent once its run has answered: one more turn in the same session, in which the agent writes
+// its memo and notes into the learning repository with its own tools, as the reflect skill says. The host writes the
+// memo's front matter; the agent writes the four sections under it. `reflectBudget` is the share of the run's cap held
+// back for that turn.
+import { MEMO_SECTIONS } from "./formats.js";
+import { RUN_ID } from "./layout.js";
+
+/** The share of a run's cap its reflection may spend, at most `REFLECT_MAX_USD`. */
+export const REFLECT_SHARE = 0.1;
+export const REFLECT_MAX_USD = 0.25;
+/** The reflection's reserve for a run with no cap. */
+export const REFLECT_UNCAPPED_USD = 0.05;
+
+/** The reserve for a run's reflection, in dollars: a tenth of `capUsd`, at most $0.25; $0.05 when the run has no cap. */
+export function reflectBudget(capUsd: number | undefined): number {
+  if (capUsd === undefined) return REFLECT_UNCAPPED_USD;
+  if (typeof capUsd !== "number" || !Number.isFinite(capUsd) || capUsd <= 0) throw new Error("a run's cap must be a number of dollars above 0");
+  // Rounded to 12 significant digits, never to fixed decimals: a cap above 0, however small, keeps a reserve above 0.
+  return Math.min(REFLECT_MAX_USD, Number((capUsd * REFLECT_SHARE).toPrecision(12)));
+}
 
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
 const UNSEEN = /[\p{Cc}\p{Cf}]/u;
 
-/** The end-of-run turn's message. `dir` is the run's copy of the folder relative to the run's workspace (`.learning`),
- *  where every harness's file tools resolve a relative path: the prompt never names a path of the host's, which a box
- *  would not see. `active` is how many notes are active in it, so how many lines the index has left. */
-export function reflectPrompt(options: { dir: string; active: number }): string {
-  const { dir, active } = options;
-  if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
-  if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
-  const left = Math.max(0, INDEX_LINES - active);
+/** The message a host sends once the run has answered. `run` is the run id, `dir` where the learning repository is
+ *  checked out on `runs/<run>` with the memo's front matter already in `memos/<run>.md`. */
+export function reflectPrompt(options: { run: string; dir: string }): string {
+  const { run, dir } = options;
+  if (typeof run !== "string" || !RUN_ID.test(run)) throw new Error("the run id is not one the learning layout accepts");
+  if (typeof dir !== "string" || !dir.startsWith("/") || /\s/.test(dir) || UNSEEN.test(dir)) throw new Error("the directory must be an absolute path with no spaces or unseen characters");
   return [
-    "The task is done. Before the run ends, keep what this run taught you that will help in later runs, if anything.",
+    "The task is done. Before the run ends, reflect on it for your learning repository, following the reflect skill.",
     "",
-    `Your notes from earlier runs are in \`${dir}/\`, in your working directory: one file per note, and ${INDEX_FILE}, their`,
-    `index. To keep something new, add one file there for each memory, named for its topic (\`${dir}/refund-policy-path.md\`),`,
-    "in this format:",
+    `The repository is checked out in ${dir}, on the branch runs/${run}. The memo memos/${run}.md is there with the host's`,
+    "front matter: keep the front matter as it is, and write these sections below it, each once, in this order:",
+    ...MEMO_SECTIONS.map((title) => `## ${title}`),
     "",
-    "---",
-    "name: A short title",
-    "description: One line that says when it applies",
-    "type: user, feedback, project or reference",
-    "---",
-    "The memory itself, in a few lines.",
+    "Add a note under learnings/ for each general rule this run taught you that would help on other inputs, add this run to",
+    "the runs of each note that held again, and keep learnings/INDEX.md in step. Write no note when the run taught nothing",
+    "general.",
     "",
-    "The type is `user` for who the user is and what they prefer, `feedback` for how they want the work done, `project`",
-    "for facts about the work, and `reference` for where to find things. To replace a memory, add a new file with",
-    "`supersedes: [old-file.md]` in its front matter. Never edit or delete a file that is there, and leave",
-    `${INDEX_FILE} alone: the host rebuilds it.`,
+    `Commit what you wrote on runs/${run} if you can run git here; never commit to main.`,
     "",
-    left > 0
-      ? `The index has room for ${left} more ${left === 1 ? "line" : "lines"}, one per note.`
-      : "The index is full: replace a memory rather than add one.",
-    "Writing nothing is fine: most runs teach nothing new.",
-    "",
-    "Do not keep setup or environment failures, that a tool does not work, one-off events, or names, ids, dates or",
-    "amounts from this run's input.",
+    "Write about the work, never about this case's data: never a name, an id, an amount, an address or a document from the",
+    "input, and never a key or a password.",
   ].join("\n");
 }

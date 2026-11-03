@@ -759,7 +759,8 @@ auto-memory format:
 - `MEMORY.md`, the index a run reads, one line per active note: `- [name](file.md) — description`, built by the server;
 - one file per note, `<slug>.md`: front matter with `name`, `description` and `type` (`user`, `feedback`, `project` or
   `reference`), and optionally `status: superseded` or `retired` with `superseded_by` (no status: active), then the
-  note's text. [`packages/learn`](../learn/README.md) parses it and builds the index.
+  note's text. The server parses it and builds the index with its own code, in [`src/learn/`](src/learn/SPEC.md),
+  whose `SPEC.md` is the folder's contract.
 
 The folder is plain git with `main` checked out. The agent's first run that learns makes it, with one commit on `main`
 holding an empty `MEMORY.md`; an agent that does not learn never gets one. The server is its only writer. Every git
@@ -789,7 +790,7 @@ When a run that learns answers or fails, the server asks the same session one mo
 whatever its harness: one message through the run's door under the fixed request id `learn-reflect-<run id>`, so a
 server that restarts mid-turn asks again and the run takes it once. The server alone sends it, with the origin
 `reflect`; no request field sets it. Before it, `work/.learning/` is laid again from the seed, so only the turn's own
-writes count. The message (packages/learn's `reflectPrompt`) names that folder as `.learning/`, relative to the run's
+writes count. The message (`reflectPrompt`, in `src/learn/reflect.ts`) names that folder as `.learning/`, relative to the run's
 work, where every harness's file tools resolve it (no host path, which a box would not see), the note format, that a memory is replaced by a new note with `supersedes: [old.md]` and never edited or deleted, that the
 server rebuilds `MEMORY.md`, how many index lines are left (200 less the active notes), that writing nothing is fine,
 and what not to keep. The turn runs under the run's own cap, with no reserve, and within 5 minutes; its rows are
@@ -799,7 +800,7 @@ As the run settles, before it reads ended and before a follow-up can open it aga
 `work/.learning/` whole, with one rename, to `runs/<id>/learning-turn/`, outside the run's work; a follow-up finds
 `work/.learning/` laid again from the seed. Once the run has ended, in the agent's queue, the server reads what the turn
 left from that snapshot alone, never from the work: the folder's top only, each entry with lstat and never a link
-followed, at most 4096 bytes of a note, and never past 64 changed paths. packages/learn's `checkProposal` refuses, before anything is written anywhere, an edited or deleted note, a path
+followed, at most 4096 bytes of a note, and never past 64 changed paths. `checkProposal` (`src/learn/check.ts`) refuses, before anything is written anywhere, an edited or deleted note, a path
 that is not a `.md` file at the top, a bad name, a link or anything not a regular file, front matter out of shape or
 setting `status`, a `supersedes` naming a note that is not active, more than 8 notes superseded, more than 8 new notes
 or a note over 4096 bytes, an index past 200 lines, hidden characters, non-UTF-8, and text shaped like a secret or
@@ -807,7 +808,8 @@ holding one of the server's own secrets (the launcher's, the keys and tokens in 
 tokens), in a note or its name.
 `MEMORY.md` as the turn left it is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`.
 
-Then one grader decides, one grade at a time per agent: packages/learn's `gradePrompt` asked of the agent's own model,
+Then one grader decides, one grade at a time per agent: `gradePrompt` (`src/learn/grade.ts`), which holds `GRADE_RUBRIC`, the rubric's one
+statement, asked of the agent's own model,
 bounded (3 minutes), against `main` as it is then, and read by `parseVerdict`, which fails closed. The grader reads each
 active note's index line, the whole text only of the notes the proposal supersedes, and the new notes, so its prompt
 stays under 200,000 characters however many notes the folder holds. Only with Jev's key here does an injection screen
