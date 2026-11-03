@@ -140,6 +140,33 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   assert.deepEqual(await docker.containers(), [], "no container is left");
 });
 
+test("fake docker: read, write and edit run no docker command, on the work/ the box binds; bash runs one docker exec; a run with no bash makes no box", { timeout: 90_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE });
+  assert.equal((await api("POST", "/agents", { definition: { id: "files", name: "files", instructions: "Probe.", place: SANDBOX, tools: ["read", "write", "edit", "bash"] } })).status, 201);
+  const ran = async (plan) => {
+    const run = await api("POST", "/agents/files/runs", { input: { content: JSON.stringify({ probe: plan }) } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
+    return answers(data, run.body.run_id);
+  };
+  const files = [
+    { tool: "write", args: { path: "a.txt", content: "written" } },
+    { tool: "read", args: { path: "a.txt" } },
+    { tool: "edit", args: { path: "a.txt", edits: [{ oldText: "written", newText: "edited" }] } },
+    { tool: "read", args: { path: "a.txt" } },
+  ];
+  const plain = await ran(files);
+  assert.deepEqual(plain.map((a) => [a.tool, a.error, a.text]).filter(([tool]) => tool === "read"), [["read", false, "written"], ["read", false, "edited"]]);
+  assert.deepEqual(docker.calls().filter((args) => args[0] === "run" || args[0] === "exec"), [], "no box made, no command run in one");
+  const said = await ran([...files, { tool: "bash", args: { command: "cat a.txt" } }]);
+  assert.equal(said.at(-1).text, "edited", "bash, in the box, reads what the file tools wrote here");
+  const execs = docker.calls().filter((args) => args[0] === "exec");
+  assert.equal(execs.length, 1, JSON.stringify(execs));
+  assert.ok(execs[0].join(" ").includes("cat a.txt"), "the one exec is bash's");
+  assert.equal(docker.runs().length, 1, "one box, made for bash");
+});
+
 test("fake docker: a run's box is found by its label and taken over, its left commands killed first, with no create", { timeout: 90_000 }, async (t) => {
   const docker = await fakeDocker(t);
   const { api, data } = await serve(t, { faux: PROBE });

@@ -604,8 +604,14 @@ request's `place` and `capabilities.places` `x-agentrun-serve: "place/1"`.
 ### A run in a Docker box
 
 With `AGENTRUN_BOXES=docker` and a Docker daemon this server's user may use, a run whose place is
-`{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `read`, `write`, `edit` or `bash` call
-(a run with no such call gets none). Those four tools are pi's own, on every harness; their calls run in the container.
+`{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `bash` call (a run with none gets no
+container). Those four tools are pi's own, on every harness. `bash` runs in the container. `read`, `write` and `edit`
+run on this server, on the `work/` the container binds, because a `docker exec` costs half a second or more per call:
+they follow no link anywhere on the way (one pointing inside `work/` included), take only a regular file with one hard
+link, and write through a temporary file renamed over the old one, keeping its mode (a new file is `0644`). A refusal
+says so and names the box's path; `bash`, in the container, can still reach the file. Where this server reaches
+directories by path (no `/proc/self/fd`, as on macOS), or a box binds nothing, all four run in the container, made on
+the first of them.
 `fetch_page`, `web_fetch` and the `monid.*` tools stay on this server, and so do the run's loop, its log, its model
 calls and every key. What the server itself files in `work/` (monid's long answers, the browser's evidence) never goes
 through a link a box's command planted there: each directory is held open on the way (`/proc/self/fd`). On a host

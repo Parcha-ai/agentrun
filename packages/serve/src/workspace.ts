@@ -246,14 +246,18 @@ async function entryOf(pin: { entry: string }, refuse: (error: unknown) => never
  * Writes `bytes` to `rel` under `work` whole and durably (files.ts writeDurable), as a file of `mode`: through a temporary
  * file in the same directory, a dot-name of the server's own, renamed over the file. The directories on the way are made
  * when missing, and each is synced into its parent before this resolves. A link on the way or at the file, or a directory
- * there, is refused: never followed and never replaced. Answers the stats of the file this call wrote.
+ * there, is refused: never followed and never replaced. Answers the stats of the file this call wrote. `asTool`, a run's
+ * file tool writing a bound box's work/ (bound-files.ts): a file with another hard link is refused, a file already there
+ * keeps its mode, and a new one gets `mode` as given, whatever this process's umask.
  */
-export async function writeWorkFile(work: string, rel: string, bytes: Uint8Array, mode = 0o600): Promise<Stats> {
+export async function writeWorkFile(work: string, rel: string, bytes: Uint8Array, mode = 0o600, asTool = false): Promise<Stats> {
   const { pin, refuse, real, making } = await pinForWrite(work, rel, true);
   try {
-    await entryOf(pin, refuse, rel);
+    const before = await entryOf(pin, refuse, rel);
+    if (asTool && before && before.nlink !== 1) throw new WorkRefused(rel, "hard_link");
+    const kept = asTool && before ? before.mode & 0o777 : mode;
     // A link swapped in after that check is replaced by the rename, never written through.
-    const stats = await writeDurable(pin.entry, bytes, mode, `${pin.dir}/.agentrun-${process.pid}-${randomBytes(6).toString("hex")}.tmp`).catch(refuse);
+    const stats = await writeDurable(pin.entry, bytes, kept, `${pin.dir}/.agentrun-${process.pid}-${randomBytes(6).toString("hex")}.tmp`, asTool).catch(refuse);
     // writeDurable synced the file's own directory; a directory made above it survives a crash once its parent is synced.
     if (making) {
       let at = real;
