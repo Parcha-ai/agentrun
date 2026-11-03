@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CAPS, foldLabel, groupTimeline, registerLabel, registerTurnEnding, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
+import * as timelineModule from "../dist/timeline/index.js";
 
 const GREP_FIELDS = [
   "id", "timestamp", "created_at", "kind", "summary", "agent_label", "tool_name", "tool_use_id", "tool_status",
@@ -313,6 +314,14 @@ test("cost: an adapter run's usage row says the effort and thinking its requests
   assert.equal(mixed.summary, "Cost so far: $0.0300 over 3 model requests · low/high effort · adaptive thinking · 0 thinking tokens");
   const unreported = timelineOf([assistant([{ type: "text", text: "a" }], 0, asked("medium"))]).at(-1);
   assert.equal(unreported.summary, "Cost so far: $0.0100 over 1 model request · medium effort · adaptive thinking", "no count reported, none said");
+});
+
+// The same words as data, for a host that writes its own usage row (serve's decisions): read from the entries, not the row.
+test("cost: usageReasoningOf gives what the usage row says after its cost of how the requests reasoned, and nothing for a pi run", () => {
+  const asked = (effort, tokens) => ({ reasoning: { effort, thinking: "adaptive", ...(tokens === undefined ? {} : { tokens }) } });
+  assert.equal(typeof timelineModule.usageReasoningOf, "function", "the timeline exports it");
+  assert.equal(timelineModule.usageReasoningOf([assistant([{ type: "text", text: "a" }], 0, asked("high", 400)), assistant([{ type: "text", text: "b" }], 1, asked("high", 12))]), " · high effort · adaptive thinking · 412 thinking tokens");
+  assert.equal(timelineModule.usageReasoningOf([assistant([{ type: "text", text: "a" }], 0)]), "");
 });
 
 test("cost: a sum, and unknown when any answer carries none, never $0", () => {

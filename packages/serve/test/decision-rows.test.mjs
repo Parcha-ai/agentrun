@@ -52,6 +52,17 @@ test("a decision's cost joins the run's usage row; one unknown makes the total u
   assert.deepEqual(withDecisions([usageRow(0.01, 1)], []), [usageRow(0.01, 1)], "no decisions: the rows as they were");
 });
 
+// How the run's requests reasoned comes to the decisions' usage row as data (pi's timeline's usageReasoningOf), never
+// read back out of the row's text: a summary of several " · " parts (a settled run's "Total: … · N model requests · T s
+// · high effort") would otherwise repeat its count and its duration after the decisions'.
+test("the decisions' usage row says how the run's requests reasoned from the reasoning it is given, never from the row's text", () => {
+  const settled = { ...usageRow(0.01, 3), summary: "Total: $0.0100 · 3 model requests · 12 s · high effort · adaptive thinking" };
+  const [usage] = withDecisions([settled], [receipt()], " · high effort · adaptive thinking").filter((r) => r.kind === "usage");
+  assert.equal(usage.summary, "Cost so far: $0.0140 over 3 model requests and 1 decision · high effort · adaptive thinking");
+  const [plain] = withDecisions([{ ...settled, summary: "Cost so far: $0.0100 over 3 model requests · 12 s" }], [receipt()]).filter((r) => r.kind === "usage");
+  assert.equal(plain.summary, "Cost so far: $0.0140 over 3 model requests and 1 decision", "given none, it says none, whatever the text holds");
+});
+
 test("decision rows sit among the run's rows by time, the usage row last", () => {
   const at = (id, timestamp) => ({ ...usageRow(0, 0), id, kind: "text_block", timestamp, usage: undefined });
   const rows = withDecisions([at("a", "2026-10-29T22:59:00.000Z"), at("b", "2026-10-29T23:01:00.000Z"), usageRow(0.01, 1)], [receipt()]);
