@@ -10,31 +10,63 @@ export type Decode = (text: string) => string;
 const INERT = /<(script|style|svg|noscript|template)(?=[\s/>])|<!--/gi;
 const CLOSER: Record<string, RegExp> = Object.fromEntries(["script", "style", "svg", "noscript", "template"].map((name) => [name, new RegExp(`</${name}(?=[\\s/>])[^>]*>?`, "gi")]));
 
-/** `html` without its script, style, svg, noscript and template elements and its comments, in one pass. One whose end
- *  is missing runs to the end of the page, as a browser reads it; but an svg's start tag goes alone, since a browser
- *  lets the HTML that follows out of an unclosed svg. A nested svg or template ends at the first end tag of its name. */
-export function dropInert(html: string): string {
-  const inert = new RegExp(INERT.source, INERT.flags);
-  const kept: string[] = [];
-  let at = 0;
-  for (let found = inert.exec(html); found; found = inert.exec(html)) {
-    kept.push(html.slice(at, found.index));
-    let end: number;
-    if (found[0] === "<!--") {
-      // "<!-->" and "<!--->" are whole comments too.
-      const close = html.indexOf("-->", found.index + 2);
-      end = close < 0 ? html.length : close + 3;
-    } else {
-      const name = found[1]!.toLowerCase();
-      const closer = CLOSER[name]!;
-      closer.lastIndex = found.index + found[0].length;
-      const close = closer.exec(html);
-      end = close ? close.index + close[0].length : name === "svg" ? (html.indexOf(">", found.index) + 1 || html.length) : html.length;
+/** A page without its script, style, svg, noscript and template elements and its comments, in steps so a caller on the
+ *  event loop can yield between them (dropInert, all at once). One whose end is missing runs to the end of the page, as
+ *  a browser reads it; but an svg's start tag goes alone, since a browser lets the HTML that follows out of an unclosed
+ *  svg. A nested svg or template ends at the first end tag of its name. A search for an end tag that finds none is not
+ *  made again from a later start of that name (none follows it either), so a page of unclosed svgs is read once, not
+ *  once for each. */
+export class InertDrop {
+  readonly #inert = new RegExp(INERT.source, INERT.flags);
+  readonly #unclosed = new Map<string, number>();
+  readonly #kept: string[] = [];
+  #at = 0;
+  #done = false;
+
+  constructor(readonly html: string) {}
+
+  /** Drops the blocks found in the next `chars` characters or so; true once the whole page is read. */
+  step(chars: number): boolean {
+    const { html } = this;
+    const until = this.#at + chars;
+    while (!this.#done && this.#at < until) {
+      const inert = this.#inert;
+      inert.lastIndex = this.#at;
+      const found = inert.exec(html);
+      if (!found) { this.#kept.push(html.slice(this.#at)); this.#done = true; break; }
+      this.#kept.push(html.slice(this.#at, found.index));
+      let end: number;
+      if (found[0] === "<!--") {
+        // "<!-->" and "<!--->" are whole comments too.
+        const close = html.indexOf("-->", found.index + 2);
+        end = close < 0 ? html.length : close + 3;
+      } else {
+        const name = found[1]!.toLowerCase();
+        const from = found.index + found[0].length;
+        let close: RegExpExecArray | null = null;
+        if (from < (this.#unclosed.get(name) ?? Number.POSITIVE_INFINITY)) {
+          const closer = CLOSER[name]!;
+          closer.lastIndex = from;
+          close = closer.exec(html);
+          if (!close) this.#unclosed.set(name, from);
+        }
+        end = close ? close.index + close[0].length : name === "svg" ? (html.indexOf(">", found.index) + 1 || html.length) : html.length;
+      }
+      this.#at = end;
+      if (end >= html.length) this.#done = true;
     }
-    at = inert.lastIndex = end;
+    return this.#done;
   }
-  kept.push(html.slice(at));
-  return kept.length === 1 ? kept[0]! : kept.join("");
+
+  /** The page as dropped so far (the whole of it once step has answered true). */
+  result(): string { return this.#kept.length === 1 ? this.#kept[0]! : this.#kept.join(""); }
+}
+
+/** `html` without its inert blocks, all at once (see InertDrop). */
+export function dropInert(html: string): string {
+  const drop = new InertDrop(html);
+  drop.step(Number.POSITIVE_INFINITY);
+  return drop.result();
 }
 
 /** `html` cut to at most `max` characters, after the last tag that ends before the cut, so no tag is left half; at

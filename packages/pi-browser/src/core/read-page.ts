@@ -8,7 +8,7 @@
 // (`converted: "text"`).
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
-import { cutHtml, type Decode, dropInert, PageScan } from "./page-scan.js";
+import { cutHtml, type Decode, InertDrop, PageScan } from "./page-scan.js";
 
 /** The most of a page's HTML that is read, counted once its script, style, svg, noscript and template blocks and its
  *  comments are dropped. A million characters of go.dev/dl converts in about 0.8 s on a busy 48-core host and gives
@@ -17,7 +17,7 @@ export const READ_MAX_CHARS = 1_000_000;
 /** How long the worker has for the markdown by default: six times what READ_MAX_CHARS of tables took. */
 export const READ_DEADLINE_MS = 5_000;
 /** How much of the page one step of the plain-text scan reads before it yields the loop. */
-const STEP_CHARS = 131_072;
+const STEP_CHARS = 32_768;
 
 /** `converted`: "markdown", or "text" when the conversion did not finish in time (or failed) and the text is the page's
  *  plain text. `truncated` and `html_chars` (the page's whole length, in characters) when the page was cut at
@@ -40,7 +40,7 @@ const decodeOf = () => (decoder ??= import("node-html-parser").then(({ TextNode 
 export async function readPage(html: string, url: string, { deadlineMs = READ_DEADLINE_MS, signal }: ReadPageOptions = {}): Promise<PageRead> {
   signal?.throwIfAborted();
   const decode = decodeOf();
-  const kept = dropInert(html);
+  const kept = await dropOnLoop(html, signal);
   const read = cutHtml(kept, READ_MAX_CHARS);
   const cut = read.length < kept.length ? { truncated: true as const, html_chars: html.length } : {};
   await yieldToLoop();
@@ -69,6 +69,16 @@ function inWorker(html: string, url: string, deadlineMs: number, signal: AbortSi
     worker.once("error", () => settle(() => resolve(null)));
     worker.once("exit", () => settle(() => resolve(null)));
   });
+}
+
+/** `html` without its inert blocks (InertDrop), STEP_CHARS at a time with the loop yielded between steps. */
+async function dropOnLoop(html: string, signal: AbortSignal | undefined): Promise<string> {
+  const drop = new InertDrop(html);
+  while (!drop.step(STEP_CHARS)) {
+    await yieldToLoop();
+    signal?.throwIfAborted();
+  }
+  return drop.result();
 }
 
 /** `html`'s plain text, title and links, scanned STEP_CHARS at a time with the loop yielded between steps. */
