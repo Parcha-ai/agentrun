@@ -10,7 +10,7 @@ import { sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
 import { FAUX_HARNESS_ENV } from "./harness.js";
-import { chooseModel, FAUX_ENV, type ModelRef } from "./model.js";
+import { chooseModel, FAUX_ENV, hostModel, type ModelRef } from "./model.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
 import { NATIVE_SEARCH_ALLOWANCE_TOKENS } from "./cap.js";
@@ -179,14 +179,14 @@ export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef): HarnessP
  *  there, OpenRouter's default for codex. Under a faux model or the faux harness, the ref as given. */
 export function codexRef(env: NodeJS.ProcessEnv, ref: string | undefined): string | undefined {
   if (env[FAUX_ENV] || env[FAUX_HARNESS_ENV] || !openRouterOnly("codex", env)) return ref;
-  const named = ref ?? (env.AGENT_MODEL || OPENROUTER_DEFAULT_MODELS.codex);
+  const named = ref ?? (hostModel(env, "default", "codex") || OPENROUTER_DEFAULT_MODELS.codex);
   return named.startsWith("openai/") ? `openrouter/${named}` : named;
 }
 
 /** codex's model for `ref`, as model.ts chooses the ref codexRef gives: a save, a run and capabilities all ask this. A
  *  host default that does not resolve is the host's to fix, whatever name codexRef gave it. */
 export async function codexModel(env: NodeJS.ProcessEnv, ref: string | undefined): ReturnType<typeof chooseModel> {
-  const chosen = await chooseModel(env, codexRef(env, ref));
+  const chosen = await chooseModel(env, codexRef(env, ref), "default", "codex");
   return "why" in chosen && ref === undefined ? { ...chosen, host: true } : chosen;
 }
 
@@ -235,8 +235,8 @@ export const openRouterName = (id: string): string => id.replace(/-(\d+)-(\d+)$/
  *  claudeProvider's to say. */
 export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { model: ModelRef } | { why: string; host: boolean } {
   const throughOpenRouter = openRouterOnly("claude-agent", env);
-  const named = ref ?? (env.AGENT_MODEL || (throughOpenRouter ? OPENROUTER_DEFAULT_MODELS["claude-agent"] : undefined));
-  if (!named) return { why: "The revision names no model, and this host has no default: name an anthropic/<model-id> in the definition.", host: true };
+  const named = ref ?? (hostModel(env, "default", "claude-agent") || (throughOpenRouter ? OPENROUTER_DEFAULT_MODELS["claude-agent"] : undefined));
+  if (!named) return { why: "No model yet for claude-agent: add an Anthropic key in Settings → Model keys, or set ANTHROPIC_API_KEY where AgentRun starts.", host: true };
   const slash = named.indexOf("/");
   if (slash < 1) return { why: `claude-agent runs a model named anthropic/<model-id>; the run's model is ${named}.`, host: ref === undefined };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];

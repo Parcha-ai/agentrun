@@ -5,6 +5,8 @@ import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { KeysPage } from "@/components/KeysPage";
 import { Settings, type SettingsPage } from "@/components/Settings";
 import { ToolsPage } from "@/components/ToolsPage";
+import { ModelKeyCard } from "@/components/ModelKeyCard";
+import { NoModelBanner } from "@/components/NoModelBanner";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
@@ -14,10 +16,13 @@ import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
-import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, type RunsFilter } from "@/lib/client";
+import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { appendRuns } from "@/lib/idempotency";
 import { toolChoices } from "@/lib/toolSettings";
 import type { Run, RunStatus } from "@/lib/v2";
+
+/** How often the console reads the capabilities again while no model is ready (NoModelBanner, ModelKeyCard). */
+const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
@@ -244,7 +249,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         const active = a.filter((x) => !x.archived_at);
         setPick((p) => (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
       })
-      .catch((e) => { if (n === agentsAsked.current) setStartError(e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)); });
+      .catch((e) => { if (n === agentsAsked.current) setStartError(problemOf(e)); });
   }, [v2, where.section, retry, refreshed]);
   useEffect(() => {
     if (where.section !== "mission") return;
@@ -274,6 +279,16 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     }
   };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
+  // While no model is ready, the capabilities are read again every MODEL_CHECK_MS and whenever the page comes back into
+  // view, so the bar (and the first screen's card) goes by itself once a key is set where the server starts, or saved.
+  const modelsReady = caps?.models?.ready;
+  useEffect(() => {
+    if (modelsReady !== false) return;
+    const again = () => void v2.capabilities().then(setCaps).catch(() => {});
+    const timer = setInterval(again, MODEL_CHECK_MS);
+    window.addEventListener("focus", again);
+    return () => { clearInterval(timer); window.removeEventListener("focus", again); };
+  }, [v2, modelsReady]);
   return (
     <Shell active={where.section} settings={settingsOffered.length > 0} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
@@ -286,6 +301,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
           {imported.state !== "running" && <button type="button" className="caps border px-2 py-1 text-[11px] hover:bg-accent" onClick={() => setImported(null)}>Dismiss</button>}
         </p>
       )}
+      {caps?.models?.ready === false && where.section !== "mission" && <NoModelBanner needs={caps.models.needs} settings={!!caps.features?.tool_keys?.routes} />}
       {where.section === "playground" && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "settings"
@@ -294,8 +310,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
               : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} />}
           </Settings>
         : where.section === "mission"
-        ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
-            scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
+        // The first screen asks for a model key while the server says no agent that names no model runs here yet.
+        ? <div className="flex h-full flex-col">
+            {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} atRest={caps.features.tool_keys?.at_rest} onSaved={() => { v2.capabilities().then(setCaps).catch(() => {}); }} />}
+            <div className="min-h-0 flex-1">
+              <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
+                scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
+            </div>
+          </div>
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />

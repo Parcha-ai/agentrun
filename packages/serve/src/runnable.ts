@@ -38,7 +38,7 @@ export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref:
   const own = harness === "claude-agent" && !env[FAUX_HARNESS_ENV];
   if (own && !available) return undefined;
   // codex's is the run's usual model, but an OpenAI model it reaches through OpenRouter alone is OpenRouter's (codexRef).
-  const chosen = own ? (await import("./adapters.js")).claudeModel(env, ref) : harness === "codex" ? await (await import("./adapters.js")).codexModel(env, ref) : await chooseModel(env, ref);
+  const chosen = own ? (await import("./adapters.js")).claudeModel(env, ref) : harness === "codex" ? await (await import("./adapters.js")).codexModel(env, ref) : await chooseModel(env, ref, "default", harness);
   if ("why" in chosen) return chosen;
   // The harness runs here; whether it runs this model (the revision's, or the default) is checked on it.
   if (harness !== DEFAULT_HARNESS && available) {
