@@ -45,8 +45,9 @@ const GENERIC_TYPES = new Set(["application/octet-stream", "application/x-www-fo
  *  as given (`http://host:port`) or as the contract's `/v2` server URL alike. */
 export const uploadUrl = (id: string): string => `/v2/files/${id}`;
 
-/** Test seam, tests only: called as a run's copy starts, with the run's work/, before any file is copied. */
-export const uploadTestHooks: { beforeCopy?: (work: string) => Promise<void> | void } = {};
+/** Test seams, tests only: as a run's copy starts, with the run's work/, before any file is copied; and as a file sent in
+ *  one call writes its record, with the file's folder, its bytes in place. */
+export const uploadTestHooks: { beforeCopy?: (work: string) => Promise<void> | void; beforeRecord?: (dir: string) => Promise<void> | void } = {};
 
 /** The contract's FileUpload: the file, and where to send its bytes (for a file sent in one call, ready, a PUT of the
  *  same bytes, which changes nothing). */
@@ -209,9 +210,16 @@ export class Uploads {
           const file: UploadedFile = { file_id: uuidv7(now), path: path!, size_bytes: size, content_type: contentType, sha256, status: "ready", created_at: new Date(now).toISOString(), expires_at: null };
           const dir = join(this.root, file.file_id);
           await mkdir(dir, { mode: 0o700 });
-          await rename(temp, join(dir, BYTES));
-          made = true;
-          await writeDurable(join(dir, RECORD), `${JSON.stringify(file)}\n`);
+          try {
+            await rename(temp, join(dir, BYTES));
+            made = true;
+            await uploadTestHooks.beforeRecord?.(dir);
+            await writeDurable(join(dir, RECORD), `${JSON.stringify(file)}\n`);
+          } catch (error) {
+            // No record, no file: its folder and bytes go too, so nothing is left that the API cannot list or delete.
+            await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+            throw error;
+          }
           return this.answer(file);
         },
         discard: async () => {
@@ -286,7 +294,15 @@ export class Uploads {
             : undefined;
       const wrong = mismatch(file);
       if (wrong) throw wrong;
-      if (!handle || !temp) return file;
+      // Ready already: read again in turn with a DELETE, which may have removed it while these bytes arrived.
+      if (!handle || !temp)
+        return await this.exclusive(id, async () => {
+          const now = await this.get(id);
+          if (!now) throw new ApiError("not_found", `no file ${id}: it was deleted while its bytes arrived`);
+          const other = mismatch(now);
+          if (other) throw other;
+          return now;
+        });
       await handle.sync();
       closed = true;
       await handle.close();

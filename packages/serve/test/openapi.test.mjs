@@ -84,7 +84,7 @@ test("the contract's operations are as vendored; this server's own are added and
       // upload/2: the contract's JSON body kept as the first choice and the raw bytes beside it; its parameters kept, then
       // path, content_type and sha256; its responses kept but for 201's description, and 415 added; the rest as vendored.
       assert.deepEqual(Object.keys(changes).sort(), ["parameters", "requestBody", "responses"]);
-      assert.deepEqual(Object.keys(op.requestBody.content), ["application/json", "application/octet-stream"]);
+      assert.deepEqual(Object.keys(op.requestBody.content), ["application/json", "application/octet-stream", "*/*"]);
       assert.deepEqual(op.requestBody.content["application/json"], original.requestBody.content["application/json"]);
       assert.equal(op.requestBody.required, original.requestBody.required);
       assert.deepEqual(op.parameters.slice(0, original.parameters.length), original.parameters);

@@ -831,8 +831,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // upload/2: POST /files also takes a file's bytes in one call (`path` in the query, the bytes the body), answered as
   // a reservation is with the file ready; and `upload.url` is a path from the server's root, `/v2/files/{file_id}`.
   const createFile = (doc.paths["/files"] as Json).post as Json & { requestBody: Json & { content: Record<string, Json> }; parameters: Json[]; responses: Record<string, Json> };
-  createFile.requestBody.description = "The contract's JSON reservation, its bytes sent after with PUT /files/{file_id}; or the file's bytes themselves, any type but a multipart form, with `path` in the query: sent in one call, the length the body's and the hash its own.";
-  createFile.requestBody.content["application/octet-stream"] = { schema: { type: "string", contentMediaType: "application/octet-stream" } };
+  createFile.requestBody.description = "Without `path` in the query: the contract's JSON reservation (application/json, FileCreate), its bytes sent after with PUT /files/{file_id}. With `path` in the query: the file's bytes themselves, in any type, application/json included (a multipart form is 415), sent in one call, the length the body's and the hash its own.";
+  Object.assign(createFile.requestBody.content, structuredClone(RAW));
   const query = (name: string, description: string, schema: Json) => ({ name, in: "query", required: false, description, schema });
   createFile.parameters = [
     ...createFile.parameters,

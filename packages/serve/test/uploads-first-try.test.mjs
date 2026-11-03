@@ -7,7 +7,7 @@ import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { MAX_UPLOAD_BYTES } from "../dist/uploads.js";
+import { MAX_UPLOAD_BYTES, uploadTestHooks } from "../dist/uploads.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, cookieOf, follow, scratch, serve } from "./support.mjs";
 
@@ -215,4 +215,53 @@ test("the page's session sends a file in one call only with its own Origin: the 
   assert.equal((await call(server.port, { method: "DELETE", path: `/v2/files/${reserved.json.file.file_id}`, headers: { cookie, origin: page } })).status, 401, "a DELETE is no raw route: it needs the JSON rule");
   // A POST to a route not marked raw still takes JSON only.
   assert.equal((await call(server.port, { method: "POST", path: "/v2/agents", headers: { cookie, origin: page, "content-type": "text/plain" }, body: JSON.stringify(agent("a1")) })).status, 401);
+});
+
+test("a PUT of a ready file's bytes that a DELETE overtakes answers 404, never ready", async (t) => {
+  const server = await served(t);
+  const bytes = Buffer.from("ready bytes");
+  const file = (await sendFile(server, { path: "gone.txt" }, bytes)).json.file;
+  // The retry's first half goes, the file is deleted while it streams, then its second half.
+  let finish;
+  const answer = new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port: server.port, method: "PUT", path: `/v2/files/${file.file_id}`, agent: false, headers: { host: `127.0.0.1:${server.port}`, ...bearer(server), "content-length": String(bytes.length) } }, (res) => {
+      const parts = [];
+      res.on("data", (chunk) => parts.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode, json: JSON.parse(Buffer.concat(parts).toString("utf8") || "null") }));
+    });
+    req.once("error", reject);
+    req.write(bytes.subarray(0, 5));
+    finish = () => req.end(bytes.subarray(5));
+  });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal((await send(server.port, "DELETE", `/v2/files/${file.file_id}`, undefined, bearer(server))).status, 204);
+  finish();
+  const done = await answer;
+  assert.deepEqual([done.status, done.json?.error?.code], [404, "not_found"], JSON.stringify(done.json));
+});
+
+test("a file sent in one call whose record cannot be written leaves nothing behind, and the next one is made", async (t) => {
+  const server = await served(t);
+  uploadTestHooks.beforeRecord = () => {
+    throw new Error("no space left on the test's disk");
+  };
+  t.after(() => void (uploadTestHooks.beforeRecord = undefined));
+  const failed = await sendFile(server, { path: "orphan.txt" }, Buffer.from("orphan bytes"));
+  assert.equal(failed.status, 500, failed.text);
+  uploadTestHooks.beforeRecord = undefined;
+  assert.deepEqual(await readdir(join(server.data, "files")), [], "no folder, no bytes, no incoming file");
+  assert.deepEqual((await server.api("GET", "/files")).body.files, []);
+  assert.equal((await sendFile(server, { path: "next.txt" }, Buffer.from("next"))).status, 201);
+});
+
+test("the served document covers every body a file sent in one call takes", async (t) => {
+  const server = await served(t);
+  const body = server.doc.paths["/files"].post.requestBody;
+  const covered = (type) => Object.keys(body.content).some((range) => range === "*/*" || range === type || (range.endsWith("/*") && type.startsWith(range.slice(0, -1))));
+  for (const type of ["application/pdf", "text/plain", "image/png", "application/octet-stream", "application/x-www-form-urlencoded"]) {
+    assert.ok(covered(type), `${type}: a media range in the document takes it`);
+    assert.equal((await sendFile(server, { path: `file.${type.split("/")[1]}` }, Buffer.from("x"), { "content-type": type })).status, 201, type);
+  }
+  // With path in the query, a JSON body is a file's bytes: the document says so beside the contract's reservation.
+  assert.match(body.description, /application\/json.*path.*query|path.*query.*application\/json/s);
 });
