@@ -36,14 +36,6 @@ export function installHint(message: string, npmLine: string, spec: string, npx 
   return npx && message.includes(npmLine) ? message.replace(npmLine, `npx -p @parcha/agentrun-serve@${SERVE_VERSION} -p ${spec} agentrun-serve`) : message;
 }
 
-/** A harness's adapter refused to build: its message with the line that installs the harness when it names none, and
- *  with the npx form of the adapter's own install line (`pinned`) when the server runs from npx. */
-function unavailable(harness: string, error: unknown, pinned: { npmLine: string; spec: string } | undefined, npx: boolean): HarnessUnavailable {
-  const message = (error as Error).message;
-  const said = message.includes("npm install") ? message : `${message} (${INSTALL[harness]})`;
-  return new HarnessUnavailable(pinned ? installHint(said, pinned.npmLine, pinned.spec, npx) : said);
-}
-
 /** For tests: a JSON `{command, args?, env?}` that speaks Codex's app-server protocol in place of Codex. agentrun-harness-codex
  *  takes it only under its own guard (AGENTRUN_CODEX_STANDIN=1, under a test runner). */
 export const CODEX_STANDIN_ENV = "AGENTRUN_SERVE_CODEX_STANDIN";
@@ -87,8 +79,46 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
   };
 }
 
-/** Why this server cannot run a harness here, in words a person can act on. */
-export class HarnessUnavailable extends Error {}
+/** What fixes a harness that is not on this machine as its adapter needs it: `install`, its package or binary is missing;
+ *  `pins`, what is installed is not the pinned build. */
+export type InstallFix = "install" | "pins";
+
+/** Why this server cannot run a harness here, in words a person can act on; `fix`, when installing is the fix. */
+export class HarnessUnavailable extends Error {
+  constructor(message: string, readonly fix?: InstallFix) {
+    super(message);
+  }
+}
+
+/** What an adapter's own setup error says installing fixes, by its typed code: none for any other error. */
+function fixOf(error: unknown): InstallFix | undefined {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === "CLAUDE_AGENT_NOT_INSTALLED" || code === "CODEX_NOT_INSTALLED") return "install";
+  if (code === "CLAUDE_AGENT_PIN_MISMATCH" || code === "CODEX_PIN_MISMATCH") return "pins";
+  return undefined;
+}
+
+/** How a reason found at the start's probe ends (harness.ts' harnessOffers), which is the only one: what is installed
+ *  after it shows once AgentRun restarts. */
+const RESTART: Record<InstallFix, string> = { install: "once it is installed, restart AgentRun to pick it up", pins: "once the pinned build is installed, restart AgentRun" };
+
+/** The reason the start's probe gives for `error`: its message, ending with the restart (RESTART) where installing is
+ *  the fix. A message whose install line is npx's has no `fix`: running that line is the restart. */
+export function startReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const fix = error instanceof HarnessUnavailable ? error.fix : undefined;
+  return fix ? `${message.replace(/\.$/, "")}; ${RESTART[fix]}.` : message;
+}
+
+/** A HarnessUnavailable for an adapter's own setup `error`: its message, with the line that installs the harness when it
+ *  names none, and with the adapter's own install line (`pinned`) made npx's where serve runs from npx (installHint):
+ *  installing is its fix unless the line became npx's, which restarts AgentRun itself. */
+function unavailable(harness: string, error: unknown, pinned: { npmLine: string; spec: string } | undefined, npx: boolean): HarnessUnavailable {
+  const message = (error as Error).message;
+  const said = message.includes("npm install") ? message : `${message} (${INSTALL[harness]})`;
+  const hinted = pinned ? installHint(said, pinned.npmLine, pinned.spec, npx) : said;
+  return new HarnessUnavailable(hinted, hinted === said ? fixOf(error) : undefined);
+}
 
 type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite: number };
 /** A child's command under the run's confinement (pi-durable-disk's confinePrefix): only added in front. */
@@ -215,7 +245,7 @@ export function nativeOptions(harness: string, env: NodeJS.ProcessEnv): { webSea
 /** claude-agent's adapter, from `load` (the installed package; a test gives its own). */
 export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = loadClaude, npx = startedByNpx()): Promise<AgentAdapter> {
   const claude = (await load().catch(() => {
-    throw new HarnessUnavailable(`claude-agent is not installed here: ${INSTALL["claude-agent"]}`);
+    throw new HarnessUnavailable(`claude-agent is not installed here: ${INSTALL["claude-agent"]}`, "install");
   })) as { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; CLAUDE_AGENT_SDK_INSTALL?: string; CLAUDE_AGENT_SDK_VERSION?: string };
   // What no key fixes is said first: the adapter is built before the provider's refusal is thrown, and its construction
   // checks the SDK's version, zod and the pinned CLI (claude --version, once). The provider is read only when a session
@@ -248,7 +278,7 @@ export const thinkingFor = (harness: string, level: string): SessionSpec["thinki
 /** codex's adapter, from `load` (the installed package; a test gives its own). */
 export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<typeof import("@parcha/agentrun-harness-codex")> = () => import("@parcha/agentrun-harness-codex"), npx = startedByNpx()): Promise<AgentAdapter> {
   const codex = await load().catch(() => {
-    throw new HarnessUnavailable(`codex is not installed here: ${INSTALL.codex}`);
+    throw new HarnessUnavailable(`codex is not installed here: ${INSTALL.codex}`, "install");
   });
   const standIn = env[CODEX_STANDIN_ENV] ? (JSON.parse(env[CODEX_STANDIN_ENV]) as { command: string; args?: string[]; env?: Record<string, string> }) : undefined;
   if (!standIn) {
@@ -278,8 +308,10 @@ export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs:
 }
 
 /** Why `harness` cannot run here, or undefined when it can: its package and pins, its provider, and the adapter's own
- *  check of the model `given` names (with none, a model of the harness's own provider: whether it runs here at all). */
-export async function harnessReason(harness: string, env: NodeJS.ProcessEnv, given: AdapterNeeds | undefined): Promise<string | undefined> {
+ *  check of the model `given` names (with none, a model of the harness's own provider: whether it runs here at all).
+ *  `atStart`: asked by the start's probe, whose offers hold until a restart, so a reason installing fixes ends saying
+ *  to restart AgentRun once it is installed (startReason). */
+export async function harnessReason(harness: string, env: NodeJS.ProcessEnv, given: AdapterNeeds | undefined, { atStart = false }: { atStart?: boolean } = {}): Promise<string | undefined> {
   if (env[FAUX_HARNESS_ENV]) return undefined;
   const needs = given ?? { model: { provider: harness === "claude-agent" ? "anthropic" : "openai", modelId: "default" }, models: { getModel: () => undefined } };
   try {
@@ -287,6 +319,6 @@ export async function harnessReason(harness: string, env: NodeJS.ProcessEnv, giv
     const problems = adapter.check({ key: "capabilities", label: "capabilities", system: [], tools: [], context: "fresh" });
     return problems.length ? problems.join(" ") : undefined;
   } catch (error) {
-    return (error as Error).message;
+    return atStart ? startReason(error) : (error as Error).message;
   }
 }

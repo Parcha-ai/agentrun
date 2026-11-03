@@ -115,7 +115,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                     {revisions.map((r) => <option key={r.revision} value={r.revision}>rev {r.version}{r.current ? " (current)" : ""}{r.note ? `: ${r.note}` : ""}</option>)}
                   </select>
                 </Label>
-                <Label name="effort" note="Empty uses the agent's own.">
+                <Label name="effort" note="How hard the model thinks. Empty uses the agent's own.">
                   <div className="flex gap-2">{["", ...efforts].map((e) => <button key={e || "default"} type="button" onClick={() => setEffort(e)} className={cn("caps border px-3 py-2 text-[12px]", effort === e ? "border-foreground" : "text-muted-foreground")}>{e || "default"}</button>)}</div>
                 </Label>
                 {kind === "agentic" && (
