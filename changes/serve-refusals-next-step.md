@@ -4,7 +4,7 @@ kind: fix
 ---
 Every refusal and reason about places, boxes and the agent's home now names the next step.
 - A place's `422` on `definition.place` carries a `fix`: the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}` for `"place": "docker"` or `{"mode": "docker"}`), or the field to remove. `bash` on a runner agent gets the sandbox place as its fix; the browser in a sandbox, `Remove "browser" from definition.tools.`; a workflow in a sandbox, `"place": {"mode": "runner"}` (an edit that leaves the place out keeps the agent's); a run request's `place` other than `"runner"`, `Remove place.` or `"place": "runner"`.
-- A box that `AGENTRUN_BOXES` does not list says `not enabled on this server: start it with AGENTRUN_BOXES=docker`, keeping the boxes the setting already lists. The same reason is in capabilities, a save's warning and a run's `409`.
+- A box that `AGENTRUN_BOXES` does not list says `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker`, keeping the boxes the setting already lists. The same reason is in capabilities, a save's warning and a run's `409`.
 - A `docker` whose daemon does not answer says `docker version failed (exit 1): start Docker, or add this server's user to the docker group, then restart this server`. A missing CLI says to install Docker. A save's warning and a run's `409` end in one full stop (no more `?.`).
 - `capabilities.tools`' `bash` is `available: false`, with a `reason` naming each box's own, when no box this server has can run it.
 - The start banner adds a line saying which boxes are ready (`Boxes: docker is ready, so sandbox agents run their tools there.`), or why none is. `startServe` returns it as `boxesLine`.

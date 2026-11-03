@@ -31,7 +31,7 @@ agentrun-serve on http://127.0.0.1:7340/v2 (agent store in ~/.local/share/agentr
 AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
 AGENTRUN_API_KEY=ar_local_...
 Open http://127.0.0.1:7340/
-Boxes: none is ready, so sandbox agents do not run here. docker: not enabled on this server: start it with AGENTRUN_BOXES=docker.
+Boxes: none is ready, so sandbox agents do not run here. docker: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.
 Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
 ```
 
@@ -190,7 +190,7 @@ log line says what the server found:
 
 The line gives a reason for each listed box that is unavailable, and the banner says the same in words
 (`Boxes: docker is ready, so sandbox agents run their tools there.`). Each reason says what to do next: a box the list
-does not name says `not enabled on this server: start it with AGENTRUN_BOXES=docker` (keeping the boxes it already
+does not name says `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker` (keeping the boxes it already
 lists), and a `docker` whose daemon does not answer says to start Docker or add this server's user to the `docker`
 group, then restart the server, since the probe runs once. A reason never holds a key, a command's output or a
 provider's answer.

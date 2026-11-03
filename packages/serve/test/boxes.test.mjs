@@ -19,7 +19,7 @@ import { FAUX, scratch, withEnv } from "./support.mjs";
 const VM = VM_PROVIDER.id;
 const DAYTONA_KEY = "DAYTONA_API_KEY";
 /** A box AGENTRUN_BOXES does not list: its reason names the setting, with the boxes `listed` already kept. */
-const notEnabled = (id, listed = []) => `not enabled on this server: start it with AGENTRUN_BOXES=${BOX_IDS.filter((box) => box === id || listed.includes(box)).join(",")}`;
+const notEnabled = (id, listed = []) => `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${BOX_IDS.filter((box) => box === id || listed.includes(box)).join(",")}`;
 const NOT_YET = "the bwrap box is not in this release yet: use the docker box";
 const CANARY = `not-a-key-${process.pid}`;
 const keys = () => Object.fromEntries(BOX_KEYS.map((name) => [name, `${CANARY}-${name}`]));
