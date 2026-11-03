@@ -288,8 +288,10 @@ function cutSecond() {
 const idle = () => ({ id: "late", version: "0", capabilities: () => ({ fork: false }), check: () => [], async open() { return { state: "new", async send() {}, async recover() {}, turnEnd: async () => ({ status: "completed" }), async interrupt() {}, async close() {} }; } });
 
 /** A run whose second request is cut by a crash after its record, held at `second`, was written and before its root start
- *  mark landed (its commit is refused: the process went first), opened again on the same store. The root, after. */
-async function cutBeforeItsMark(second) {
+ *  mark landed (its commit is refused: the process went first), opened again on the same store. With
+ *  `crashInRecovery`, that next open goes too, after it booked the cut request in its session and before its root
+ *  entries landed, and the run is opened once more. The root, after. */
+async function cutBeforeItsMark(second, { crashInRecovery = false } = {}) {
   const storage = new MemoryStorage();
   let lost = 0;
   const losing = (harness) => new Proxy(harness, {
@@ -305,6 +307,20 @@ async function cutBeforeItsMark(second) {
   await settles(async () => (await rootOf(first.harness)).some((e) => e.kind === BOOKED && e.data.request === 1), "the first answer is written");
   const before = await rootOf(first.harness);
   assert.deepEqual(before.filter((e) => e.kind === REQUEST_STARTED).map((e) => e.data.request), [1], "only the first request's start mark is on the root");
+  if (crashInRecovery) {
+    // The next open books the cut request in its session (bookCut), then goes before any of its root entries lands.
+    let refused = 0;
+    const going = (harness) => new Proxy(harness, {
+      get: (target, key) => key !== "commit" ? Reflect.get(target, key).bind?.(target) ?? Reflect.get(target, key) : (change, context) =>
+        target.commit((tx) => change(new Proxy(tx, { get: (t, k) => (k === "appendEntry" ? (...args) => (args[0] === ROOT_CONVERSATION_ID || args[1] === ROOT_CONVERSATION_ID ? (refused++, Promise.reject(new Error("the process went"))) : t.appendEntry(...args)) : typeof t[k] === "function" ? t[k].bind(t) : t[k]) })), context),
+    });
+    await assert.rejects(openedUnder(storage, idle(), holding(() => 0.5), going), "the recovering open goes before its root entries land");
+    assert.ok(refused > 0, "its root write is refused");
+    const earlier = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+    const records = await (await durableSessions(earlier, ctx).open("run:1")).read();
+    assert.ok(records.some((r) => r.kind === RUNNER_RECORDS.turn && r.data?.turn === 2 && r.data?.cut === true), "the cut request is booked in the session, as cut");
+    assert.deepEqual((await rootOf(earlier)).filter((e) => e.kind === REQUEST_STARTED).map((e) => e.data.request), [1], "and still has no start mark on the root");
+  }
   // The next open books the cut request from its record.
   const next = await openedUnder(storage, idle(), holding(() => 0.5));
   return rootOf(next.harness);
@@ -314,6 +330,12 @@ test("a request a crash cut whose start mark never reached the root: the next op
   const after = await cutBeforeItsMark(0.5);
   assert.deepEqual(usage(after, true), { usd: null, requests: 2, at_most_usd: 0.502 }, "the known $0.002 and the cut request at its own $0.5, never at the first request's $0.01");
   assert.deepEqual(after.filter((e) => e.kind === REQUEST_STARTED).map((e) => [e.data.request, e.data.heldUsd]), [[1, 0.01], [2, 0.5]], "the cut request is marked from its record, at what was held for it");
+});
+
+test("a request a crash cut whose start mark never reached the root, whose recovering open went too after booking it cut: the open after still marks it from its record, at its own hold", async () => {
+  const after = await cutBeforeItsMark(0.5, { crashInRecovery: true });
+  assert.deepEqual(usage(after, true), { usd: null, requests: 2, at_most_usd: 0.502 }, "the cut request at its own $0.5 after two crashes, never at the first request's $0.01");
+  assert.deepEqual(after.filter((e) => e.kind === REQUEST_STARTED).map((e) => [e.data.request, e.data.heldUsd]), [[1, 0.01], [2, 0.5]], "marked from its record by the open that wrote its entry");
 });
 
 test("a request a crash cut whose start mark never reached the root and whose record holds no figure reads unbounded, never at another request's figure", async () => {
