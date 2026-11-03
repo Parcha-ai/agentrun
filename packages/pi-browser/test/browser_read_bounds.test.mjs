@@ -150,3 +150,8 @@ test("browser_read's frames are read from each frame's own src attribute: a \"sr
     "each frame's own src, in page order: a quoted mention is no source, an attribute right after a quote counts, the base href is its own, the first of two src holds");
   assert.deepEqual(seen.frameText, ["Only a mention"]);
 });
+
+test("the text inside a frame decodes a numeric reference whatever its leading zeroes", async () => {
+  const seen = await judgedHere('<html><body><iframe src="https://challenge.example/">&#000000065;ccess &#x00000064;enied&#0000000000000000000000000000000000033;</iframe></body></html>');
+  assert.deepEqual(seen.frameText, ["Access denied!"]);
+});

@@ -169,3 +169,28 @@ test("a link is a's own href attribute: an \"href=\" inside another attribute's 
     assert.deepEqual(page.links, ["https://site.example/right", "https://site.example/tight"], how);
   }
 });
+
+test("a numeric character reference reads as a browser reads it, whatever its leading zeroes, the same as markdown and as plain text", async () => {
+  const html = "<html><head><title>&#000000065;&#x0000000042;</title></head><body>"
+    + "<p>&#000000065;&#x0000000042;&#67 &#000000000000000000000000000000000000000000068; x &#1114112;&#xD800;&#0;&#99999999999999999999; x &#150;&#x80;</p></body></html>";
+  for (const deadlineMs of [undefined, 0]) {
+    const page = await readPage(html, "https://site.example/", deadlineMs === undefined ? {} : { deadlineMs });
+    const how = deadlineMs === undefined ? "markdown" : "text";
+    assert.equal(page.converted, how);
+    assert.equal(page.title, "AB", how);
+    assert.equal(page.text, "ABC D x ���� x –€", how);
+  }
+});
+
+test("decodeEntities reads a numeric reference's whole digit run, in one linear pass: past U+10FFFF, a surrogate or zero is U+FFFD, 128 to 159 are windows-1252's, as in a browser", async () => {
+  const { decodeEntities } = await import("../dist/core/entities.js");
+  assert.equal(decodeEntities("&#000000065;&#x000000041;&#X0042;&#65&#x41 B"), "AAB" + "AA B");
+  assert.equal(decodeEntities("&#1114111;"), "\u{10FFFF}");
+  assert.equal(decodeEntities("&#1114112;&#x110000;&#xDFFF;&#55296;&#0;&#x00000;&#99999999999999999999999;&#xFFFFFFFFFFFFFFFFFFFF;"), "�".repeat(8));
+  assert.equal(decodeEntities("&#128;&#x81;&#x8D;&#146;&#x96;&#159;"), "€\u0081\u008D’–Ÿ");
+  assert.equal(decodeEntities("&#; &#x; &#xG; &# 65;"), "&#; &#x; &#xG; &# 65;", "no digit: left as written");
+  const started = performance.now();
+  assert.equal(decodeEntities(`&#${"0".repeat(2_000_000)}65; and &#x${"0".repeat(2_000_000)}42;`), "A and B");
+  assert.equal(decodeEntities("&#0000065;".repeat(200_000)), "A".repeat(200_000));
+  assert.ok(performance.now() - started < 2_000, "linear in the text");
+});
