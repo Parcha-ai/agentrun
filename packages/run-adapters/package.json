@@ -50,9 +50,9 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "node ../../scripts/build.mjs .",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
     "prepack": "npm run build",
-    "typecheck": "node ../../scripts/build.mjs --typecheck .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
   },
   "dependencies": {

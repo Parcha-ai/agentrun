@@ -2,5 +2,5 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "composite": true, "outDir": "dist", "rootDir": "src", "types": ["node"] },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../decisions" }, { "path": "../dsl" }, { "path": "../jev" }, { "path": "../pi" }, { "path": "../pi-browser" }, { "path": "../pi-durable-agent" }, { "path": "../pi-durable-disk/tsconfig.build.json" }, { "path": "../pi-transport/tsconfig.build.json" }, { "path": "../run-adapters" }, { "path": "../run-adapters-claude-agent" }, { "path": "../run-adapters-codex" }]
+  "references": [{ "path": "../decisions" }, { "path": "../dsl" }, { "path": "../jev" }, { "path": "../pi" }, { "path": "../pi-durable-agent" }, { "path": "../pi-durable-disk/tsconfig.build.json" }, { "path": "../pi-transport/tsconfig.build.json" }]
 }

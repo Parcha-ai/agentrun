@@ -12,9 +12,13 @@
 //     emptied and compiled whole, so a deleted or renamed source never leaves a stale module in dist;
 //   - a program that reads another project's output must reference that project, or tsc would not rebuild it when that
 //     project changes: the build fails naming the reference to add.
+// A workspace whose emitting tsconfig is not composite cannot be referenced (a synced or vendored copy keeps the tsconfig
+// of its upstream). It builds with its own `build` script, after the workspaces it depends on (package.json), and only
+// when its sources, its tsconfigs, its package.json or the declarations of those workspaces changed, or its outDir did.
+// A program that reads its declarations compiles whole when they change, since tsc's build mode does not look at them.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -111,27 +115,66 @@ export function build({ root = repository, targets = [root], typecheck = false, 
   const outDirs = all.flatMap(tsconfigsIn).flatMap((file) => {
     try { return emits(file) && parse(file).options.outDir ? [[parse(file).options.outDir, file]] : []; } catch { return []; }
   });
+  const emittersIn = (dir) => tsconfigsIn(dir).filter((file) => outDirs.some(([, owner]) => owner === file));
+  const outputDirs = (dir) => emittersIn(dir).map((file) => parse(file).options.outDir);
+  const externals = new Set(all.filter((dir) => emittersIn(dir).some((file) => !parse(file).options.composite)));
+
+  // What each workspace depends on, from its package.json, transitively.
+  const manifest = (dir) => JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+  const byName = new Map(all.map((dir) => [manifest(dir).name, dir]));
+  const dependencies = (dir, seen = new Set()) => {
+    const fields = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'].map((field) => manifest(dir)[field] ?? {});
+    for (const dep of fields.flatMap(Object.keys).map((name) => byName.get(name))) {
+      if (dep && dep !== dir && !seen.has(dep)) dependencies(dep, seen.add(dep));
+    }
+    return seen;
+  };
+  const dependedOn = (dir) => [...dependencies(dir)].sort();
+
+  const hashOf = (files) => {
+    const digest = createHash('sha256');
+    for (const file of [...files].map((file) => resolve(file)).sort()) digest.update(rel(file)).update('\0').update(readFileSync(file)).update('\0');
+    return digest.digest('hex');
+  };
+  const outputFiles = (dir, keep = () => true) => outputDirs(dir).flatMap((out) => (existsSync(out) ? filesUnder(out) : [])).filter(keep);
+  const declarationStamps = new Map();
+  const declarationsOf = (dir) => {
+    if (!declarationStamps.has(dir)) declarationStamps.set(dir, existsSync(dir) ? hashOf(outputFiles(dir, (file) => /\.d\.[cm]?ts$/.test(file))) : 'gone');
+    return declarationStamps.get(dir);
+  };
+  const readRecord = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return undefined; } };
+  const writeRecord = (file, value) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, `${JSON.stringify(value)}\n`); };
+  const externalsRecord = (config) => parse(config).options.tsBuildInfoFile.replace(/\.tsbuildinfo$/, '.externals.json');
 
   const roots = targets.flatMap((target) => {
     target = resolve(target);
     if (statSync(target).isFile()) return [target];
-    const configs = all.filter((dir) => inside(target, dir)).flatMap(tsconfigsIn);
-    return typecheck ? configs : configs.filter(emits);
+    return all.filter((dir) => inside(target, dir)).flatMap((dir) => {
+      if (externals.has(dir)) return [dir];
+      const configs = tsconfigsIn(dir);
+      return typecheck ? configs : configs.filter(emits);
+    });
   });
   if (!roots.length) throw new Error(`no workspace tsconfig under ${targets.join(', ')}`);
 
-  // Build order: each project after the projects it references.
+  // Build order: each project after the projects it references, and after the workspaces outside the references that its
+  // workspace depends on (all of them, for a tsconfig outside the workspaces); such a workspace after its dependencies.
+  const edges = (node) => {
+    if (externals.has(node)) return dependedOn(node).flatMap((dep) => (externals.has(dep) ? [dep] : emittersIn(dep)));
+    const workspace = workspaceOf(node);
+    return [...references(node), ...(workspace ? dependedOn(workspace) : all).filter((dir) => externals.has(dir))];
+  };
   const order = [];
   const state = new Map();
-  const visit = (file, path) => {
-    if (state.get(file) === 'done') return;
-    if (state.get(file) === 'visiting') throw new Error(`project references form a cycle: ${[...path, file].map(rel).join(' -> ')}`);
-    state.set(file, 'visiting');
-    for (const ref of references(file)) visit(ref, [...path, file]);
-    state.set(file, 'done');
-    order.push(file);
+  const visit = (node, path) => {
+    if (state.get(node) === 'done') return;
+    if (state.get(node) === 'visiting') throw new Error(`the build order forms a cycle: ${[...path, node].map(rel).join(' -> ')}`);
+    state.set(node, 'visiting');
+    for (const next of edges(node)) visit(next, [...path, node]);
+    state.set(node, 'done');
+    order.push(node);
   };
-  for (const file of roots) visit(file, []);
+  for (const node of roots) visit(node, []);
 
   const unreferenced = new Map();
   const compiled = new Set();
@@ -141,13 +184,16 @@ export function build({ root = repository, targets = [root], typecheck = false, 
     const refs = new Set((projectReferences ?? []).map((ref) => resolve(ts.resolveProjectReferencePath(ref))));
     const own = new Set(rootNames.map((file) => resolve(file)));
     const missing = { refs: new Set(), files: new Set() };
+    const read = new Set();
     for (const { fileName } of program.getProgram().getSourceFiles()) {
       const file = resolve(fileName);
       if (own.has(file) || file.split(sep).includes('node_modules')) continue;
       const owner = outDirs.find(([dir]) => inside(dir, file))?.[1];
       if (!owner) missing.files.add(file);
+      else if (externals.has(workspaceOf(owner))) read.add(file);
       else if (owner !== config && !refs.has(owner)) missing.refs.add(owner);
     }
+    writeRecord(externalsRecord(config), Object.fromEntries([...read].sort().map((file) => [rel(file), hashOf([file])])));
     if (missing.refs.size || missing.files.size) unreferenced.set(config, missing);
     compiled.add(config);
     return program;
@@ -155,10 +201,48 @@ export function build({ root = repository, targets = [root], typecheck = false, 
   const pretty = !!process.stdout.isTTY;
   const host = ts.createSolutionBuilderHost(ts.sys, createProgram, ts.createDiagnosticReporter(ts.sys, pretty), ts.createBuilderStatusReporter(ts.sys, pretty));
   host.getParsedCommandLine = (file) => parse(file);
-  const builder = ts.createSolutionBuilder(host, order, { verbose });
+  const builder = ts.createSolutionBuilder(host, order.filter((node) => !externals.has(node)), { verbose });
+
+  // A workspace outside the references: its own build, skipped while what it was built from and what it built are unchanged.
+  const buildExternal = (dir) => {
+    const record = join(cache, hash, rel(dir), 'build.json');
+    const sources = new Set([join(dir, 'package.json')]);
+    for (const config of emittersIn(dir)) {
+      const { options, fileNames } = parse(config);
+      for (const file of [config, ...(options.configFile?.extendedSourceFiles ?? []), ...fileNames]) sources.add(resolve(file));
+      if (options.rootDir && existsSync(options.rootDir)) for (const file of filesUnder(options.rootDir)) sources.add(file);
+    }
+    const inputs = createHash('sha256').update(hashOf(sources));
+    for (const dep of dependedOn(dir)) inputs.update(`${rel(dep)}\0${declarationsOf(dep)}\0`);
+    const built = { inputs: inputs.digest('hex'), outputs: hashOf(outputFiles(dir)) };
+    const prior = readRecord(record);
+    if (prior?.inputs === built.inputs && prior.outputs === built.outputs) return;
+    if (!manifest(dir).scripts?.build) throw new Error(`${rel(dir)}: its tsconfig is not composite, so it builds with its own "build" script, and it has none`);
+    const at = performance.now();
+    rmSync(record, { force: true });
+    runStep(root, dir, 'build', rel);
+    declarationStamps.delete(dir);
+    writeRecord(record, { ...built, outputs: hashOf(outputFiles(dir)) });
+    compiled.add(dir);
+    log(`built ${rel(dir)} in ${((performance.now() - at) / 1000).toFixed(1)} s`);
+  };
 
   for (const config of order) {
+    if (externals.has(config)) {
+      buildExternal(config);
+      continue;
+    }
     const workspace = workspaceOf(config);
+    // tsc's build mode does not look at the declarations a program reads from outside its references.
+    const buildinfo = parse(config).options.tsBuildInfoFile;
+    if (existsSync(buildinfo)) {
+      const read = readRecord(externalsRecord(config));
+      const changed = read && Object.keys(read).find((file) => !existsSync(resolve(root, file)) || hashOf([resolve(root, file)]) !== read[file]);
+      if (!read || changed) {
+        log(`${rel(config)}: ${read ? `${changed} changed` : 'no record of what it reads outside its references'}; compiling it whole`);
+        rmSync(buildinfo, { force: true });
+      }
+    }
     const parsed = parse(config);
     const emitting = !parsed.options.noEmit;
     if (emitting && workspace) {
@@ -174,6 +258,7 @@ export function build({ root = repository, targets = [root], typecheck = false, 
     }
     const at = performance.now();
     const status = builder.build(config);
+    declarationStamps.delete(workspace);
     if (status !== ts.ExitStatus.Success) throw Object.assign(new Error(`${rel(config)}: TypeScript reported errors`), { quiet: true });
     // Left only by a source whose time changed but not its text, after its output was deleted: tsc then emits nothing.
     const missing = emitting && staleOutputs(project, { compiled: true, rel });

@@ -2,5 +2,5 @@
   "extends": "./tsconfig.json",
   "compilerOptions": { "composite": false, "noEmit": true, "rootDir": "." },
   "include": ["test/**/*.ts"],
-  "references": [{ "path": "." }, { "path": "../dsl" }, { "path": "../pi" }, { "path": "../pi-browser" }]
+  "references": [{ "path": "." }, { "path": "../dsl" }, { "path": "../pi" }]
 }

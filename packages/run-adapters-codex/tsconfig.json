@@ -1,6 +1,5 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "composite": true, "outDir": "dist", "rootDir": "src", "types": ["node"] },
-  "include": ["src/**/*.ts"],
-  "references": [{ "path": "../dsl" }, { "path": "../run-adapters" }]
+  "compilerOptions": { "outDir": "dist", "rootDir": "src", "types": ["node"] },
+  "include": ["src/**/*.ts"]
 }

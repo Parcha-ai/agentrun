@@ -1,6 +1,7 @@
 // The workspaces' build (scripts/build.mjs) on a two-package workspace: b references a and imports its output.
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -124,4 +125,35 @@ test('a directory selects the workspaces inside it, with the projects they refer
   assert.deepEqual(run(root, { targets: [join(root, 'packages/a')] }), ['packages/a/tsconfig.json']);
   assert.ok(!existsSync(join(root, 'packages/b/dist')));
   assert.deepEqual(run(root, { targets: [join(root, 'packages/b')] }), ['packages/b/tsconfig.json']);
+});
+
+test('a workspace with a tsconfig that is not composite builds with its own script, and its dependents see its changes', (t) => {
+  const root = workspace();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc');
+  put(root, 'packages/c/package.json', { name: 'c', dependencies: { a: '*' }, scripts: { build: `node -e "require('fs').rmSync('dist',{recursive:true,force:true})" && node ${JSON.stringify(tsc)} -p tsconfig.json` } });
+  put(root, 'packages/c/tsconfig.json', { compilerOptions: { ...options, declaration: true, rootDir: 'src', outDir: 'dist' }, include: ['src'] });
+  put(root, 'packages/c/src/index.ts', "import { answer } from '../../a/dist/index.js';\nexport const total: number = answer + 1;\n");
+  put(root, 'packages/c/src/old.ts', 'export const old = 1;\n');
+  put(root, 'packages/b/package.json', { name: 'b', dependencies: { c: '*' } });
+  put(root, 'packages/b/src/total.ts', "import { total } from '../../c/dist/index.js';\nexport const sum: number = total + 1;\n");
+  assert.deepEqual(run(root), ['packages/a/tsconfig.json', 'packages/c', 'packages/b/tsconfig.json'], 'c after a, b after c');
+  assert.deepEqual(run(root), [], 'nothing changed: c is not built again');
+
+  put(root, 'packages/c/src/index.ts', "import { answer } from '../../a/dist/index.js';\nexport const total: number = answer + 2;\n");
+  assert.deepEqual(run(root), ['packages/c'], "same declarations: b stays current");
+
+  rmSync(join(root, 'packages/c/src/old.ts'));
+  assert.deepEqual(run(root), ['packages/c']);
+  assert.ok(!existsSync(join(root, 'packages/c/dist/old.js')), "c's own build leaves no stale module");
+
+  put(root, 'packages/c/src/index.ts', "export const total: string = 'x';\n");
+  assert.throws(() => run(root), /packages\/b\/tsconfig\.json: TypeScript reported errors/, "b is checked against c's new declarations");
+  put(root, 'packages/c/src/index.ts', "import { answer } from '../../a/dist/index.js';\nexport const total: number = answer + 3;\n");
+  assert.deepEqual(run(root), ['packages/c', 'packages/b/tsconfig.json']);
+
+  rmSync(join(root, 'packages/c/dist/index.js'));
+  assert.deepEqual(run(root), ['packages/c'], 'a changed outDir builds it again');
+  put(root, 'packages/a/src/index.ts', "export const answer: string = 'x';\n");
+  assert.throws(() => run(root), /packages\/c: build \(.*\) exited 2/, "c builds again on a's new declarations, and its own build fails");
 });

@@ -19,5 +19,5 @@
   "include": [
     "src"
   ],
-  "references": [{ "path": "../dsl" }, { "path": "../pi" }, { "path": "../pi-browser" }, { "path": "../pi-durable-disk/tsconfig.build.json" }, { "path": "../pi-transport/tsconfig.build.json" }, { "path": "../pi-vision" }]
+  "references": [{ "path": "../dsl" }, { "path": "../pi" }, { "path": "../pi-durable-disk/tsconfig.build.json" }, { "path": "../pi-transport/tsconfig.build.json" }, { "path": "../pi-vision" }]
 }
