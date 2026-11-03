@@ -8,6 +8,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const readName = /^evidence\/investigate\/browser_read-[0-9a-f]{12}\.json$/;
@@ -43,4 +44,4 @@ async function main() {
   }
 }
 
-if (import.meta.main) await main();
+if (isMain(import.meta)) await main();

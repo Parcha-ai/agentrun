@@ -572,7 +572,8 @@ A run's metrics sit beside its row: `metrics` on `carryBack(runId, { state, cost
 are written in the transaction that writes the run's row, and `store.runMetrics(runId)` reads them back with `at`, when they were
 written (undefined for a run with none). `runMetricsOf(records)` from `@parcha/pi-durable-agent/timeline` makes them from the
 entries of every conversation of the run's store (`SELECT record FROM entries ORDER BY id`), for a run this machine ran and an
-imported one alike; the host adds what only it knows: `activeMs`, how long the run was at work, `effort`, `model` (the model it
+imported one alike; `runMetricsWithDecisions(records, decisions)` adds a workflow run's decision receipts (each a request of
+its own, its `usage` in the token sums, one with no usage or cancelled in `unmetered`); the host adds what only it knows: `activeMs`, how long the run was at work, `effort`, `model` (the model it
 ran; runMetricsOf names the one with the most requests), and `costUsdEst` with `costBasis`, an estimate of its cost apart from
 `cost_usd` and how it was made. The tokens are pi's: `input` is the input neither read from nor written to the cache,
 `cache_read` the cached input read, `cache_write` the input written to the cache, so the whole input is
@@ -727,6 +728,7 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
 | `inputPreview(args, max)` | The input worth showing, or `null`: a `description`, `command`, `query`, `file_path`, `url`, `path` or `code` argument, with a URL's query values dropped, cut to `max` |
 | `runMetricsOf(records)` | What a run that ended used, from the entries of all its conversations, in log order: its tokens (`input`, `cacheRead`, `cacheWrite`, `output`), its `requests` as the usage row counts them and `unmetered`, those of unknown tokens (an aborted response's partial usage, and a usage with no input at all, are never summed), its requests by `provider/model` (`models`) and the busiest `model`, and each tool's `calls` and `errors` (`tools`), their names kept to what the store takes (`METRIC_NAMES`). A `RunMetrics`, for the store's `carryBack` and `importRun` ([Agents in a folder](#agents-in-a-folder-the-agent-store)) |
+| `runMetricsWithDecisions(records, decisions)` | `runMetricsOf`, with a workflow run's decision receipts (`DecisionLike`) beside its entries: each a request by `provider/model`, its `usage` (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, in `unmetered`. serve passes a workflow run's receipts at its end; `runMetricsOf` keeps one parameter, so `.map(runMetricsOf)` stays safe |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
 | `METRIC_NAMES` | How `runMetricsOf` keeps tool and model names: `max` 256 characters, the `kept` 100 busiest of each, and the names it sums the rest and a nameless tool under: `otherTools` (`…other tools`), `otherModels` (`…other models`), `unnamedTool` (`…unnamed tool`) |
 | `REQUEST_STARTED`, `REQUEST_ENDED`, `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted; and the cost of a request with no `pi.assistant` entry of its own (a compaction summary, marked `request: "compaction"`). An answer written before its cost came in is followed by `REQUEST_COST_PENDING`, and its cost comes later as `REQUEST_COST_LATE` (`usd`): it adds to the cost and is not counted as a request; the cost reads unknown while one is pending. A call an answer asked for, written after that answer's own entry (a harness reports each call as it runs it), follows `REQUEST_CONTINUED` in a `pi.assistant` of its own: it shows under that answer and counts as a call, not as a request, a cost or tokens. The usage row counts each marked request and sums each cost; one with no entry or cost (cut before its answer) other than the latest still in flight makes the cost unknown. A request the host refused before it left (`REQUEST_REFUSED`) is not counted, and pi's error entry for it is not shown. A conversation with no marks reads as before |
@@ -734,7 +736,8 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 
 Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`, `OutcomeFn`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
-`FoldSpec`, `ToolResultView`, and `RunMetrics` and `ToolMetrics` (what `runMetricsOf` returns).
+`FoldSpec`, `ToolResultView`, `RunMetrics` and `ToolMetrics` (what `runMetricsOf` returns), and `DecisionLike` (a
+workflow's decision receipt, as `runMetricsWithDecisions` reads it).
 
 ### `@parcha/pi-durable-agent/serve`
 
