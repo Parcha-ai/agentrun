@@ -520,8 +520,9 @@ export class LearningRuns {
   }
 
   /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a
-   *  child's, and the test hooks a run's process gets. */
+   *  child's, the keys saved on it with them (a Jev key saved through the settings API screens as one in the environment
+   *  does), and the test hooks a run's process gets. */
   private hostEnv(): NodeJS.ProcessEnv {
-    return withSecrets({ ...withoutFaux(process.env), ...this.kernel.fauxEnv() });
+    return withSecrets({ ...withoutFaux(process.env), ...this.kernel.fauxEnv() }, "all", this.options.storedKeys);
   }
 }

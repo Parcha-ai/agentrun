@@ -79,6 +79,22 @@ test("with Jev here, the screen runs first: a note it scores at or over the thre
   assert.deepEqual(callsIn(calls), [], "still never the grader");
 });
 
+// A Jev key a person saved on the server (the settings API) screens the notes as one in the server's environment does.
+test("a Jev key saved through the settings API, none in the environment, screens the notes: a note it scores over the threshold drops the run as screen, Jev asked on the saved key and the grader never", { timeout: 150_000 }, async (t) => {
+  const dir = await scratch(t);
+  const jev = join(dir, "jev.jsonl");
+  const calls = join(dir, "calls.jsonl");
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_JEV_CALLS: jev, AGENTRUN_TEST_FAUX_CALLS: calls }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_NO_USAGE", "AGENTRUN_TEST_FAUX_GRADE_HOLD"]);
+  const { api } = await serve(t, { learning: "on", faux: LEARN, fauxJev: FAUX_JEV });
+  assert.equal((await api("PUT", "/settings/tool-keys/typesafe", { values: { TYPESAFE_API_KEY: CANARY } })).status, 204);
+  await made(api, learner("screened", { plan: PLAN }));
+  const runId = await started(api, "screened");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "dropped", "screen");
+  assert.ok(callsIn(jev).length >= 1 && callsIn(jev).every((call) => call.authorized && call.pid === process.pid), "the server asked Jev, on the saved key");
+  assert.deepEqual(callsIn(calls), [], "the grader was never asked");
+});
+
 test("a server that goes mid-grade grades the run once at its next start; a run whose kept verdict is merged again is the merge already on main, never a second", { timeout: 180_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls, AGENTRUN_TEST_FAUX_GRADE_HOLD: "1" }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
