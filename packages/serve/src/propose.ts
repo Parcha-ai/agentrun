@@ -9,7 +9,7 @@
 import { constants } from "node:fs";
 import { lstat, open, opendir } from "node:fs/promises";
 import { join } from "node:path";
-import { CAPS, type Change, checkProposal, INDEX_FILE, type Problem, printable } from "@parcha/agentrun-learn";
+import { CAPS, type Change, checkProposal, GRADE_CAPS, INDEX_FILE, type Problem, printable, redactSecrets } from "@parcha/agentrun-learn";
 import { homeOf, writeDurable } from "./files.js";
 import { activeOf, agentFolder, LEARNED_SNAPSHOT, type Proposal, PROPOSAL, readSeed, withAgentRepo } from "./learning.js";
 
@@ -81,10 +81,14 @@ async function harvest(dir: string, laid: ReadonlyMap<string, string>): Promise<
   return { changes, own };
 }
 
+/** `text`'s first `max` UTF-16 units, never half a character. */
+const cut = (text: string, max: number) => (text.length <= max ? text : [...text].reduce((out, ch) => (out.length + ch.length > max ? out : out + ch), ""));
+
 /** What run `runId`'s end-of-run turn added, read from its snapshot, checked against its seed `seed` (its pin) and kept
- *  in `runDir` as its proposal; or `empty` when it added nothing, or `checker` with the problems, printable. `refuse`:
- *  this host's secrets. In the agent's queue. A snapshot that is not there throws. */
-export const proposeRun = (input: { data: string; agentId: string; runDir: string; seed: string; refuse: readonly string[] }): Promise<Proposed> => withAgentRepo(input.data, input.agentId, async () => {
+ *  in `runDir` as its proposal, with `asked`, what the user said in the run, as the grader reads it (each message cut to
+ *  GRADE_CAPS.askedMessage, then of the host's secrets); or `empty` when it added nothing, or `checker` with the
+ *  problems, printable. `refuse`: this host's secrets. In the agent's queue. A snapshot that is not there throws. */
+export const proposeRun = (input: { data: string; agentId: string; runDir: string; seed: string; refuse: readonly string[]; asked?: readonly string[] }): Promise<Proposed> => withAgentRepo(input.data, input.agentId, async () => {
   const seed = await readSeed(homeOf(input.data, input.agentId), await agentFolder(input.data, input.agentId), input.seed);
   const { changes, own } = await harvest(join(input.runDir, LEARNED_SNAPSHOT), new Map(Object.entries(seed.notes))).catch((error: NodeJS.ErrnoException) => {
     // Never the error's own text, which names a path of the run's: it may hold anything.
@@ -94,7 +98,8 @@ export const proposeRun = (input: { data: string; agentId: string; runDir: strin
   const problems = [...own.map((problem) => printable(problem, input.refuse)), ...checked.problems];
   if (problems.length) return { state: "dropped", reason: "checker", problems };
   if (!checked.notes.length) return { state: "dropped", reason: "empty" };
-  const proposal: Proposal = { seed: input.seed, notes: checked.notes.map(({ file, text }) => ({ file, text })) };
+  const asked = (input.asked ?? []).map((message) => redactSecrets(cut(message, GRADE_CAPS.askedMessage), input.refuse));
+  const proposal: Proposal = { seed: input.seed, notes: checked.notes.map(({ file, text }) => ({ file, text })), asked };
   await writeDurable(join(input.runDir, PROPOSAL), `${JSON.stringify(proposal)}\n`);
   return { state: "proposed", notes: proposal.notes.length };
 });

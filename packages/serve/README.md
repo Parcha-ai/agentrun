@@ -807,10 +807,13 @@ holding one of the server's own secrets (the launcher's, the keys and tokens in 
 tokens), in a note or its name.
 `MEMORY.md` as the turn left it is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`.
 
-Then one grader decides, one grade at a time per agent: packages/learn's `gradePrompt` asked of the agent's own model,
-bounded (3 minutes), against `main` as it is then, and read by `parseVerdict`, which fails closed. The grader reads each
-active note's index line, the whole text only of the notes the proposal supersedes, and the new notes, so its prompt
-stays under 200,000 characters however many notes the folder holds. Only with Jev's key here does an injection screen
+Then one grader decides, one grade at a time per agent: packages/learn's `gradePrompt`, bounded (3 minutes), against
+`main` as it is then, and read by `parseVerdict`, which fails closed. It runs on the model the server grades on:
+`--grade-model` (or `AGENTRUN_SERVE_GRADE_MODEL`), else the strong tier (`AGENT_MODEL_STRONG`), named as the strong tier
+takes one; with neither, on the agent's own model. A cheap model is a poor grader, so point the strong tier (or
+`--grade-model`) at a strong one. The grader reads each active note's index line, the whole text only of the notes the
+proposal supersedes, what the user said in the run (cut of the server's secrets, as the proposal keeps it), and the new
+notes, so its prompt stays under 200,000 characters however many notes the folder holds. Only with Jev's key here does an injection screen
 run first, on Jev: a note it scores at `INJECTION_THRESHOLD` (0.75) or over, or cannot score, drops the run. What the
 grade spends is in no run's totals: it is kept on the run's learning, and counted once on `GET /usage` under the meter
 `learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.

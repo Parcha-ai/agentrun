@@ -1,8 +1,10 @@
 // Learning, its grade and its merge: once a run's proposal passed the checks (propose.ts), one grader decides whether its
 // new notes join the agent's main, and the host merges them.
-// - The grader is packages/learn's gradePrompt, asked as one bounded completion on the agent's own model, against main as
-//   it is now: each active note's index line, and the whole text only of the notes the proposal supersedes, so the
-//   prompt is bounded whatever the folder holds (GRADE_CAPS). Its answer is read by parseVerdict, which fails closed. A
+// - The grader is packages/learn's gradePrompt, asked as one bounded completion against main as it is now: each active
+//   note's index line, the whole text only of the notes the proposal supersedes, and what the user said in the run, so
+//   the prompt is bounded whatever the folder holds (GRADE_CAPS). It runs on the model the server names for grading
+//   (gradeModelOf: `--grade-model`, else its strong tier), else on the agent's own. Its answer is read by parseVerdict,
+//   which fails closed. A
 //   call cut off at its bound spent what nobody knows: the grade's cost is then unknown, never $0. Before it, and only
 //   when this server has an independent judge (Jev), each new note goes through the injection screen: pi-browser's page
 //   classifier with its own INJECTION_THRESHOLD. A score at or over it refuses the proposal, and no score refuses it too.
@@ -139,12 +141,24 @@ const tokensOf = (usage: PiUsage | undefined): Tokens | null =>
   usage && [usage.input, usage.output, usage.cacheRead ?? 0, usage.cacheWrite ?? 0].every((n) => Number.isSafeInteger(n) && n >= 0) ? { input: usage.input, cache_read: usage.cacheRead ?? 0, cache_write: usage.cacheWrite ?? 0, output: usage.output } : null;
 type PiModels = { getModel(provider: string, id: string): unknown; completeSimple(...args: unknown[]): Promise<{ usage?: PiUsage }> };
 
-/** One completion on the agent's own model, as its run's process picks it (app.ts): claude-agent's from pi-ai's catalog,
- *  sent where the run's own requests go (claudeProvider), any other harness's by runModels (the gateway, pi-ai's
- *  providers, or the faux module), at its revision's thinking; counted in `cost` (a call that fails has an unknown cost). */
-async function agentModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost): Promise<Complete> {
+/** The variable that names the grader's model, as `--grade-model` does. */
+export const GRADE_MODEL_ENV = "AGENTRUN_SERVE_GRADE_MODEL";
+/** The model this server grades on, by name: `given` (`--grade-model`), else GRADE_MODEL_ENV, else its strong tier
+ *  (AGENT_MODEL_STRONG); undefined when it names none, and each run is graded on its agent's own model. A name is a
+ *  model as the strong tier takes one: sent as it is to a gateway, a provider/model-id otherwise. */
+export const gradeModelOf = (env: NodeJS.ProcessEnv, given?: string): string | undefined => given || env[GRADE_MODEL_ENV] || env.AGENT_MODEL_STRONG || undefined;
+
+/** One completion for the grader: on the model the server names for grading (`named`), picked as a workflow's strong
+ *  tier is (runModels: the gateway, pi-ai's providers, or the faux module); else on the agent's own model, as its run's
+ *  process picks it (app.ts): claude-agent's from pi-ai's catalog, sent where the run's own requests go
+ *  (claudeProvider), any other harness's by runModels. At its revision's thinking; counted in `cost` (a call that fails
+ *  has an unknown cost). */
+async function graderModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost, named: string | undefined): Promise<Complete> {
   let chosen;
-  if (agent.harness === "claude-agent" && !env[FAUX_HARNESS_ENV]) {
+  if (named) {
+    const picked = await runModels({ ...env, AGENT_MODEL_STRONG: named }, undefined, ["strong"]);
+    chosen = { models: picked.models, model: picked.byTier.get("strong")! };
+  } else if (agent.harness === "claude-agent" && !env[FAUX_HARNESS_ENV]) {
     const choice = claudeModel(env, agent.model);
     if ("why" in choice) throw new Error(choice.why);
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
@@ -193,10 +207,11 @@ async function independentJudge(env: NodeJS.ProcessEnv, cost: GradeCost): Promis
   };
 }
 
-/** The screen (only with an independent judge), then the grader: the first note the screen refuses or cannot judge, the
- *  grader's verdict, or why the grader gave none; with what it spent. Rejects only when `signal` (the server closing)
- *  aborts it: nothing is decided then. */
-export async function judgeProposal(input: { runId: string; agent: Agent; main: GradeMain; proposed: NoteText[]; env: NodeJS.ProcessEnv; signal: AbortSignal; gradeTimeoutMs?: number }): Promise<Judged> {
+/** The screen (only with an independent judge), then the grader, on `gradeModel` when the server names one (gradeModelOf),
+ *  given `asked`, what the user said in the run: the first note the screen refuses or cannot judge, the grader's verdict,
+ *  or why the grader gave none; with what it spent. Rejects only when `signal` (the server closing) aborts it: nothing
+ *  is decided then. */
+export async function judgeProposal(input: { runId: string; agent: Agent; main: GradeMain; proposed: NoteText[]; asked?: readonly string[]; gradeModel?: string; env: NodeJS.ProcessEnv; signal: AbortSignal; gradeTimeoutMs?: number }): Promise<Judged> {
   const { runId, agent, main, proposed, env, signal } = input;
   const cost: GradeCost = { usd: 0, tokens: { ...NO_TOKENS } };
   const judge = await independentJudge(env, cost);
@@ -214,8 +229,8 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
   }
   try {
     const { gradePrompt, parseVerdict } = await import("@parcha/agentrun-learn");
-    const prompt = gradePrompt({ run: runId, instructions: agent.instructions, active: main.active, superseded: main.superseded, proposed });
-    const grader = await agentModel(env, agent, cost);
+    const prompt = gradePrompt({ run: runId, instructions: agent.instructions, active: main.active, superseded: main.superseded, proposed, ...(input.asked ? { asked: input.asked } : {}) });
+    const grader = await graderModel(env, agent, cost, input.gradeModel);
     const answer = await bounded(input.gradeTimeoutMs ?? GRADE_TIMEOUT_MS, signal, cost, (grade) => grader({ prompt, maxTokens: GRADE_MAX_TOKENS }, grade));
     return { verdict: parseVerdict(answer.text, proposed), cost };
   } catch (error) {

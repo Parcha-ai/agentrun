@@ -46,6 +46,43 @@ test("the grader's verdict decides: a drop, a merge that keeps no note and an an
   assert.equal(callsIn(calls).filter((call) => call.kind === "grade").length, cases.length, "one grader call a run");
 });
 
+test("the grader runs on the model the server names for it, --grade-model (AGENTRUN_SERVE_GRADE_MODEL) before its strong tier (AGENT_MODEL_STRONG), whatever the agent's own model; with neither, on the agent's own", { timeout: 180_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const graded = async (options, env = {}) => {
+    Object.assign(process.env, env);
+    const { api, close } = await serve(t, { learning: "on", faux: LEARN, ...options });
+    await made(api, learner("model", { plan: PLAN }));
+    const { view, rows } = await ended(api, await started(api, "model"));
+    settled(view, rows, "merged");
+    for (const name of Object.keys(env)) delete process.env[name];
+    await close();
+    return callsIn(calls).at(-1).model;
+  };
+  assert.equal(await graded({}), "faux-1", "neither: the agent's own model");
+  assert.equal(await graded({}, { AGENT_MODEL_STRONG: "faux-strong" }), "faux-strong", "the strong tier");
+  assert.equal(await graded({}, { AGENT_MODEL_STRONG: "faux-strong", AGENTRUN_SERVE_GRADE_MODEL: "faux-grader" }), "faux-grader", "the grade model's variable, before the strong tier");
+  assert.equal(await graded({ gradeModel: "faux-named" }, { AGENTRUN_SERVE_GRADE_MODEL: "faux-grader" }), "faux-named", "the option, before the variable");
+  assert.equal(callsIn(calls).length, 4, "one grade a run");
+});
+
+test("the grader reads what the user said in the run, in order and cut of the server's secrets, and never the end-of-run turn's message", { timeout: 150_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api, token, data } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("asked", { plan: PLAN }));
+  const runId = await started(api, "asked", `Remember for next time: answer in tables. The server's token is ${token}.`);
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "merged");
+  const [call] = callsIn(calls);
+  assert.deepEqual(call.asked, ["1. Remember for next time: answer in tables. The server's token is [redacted]."]);
+  assert.ok(!JSON.stringify(callsIn(calls)).includes(token), "the token never reached the grader");
+  // The proposal keeps them as the grader read them, so a grade after a restart reads the same.
+  const proposal = readFileSync(join(data, "runs", runId, "learning-proposal.json"), "utf8");
+  assert.deepEqual(JSON.parse(proposal).asked, ["Remember for next time: answer in tables. The server's token is [redacted]."]);
+  assert.ok(!proposal.includes(token));
+});
+
 test("with no independent judge there is no injection screen: Jev is never asked, the grader alone decides, and the run merges", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   withEnv(t, { AGENTRUN_TEST_FAUX_JEV_CALLS: join(dir, "jev.jsonl"), AGENTRUN_TEST_FAUX_CALLS: join(dir, "calls.jsonl") }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD"]);

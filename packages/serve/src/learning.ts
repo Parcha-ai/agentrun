@@ -65,9 +65,11 @@ export const shortLearning = (learning: Learning | null) => (learning ? { state:
 /** The label of the end-of-run turn's timeline rows, and the kind and label of a run's learning row. */
 export const LEARNING_LABEL = "learning";
 
-/** A run's proposal, in its directory (propose.ts): the seed it was checked against, and each new note's file and text. */
+/** A run's proposal, in its directory (propose.ts): the seed it was checked against, each new note's file and text, and
+ *  what the user said in the run as the grader reads it (each message cut to GRADE_CAPS.askedMessage and of the host's
+ *  secrets; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
-export type Proposal = { seed: string; notes: { file: string; text: string }[] };
+export type Proposal = { seed: string; notes: { file: string; text: string }[]; asked?: string[] };
 
 /** A run's pin, in its directory: written once, when the run is made, and never changed by a resume. */
 export const LEARNING_PIN = "learning.json";
