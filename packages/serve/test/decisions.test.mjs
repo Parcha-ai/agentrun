@@ -203,6 +203,56 @@ test("with no decision key, a run's process gets no key descriptor at all", asyn
   assert.equal(last.status, "completed");
 });
 
+/** A model node that reports the names of the decision keys its process was handed (faux-model.mjs), and its schema. */
+const keysNode = (tools) => ({ node: "extract", label: "keys", instructions: "Report the decision keys.", out: "Names", as: "names", ...(tools ? { tools } : {}) });
+const NAMES = { Names: { type: "object", required: ["names"], properties: { names: { type: "array", items: { type: "string" } } } } };
+
+test("a workflow is handed only the decision keys its nodes need: none with no decision node (no descriptor at all), Jev's alone for a Jev judge, Parallel's alone for a Parallel judge or web_fetch, on a server holding Jev's, Parallel's and OpenRouter's", async (t) => {
+  withEnv(t, { TYPESAFE_API_KEY: CANARY, PARALLEL_API_KEY: PARALLEL_CANARY, OPENROUTER_API_KEY: OTHER_ROUTER_KEY }, KEYS);
+  const gate = join(await scratch(t), "go");
+  const { api, data } = await serve(t, { fauxJev: FAUX_JEV, fauxParallel: FAUX_PARALLEL });
+  // No decision node: no descriptor at all.
+  const runId = await startFlow(api, [probe(gate)]);
+  const pid = await processOf(data, runId);
+  assert.equal((await readFile(`/proc/${pid}/environ`, "utf8")).includes("AGENTRUN_SERVE_DECISION_KEY_FD"), false, "no descriptor is named");
+  assert.equal(await handedSocket(pid, KEY_FD), false, "and none is open");
+  await writeFile(gate, "");
+  assert.equal((await follow(api, runId, ["completed", "failed"])).last.status, "completed");
+  // Each with what its nodes need, and no other.
+  const handed = async (id, steps) => {
+    const doc = flow(steps, { schemaId: "Names", path: "names" });
+    Object.assign(doc.schemas, NAMES);
+    assert.equal((await api("POST", "/agents", flowAgent(id, doc))).status, 201);
+    const { body } = await api("POST", `/agents/${id}/runs`, { input: { question: QUESTION } });
+    const { last } = await follow(api, body.run_id, ["completed", "failed"]);
+    const run = (await api("GET", `/runs/${body.run_id}`)).body;
+    assert.equal(last.status, "completed", JSON.stringify(run.error));
+    return run.result.output.names;
+  };
+  assert.deepEqual(await handed("onjev", [judge, keysNode()]), ["TYPESAFE_API_KEY"], "a Jev judge: Jev's key alone");
+  assert.deepEqual(await handed("onparallel", [onParallel, keysNode()]), ["PARALLEL_API_KEY"], "a Parallel judge: Parallel's alone");
+  assert.deepEqual(await handed("fetching", [keysNode(["web_fetch"])]), ["PARALLEL_API_KEY"], "a node naming web_fetch: Parallel's, for its extract");
+  assert.deepEqual(await handed("plain", [keysNode()]), [], "no decision node: none");
+});
+
+test("decisionNeedsFor and decisionKeysFor: a run's decision keys by what it runs, an agentic run Parallel's for web_fetch alone; Jev's by its route", async () => {
+  const { decisionNeedsFor } = await import("../dist/runs.js");
+  const { decisionKeysFor } = await import("../dist/decisions.js");
+  const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
+  const workflow = (steps) => revision("workflow", { workflow: flow(steps) });
+  const keys = { TYPESAFE_API_KEY: "t".repeat(20), PARALLEL_API_KEY: "p".repeat(20), OPENROUTER_API_KEY: "o".repeat(20) };
+  const names = async (rev, env = keys) => Object.keys(decisionKeysFor(env, await decisionNeedsFor(rev))).sort();
+  assert.deepEqual(await names(revision("agentic", { instructions: "Answer." })), [], "an agentic run: none");
+  assert.deepEqual(await names(revision("agentic", { instructions: "Answer.", tools: ["web_fetch"] })), ["PARALLEL_API_KEY"], "an agentic run naming web_fetch: Parallel's");
+  assert.deepEqual(await names(workflow([probe()])), [], "no decision node: none");
+  assert.deepEqual(await names(workflow([judge, probe()])), ["TYPESAFE_API_KEY"]);
+  assert.deepEqual(await names(workflow([judge, probe()]), { OPENROUTER_API_KEY: keys.OPENROUTER_API_KEY, PARALLEL_API_KEY: keys.PARALLEL_API_KEY }), ["OPENROUTER_API_KEY"], "Jev on the OpenRouter route: OpenRouter's");
+  assert.deepEqual(await names(workflow([onParallel, probe()])), ["PARALLEL_API_KEY"]);
+  assert.deepEqual(await names(workflow([{ ...judge, provider: "openrouter", model: "m" }, probe()])), ["OPENROUTER_API_KEY"], "an OpenRouter decision node: OpenRouter's");
+  assert.deepEqual(await names(workflow([judge, onParallel, probe()])), ["PARALLEL_API_KEY", "TYPESAFE_API_KEY"]);
+  assert.deepEqual(await names(workflow([{ node: "call", label: "page", via: "tool", tool: "web_fetch", args: { url: "https://example.com/" }, out: "Probe", as: "page", deadline_s: 30 }, probe()])), ["PARALLEL_API_KEY"], "a call node to web_fetch: Parallel's");
+});
+
 test("with TYPESAFE_API_KEY set, a judge workflow runs on Jev and its decision is recorded in the run", async (t) => {
   const seen = await withCanary(t);
   const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
