@@ -12,7 +12,7 @@ import type { Context } from "@earendil-works/chord";
 import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
 import { ArchilCodingTools } from "@parcha/pi-durable-disk";
 import { BOX_WORK, type Place } from "./place.js";
-import { asGivenRefusals } from "./workspace-paths.js";
+import { asGivenRefusals, refuseOutsideWorkspace } from "./workspace-paths.js";
 
 // pi-durable-disk's types name the pi-durable it resolves, which a build at another pi version (the pi-floor legs) can
 // hold apart from this package's own: the extension crosses that boundary as a value, typed on this side.
@@ -49,17 +49,18 @@ export function boxPath(path: string, hostWork?: string): string | undefined {
 export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
   if (place.mode === "runner") return { extension: CodingTools, tools: CodingTools.tools ?? [] };
   if (!box) throw new Error("a run whose place is a box needs its box for its coding tools");
-  const tools = (pis.tools ?? []).filter((tool) => BOXED_TOOLS.includes(tool.name)).map((tool): ToolRegistration => ({
+  const tools = asGivenRefusals((pis.tools ?? []).filter((tool) => BOXED_TOOLS.includes(tool.name)).map((tool): ToolRegistration => ({
     ...tool,
     execute: async (args, api, context) => {
-      // A file tool's path in the box's words, or refused in the confined tools' words.
+      // A file tool's path in the box's words, or refused as the confined tools refuse (refuseOutsideWorkspace): named
+      // by the path the call gave and no other, the box's work dir included.
       const path = (args as { path?: unknown } | null)?.path;
       const inBox = typeof path === "string" ? boxPath(path, box.hostWork) : undefined;
-      if (typeof path === "string" && inBox === undefined) throw new Error(`${path}: outside the workspace ${BOX_WORK}`);
+      if (typeof path === "string" && inBox === undefined) refuseOutsideWorkspace(path);
       const given = inBox === undefined ? args : { ...(args as object), path: inBox };
       return tool.execute(given as typeof args, { ...api, env: (await box.env(context)) as typeof api.env }, context);
     },
-  }));
+  })));
   // The permission gate (allow, ask, deny) wraps this source: the one call it takes, whichever of the two lands second.
   return { extension: { ...pis, tools }, tools };
 }
