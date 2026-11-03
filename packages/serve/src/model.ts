@@ -5,7 +5,7 @@
 // gateway; otherwise pi-ai's providers serve it, with their keys from the environment.
 import { pathToFileURL } from "node:url";
 import type { ModelCost, ModelThinkingLevel, Provider, ProviderStreams } from "@earendil-works/pi-ai";
-import { DEFAULT_HARNESS } from "./harness.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { authContextOf } from "./secrets.js";
 
 /** The child's environment names the faux module by absolute path. */
@@ -43,10 +43,26 @@ export const MODEL_KEYS = [
   { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/anthropic/claude-sonnet-5.5", harnesses: [DEFAULT_HARNESS] },
 ] as const;
 
-/** The model a revision that names none runs on with `harness`, for `tier`: the host's (the tier's own variable, else
- *  `AGENT_MODEL`), else that of the first of MODEL_KEYS whose key is here and that `harness` runs on. */
-export const hostModel = (env: NodeJS.ProcessEnv, tier: Tier = "default", harness: string = DEFAULT_HARNESS): string | undefined =>
-  env[TIER_ENV[tier]] || env.AGENT_MODEL || MODEL_KEYS.find((row) => env[row.field] && (row.harnesses as readonly string[]).includes(harness))?.model;
+/** Whether `harness` runs the model `id`: pi any; claude-agent an Anthropic model (`anthropic/...`), as it talks to
+ *  Anthropic's endpoint only; codex an OpenAI model, or a gateway's own id (no provider, through AGENT_MODEL_BASE_URL),
+ *  as it takes that gateway for its OpenAI-compatible endpoint. On the faux harness every harness runs the run's model. */
+export function harnessRuns(env: NodeJS.ProcessEnv, id: string, harness: string): boolean {
+  if (harness === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV]) return true;
+  const slash = id.indexOf("/");
+  const provider = slash > 0 ? id.slice(0, slash) : undefined;
+  if (harness === "claude-agent") return provider === "anthropic";
+  if (harness === "codex") return provider === "openai" || (provider === undefined && Boolean(env.AGENT_MODEL_BASE_URL));
+  return true;
+}
+
+/** The model a revision that names none runs on with `harness`, for `tier`: the tier's own variable, else AGENT_MODEL,
+ *  each only when `harness` runs it (harnessRuns; one it can't is skipped, never an error), else that of the first of
+ *  MODEL_KEYS whose key is here (a placeholder behind a base URL counts) and that `harness` runs on. Undefined when none
+ *  is: the harness has no default here. */
+export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harness: string = DEFAULT_HARNESS): string | undefined {
+  for (const id of [env[TIER_ENV[tier]], env.AGENT_MODEL]) if (id && harnessRuns(env, id, harness)) return id;
+  return MODEL_KEYS.find((row) => env[row.field] && (row.harnesses as readonly string[]).includes(harness))?.model;
+}
 /** A faux model id per tier: `faux-1`, or the id a tier's variable names. */
 const fauxModel = (env: NodeJS.ProcessEnv, tier: Tier): string => (tier === "default" ? undefined : env[TIER_ENV[tier]]) || "faux-1";
 
