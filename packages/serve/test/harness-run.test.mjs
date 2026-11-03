@@ -21,6 +21,8 @@ const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).p
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer;
+/** The timeline's rows that say the run's process opened again after the last one ended unfinished. */
+const resumedRows = (rows) => rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary);
 
 async function started(api, id, instructions, harness = "claude-agent", tools = []) {
   assert.equal((await api("POST", "/agents", agent(id, { harness, instructions, tools }))).status, 201);
@@ -51,7 +53,7 @@ test("one turn of three paid requests costs their sum, once: never twice", { tim
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.007);
 });
 
-test("a run whose process dies mid-turn after a paid request resumes on the next process and finishes; each paid request counted once", { timeout: 90_000 }, async (t) => {
+test("a run whose process dies mid-turn after a paid request resumes on the next process and finishes; each paid request counted once; its timeline says it resumed after a crash", { timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");
   const runId = await started(api, "resume", `Wait for ${go} before the answer.`);
@@ -66,6 +68,26 @@ test("a run whose process dies mid-turn after a paid request resumes on the next
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "Done after the wait.");
   assert.deepEqual(usageOf(rows), { usd: 0.006, requests: 2 }, "the request before the kill and the one after it, once each");
+  assert.deepEqual(resumedRows(rows), ["Resumed after a crash"], "one stored row, kept by the settle's read");
+});
+
+test("a run that the server stopped mid-turn goes on at the next start, and its timeline says it resumed after the server stopped", { timeout: 90_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const first = await serve(t, { data, fauxHarness: FAUX_HARNESS });
+  const go = join(await scratch(t), "go");
+  const runId = await started(first.api, "drained", `Wait for ${go} before the answer.`);
+  for (let i = 0; !(await first.api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+    assert.ok(i < 300, "the first request's tool row");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await first.close();
+  const left = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  assert.deepEqual([left.status, left.detail?.reason], ["sleeping", "drained"], "drained, not crashed");
+  const next = await serve(t, { data, fauxHarness: FAUX_HARNESS });
+  await writeFile(go, "");
+  const { rows } = await follow(next.api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(await answer(next.api, runId), "Done after the wait.");
+  assert.deepEqual(resumedRows(rows), ["Resumed after the server stopped"], "one stored row, kept by the settle's read");
 });
 
 test("a chat sent while a turn works, then the server and the run's process die: the next server's run finishes the turn and answers the chat before it completes, never dropping it", { timeout: 120_000 }, async (t) => {
