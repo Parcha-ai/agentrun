@@ -68,6 +68,16 @@ test("a cost still pending reads at most what its host held for it, live and set
   assert.deepEqual(usageOf([user("go"), started(), early(), custom(REQUEST_COST_PENDING, { request: 1 })]), { usd: null, requests: 1 }, "a pending cost whose request has no figure anywhere: unbounded");
 });
 
+test("a late cost closes the pending cost of the request it names, never the oldest one: two turns' late costs in reverse order keep the other one's hold", () => {
+  const key = "run:1";
+  // A held 0.50 and B held 0.10, each written pending; B's late cost ($0.01) comes first.
+  const entries = [user("go"), started(0.5), early(), custom(REQUEST_COST_PENDING, { key, request: 1, heldUsd: 0.5 }), user("again"), started(0.1), early(), custom(REQUEST_COST_PENDING, { key, request: 2, heldUsd: 0.1 }), custom(REQUEST_COST_LATE, { key, request: 2, usd: 0.01 })];
+  assert.deepEqual(usageOf(entries), { usd: null, requests: 2, at_most_usd: 0.51 }, "A can still cost up to its 0.50: never 0.11");
+  assert.deepEqual(usageOf([...entries, custom(REQUEST_COST_LATE, { key, request: 1, usd: 0.2 })]), { usd: 0.21, requests: 2 }, "both in: known");
+  // An older pending mark names no request: the oldest is closed first, as before.
+  assert.deepEqual(usageOf([user("go"), started(0.5), early(), custom(REQUEST_COST_PENDING, {}), started(0.1), early(), custom(REQUEST_COST_PENDING, {}), custom(REQUEST_COST_LATE, { usd: 0.01 })]), { usd: null, requests: 2, at_most_usd: 0.51 }, "no identity: the oldest closes, at the pool's largest figure for the other");
+});
+
 test("a request whose start mark a crash lost, marked again from its host's record before its cut answer, counts at its own figure, never at another start's", () => {
   // Request 1 (held 0.01) answered at $0.002; request 2 (held 0.5) cut, its start written by the next open.
   assert.deepEqual(usageOf([user("go"), started(0.01), priced("one", 0.002), started(0.5), noPrice()]), { usd: null, requests: 2, at_most_usd: 0.502 });
