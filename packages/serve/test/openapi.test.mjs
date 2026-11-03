@@ -378,7 +378,13 @@ test("what a run read and learned and what learning changed for its agent are le
   for (let i = 0; i < 3; i++) views.push((await ended(api, await started(api, id))).view);
   assert.deepEqual(views.map((view) => [view.learning.state, Boolean(view.learning.used), Boolean(view.learning.learned)]), [["dropped", false, false], ["merged", false, true], ["dropped", true, false], ["dropped", true, false]]);
   const listed = (await api("GET", `/agents/${id}/runs`)).body.runs;
+  const runLearning = doc.paths["/runs/{run_id}/learning"].get.responses["200"].content["application/json"].schema;
+  for (const field of ["used", "learned"]) assert.equal(runLearning.oneOf[0].properties[field]["x-agentrun-serve"], "learning/2", `GET /runs/{run_id}/learning's ${field}`);
+  assert.match(whole.oneOf[0].properties.used.description, /bash/, "a read through a command is not counted, and says so");
   for (const view of views) {
+    const all = (await api("GET", `/runs/${view.run_id}/learning`)).body;
+    assert.deepEqual([all.used, all.learned], [view.learning.used, view.learning.learned], "the run's learning whole names the same notes");
+    assert.deepEqual(schemaProblems(doc, runLearning, all), [], JSON.stringify(all));
     assert.deepEqual(schemaProblems(doc, whole, view.learning), [], JSON.stringify(view.learning));
     const row = listed.find((run) => run.run_id === view.run_id).learning;
     assert.deepEqual(schemaProblems(doc, short, row), [], JSON.stringify(row));

@@ -76,6 +76,8 @@ export const STOPPED = {
 export const said = {
   seeded: (notes: number) => (notes === 0 ? "Started with nothing learned yet." : `Started from ${count(notes, "note")}.`),
   reflecting: "Looking back on this run…",
+  /** The end-of-run turn's message, as a person reads it in the timeline: never the prompt the model is sent. */
+  asked: "Looking back on this run.",
   proposed: (notes: number) => `Checking ${count(notes, "new note")}…`,
   /** What it learned, by name (each at most 100 characters), and how many older notes they replace. */
   merged: (learned: readonly { name: string; supersedes: readonly string[] }[]) => {

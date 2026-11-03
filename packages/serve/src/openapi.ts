@@ -284,18 +284,38 @@ const VERDICT_ITEM = {
     why: { type: "string", description: "One sentence, the grader's, cut of the host's secrets." },
   },
 };
+/** A note's file name, as a run's learning names one. */
+const NOTE_NAME_FILE = { type: "string", description: "The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now." };
+/** The notes a run read and learned, on its learning block (runs.ts, learning.ts notesView): each present only when it
+ *  holds a note. */
+const LEARNING_NOTES: Record<string, Json> = {
+  used: {
+    type: "array", minItems: 1,
+    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." } }),
+    description: "The notes this run read from `.learning/` in its working directory, in the order it first read each: every `read` call of its job (on any harness) whose result was a success and that names a note the run started from. A note read another way, through a command (`bash`'s `cat .learning/<file>`, say), is not counted. MEMORY.md, the index every run gets in its instructions, is not one; nor is a read the run's end-of-run turn made. Found once, as the run settles, and kept with the run: absent while it runs (a follow-up included) and when it read none.",
+    "x-agentrun-serve": "learning/2",
+  },
+  learned: {
+    type: "array", minItems: 1,
+    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." }, supersedes: { type: "array", items: NOTE_NAME_FILE, description: "The older notes it replaced, each now `superseded` by it; empty when it replaced none." } }),
+    description: "The notes this run's learning added to the agent's learning folder: present once `state` is `merged`, absent otherwise.",
+    "x-agentrun-serve": "learning/2",
+  },
+};
+/** `properties` as a closed object, its `optional` ones left out of `required`. */
+const closedWith = (properties: Record<string, Json>, optional: Record<string, Json>) => ({ ...closed(properties), properties: { ...properties, ...optional } });
 const RUN_LEARNING = {
   oneOf: [
-    closed({
+    closedWith({
       run: { type: "string" }, state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON,
-      detail: { ...NULL_STRING, description: "One plain sentence: never a secret or a value from the input." }, at: { type: "string", format: "date-time" },
+      detail: { ...NULL_STRING, description: "Run.learning's detail: one sentence in a person's words, cut of the host's secrets as they are now." }, at: { type: "string", format: "date-time" },
       seed: { ...NULL_STRING, description: "The commit of main the run started from; null when its seed failed." },
       merged: { ...NULL_STRING, description: "Its merge commit on main, once merged." },
       verdict: { oneOf: [closed({ merge: { type: "boolean" }, reason: { type: "string" }, items: { type: "array", items: VERDICT_ITEM, description: "One for each new note the run proposed." } }), { type: "null" }], description: "The grader's, once it judged; null when no grade ran." },
       problems: { type: "array", items: PROBLEM, description: "The checker's, when the reason is `checker`." },
       cost_usd: closed({ grade: { type: ["number", "null"], description: "The grade's, outside the run (GET /usage's `learning` meter); null before a grade ran, or when its cost is unknown. The end-of-run turn's cost is in the run's own totals." } }),
       tokens: closed({ grade: { oneOf: [closed({ input: COUNT, cache_read: COUNT, cache_write: COUNT, output: COUNT }), { type: "null" }], description: "The grade's tokens; `input` excludes cached input." } }),
-    }),
+    }, LEARNING_NOTES),
     { type: "null" },
   ],
   description: "The run's learning whole. Null for a run that does not learn.",
@@ -696,26 +716,6 @@ const REVIEW: Json = {
   "x-agentrun-serve": "review/1",
 };
 const LEARNING_NULL = "Null for a run that does not learn: its agent's `learning` is not true, the server's learning was off when it started (`capabilities.features.learning`), or it is a workflow's or an imported run.";
-/** A note's file name, as a run's learning names one. */
-const NOTE_NAME_FILE = { type: "string", description: "The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now." };
-/** The notes a run read and learned, on its learning block (runs.ts, learning.ts notesView): each present only when it
- *  holds a note. */
-const LEARNING_NOTES: Record<string, Json> = {
-  used: {
-    type: "array", minItems: 1,
-    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." } }),
-    description: "The notes this run read from `.learning/` in its working directory, in the order it first read each: every `read` call of its job (on any harness) whose result was a success and that names a note the run started from. MEMORY.md, the index every run gets in its instructions, is not one; nor is a read the run's end-of-run turn made. Found once, as the run settles, and kept with the run: absent while it runs (a follow-up included) and when it read none.",
-    "x-agentrun-serve": "learning/2",
-  },
-  learned: {
-    type: "array", minItems: 1,
-    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." }, supersedes: { type: "array", items: NOTE_NAME_FILE, description: "The older notes it replaced, each now `superseded` by it; empty when it replaced none." } }),
-    description: "The notes this run's learning added to the agent's learning folder: present once `state` is `merged`, absent otherwise.",
-    "x-agentrun-serve": "learning/2",
-  },
-};
-/** `properties` as a closed object, its `optional` ones left out of `required`. */
-const closedWith = (properties: Record<string, Json>, optional: Record<string, Json>) => ({ ...closed(properties), properties: { ...properties, ...optional } });
 /** A run's learning (runs.ts): whether it started from what its agent learned. */
 const LEARNING = {
   oneOf: [

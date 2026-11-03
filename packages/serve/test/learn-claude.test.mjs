@@ -3,6 +3,8 @@
 // work/.learning/, are proposed, graded on the agent's own model at the same endpoint, and merged. The scripted model
 // does what a model does with that message: one note at the folder it names, relative, and one at its CLI's working
 // directory joined with that folder, as a model that resolves "in your working directory" writes it (QA run 3, F20).
+// What the model reads of that message is checked here, where the model reads it: the folder relative to the run's
+// work, never a host path. The run's timeline shows a person only that it looks back.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -23,6 +25,7 @@ const CWD = /(?:Primary working directory|Working directory): (\/[^\s"\\]+)/;
 test("on claude-agent's real adapter, the end-of-run turn's notes land in the run's work/.learning/, one written relative to the folder the turn names and one at the CLI's working directory, and both are proposed, graded at the same endpoint and merged", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   let cwd;
   let graded = 0;
+  let prompt;
   const fake = await fakeAnthropic({
     reply: (r) => {
       // The grader: one call with no tools, on the agent's own model, which keeps both notes.
@@ -36,7 +39,8 @@ test("on claude-agent's real adapter, the end-of-run turn's notes land in the ru
       const turn = r.messages.findLastIndex((m) => m.role === "user" && FOLDER.test(typeof m.content === "string" ? m.content : m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")));
       if (turn < 0) return { text: "Claude answered." };
       const asked = r.messages[turn];
-      const dir = FOLDER.exec(typeof asked.content === "string" ? asked.content : asked.content.filter((b) => b.type === "text").map((b) => b.text).join("\n"))[1];
+      prompt = typeof asked.content === "string" ? asked.content : asked.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      const dir = FOLDER.exec(prompt)[1];
       const written = r.messages.slice(turn + 1).flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "tool_result").length;
       if (written === 0) return { tool: { name: "mcp__hands__write", input: { path: `${dir}/check-units.md`, content: UNITS } } };
       if (written === 1) return { tool: { name: "mcp__hands__write", input: { path: `${cwd}/${dir}/cite-sources.md`, content: SOURCES } } };
@@ -60,6 +64,12 @@ test("on claude-agent's real adapter, the end-of-run turn's notes land in the ru
   const writes = reflectRows(rows).filter((row) => row.kind === "tool_result").map((row) => [row.tool_name, row.tool_status]);
   assert.deepEqual(writes, [["write", "success"], ["write", "success"]], JSON.stringify(reflectRows(rows).map((row) => row.tool_result_preview)));
   settled(view, rows, "merged");
+  // The message names the folder relative to the run's work, never by a host path; the timeline shows none of it.
+  assert.match(prompt, /The task is done\./);
+  assert.match(prompt, /Your notes from earlier runs are in `\.learning\/`, in your working directory/);
+  assert.doesNotMatch(prompt, /(?:^|[\s`'"(\[])\/[^\s/]/m, "the message holds no absolute path");
+  assert.ok(!prompt.includes(data), "nor the data directory");
+  assert.deepEqual(reflectRows(rows).filter((row) => row.kind === "user_message").map((row) => [row.summary, row.text]), [["Looking back on this run.", "Looking back on this run."]]);
   // Set aside out of its work as the run ended: what the turn wrote is what was checked.
   assert.equal(readFileSync(join(turnCopyOf(data, runId), "check-units.md"), "utf8"), UNITS);
   assert.equal(readFileSync(join(turnCopyOf(data, runId), "cite-sources.md"), "utf8"), SOURCES);

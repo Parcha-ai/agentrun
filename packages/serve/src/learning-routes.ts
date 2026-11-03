@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, retire } from "@parcha/agentrun-learn";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
-import { agentFolder, checkOut, git, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, type Shown, withAgentRepo } from "./learning.js";
+import { agentFolder, checkOut, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
@@ -401,14 +401,17 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
   });
 }
 
-/** GET /runs/{id}/learning: the run's learning whole, or null for a run that does not learn. */
+/** GET /runs/{id}/learning: the run's learning whole, or null for a run that does not learn: its detail cut of the
+ *  host's secrets now, and the notes it read and learned as its view shows them (learning.ts notesView). */
 export async function runLearning(run: Run, shown: Shown, secrets: readonly string[]) {
   const learning = run.meta.learning;
   if (!learning) return null;
   const pin = await readPin(run.dir).catch(() => undefined);
   const { state, reason, detail, at, verdict, problems, merged, cost_usd, tokens } = learning;
   return {
-    run: run.id, state, reason, detail, at,
+    run: run.id, state, reason, detail: detail === null ? null : shown.text(detail), at,
+    // Once it settled (a run that runs again for a follow-up is still reading).
+    ...notesView(learning, shown, run.settled),
     seed: pin?.seed ?? null,
     merged: merged ?? null,
     // The grader's, with its item for each new note: a name holding one of the host's secrets reads [redacted], and

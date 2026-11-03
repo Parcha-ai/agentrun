@@ -57,13 +57,14 @@ export function reflects(reflect: Reflect | undefined, id: string | number): boo
   return reflect.until === undefined && typeof id === "string" && id.includes(":live:");
 }
 /** `rows` with the end-of-run turn's labelled: never the run's answer (meaningful skips the label), its answer shown as
- *  a text row, and its message as the host's. */
+ *  a text row, and its message as the host's, in a person's words (learning-words.ts): what the model is asked stays in
+ *  the run's store, and no row shows it. */
 export function labelled(reflect: Reflect | undefined, rows: TimelineEvent[]): TimelineEvent[] {
   if (!reflect) return rows;
   return rows.map((row) => (!reflects(reflect, row.id) ? row : {
     ...row, agent_label: LEARNING_LABEL,
     ...(row.kind === "final_answer" ? { kind: "text_block" as const } : {}),
-    ...(row.kind === "user_message" ? { summary: `Learning: ${(row.summary ?? "").replace(/^You: /, "")}` } : {}),
+    ...(row.kind === "user_message" ? { summary: said.asked, text: said.asked } : {}),
   }));
 }
 /** A path that names a file at the top of a run's copy of the folder: `.learning/<file>` relative to its work, as a

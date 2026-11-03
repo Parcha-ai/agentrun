@@ -92,7 +92,7 @@ const isText = (value: unknown): value is string => typeof value === "string";
 /** The notes a run read and learned, as a view or a list shows them, each name cut of the host's secrets (`shown`):
  *  `used` once the run settled, `learned` once it merged, each only when it holds a note. serve.json's are read as
  *  untrusted: an entry out of shape is left out. */
-function notesView({ state, used, learned }: Learning, shown: Shown, settled: boolean): { used?: NoteUsed[]; learned?: NoteLearned[] } {
+export function notesView({ state, used, learned }: Learning, shown: Shown, settled: boolean): { used?: NoteUsed[]; learned?: NoteLearned[] } {
   const read = settled && Array.isArray(used) ? used.filter((note) => isText(note?.file) && isText(note.name)).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })) : [];
   const added = state === "merged" && Array.isArray(learned) ? learned.filter((note) => isText(note?.file) && isText(note.name) && Array.isArray(note.supersedes) && note.supersedes.every(isText)).map(({ file, name, supersedes }) => ({ file: shown.name(file), name: shown.text(name), supersedes: supersedes.map(shown.name) })) : [];
   return { ...(read.length ? { used: read } : {}), ...(added.length ? { learned: added } : {}) };
