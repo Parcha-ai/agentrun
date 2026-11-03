@@ -37,7 +37,7 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
   const log = join(await scratch(t), "monid-calls.jsonl");
   // Built here, so no scanner reads it as a credential.
   const saved = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: log, AGENTRUN_TEST_FAUX_MONID_KEY: saved }, ["MONID_API_KEY"]);
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: log, AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(saved).digest("hex") }, ["MONID_API_KEY"]);
   // pi answers with the custody model (what its process was handed); claude-agent runs the faux harness.
   const { api, data } = await serve(t, { faux: CUSTODY, fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
   const sent = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
