@@ -12,8 +12,8 @@ permissions:
 
 # Reaches every npm and npx in every job, nested ones too unless a script clears the env. A registry request that fails
 # before its response arrives (reset, refused, timed out, 5xx) is retried 5 times, 20 s then 2 min apart (~8 min), not
-# npm's 2 in ~70 s. npm never retries a download that drops midway: each `npm ci` step, and the console's in
-# scripts/build-console.mjs, runs once more instead.
+# npm's 2 in ~70 s. npm never retries a download that drops midway: each `npm ci` (scripts/npm-ci-retry.mjs, also used
+# by scripts/build-console.mjs) retries once on a network error only.
 env:
   npm_config_fetch_retries: '5'
   npm_config_fetch_retry_mintimeout: '20000'
@@ -66,12 +66,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
           pdftoppm -v && gs --version && ffmpeg -version | head -1
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - name: The console, built before the server so the server's build copies it into its dist
         # verify-packages --console then checks the packed server carries it, its files scanned like every packed file.
         if: matrix.shard == 'checks'
         working-directory: apps/console
-        run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; } && npm run build
+        run: node ../../scripts/npm-ci-retry.mjs --ignore-scripts && npm run build
       - run: npm run build
       - if: matrix.shard == 'checks'
         run: npm run typecheck
@@ -126,7 +126,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
           cache-dependency-path: apps/console/package-lock.json
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node ../../scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
@@ -168,7 +168,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
         if: always()
@@ -191,7 +191,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/agentrun-pi,@parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
         if: always()
@@ -233,7 +233,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
           pdftoppm -v && gs --version && ffmpeg -version | head -1
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - name: The clean consumer and the reference example at the leg's pi
         # The packages packed and installed together in an empty directory, with the pi family at this version: one
@@ -269,7 +269,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - run: node scripts/pi-cross-version.mjs --from 1.1.0 --to 1.2.0 --npm "npx --yes npm@11.21.0"
 
@@ -287,7 +287,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-vision --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
         if: always()
@@ -317,7 +317,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build -w @parcha/pi-vision
       - run: npm run test:binaries -w @parcha/pi-vision
 
@@ -335,7 +335,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-transport --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
         if: always()
@@ -358,7 +358,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run lint -w @parcha/pi-transport
       - run: docker pull debian:bookworm-slim
       - run: npm run test:live:docker -w @parcha/pi-transport
@@ -393,7 +393,7 @@ jobs:
         # exits with SIGABRT at startup. This is the runner's documented switch; the sandbox stays on for the tests.
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - run: npm run test:chrome -w @parcha/pi-browser
       # The assembled reference job on the same Chrome: its record and ledger must be the fixed ones (the receipt name and token counts are not).
@@ -416,7 +416,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - name: Run the stranger test
         # An explicit shell runs with pipefail; the default does not, and tee's status would hide a failing spec.
@@ -439,7 +439,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - name: The local run's tests
         working-directory: packages/pi-durable-disk
@@ -489,7 +489,7 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; }
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - name: Run the README's install line
         shell: bash
@@ -588,7 +588,7 @@ jobs:
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - name: Build the TypeScript packages
         working-directory: .
-        run: npm ci --ignore-scripts || { echo "::warning::npm ci failed, retrying once"; sleep 15; npm ci --ignore-scripts; } && npm run build
+        run: node scripts/npm-ci-retry.mjs --ignore-scripts && npm run build
       - name: Collect every workflow the test suites validate, with TypeScript's verdicts
         working-directory: .
         run: node spec/lean/sweep/collect.mjs spec/lean/.lake/validator-corpus.json

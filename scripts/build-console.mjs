@@ -40,8 +40,11 @@ export function stampConsole(root) {
   writeFileSync(join(root, 'apps', 'console', 'dist', HASH_FILE), `${consoleInputsHash(root)}\n`);
 }
 
+// `npm ci` runs through npm-ci-retry.mjs: once more after a network error, never after any other failure.
+const NPM_CI_RETRY = fileURLToPath(new URL('./npm-ci-retry.mjs', import.meta.url));
 const npm = (args, cwd) => {
-  const done = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', args, { cwd, stdio: 'inherit' });
+  const [bin, argv] = args[0] === 'ci' ? [process.execPath, [NPM_CI_RETRY, ...args.slice(1)]] : [process.platform === 'win32' ? 'npm.cmd' : 'npm', args];
+  const done = spawnSync(bin, argv, { cwd, stdio: 'inherit' });
   if (done.status !== 0) throw new Error(`npm ${args.join(' ')} in ${cwd} exited ${done.status ?? done.signal}`);
 };
 
@@ -63,11 +66,7 @@ export function consoleDepsInstalled(root) {
 export function buildConsole(root, { run = npm, log = (line) => console.log(line) } = {}) {
   if (consoleIsCurrent(root)) { log('The console is current (apps/console/dist matches its sources): not built again.'); return 'current'; }
   const app = join(root, 'apps', 'console');
-  if (!consoleDepsInstalled(root)) {
-    const install = () => run(['ci', '--ignore-scripts', '--no-audit', '--no-fund'], app);
-    // npm does not retry a download that drops midway; npm ci starts from an empty node_modules, so a second run is clean.
-    try { install(); } catch (error) { log(`warning: ${error.message}; running it once more`); install(); }
-  }
+  if (!consoleDepsInstalled(root)) run(['ci', '--ignore-scripts', '--no-audit', '--no-fund'], app);
   run(['run', 'build'], app);
   if (!consoleIsCurrent(root)) throw new Error('apps/console built, but its dist does not record the inputs it was built from');
   return 'built';
