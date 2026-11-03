@@ -172,8 +172,8 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
     expect(put.body).toMatchObject({ definition: { learning: true, version: 2 }, note: "Learning on" });
     expect(page.text()).toContain("rev 2 of 2");
     expect(page.text()).toContain("Nothing learned yet");
-    // Its tools have no write tool: the tab says it needs one, quietly.
-    expect(page.text()).toContain("Needs the write tool, for now");
+    // Its tools have no write tool, and it needs none: the tab asks for no tool.
+    expect(page.text()).not.toMatch(/write tool/i);
   });
 
   it("a run's header says what it read and kept, each a link to those notes in the agent's Learning tab", async () => {

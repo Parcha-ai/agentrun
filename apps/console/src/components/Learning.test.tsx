@@ -370,9 +370,11 @@ describe("the switch and the empty states", () => {
     expect(t.text()).toContain("2 runs looked back: nothing worth keeping yet.");
     expect(t.text()).toContain("Or write a note yourself");
   });
-  it("learning on without the write tool says it needs it, quietly", async () => {
+  it("learning on without the write tool asks for no tool: the switch is on, with no line about one and no Add it", async () => {
     const t = await open(agent(true, { tools: ["read"] }));
-    expect(t.text()).toContain("Needs the write tool, for now");
+    expect((t.host.querySelector('[role="switch"]') as HTMLButtonElement).getAttribute("aria-checked")).toBe("true");
+    expect(t.text()).not.toMatch(/write tool/i);
+    expect([...t.host.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Add it");
   });
   it("notes kept while learning is off say later runs don't read them", async () => {
     const t = await open(agent(false));

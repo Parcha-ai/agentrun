@@ -256,7 +256,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <input value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
                 </Field>
               )}
-              {!workflow && !starting && caps.learning && <LearningField fields={f} onFields={set} saved={d?.learning} tools={caps.tools} server={caps.learning} error={fieldError("learning")} warning={fieldWarning("learning")} />}
+              {!workflow && !starting && caps.learning && <LearningField fields={f} onFields={set} saved={d?.learning} server={caps.learning} error={fieldError("learning")} warning={fieldWarning("learning")} />}
             </div>
           )}
 
