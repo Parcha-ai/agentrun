@@ -68,6 +68,15 @@ test("a model that answers one empty text block (a stop, no tool call) answered:
   assert.deepEqual([run.status, run.state, run.result], ["completed", "idle", { output: null, final_answer: "" }]);
 });
 
+test("a model that answers with only a thinking block (a stop, no text block, no tool call) answered: the run completes with an empty final_answer", async (t) => {
+  const { api } = await serve(t);
+  const { run_id } = await startRun(api, "pensive", "Answer with only thinking.");
+  const { rows, last } = await follow(api, run_id, ["completed"]);
+  assert.equal(last.final, true);
+  assert.deepEqual(rows.map((r) => r.kind), ["user_message", "thinking", "final_answer", "usage"]);
+  assert.deepEqual((await api("GET", `/runs/${run_id}`)).body.result, { output: null, final_answer: "" });
+});
+
 test("the change cursor: a saved cursor resumes onto the rows held, 0 resets, and the final cursor answers unchanged", async (t) => {
   const { api } = await serve(t);
   const { run_id } = await startRun(api, "calc", "What is six times seven?");
