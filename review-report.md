@@ -13,9 +13,13 @@ The review-clean exit criterion is met for PR #1408 at head `3573f4a6f4f1a68b2a1
 
 The [summary](https://github.com/Parcha-ai/agentrun/pull/1408#issuecomment-6592483255) was updated at `2026-11-03T01:36:45Z`, after the [final review request](https://github.com/Parcha-ai/agentrun/pull/1408#issuecomment-6593070050) at `01:33:50Z`. It links the exact current head. The Greptile check for that head is completed with conclusion success. The earlier score for `3d83a3f6` was excluded as stale.
 
-The audit at `2026-11-03T01:37:26Z` fully paginated all three sources. GraphQL returned 5 threads and all nested comments, with no remaining pages. REST pagination returned 7 reviews and 3 issue comments. No human requests, summary-only requests or additional findings remain.
+The final review audit at `2026-11-03T01:45:10Z` fully paginated all three sources. GraphQL returned 5 threads and all nested comments, with no remaining pages. REST pagination returned 7 reviews and 3 issue comments. No human requests, summary-only requests or additional findings remain.
 
-CI at that audit had 59 successful checks, 6 running checks and zero failures. The running checks were the Node 24.21.0 durable matrix case, four pi-1-2 matrix cases and lean. CI completion is separate from review-clean and remains under the bounded monitor.
+The bounded CI watch ended with 63 successful checks, 1 failed check and 1 running check. Review-clean does not imply that CI is green.
+
+The failed [pi-1-2 1.2.0 first job](https://github.com/Parcha-ai/agentrun/actions/runs/41559597077/job/125667163350) passed its build and clean-consumer checks. Its server suite passed 739 of 740 tests. The failure was [the webhook recovery test](https://github.com/Parcha-ai/agentrun/blob/3573f4a6f4f1a68b2a1c52161b0a363d2802315f/packages/serve/test/webhooks.test.mjs#L524). At line 542, "the same wait, no new notice" expected 1 notification and received 2. The pi-git-remote and pi-transport suites passed in that job.
+
+The [pi-1-2 1.3.0 first job](https://github.com/Parcha-ai/agentrun/actions/runs/41559597077/job/125667163231) remained running. It started at `01:26:17Z`; its pi-leg test step started at `01:31:27Z`. At `01:44:15Z` the job had run for 17 minutes 58 seconds. These first-suite jobs test pi-transport, agentrun-serve and pi-git-remote with a 30-minute job budget. The API showed the current step but did not expose current per-test progress. No rerun was requested.
 
 Owner decisions on the #1406/native queued-stop dependency and inherited dependencies remain outside the review loop. This report does not imply merge approval. The root agent reports final local proof of 385 console checks, 27 browser rows, 69 native checks and 8 container checks; this read-only audit did not rerun that proof.
 

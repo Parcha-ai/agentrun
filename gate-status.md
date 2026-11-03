@@ -28,6 +28,12 @@ The full `npm run check` is not claimed green. Its build, generated checks and t
 
 [CI diagnosis and prior-head evidence](ci-failure.md) records that race. [Approved PR #1406](https://github.com/Parcha-ai/agentrun/pull/1406) contains its fix. Integrate that dependency before treating the full gate as green. Current-head CI and review status must be read from the PR, rather than inferred from this static receipt.
 
+## Final-head compatibility failure
+
+The final-head pi 1.2.0 compatibility job passed 739 of 740 server tests and failed the existing webhook recovery assertion. [Diagnosis and limits](webhook-ci-failure.md) documents the unchanged source/test blobs and matching, already-reviewed [test-only PR #1401](https://github.com/Parcha-ai/agentrun/pull/1401). The assertion counts delivery receipts where the contract permits retrying the same notification ID. The current log omits IDs, so it does not prove those particular receipts were identical or that distinct duplicate notices occurred.
+
+The native dependency decision now covers #1406 and #1401. Neither is included in this candidate.
+
 ## Dependencies and queued work
 
 The console lockfile retains 14 inherited audit findings: 7 moderate, 3 high and 4 critical. The added contract generator introduces none. No dependency remediation is claimed. Native package verification uses the repository's existing audit exceptions; the next high-severity exception expiry is November 6, 2026.
