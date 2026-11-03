@@ -18,7 +18,7 @@ import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
-import { dropSeed, type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, learningView, shortLearning } from "./learning.js";
+import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, learningView, shortLearning } from "./learning.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
@@ -518,13 +518,9 @@ export class Runs {
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
     };
-    // A server that went down while it copied what the run's agent learned saved the run's input and no learning, and
-    // left the copy half made, or whole with its pin: the copy goes, so the run starts again with nothing learned.
-    if (row.state === "running" && stored && !meta.learning && (await dropSeed(dir, join(dir, "work")))) {
-      meta.learning = { state: "dropped", reason: "seed_failed", detail: "The server stopped while it copied what the agent learned into the run, so the run started with nothing learned.", at: new Date().toISOString() };
-      await writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`);
-      warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
-    }
+    // A seed copy a server went down during is taken back before anything holds the run: its relaunch, a settle, a
+    // follow-up (learning-run.ts onLoad).
+    if (stored) await this.learning.onLoad(row, dir, meta, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, known?.revision);
     this.runs.set(row.id, run);
@@ -1342,20 +1338,26 @@ export class Runs {
   }
 
   private async start(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
-    // A run that learns: its seed read before it is made, and pinned in it once it is (learning-run.ts).
+    // A run that learns: its seed read before it is made (learning-run.ts).
     const pin = await this.learning.onStart(entry.agent.id, revision);
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
     const at = new Date().toISOString();
-    const learning = await pin?.(started, at);
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
       created_at: at,
       input: options.input,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
-      ...(learning ? { learning } : {}),
     };
+    // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
+    // next one relaunches with its first message.
     await this.setUp(started.runId, started.dir, meta);
+    if (pin) {
+      // Then its seed copied and pinned, and its learning saved once the copy is whole or gone. A server that goes down
+      // during the copy leaves none saved, and the next one takes the copy back (learning-run.ts onLoad).
+      meta.learning = await pin(started, at);
+      await this.setUp(started.runId, started.dir, meta);
+    }
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
     run.moment = "other";
     this.runs.set(run.id, run);

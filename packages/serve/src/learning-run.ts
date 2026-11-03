@@ -2,6 +2,7 @@
 // builds one LearningRuns and calls it where a run's life meets learning:
 //   onStart       the run about to be made: its seed read first, then pinned in it once it is (learning.ts)
 //   onSaved       its serve.json written: the learning ledger's line, once its learning ended (usage.ts)
+//   onLoad        a run read at a start, before the kernel holds it: a seed copy a server went down during taken back
 //   beforeFinish  its job ended: the end-of-run turn asked first, and the run let go once the turn ends
 //   onAdopt       a running run read at a start: one a server left in its end-of-run turn finishes, its turn asked again
 //   beforeSettle  its end being written: the turn's rows closed, and what the turn wrote set aside
@@ -17,7 +18,7 @@ import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-d
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
-import { layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, shortLearning, snapshotLearned, withAgentGrade } from "./learning.js";
+import { dropSeed, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, shortLearning, snapshotLearned, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, withSecrets } from "./secrets.js";
@@ -153,7 +154,8 @@ export class LearningRuns {
 
   /** A run of `revision` about to be made for agent `agentId`. It learns when the server's switch (`--learning`) is on and
    *  its agent's definition says `learning: true`; then its seed is read now, before the run is made, so the folder is
-   *  read once whatever the run's setup does, and what comes back pins it in the run once it is made, at `at`: its
+   *  read once whatever the run's setup does, and what comes back pins it in the run once it is made and its input
+   *  saved (a server that goes down during the copy leaves no learning saved: onLoad), at `at`: its
    *  learning, `seeded`, or `dropped` as `seed_failed` (a learning fault never refuses a run). Undefined when it does
    *  not learn. */
   async onStart(agentId: string, revision: Revision): Promise<((started: Pick<StartedRun, "runId" | "dir" | "workspace">, at: string) => Promise<Learning>) | undefined> {
@@ -196,6 +198,19 @@ export class LearningRuns {
     }
     if (skip) this.dropLearning(run, ...skip);
     return false;
+  }
+
+  /** A run read at a start, before the kernel holds it, `save` writing its serve.json: one a server went down while it
+   *  copied the run's seed (running, its input saved and no learning, and a pin or a `work/.learning/` there) has both
+   *  taken back, so it starts again with nothing learned, and its learning dropped as `seed_failed`, saved before the
+   *  ledger's line (onSaved). Called before anything reads the run: its relaunch, a settle, a follow-up. A seed_failed
+   *  run asks no end-of-run turn (reflectSkip). A copy that never began leaves nothing, and the learning stays null. */
+  async onLoad(row: Pick<RunRow, "id" | "agent" | "state">, dir: string, meta: Run["meta"], save: () => Promise<void>): Promise<void> {
+    if (row.state !== "running" || meta.learning || !(await dropSeed(dir, join(dir, "work")))) return;
+    meta.learning = { state: "dropped", reason: "seed_failed", detail: "The server stopped while it copied what the agent learned into the run, so the run started with nothing learned.", at: new Date().toISOString() };
+    await save();
+    warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
+    await this.onSaved({ id: row.id, agentId: row.agent }, meta.learning);
   }
 
   /** A running run read at a start, `live` when its process serves it still. One a server left while its end-of-run turn
