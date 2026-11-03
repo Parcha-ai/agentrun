@@ -3,6 +3,7 @@
 // replay, the deadline share, one child at a time, and the events nested under the lead's call.
 import assert from 'node:assert/strict';
 import { test as nodeTest } from 'node:test';
+import * as kernel from '@parcha/agentrun-kernel';
 import { createHarnessRunner, DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
 import { FAUX_RECORDS, fauxAdapter, memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
@@ -44,6 +45,32 @@ test('a delegate runs its agent as a child node: its system prompt verbatim, onl
   // Its events are the lead's call's: nested by the delegate tag.
   assert.ok(events.length > 0 && events.every((e) => e.delegate?.agent === 'checker' && e.delegate.callId === 'toolu_1' && e.delegate.parentKey === 'step:lead'));
   assert.ok(events.some((e) => e.type === 'request_start') && events.some((e) => e.type === 'tool_start' && e.name === 'fetch'));
+});
+
+test("an answer past the delegate's cap reaches the lead cut to fit, its JSON whole: the answer's text cut, the citations and gaps that fit, saying what was cut and that the whole answer is kept in the run's records, which no tool reads; answered again, it is cut the same", async () => {
+  const cap = kernel.DELEGATE_ANSWER_MAX_CHARS;
+  assert.equal(cap, 60_000);
+  const long = { answer: `${'All three claims hold. '.repeat(10_000)}END`, citations: Array.from({ length: 400 }, (_, i) => ({ url: `https://example.com/${i}`, quote: 'q'.repeat(100) })), gaps: ['one', 'two'] };
+  const store = memorySessionStore();
+  const adapter = fauxAdapter({ script: () => [{ submit: long }] });
+  const t = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter, store, parentKey: 'step:lead' });
+  const result = await call(t, { agent: 'checker', task: 'Check the claims.' });
+  assert.equal(result.isError, undefined);
+  const newline = result.text.indexOf('\n');
+  const cut = JSON.parse(result.text.slice(0, newline));
+  assert.ok(result.text.length <= cap + 600, `${result.text.length} characters`);
+  assert.ok(newline <= cap, 'the JSON within the cap');
+  assert.ok(long.answer.startsWith(cut.answer) && cut.answer.length < long.answer.length, 'the answer is its start');
+  assert.deepEqual(cut.citations, long.citations.slice(0, cut.citations.length), 'the first citations, whole');
+  assert.ok(cut.citations.length > 50 && cut.citations.length < 400, `${cut.citations.length} citations`);
+  assert.deepEqual(cut.gaps, long.gaps, 'the gaps, whole');
+  const whole = JSON.stringify(long).length;
+  assert.deepEqual(cut.cut, { original_chars: whole, answer: [cut.answer.length, long.answer.length], citations: [cut.citations.length, 400] });
+  assert.equal(result.text.slice(newline + 1), `The delegate's answer was ${whole} characters, past the ${cap} a delegate's answer holds here: its answer is cut at ${cut.answer.length} of ${long.answer.length} characters, and ${400 - cut.citations.length} of its 400 citations are left out. The whole answer is kept in this run's records (the session step:step:lead/delegate:toolu_1), which none of your tools reads: ask the delegate again, with a narrower task, for what was cut.`);
+  // The same call again answers from the child's record, cut the same way.
+  assert.equal((await call(t, { agent: 'checker', task: 'Check the claims.' })).text, result.text);
+  const short = await call(delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter: fauxAdapter({ script: () => [{ submit: ANSWER }] }), store: memorySessionStore(), parentKey: 'step:lead' }), { agent: 'checker', task: 'x' });
+  assert.equal(short.text, JSON.stringify(ANSWER), 'an answer within the cap is as it was');
 });
 
 test("the tools subset, checked when the tool is made: an agent naming a tool the lead lacks is refused by name, and so is one naming delegate (depth 1)", () => {

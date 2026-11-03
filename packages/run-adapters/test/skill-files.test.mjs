@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
+import * as kernel from '@parcha/agentrun-kernel';
 import { READ_SKILL_FILE, readSkillFileTool } from '@parcha/agentrun-kernel';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-skill-files-'));
@@ -32,6 +33,27 @@ test("a listed file of a skill reads, its exact text; the tool is replay-safe an
   assert.deepEqual(tool.inputSchema.properties.skill.enum, ['research', 'billing']);
   assert.deepEqual(await call(tool, { skill: 'research', path: 'reference/sources.md' }), { text: 'Primary sources first. ✓\n' });
   assert.deepEqual(await call(tool, { skill: 'billing', path: 'rates.md' }), { text: 'the other skill\n' });
+});
+
+test("a long file is read in parts, as pi's read reads one: at most 2,000 lines or 50 KB from offset (a line, from 1), saying which lines of how many and the offset that reads on; limit stops sooner; a line past 50 KB shows its first 50 KB", async () => {
+  const { root } = skills();
+  const lines = Array.from({ length: 3_000 }, (_, i) => `line ${i + 1}`);
+  writeFileSync(join(root, 'research', 'big.md'), `${lines.join('\n')}\n`);
+  const wide = Array.from({ length: 1_000 }, () => 'w'.repeat(99));
+  writeFileSync(join(root, 'research', 'wide.md'), `${wide.join('\n')}\n`);
+  writeFileSync(join(root, 'research', 'one.md'), 'x'.repeat(60_000));
+  const tool = readSkillFileTool(root, [{ name: 'research', files: ['big.md', 'wide.md', 'one.md'] }]);
+  const read = (path, part = {}) => call(tool, { skill: 'research', path, ...part });
+  assert.deepEqual([kernel.SKILL_READ_MAX_LINES, kernel.SKILL_READ_MAX_BYTES], [2_000, 50 * 1024], "pi's read's limits");
+  assert.deepEqual(await read('big.md'), { text: `${lines.slice(0, 2_000).join('\n')}\n\n[Showing lines 1-2000 of 3000. Use offset=2001 to continue.]` });
+  assert.deepEqual(await read('big.md', { offset: 2_001 }), { text: `${lines.slice(2_000).join('\n')}\n` }, 'the rest, to the end, as the file has it');
+  assert.deepEqual(await read('big.md', { offset: 10, limit: 5 }), { text: `${lines.slice(9, 14).join('\n')}\n\n[2986 more lines in the file. Use offset=15 to continue.]` });
+  assert.deepEqual(await read('wide.md'), { text: `${wide.slice(0, 512).join('\n')}\n\n[Showing lines 1-512 of 1000 (50KB limit). Use offset=513 to continue.]` }, 'lines while they fit in 50 KB');
+  assert.deepEqual(await read('one.md'), { text: `${'x'.repeat(50 * 1024)}\n\n[Line 1 is 58.6KB, past the 50KB one read holds: showing its first 50KB. The rest of the line cannot be read with this tool.]` });
+  assert.deepEqual(await read('big.md', { offset: 3_001 }), { text: "Not read: offset 3001 is past the end of the skill research's big.md (3000 lines).", isError: true });
+  assert.deepEqual(await call(tool, { skill: 'research', path: 'big.md', offset: 0 }), { text: 'Not read: offset is a line number, 1 or more.', isError: true });
+  assert.deepEqual(tool.inputSchema.required, ['skill', 'path']);
+  assert.deepEqual([tool.inputSchema.properties.offset.type, tool.inputSchema.properties.limit.type], ['integer', 'integer']);
 });
 
 test('refused, each by name: an unlisted path, a climbing or absolute one (before any filesystem call), an unknown skill, another skill\'s file', async () => {
