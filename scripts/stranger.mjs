@@ -196,7 +196,7 @@ export async function stranger(name, { registry = false, tarballs: given, readme
       installArgs = [...readmeInstallArgs(line, packed, companions), '--ignore-scripts', '--no-audit', '--no-fund'];
     } else {
       let sources;
-      if (registry) sources = [`${spec.package}@beta`, ...(spec.companions ?? []).map(companion => `${companion}@beta`)];
+      if (registry) sources = [`${spec.package}@latest`, ...(spec.companions ?? []).map(companion => `${companion}@latest`)];
       else sources = given ?? await pack(spec.install, packs);
       installArgs = ['install', '--ignore-scripts', '--no-audit', '--no-fund', ...sources, ...peers];
     }
@@ -264,45 +264,45 @@ export function parseIndex(markdown) {
 }
 
 /**
- * Which examples to walk against the registry whose `beta` tag is `beta`: those that run with no key (CI "yes"), each at
- * the `version` it installs: its Since, or this platform's `floor` (the spec's `examples.platformFloors`: the first release
- * that runs on it at all) when that is later. One whose version is above the beta is skipped with its reason. A keyless
- * example must name a version.
+ * Which examples to walk against the registry whose `latest` tag is `latest`: those that run with no key (CI "yes"), each
+ * at the `version` it installs: its Since, or this platform's `floor` (the spec's `examples.platformFloors`: the first
+ * release that runs on it at all) when that is later. One whose version is above the latest is skipped with its reason. A
+ * keyless example must name a version.
  */
-export function selectExamples(rows, beta, floor) {
+export function selectExamples(rows, latest, floor) {
   const run = []; const skipped = [];
   for (const { name, since, ci } of rows) {
     if (ci !== 'yes') { skipped.push({ name, reason: `not keyless (CI "${ci}")` }); continue; }
     assert.ok(/^\d/.test(since), `${name}: a keyless example's Since is a published version, not "${since}"`);
     const version = floor !== undefined && compareVersions(since, floor) < 0 ? floor : since;
-    if (compareVersions(version, beta) > 0) skipped.push({ name, reason: `needs ${version}${version === since ? '' : ' on this platform'}, and the registry's beta is ${beta}` });
+    if (compareVersions(version, latest) > 0) skipped.push({ name, reason: `needs ${version}${version === since ? '' : ' on this platform'}, and the registry's latest is ${latest}` });
     else run.push({ name, since, version });
   }
   return { run, skipped };
 }
 
-/** The `npm install` arguments of the index's install block, with the package at `version` instead of `@beta`. */
+/** The `npm install` arguments of the index's install block, with the package at `version` instead of `@latest`. */
 export function examplesInstallArgs(block, packageName, version) {
   const lines = block.split('\n').map(line => line.trim()).filter(line => /^npm (install|i) /.test(line));
   assert.equal(lines.length, 1, `the install block has one npm install line, not ${lines.length}`);
-  assert.ok(lines[0].split(/\s+/).includes(`${packageName}@beta`), `the install line names ${packageName}@beta`);
+  assert.ok(lines[0].split(/\s+/).includes(`${packageName}@latest`), `the install line names ${packageName}@latest`);
   return readmeInstallArgs(lines[0], new Map([[packageName, `${packageName}@${version}`]]));
 }
 
 /**
  * The Since cells, enforced: for every keyless example whose version (its Since, or this platform's floor when later) is
- * at or below the registry's `beta`, install exactly that version in an empty directory the way "Run one from an install"
- * says, copy the example's files, run `node main.ts` and expect its `ok:` line. An example above the beta is skipped with
+ * at or below the registry's `latest`, install exactly that version in an empty directory the way "Run one from an install"
+ * says, copy the example's files, run `node main.ts` and expect its `ok:` line. An example above the latest is skipped with
  * a reason. Results are `{ name, since, version, status, ... }`.
  */
 async function walkExamples(spec, work, env) {
   const { examples } = spec;
   const npm = (args, cwd, timeoutMs = 300_000) => runCommand('npm', args, { cwd, env, timeoutMs });
-  const tag = await npm(['view', spec.package, 'dist-tags.beta'], work, 60_000);
-  const beta = tag.stdout.trim();
-  assert.ok(tag.exitCode === 0 && beta, `the registry has no beta tag for ${spec.package}: ${tag.stderr.slice(-500)}`);
+  const tag = await npm(['view', spec.package, 'dist-tags.latest'], work, 60_000);
+  const latest = tag.stdout.trim();
+  assert.ok(tag.exitCode === 0 && latest, `the registry has no latest tag for ${spec.package}: ${tag.stderr.slice(-500)}`);
   const index = await readFile(join(root, examples.readme), 'utf8');
-  const { run, skipped } = selectExamples(parseIndex(index), beta, examples.platformFloors?.[process.platform]);
+  const { run, skipped } = selectExamples(parseIndex(index), latest, examples.platformFloors?.[process.platform]);
   const results = skipped.map(({ name, reason }) => ({ name, status: 'skipped', reason }));
   for (const version of [...new Set(run.map(example => example.version))]) {
     const project = join(work, `examples-${version}`);
@@ -324,7 +324,7 @@ async function walkExamples(spec, work, env) {
       results.push({ name, since, version, status: problems.length ? 'failed' : 'passed', problems, output: output.slice(-1500) });
     }
   }
-  return { beta, results };
+  return { latest, results };
 }
 
 async function main() {
@@ -345,7 +345,7 @@ async function main() {
     if (isMissing(spec)) { console.log(`${name}: ${MISSING}: ${spec.reason}`); return; }
     const packs = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), 'stranger-packs-'));
     try {
-      // With --registry the container installs @beta from npm and nothing is packed here.
+      // With --registry the container installs @latest from npm and nothing is packed here.
       if (!registry) await pack(spec.install, packs);
       const inner = ['run', '--rm', '-v', `${root}:/repo:ro`, '-v', `${packs}:/packs:ro`, image, 'node', '/repo/scripts/stranger.mjs', name, ...(registry ? ['--registry'] : ['--tarballs', '/packs'])];
       const done = await new Promise(resolvePromise => spawn('docker', inner, { stdio: 'inherit' }).on('close', (code, signal) => resolvePromise(exitCodeOf(code, signal))));
@@ -356,7 +356,7 @@ async function main() {
   const given = tarballDir ? (await readdir(tarballDir)).filter(file => file.endsWith('.tgz')).map(file => join(tarballDir, file)) : undefined;
   const outcome = await stranger(name, { registry, tarballs: given, readmeLine, examplesOnly });
   if (outcome.examples) {
-    console.log(`${name}: examples against the registry's beta ${outcome.examples.beta}`);
+    console.log(`${name}: examples against the registry's latest ${outcome.examples.latest}`);
     for (const { name: example, since, version, status, reason, problems } of outcome.examples.results) {
       const at = version === since ? `Since ${since}` : `Since ${since}, ${version} on ${process.platform}`;
       console.log(status === 'skipped' ? `  ${example}: skipped, ${reason}` : `  ${example} (${at}): ${status}${problems?.length ? `: ${problems.join('; ').slice(0, 400)}` : ''}`);

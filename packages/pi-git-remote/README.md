@@ -13,7 +13,7 @@ learn in a repository: a run proposes on `runs/<id>`, a curator merges to `main`
 Node 22.19 or later and git 2.40 or later. In an empty directory:
 
 ```sh
-npm install @parcha/pi-git-remote@beta
+npm install @parcha/pi-git-remote@latest
 ```
 
 Save this as `quickstart.mjs` and run `node quickstart.mjs`:
@@ -203,7 +203,7 @@ release widens the range. Give pi a model one of three ways:
 Without one, pi stops at `No API key found for the selected model`.
 
 ```sh
-cd "$(mktemp -d)" && npm install @parcha/pi-git-remote@beta
+cd "$(mktemp -d)" && npm install @parcha/pi-git-remote@latest
 git init -q --bare -b main acme.git
 git clone -q acme.git seed 2>/dev/null && (cd seed && mkdir notes && echo "Cite every claim." > AGENTS.md && echo hello > notes/hello.md \
   && git add -A && git -c user.name=seed -c user.email=seed@example.com commit -qm seed && git push -q origin main)

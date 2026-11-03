@@ -44,7 +44,7 @@ Archil is not supported: the package needs the disk to give an exclusive claim a
 On Linux with Node 22.19 or later (or on macOS [for development](docs/reference.md#on-macos)). In an empty directory:
 
 ```sh
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 pi 1.4 is not supported yet; a later release widens the range.
@@ -220,7 +220,7 @@ what it imports.
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 `@earendil-works/pi-durable` and `@earendil-works/chord` are peer dependencies, `>=1.0.4 <1.4.0`: pi 1.4 is not supported yet; a

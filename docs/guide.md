@@ -14,17 +14,17 @@ For TypeScript authoring and reusable child workflows, follow the [research tuto
 In your project, install the core and save the complete triage workflow:
 
 ```sh
-npm install @parcha/agentrun-dsl@beta
-npx @parcha/agentrun-dsl@beta example workflow.json
-npx @parcha/agentrun-dsl@beta validate workflow.json --trusted
-npx @parcha/agentrun-dsl@beta dry-run workflow.json --trusted
+npm install @parcha/agentrun-dsl@latest
+npx @parcha/agentrun-dsl@latest example workflow.json
+npx @parcha/agentrun-dsl@latest validate workflow.json --trusted
+npx @parcha/agentrun-dsl@latest dry-run workflow.json --trusted
 ```
 
 `example` refuses to overwrite a file. `--trusted` acknowledges that JavaScript in a workflow may execute during validation. Dry-run synthesizes the declared input schema; a workflow without one starts from `{}`. Supply your own JSON object when needed:
 
 ```sh
-npx @parcha/agentrun-dsl@beta validate workflow.json input.json --trusted
-npx @parcha/agentrun-dsl@beta dry-run workflow.json input.json --trusted
+npx @parcha/agentrun-dsl@latest validate workflow.json input.json --trusted
+npx @parcha/agentrun-dsl@latest dry-run workflow.json input.json --trusted
 ```
 
 Structural checks, including unknown node fields, always run. Supplied inputs also check the input schema and reachable input keys. Dry-run checks synthetic execution wiring, not model quality or effect delivery. Its `status` says whether every check ran: `passed`, `failed` (`ok` is false, `problems` say why), or `not_run`: `ok` stays true, but a path could not be exercised (for example, a synthetic judgment escalated or a schema cannot be synthesized), and `skipped` gives the reasons. A `not_run` result is not execution proof. `agentrun-dsl dry-run` exits 1 on a failure and 0 otherwise; with `--strict` it exits 3 when the status is `not_run`.
@@ -90,7 +90,7 @@ The `input` contract, when supplied, is checked before execution. A completed wo
 <a id="jev"></a>
 ## Add live Jev system one decisions
 
-Jev is the optional TypeSafe model adapter for typed judgments. This section makes a live model request, unlike the offline demo. Install `@parcha/agentrun-jev@beta` alongside the core and obtain authorized TypeSafe access through your provider or organization. Configure `TYPESAFE_API_KEY` in the server environment using your existing secret-management process. If your organization uses a gateway, also use its configured `TYPESAFE_BASE_URL`. Do not put credentials in browser code or commit them to this source tree.
+Jev is the optional TypeSafe model adapter for typed judgments. This section makes a live model request, unlike the offline demo. Install `@parcha/agentrun-jev@latest` alongside the core and obtain authorized TypeSafe access through your provider or organization. Configure `TYPESAFE_API_KEY` in the server environment using your existing secret-management process. If your organization uses a gateway, also use its configured `TYPESAFE_BASE_URL`. Do not put credentials in browser code or commit them to this source tree.
 
 In your project after configuring access, save this as `live-triage.mjs` and run `node live-triage.mjs`. A live model can return a different answer from the scripted fixture:
 
@@ -118,7 +118,7 @@ Confidence is a model output, not an empirically calibrated accuracy guarantee. 
 Pi drafts a typed workflow for your task, checks it, dry-runs it for free, runs it, and shows every node on its graph. With [Pi installed](../packages/pi/README.md#install) (1.0.4 to below 1.4; CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0), run these commands in your project:
 
 ```sh
-pi install npm:@parcha/agentrun-pi@beta -l
+pi install npm:@parcha/agentrun-pi@latest -l
 pi --offline
 ```
 
@@ -208,7 +208,7 @@ It prints `run-1 proposes | seed`: the run's branch reached `main` as a fast-for
 
 [`@parcha/pi-transport`](../packages/pi-transport/README.md) runs a pi agent's tools on another machine: this machine, a Docker container, or a Daytona or Modal sandbox, behind one `Box` interface. The session, its store and its model calls stay with the host; only the tools go to the box. Use it when a step needs a machine the host is not: a GPU, more memory, or a sandbox apart from the host for code the agent writes and runs. Jev can choose the machine for each step from a one-line purpose you give each environment.
 
-Install it with `npm install @parcha/pi-transport@beta`. This runs with no key and no Docker. The box is a directory on this machine, with no isolation:
+Install it with `npm install @parcha/pi-transport@latest`. This runs with no key and no Docker. The box is a directory on this machine, with no isolation:
 
 ```js
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

@@ -2,11 +2,11 @@
 
 Typed workflows that your agent writes. It drafts a workflow, checks it, dry-runs it for free, then runs it; `@parcha/agentrun-dsl/graph` turns the workflow into its graph. The core provides the v2 workflow types, validator, interpreter, events, schema, and an offline CLI. Supply agent, judgment, and effect functions only when a workflow needs them.
 
-Beta, on npm under the `beta` dist-tag (`npm view @parcha/agentrun-dsl dist-tags`). Requires Node 22.19+; TypeScript consumers require TypeScript 5.4+.
+Beta, on npm under the `latest` dist-tag (`npm view @parcha/agentrun-dsl dist-tags`). Requires Node 22.19+; TypeScript consumers require TypeScript 5.4+.
 
 ```sh
-npm install @parcha/agentrun-dsl@beta
-npx @parcha/agentrun-dsl@beta demo
+npm install @parcha/agentrun-dsl@latest
+npx @parcha/agentrun-dsl@latest demo
 ```
 
 For the JavaScript API, save this as `demo.mjs` and run `node demo.mjs`:
@@ -33,12 +33,12 @@ The same checks from a shell, in the project where you installed the package, on
 
 ```sh
 cp node_modules/@parcha/agentrun-dsl/skills/author/examples/review-release-notes.json workflow.json
-npx @parcha/agentrun-dsl@beta inspect workflow.json
-npx @parcha/agentrun-dsl@beta validate workflow.json --trusted
-npx @parcha/agentrun-dsl@beta dry-run workflow.json --trusted
+npx @parcha/agentrun-dsl@latest inspect workflow.json
+npx @parcha/agentrun-dsl@latest validate workflow.json --trusted
+npx @parcha/agentrun-dsl@latest dry-run workflow.json --trusted
 ```
 
-Its dry run is `passed`: every node ran on synthetic values, with no model call. The demo's workflow (`npx @parcha/agentrun-dsl@beta example demo.json`) comes back `not_run` instead: its confidence check escalates on a synthetic answer, so the queue choice after it is not exercised, and `skipped` says so. `dry-run --strict` exits 3 on `not_run`, for a script that must stop there; a failure exits 1.
+Its dry run is `passed`: every node ran on synthetic values, with no model call. The demo's workflow (`npx @parcha/agentrun-dsl@latest example demo.json`) comes back `not_run` instead: its confidence check escalates on a synthetic answer, so the queue choice after it is not exercised, and `skipped` says so. `dry-run --strict` exits 3 on `not_run`, for a script that must stop there; a failure exits 1.
 
 ### Run it with no key
 
@@ -95,7 +95,7 @@ Save its input as `total.input.json`:
 Then run it:
 
 ```sh
-npx @parcha/agentrun-dsl@beta run total.json total.input.json --trusted
+npx @parcha/agentrun-dsl@latest run total.json total.input.json --trusted
 ```
 
 It prints `"status": "complete"` and an output with `"total": 6`. The shipped examples each need an adapter, so `run` stops on them naming it: `review-release-notes.json` needs `runNode`, `evidence-gate.json` needs `runJudge`, and `read-file.json` and `read-source-decision.json` need `runEffect` (the latter also `runJudge`). Run those with `runWorkflow` and your own adapters.

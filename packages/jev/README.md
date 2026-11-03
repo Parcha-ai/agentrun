@@ -2,10 +2,10 @@
 
 Optional [TypeSafe Jev](https://docs.typesafe.ai/) support for AgentRun DSL. Jev answers focused questions with typed values and probability distributions. The workflow decides how to use them.
 
-Beta, on npm under the `beta` dist-tag (`npm view @parcha/agentrun-jev dist-tags`). Requires Node.js 22.19 or later.
+Beta, on npm under the `latest` dist-tag (`npm view @parcha/agentrun-jev dist-tags`). Requires Node.js 22.19 or later.
 
 ```sh
-npm install @parcha/agentrun-dsl@beta @parcha/agentrun-jev@beta
+npm install @parcha/agentrun-dsl@latest @parcha/agentrun-jev@latest
 ```
 
 ## Offline tests

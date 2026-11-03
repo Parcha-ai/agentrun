@@ -217,7 +217,7 @@ async function transport<T>(load: () => Promise<T>): Promise<T> {
     return await load();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND' && String((error as Error).message).includes("'@parcha/pi-transport")) {
-      throw new Error('this demo declares boxes, which need @parcha/pi-transport: npm install @parcha/pi-transport@beta');
+      throw new Error('this demo declares boxes, which need @parcha/pi-transport: npm install @parcha/pi-transport@latest');
     }
     throw error;
   }

@@ -35,7 +35,7 @@ where each tool runs. The definition names tools; the host binds them. It does n
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 The package needs Node 22.19 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
@@ -44,7 +44,7 @@ to 1.3.0, the newest its peer range takes. pi 1.4 is not supported yet; a later 
 need a browser, a key or a network.
 
 To try a version that is not on npm yet, `npm pack -w @parcha/pi-durable-agent` in a built checkout writes
-`parcha-pi-durable-agent-<version>.tgz`: install that file's path in place of `@parcha/pi-durable-agent@beta`.
+`parcha-pi-durable-agent-<version>.tgz`: install that file's path in place of `@parcha/pi-durable-agent@latest`.
 
 ## Quickstart (no key, no network)
 
@@ -56,7 +56,7 @@ a later release widens the range), save this as `quickstart.mjs`, and run
 `node --no-warnings=ExperimentalWarning quickstart.mjs` (Node's SQLite is marked experimental and says so):
 
 ```sh
-npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 ```js
