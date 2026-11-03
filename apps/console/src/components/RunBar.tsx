@@ -58,8 +58,8 @@ export function RunBar({ agent, efforts, v2, go, blocked }: { agent: Agent; effo
           className={cn("min-w-0 flex-1 resize-y border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong", workflow && "leading-[1.6]")} />
         <div className="flex shrink-0 items-center gap-3">
           {efforts.length > 0 && (
-            <label className="flex items-center gap-2">
-              <span className="caps text-[11px] text-muted-foreground">Effort</span>
+            <label className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
+              <span className="flex flex-col leading-tight"><span className="caps text-[11px] text-muted-foreground">Effort</span><span className="text-[11px] text-muted-foreground">How hard the model thinks</span></span>
               <select value={effort} onChange={(e) => setEffort(e.target.value)} aria-label="Effort" className="h-10 border bg-background px-3 font-mono text-[13px]">
                 {["", ...efforts].map((e) => <option key={e || "default"} value={e}>{e || "default"}</option>)}
               </select>
