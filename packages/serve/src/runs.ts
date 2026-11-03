@@ -37,6 +37,7 @@ import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
+import { keyRefusal, runKeyOf } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, storedPlace } from "./place.js";
 import { destroyRunBoxes, FAUX_BOX_ENV, sweepRunBoxes } from "./run-box.js";
@@ -679,8 +680,17 @@ export class Runs {
     const last = meaningful(run.rows);
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
-    if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
+    if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: this.plainKey(run, last.text ?? undefined) ?? last.text ?? last.summary ?? "The run failed.", retryable: false } };
     return !stopped(run) && answerOf(run.rows) ? { outcome: "completed" } : undefined;
+  }
+
+  /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
+   *  harness's route sends, by this server's settings and keys, and no secret's value. */
+  private plainKey(run: Run, text: string | undefined): string | undefined {
+    if (!text) return undefined;
+    const env = withSecrets(process.env, "all", this.options.storedKeys);
+    const secrets = SECRET_NAMES.map((name) => env[name]).filter((value): value is string => typeof value === "string");
+    return keyRefusal(text, runKeyOf(env, run.harness ?? run.tooling?.harness, run.tooling?.model), secrets);
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */

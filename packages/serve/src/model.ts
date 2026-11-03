@@ -51,6 +51,18 @@ export const MODEL_KEYS = [
 /** `row`'s default for `harness`: its own (`models`), else the row's. */
 const rowModel = (row: (typeof MODEL_KEYS)[number], harness: string): string => (row as { models?: Partial<Record<string, string>> }).models?.[harness] ?? row.model;
 
+/**
+ * Whether `harness` reaches its vendor's models here only through OpenRouter: OPENROUTER_API_KEY is set and none of the
+ * harness's own settings is. Those win, as on a host with no OpenRouter key: the endpoint the host names
+ * (ANTHROPIC_BASE_URL for claude-agent, which needs ANTHROPIC_API_KEY; serve's gateway AGENT_MODEL_BASE_URL for codex,
+ * with AGENT_MODEL_API_KEY or none), then the vendor's own key (ANTHROPIC_API_KEY, OPENAI_API_KEY), then OpenRouter. An
+ * endpoint the host names never gets the OpenRouter key.
+ */
+export function openRouterOnly(harness: "claude-agent" | "codex", env: NodeJS.ProcessEnv): boolean {
+  if (!env.OPENROUTER_API_KEY) return false;
+  return harness === "claude-agent" ? !env.ANTHROPIC_BASE_URL && !env.ANTHROPIC_API_KEY : !env.AGENT_MODEL_BASE_URL && !env.OPENAI_API_KEY;
+}
+
 /** What a person does when no model runs here: add a model provider's key in the console, or set one where AgentRun
  *  starts (MODEL_KEYS' fields), OpenRouter's named first, as its one key runs every harness. The order a default is
  *  taken in is MODEL_KEYS' own. */

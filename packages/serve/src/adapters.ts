@@ -10,7 +10,7 @@ import { sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
 import { FAUX_HARNESS_ENV } from "./harness.js";
-import { chooseModel, FAUX_ENV, hostModel, type ModelRef } from "./model.js";
+import { chooseModel, FAUX_ENV, hostModel, type ModelRef, openRouterOnly } from "./model.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
 import { NATIVE_SEARCH_ALLOWANCE_TOKENS } from "./cap.js";
@@ -131,17 +131,7 @@ export function gatewayBase(setting: string, value: string): string {
  *  under one base, its key taken as a bearer token. The OpenRouter key goes nowhere else. */
 export const OPENROUTER_BASE = "https://openrouter.ai/api";
 
-/**
- * Whether `harness` reaches its vendor's models here only through OpenRouter: OPENROUTER_API_KEY is set and none of the
- * harness's own settings is. Those win, as on a host with no OpenRouter key: the endpoint the host names
- * (ANTHROPIC_BASE_URL for claude-agent, which needs ANTHROPIC_API_KEY; serve's gateway AGENT_MODEL_BASE_URL for codex,
- * with AGENT_MODEL_API_KEY or none), then the vendor's own key (ANTHROPIC_API_KEY, OPENAI_API_KEY), then OpenRouter. An
- * endpoint the host names never gets the OpenRouter key.
- */
-export function openRouterOnly(harness: "claude-agent" | "codex", env: NodeJS.ProcessEnv): boolean {
-  if (!env.OPENROUTER_API_KEY) return false;
-  return harness === "claude-agent" ? !env.ANTHROPIC_BASE_URL && !env.ANTHROPIC_API_KEY : !env.AGENT_MODEL_BASE_URL && !env.OPENAI_API_KEY;
-}
+export { openRouterOnly };
 
 /** OpenRouter's key, read per request, refused by name where it is not set (a model named on OpenRouter, a host
  *  without its key). */
