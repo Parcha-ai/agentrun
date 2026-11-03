@@ -3,6 +3,7 @@
 // arrive, and the signed-in owner can read how the import stands.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
@@ -352,9 +353,12 @@ const holding = (dir, value) => {
   return found;
 };
 
-test("under its launcher, setup's import cuts the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
-  // The value of a key the server holds (the launcher hands it over a pipe; no environment has it).
-  const KEY = "not-a-secret-key-4f9e2a7c1d8b6e3a";
+test("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
+  // A value of its own for every name the launcher protects (its SECRETS line), each handed over its pipe: no environment
+  // of the server's has one. The seal key is one a server takes: 32 bytes in base64.
+  const names = /^SECRETS='([A-Z0-9_ ]+)'$/m.exec(readFileSync(LAUNCHER, "utf8"))[1].split(" ").filter(Boolean);
+  const keys = Object.fromEntries(names.map((name) => [name, name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : `not-a-secret-${name.toLowerCase()}-${randomBytes(8).toString("hex")}`]));
+  const KEY = Object.values(keys).join(" ");
   const root = await scratch(t);
   const home = join(root, "home");
   const site = join(home, "code", "acme-site");
@@ -365,7 +369,7 @@ test("under its launcher, setup's import cuts the server's own secrets out of ev
   const [data, config, temp] = [join(root, "agents"), join(root, "config"), join(root, "tmp")];
   mkdirSync(temp, { recursive: true });
   const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
-  const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config, OPENAI_API_KEY: KEY } });
+  const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config, ...keys } });
   const exited = new Promise((resolve) => child.once("exit", resolve));
   t.after(async () => {
     try {
@@ -386,7 +390,7 @@ test("under its launcher, setup's import cuts the server's own secrets out of ev
   const state = async () => (await call(port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
   for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
   assert.deepEqual(await state(), { state: "done", agents: 1, runs: 1, skipped: 0 }, err);
-  assert.deepEqual(holding(data, KEY), [], "no file under the data directory holds the key");
+  for (const [name, value] of Object.entries(keys)) assert.deepEqual(holding(data, value), [], `no file under the data directory holds ${name}'s value`);
 });
 
 test("setup counts sessions as the import takes them: a thread resumed in a second file of the same id is one session", { timeout: 60_000 }, async (t) => {
