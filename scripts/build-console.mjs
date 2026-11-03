@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 
 /** The console's build inputs, below the repository's root. */
-const INPUTS = ['apps/console/src', 'apps/console/index.html', 'apps/console/package.json', 'apps/console/package-lock.json', 'apps/console/tsconfig.json', 'apps/console/vite.config.ts', 'apps/console/tailwind.config.ts', 'apps/console/postcss.config.js', 'packages/dsl/src'];
+const INPUTS = ['apps/console/src', 'apps/console/index.html', 'apps/console/package.json', 'apps/console/package-lock.json', 'apps/console/tsconfig.json', 'apps/console/vite.config.ts', 'apps/console/third-party-notices.mjs', 'apps/console/tailwind.config.ts', 'apps/console/postcss.config.js', 'packages/dsl/src'];
 export const HASH_FILE = '.build-hash';
 
 const filesUnder = (path) => (statSync(path).isDirectory() ? readdirSync(path).sort().flatMap((name) => filesUnder(join(path, name))) : [path]);
