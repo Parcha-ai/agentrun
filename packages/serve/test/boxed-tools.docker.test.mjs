@@ -3,8 +3,8 @@
 // faux box cannot show is checked here: no key or token in the box's environment, in any process's under /proc or in
 // what Docker keeps of the container; no network, neither this host (on loopback, the bridge's gateway or its own
 // address) nor a public address, and no name resolves; and nothing of the host outside the run's work/ in the box.
-// With AGENTRUN_SERVE_LIVE_DOCKER_BUILD=1 too, the server also builds its default box image (python 3.12, git, curl)
-// from its recipe, and a box from it runs python, git and curl with no network.
+// With AGENTRUN_SERVE_LIVE_DOCKER_BUILD=1 too, the server also builds its default box image (python, git, curl, node,
+// rg) from its recipe, and a box from it runs each of them with no network.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -152,7 +152,7 @@ test("live Docker (claude-agent, codex on the faux harness): bash writes out.txt
   }
 });
 
-test("live Docker, the default image: the server builds it once from its recipe (its network is the build's alone), with python 3.12, git and curl, labelled with the recipe's hash; a box from it still has no network", { skip: !LIVE_BUILD && "set AGENTRUN_SERVE_LIVE_DOCKER=1 and AGENTRUN_SERVE_LIVE_DOCKER_BUILD=1 with a Docker daemon that can reach Docker Hub and Debian's mirrors", timeout: 900_000 }, async (t) => {
+test("live Docker, the default image: the server builds it once from its recipe (its network is the build's alone), with python 3.12, git, curl, node and rg, labelled with the recipe's hash; a box from it still has no network", { skip: !LIVE_BUILD && "set AGENTRUN_SERVE_LIVE_DOCKER=1 and AGENTRUN_SERVE_LIVE_DOCKER_BUILD=1 with a Docker daemon that can reach Docker Hub and Debian's mirrors", timeout: 900_000 }, async (t) => {
   withEnv(t, { ...SENTINELS, AGENTRUN_BOXES: "docker" }, ["AGENTRUN_DOCKER_IMAGE"]);
   const { api, data } = await serve(t, { faux: PROBE });
   const offer = async () => (await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker");
@@ -162,7 +162,7 @@ test("live Docker, the default image: the server builds it once from its recipe 
   assert.equal(docker("image", "inspect", "--format", `{{ index .Config.Labels "${RECIPE_LABEL}" }}`, DEFAULT_DOCKER_IMAGE).trim(), RECIPE_HASH);
   assert.equal((await api("POST", "/agents", { definition: { id: "built", name: "built", instructions: "Probe.", place: SANDBOX, tools: ["bash"] } })).status, 201);
   const plan = [
-    { tool: "bash", args: { command: "python3 --version && git --version && curl --version | head -1" } },
+    { tool: "bash", args: { command: "python3 --version && git --version && curl --version | head -1 && node --version && rg --version | head -1" } },
     { tool: "bash", args: { command: "if timeout 5 curl -sS https://deb.debian.org >/dev/null 2>&1; then echo OPEN; else echo CLOSED; fi" } },
   ];
   const run = await api("POST", "/agents/built/runs", { input: { content: JSON.stringify({ probe: plan }) } });
@@ -173,5 +173,7 @@ test("live Docker, the default image: the server builds it once from its recipe 
   assert.match(said[0].text, /Python 3\.12\.\d+/);
   assert.match(said[0].text, /git version \d/);
   assert.match(said[0].text, /curl \d/);
+  assert.match(said[0].text, /^v\d+\.\d+\.\d+$/m, "node");
+  assert.match(said[0].text, /ripgrep \d/);
   assert.equal(said[1].text.trim(), "CLOSED", "the box has no network, whatever its image's build had");
 });

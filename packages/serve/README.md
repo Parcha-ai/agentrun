@@ -196,9 +196,9 @@ provider's answer.
   Then the server asks Docker for [the box's image](#the-boxs-image) (`docker image inspect`). When Docker has it (the
   default with this recipe's hash), the box is `ready`. When not, the server builds the default, or pulls the image
   `AGENTRUN_DOCKER_IMAGE` names, once, in the background, for at most 10 minutes. Meanwhile the box is available and
-  `preparing` (`building the box image (python 3.12, git, curl)`, or `pulling <image>`), and a sandbox run whose first
-  box comes then waits for the image, with one row on its timeline (`Preparing the box image: building it (python 3.12,
-  git, curl)…`), instead of a first tool call that pulls it silently. A build or pull that fails, or takes longer, makes
+  `preparing` (`building the box image (python, git, curl, node, rg)`, or `pulling <image>`), and a sandbox run whose
+  first box comes then waits for the image, with one row on its timeline (`Preparing the box image: building it (python,
+  git, curl, node, rg)…`), instead of a first tool call that pulls it silently. A build or pull that fails, or takes longer, makes
   the box unavailable with the reason (the build could not reach the network, pull its base or install a package, ran
   out of disk; the registry refused the image, has no such image, could not be reached; or the time ran out) until a
   restart tries again. A run that was waiting fails its call with that reason, and the next sandbox run is
@@ -712,7 +712,7 @@ go through `work/` by path.
 ### The box's image
 
 A Docker box starts from this server's own image by default: `agentrun-box`, python 3.12 (`python:3.12-slim`, pinned by
-its digest) with git, curl and their certificates, about 200 MB. Its recipe is `BOX_RECIPE` in `src/box-image.ts`, its
+its digest) with git, curl, node (Debian's `nodejs`, no npm), rg (`ripgrep`) and their certificates, about 300 MB. Its recipe is `BOX_RECIPE` in `src/box-image.ts`, its
 base `BOX_BASE` there. To move the base, read the tag's index digest again from Docker Hub (the comment beside it says
 how) and put it in `BOX_BASE`: the recipe's hash changes, and so does the image's tag, so the next start builds it. The
 server builds it on

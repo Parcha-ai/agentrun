@@ -23,7 +23,7 @@ const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const IMAGE = "debian:bookworm-slim";
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const PULLING = `Preparing the box image: pulling ${IMAGE}…`;
-const BUILDING = "Preparing the box image: building it (python 3.12, git, curl)…";
+const BUILDING = "Preparing the box image: building it (python, git, curl, node, rg)…";
 /** Docker's own words for a refused pull, with a marker no reason may carry. */
 const DENIED = `Error response from daemon: pull access denied for nosuch/box, repository does not exist or may require 'docker login': denied: requested access to the resource is denied RAW-DOCKER-STDERR`;
 
@@ -110,7 +110,7 @@ test("the default image is built on first use, once, from a private context dire
   const changes = [];
   const before = Date.now();
   const image = await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, { onChange: (state) => changes.push(state) });
-  assert.deepEqual(image.state(), { state: "preparing", reason: "building the box image (python 3.12, git, curl)" }, "the start does not wait for the build");
+  assert.deepEqual(image.state(), { state: "preparing", reason: "building the box image (python, git, curl, node, rg)" }, "the start does not wait for the build");
   const preparing = recordOf(data);
   assert.deepEqual([preparing.state, preparing.row], ["preparing", BUILDING]);
   assert.ok(preparing.until >= before + 10 * 60_000 && preparing.until <= Date.now() + 10 * 60_000, "the record holds the build's deadline");
@@ -125,7 +125,7 @@ test("the default image is built on first use, once, from a private context dire
   assert.equal(existsSync(build.context), false, "the context directory is gone after the build");
   assert.match(BOX_RECIPE, /^FROM python:3\.12-slim@sha256:[0-9a-f]{64}\n/, "the base pinned by its digest");
   assert.equal([...BOX_RECIPE.matchAll(/^FROM /gm)].length, 1, "one FROM, python:3.12-slim");
-  assert.match(BOX_RECIPE, /apt-get install -y --no-install-recommends git curl ca-certificates/);
+  assert.match(BOX_RECIPE, /apt-get install -y --no-install-recommends git curl ca-certificates nodejs ripgrep \\\n && rm -rf \/var\/lib\/apt\/lists\/\*\n$/, "node and rg from apt, the lists cleaned after");
   assert.deepEqual(docker.calls().find((args) => args[0] === "build"), ["build", "--quiet", "--label", `${RECIPE_LABEL}=${RECIPE_HASH}`, "--tag", DEFAULT_DOCKER_IMAGE, build.context], "the context directory is the build's last argument, never stdin");
   assert.deepEqual(docker.pulls(), [], "nothing is pulled by hand: the build pulls its base");
   // The next start finds it, with this recipe's hash: no build.
@@ -153,7 +153,7 @@ test("a build that fails, or takes too long, makes the box unavailable with a re
   const docker = await fakeDocker(t, { "build-fail": OFFLINE });
   const data = await scratch(t);
   const failed = await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE)).settled;
-  assert.deepEqual(failed, { state: "unavailable", reason: `the build of the box image could not reach the network (it pulls python:3.12-slim and installs git and curl with apt): ${NEXT}` });
+  assert.deepEqual(failed, { state: "unavailable", reason: `the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs and ripgrep with apt): ${NEXT}` });
   assert.ok(!failed.reason.includes("RAW-DOCKER-STDERR"));
   assert.deepEqual(recordOf(data), { image: DEFAULT_DOCKER_IMAGE, state: "unavailable", reason: failed.reason });
   await writeFile(join(docker.state, "build-fail"), NO_BASE);
@@ -161,9 +161,9 @@ test("a build that fails, or takes too long, makes the box unavailable with a re
   await writeFile(join(docker.state, "build-fail"), "failed to copy files: write /var/lib/docker/x: no space left on device RAW-DOCKER-STDERR");
   assert.equal((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE)).settled).reason, "the build of the box image ran out of disk space: free some, then restart the server");
   await writeFile(join(docker.state, "build-fail"), "E: Unable to locate package git RAW-DOCKER-STDERR");
-  assert.match((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE)).settled).reason, /^apt could not install what the box image needs \(git, curl\): /);
+  assert.match((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE)).settled).reason, /^apt could not install what the box image needs \(git, curl, nodejs, ripgrep\): /);
   await writeFile(join(docker.state, "build-fail"), "Err:1 http://deb.debian.org/debian bookworm InRelease Temporary failure resolving 'deb.debian.org' RAW-DOCKER-STDERR");
-  assert.match((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE)).settled).reason, /^the build of the box image could not reach the network \(it pulls python:3\.12-slim and installs git and curl with apt\): /);
+  assert.match((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE)).settled).reason, /^the build of the box image could not reach the network \(it pulls python:3\.12-slim and installs git, curl, nodejs and ripgrep with apt\): /);
   await rm(join(docker.state, "build-fail"));
   await writeFile(join(docker.state, "build-hold"), "");
   const started = Date.now();
@@ -307,7 +307,7 @@ test("a run's first box waits on the record: at once when it is ready, missing o
 async function waitsForTheImage(t, way) {
   const built = way === "build";
   const docker = await fakeDocker(t, built ? { "build-hold": "" } : { "no-image": "", "pull-hold": "" }, built ? {} : OVERRIDE);
-  const [image, row, reason] = built ? [DEFAULT_DOCKER_IMAGE, BUILDING, "building the box image (python 3.12, git, curl)"] : [IMAGE, PULLING, `pulling ${IMAGE}`];
+  const [image, row, reason] = built ? [DEFAULT_DOCKER_IMAGE, BUILDING, "building the box image (python, git, curl, node, rg)"] : [IMAGE, PULLING, `pulling ${IMAGE}`];
   const printed = logged();
   const { api, data } = await serve(t, { faux: PROBE, log: printed.log });
   assert.deepEqual(await dockerOffer(api), { id: "docker", available: true, state: "preparing", reason });

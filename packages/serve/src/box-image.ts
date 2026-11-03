@@ -26,7 +26,7 @@ import { BOX_KEYS, type BoxOffer } from "./boxes.js";
 /** The setting that names another image for Docker boxes than this server's own. */
 export const DOCKER_IMAGE_ENV = "AGENTRUN_DOCKER_IMAGE";
 /** What the default image has, in words. */
-export const RECIPE_HAS = "python 3.12, git, curl";
+export const RECIPE_HAS = "python, git, curl, node, rg";
 /** The base the default image builds from: `python:3.12-slim`, pinned to the multi-arch index digest Docker Hub served
  *  for that tag on 2026-11-03, so a build gets the same base wherever it runs. To move it, read the tag's index digest
  *  again (an anonymous pull token from auth.docker.io for `repository:library/python:pull`, then a HEAD of
@@ -39,7 +39,7 @@ export const BOX_BASE = "python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251de
 export const BOX_RECIPE = [
   `FROM ${BOX_BASE}`,
   "RUN apt-get update \\",
-  " && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git curl ca-certificates \\",
+  " && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git curl ca-certificates nodejs ripgrep \\",
   " && rm -rf /var/lib/apt/lists/*",
   "",
 ].join("\n");
@@ -107,9 +107,9 @@ function buildFailure(answer: Answer, timeoutMs: number): string {
   if (answer.code === "timeout") return `the build of the box image did not finish within ${span(timeoutMs)}: ${next}`;
   if (/no space left on device/i.test(answer.stderr)) return `the build of the box image ran out of disk space: free some, then restart the server`;
   // A base that could not be fetched for want of a network says so in both ways: the network is the cause.
-  if (UNREACHABLE.test(answer.stderr)) return `the build of the box image could not reach the network (it pulls python:3.12-slim and installs git and curl with apt): ${next}`;
+  if (UNREACHABLE.test(answer.stderr)) return `the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs and ripgrep with apt): ${next}`;
   if (/pull access denied|manifest unknown|not found: manifest|failed to resolve source metadata|failed to fetch anonymous token/i.test(answer.stderr)) return `the build of the box image could not pull its base, python:3.12-slim: ${next}`;
-  if (/Unable to locate package|has no installation candidate|E: Package/i.test(answer.stderr)) return `apt could not install what the box image needs (git, curl): ${next}`;
+  if (/Unable to locate package|has no installation candidate|E: Package/i.test(answer.stderr)) return `apt could not install what the box image needs (git, curl, nodejs, ripgrep): ${next}`;
   return `docker build of the box image failed (${exitOf(answer)}): ${next}`;
 }
 
