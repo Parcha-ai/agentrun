@@ -129,8 +129,10 @@ function descriptors(pid) {
 /** A canary for every secret this test expects the launcher to name, checked against its list. */
 function canaries() {
   for (const name of READ) assert.ok(SECRET_NAMES.includes(name), `${name} is on the launcher's list of secrets`);
-  const canary = `not-a-secret-${process.pid}-${Date.now()}`;
-  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name) => [name, `${canary}-${name}`])) };
+  // Short, each its own: every secret set at once goes over the launcher's pipe, which holds 4096 bytes for sure, and
+  // the list grows with pi-ai's providers. The token's is the API's, 32 characters or more.
+  const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
+  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : `${canary}-${i}`])) };
 }
 
 /** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment.
