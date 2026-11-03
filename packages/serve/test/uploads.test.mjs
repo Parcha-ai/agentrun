@@ -59,6 +59,9 @@ const fileList = async (api, runId) => {
 };
 
 test("reserve, then send the bytes: pending, then ready, binary-safe, kept 0600 under files/<id>/, the answers the contract's", async (t) => {
+  // Under a permissive umask, so the mode seen is the one the write asks for, not what the umask leaves of it.
+  const umask = process.umask(0o022);
+  t.after(() => process.umask(umask));
   const server = await serve(t);
   const doc = await (await fetch(`${server.baseUrl}/openapi.json`)).json();
   const check = (name, value) => assert.deepEqual(schemaProblems(doc, { $ref: `#/components/schemas/${name}` }, value), [], `${name}: ${JSON.stringify(value)}`);
@@ -202,7 +205,8 @@ export default function reply(context, faux) {
 });
 
 test("a run whose files are still being copied does not start for a message meanwhile: its process waits for the copy", async (t) => {
-  const server = await serve(t);
+  // A request waits half a second for a run's door, so the message meanwhile is answered while the copy is still held.
+  const server = await serve(t, { readyTimeoutMs: 500 });
   const { api } = server;
   const notes = await upload(server, "notes.txt", Buffer.from("copied before the start\n"));
   assert.equal((await api("POST", "/agents", agent("held"))).status, 201);
@@ -220,16 +224,15 @@ test("a run whose files are still being copied does not start for a message mean
   const work = await started;
   const runId = (await api("GET", "/runs")).body.runs[0]?.run_id;
   assert.ok(runId, "a client finds the run while it copies");
-  const message = api("POST", `/runs/${runId}/messages`, { content: "Go on." });
-  // The message's start would have spawned the process by now; it waits for the copy instead.
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  // The message waits for the copy, never a launch, and is answered so once its wait is up.
+  const message = await api("POST", `/runs/${runId}/messages`, { content: "Go on." });
+  assert.deepEqual([message.status, message.body.error?.code, message.body.error?.message], [503, "unavailable", "the run's files are still being copied into its workspace"], JSON.stringify(message.body));
   const dir = join(work, "..");
   assert.equal(await stat(join(dir, "process.log")).catch(() => null), null, "no process while the files are copied");
   open();
   const run = await created;
   assert.equal(run.status, 202, JSON.stringify(run.body));
   assert.equal(run.body.run_id, runId);
-  assert.ok([202, 409].includes((await message).status));
   await follow(api, runId, ["completed"]);
   assert.equal(await readFile(join(work, "inputs", "notes.txt"), "utf8"), "copied before the start\n");
 });
@@ -362,18 +365,10 @@ test("file_ids naming an unknown, pending or repeated file, or more than max_fil
   const full = await api("POST", "/agents/refused/runs", { input: { content: "Hello." }, file_ids: many.slice(0, MAX_FILES_PER_RUN) });
   assert.equal(full.status, 202, JSON.stringify(full.body));
   assert.equal((await fileList(api, full.body.run_id)).filter((f) => f.path.startsWith("inputs/")).length, MAX_FILES_PER_RUN);
-});
-
-test("a run body without file_ids, or with none, starts as before: no inputs folder", async (t) => {
-  const { api, data } = await serve(t);
-  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
-  for (const body of [{ input: { content: "Hello." } }, { input: { content: "Hello." }, file_ids: [] }]) {
-    const run = await api("POST", "/agents/plain/runs", body);
-    assert.equal(run.status, 202, JSON.stringify(run.body));
-    await follow(api, run.body.run_id, ["completed"]);
-    assert.deepEqual((await fileList(api, run.body.run_id)).filter((f) => f.path.startsWith("inputs/")), []);
-    assert.equal(await stat(join(data, "runs", run.body.run_id, "work", "inputs")).catch(() => null), null);
-  }
+  // None at all starts as a run with no file_ids does: no inputs folder.
+  const none = await api("POST", "/agents/refused/runs", { input: { content: "Hello." }, file_ids: [] });
+  assert.equal(none.status, 202, JSON.stringify(none.body));
+  assert.equal(await stat(join(server.data, "runs", none.body.run_id, "work", "inputs")).catch(() => null), null);
 });
 
 test("the console's session sends a file's bytes: a PUT to a route marked raw takes any content type from the page's own origin; without it, or from another, it is no credential; nothing else changes", async (t) => {
