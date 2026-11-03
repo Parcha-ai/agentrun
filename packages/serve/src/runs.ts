@@ -5,7 +5,7 @@
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, existsSync, openSync, rmSync } from "node:fs";
 import { open as openFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
@@ -17,7 +17,7 @@ import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecis
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, tempOf, writeDurableSync, writeWhole } from "./files.js";
+import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
 import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
@@ -74,12 +74,6 @@ const CARRY_BACK_RETRIES_MS = [500, 1_000, 2_000, 4_000, 8_000];
 const EXIT_AFTER_RELEASE_MS = 30_000;
 /** How many 500 ms ticks in a row a live run's record is unreadable before the server says so. */
 const UNREADABLE_TICKS = 10;
-/** How far back a start looks for an end whose run.ended a kill kept from the outbox: past the outbox's own retries,
- *  which end within about a day (webhooks.ts RETRY_MS), a notice would not be sent any more. */
-const END_NOTICE_WINDOW_MS = 24 * 3_600_000;
-/** In the data directory: when a server that records its ends' notices first started. An end before it was an older
- *  server's, which kept no record of its notice, so it is never queued again. */
-const END_NOTICES_SINCE = "end-notices-since";
 const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
@@ -112,14 +106,8 @@ type RunMeta = {
   /** What its newest process took its thinking level from (app.ts's thinkingOf), as its environment had them: `effort`,
    *  the run's effort, and `host`, the host's AGENT_THINKING. Absent for a process an older server started. */
   launch_thinking?: { effort?: string; host?: string };
-  /** Its end's run.ended, recorded once the webhook outbox holds it on disk, by the end's time (the agent store's row's).
-   *  A start queues an end in the store that this does not name (recover), and a continuation waits for it (reopen). */
-  end_notice?: { ended_at: string; queued: true };
   /** Where the run's learning stands (learning.ts); absent for a run that does not learn. */
   learning?: Learning;
-  /** The newest wait whose run.needs_input is in the webhook outbox on disk, by its mark (waitMark): a server that adopts
-   *  the run queues a wait it stands at that this does not name, one reached while no server was up. */
-  wait_notice?: { marker: string };
 };
 /** A run's learning as a list shows it: its state and reason. */
 const shortLearning = (learning: Learning | null) => (learning ? { state: learning.state, reason: learning.reason } : null);
@@ -203,18 +191,12 @@ export type Run = {
    *  request that would waits for it), and nothing but a cancel settles it. */
   preparing?: Promise<void>;
   settled: boolean;
-  /** Ended here, its end not yet in the agent store (persistLater tries again): no run.ended until it is. */
-  endUnstored?: boolean;
   settling?: Promise<void>;
   /** The newest write of its serve.json: one at a time, in order. */
   saving?: Promise<void>;
   /** Settles of this run not yet done: while any is, nothing starts its process again. */
   settles: number;
   updatedAt: string;
-  /** Where its status stood for its notices (`notify`): input_required, an end once carried back, or `other`. Unset
-   *  until this server has first read the run, so a run it adopts notices nothing of where it already stood; UNREAD for
-   *  an agentic run adopted live, whose rows come with its first snapshot. */
-  moment?: string;
 };
 
 const ASKED = "Asked you: ";
@@ -305,25 +287,8 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
   return (id) => !live.has(id) && !isLive(id);
 }
 
-/** A live run adopted with no rows yet: where it stands is read from its first snapshot, notifying nothing. */
-const UNREAD = "unread";
-/** What a run's `moment` becomes (`keep`) as its status is recorded, and whether that is a notice. A run not yet read
- *  (undefined) keeps none. A live run adopted with no rows (UNREAD) takes where its first snapshot stands, silently; an
- *  end it comes to is always new, and noticed. A wait is also a notice while the run's record does not name it (mark). */
-export function nextMoment(seen: string | undefined, moment: string, rows: number): { keep: string | undefined; notify: boolean } {
-  if (seen === undefined) return { keep: undefined, notify: false };
-  if (seen === UNREAD && (moment === "other" || moment === "input_required")) return { keep: rows ? moment : UNREAD, notify: false };
-  return { keep: moment, notify: moment !== seen && moment !== "other" };
-}
-
 /** A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on). */
 const waitMark = (run: Run): string => (stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "";
-
-/** Where a run's status stands for its notices: input_required, an end once it is in the agent store, else other. */
-const momentOf = (run: Run): string => {
-  const { status } = statusOf(run);
-  return status === "input_required" || (TERMINAL.has(status) && run.settled && !run.endUnstored) ? status : "other";
-};
 
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {
@@ -354,10 +319,9 @@ export type StartOptions = { input: Json; title: string; effort?: string; maxCos
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
 export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxExa?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; learning?: LearningMode; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify };
-/** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
- *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
-/** Queues a run's notice under `marker`, and says what came of it (webhooks.ts' Emitted): a record of it is kept only
- *  once it is in the outbox on disk (`queued`), or there is nothing to send (`off`). */
+/** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
+ *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
+ *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
 export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => Emitted;
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
@@ -450,8 +414,6 @@ export class Runs {
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
   private closing = false;
-  /** When this data directory's record-keeping of end notices began (noticesSince), once read. */
-  private noticesFrom?: number;
   /** Set once `close` is done: the store is closed, so nothing settles after it. */
   private closed = false;
   /** Runs past the cap's check whose process is not started yet. */
@@ -508,9 +470,6 @@ export class Runs {
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
-      // An earlier end's record, kept only while the run is ended: a running run's next end is its own.
-      ...(row.state !== "running" && isObject(stored?.end_notice) && typeof stored.end_notice.ended_at === "string" && stored.end_notice.queued === true ? { end_notice: { ended_at: stored.end_notice.ended_at, queued: true as const } } : {}),
-      ...(isObject(stored?.wait_notice) && typeof stored.wait_notice.marker === "string" ? { wait_notice: { marker: stored.wait_notice.marker } } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
     };
     // A server that went down while it copied what the run's agent learned saved the run's input and no learning, and
@@ -543,9 +502,6 @@ export class Runs {
       this.adoptProcess(run, record);
     }
     this.refresh(run);
-    run.moment = run.kind === "agentic" && run.orphan !== undefined && !run.rows.length ? UNREAD : momentOf(run);
-    // A wait it stands at that its record does not name (reached while no server was up): queued now (mark).
-    if (run.moment === "input_required") this.mark(run);
     return run;
   }
 
@@ -751,105 +707,32 @@ export class Runs {
 
   async recover(): Promise<void> {
     await this.sweepOnce();
-    // Read, or written at this first start, before anything ends here: a run that ends later is after it.
-    if (this.options.notify) this.noticesFrom ??= this.noticesSince();
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
-      if (row.importedFrom) continue;
-      if (row.state !== "running") {
-        if (this.options.notify && row.endedAt && this.endNoticeDue(row.endedAt)) await this.endNotice(row).catch((error: Error) => warn(row.id, `its end's notice is not checked: ${error.message}`));
-        continue;
-      }
+      if (row.state !== "running" || row.importedFrom) continue;
       const run = await this.adopt(row).catch((error: Error) => (warn(row.id, `not recovered: ${error.message}; the next start tries again`), null));
       if (run && !this.live(run) && !run.outcome) await this.settle(run, null, false);
     }
   }
 
-  /** Whether an end's run.ended is still this server's to send: an end since record-keeping began (noticesSince) and
-   *  within the outbox's own day. An earlier one counts as delivered: an older server's, or past every retry. */
-  private endNoticeDue(endedAt: string): boolean {
-    this.noticesFrom ??= this.noticesSince();
-    return Date.parse(endedAt) >= Math.max(this.noticesFrom, Date.now() - END_NOTICE_WINDOW_MS);
-  }
-
-  /** When this data directory's servers began recording their ends' notices (END_NOTICES_SINCE): read, or written now,
-   *  once and durably, at the first start of such a server. One that cannot be written is taken as now, and said, so a
-   *  start never sends an older server's ends again. */
-  private noticesSince(): number {
-    const file = join(this.options.agents.dir, END_NOTICES_SINCE);
-    try {
-      const at = Date.parse(readFileSync(file, "utf8").trim());
-      if (Number.isFinite(at)) return at;
-    } catch {}
-    const now = Date.now();
-    try {
-      writeDurableSync(file, `${new Date(now).toISOString()}\n`);
-    } catch (error) {
-      const fields = { condition: "notices_since_unwritable", file, error: (error as NodeJS.ErrnoException).code ?? "unknown" };
-      if (this.options.log) this.options.log("webhook", fields);
-      else process.stderr.write(`agentrun-serve: event=webhook condition=${fields.condition} file=${file} error=${fields.error}\n`);
-    }
-    return now;
-  }
-
-  /** An ended run whose run.ended is not recorded as queued for its end (its server was killed between the store's end
-   *  and the outbox write, or the record never reached the disk): queued now, under the store's end time, so the same
-   *  webhook-id; the outbox, or the receiver, drops one it already has. */
-  private async endNotice(row: RunRow): Promise<void> {
-    const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<RunMeta> | null;
-    const end = meta?.end_notice;
-    if (end?.queued === true && end.ended_at === row.endedAt) return;
-    const run = await this.adopt(row);
-    // Adopted as it stands, which notices nothing: from `other`, its end is a moment again.
-    run.moment = "other";
-    this.mark(run);
-  }
-
-  /** The run's status, state and whether its rows are all in, as one more change of its log when any of them moves. */
+  /** The run's status, state and whether its rows are all in, as one more change of its log when any of them moves. A wait
+   *  is told each time it is seen: webhooks.ts queues each wait once, whichever server sees it first. */
   private mark(run: Run): void {
     const { status, state } = statusOf(run);
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
-    const seen = run.moment;
-    const moment = momentOf(run);
-    const { keep, notify } = nextMoment(seen, moment, run.rows.length);
-    run.moment = keep;
-    const waits = moment === "input_required";
-    const at = waits ? waitMark(run) : (run.endedAt ?? "");
-    // A wait is a notice until its record says the outbox holds it, whatever this server saw of it: one the run reached
-    // while no server was up is queued by the server that adopts it (a run read for the first time notices nothing yet).
-    const unrecorded = waits && seen !== undefined && run.meta.wait_notice?.marker !== at;
-    if (!(notify || unrecorded) || !this.options.notify) return;
-    try {
-      // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
-      const pending = waits ? { pending: { kind: state === "waiting" ? ("question" as const) : ("stopped" as const) } } : {};
-      const emitted = this.options.notify(waits ? "run.needs_input" : "run.ended", { run_id: run.id, agent_id: run.agentId, status, title: run.meta.title, ...pending }, at);
-      // Recorded only once the outbox holds it on disk (or nothing is to be sent): a record of a notice the outbox lost
-      // (its write failed, then a kill) would keep the next server from queuing it again.
-      const landed = emitted === "queued" || emitted === "off";
-      const end = run.meta.end_notice;
-      if (waits && landed) {
-        run.meta.wait_notice = { marker: at };
-        this.recordMeta(run);
-      } else if (!waits && at && !(end?.queued && end.ended_at === at) && landed) {
-        run.meta.end_notice = { ended_at: at, queued: true };
-        this.recordMeta(run);
-      }
-    } catch (error) {
-      warn(run.id, `its notice was not queued: ${(error as Error).message}`);
-    }
+    // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
+    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state === "waiting" ? "question" : "stopped" });
   }
 
-  /** A record that must be on disk before anything else can happen (what the outbox holds of the run's notices): its
-   *  serve.json written now, synchronously, through a temporary file of its own. A save already in flight may land after
-   *  it with what it read before, so one more save follows in their order, writing run.meta as it is then: neither is
-   *  lost. A write that fails leaves the notice unrecorded, so the next server queues it again, under the same id. */
-  private recordMeta(run: Run): void {
-    const file = join(run.dir, RUN_META);
+  /** Tells webhooks.ts (`notify`) of a moment of the run under `marker`: a wait it reached (mark), or an end the agent store
+   *  has (settle, persistLater, reopen). What it already queued it queues no more. */
+  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "stopped" }): Emitted | undefined {
+    if (!this.options.notify || !marker) return undefined;
     try {
-      writeDurableSync(file, `${JSON.stringify(run.meta)}\n`, 0o600, tempOf(file));
+      return this.options.notify(event, { run_id: run.id, agent_id: run.agentId, status: statusOf(run).status, title: run.meta.title, ...(pending ? { pending } : {}) }, marker);
     } catch (error) {
-      warn(run.id, `its notice's record is not written: ${(error as Error).message}`);
+      warn(run.id, `its notice was not queued: ${(error as Error).message}`);
+      return undefined;
     }
-    if (run.saving) void this.saveMeta(run).catch(() => undefined);
   }
 
   // ---- the door -------------------------------------------------------------------------------------------------------
@@ -1240,12 +1123,11 @@ export class Runs {
     } catch (error) {
       // A store that refuses the write (a full disk, a store fenced by it) must not leave the run unended: it ends here
       // now, with its cost from its rows, and the write is tried again until it lands. A restart before then reads the
-      // run as it was in the store. Its run.ended waits for the store (endUnstored), so a receiver that reads the run
+      // run as it was in the store. Its run.ended waits for the store (persistLater), so a receiver that reads the run
       // back on its notice reads it ended there too.
       warn(run.id, `its end could not be written to the agent store (${(error as Error).message}); trying again every ${(this.options.settleRetryMs ?? SETTLE_RETRY_MS) / 1000} s`);
       // An unknown cost stays unknown: never stored as 0.
       if (cost !== null) run.costUsd = cost;
-      run.endUnstored = true;
       run.outcome = outcome;
       run.finishing = undefined;
       run.settled = true;
@@ -1265,6 +1147,7 @@ export class Runs {
     run.settled = true;
     run.updatedAt = new Date().toISOString();
     this.refresh(run);
+    this.notice(run, "run.ended", run.endedAt);
   }
 
   /** The run's metrics as the store keeps them: what its entries say it used, the effort its newest process ran at (unknown
@@ -1295,8 +1178,7 @@ export class Runs {
         if (row?.endedAt) run.endedAt = row.endedAt;
         if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
         // In the store at last: its run.ended goes now.
-        run.endUnstored = false;
-        this.refresh(run);
+        this.notice(run, "run.ended", run.endedAt);
       }, () => this.persistLater(run, persist));
     }, this.options.settleRetryMs ?? SETTLE_RETRY_MS);
     timer.unref();
@@ -1417,7 +1299,6 @@ export class Runs {
       await this.setUp(started.runId, started.dir, meta);
     }
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
-    run.moment = "other";
     this.runs.set(run.id, run);
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;
@@ -1527,12 +1408,9 @@ export class Runs {
       const now = this.store.readRun(run.id);
       if (now?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
       if (now?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
-      // Its end's run.ended in the outbox before the run opens again, or not opened: once the row runs, nothing queues it.
-      if (this.options.notify && now?.endedAt && this.endNoticeDue(now.endedAt) && !(run.meta.end_notice?.queued && run.meta.end_notice.ended_at === now.endedAt)) {
-        run.moment = "other";
-        this.mark(run);
-        if (!(run.meta.end_notice?.queued && run.meta.end_notice.ended_at === now.endedAt)) throw new ApiError("unavailable", "The run's end is still being announced to its webhook; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
-      }
+      // Its end's run.ended in the outbox on disk before the run opens again, or not opened: once the row runs, no start finds
+      // the end to queue it.
+      if (now?.endedAt && this.notice(run, "run.ended", now.endedAt) === "unsaved") throw new ApiError("unavailable", "The run's end is still being announced to its webhook; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
       try {
         this.store.reopenRun(run.id);
       } catch (error) {

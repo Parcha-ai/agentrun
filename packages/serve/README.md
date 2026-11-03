@@ -376,14 +376,13 @@ A run's end and its `run.ended` are one durable step. The server chooses the end
 store, so the row's `ended_at` and the message's `webhook-id` name one time. `run.ended` is queued only once the agent
 store has the end, so a receiver that reads the run back on its message (`GET /v2/runs/{id}`) reads it ended; while the
 store refuses the end (a full disk, a busy store), nothing is sent, until a later try of the write or the next server
-stores it. It is recorded with the run (`serve.json`) once the outbox holds it on disk, and a server that starts queues
-any end of the last day that record does not name, under the same `webhook-id`: one lost to a kill, or a record lost to
-a crash of the machine. The first start of a server that keeps these records writes when it began
-(`DIR/end-notices-since`); an end before that time, an older server's, is never sent again. A run is continued only once its end's `run.ended` is in the outbox (`503` meanwhile), so a
-continued run's next end is its own, under its own id. A
-`run.needs_input` is recorded with the run once the outbox holds it on disk; a server that takes over a run queues a
-wait it stands at that the record does not name (one the run came to while no server was up), under its one
-`webhook-id`.
+stores it. The outbox (`DIR/webhook-outbox.json`) keeps, in the same write as each message, which end and which wait of
+each run it queued. A server that starts queues any end of the last day that the agent store holds and the outbox does
+not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine), and a server that takes over a run
+queues a wait it stands at that the outbox does not name (one the run came to while no server was up), under its one
+`webhook-id`. The first start of a server that keeps this writes when it began (`DIR/end-notices-since`); an end before
+that time (an older server's) or before the webhook was set is never sent. A run is continued only once its end's
+`run.ended` is in the outbox on disk (`503` meanwhile), so a continued run's next end is its own, under its own id.
 
 ```json
 { "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",

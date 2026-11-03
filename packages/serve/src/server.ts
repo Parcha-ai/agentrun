@@ -427,8 +427,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
-  // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
-  void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
+  // Runs an earlier server left: supervised again, carried back when they already ended, or opened again. Then each end
+  // the agent store holds that the webhook's ledger does not (its server was killed before the outbox had it), queued.
+  void runs
+    .recover()
+    .then(async () => {
+      const ends = (await agents.request(() => agents.store.listRuns())).filter((row) => !row.importedFrom && row.endedAt);
+      await webhooks.catchUp(ends, async (id) => {
+        const run = await runs.get(id);
+        if (!run) return null;
+        const { run_id, agent_id, status, title } = await runs.view(run);
+        return { run_id, agent_id, status, title };
+      });
+    })
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
