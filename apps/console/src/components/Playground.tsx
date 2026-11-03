@@ -15,7 +15,7 @@ export const startFailure = (e: unknown, ms: number): StartResult =>
   e instanceof ClientError ? { status: e.status, ms, body: { error: { ...e.toApiError(), ...(e.fields ? { fields: e.fields } : {}) } } } : { status: 0, ms, body: { error: { code: "network", message: String(e) } } };
 export type PlaygroundProps = {
   agents: Agent[];
-  revisions?: { revision: string; version: number; current: boolean; note: string | null }[];
+  revisions?: { revision: string; version: number; current: boolean; note: string | null; definition?: Record<string, unknown> }[];
   efforts: string[];
   origin: string;
   agentId?: string;
@@ -53,8 +53,10 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [revision, setRevision] = useState("");
   const [effort, setEffort] = useState("");
   const [cap, setCap] = useState("");
-  // A sandbox agent's run asked for on the server instead: the request's `place: "runner"`.
-  const boxed = placeOf(agent?.definition.place);
+  // A sandbox agent's run asked for on the server instead: the request's `place: "runner"`. The place is the one of the
+  // revision the run would start from: the one picked, else the current one.
+  const picked = revision ? revisions.find((r) => r.revision === revision) : undefined;
+  const boxed = placeOf(picked ? picked.definition?.place : agent?.definition.place);
   const inBox = kind === "agentic" && boxed?.mode === "sandbox" ? boxed.box : undefined;
   const [onServer, setOnServer] = useState(false);
   const [view, setView] = useState<"form" | "json">("form");

@@ -28,4 +28,31 @@ describe("Playground, a sandbox agent's run on the server", () => {
     act(() => tick.click());
     expect(host.textContent).toContain('"place":"runner"');
   });
+
+  it("follows the SELECTED revision's place: an older revision in a box offers it, an older one on the server doesn't", () => {
+    const base = agentFixture("invoice-checker");
+    const boxed = { ...base, agent_id: "boxed", definition: { ...base.definition, place: { mode: "sandbox", box: "docker" } } };
+    const revisions = (current: unknown, older: unknown) => [
+      { revision: "rv2", version: 2, current: true, note: null, definition: { ...(current ? { place: current } : {}) } },
+      { revision: "rv1", version: 1, current: false, note: null, definition: { ...(older ? { place: older } : {}) } },
+    ];
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const pick = (rev: string) => act(() => {
+      const sel = [...host.querySelectorAll("select")].find((x) => [...x.options].some((o) => o.value === "rv1"))!;
+      sel.value = rev;
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    // The current revision runs on the server; the older one is in a box.
+    act(() => root!.render(createElement(Playground, { agents: [base], revisions: revisions(undefined, { mode: "sandbox", box: "docker" }), efforts: [], origin: "http://serve.test", agentId: "invoice-checker" })));
+    expect(host.querySelector('input[name="place"]')).toBeNull();
+    pick("rv1");
+    expect(host.querySelector('input[name="place"]')).not.toBeNull();
+    // The current revision is in a box; the older one runs on the server.
+    act(() => root!.render(createElement(Playground, { agents: [boxed], revisions: revisions({ mode: "sandbox", box: "docker" }, { mode: "runner" }), efforts: [], origin: "http://serve.test", agentId: "boxed" })));
+    pick("");
+    expect(host.querySelector('input[name="place"]')).not.toBeNull();
+    pick("rv1");
+    expect(host.querySelector('input[name="place"]')).toBeNull();
+  });
 });
