@@ -120,7 +120,7 @@ function skillsSeed(skills: readonly HostSkill[]): MachineSeed {
 }
 
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
-  if (options.webSearch !== undefined && options.webSearch !== "live") throw new TypeError("agentrun-codex: webSearch is \"live\" or absent");
+  if (options.webSearch !== undefined && options.webSearch !== "live") throw new TypeError("agentrun-harness-codex: webSearch is \"live\" or absent");
   // The skills first: a skill Codex would skip or list under another name is the host's to fix, binary or not.
   const skills = options.skills ?? [];
   const skillsWrong = skillProblems(skills);
