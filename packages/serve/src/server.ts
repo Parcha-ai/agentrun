@@ -1,7 +1,7 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve } from "node:path";
@@ -15,7 +15,7 @@ import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
-import { NODE_TOOLS, toolsView } from "./tools.js";
+import { NODE_TOOLS, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, ownedByIdentity } from "./home-path.js";
@@ -27,13 +27,14 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { type LearningMode, learningOf } from "./learning.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
-import { placesOf } from "./place.js";
+import { type Place, placesOf, resolvePlace } from "./place.js";
+import { fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
-import { boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
+import { type BoxOffer, boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
@@ -123,6 +124,9 @@ export type ServeOptions = {
   fauxExa?: string;
   /** A module scripting the faux harness (`script(spec)`): every harness but pi runs on it (harness.ts). */
   fauxHarness?: string;
+  /** With `faux` only: a module whose default export, given the data root, is the box provider runs' Docker boxes come
+   *  from (the tests' faux box, pi-transport's local box): docker is then available, and nothing asks Docker. */
+  fauxBox?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
   /** The console's built files, answered at / (default dist/console beside the server, which this package's build copies
@@ -255,21 +259,21 @@ export function workflowTitle(name: string, input: Record<string, unknown>): str
 
 /** The server's reading of `base` with its secrets, saved keys among them, and its capabilities on it, the harnesses'
  *  offers included: made at the start and again at each save or delete of a key, so a key saved later can make a harness
- *  available with no restart. */
-export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode) {
+ *  available with no restart. `boxes`: what the box registry set up at the start (boxes.ts), the same in every reading. */
+export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, boxes: readonly BoxOffer[] = []) {
   const env = withSecrets(base, "all", stored);
-  return { env, caps: await capabilities(env, maxRuns, learning ?? learningOf(env)) };
+  return { env, caps: await capabilities(env, maxRuns, learning ?? learningOf(env), boxes) };
 }
 
 /** The capabilities document GET /v2/capabilities answers for `env`: each harness's offer resolved, its `default_model`
  *  included (harnessOffers), so what this returns is what the route serves and what the document's schema holds.
  *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given. */
-export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env)) {
-  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning);
+export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), boxes: readonly BoxOffer[] = []) {
+  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, boxes);
 }
 
 /** The capabilities document from offers already resolved: the route builds it once, at start. */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode) {
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, boxes: readonly BoxOffer[] = []) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -279,7 +283,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
     harnesses,
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
-    places: placesOf(env),
+    places: placesOf(boxes),
     models,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing;
      *  `key`, the tool key that unlocks it (tool-keys.ts), when one does. */
@@ -375,8 +379,9 @@ async function oldHomes(data: string): Promise<string[]> {
 }
 
 export async function startServe(options: ServeOptions): Promise<Serve> {
-  const data = resolve(options.data);
-  await mkdir(data, { recursive: true, mode: 0o700 });
+  await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
+  // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
+  const data = await realpath(resolve(options.data));
   // What only reads and refuses comes first: a start refused for it creates nothing in the data root, server.lock included.
   const homes = await oldHomes(data);
   if (homes.length) {
@@ -434,12 +439,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let latest = 0;
   const keysChanged = async () => {
     const mine = ++latest;
-    const next = await readingOf(base, maxRuns, storedKeys, learning);
+    // The box offers are probed once, below, before the first reading is made.
+    const next = await readingOf(base, maxRuns, storedKeys, learning, boxOffers);
     if (mine === latest) ({ env, caps } = next);
   };
-  // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts). No run uses one yet: the log says which this server has.
+  // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
+  // box stands in for Docker, and nothing asks Docker.
   const boxes = await boxRegistry(env);
-  log?.(logLine("boxes", boxesLog(boxes.offers(), enabledBoxes(env))));
+  const fauxBox = options.faux && options.fauxBox ? await fauxBoxes(resolve(options.fauxBox), data) : undefined;
+  const boxOffers: BoxOffer[] = boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? { id: "docker", available: true, reason: "a faux box (tests)" } : offer));
+  const runBoxes = fauxBox ?? boxes.provider("docker");
+  log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
@@ -447,7 +457,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
+  const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(fauxBox ? { fauxBox: resolve(options.fauxBox!) } : {}), ...(runBoxes ? { runBoxes } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -629,10 +639,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const workflowShape = ({ workflow, harness, place }: { workflow: unknown; harness?: string; place?: RevisionShape["place"] }): RevisionShape => ({ kind: "workflow", workflow, ...(harness ? { harness } : {}), ...(place ? { place } : {}) });
   const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : workflowShape(revision.body));
 
-  /** What keeps `revision` from running here, checked before anything starts with the checks a save makes
-   *  (runnable.ts): one a save refused, or one a setting of this host fixes that it does not have yet. */
-  async function runnable(revision: Revision): Promise<void> {
-    const blockers = await blockersOf(env, shapeOf(revision));
+  /** What keeps `revision` from running here at `place` (its own, or narrowed to the runner), checked before anything
+   *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
+   *  does not have yet. A run narrowed to the runner runs without bash. */
+  async function runnable(revision: Revision, place: Place): Promise<void> {
+    const shape = { ...shapeOf(revision), place };
+    if (shape.kind === "agentic" && place.mode === "runner" && revision.body.place?.mode === "sandbox") shape.tools = (shape.tools ?? []).filter((tool) => !toolOf(tool)?.sandboxOnly);
+    const blockers = await blockersOf(env, shape, boxOffers);
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
@@ -648,7 +661,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision));
+    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision), boxOffers);
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);
@@ -667,7 +680,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async () => {
-      const issues = Object.keys(body).filter((k) => !["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+      const issues = Object.keys(body).filter((k) => !["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id", "place"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+      // A run may narrow its agent's place to the runner, never widen it: the only place a request names.
+      if (body.place !== undefined && body.place !== "runner") issues.push({ field: "place", reason: "not_an_option", message: 'place is "runner": a run may narrow its agent\'s place to the runner, and names no other' });
       if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
       if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
       if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
@@ -684,9 +699,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const input = body.input as Json;
       const wrong = await inputIssuesOf(revision, input);
       if (wrong.length) throw invalid(wrong);
-      await runnable(revision);
+      const place = resolvePlace(revision.body.place as Place | undefined, body.place === "runner" ? "runner" : undefined);
+      await runnable(revision, place);
       const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, input) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-      const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+      const run = await runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
     });
   }

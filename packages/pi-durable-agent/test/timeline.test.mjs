@@ -51,6 +51,11 @@ test("thinking collapses to its first sentence and keeps the full text", () => {
   assert.equal(row.text, "The portal needs a sign-in. I have a saved connection for it.");
 });
 
+test("a stop answer of one empty text block is an empty final_answer; a stop with no text block at all shows nothing", () => {
+  const rows = timelineOf([assistant([{ type: "thinking", thinking: "" }, { type: "text", text: "" }]), assistant([])]);
+  assert.deepEqual(rows.filter((r) => r.kind !== "usage").map((r) => [r.kind, r.summary, r.text]), [["final_answer", "", ""]]);
+});
+
 test("prose before calls is a text_block; a final stop answer is the final_answer", () => {
   const rows = timelineOf([assistant([{ type: "text", text: "Opening the portal." }, call("c", "read", { path: "a" })]), result("c", "read", "x"), assistant([{ type: "text", text: "Done.\nMore." }])]);
   assert.deepEqual(rows.filter((r) => /text|final/.test(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "Opening the portal."], ["final_answer", "Done."]]);

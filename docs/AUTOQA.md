@@ -269,10 +269,20 @@ the run's files go to. It gives back:
   place saves with a warning at `definition.place`, and its run is 409 `agent_not_runnable` with `details.box`.
 - Serve, the box registry (`packages/serve/src/boxes.ts`): `AGENTRUN_BOXES` lists the boxes to probe once at start
   (`boxRegistry`), and the start log's `event=boxes` line says which are available and why the others aren't. Box
-  keys (`BOX_KEYS`) stay with the server.
+  keys (`BOX_KEYS`) stay with the server. The registry feeds `places` (`boxAvailability`): `docker` is available when
+  it is, and every other box says runs in it are not available yet.
+- Serve, a run's place and its box: a run request's `place: "runner"` only narrows (`resolvePlace`), and the run keeps
+  its resolved `place` (its `serve.json`, `GET /v2/runs/{id}`). In the run's process, `codingSource(place, box?)`
+  (`packages/serve/src/coding-tools.ts`) is the boxed coding source: on the runner pi's `read`, `write` and `edit`; in a
+  box those and `bash`, each call on pi-transport's `boxEnv` over the run's box. pi's tool table and the other
+  harnesses' `hostTools` both take it, and the tool plane's permission gate wraps it. `agentWorkDir(runDir, place)`
+  (`place.ts`) is the run's `work/` as its tools see it: `<runDir>/work` on the runner, `/run/agentrun/run/work` in a
+  box. The box's lifecycle and mounts are `packages/serve/src/run-box.ts` (`runBox`, `boxMounts`, `mountSource`,
+  `destroyRunBoxes`, `sweepRunBoxes`), labelled `agentrun.run=<id>`; pi-transport's `endLeftCommands` kills what a
+  crashed run's process left running.
 
-Not on main yet: the registry feeding `places` (capabilities and run refusals still say no box is set up), runs in a
-box, a files API for the agent's home, and uploads. Each one extends this section when it lands.
+Not on main yet: runs in a box other than Docker, a files API for the agent's home, and uploads. Each one extends this
+section when it lands.
 
 **Alone.** Everything else is faked: boxes by fake providers, the model by the faux model. Put a `docker` that exits
 1 first on `PATH`, even where Docker is installed, so nothing reaches a daemon by accident:
@@ -290,11 +300,16 @@ npm test -w @parcha/pi-transport -- home-untrusted-store                       #
 # serve: node:test over dist, on the faux model
 npm run build
 (cd packages/serve && node --test test/place.test.mjs test/boxes.test.mjs test/files.test.mjs \
-  test/box-sweep.test.mjs test/box-record.test.mjs)
+  test/box-sweep.test.mjs test/box-record.test.mjs test/boxed-tools.test.mjs test/run-box.test.mjs \
+  test/coding-tools.test.mjs test/host-tools.test.mjs)
 ```
 
+`boxed-tools.test.mjs` runs sandbox runs on a faux box (pi-transport's local box, `startServe({ fauxBox })`), and
+`run-box.test.mjs` puts its own fake `docker` first on `PATH`, which runs a box's commands on the host.
+
 The Docker variant runs only where Docker exists, as CI's `transport-docker` job does:
-`docker pull debian:bookworm-slim && npm run test:live:docker -w @parcha/pi-transport`. Each `.live` file the `box-`
+`docker pull debian:bookworm-slim && npm run test:live:docker -w @parcha/pi-transport`, then serve's
+`AGENTRUN_SERVE_LIVE_DOCKER=1 node --test test/boxed-tools.docker.test.mjs` (advisory there). Each `.live` file the `box-`
 filter picks up skips itself without its `PI_TRANSPORT_LIVE_*` variable, so the commands above start no real box.
 `boxes.test.mjs` puts its own fake `docker` first on `PATH` and answers Daytona from a loopback fake; never set a box key
 or a real `docker` on `PATH` for a server under test.
@@ -317,6 +332,13 @@ or a real `docker` on `PATH` for a server under test.
    a `..` segment, a target of `/` and a repeated target before `docker run`; `box-local` refuses any mount.
 6. **Run files and the sweep**: `files.test.mjs` never lists or serves a dotfile or a symlink, and refuses `..` with the
    contract's codes; `box-sweep.test.mjs` reaps a box whose writer is gone and quarantines one it cannot empty.
+7. **Boxed tools**: `boxed-tools.test.mjs` and `run-box.test.mjs` pass. A sandbox run's `bash` `printf hi > out.txt`
+   shows in `GET /v2/runs/{id}/files` on pi, claude-agent and codex; the box's environment is `LANG`, `HOME=/tmp` and
+   its `PATH`, with no key or token; every `docker run` has `--network none`, `--user` the server's uid:gid, one
+   `--mount` of `work/` at `/run/agentrun/run/work` and only `NAME=value` envs; `place: "runner"` on a run makes no box
+   and offers no `bash`; a runner agent naming `bash` and a sandbox workflow are 422; a link at a run's `work/` is refused
+   and nothing is bound; the box is destroyed at completion, cancel and archive, adopted by its label after a crash
+   (the left command killed), and swept at start once its run has ended.
 
 ### Console, import and analytics
 
