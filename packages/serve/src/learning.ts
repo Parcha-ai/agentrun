@@ -90,10 +90,11 @@ function notesView({ state, used, learned }: Learning, shown: Shown, settled: bo
   const added = state === "merged" && Array.isArray(learned) ? learned.filter((note) => isText(note?.file) && isText(note.name) && Array.isArray(note.supersedes) && note.supersedes.every(isText)).map(({ file, name, supersedes }) => ({ file: shown.name(file), name: shown.text(name), supersedes: supersedes.map(shown.name) })) : [];
   return { ...(read.length ? { used: read } : {}), ...(added.length ? { learned: added } : {}) };
 }
-/** A run's learning as its view shows it: the state, why and when, and the notes it read and learned (notesView). */
+/** A run's learning as its view shows it: the state, why in a person's words (learning-words.ts) cut of the host's
+ *  secrets now, and when, and the notes it read and learned (notesView). */
 export const learningView = (learning: Learning, shown: Shown, settled: boolean) => {
   const { state, reason, detail, at } = learning;
-  return { state, reason, detail, at, ...notesView(learning, shown, settled) };
+  return { state, reason, detail: detail === null ? null : shown.text(detail), at, ...notesView(learning, shown, settled) };
 };
 /** A run's learning as a list shows it: its state and reason, and the notes it read and learned (notesView). */
 export const shortLearning = (learning: Learning | null, shown: Shown, settled: boolean) => (learning ? { state: learning.state, reason: learning.reason, ...notesView(learning, shown, settled) } : null);

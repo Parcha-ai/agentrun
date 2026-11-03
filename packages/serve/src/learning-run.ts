@@ -15,7 +15,7 @@
 // the kernel writes.
 import { lstat, readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
-import { INDEX_FILE, parseNoteFile } from "@parcha/agentrun-learn";
+import { INDEX_FILE, parseNoteFile, parseVerdict, redactSecrets, type Verdict } from "@parcha/agentrun-learn";
 import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { SPEND_CAP_REACHED } from "./cap.js";
@@ -24,6 +24,7 @@ import { activeOf, dropSeed, layLearned, LEARNED_DIR, type Learning, LEARNING_LA
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
+import { said, STOPPED } from "./learning-words.js";
 import { ended, outcomeOf, outcomes, record } from "./usage.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -86,6 +87,18 @@ export function notesRead(reflect: Reflect | undefined, rows: readonly TimelineE
   return [...read];
 }
 
+/** The reasons packages/learn's parseVerdict gives of its own, never the grader's: an answer it could not read, and one
+ *  it refused (an item for a file it was not asked about, a file judged twice, a new note with no item, a merge that
+ *  did not keep every note). Found by asking it, so they follow it. */
+const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[]}', '{"merge":false,"reason":"r","items":[{"file":"b.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"},{"file":"a.md","keep":false,"why":"w"}]}'].map((answer) => parseVerdict(answer, ["a.md"]).reason));
+/** Why a verdict kept nothing, in a person's words: the grader's own reason, or when the reason is parseVerdict's own,
+ *  the grader's word on the first note it did not keep; an answer that held neither is said as such. */
+const notKept = (verdict: Verdict): string => {
+  if (!OWN_REASONS.has(verdict.reason)) return said.grader(verdict.reason);
+  const why = verdict.items.find((item) => !item.keep)?.why;
+  return why ? said.grader(why) : said.stopped(STOPPED.unread);
+};
+
 /** The notes a run's learning added, from its proposal: each note's file, name and the notes it supersedes. */
 const learnedOf = (proposal: Proposal): NoteLearned[] => proposal.notes.flatMap(({ file, text }) => {
   const note = parseNoteFile(file, text);
@@ -93,13 +106,15 @@ const learnedOf = (proposal: Proposal): NoteLearned[] => proposal.notes.flatMap(
 });
 
 /** The run's learning row, once its learning was proposed, merged or dropped (`seed_failed` included): its state, reason
- *  and detail. One row, which says where the learning ended. */
-export function withLearning(rows: readonly TimelineEvent[], learning: Learning | undefined): TimelineEvent[] {
+ *  and detail, its summary the detail itself (learning-words.ts), cut of the host's secrets now (`shown`). One row,
+ *  which says where the learning ended. */
+export function withLearning(rows: readonly TimelineEvent[], learning: Learning | undefined, shown: Shown): TimelineEvent[] {
   if (!learning || learning.state === "seeded" || learning.state === "reflecting") return [...rows];
+  const detail = learning.detail === null ? null : shown.text(learning.detail);
   const row = {
-    id: LEARNING_LABEL, timestamp: learning.at, created_at: learning.at, kind: "learning" as const, summary: `Learning ${learning.state}${learning.reason ? ` (${learning.reason})` : ""}: ${learning.detail ?? ""}`.trim(), agent_label: LEARNING_LABEL,
-    tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: learning.detail,
-    learning: { state: learning.state, reason: learning.reason, detail: learning.detail },
+    id: LEARNING_LABEL, timestamp: learning.at, created_at: learning.at, kind: "learning" as const, summary: detail ?? `Learning ${learning.state}`, agent_label: LEARNING_LABEL,
+    tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: detail,
+    learning: { state: learning.state, reason: learning.reason, detail },
   };
   return [...rows, row];
 }
@@ -246,10 +261,11 @@ export class LearningRuns {
           for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
         } catch (error) {
           warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
-          failed = "What the agent learned could not be copied into the run, so it started with nothing learned.";
+          failed = said.stopped(STOPPED.notCopied);
         }
       }
-      return failed === undefined ? { state: "seeded", reason: null, detail: null, at, seed_notes: "seed" in seeded ? Object.keys(seeded.seed.notes).length : 0 } : { state: "dropped", reason: "seed_failed", detail: failed, at };
+      const notes = "seed" in seeded ? Object.keys(seeded.seed.notes).length : 0;
+      return failed === undefined ? { state: "seeded", reason: null, detail: said.seeded(notes), at, seed_notes: notes } : { state: "dropped", reason: "seed_failed", detail: failed, at };
     };
   }
 
@@ -284,7 +300,7 @@ export class LearningRuns {
    *  run asks no end-of-run turn (reflectSkip). A copy that never began leaves nothing, and the learning stays null. */
   async onLoad(row: Pick<RunRow, "id" | "agent" | "state">, dir: string, meta: Run["meta"], save: () => Promise<void>): Promise<void> {
     if (row.state !== "running" || meta.learning || !(await dropSeed(dir, join(dir, "work")))) return;
-    meta.learning = { state: "dropped", reason: "seed_failed", detail: "The server stopped while it copied what the agent learned into the run, so the run started with nothing learned.", at: new Date().toISOString() };
+    meta.learning = { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.serverStopped), at: new Date().toISOString() };
     await save();
     warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
     await this.onSaved({ id: row.id, agentId: row.agent }, meta.learning);
@@ -319,7 +335,7 @@ export class LearningRuns {
     if (awaitsPropose(run.meta)) {
       await snapshotLearned(run.dir).catch((error: Error) => {
         warn(run.id, `what its end-of-run turn wrote could not be set aside: ${error.message}`);
-        this.setLearning(run, "dropped", "propose_failed", "What the end-of-run turn wrote could not be set aside to be checked.");
+        this.setLearning(run, "dropped", "propose_failed", said.stopped(STOPPED.notSetAside));
       });
     }
     await this.noteUsed(run);
@@ -458,11 +474,11 @@ export class LearningRuns {
     if (blocked) {
       if (this.learningOff !== blocked) process.stderr.write(`agentrun-serve: runs start with nothing learned: ${blocked}\n`);
       this.learningOff = blocked;
-      return { failed: "This host has no git that learning can use, so the run started with nothing learned." };
+      return { failed: said.stopped(STOPPED.noGit) };
     }
     return seedOf(this.options.agents.dir, agentId).then((seed) => ({ seed }), (error: Error) => {
       process.stderr.write(`agentrun-serve: the agent ${agentId}'s learning folder could not be read, so its run starts with nothing learned: ${error.message}\n`);
-      return { failed: "The agent's learning folder could not be read, so the run started with nothing learned." };
+      return { failed: said.stopped(STOPPED.unreadable) };
     });
   }
 
@@ -510,10 +526,10 @@ export class LearningRuns {
    *  room left, and one whose spend is unknown cannot be kept within its cap. */
   private reflectSkip(run: Run, end: { outcome: Status; error?: Run["error"]; abort?: boolean }): [LearningReason, string] | null | undefined {
     if (run.meta.learning?.state !== "seeded" || run.meta.reflect) return null;
-    if (run.cancel) return ["cancelled", "The run was cancelled before it could reflect."];
-    if (end.abort || end.error?.code === SPEND_CAP_REACHED) return ["no_budget", "The run's cap leaves no room for the end-of-run turn."];
-    if (run.meta.max_cost_usd !== undefined && this.kernel.costOf(run.rows) === null) return ["unknown_cost", "What the run spent is unknown, so its cap cannot be kept through an end-of-run turn."];
-    if (!run.writes) return ["no_write_tool", "The agent has no write tool to add a note with."];
+    if (run.cancel) return ["cancelled", said.stopped(STOPPED.cancelled)];
+    if (end.abort || end.error?.code === SPEND_CAP_REACHED) return ["no_budget", said.noBudget];
+    if (run.meta.max_cost_usd !== undefined && this.kernel.costOf(run.rows) === null) return ["unknown_cost", said.unknownCost];
+    if (!run.writes) return ["no_write_tool", said.noWriteTool];
     return undefined;
   }
 
@@ -526,7 +542,7 @@ export class LearningRuns {
     run.meta.reflect = { outcome, after, deadline: new Date(Date.now() + (this.options.reflectTimeoutMs ?? REFLECT_TIMEOUT_MS)).toISOString() };
     // The job's error, kept for a restart: the turn's is never the run's.
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
-    this.setLearning(run, "reflecting", null, "The agent is asked what it learned.");
+    this.setLearning(run, "reflecting", null, said.reflecting);
     this.kernel.mark(run);
     void this.reflectTurn(run);
   }
@@ -555,7 +571,7 @@ export class LearningRuns {
     } catch (error) {
       if (!this.kernel.live(run) || run.cancel) return;
       warn(run.id, `its end-of-run turn was not asked: ${(error as Error).message}`);
-      this.dropLearning(run, "reflect_failed", "The end-of-run turn could not be asked.");
+      this.dropLearning(run, "reflect_failed", said.stopped(STOPPED.notAsked));
       return this.kernel.terminate(run);
     }
     if (end === "gone") return;
@@ -584,17 +600,17 @@ export class LearningRuns {
    *  never left `seeded` went before it could reflect. */
   private closeLearning(run: Run, outcome: Status): void {
     const { learning, reflect } = run.meta;
-    if (learning?.state === "seeded") return this.setLearning(run, "dropped", ...((run.cancel || outcome === "cancelled" ? ["cancelled", "The run was cancelled before it could reflect."] : ["crashed", "The run's process went before it could reflect."]) as [LearningReason, string]));
+    if (learning?.state === "seeded") return this.setLearning(run, "dropped", ...((run.cancel || outcome === "cancelled" ? ["cancelled", said.stopped(STOPPED.cancelled)] : ["crashed", said.stopped(STOPPED.crashed)]) as [LearningReason, string]));
     if (!reflect || reflect.until !== undefined) return;
     reflect.until = run.lastEntry ?? reflect.after;
     if (learning?.state !== "reflecting") return;
     const last = run.rows.findLast((row) => row.agent_label === LEARNING_LABEL && shows(row));
-    if (run.cancel) this.setLearning(run, "dropped", "cancelled", "The run was cancelled during its end-of-run turn.");
-    else if (reflect.timedOut) this.setLearning(run, "dropped", "reflect_timeout", "The end-of-run turn did not end in time.");
-    else if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) this.setLearning(run, "dropped", "no_budget", "The run's cap refused the end-of-run turn's request.");
-    else if (last?.kind === "error") this.setLearning(run, "dropped", "reflect_failed", "The end-of-run turn ended on an error.");
-    else if (!reflect.ended) this.setLearning(run, "dropped", "crashed", "The run's process went during its end-of-run turn.");
-    else this.setLearning(run, "reflecting", null, "The end-of-run turn ended; what it wrote waits to be checked.");
+    if (run.cancel) this.setLearning(run, "dropped", "cancelled", said.stopped(STOPPED.cancelledLooking));
+    else if (reflect.timedOut) this.setLearning(run, "dropped", "reflect_timeout", said.stopped(STOPPED.timedOut));
+    else if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) this.setLearning(run, "dropped", "no_budget", said.noBudget);
+    else if (last?.kind === "error") this.setLearning(run, "dropped", "reflect_failed", said.stopped(STOPPED.failed));
+    else if (!reflect.ended) this.setLearning(run, "dropped", "crashed", said.stopped(STOPPED.crashedLooking));
+    else this.setLearning(run, "reflecting", null, said.reflecting);
   }
 
   /** What the run's end-of-run turn wrote, checked and kept as its proposal or dropped (propose.ts), once at a time, after
@@ -613,13 +629,13 @@ export class LearningRuns {
       const { proposeRun } = await import("./propose.js");
       // The secrets this server holds, wherever its launcher put them, the keys saved on it, what each launch handed the
       // run, and its own tokens.
-      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, refuse: [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken] });
-      if (proposed.state === "proposed") this.setLearning(run, "proposed", null, `The run proposes ${proposed.notes === 1 ? "one new note" : `${proposed.notes} new notes`}, which passed the checks and are being graded.`);
-      else if (proposed.reason === "empty") this.setLearning(run, "dropped", "empty", "The end-of-run turn added no note.");
-      else this.setLearning(run, "dropped", "checker", `The checks refused what the run wrote: ${[...new Set(proposed.problems.map((problem) => problem.rule))].join(", ")}.`, { problems: proposed.problems });
+      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, refuse: this.refused(run) });
+      if (proposed.state === "proposed") this.setLearning(run, "proposed", null, said.proposed(proposed.notes));
+      else if (proposed.reason === "empty") this.setLearning(run, "dropped", "empty", said.empty);
+      else this.setLearning(run, "dropped", "checker", said.checker(proposed.problems), { problems: proposed.problems });
     } catch (error) {
       warn(run.id, `what its end-of-run turn wrote could not be checked: ${(error as Error).message}`);
-      this.setLearning(run, "dropped", "propose_failed", "What the end-of-run turn wrote could not be checked.");
+      this.setLearning(run, "dropped", "propose_failed", said.stopped(STOPPED.notChecked));
     }
     await this.kernel.save(run).catch((error: Error) => warn(run.id, `its learning is not saved: ${error.message}`));
     void this.gradeOnce(run);
@@ -652,32 +668,40 @@ export class LearningRuns {
       const main = kept.verdict ? undefined : await readForGrade(data, run.agentId, run.id, proposal);
       // Main took a note of the same name, or superseded one it supersedes, since the run started: refused before the
       // grader is asked.
-      if (main && "problems" in main) return await end("dropped", "checker", `Main no longer takes what the run proposed: ${[...new Set(main.problems.map((problem) => problem.rule))].join(", ")}.`, { problems: main.problems });
+      if (main && "problems" in main) return await end("dropped", "checker", said.stale(main.problems), { problems: main.problems });
       if (main && !("merged" in main)) {
         const { instructions, harness, model, thinking } = known.revision.body;
         const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, env: this.hostEnv(), signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
         kept = { cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
-        if ("file" in judged) return await end("dropped", judged.reason, judged.reason === "screen" ? "The injection screen refused a new note." : "The injection screen could not judge a new note.");
+        if ("file" in judged) return await end("dropped", judged.reason, judged.reason === "screen" ? said.screen : said.stopped(STOPPED.screenDown));
         if ("error" in judged) {
           warn(run.id, `its grader gave no verdict: ${judged.error.message}`);
-          return await end("dropped", "grade_failed", "The grader gave no verdict.");
+          return await end("dropped", "grade_failed", said.stopped(STOPPED.noReview));
         }
         kept.verdict = judged.verdict;
-        if (!judged.verdict.merge) return await end("dropped", "grader", "The grader's verdict was to keep none of the new notes.");
+        // The grader's own reason, its first sentence (notKept), cut of every secret the run's notes were checked against.
+        if (!judged.verdict.merge) return await end("dropped", "grader", redactSecrets(notKept(judged.verdict), this.refused(run)));
         // Kept before the merge: a restart merges on this verdict, and never asks the grader again.
         this.setLearning(run, "proposed", null, before.detail, kept);
         await this.kernel.save(run);
       }
       const merge = await mergeProposal(data, run.agentId, run.id, proposal, kept.verdict?.reason || "The grader kept every new note.");
-      if ("problems" in merge) return await end("dropped", "checker", `Main no longer takes what the run proposed: ${[...new Set(merge.problems.map((problem) => problem.rule))].join(", ")}.`, { problems: merge.problems });
+      if ("problems" in merge) return await end("dropped", "checker", said.stale(merge.problems), { problems: merge.problems });
       if (merge.checkout) warn(run.id, `its merge is on main, but the folder's files were not brought in line: ${merge.checkout.message}`);
-      await end("merged", null, "What the run learned is merged into main.", { merged: merge.merged, learned: learnedOf(proposal) });
+      const learned = learnedOf(proposal);
+      await end("merged", null, redactSecrets(said.merged(learned), this.refused(run)), { merged: merge.merged, learned });
     } catch (error) {
       // A server closing: nothing was decided, and the next start grades the run.
       if (this.closing) return;
       warn(run.id, `what it proposed could not be graded: ${(error as Error).message}`);
-      await end("dropped", "grade_failed", "What the run proposed could not be graded or merged.");
+      await end("dropped", "grade_failed", said.stopped(STOPPED.notReviewed));
     }
+  }
+
+  /** What a run's learning refuses, and cuts from what it says: the secrets this server holds, wherever its launcher put
+   *  them, the keys saved on it, what each launch handed the run, and its own tokens. */
+  private refused(run: Run): string[] {
+    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken];
   }
 
   /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a

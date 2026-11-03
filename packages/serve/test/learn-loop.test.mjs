@@ -41,7 +41,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.ok(answer.includes("Say your prompt.") && !answer.includes("Reflected."), `the answer is the job's, never the turn's: ${answer}`);
     assert.equal(learnedIn(answer), undefined, "run 1 had nothing learned");
     settled(first.view, first.rows, "merged");
-    assert.equal(first.view.learning.detail, "What the run learned is merged into main.");
+    assert.equal(first.view.learning.detail, "Learned: Check units");
     // What it learned is on its learning block, in its view and in every list; it used no note: the one it tried to read
     // was not there yet.
     const learned = [{ file: FILE, name: "Check units", supersedes: [] }];

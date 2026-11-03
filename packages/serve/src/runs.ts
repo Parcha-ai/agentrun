@@ -676,7 +676,7 @@ export class Runs {
    *  only, never the run's own rows, which its cost and its answer are read from. */
   private show(run: Run): void {
     const rows = run.decisions?.length ? withDecisions(run.rows, run.decisions) : run.rows;
-    if (run.log.sync(withLearning(rows, run.meta.learning), run.keep)) run.updatedAt = new Date().toISOString();
+    if (run.log.sync(withLearning(rows, run.meta.learning, this.learning.shown()), run.keep)) run.updatedAt = new Date().toISOString();
   }
 
   /** A live process: the child this server started, or one an earlier server started that still serves the run. */

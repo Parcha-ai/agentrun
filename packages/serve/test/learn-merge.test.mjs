@@ -83,7 +83,7 @@ test("two runs at once that add different notes both merge, and the index has bo
   const states = ends.map(({ view }) => `${view.learning.state}/${view.learning.reason}`).sort();
   assert.deepEqual(states, ["dropped/checker", "merged/null"]);
   const lost = ends.find(({ view }) => view.learning.state === "dropped");
-  assert.match(lost.view.learning.detail, /exists/);
+  assert.equal(lost.view.learning.detail, "Not kept: the agent's notes changed while this run ran (a note under a name already taken).");
   assert.deepEqual((await savedOf(data, lost.view.run_id)).learning.problems, [{ rule: "exists", path: "gamma.md", detail: "the folder has a note by this name" }]);
   assert.equal(mergesOf(repo, lost.view.run_id).length, 0);
 });
@@ -155,7 +155,7 @@ test("a turn that adds nothing is dropped as empty, and the run's answer stands"
   const { view, rows } = await ended(api, runId);
   assert.equal(view.result.final_answer, "Job answer.");
   settled(view, rows, "dropped", "empty");
-  assert.equal(view.learning.detail, "The end-of-run turn added no note.");
+  assert.equal(view.learning.detail, "Nothing new to remember from this run.");
   assert.equal(git(repoOf(data, "idle"), ["rev-list", "--count", "main"]), "1");
 });
 
