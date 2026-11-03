@@ -916,6 +916,9 @@ export class Runs {
         for (const e of events) if (e.type === "run_start" || e.type === "run_end") run.working = e.type === "run_start";
         noteAnswer(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])));
         reducer.apply(events as never);
+        // A stopped turn is over while the run's process lives on: a request it cut is a charge with no price (costsofar/1),
+        // as the settled read counts it, never one in flight.
+        if (!run.working && stopped(run)) reducer.idle();
         // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
         // already shown, which stay; only live rows go when they end.
         const rows = reducer.rows();

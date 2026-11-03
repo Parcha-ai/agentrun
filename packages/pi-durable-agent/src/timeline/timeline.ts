@@ -558,8 +558,10 @@ function createProjector(options: TimelineOptions) {
     return [...calls].filter(([, call]) => (conv === undefined || call.conv === conv) && !call.done).map(([key, call]) => [key.slice(key.indexOf(":") + 1), call]);
   }
 
-  function usage(): TimelineEvent | undefined {
-    const counted = meter.usage(options.settled === true);
+  /** The usage row. `nothingInFlight`: read as a settled run is, a request marked with no answer being cut, for a host that
+   *  knows its turn is over while its process lives on (a stopped turn). */
+  function usage(nothingInFlight = false): TimelineEvent | undefined {
+    const counted = meter.usage(options.settled === true || nothingInFlight);
     if (!counted || root === undefined) return undefined;
     const { usd, requests, charges, so_far_usd, unpriced } = counted;
     const paid = charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : "";
@@ -847,6 +849,13 @@ export function timelineReducer(options: TimelineOptions = {}) {
     apply,
     /** Every row now, in log order. */
     rows: () => [...store.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)),
+    /** The usage row read with nothing in flight, put in place of the live one: for a host whose turn was stopped and is
+     *  over, so a request it cut counts as a charge with no price, as a settled read counts it. Undefined with no row. */
+    idle: () => {
+      const usage = projector.usage(true);
+      if (usage) store.set(usage.id, usage);
+      return usage;
+    },
     /** Whether `id` is a live row (one the events made: a stream, a wait, a phase), not one a committed entry made.
      *  A live row ends when it is gone; a committed one was shown and stays, though a snapshot of a compacted
      *  conversation no longer holds it. */
