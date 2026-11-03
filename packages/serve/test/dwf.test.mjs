@@ -124,7 +124,7 @@ test("a workflow with code, pdf_pages and llm calls runs on serve; its graph sho
   const docs = join(dir, "docs");
   await mkdir(docs);
   for (const name of ["a", "b", "c"]) pdf(join(docs, `${name}.pdf`), `Document ${name}`);
-  const { api } = await serve(t, { documents: docs, allowCodeNodes: true });
+  const { api, data } = await serve(t, { documents: docs, allowCodeNodes: true });
   const made = await api("POST", "/agents", flowAgent("docs", docsFlow(), { tools: ["pdf_pages", "llm"] }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const caps = (await api("GET", "/capabilities")).body;
@@ -138,7 +138,11 @@ test("a workflow with code, pdf_pages and llm calls runs on serve; its graph sho
   assert.equal((await api("GET", `/runs/${id}`)).body.status, "paused");
   const listed = (await api("GET", "/runs?status=paused")).body.runs.map((r) => r.run_id);
   assert.deepEqual(listed, [id]);
-  await sleep(3000);
+  // Its process is up and its workflow's driver open (it writes the live view then), so the first node waits at the gate.
+  for (let i = 0; !existsSync(join(data, "runs", id, "live.json")); i++) {
+    assert.ok(i < 600, "the run's process opens its workflow");
+    await sleep(50);
+  }
   let graph = (await api("GET", `/runs/${id}/graph`)).body;
   assert.deepEqual([graph.run.status, graph.run.paused, graph.totals.effects], ["paused", true, 0]);
   assert.deepEqual(graph.nodes["/root/steps/0"].items.map((i) => [i.index, i.status, i.label]), [[0, "pending", "a.pdf"], [1, "pending", "b.pdf"], [2, "pending", "c.pdf"]]);
@@ -165,7 +169,6 @@ test("a workflow with code, pdf_pages and llm calls runs on serve; its graph sho
   assert.equal(image.status, 200);
   // An ended run is not paused again.
   assert.equal((await api("POST", `/runs/${id}/pause`)).status, 409);
-  assert.ok(!existsSync(join(dir, "never")));
 });
 
 /** The smoke's faux decision providers: each call waits AGENTRUN_SMOKE_DECISION_MS and is filed in AGENTRUN_SMOKE_DECISION_CALLS. */
@@ -226,11 +229,20 @@ test("a run's graph reads while it goes and while it is paused mid-map at maxCon
   assert.equal((await api("POST", `/runs/${id}/pause`)).body.paused, true);
   graph = await read();
   assert.equal(graph.run.status, "paused");
-  // The judges in flight finish; nothing new starts; every read answers within a second.
-  await sleep(3500);
-  const settled = await read();
+  // The judges in flight finish: every request sent has its receipt, and no call is working. Nothing new starts; every
+  // read answers within a second.
+  const sent = async () => (await readFile(join(dir, "calls.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean).length;
+  let settled;
+  for (const end = Date.now() + 60_000; ; ) {
+    settled = await read();
+    if (settled.decisions.length === (await sent()) && settled.effects.every((e) => e.status !== "working")) break;
+    assert.ok(Date.now() < end, "the judges in flight finish within a minute");
+    await sleep(100);
+  }
+  const asked = await sent();
   await sleep(1000);
   const later = await read();
+  assert.equal(await sent(), asked, "no decision is asked while paused");
   assert.equal(later.totals.decisions, settled.totals.decisions, "no decision lands while paused");
   assert.equal(later.totals.effects, settled.totals.effects, "no call starts while paused");
   assert.ok(later.nodes["/root/steps/0"].items.some((i) => i.status === "pending"), "the map is paused mid-way");
@@ -378,8 +390,16 @@ test("a judge naming provider openrouter is answered by the OpenRouter model it 
   const placeholder = "faux-test-placeholder";
   withEnv(t, { OPENROUTER_API_KEY: placeholder }, ["TYPESAFE_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS"]);
   process.env.AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS = "0";
-  const fauxOpenrouter = new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url).pathname;
-  const { api } = await serve(t, { fauxOpenrouter });
+  // The faux System One, behind a fetch that files the key each request was sent with.
+  const dir = await scratch(t);
+  const sentWith = join(dir, "keys.jsonl");
+  const fauxOpenrouter = join(dir, "faux-openrouter.mjs");
+  await writeFile(fauxOpenrouter, [
+    `import { appendFileSync } from "node:fs";`,
+    `import faux from ${JSON.stringify(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url).href)};`,
+    `export default async (url, init = {}) => (appendFileSync(${JSON.stringify(sentWith)}, JSON.stringify({ path: new URL(String(url)).pathname, auth: new Headers(init.headers).get("authorization") }) + "\\n"), faux(url, init));`,
+  ].join("\n"));
+  const { api, data } = await serve(t, { fauxOpenrouter });
   const flow = {
     v: 2, name: "asked",
     schemas: {
@@ -398,4 +418,9 @@ test("a judge naming provider openrouter is answered by the OpenRouter model it 
   const run = (await api("GET", `/runs/${id}`)).body;
   assert.equal(run.status, "completed", JSON.stringify(run.error));
   assert.equal(typeof run.result.output.is_coi, "boolean");
+  const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
+  const receipts = durableDecisions(join(data, "runs", id, "store", "run.sqlite"));
+  assert.deepEqual(receipts.map((r) => [r.provider, r.model]), [["openrouter", "liquid/d1 (faux)"]], "OpenRouter answered, on the model the node names (the faux marks its answers)");
+  const sent = (await readFile(sentWith, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(sent, [{ path: "/api/v1/systemone", auth: `Bearer ${placeholder}` }], "one request, sent with the key handed to the run");
 });

@@ -3,6 +3,7 @@ import { type InputIssue, invalid } from "./errors.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
 import { placeIssues } from "./place.js";
+import { settingsIssues } from "./tool-plane.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SKILL_PATH = /^(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\/\/)(?!.*\/$)[^/\\\u0000][^\\\u0000]*$/;
@@ -14,7 +15,7 @@ export const isObject = (value: unknown): value is Json => typeof value === "obj
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "learning", "skills", "tools"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "learning", "skills", "tools", "tool_settings"];
 /** Why a field a definition may have elsewhere has no place in an agent store's revision. */
 export const NOT_KEPT: Record<string, string> = {
   input_schema: "The agent store keeps no input_schema: an agentic run takes {content}, and a workflow checks its input against its own schema.",
@@ -72,6 +73,8 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   }
   if (d.skills !== undefined) names(d.skills, `${at}.skills`, out);
   if (d.tools !== undefined) names(d.tools, `${at}.tools`, out);
+  // The agent's own tool settings, over the server's (tool-plane.ts); an edit that leaves them out keeps none.
+  if (d.tool_settings !== undefined) out.push(...settingsIssues(d.tool_settings, `${at}.tool_settings`));
   return out;
 }
 
