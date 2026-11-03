@@ -7,13 +7,20 @@
 // from its recorded result, and one a crash cut off resumes from its own store (its finished paid requests are never sent
 // again). Its paid requests are booked under that key and go through the lead's `beforeRequest`, so one budget covers the
 // lead and every child; its deadline is the lead's, or the agent's share of what is left. Children run one at a time, and
-// a child has no delegate tool (depth 1).
+// a child has no delegate tool (depth 1). The lead reads at most DELEGATE_ANSWER_MAX_CHARS of an answer: one past it is
+// cut to fit, its JSON whole, and says what was cut and that the whole answer is kept in the child's records, which no tool
+// of the lead's reads (delegateText), so a result stays under the host's bound (HOST_RESULT_MAX_CHARS).
 import { Mutex } from "./process/tools.js";
 import { createHarnessRunner, RUNNER_RECORDS, SUBMIT_TOOL, type BeforeRequest } from "./runner.js";
 import type { AgentAdapter, HarnessEvent, HostTool, NodeRequest, SessionStore } from "./types.js";
 
 /** The tool's name, as the lead calls it. */
 export const DELEGATE_TOOL = "delegate";
+/** The most characters of a delegate's answer (its JSON) the lead reads. */
+export const DELEGATE_ANSWER_MAX_CHARS = 60_000;
+/** Of a cut answer, the most its citations and its gaps take (as JSON): the answer's text gets the rest. */
+const CITATIONS_MAX_CHARS = 20_000;
+const GAPS_MAX_CHARS = 5_000;
 
 /** What every delegate answers: its finding, the sources it rests on, and what it could not settle. */
 export const DELEGATE_RESULT_SCHEMA = Object.freeze({
@@ -97,6 +104,60 @@ export function delegateProblems(options: Pick<DelegateOptions, "agents" | "tool
   return problems;
 }
 
+/** The items of `list` that fit in `max` characters of JSON (with their commas), from its start. */
+function fitting(list: readonly unknown[], max: number): unknown[] {
+  const kept: unknown[] = [];
+  for (let used = 2; kept.length < list.length; ) {
+    const cost = JSON.stringify(list[kept.length]).length + 1;
+    if (used + cost > max) break;
+    used += cost;
+    kept.push(list[kept.length]);
+  }
+  return kept;
+}
+
+/**
+ * A delegate's answer as the lead reads it: its JSON, when that is within DELEGATE_ANSWER_MAX_CHARS. Past it, the answer
+ * is cut to fit and its JSON stays whole: the citations and the gaps that fit their share, from the first, and the
+ * longest start of the answer's text that fits the rest, with `cut` saying the whole's length and what was cut of each
+ * part; then a line saying so to the model, and that the whole answer is kept in the child's records (`step:<session>`),
+ * which none of the lead's tools reads.
+ */
+export function delegateText(value: unknown, session: string): string {
+  const whole = JSON.stringify(value);
+  if (whole.length <= DELEGATE_ANSWER_MAX_CHARS) return whole;
+  const given = (value !== null && typeof value === "object" ? value : {}) as { answer?: unknown; citations?: unknown; gaps?: unknown };
+  const answer = typeof given.answer === "string" ? given.answer : JSON.stringify(given.answer ?? "");
+  const lists = { citations: Array.isArray(given.citations) ? given.citations : undefined, gaps: Array.isArray(given.gaps) ? given.gaps : undefined };
+  const kept = { citations: lists.citations && fitting(lists.citations, CITATIONS_MAX_CHARS), gaps: lists.gaps && fitting(lists.gaps, GAPS_MAX_CHARS) };
+  const shape = (text: string) => ({
+    answer: text,
+    ...(kept.citations ? { citations: kept.citations } : {}),
+    ...(kept.gaps ? { gaps: kept.gaps } : {}),
+    cut: {
+      original_chars: whole.length,
+      ...(text.length < answer.length ? { answer: [text.length, answer.length] } : {}),
+      ...(kept.citations && kept.citations.length < lists.citations!.length ? { citations: [kept.citations.length, lists.citations!.length] } : {}),
+      ...(kept.gaps && kept.gaps.length < lists.gaps!.length ? { gaps: [kept.gaps.length, lists.gaps!.length] } : {}),
+    },
+  });
+  // The longest start of the answer's text whose JSON keeps the whole within the cap, never half a surrogate pair.
+  let length = 0;
+  for (let high = answer.length; length < high; ) {
+    const mid = Math.ceil((length + high) / 2);
+    if (JSON.stringify(shape(answer.slice(0, mid))).length <= DELEGATE_ANSWER_MAX_CHARS) length = mid;
+    else high = mid - 1;
+  }
+  if (length > 0 && length < answer.length && (answer.charCodeAt(length - 1) & 0xfc00) === 0xd800) length -= 1;
+  const fitted = shape(answer.slice(0, length));
+  const parts = [
+    ...(length < answer.length ? [`its answer is cut at ${length} of ${answer.length} characters`] : []),
+    ...(["citations", "gaps"] as const).flatMap((part) => (kept[part] && kept[part]!.length < lists[part]!.length ? [`${lists[part]!.length - kept[part]!.length} of its ${lists[part]!.length} ${part} are left out`] : [])),
+  ];
+  const what = parts.length > 1 ? `${parts.slice(0, -1).join(", ")}, and ${parts.at(-1)}` : parts[0] ?? "it is cut";
+  return `${JSON.stringify(fitted)}\nThe delegate's answer was ${whole.length} characters, past the ${DELEGATE_ANSWER_MAX_CHARS} a delegate's answer holds here: ${what}. The whole answer is kept in this run's records (the session step:${session}), which none of your tools reads: ask the delegate again, with a narrower task, for what was cut.`;
+}
+
 /** The `delegate` host tool: refuses a bad definition when made. */
 export function delegateTool(options: DelegateOptions): HostTool {
   const problems = delegateProblems(options);
@@ -135,7 +196,7 @@ export function delegateTool(options: DelegateOptions): HostTool {
         // A child that delivered before a crash answers from its record, deadline or not; only new work is refused. Read,
         // not opened: opening would fence the session for nothing.
         const saved = (await options.store.read(`step:${sessionId}`)).findLast((r) => r.kind === RUNNER_RECORDS.accepted);
-        if (saved) return { text: JSON.stringify((saved.data as { value: unknown }).value) };
+        if (saved) return { text: delegateText((saved.data as { value: unknown }).value, sessionId) };
         return { text: "Not delegated: the lead has no time left.", isError: true };
       }
       const timeoutMs = left === undefined ? options.timeoutMs : Math.max(1, Math.floor(left * (agent.deadlineShare ?? 1)));
@@ -161,7 +222,7 @@ export function delegateTool(options: DelegateOptions): HostTool {
           ...(agent.tier === undefined ? {} : { tier: agent.tier }),
           step: { sessionId, attempt: 0, earlierSessionIds: [] },
         });
-        return { text: JSON.stringify(answer) };
+        return { text: delegateText(answer, sessionId) };
       } catch (error) {
         // Stopped (the lead paused, the process is draining): not an answer. Rethrown, the lead's harness records the call
         // as interrupted and runs the same call id again on resume, which resumes this child. A child that failed on its

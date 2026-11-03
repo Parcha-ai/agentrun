@@ -19,6 +19,15 @@ export type HarnessRunner = ((request: NodeRequest) => Promise<unknown>) & { sto
 
 /** The tool the runner injects; a host tool may not take its name. */
 export const SUBMIT_TOOL = "submit";
+/** The most characters of why a submission was rejected (its schema errors, as JSON, or the review's words) the model
+ *  reads: a value with more errors than that is told the first of them and how many there are. */
+export const REJECTION_MAX_CHARS = 8_000;
+
+/** `said` within REJECTION_MAX_CHARS: cut at its end, saying how many errors there were in all when it lists them. */
+function rejection(said: string, errors?: number): string {
+  if (said.length <= REJECTION_MAX_CHARS) return said;
+  return `${said.slice(0, REJECTION_MAX_CHARS)}… (cut at ${REJECTION_MAX_CHARS} of ${said.length} characters${errors === undefined ? "" : `; ${errors} errors in all, the first shown`})`;
+}
 /** A held figure as a host gives it or a record keeps it: a finite amount, 0 or more, else none. */
 const heldFigure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
 /** `total` with `cost` added: unknown once either is. */
@@ -412,11 +421,12 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
         await append([{ kind: RUNNER_RECORDS.submit, data: { n: submissions } }]);
         const candidate = (args as { value?: unknown } | null)?.value;
         let message: string | undefined;
-        if (!envelope.Check(args)) message = JSON.stringify([...envelope.Errors(args)]);
-        else if (!validator.Check(candidate)) message = JSON.stringify([...validator.Errors(candidate)]);
+        const listed = (errors: unknown[]) => rejection(JSON.stringify(errors), errors.length);
+        if (!envelope.Check(args)) message = listed([...envelope.Errors(args)]);
+        else if (!validator.Check(candidate)) message = listed([...validator.Errors(candidate)]);
         else if (request.review) {
           const verdict = await request.review(candidate);
-          if (!verdict.accepted) message = verdict.message;
+          if (!verdict.accepted) message = rejection(String(verdict.message));
           else if (!validator.Check(candidate)) message = "The reviewed candidate no longer satisfies its output schema";
         }
         if (stopped) return { text: "This session has stopped.", isError: true };

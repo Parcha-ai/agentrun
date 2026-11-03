@@ -51,7 +51,7 @@ const runNode = createHarnessRunner(
   reaches it, and its process group ends with the session.
 - **The host's skills, and no others.** `codexAdapter({ skills: [{ name, files }] })`: Codex lists each skill to the model
   by its name and description, and the model reads its `SKILL.md` and the files it names with `read_skill_file` (it has
-  no shell). The skills are written into the session's `CODEX_HOME` at the start of every drive, where Codex lists a
+  no shell), at most 2,000 lines or 50 KB a read, as pi's read, with `offset` and `limit` to read on. The skills are written into the session's `CODEX_HOME` at the start of every drive, where Codex lists a
   user's skills even in a turn with its built-ins off (it lists none from a working directory's `.agents/skills` there).
   Codex's bundled skills (imagegen, openai-docs, skill-creator, skill-installer, ...) are off in every session, with
   skills or without. The skills are checked when the adapter is made, by `skillProblems` of `@parcha/agentrun-kernel`,
