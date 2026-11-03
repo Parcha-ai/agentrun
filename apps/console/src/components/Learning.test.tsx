@@ -87,7 +87,7 @@ describe("the Learning tab's notes", () => {
     const first = t.card("Try /policies/refund-policy first")!;
     // The type in plain words, the API's value in its tooltip.
     expect(first.textContent).toContain("How to work");
-    expect(first.querySelector('[title="feedback"]')?.textContent).toBe("How to work");
+    expect(first.querySelector('[title="feedback"]')).toBeNull();
     expect(first.textContent).toContain("The body of Try /policies/refund-policy first.");
     expect(first.textContent).toContain("Learned in");
     expect(first.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("brooklinen.com");
@@ -106,11 +106,16 @@ describe("the Learning tab's notes", () => {
     expect(t.text()).toContain("Earlier notes1 no longer read");
     await t.click(/^Earlier notes/);
     expect(t.text()).toContain("Replaced by Try /policies/refund-policy first");
+    // A button, not a link: the address is the page's router. It moves the focus to the note that replaced it.
+    const to = [...t.host.querySelectorAll('section[aria-label="Earlier notes"] button')].find((b) => b.textContent === "Try /policies/refund-policy first")!;
+    await act(async () => { (to as HTMLButtonElement).click(); });
+    expect(document.activeElement).toBe(t.card("Try /policies/refund-policy first"));
   });
   it("a note an address points at is highlighted, and an earlier one opens its list", async () => {
     const t = await open(agent(true), {}, { focus: [FIRST, OLD] });
-    expect(t.card("Try /policies/refund-policy first")!.className).toContain("border-primary");
-    expect(t.card("Keep it to three lines")!.className).not.toContain("border-primary");
+    const lit = (name: string) => t.card(name)!.className.split(/\s+/).includes("border-primary");
+    expect(lit("Try /policies/refund-policy first")).toBe(true);
+    expect(lit("Keep it to three lines")).toBe(false);
     expect(t.text()).toContain("Replaced by");
   });
   it("what the next run reads is the server's index, read-only, behind a toggle", async () => {
@@ -194,6 +199,30 @@ describe("editing a note", () => {
     expect(t.host.querySelector('section[aria-label="Edit note"]')).toBeNull();
     expect(t.card("Try /policies/refund-policy first")!.textContent).toContain("Saved");
   });
+  it("opens on the version the card showed; one changed since opens on its newest, and says so", async () => {
+    const t = await open(agent(true), { read: async () => ({ note: "---\nname: Try /policies/refund-policy first\ndescription: d\ntype: feedback\n---\nThe newer body.\n", etag: '"v7"' }) });
+    await t.click(/^Edit Try/);
+    expect(t.text()).toContain("This is the newest version, not the one the card showed.");
+    expect((t.host.querySelector('section[aria-label="Edit note"] textarea') as HTMLTextAreaElement).value).toBe("The newer body.\n");
+    await t.key(t.host.querySelector('section[aria-label="Edit note"] textarea')!, "Enter", { ctrlKey: true });
+    expect(t.calls).toContain(`write ${FIRST} {"etag":"\\"v7\\""}`);
+  });
+  it("from a server whose notes carry their version, opens on the card's text and version with no read", async () => {
+    const withTags = view();
+    withTags.notes.items = withTags.notes.items.map((x) => ({ ...x, etag: `"card-${x.file}"` }));
+    const t = await open(agent(true), { learning: async () => withTags });
+    await t.click(/^Edit Try/);
+    expect(t.calls.some((c) => c.startsWith("read"))).toBe(false);
+    await t.key(t.host.querySelector('section[aria-label="Edit note"] textarea')!, "Enter", { ctrlKey: true });
+    expect(t.calls).toContain(`write ${FIRST} {"etag":"\\"card-${FIRST}\\""}`);
+  });
+  it("never saves with no version: no empty If-Match is sent", async () => {
+    const t = await open(agent(true), { read: async (f) => ({ note: view().notes.items.find((x) => x.file === f)!.text, etag: null }) });
+    await t.click(/^Edit Try/);
+    await t.click(/^Save$/);
+    expect(t.text()).toContain("Not saved: Can't tell which version this is: reload.");
+    expect(t.calls.some((c) => c.startsWith("write"))).toBe(false);
+  });
   it("Enter in a one-line field saves too, and Esc cancels without a write", async () => {
     const t = await open(agent(true));
     await t.click(/^Edit Keep/);
@@ -256,7 +285,30 @@ describe("retiring a note", () => {
     expect(t.calls).toContain(`retire ${MINE} "v-${MINE}"`);
     expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(2);
   });
-  it("one changed since says so, and is not retired", async () => {
+  it("is made on the version the card showed: a note whose text changed since says so, and is not retired", async () => {
+    const t = await open(agent(true), { read: async () => ({ note: "---\nname: Keep it to three lines\ndescription: d\ntype: feedback\n---\nSomeone changed this.\n", etag: '"v9"' }) });
+    await t.click(/^Retire Keep/);
+    await t.click(/^Yes, retire$/);
+    expect(t.text()).toContain("It changed since you opened it. Reload the tab to see the newest version.");
+    expect(t.calls.some((c) => c.startsWith("retire"))).toBe(false);
+  });
+  it("from a server whose notes carry their version, retires on the card's own, with no read", async () => {
+    const withTags = view();
+    withTags.notes.items = withTags.notes.items.map((x) => ({ ...x, etag: `"card-${x.file}"` }));
+    const t = await open(agent(true), { learning: async () => withTags });
+    await t.click(/^Retire Keep/);
+    await t.click(/^Yes, retire$/);
+    expect(t.calls).toContain(`retire ${MINE} "card-${MINE}"`);
+    expect(t.calls.some((c) => c.startsWith("read"))).toBe(false);
+  });
+  it("never retires with no version: a read that names none says so", async () => {
+    const t = await open(agent(true), { read: async (f) => ({ note: view().notes.items.find((x) => x.file === f)!.text, etag: null }) });
+    await t.click(/^Retire Keep/);
+    await t.click(/^Yes, retire$/);
+    expect(t.text()).toContain("Can't tell which version this is: reload.");
+    expect(t.calls.some((c) => c.startsWith("retire"))).toBe(false);
+  });
+  it("one changed between the read and the retire says so, and is not retired", async () => {
     const t = await open(agent(true), { retire: async () => { throw new ClientError(412, "precondition_failed", "changed"); } });
     await t.click(/^Retire Keep/);
     await t.click(/^Yes, retire$/);
@@ -285,7 +337,7 @@ describe("the switch and the empty states", () => {
     await act(async () => { sw.click(); });
     await settle();
     expect(t.text()).toContain("Learning was not changed.");
-    expect(t.text()).toContain("Another revision was saved first. (precondition_failed)");
+    expect(t.text()).toContain("Another revision was saved first. · precondition_failed");
     expect(sw.getAttribute("aria-checked")).toBe("false");
   });
   it("with learning on and nothing learned yet: says so, and how many runs looked back", async () => {
@@ -318,7 +370,10 @@ describe("loading and errors", () => {
   it("shows placeholders while it reads, then the notes", async () => {
     let release!: (v: AgentLearning) => void;
     const t = await open(agent(true), { learning: () => new Promise((r) => { release = r; }) });
-    expect(t.host.querySelector('[aria-busy="true"]')?.getAttribute("aria-label")).toBe("Loading what it learned");
+    const loading = t.host.querySelector('[aria-busy="true"]')!;
+    expect([loading.getAttribute("role"), loading.getAttribute("aria-label")]).toEqual(["status", "Loading what it learned"]);
+    expect(loading.innerHTML).toContain("motion-safe:animate-pulse");
+    expect(loading.innerHTML).not.toMatch(/(^|[\s"])animate-pulse/);
     await act(async () => { release(view()); });
     await settle();
     expect(t.text()).toContain("What it has learned");
@@ -327,7 +382,8 @@ describe("loading and errors", () => {
     let n = 0;
     const t = await open(agent(true), { learning: async () => { if (n++ === 0) throw new ClientError(500, "internal", "The agent's notes could not be read."); return view(); } });
     expect(t.text()).toContain("What this agent learned could not be read.");
-    expect(t.text()).toContain("The agent's notes could not be read. (internal)");
+    expect(t.text()).toContain("The server hit a problem on its side.");
+    expect(t.text()).toContain("The agent's notes could not be read. · internal");
     await t.click(/Try again/);
     expect(t.text()).toContain("What it has learned");
   });

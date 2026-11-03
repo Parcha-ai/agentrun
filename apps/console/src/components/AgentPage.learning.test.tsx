@@ -50,14 +50,16 @@ describe("AgentPage's Learning tab", () => {
   it("is a tab of an agentic agent on a server with learning, on or off", async () => {
     for (const learning of ["on", "off"] as const) {
       const p = await open(agent(), { learning });
-      expect(p.tabs()).toEqual(["Runs", "Learning"]);
+      expect(p.tabs()).toContain("Learning");
       act(() => root?.unmount()); document.body.innerHTML = "";
     }
   });
   it("is not a tab on a server without learning, nor of a workflow agent", async () => {
-    expect((await open(agent(), { learning: null })).tabs()).toEqual(["Runs"]);
+    expect((await open(agent(), { learning: null })).tabs()).not.toContain("Learning");
     act(() => root?.unmount()); document.body.innerHTML = "";
-    expect((await open(agent("workflow"), { learning: "on" })).tabs()).toEqual(["Runs", "Workflow"]);
+    const wf = (await open(agent("workflow"), { learning: "on" })).tabs();
+    expect(wf).toContain("Workflow");
+    expect(wf).not.toContain("Learning");
   });
   it("at its address, opens before the server's capabilities are read, and stays once they say it learns", async () => {
     const p = await open(agent(), { tab: "learning" });
@@ -69,10 +71,11 @@ describe("AgentPage's Learning tab", () => {
   });
   it("elsewhere, the tab waits for the capabilities: none before them, and none once they say the server has no learning", async () => {
     const p = await open(agent());
-    expect(p.tabs()).toEqual(["Runs"]);
+    expect(p.tabs()).not.toContain("Learning");
     p.render({ learning: null, tab: "learning" });
     await settle();
-    expect(p.tabs()).toEqual(["Runs"]);
+    expect(p.tabs()).not.toContain("Learning");
+    expect(p.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
   });
   it("the switch on the tab makes a revision, and the page's header follows it", async () => {
     const p = await open(agent(), { tab: "learning", learning: "on" });

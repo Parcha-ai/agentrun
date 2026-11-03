@@ -40,6 +40,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     if (run && harness.state === "loading") void readHarness(v2, run).then(setHarness);
   }, [run?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
   const offer = messageOffer(harness, caps);
+  useLearningSettle(run, () => refresh());
 
   const refresh = async () => {
     const n = runReads.begin();
@@ -49,7 +50,6 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     } catch (e) { if (runReads.current(n)) setError(asApiError(e)); }
   };
   useEffect(() => { void refresh(); }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
-  useLearningSettle(run, refresh);
   useEffect(() => {
     const ctl = new AbortController();
     follow(v2, runId, {

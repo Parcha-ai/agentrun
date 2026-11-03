@@ -31,15 +31,21 @@ export function LearningSwitch({ id, checked, onChange, busy, disabled, quiet, s
   );
 }
 
-/** The switch as the editor's form holds it: on when the form says so, else as the definition was saved (`saved`).
- *  Put back off on an agent that never said, it says nothing again, so the switch alone makes no new revision. Off to
- *  on without the write tool offers to tick it, when its harness runs it here. */
-export function LearningField({ fields, onFields, saved, tools, server }: { fields: AgentFields; onFields: (patch: AgentFields) => void; saved?: boolean; tools: ToolOffer[]; server?: "on" | "off" }) {
+/** The editor's Settings step's "Learning" field, its label as the step's other fields have it: the switch as the form
+ *  holds it, on when the form says so, else as the definition was saved (`saved`). Put back off on an agent that never
+ *  said, it says nothing again, so the switch alone makes no new revision. Off to on without the write tool offers to
+ *  tick it, when its harness runs it here. `error` and `warning`: a refused save's and a save's, for the field. */
+export function LearningField({ fields, onFields, saved, tools, server, error, warning }: { fields: AgentFields; onFields: (patch: AgentFields) => void; saved?: boolean; tools: ToolOffer[]; server?: "on" | "off"; error?: string; warning?: string }) {
   const on = (fields.learning ?? saved) === true;
   const canWrite = toolsFor(fields.harness ?? "pi", tools).some((t) => t.name === "write" && t.available);
   return (
-    <LearningSwitch id="learning-switch" className="border px-4 py-3" checked={on} server={server}
-      onChange={(next) => onFields({ learning: next ? true : saved === undefined ? undefined : false })}
-      noWrite={!(fields.tools ?? []).includes("write")} onAddWrite={canWrite ? () => onFields({ tools: [...(fields.tools ?? []), "write"] }) : undefined} />
+    <div>
+      <div className="mb-2"><span className="caps text-[12px] font-semibold">Learning</span></div>
+      <LearningSwitch id="learning-switch" className="border px-4 py-3" checked={on} server={server}
+        onChange={(next) => onFields({ learning: next ? true : saved === undefined ? undefined : false })}
+        noWrite={!(fields.tools ?? []).includes("write")} onAddWrite={canWrite ? () => onFields({ tools: [...(fields.tools ?? []), "write"] }) : undefined} />
+      {error && <p className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{error}</p>}
+      {warning && <p className="mt-2 font-mono text-[12px] text-warning-text">{warning}</p>}
+    </div>
   );
 }

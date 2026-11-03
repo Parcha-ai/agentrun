@@ -34,6 +34,8 @@ describe("route", () => {
     expect(route("#/agents/x/learning")).toEqual({ section: "agents", agent: "x", tab: "learning" });
     // A run's chip points at the notes it read or kept: the Learning tab, each note named.
     expect(route("#/agents/refund%20finder/learning?note=a.md&note=b.md")).toEqual({ section: "agents", agent: "refund finder", tab: "learning", notes: ["a.md", "b.md"] });
+    expect(route("#/agents/x/learning?note=a&note=b")).toEqual({ section: "agents", agent: "x", tab: "learning", notes: ["a", "b"] });
+    expect(route("#/agents/x/learning?")).toEqual({ section: "agents", agent: "x", tab: "learning", notes: [] });
     expect(route("#/agents/x/edit")).toEqual({ section: "agents", agent: "x", edit: true });
     expect(route("#/agents/new")).toEqual({ section: "agents", agent: null });
     expect(route("#/agents?archived=true")).toEqual({ section: "agents", archived: true });

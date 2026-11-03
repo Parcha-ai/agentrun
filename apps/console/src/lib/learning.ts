@@ -28,7 +28,9 @@ export type RunLearning = {
   learned?: LearnedRef[];
 } | null;
 
-export type LearningNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; superseded_by: string | null; text: string };
+/** `etag` (a newer server's): the note's version, the file read's ETag, so an edit or a retire is made on the version a
+ *  card showed without reading it again. */
+export type LearningNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; superseded_by: string | null; text: string; etag?: string };
 /** One change to what the agent learned, newest first: a run's (`by.run`; `reason`, why it was kept) or a person's. */
 export type LearningChange = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
 export type LearningCounts = { merged: number; dropped: Record<string, number>; in_progress: number };
@@ -43,6 +45,22 @@ export type AgentLearning = { agent: string; main: string | null; index: string;
 /** A note as GET .../learning/files/{file} answers it, and as a write answers it: its whole text and its version, as
  *  getAgent gives an agent and its ETag. */
 export type NoteText = { note: string; etag: string | null };
+/** The version of a note a person saw, which an edit or a retire of it is made on. From a server whose notes carry their
+ *  `etag`, it is the card's own. Else the note is read now, and is that version only if its text is still the text the
+ *  card showed: `changed` when it is not (someone, or a run, changed it since), `unknown` when the server named no
+ *  version. This is the one place the console moves to the notes' own `etag`. */
+export type Seen = { kind: "same"; etag: string; text: string } | { kind: "changed"; now: NoteText } | { kind: "unknown" };
+export async function seenVersion(note: Pick<LearningNote, "text" | "etag">, read: () => Promise<NoteText>): Promise<Seen> {
+  if (typeof note.etag === "string" && note.etag) return { kind: "same", etag: note.etag, text: note.text };
+  const now = await read();
+  if (now.note !== note.text) return { kind: "changed", now };
+  return now.etag ? { kind: "same", etag: now.etag, text: now.note } : { kind: "unknown" };
+}
+/** Said when the server named no version of a note: a write never goes without one (no empty If-Match). */
+export const NO_VERSION = "Can't tell which version this is: reload.";
+/** Said when the note changed since a card showed it. */
+export const CHANGED = "It changed since you opened it.";
+
 /** Why the server's checks refused a note a person wrote: each problem, printable. */
 export type NoteProblem = { rule: string; path?: string; detail: string };
 
@@ -120,7 +138,7 @@ export const goingWords = (state: LearningState) => (state === "seeded" ? "Learn
  *  cuts 3.8 s to 3s, which reads against the change beside it). */
 export const took = (seconds: number) => elapsed(Math.round(seconds) * 1000);
 /** A median cost, as the console writes a run's: the medians are of estimates, so each says so. */
-export const money = (usd: number) => cost({ usd, basis: "estimate", source: "estimate", charge_state: null, cap_usd: null });
+export const money = (usd: number) => cost({ usd, basis: "estimate", charge_state: null, cap_usd: null });
 /** The change from `a` to `b` as a whole percent: -33 is a third less. Null when `a` is not above zero. */
 export const change = (a: number, b: number) => (a > 0 ? Math.round(((b - a) / a) * 100) : null);
 /** Whether both sides' costs are known, so they can be set side by side. */

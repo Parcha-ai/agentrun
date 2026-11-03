@@ -34,6 +34,11 @@ describe("LearningChips", () => {
     expect(html).toContain('href="#/agents/refunds/learning?note=shopify-refund-policy-path.md"');
     expect(html).toContain('href="#/agents/refunds/learning?note=try-policies-refund-policy-first.md"');
     expect(html).toContain('aria-label="Used 1 note: Shopify refund policy path"');
+    // The tooltip describes the link, the focusable element, not a span around it.
+    const link = /<a [^>]*aria-label="Used 1 note[^>]*>/.exec(html)?.[0] ?? "";
+    const id = /aria-describedby="([^"]+)"/.exec(link)?.[1];
+    expect(id).toBeTruthy();
+    expect(html).toContain(`role="tooltip" id="${id}"`);
   });
   it("counts in words: 2 notes", () => {
     const two = [...USED, { file: "keep-it-short.md", name: "Keep it short" }];
