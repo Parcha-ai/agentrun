@@ -155,3 +155,12 @@ test("the text inside a frame decodes a numeric reference whatever its leading z
   const seen = await judgedHere('<html><body><iframe src="https://challenge.example/">&#000000065;ccess &#x00000064;enied&#0000000000000000000000000000000000033;</iframe></body></html>');
   assert.deepEqual(seen.frameText, ["Access denied!"]);
 });
+
+test("a frame inside a template is no frame however templates nest: a template inside it does not end it, nor does a \"</template>\" in its script or its comment", async () => {
+  const html = '<html><body><template><template></template><iframe src="https://hidden.example/">nested</iframe></template>'
+    + '<template><script>var s = "</template>";</script><iframe src="https://scripted.example/">scripted</iframe></template>'
+    + '<template><!-- </template> --><iframe src="https://commented.example/">commented</iframe></template>'
+    + '<iframe src="https://shown.example/">Shown</iframe></body></html>';
+  const seen = await judgedHere(html);
+  assert.deepEqual([seen.frames, seen.frameText], [["https://shown.example"], ["Shown"]]);
+});

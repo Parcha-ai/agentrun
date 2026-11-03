@@ -194,3 +194,33 @@ test("decodeEntities reads a numeric reference's whole digit run, in one linear 
   assert.equal(decodeEntities("&#0000065;".repeat(200_000)), "A".repeat(200_000));
   assert.ok(performance.now() - started < 2_000, "linear in the text");
 });
+
+test("a template's content is dropped whole however templates nest: a template inside it does not end it, nor does a \"</template>\" in its script or its comment, as markdown and as plain text", async () => {
+  const html = '<html><head><title>Nest</title></head><body><h1>Shown</h1>'
+    + '<template><template><p>inner</p></template><p>Hidden after the inner template.</p><a href="/hidden">hidden link</a></template>'
+    + '<template><script>var s = "</template>";</script><p>Hidden after the script.</p></template>'
+    + '<template><!-- </template> --><p>Hidden after the comment.</p></template>'
+    + '<p>After the templates.</p><a href="/shown">Shown link</a></body></html>';
+  for (const deadlineMs of [undefined, 0]) {
+    const page = await readPage(html, "https://site.example/", deadlineMs === undefined ? {} : { deadlineMs });
+    const how = deadlineMs === undefined ? "markdown" : "text";
+    assert.equal(page.converted, how);
+    assert.doesNotMatch(page.text, /Hidden|inner|var s|hidden link/, how);
+    assert.match(page.text, /Shown[\s\S]*After the templates\.[\s\S]*Shown link/, how);
+    assert.deepEqual(page.links, ["https://site.example/shown"], how);
+  }
+});
+
+test("a template holding a template, hidden words and a \"</template>\" in a script, before each of a 3 MB page's paragraphs: each dropped whole, read within 10 s, the event loop never held 100 ms", async () => {
+  const run = await inChild("readPage", 3_000_000, {}, "templates");
+  quick(run, 10_000);
+  assert.ok(run.page.text.includes("para 0 of the page, kept"), "the text after a template is kept");
+  assert.ok(run.page.text.includes("para 1 of the page, kept"));
+  assert.doesNotMatch(run.page.text, /hidden|inner|var s/, "nothing inside a template reaches the page");
+});
+
+test("one template holding a 3 MB page of short tags, closed at its end: dropped whole, the paragraph after it kept, the event loop never held 100 ms", async () => {
+  const run = await inChild("readPage", 3_000_000, {}, "bigtemplate");
+  quick(run, 10_000);
+  assert.match(run.page.text, /^# Start\n\nafter the template, kept$/);
+});

@@ -43,18 +43,25 @@ export function downloadsPage(chars, { oneTable = false } = {}) {
 
 /** A page of at least `chars` characters shaped to defeat a scan that is not linear: `unclosed`, an svg start tag that
  *  is never closed before each paragraph, then a style and a script never closed either; `unquoted`, a paragraph whose
- *  title attribute opens a quote that no quote ever closes, each time. `{ html, first, last }` as downloadsPage's,
+ *  title attribute opens a quote that no quote ever closes, each time; `templates`, before each paragraph a template
+ *  holding a template, hidden words and a script whose string is "</template>"; `bigtemplate`, one template holding
+ *  the whole page in short tags, closed at its end, then one paragraph. `{ html, first, last }` as downloadsPage's,
  *  `first` and `last` its first and last paragraph's text. */
 export function shapedPage(shape, chars) {
   const parts = ["<!DOCTYPE html>\n<html><head><title>Shaped</title></head><body>\n<h1>Start</h1>\n"];
-  let size = parts[0].length;
+  if (shape === "bigtemplate") parts.push("<template>\n");
+  let size = parts.join("").length;
   let last = null;
   for (let i = 0; size < chars; i += 1) {
     last = `para ${i}`;
-    const part = shape === "unclosed" ? `<svg class="icon" viewBox="0 0 10 10"><p>${last} of the page, kept</p>\n` : `<p title="open>${last} of the page, kept</p>\n`;
+    const part = shape === "unclosed" ? `<svg class="icon" viewBox="0 0 10 10"><p>${last} of the page, kept</p>\n`
+      : shape === "templates" ? `<template><template><b>inner</b></template><b>hidden ${i}</b><script>var s = "</template>";</script></template><p>${last} of the page, kept</p>\n`
+      : shape === "bigtemplate" ? `<i>hidden</i><b>${i}</b><br>\n`
+      : `<p title="open>${last} of the page, kept</p>\n`;
     parts.push(part);
     size += part.length;
   }
   if (shape === "unclosed") parts.push("<p>tail</p><style>.a { color: red }\n<script>track();\n");
+  if (shape === "bigtemplate") { parts.push("</template>\n<p>after the template, kept</p>\n"); last = "after the template"; }
   return { html: parts.join(""), first: "para 0", last };
 }
