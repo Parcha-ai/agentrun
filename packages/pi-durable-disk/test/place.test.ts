@@ -883,6 +883,7 @@ describe("archilPlace unheld: a hook in the start window, while nobody holds the
       { PATH: VALUE }, { PDA_HOLDER: VALUE }, { HOST_BOX: VALUE }, { RUN_LABEL: VALUE }, { "1BAD": VALUE }, { "A-B": VALUE }, { NUMBER: 7 }, { NUL: "a\0b" },
       { ANTHROPIC_API_KEY: VALUE }, { MODAL_TOKEN_ID: VALUE }, { MODAL_TOKEN_SECRET: VALUE }, { DB_PASSWORD: VALUE }, { GH_TOKEN: VALUE }, { db_passwd: VALUE },
       { X_Credentials: VALUE }, { CREDENTIAL: VALUE }, { CACHE_KEY_PREFIX: VALUE },
+      { DB_PASS: VALUE }, { GH_PAT: VALUE }, { SENTRY_DSN: VALUE }, { DB_PWD: VALUE }, { FOO_TOKEN_BAR: VALUE }, { MY_TOKEN_FILE: VALUE },
     ];
     for (const env of refused) {
       const name = Object.keys(env)[0]!;
@@ -900,7 +901,7 @@ describe("archilPlace unheld: a hook in the start window, while nobody holds the
     }
     const control = new FakeControl();
     const { host, starts } = providing(control);
-    const passing = { KEYBOARD: "us", TOKENIZER: "bpe", MONKEY: "1", SECRETARY: "ok", LABEL_HINT: "x" };
+    const passing = { KEYBOARD: "us", TOKENIZER: "bpe", MONKEY: "1", SECRETARY: "ok", LABEL_HINT: "x", PWD: "/w", OLDPWD: "/o", PATTERN: "x", COMPASS: "n" };
     const place = makePlace({ ...REF, control, host, ensure: OWNER, unheld: async () => passing });
     await place.start({ gen: 1, env: LIFE, stdin: await place.token!(1) });
     for (const [k, v] of Object.entries(passing)) assert.equal(starts[0]!.attempt!.env![k], v, k);

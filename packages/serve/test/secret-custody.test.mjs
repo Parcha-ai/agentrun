@@ -515,7 +515,9 @@ test("under its launcher, with every secret set, a pi run is handed exactly its 
   const unlisted = `nak-unlisted-${process.pid}-${Date.now().toString(36)}`;
   const foo = `${unlisted}-FOO_API_KEY`;
   const password = `${unlisted}-FOO_PASSWORD`;
-  const { root, api } = await launched(t, { ...secrets, FOO_API_KEY: foo, FOO_PASSWORD: password });
+  // And names a key's segment makes one, wherever it is: none on a list.
+  const more = Object.fromEntries(["SERVICE_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "DB_PASS", "GH_PAT", "MY_TOKEN_FILE", "FOO_TOKEN_BAR", "SENTRY_DSN", "DB_PWD"].map((name) => [name, `${unlisted}-${name}`]));
+  const { root, api } = await launched(t, { ...secrets, FOO_API_KEY: foo, FOO_PASSWORD: password, ...more });
   // On the faux model whatever they name, as a faux run is: each is handed what a run on its model is handed, and its
   // model call answers.
   const models = { gemini: ["google/gemini-2.5-flash", "GEMINI_API_KEY"], openrouter: ["openrouter/anthropic/claude-sonnet-4.5", "OPENROUTER_API_KEY"], openai: ["openai/gpt-4o", "OPENAI_API_KEY"] };
@@ -529,7 +531,7 @@ test("under its launcher, with every secret set, a pi run is handed exactly its 
   for (const [id, report] of Object.entries(reports)) {
     assert.deepEqual(report.pipe, { fd: 3, closed: true }, "its pipe, fd 3, read and closed");
     for (const where of ["env", "child", "toolChild"]) {
-      assert.deepEqual(report[where].filter((name) => SECRET_NAMES.includes(name) || ["FOO_API_KEY", "FOO_PASSWORD"].includes(name)), [], `no secret's name in ${where} of the run on ${id}`);
+      assert.deepEqual(report[where].filter((name) => SECRET_NAMES.includes(name) || ["FOO_API_KEY", "FOO_PASSWORD", ...Object.keys(more)].includes(name)), [], `no secret's name in ${where} of the run on ${id}`);
       assert.deepEqual(keyShapedIn(report[where]), [], `no key-shaped name at all in ${where}`);
     }
   }
@@ -537,7 +539,7 @@ test("under its launcher, with every secret set, a pi run is handed exactly its 
   await holdTurn(api, reports.gemini.id);
   const seen = noSecretAnywhere(root, canary);
   assert.ok(seen.some((cmdline) => cmdline.includes(" --app ")), "the run's process is among those read");
-  for (const value of [foo, password]) onlyTheServerHolds(root, value);
+  for (const value of [foo, password, ...Object.values(more)]) onlyTheServerHolds(root, value);
 });
 
 /** Every file under `dir` (a run's directory: its store, process.log, harness/), and which holds any of `values`. */
