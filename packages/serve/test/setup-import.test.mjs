@@ -298,3 +298,42 @@ test("under its launcher (node started from a string), setup counts this machine
   assert.deepEqual(await state(), { state: "done", agents: 1, runs: 3, skipped: 0 }, err);
   assert.equal(err, "", "no line on stderr: no refused worker, no node:sqlite warning");
 });
+
+test("a server whose process runs with flags a worker may not take (as a test runner's child does on Node 24) still counts and imports: its worker inherits what Node passes on", { timeout: 90_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const site = join(home, "code", "acme-site");
+  mkdirSync(site, { recursive: true });
+  claudeSession(home, site, 1);
+  codexSession(home, site, 2);
+  const script = join(root, "serve.mjs");
+  writeFileSync(
+    script,
+    `import { startServe } from ${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)};
+const serve = await startServe({ data: ${JSON.stringify(join(root, "agents"))}, port: 0, faux: ${JSON.stringify(FAUX)}, accounts: true, openSetup: true, sessionsHome: { home: ${JSON.stringify(home)}, temp: ${JSON.stringify(join(root, "tmp"))} } });
+console.log(\`port \${serve.port}\`);
+process.on("SIGTERM", () => void serve.close().then(() => process.exit(0)));
+`,
+  );
+  // --stack-trace-limit is a V8 flag: given to a worker by name, Node refuses the worker.
+  const child = spawn(process.execPath, ["--stack-trace-limit=10", script], { stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  t.after(async () => (child.kill("SIGTERM"), await exited));
+  let [out, err] = ["", ""];
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (const deadline = Date.now() + 30_000; !/port (\d+)/.test(out); ) {
+    assert.ok(Date.now() < deadline, `the server started: ${out}${err}`);
+    await sleep(50);
+  }
+  const port = Number(/port (\d+)/.exec(out)[1]);
+  const read = () => call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  let found = await read();
+  for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
+  assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 2 }], err);
+  const made = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin: `http://127.0.0.1:${port}` }, body: { password: PASSWORD, import: true } });
+  assert.deepEqual([made.status, made.json], [201, { signed_in: true, importing: true }], made.text);
+  const state = async () => (await call(port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
+  for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
+  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 2, skipped: 0 }, err);
+});

@@ -42,6 +42,10 @@ import { openWorkFile, removeWorkFile, WALK_DEPTH, walkWork, WorkRefused, writes
 import { type ServerLock, takeServerLock } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
+
+/** A process's flags for a worker of it: without --input-type and the code string given with -e, --eval, -p or --print. */
+const workerArgs = (args: readonly string[]): string[] =>
+  args.filter((arg, i) => !arg.startsWith("--input-type") && !/^(?:-e|--eval|-p|--print)(?:=|$)/.test(arg) && !/^(?:-e|--eval|-p|--print)$/.test(args[i - 1] ?? ""));
 export const DEFAULT_PORT = 7340;
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const TOKEN_FILE = ".token";
@@ -427,9 +431,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
         workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}) } satisfies ImportTask,
-        // The server's own flags, but for --input-type: its launcher starts it from a string (node --input-type=module
-        // -e), and a worker started from a file with that flag is refused.
-        execArgv: process.execArgv.filter((arg) => !arg.startsWith("--input-type")),
+        // Started from a string (its launcher runs node --input-type=module -e), the server's flags are given again
+        // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
+        // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
+        // runner's child holds many).
+        ...(process.execArgv.some((arg) => arg.startsWith("--input-type")) ? { execArgv: workerArgs(process.execArgv) } : {}),
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
       let answer: ImportAnswer | undefined;
