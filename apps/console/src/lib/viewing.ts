@@ -7,10 +7,13 @@ export function pendingQuestion(status: RunStatus, state: RunState, rows: Timeli
   return rows.findLast((r) => r.kind === "waiting") ?? null;
 }
 
-/** How the viewer shows a file: Markdown rendered, text as text, anything else (an unknown type included: the server
- *  sends `content_type: null` for an extension it does not know) as a download only. */
-export function viewKind(file: RunFile): "markdown" | "text" | "download" {
-  const type = file.content_type ?? "";
+/** Preview only supported media types. Unknown and active image formats remain downloads. */
+export function viewKind(file: RunFile): "markdown" | "text" | "html" | "image" | "audio" | "video" | "download" {
+  const type = (file.content_type ?? "").split(";")[0].trim().toLowerCase();
+  if (type === "text/html") return "html";
+  if (["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp"].includes(type)) return "image";
+  if (["audio/mpeg", "audio/wav", "audio/ogg", "audio/flac", "audio/mp4", "audio/webm"].includes(type)) return "audio";
+  if (["video/mp4", "video/webm", "video/ogg"].includes(type)) return "video";
   if (type.startsWith("text/markdown") || file.path.toLowerCase().endsWith(".md")) return "markdown";
   if (type.startsWith("text/") || type.includes("json")) return "text";
   return "download";

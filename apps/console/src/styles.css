@@ -6,10 +6,13 @@
 @tailwind components;
 @tailwind utilities;
 
-/* The AgentRun look, the hosted AgentRun console's: shadcn's variables (dark is the default), an orange
-   primary, a 1px border on everything, and no rounded corners. Values are HSL triplets. */
+/* AgentRun surfaces share dark neutrals, restrained orange and separate control, card and composer radii.
+   Color values are HSL triplets so host applications can supply their own theme. */
 @layer base {
   :root {
+    --ar-control-radius: 8px;
+    --ar-card-radius: 12px;
+    --ar-composer-radius: 14px;
     --background: 0 0% 100%;
     --foreground: 240 10% 3.9%;
     --card: 0 0% 100%;
@@ -59,10 +62,18 @@
     --run-active: 239 83.3% 71.8%;
     --run-error-surface: 0 33.3% 17.1%;
   }
-  * { @apply border-border; border-radius: 0 !important; }
+  * { @apply border-border; }
   html, body, #root { height: 100%; }
   body { @apply bg-background font-sans text-foreground antialiased; }
   :focus-visible { outline: 1px solid hsl(var(--ring)); outline-offset: 1px; }
+  button, input, select, textarea { border-radius: var(--ar-control-radius); }
+  input[type="checkbox"], input[type="radio"] { border-radius: 3px; }
+  section.border, [class~="border"][class~="bg-card"], dialog > div { border-radius: var(--ar-card-radius); }
+  form:has(#composer) { border-radius: var(--ar-composer-radius); }
+  [role="tab"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
 }
 
 @layer components {

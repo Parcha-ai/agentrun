@@ -754,6 +754,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       fields.push([name, ...down, field].join("."));
     }
   }
+  const modelSource = (((schemas.Capabilities as Json).properties as Json).models as Json).properties as Json;
+  const source = modelSource.source as Json & { enum: string[] };
+  source.enum = [...source.enum, "providers", "gateway"];
+  source["x-agentrun-serve"] = "modelsource/1";
+  fields.push("Capabilities.models.source.providers", "Capabilities.models.source.gateway");
   // The contract's definition fields this server refuses (validate.ts), each marked with the reason its 422 gives.
   const definition = schemas.DefinitionInput as Json & { properties: Record<string, Json> };
   const refused: string[] = [];

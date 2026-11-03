@@ -14,6 +14,9 @@ describe("route", () => {
     expect(route("#/runs/r1")).toEqual({ section: "runs", run: "r1" });
     expect(route("#/runs?agent=calc")).toEqual({ section: "runs", runsOf: "calc" });
   });
+  it("keeps the agent and pinned revision in a run handoff's playground link", () => {
+    expect(route("#/playground?agent=agent%20one&revision=rev-two")).toEqual({ section: "playground", startAgent: "agent one", startRevision: "rev-two" });
+  });
   it("opens Settings → Tool keys at its own address, and at #/settings", () => {
     expect(route("#/settings/keys")).toEqual({ section: "settings", settings: "keys" });
     expect(route("#/settings")).toEqual({ section: "settings", settings: "keys" });
@@ -95,7 +98,7 @@ describe("App, Mission Control after a failed read", () => {
   });
 });
 
-// Settings shows only on a server with the tool keys routes, so the console never offers a page its server lacks.
+// Settings always describes the connection; key editing is present only when this server supports it.
 describe("App, Settings", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const keys = { keys: [{ id: "monid", label: "Monid", fields: [{ name: "MONID_API_KEY", set: false, source: null }], unlocks: ["monid.run"], harnesses: ["pi"] }], reenter: null };
@@ -122,17 +125,20 @@ describe("App, Settings", () => {
     return { host, nav, asked };
   }
 
-  it("has no Settings in the nav when the server has no features.tool_keys", async () => {
-    const page = await open({}, "#/runs");
+  it("keeps connection Settings available without offering unsupported tool-key routes", async () => {
+    const page = await open({}, "#/settings");
     expect(page.nav()).toContain("Runs");
-    expect(page.nav()).not.toContain("Settings");
+    expect(page.nav()).toContain("Settings");
+    expect(page.host.querySelector("h1")?.textContent).toBe("Server connection");
+    expect(page.asked).not.toContain("GET /v2/settings/tool-keys");
   });
 
   it("shows Settings when the server has the routes, and #/settings/keys opens Tool keys", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
     expect(page.nav()).toContain("Settings");
     expect(page.host.querySelector('[aria-current="page"]')?.textContent?.trim()).toBe("Settings");
-    expect(page.host.querySelector("h1")?.textContent).toBe("Tool keys");
+    expect(page.host.querySelector("h1")?.textContent).toBe("Server connection");
+    expect(page.host.textContent).toContain("Tool keys");
     expect(page.host.textContent).toContain("MONID_API_KEYnot set");
   });
 
@@ -148,6 +154,57 @@ describe("App, Settings", () => {
     await act(async () => { button(/^Save$/).click(); }); await settle();
     expect(page.asked).toContain("PUT /v2/settings/tool-keys/monid");
     expect(caps()).toBe(2);
+  });
+});
+
+describe("App, expired local-owner session", () => {
+  it("clears private data and rechecks the session when a protected request is unauthorized", async () => {
+    let expired = false;
+    const sessions: boolean[] = [];
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") { sessions.push(!expired); return json(200, { password_set: true, signed_in: !expired }); }
+      if (expired) return json(401, { error: { code: "unauthenticated", message: "The session ended.", retryable: false } });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/agents") return json(200, { agents: [], next_cursor: null });
+      return json(200, { runs: [{ run_id: "private", agent_id: "agent", agent_version: 1, revision: "rev", kind: "agentic", status: "completed", state: "idle", title: "Private customer answer", created_at: "2026-11-01T00:00:00Z", ended_at: "2026-11-01T00:00:01Z", result: null, error: null, cost: null, archived_at: null }], next_cursor: null });
+    });
+    location.hash = "#/runs";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(App)); });
+    expect(host.textContent).toContain("Private customer answer");
+    expired = true;
+    await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Navigation"] button')].find((button) => button.textContent?.trim() === "Agents")!.click(); window.dispatchEvent(new HashChangeEvent("hashchange")); });
+    expect(host.textContent).not.toContain("Private customer answer");
+    expect(host.querySelector('input[type="password"]')).not.toBeNull();
+    expect(sessions).toEqual([true, false]);
+  });
+});
+
+describe("App, explicitly restricted listings", () => {
+  it.each(["agents", "runs"] as const)("hides the %s listing and refuses its direct route without requesting it", async (restricted) => {
+    const asked: string[] = [];
+    const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      asked.push(path);
+      if (path === "/v2/auth/session") return json({ password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") return json({ harnesses: [], features: {
+        agents: { create: true, update: true, list: restricted !== "agents", revisions: true },
+        runs: { list: restricted !== "runs" },
+        messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false },
+      } });
+      return json({ agents: [], runs: [], next_cursor: null });
+    });
+    location.hash = `#/${restricted}`;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(App)); });
+    expect(host.textContent).toContain("listing is unavailable on this server");
+    expect([...host.querySelectorAll('nav[aria-label="Navigation"] button')].map((button) => button.textContent?.trim())).not.toContain(restricted === "agents" ? "Agents" : "Runs");
+    expect(asked).not.toContain(`/v2/${restricted}`);
   });
 });
 

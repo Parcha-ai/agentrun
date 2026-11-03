@@ -29,7 +29,11 @@ describe("viewKind", () => {
     expect(viewKind(file("notes.md", null))).toBe("markdown");
     expect(viewKind(file("out.json", "application/json"))).toBe("text");
     expect(viewKind(file("log.txt", "text/plain"))).toBe("text");
-    expect(viewKind(file("photo.png", "image/png"))).toBe("download");
+    expect(viewKind(file("photo.png", "image/png"))).toBe("image");
+    expect(viewKind(file("page.html", "text/html"))).toBe("html");
+    expect(viewKind(file("voice.ogg", "audio/ogg"))).toBe("audio");
+    expect(viewKind(file("clip.webm", "video/webm"))).toBe("video");
+    expect(viewKind(file("vector.svg", "image/svg+xml"))).toBe("download");
   });
   it("treats a type the server does not know (null) as unknown: download only", () => {
     expect(viewKind(file("data.bin", null))).toBe("download");

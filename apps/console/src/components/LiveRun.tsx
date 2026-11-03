@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { RunDetail } from "@/components/RunDetail";
 import { RunError } from "@/components/RunError";
 import { type GraphActions, GraphUnavailable, isPermanent, RunGraphView, useRunGraph } from "@/components/RunGraphView";
-import { type Capabilities, type Client, ClientError, follow } from "@/lib/client";
+import { type Capabilities, type Client, ClientError, follow, type TimelineCheckpoint } from "@/lib/client";
 import { keeper, sendOnce } from "@/lib/idempotency";
 import { type HarnessRead, messageOffer, readHarness } from "@/lib/liveRun";
 import { costOf, type RunGraph, usd } from "@/lib/runGraph";
@@ -22,6 +22,10 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   const [run, setRun] = useState<Run | null>(null);
   const [rows, setRows] = useState<TimelineRow[]>([]);
   const [files, setFiles] = useState<RunFile[]>([]);
+  const [fileState, setFileState] = useState({ complete: true, truncated: false });
+  const [disconnected, setDisconnected] = useState<ApiError | null>(null);
+  const [pendingCommand, setPendingCommand] = useState<"stop" | "cancel" | null>(null);
+  const checkpoint = useRef<TimelineCheckpoint>({ rows: [] }).current;
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState<"stop" | "cancel" | "archive" | null>(null);
   const [follows, setFollows] = useState(0);
@@ -39,30 +43,35 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     if (run && harness.state === "loading") void readHarness(v2, run).then(setHarness);
   }, [run?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
   const offer = messageOffer(harness, caps);
+  const filesSupported = caps?.features.files?.read !== false;
 
   const refresh = async () => {
     const n = runReads.begin();
-    try {
-      const [r, f] = await Promise.all([v2.getRun(runId), v2.listFiles(runId)]);
-      if (runReads.current(n)) { setRun(r); setFiles(f.files); }
-    } catch (e) { if (runReads.current(n)) setError(asApiError(e)); }
+    const k = fileReads.begin();
+    await Promise.all([
+      v2.getRun(runId).then((r) => { if (runReads.current(n)) setRun(r); }).catch((e) => { if (runReads.current(n)) setError(asApiError(e)); }),
+      filesSupported ? v2.listFiles(runId).then((f) => { if (fileReads.current(k)) { setFiles(f.files); setFileState({ complete: f.complete, truncated: f.truncated }); } })
+        .catch((e) => { if (fileReads.current(k)) { setFileState({ complete: false, truncated: false }); setError(asApiError(e)); } })
+      : Promise.resolve(),
+    ]);
   };
-  useEffect(() => { void refresh(); }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const reconnect = () => { setError(null); setDisconnected(null); void refresh(); setFollows((n) => n + 1); };
+  useEffect(() => { if (!filesSupported) setFiles([]); void refresh(); }, [runId, filesSupported]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const ctl = new AbortController();
     follow(v2, runId, {
-      signal: ctl.signal,
+      signal: ctl.signal, checkpoint, waitMs: caps?.features.timeline?.long_poll === false ? 0 : 25000,
       // A tool round can write files while the run stays working: re-read them when a new tool result lands.
-      onRows: (r) => { setRows(r); const n = r.filter((x) => x.kind === "tool_result").length; if (n > toolResults.current) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) setFiles(f.files); }).catch(() => {}); } },
+      onRows: (r) => { setRows(r); const n = r.filter((x) => x.kind === "tool_result").length; if (n > toolResults.current && filesSupported) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) { setFiles(f.files); setFileState({ complete: f.complete, truncated: f.truncated }); } }).catch((e) => { if (fileReads.current(k)) { setFileState({ complete: false, truncated: false }); setError(asApiError(e)); } }); } },
       // A page names the run's status and state: when they move, the run record (result, error, cost) and files move too.
-      onPage: (p) => { const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
-    }).catch((e) => { if (!ctl.signal.aborted) setError(asApiError(e)); });
+      onPage: (p) => { setDisconnected(null); if (p.final || (p.status === "input_required" && p.state === "idle")) setPendingCommand(null); const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
+    }).catch((e) => { if (!ctl.signal.aborted) setDisconnected(asApiError(e)); });
     return () => ctl.abort();
-  }, [runId, follows]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [runId, follows, filesSupported, caps?.features.timeline?.long_poll]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const act = async (what: "stop" | "cancel") => {
     setBusy(what);
-    try { await v2[what](runId); setError(null); } catch (e) { setError(asApiError(e)); }
+    try { await v2[what](runId); setError(null); setPendingCommand(what); } catch (e) { setError(asApiError(e)); setPendingCommand(null); }
     setBusy(null); await refresh(); setFollows((n) => n + 1);
   };
   // Only the archive's own effect is taken from its answer, at once: the run may have moved on since it was read (a final
@@ -86,17 +95,20 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
 
   // A workflow run's graph is read here, outside the tabs, so the header's cost (its totals) stays current whichever tab is
   // open. A server without the route gives the run's other views only.
-  const graph = useRunGraph((signal) => v2.getRunGraph(runId, signal), { key: runId, enabled: run?.kind === "workflow" });
-  const noGraph = !graph.data && isPermanent(graph.error);
-  if (!run) return error ? <div className="p-8"><RunError title="The server refused the request" error={error} /></div> : <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the run...</p>;
+  const graphSupported = caps?.features.runs?.graph !== false;
+  const graph = useRunGraph((signal) => v2.getRunGraph(runId, signal), { key: runId, enabled: run?.kind === "workflow" && graphSupported });
+  const noGraph = !graphSupported || !graph.data && isPermanent(graph.error);
+  if (!run) return error || disconnected ? <div className="p-8"><RunError title="The run could not be read" error={(error ?? disconnected)!} /><button type="button" className="mt-3 border px-3 py-2" onClick={reconnect}>Reconnect</button></div> : <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the run...</p>;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {error && <div className="border-b p-3"><RunError title="The server refused the request" error={error} /></div>}
+      {error && <div className="border-b p-3"><RunError title="The server refused the request" error={error} /><button type="button" className="mt-2 border px-3 py-2" onClick={reconnect}>Try again</button></div>}
+      {disconnected && <div className="border-b p-3" role="alert"><p className="text-[13px] text-warning-text">Disconnected: {disconnected.message}. Showing the last received state.</p><button type="button" className="mt-2 border px-3 py-2" onClick={reconnect}>Reconnect</button></div>}
+      {pendingCommand && <p className="border-b px-5 py-3 text-[13px] text-muted-foreground" role="status">{pendingCommand === "cancel" ? "Cancellation accepted. Waiting for the process to exit." : "Stop accepted. Waiting for the current turn to end."}</p>}
       <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
-        graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
+        graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} canPause={caps?.features.runs?.pause_workflow_runs !== false} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
-        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} onMessage={message}
-        actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), busy }} />
+        rows={rows} files={files} filesSupported={filesSupported} filesComplete={fileState.complete} filesTruncated={fileState.truncated} readFileBlob={(f) => v2.readFileBlob(runId, f.path)} onMessage={message}
+        actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: caps?.features.archive?.runs === false ? undefined : () => void archive(), supported: { stop: caps?.features.runs?.stop, cancel: caps?.features.runs?.cancel }, busy }} />
     </div>
   );
 }
@@ -104,7 +116,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
 /** A workflow run's graph from the live server, read every second while the run goes, with pause and resume. A pause
  *  or a resume shows as the server answered it until a fresh read of the graph (one made after it) says otherwise: a
  *  paused run's graph can be slow to read, and the answer's `paused` is exact. */
-function LiveGraph({ v2, runId, graph, onMoved }: { v2: Client; runId: string; graph: ReturnType<typeof useRunGraph>; onMoved: () => void }) {
+function LiveGraph({ v2, runId, graph, canPause, onMoved }: { v2: Client; runId: string; graph: ReturnType<typeof useRunGraph>; canPause: boolean; onMoved: () => void }) {
   const { data: read, error, readAt, reload } = graph;
   const [busy, setBusy] = useState<GraphActions["busy"]>(null);
   const [actError, setActError] = useState<ApiError | null>(null);
@@ -123,7 +135,7 @@ function LiveGraph({ v2, runId, graph, onMoved }: { v2: Client; runId: string; g
   return (
     <div className="flex h-full min-h-0 flex-col">
       {actError && <div className="border-b p-3"><RunError title="The server refused the request" error={actError} /></div>}
-      <div className="min-h-0 flex-1"><RunGraphView data={data} lastRead={readAt} fileUrl={(ref) => v2.fileUrl(runId, ref)} actions={{ onPause: () => void act("pause"), onResume: () => void act("resume"), busy }} /></div>
+      <div className="min-h-0 flex-1"><RunGraphView data={data} lastRead={readAt} fileUrl={(ref) => v2.fileUrl(runId, ref)} actions={{ onPause: () => void act("pause"), onResume: () => void act("resume"), supported: canPause, busy }} /></div>
     </div>
   );
 }

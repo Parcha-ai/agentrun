@@ -1,0 +1,9 @@
+AgentRun console
+Copyright 2026 Parcha Labs, Inc.
+
+Licensed under the Apache License, Version 2.0; see LICENSE.
+
+The library and standalone build include third-party software and fonts.
+Their versions, licenses and license texts are included in
+dist/library/THIRD-PARTY-NOTICES.txt and the standalone build's
+THIRD-PARTY-NOTICES.txt.

@@ -24,4 +24,8 @@ if (existsSync(join(built, "index.html"))) {
   mkdirSync(join(root, "dist", "console"), { recursive: true });
   cpSync(join(built, "index.html"), join(root, "dist", "console", "index.html"));
   if (existsSync(join(built, "assets"))) cpSync(join(built, "assets"), join(root, "dist", "console", "assets"), { recursive: true, filter: (from) => !from.endsWith(".map") });
+  for (const name of ["asset-manifest.json", "THIRD-PARTY-NOTICES.txt"]) {
+    if (!existsSync(join(built, name))) throw new Error(`Console build is missing ${name}`);
+    cpSync(join(built, name), join(root, "dist", "console", name));
+  }
 }

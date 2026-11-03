@@ -7,13 +7,15 @@ import { bounded, cost, CUT_NOTE, isEstimate, when } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { Run } from "@/lib/v2";
 
-export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive?: () => void; busy?: "stop" | "cancel" | "archive" | null };
+export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive?: () => void; busy?: "stop" | "cancel" | "archive" | null; supported?: { stop?: boolean; cancel?: boolean } };
 
 /** The run's title bar: back to its agent, the title, its status, what it cost so far, stop versus cancel, and archive.
  *  Stop ends the turn and keeps the run open (it waits for a message); cancel ends the run for good, after a confirm.
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
 export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
   const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
+  const canStop = view.canStop && actions.supported?.stop !== false;
+  const canCancel = view.canCancel && actions.supported?.cancel !== false;
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
   return (
@@ -39,19 +41,19 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
           </div>
           {run.status === "completed" && run.review && <p className="mt-2 text-[13px] text-warning-text">Needs review: {run.review.reason}</p>}
         </div>
-        {(view.canStop || view.canCancel || actions.onArchive) && (
+        {(canStop || canCancel || actions.onArchive) && (
           <div className="flex shrink-0 items-center gap-2">
-            {view.canStop && (
+            {canStop && (
               <Button size="sm" onClick={actions.onStop} disabled={!actions.onStop || !!actions.busy} title="End this turn. The run stays open and waits for your next message.">
                 <Square aria-hidden /> {actions.busy === "stop" ? "Stopping" : "Stop"}
               </Button>
             )}
-            {view.canCancel && !confirming && (
+            {canCancel && !confirming && (
               <Button size="sm" variant="destructive" onClick={() => setConfirming(true)} disabled={!actions.onCancel || !!actions.busy} title="End the run for good.">
                 <Ban aria-hidden /> {actions.busy === "cancel" ? "Cancelling" : "Cancel run"}
               </Button>
             )}
-            {confirming && (
+            {confirming && canCancel && (
               <span className="flex items-center gap-2 border border-destructive/50 px-2 py-1 text-[12px]" role="alertdialog" aria-label="Cancel this run?">
                 <span>Cancel for good?</span>
                 <Button size="sm" variant="destructive" onClick={() => { setConfirming(false); actions.onCancel?.(); }}>Yes, cancel</Button>

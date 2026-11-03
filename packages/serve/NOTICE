@@ -1,2 +1,5 @@
 AgentRun
 Copyright 2026 Parcha Labs, Inc.
+
+The console includes third-party code and fonts. Their license texts are in
+dist/console/THIRD-PARTY-NOTICES.txt, distributed beside its static assets.

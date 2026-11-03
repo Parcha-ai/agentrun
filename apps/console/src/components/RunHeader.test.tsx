@@ -11,6 +11,16 @@ const runWith = (c: Cost): Run => ({
 });
 const DISCLAIMER = "A local estimate, not a bill";
 
+it("hides stop and cancel when the server explicitly does not support them", () => {
+  const run = { ...runWith({ usd: null, basis: "estimate", charge_state: null, cap_usd: null }), status: "working" as const, state: "working" as const };
+  const html = renderToStaticMarkup(createElement(RunHeader, { run, agentName: "Calc", actions: { supported: { stop: false, cancel: false }, onStop: () => {}, onCancel: () => {} } }));
+  const host = document.createElement("div");
+  host.innerHTML = html;
+  const labels = [...host.querySelectorAll("button")].map((button) => button.textContent?.trim());
+  expect(labels).not.toContain("Stop");
+  expect(labels).not.toContain("Cancel run");
+});
+
 describe("RunHeader's cost", () => {
   it("a cost a provider reported has no estimate disclaimer, though its basis is estimate", () => {
     const html = renderToStaticMarkup(createElement(RunHeader, { run: runWith({ usd: 1.5, basis: "estimate", source: "reported", charge_state: null, cap_usd: null }), agentName: "Calc" }));
@@ -46,4 +56,3 @@ describe("RunHeader's cost when requests were cut", () => {
     expect(html).not.toContain("some requests were cut");
   });
 });
-

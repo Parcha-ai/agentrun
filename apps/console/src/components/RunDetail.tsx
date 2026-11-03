@@ -8,7 +8,7 @@ import { RunResult } from "@/components/RunResult";
 import { Timeline, Working } from "@/components/Timeline";
 import { isEscalated, type MessageFeatures, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
-import { latest, pendingQuestion } from "@/lib/viewing";
+import { latest, pendingQuestion, viewKind } from "@/lib/viewing";
 import type { Run, RunFile, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
@@ -22,6 +22,10 @@ export type RunDetailProps = {
   files: RunFile[];
   /** Reads a file's text (the authenticated bytes from /v2/runs/{id}/files/{path}). */
   readFile?: (file: RunFile) => Promise<string>;
+  readFileBlob?: (file: RunFile) => Promise<Blob>;
+  filesComplete?: boolean;
+  filesTruncated?: boolean;
+  filesSupported?: boolean;
   openFile?: RunFile | null;
   actions?: RunActions;
   /** Sends a message; resolves false when it failed, so the composer keeps the draft. */
@@ -35,25 +39,33 @@ export type RunDetailProps = {
 type Tab = "graph" | "report" | "timeline" | "files";
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, readFileBlob, filesComplete = true, filesTruncated = false, filesSupported = true, openFile = null, actions, onMessage, tab: initial, graphView, costText }: RunDetailProps) {
   const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
   const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
-  const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
+  const [open, setOpen] = useState<{ file: RunFile; text: string | null; blob?: Blob; error?: string } | null>(openFile ? { file: openFile, text: null } : null);
   const waiting = pendingQuestion(run.status, run.state, rows);
   // Only the newest read lands: closing the viewer or opening another file retires a read still in flight.
   const reads = useRef(latest()).current;
   const show = async (file: RunFile) => {
+    if (!filesSupported) return;
     const token = reads.begin();
     setOpen({ file, text: null });
-    if (!readFile) return;
-    const text = await readFile(file);
-    if (reads.current(token)) setOpen({ file, text });
+    if (!readFile && !readFileBlob) return;
+    try {
+      const blob = readFileBlob ? await readFileBlob(file) : undefined;
+      const kind = viewKind(file);
+      const text = blob ? (["markdown", "text", "html"].includes(kind) ? await blob.text() : "") : await readFile!(file);
+      if (reads.current(token)) setOpen({ file, text, blob });
+    } catch (e) {
+      if (reads.current(token)) setOpen({ file, text: null, error: e instanceof Error ? e.message : String(e) });
+    }
   };
   const close = () => { reads.cancel(); setOpen(null); };
   // A story or a deep link can open a file on first render.
-  useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (filesSupported && openFile && (readFile || readFileBlob)) void show(openFile); }, [openFile, filesSupported]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!filesSupported) { close(); if (tab === "files") setTab("timeline"); } }, [filesSupported]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`]];
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ...(filesSupported ? [["files", `Files ${files.length}`] as [Tab, string]] : [])];
   return (
     <div className="flex h-full min-h-0 flex-col">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
@@ -84,13 +96,13 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
             <p className="font-mono text-[13px] text-muted-foreground">This run gave no answer.</p>
           )}
           {tab === "timeline" && <Timeline rows={rows} live={view.live} />}
-          {tab === "files" && <RunFiles files={files} onOpen={show} />}
+          {tab === "files" && <RunFiles files={files} complete={filesComplete} truncated={filesTruncated} onOpen={show} />}
         </div>
       </div>}
       {view.canMessage && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} /></div></div>
       )}
-      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} />}
+      {open && <ArtifactViewer file={open.file} text={open.text} blob={open.blob} error={open.error} onRetry={() => void show(open.file)} onClose={close} />}
     </div>
   );
 }

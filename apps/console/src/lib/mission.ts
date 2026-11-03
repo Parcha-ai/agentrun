@@ -13,6 +13,11 @@ export type MissionView = {
    *  summed, which the total never adds in. */
   cost: { usd: number | null; basis: "reported" | "estimate" | null; unknownRuns: number; bounded?: Bounded };
   recent: Run[];
+  nextCursor?: string | null;
+  readAt?: number;
+  /** Status-filtered activity, read separately so older waiting work remains visible. */
+  activity?: Run[];
+  activityComplete?: boolean;
   /** The runs' tokens, time, tools and success over the range the page asked for: null from a server that has none. */
   analytics?: Analytics | null;
 };
@@ -130,13 +135,14 @@ export function trendDays(byDay: Analytics["by_day"], from: string | null, now =
 }
 
 /** The page's view of the server's stats and its latest runs. */
-export function missionFrom(s: Stats, recent: Run[]): MissionView {
+export function missionFrom(s: Stats, recent: Run[], snapshot: Pick<MissionView, "nextCursor" | "readAt" | "activity" | "activityComplete"> = {}): MissionView {
   return {
     agents: s.agents,
     runs: { total: s.runs.total, active: s.runs.active, needsInput: s.runs.needs_input, failed: s.runs.failed, statusUnknown: s.runs.status_unknown, ...(s.runs.needs_review === undefined ? {} : { needsReview: s.runs.needs_review }) },
     perAgent: s.per_agent.map((a) => ({ agentId: a.agent_id, name: a.name, runs: a.runs })),
     cost: { usd: s.cost.usd, basis: s.cost.basis === "charge" ? "reported" : s.cost.basis, unknownRuns: s.cost.unknown_runs, ...(s.cost.bounded_unknown ? { bounded: boundedOf(s.cost.bounded_unknown) } : {}) },
     recent,
+    ...snapshot,
     ...(s.analytics ? { analytics: s.analytics } : {}),
   };
 }

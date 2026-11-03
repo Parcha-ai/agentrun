@@ -66,6 +66,9 @@ jobs:
       - run: npm run build
       - if: matrix.shard == 'checks'
         run: npm run typecheck
+      - name: Native console contract matches the served OpenAPI
+        if: matrix.shard == 'checks'
+        run: npm run generate:contract --prefix apps/console -- --check
       - name: Demo setup prompts match their specs
         if: matrix.shard == 'checks'
         run: node scripts/check-setup-prompts.mjs

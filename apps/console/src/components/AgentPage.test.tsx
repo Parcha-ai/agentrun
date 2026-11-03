@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentPage } from "./AgentPage";
 import { agentFixture, archivedAgents, editorCaps, recorded, runFixture, runNames } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
-import { ClientError, type FieldIssue } from "@/lib/client";
+import { ClientError, type Capabilities } from "@/lib/client";
 import { ANALYTICS, statsWith } from "./AgentAnalytics.sample";
 import type { Run, TimelinePage } from "@/lib/v2";
 
@@ -32,30 +32,20 @@ async function splitRun(reread: (done: Run) => Promise<Run> = async (done) => do
 }
 
 const efforts = recorded<{ features: { efforts: string[] } }>("capabilities").body.features.efforts;
-/** A start's answer: the run (202), or a recorded refusal thrown as the client throws it. */
-type Answer = { run: Run } | { refused: string };
 /** Each recorded run's timeline by its run's id: an agent's latest run with one is followed through it. */
 const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
 const endedPage = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string }; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run> };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; stats?: () => Promise<unknown>; models?: { default: string; source: string }; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run>; capabilities?: Capabilities };
 /** By default the server's stats carry no analytics, as an older server's. `followed` lists the latest run's reads (its
  *  timeline's pages and its record), apart from the page's own reads in `asked`. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}), models, hold, strict = false, timeline, reread }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, stats = async () => ({}), models, strict = false, timeline, reread, capabilities }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const followed: string[] = [];
   const statsAsked: string[] = [];
-  const starts: { id: string; body: Record<string, unknown>; key: string }[] = [];
   const v2 = {
     statsOver: async ({ from, agent: of }: { from?: string; agent?: string }) => { statsAsked.push(`stats ${of}${from ? ` from ${from}` : ""}`); return stats(); },
-    startRun: async (id: string, body: Record<string, unknown>, key: string) => {
-      starts.push({ id, body, key });
-      await hold;
-      if ("run" in answer) return { run: answer.run, status: 202 };
-      const r = recorded<{ error: { code: string; message: string; fields?: FieldIssue[] } }>(answer.refused);
-      throw Object.assign(new ClientError(r.status, r.body.error.code, r.body.error.message), r.body.error.fields ? { fields: r.body.error.fields } : {});
-    },
     getAgent: async (id: string) => { asked.push(`agent ${id}`); return { agent, etag: null }; },
     listAgentRuns: async (id: string, _limit: number, cursor?: string | null, archived?: boolean) => {
       asked.push(`runs ${id}${cursor ? ` after ${cursor}` : ""}${archived ? " archived" : ""}`);
@@ -69,26 +59,39 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(strict ? createElement(StrictMode, null, createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, efforts, go: (h: string) => went.push(h), tab })) : createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, efforts, go: (h: string) => went.push(h), tab })));
+  act(() => root!.render(strict ? createElement(StrictMode, null, createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, efforts, go: (h: string) => went.push(h), tab, capabilities })) : createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, efforts, go: (h: string) => went.push(h), tab, capabilities })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
   const click = async (label: RegExp) => { await act(async () => { button(label)!.click(); }); await settle(); };
   const tabs = () => [...host.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
   const fact = (name: string) => [...host.querySelectorAll("dt")].find((t) => t.textContent === name)?.nextElementSibling?.textContent;
-  const bar = () => host.querySelector('section[aria-label="Start a run"]');
-  const input = () => bar()!.querySelector("textarea") as HTMLTextAreaElement;
-  const set = async (el: HTMLTextAreaElement | HTMLSelectElement, value: string) => {
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
-      el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
-    });
-  };
-  const effort = () => bar()!.querySelector('select[aria-label="Effort"]') as HTMLSelectElement;
-  return { host, went, asked, followed, statsAsked, starts, click, button, tabs, fact, bar, input, set, effort };
+  const bar = () => host.querySelector('section[aria-label="Run agent"]');
+  return { host, went, asked, followed, statsAsked, click, button, tabs, fact, bar };
 }
 
 describe("AgentPage", () => {
+  it("offers external coding-agent and pinned API run entries without mounting a task composer", async () => {
+    const agent = agentFixture("invoice-checker");
+    const page = await open(agent);
+    expect(page.host.querySelector("textarea")).toBeNull();
+    const api = [...page.host.querySelectorAll<HTMLAnchorElement>("a")].find((a) => a.textContent === "API playground");
+    expect(api?.getAttribute("href")).toBe(`#/playground?agent=${agent.agent_id}&revision=${agent.revision}`);
+    await page.click(/^Run with your coding agent$/);
+    const prompt = page.host.querySelector("dialog textarea") as HTMLTextAreaElement;
+    const context = JSON.parse(prompt.value.split("```json\n")[1].split("\n```")[0]);
+    expect(context.request).toEqual({ revision: agent.revision });
+    expect(context.agent_id).toBe(agent.agent_id);
+  });
+
+  it("does not read unsupported run history on an agent's direct address", async () => {
+    const capabilities = { harnesses: [], features: { runs: { list: false, stop: false, cancel: false, kill: false, kinds: ["agentic"] }, messages: { steer: false, answer: false, follow_up: false, steer_workflow_runs: false } } } as Capabilities;
+    const page = await open(agentFixture("invoice-checker"), { capabilities });
+    expect(page.asked).toEqual(["agent invoice-checker"]);
+    expect(page.host.querySelector('ul[aria-label="Runs"]')).toBeNull();
+    expect(page.host.querySelector('[role="status"]')).toBeTruthy();
+  });
+
   it("shows a run whose requests were cut as ≤ its bound and why, and an unknown cost without a bound not at all", async () => {
     const runs = runsOf("invoice-checker");
     const unknown = { usd: null, basis: "estimate", charge_state: null, cap_usd: null };
@@ -271,6 +274,13 @@ describe("AgentPage", () => {
     expect(page.went).toEqual(["#/agents/support-triage/edit"]);
   });
 
+  it("keeps a workflow visible without edit entry points when updates are unsupported", async () => {
+    const capabilities = { harnesses: [], features: { agents: { create: true, list: true, update: false, revisions: true }, messages: { steer: false, answer: false, follow_up: false, steer_workflow_runs: false } } } as Capabilities;
+    const page = await open(agentFixture("support-triage"), { tab: "workflow", capabilities });
+    expect(page.host.querySelector('svg[role="img"]')).toBeTruthy();
+    expect([...page.host.querySelectorAll("button")].some((b) => /Edit/.test(b.textContent ?? ""))).toBe(false);
+  });
+
   it("opens an agentic agent on its Runs tab whatever tab the address names", async () => {
     const page = await open(agentFixture("invoice-checker"), { tab: "workflow" });
     expect(page.tabs()).toEqual(["Runs"]);
@@ -326,64 +336,6 @@ describe("AgentPage", () => {
     expect(older.host.querySelector('ul[aria-label="Runs"]')).toBeTruthy();
   });
 
-  it("runs the agent from its page with the picked effort, never an output, and opens the run it started", async () => {
-    const page = await open(agentFixture("invoice-checker"));
-    expect([...page.effort().options].map((o) => o.textContent)).toEqual(["default", ...efforts]);
-    await page.set(page.input(), "Check invoice INV-1050.");
-    await page.set(page.effort(), "high");
-    await page.click(/^Run$/);
-    expect(page.starts.map((s) => [s.id, s.body])).toEqual([["invoice-checker", { input: { content: "Check invoice INV-1050." }, effort: "high" }]]);
-    expect(page.starts[0].key).toBeTruthy();
-    expect(page.went).toEqual([`#/runs/${recorded<Run>("start.run").body.run_id}`]);
-  });
-
-  it("sends no effort when the effort is default, so the server's own order applies", async () => {
-    const page = await open(agentFixture("invoice-checker"));
-    expect(page.effort().value).toBe("");
-    await page.set(page.input(), "Check invoice INV-1050.");
-    await page.click(/^Run$/);
-    expect(page.starts.map((s) => s.body)).toEqual([{ input: { content: "Check invoice INV-1050." } }]);
-  });
-
-  it("gives a workflow agent its input as JSON, from its example, and sends it parsed", async () => {
-    const a = agentFixture("support-triage");
-    const example = recorded<unknown>("start.workflow-run").request as { body?: { input: unknown } };
-    const w = a.definition.workflow as { schemas: Record<string, object> };
-    const withExample = { ...a, definition: { ...a.definition, workflow: { ...w, schemas: { ...w.schemas, Ticket: { ...w.schemas.Ticket, examples: [example.body!.input] } } } } };
-    const page = await open(withExample, { answer: { run: recorded<Run>("start.workflow-run").body } });
-    expect(JSON.parse(page.input().value)).toEqual(example.body!.input);
-    expect(page.bar()!.textContent).toContain("The workflow's example input.");
-    await page.click(/^Run$/);
-    expect(page.starts.map((s) => s.body)).toEqual([{ input: example.body!.input }]);
-    expect(page.went).toEqual([`#/runs/${recorded<Run>("start.workflow-run").body.run_id}`]);
-  });
-
-  it("says when a workflow agent's input is not JSON, and does not send it", async () => {
-    const page = await open(agentFixture("support-triage"));
-    expect(JSON.parse(page.input().value)).toEqual({ subject: "", body: "" });
-    await page.set(page.input(), "{ not json");
-    expect(page.bar()!.textContent).toContain("The workflow's input is JSON: this is not.");
-    expect(page.button(/^Run$/)!.disabled).toBe(true);
-  });
-
-  it("shows a 409 agent_not_runnable inline, stays on the page, and a retry is the same request", async () => {
-    const page = await open(agentFixture("invoice-checker"), { answer: { refused: "write.run-on-unavailable-harness" } });
-    await page.set(page.input(), "Check the 2.4.1 entry.");
-    await page.click(/^Run$/);
-    expect(page.bar()!.querySelector('[role="alert"]')?.textContent).toBe("The run did not start: This server does not run codex yet.");
-    expect(page.went).toEqual([]);
-    await page.click(/^Run$/);
-    expect(page.starts.map((s) => s.key)).toEqual([page.starts[0].key, page.starts[0].key]);
-  });
-
-  it("shows a 422 inline", async () => {
-    const page = await open(agentFixture("support-triage"), { answer: { refused: "start.workflow-run-bad-input" } });
-    await page.set(page.input(), '{ "subject": "No body" }');
-    await page.click(/^Run$/);
-    expect(page.bar()!.querySelector('[role="alert"]')?.textContent).toContain("the workflow does not take this input");
-    expect(page.went).toEqual([]);
-  });
-
   it("has no run bar for an archived agent, which takes no runs", async () => {
     const page = await open(archivedAgents()[0], { runs: [] });
     expect(page.bar()).toBeNull();
@@ -395,58 +347,6 @@ describe("AgentPage", () => {
     const links = [...page.host.querySelectorAll<HTMLAnchorElement>('ul[aria-label="Runs"] a')];
     expect(links[0].textContent).toContain("effort high");
     expect(links.slice(1).some((a) => a.textContent?.includes("effort"))).toBe(false);
-  });
-
-  it("demo: runs the agent at high effort from its page, then lists the run with its effort and shows the agent's analytics", async () => {
-    const started = { ...recorded<Run>("start.run").body, effort: "high" };
-    const page = await open(agentFixture("invoice-checker"), { stats: async () => statsWith(ANALYTICS) });
-    expect(page.tabs()).toEqual(["Runs", "Analytics"]);
-    await page.set(page.input(), "Check invoice INV-1050.");
-    await page.set(page.effort(), "high");
-    await page.click(/^Run$/);
-    expect(page.starts.map((s) => s.body)).toEqual([{ input: { content: "Check invoice INV-1050." }, effort: "high" }]);
-    expect(page.went).toEqual([`#/runs/${started.run_id}`]);
-    act(() => root?.unmount());
-    // Back on the agent's page: the run is listed with the effort it was started at, and the Analytics tab reads the agent's.
-    const back = await open(agentFixture("invoice-checker"), { runs: [started, ...runsOf("invoice-checker")], stats: async () => statsWith(ANALYTICS) });
-    const row = back.host.querySelector<HTMLAnchorElement>(`ul[aria-label="Runs"] a[href="#/runs/${encodeURIComponent(started.run_id)}"]`);
-    expect(row?.textContent).toContain("effort high");
-    await back.click(/^Analytics$/);
-    expect(back.went).toEqual(["#/agents/invoice-checker/analytics"]);
-    act(() => root?.unmount());
-    const analytics = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: async () => statsWith(ANALYTICS) });
-    expect(analytics.host.querySelector('[role="tabpanel"]')?.getAttribute("aria-label")).toBe("Analytics");
-    // One read: the page's, over the tab's first range, which the tab opens on.
-    expect(analytics.statsAsked).toHaveLength(1);
-    expect(analytics.statsAsked[0]).toMatch(/^stats invoice-checker from \d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
-    expect(analytics.host.textContent).toContain("Success by harness and effort");
-  });
-  it("a start that answers after the page is gone leaves the person where they went: no navigation", async () => {
-    let release!: () => void;
-    const page = await open(agentFixture("invoice-checker"), { hold: new Promise<void>((r) => (release = r)) });
-    await page.set(page.input(), "Check invoice INV-1050.");
-    await act(async () => { page.button(/^Run$/)!.click(); });
-    expect(page.starts).toHaveLength(1);
-    act(() => root?.unmount());
-    await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
-    expect(page.went).toEqual([]);
-  });
-
-  it("under React's StrictMode (effects run twice), a start still ends: Run comes back and the run opens; the tab reads its stats once", async () => {
-    const page = await open(agentFixture("invoice-checker"), { strict: true });
-    await page.set(page.input(), "Check invoice INV-1050.");
-    await page.click(/^Run$/);
-    expect(page.went).toEqual([`#/runs/${recorded<Run>("start.run").body.run_id}`]);
-    expect(page.button(/^Run$/)).toBeTruthy();
-    expect(page.button(/^Starting$/)).toBeUndefined();
-    act(() => root?.unmount());
-    // StrictMode runs the page's own read twice in development; the Analytics tab adds none of its own to it.
-    const runs = await open(agentFixture("invoice-checker"), { strict: true, stats: async () => statsWith(ANALYTICS) });
-    const pageReads = runs.statsAsked.length;
-    act(() => root?.unmount());
-    const tab = await open(agentFixture("invoice-checker"), { strict: true, tab: "analytics", stats: async () => statsWith(ANALYTICS) });
-    expect(tab.host.textContent).toContain("Success by harness and effort");
-    expect(tab.statsAsked).toHaveLength(pageReads);
   });
 
   it("opening the page, then its Analytics tab, reads the agent's stats once", async () => {

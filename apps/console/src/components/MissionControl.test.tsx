@@ -20,6 +20,29 @@ const view: MissionView = {
 
 // Mission Control: the console's first page. Counts, cost said honestly, runs per agent and the latest runs, linked.
 describe("MissionControl", () => {
+  it("shows actionable activity by state, pinned revisions, elapsed time and explicit partial pagination", () => {
+    const now = Date.parse("2026-10-30T03:02:00Z");
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(now);
+    try {
+      const activity = [run("active", "working", "working", "Active task"), run("waiting", "input_required", "waiting", "Waiting task"), run("failed", "failed", "idle", "Failed task")];
+      const html = renderToStaticMarkup(createElement(MissionControl, { view: { ...view, activity, activityComplete: false, nextCursor: "page2", readAt: now }, onMore: () => {}, onRefresh: () => {} }));
+      for (const label of ["Active work", "Needs attention", "Failed runs", "Active task", "Waiting task", "Failed task", "rev 1", "2 min", "Load more", "Partial activity", "Snapshot current"]) expect(html).toContain(label);
+      for (const id of ["active", "waiting", "failed"]) expect(html).toContain(`href="#/runs/${id}"`);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps the previous snapshot visible on disconnect and labels its age", () => {
+    const now = Date.parse("2026-10-30T03:02:00Z");
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(now);
+    try {
+      const html = renderToStaticMarkup(createElement(MissionControl, { view: { ...view, readAt: now - 60_000 }, error: "Network unavailable", onRefresh: () => {} }));
+      expect(html).toContain("What is six times seven?");
+      expect(html).toContain("Disconnected");
+      expect(html).toContain("Stale snapshot");
+      expect(html).toContain("Refresh");
+    } finally { vi.useRealTimers(); }
+  });
+
   it("shows the agents, the runs and how many are active, waiting on a person, or failed", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     for (const s of ["Mission Control", ">2<", ">7<", "Active", "Needs input", "Failed"]) expect(html).toContain(s);
@@ -30,10 +53,12 @@ describe("MissionControl", () => {
     expect(html).toContain('href="#/runs/run-2"');
     expect(html).toContain('href="#/agents/calc/runs"');
   });
-  it("renders a store with nothing in it, without error", () => {
+  it.each([true, false])("renders an empty store with agent creation supported: %s", (canCreate) => {
     const empty: MissionView = { agents: 0, runs: { total: 0, active: 0, needsInput: 0, failed: 0, statusUnknown: 0 }, perAgent: [], cost: { usd: null, basis: null, unknownRuns: 0 }, recent: [] };
-    const html = renderToStaticMarkup(createElement(MissionControl, { view: empty }));
+    const html = renderToStaticMarkup(createElement(MissionControl, { view: empty, canCreate }));
     expect(html).toContain("No agents yet");
+    if (canCreate) expect(html).toContain('href="#/agents/new"');
+    else expect(html).not.toContain('href="#/agents/new"');
     expect(html).toContain("No runs yet");
     expect(html).not.toMatch(/\$0(\.0+)?\b/);
   });

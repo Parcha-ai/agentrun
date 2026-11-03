@@ -14,10 +14,12 @@ export const startFailure = (e: unknown, ms: number): StartResult =>
   e instanceof ClientError ? { status: e.status, ms, body: { error: { ...e.toApiError(), ...(e.fields ? { fields: e.fields } : {}) } } } : { status: 0, ms, body: { error: { code: "network", message: String(e) } } };
 export type PlaygroundProps = {
   agents: Agent[];
-  revisions?: { revision: string; version: number; current: boolean; note: string | null }[];
+  revisions?: { revision: string; version: number; current: boolean; note: string | null; kind?: Agent["kind"]; definition?: Agent["definition"] }[];
+  revisionsError?: string | null;
   efforts: string[];
   origin: string;
   agentId?: string;
+  revision?: string;
   onAgent?: (id: string) => void;
   /** Sends the request; resolves with what the server answered. */
   onSend?: (agentId: string, body: StartBody, key: string) => Promise<StartResult>;
@@ -29,7 +31,7 @@ export type PlaygroundProps = {
 
 /** The hosted console's API playground for starting a run: the request on the left (a form, or its JSON), the same
  *  request as code on the right, and the server's answer, with a way into the run it started. */
-export function Playground({ agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onSend, onOpenRun, result: initialResult = null, live }: PlaygroundProps) {
+export function Playground({ agents, revisions = [], revisionsError, efforts, origin, agentId: initialAgent, revision: initialRevision, onAgent, onSend, onOpenRun, result: initialResult = null, live }: PlaygroundProps) {
   const [agentId, setAgentId] = useState(initialAgent ?? agents[0]?.agent_id ?? "");
   // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept.
   useEffect(() => {
@@ -37,9 +39,14 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     else if (!agents.some((a) => a.agent_id === agentId)) setAgentId(agents[0]?.agent_id ?? "");
   }, [agents, initialAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const agent = agents.find((a) => a.agent_id === agentId);
-  const kind = agent?.kind ?? "agentic";
+  const [revision, setRevision] = useState(initialRevision ?? "");
+  useEffect(() => { setRevision(initialRevision ?? ""); }, [initialAgent, initialRevision]);
+  const selected = revision ? revisions.find((r) => r.revision === revision) : undefined;
+  const definition = selected?.definition ?? (!revision || revision === agent?.revision ? agent?.definition : undefined);
+  const unresolved = !!revision && !definition;
+  const kind = selected?.kind ?? (definition?.workflow !== undefined ? "workflow" : definition?.instructions !== undefined ? "agentic" : agent?.kind ?? "agentic");
   const [text, setText] = useState("");
-  const example = kind === "workflow" ? exampleInput(agent?.definition.workflow) : null;
+  const example = kind === "workflow" ? exampleInput(definition?.workflow) : null;
   // A workflow agent opens with its example input (its schema's, else its fields empty), replaced on a switch of agent
   // unless it was edited.
   const prefilled = useRef("");
@@ -48,8 +55,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     const next = example?.text ?? "";
     prefilled.current = next;
     setText(next);
-  }, [agentId, example?.text]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [revision, setRevision] = useState("");
+  }, [agentId, revision, example?.text]); // eslint-disable-line react-hooks/exhaustive-deps
   const [effort, setEffort] = useState("");
   const [cap, setCap] = useState("");
   const [view, setView] = useState<"form" | "json">("form");
@@ -58,18 +64,18 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [result, setResult] = useState<StartResult | null>(initialResult);
   // A refused start, said plainly above its answer: the server's reason, and the box it names when it lacks one.
   const refusal = useMemo(() => {
-    const error = (result && result.status >= 400 ? (result.body as { error?: { message?: unknown; details?: { box?: unknown } } } | null)?.error : undefined);
+    const error = (result && (result.status === 0 || result.status >= 400) ? (result.body as { error?: { message?: unknown; details?: { box?: unknown } } } | null)?.error : undefined);
     return error && typeof error.message === "string" ? { message: error.message, box: typeof error.details?.box === "string" ? error.details.box : undefined } : undefined;
   }, [result]);
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
-  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap });
+  const built = startBody(kind, { text, revision: revision || agent?.revision, effort, maxCostUsd: cap });
   const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text };
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
     : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
   const send = async () => {
-    if (!built.ok || !onSend) return;
+    if (!built.ok || !onSend || unresolved || sending) return;
     setSending(true);
     const r = await submitStart(keys, agentId, built.body, onSend);
     setSending(false); setResult(r); setPane("response");
@@ -88,6 +94,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
         <span className="flex-1" />
         <span className="caps text-[11px] text-muted-foreground">Live API</span>
       </div>
+      {revisionsError && <p className="border-b px-5 py-3 text-[13px] text-destructive-text" role="alert">Revision history could not be read: {revisionsError}</p>}
+      {unresolved && <p className="border-b px-5 py-3 text-[13px] text-muted-foreground" role="status">The selected revision's definition is unavailable. Choose the loaded current revision, or reload to read its history before submitting.</p>}
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
         <section className="flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r">
           <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
@@ -101,7 +109,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             ) : (
               <>
                 <Label name={kind === "agentic" ? "input.content" : "input"} required error={!built.ok && built.field === "input" && text ? built.message : undefined}>
-                  <textarea value={text} onChange={(e) => setText(e.target.value)} rows={kind === "agentic" ? 4 : 7} placeholder={placeholder} className={field} />
+                  <textarea aria-label={kind === "agentic" ? "Task" : "Workflow input (JSON)"} value={text} onChange={(e) => setText(e.target.value)} rows={kind === "agentic" ? 4 : 7} placeholder={placeholder} className={field} />
                   {example && (
                     <p className="mt-1 font-mono text-[11px] text-muted-foreground">
                       {example.from === "example" ? "The workflow's example input. Edit it, then start." : "The workflow's input, its fields empty. Fill them in, then start."}
@@ -109,18 +117,18 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                     </p>
                   )}
                 </Label>
-                <Label name="revision" note="Empty runs the current revision.">
-                  <select value={revision} onChange={(e) => setRevision(e.target.value)} className={field}>
-                    <option value="">The current revision</option>
+                <Label name="revision" note="The request pins the displayed revision, including the loaded current one.">
+                  <select aria-label="Revision" value={revision} onChange={(e) => setRevision(e.target.value)} className={field}>
+                    <option value="">The loaded current revision{agent ? ` (rev ${agent.definition.version})` : ""}</option>
                     {revisions.map((r) => <option key={r.revision} value={r.revision}>rev {r.version}{r.current ? " (current)" : ""}{r.note ? `: ${r.note}` : ""}</option>)}
                   </select>
                 </Label>
                 <Label name="effort" note="Empty uses the agent's own.">
-                  <div className="flex gap-2">{["", ...efforts].map((e) => <button key={e || "default"} type="button" onClick={() => setEffort(e)} className={cn("caps border px-3 py-2 text-[12px]", effort === e ? "border-foreground" : "text-muted-foreground")}>{e || "default"}</button>)}</div>
+                  <div className="flex gap-2" role="group" aria-label="Effort">{["", ...efforts].map((e) => <button key={e || "default"} type="button" aria-pressed={effort === e} onClick={() => setEffort(e)} className={cn("caps border px-3 py-2 text-[12px]", effort === e ? "border-foreground" : "text-muted-foreground")}>{e || "default"}</button>)}</div>
                 </Label>
                 {kind === "agentic" && (
                   <Label name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
-                    <input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />
+                    <input aria-label="Spend cap (USD)" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />
                   </Label>
                 )}
               </>
@@ -128,7 +136,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           </div>
           <footer className="flex items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
             <span className="text-[12px] text-muted-foreground">Sends a real request to this server.</span>
-            <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
+            <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || unresolved}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
           </footer>
         </section>
         <section className="flex min-h-0 flex-col">

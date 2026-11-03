@@ -406,8 +406,16 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
   receipt.runtimeSmoke = smoke;
   assert.match((await offlineNode(['node_modules/@parcha/agentrun-serve/dist/cli.js', '--help'])).stdout, /^usage: agentrun-serve /, 'the installed agentrun-serve bin prints its usage');
   if (requireConsole) {
-    const index = await readFile(join(consumer, 'node_modules/@parcha/agentrun-serve/dist/console/index.html'), 'utf8').catch(() => '');
+    const consoleDir = join(consumer, 'node_modules/@parcha/agentrun-serve/dist/console');
+    const index = await readFile(join(consoleDir, 'index.html'), 'utf8').catch(() => '');
     assert.match(index, /\ssrc="\.\/assets\/[^"]+\.js"/, 'the installed agentrun-serve has the console, dist/console/index.html');
+    assert.match(await readFile(join(consoleDir, 'THIRD-PARTY-NOTICES.txt'), 'utf8'), /Third-party software.*AgentRun console/);
+    const assets = JSON.parse(await readFile(join(consoleDir, 'asset-manifest.json'), 'utf8'));
+    assert.ok(Array.isArray(assets.files) && assets.files.length > 0, 'the installed console has an exact asset manifest');
+    for (const file of assets.files) {
+      assert.ok(/^(?:assets\/[A-Za-z0-9_-][A-Za-z0-9._-]*|THIRD-PARTY-NOTICES\.txt)$/.test(file), 'manifest files are public assets');
+      assert.ok((await readFile(join(consoleDir, file))).length > 0, `manifest asset is installed: ${file}`);
+    }
     receipt.checks.push('The installed agentrun-serve carries the console (dist/console/index.html); its files passed the same scans.');
   }
   assert.match((await offlineNode(['node_modules/@parcha/agentrun-learn/dist/cli.js', '--help'])).stdout, /^usage: agentrun-learn check /, 'the installed agentrun-learn bin prints its usage');

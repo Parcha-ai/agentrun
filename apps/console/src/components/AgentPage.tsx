@@ -3,13 +3,14 @@ import { ArrowLeft, Bot, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
 import { LatestRun } from "@/components/LatestRun";
+import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
 import { RunBar } from "@/components/RunBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import type { Agent } from "@/lib/agentForm";
-import { type Client, ClientError } from "@/lib/client";
+import { type Capabilities, type Client, ClientError } from "@/lib/client";
 import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, modelLabel } from "@/lib/models";
@@ -19,14 +20,14 @@ import { rangeFrom, type Stats } from "@/lib/mission";
 import type { Run } from "@/lib/v2";
 
 /** `stats`: the page's own read of the agent's stats over the Analytics tab's first range, which that tab starts from. */
-type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null };
+type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null; canEdit?: boolean };
 /** What the server gives beside the agent: `analytics`, once its stats are read (an older server has none). */
-type Server = { analytics: boolean };
+type Server = { analytics: boolean; runs: boolean };
 
 /** The page's tabs, in order, each at `#/agents/{id}/{tab}`. A tab shows only on an agent it has content for; a new one
  *  is one entry here. */
 const TABS: { id: string; label: string; shows: (a: Agent, server: Server) => boolean; Body: (p: TabProps) => JSX.Element }[] = [
-  { id: "runs", label: "Runs", shows: () => true, Body: RunsTab },
+  { id: "runs", label: "Runs", shows: (_, server) => server.runs, Body: RunsTab },
   { id: "workflow", label: "Workflow", shows: (a) => a.kind === "workflow", Body: WorkflowTab },
   { id: "analytics", label: "Analytics", shows: (_, server) => server.analytics, Body: AnalyticsTab },
 ];
@@ -39,7 +40,7 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
 
 /** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a run bar (none for an archived
  *  agent, which takes no runs), and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`). */
-export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = [], go, tab }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; efforts?: string[]; go: (hash: string) => void; tab?: string }) {
+export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = [], go, tab, capabilities }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; efforts?: string[]; go: (hash: string) => void; tab?: string; capabilities?: Capabilities | null }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The agent's stats over the Analytics tab's first range: undefined until read, null when the read failed. Whether
@@ -71,7 +72,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = []
     ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
   ];
-  const tabs = TABS.filter((t) => t.shows(agent, { analytics: analytics === true }));
+  const tabs = TABS.filter((t) => t.shows(agent, { analytics: analytics === true, runs: capabilities?.features.runs?.list !== false }));
   const at = tabs.find((t) => t.id === tab) ?? tabs[0];
   // An address on a tab the server may still give: wait for its answer rather than open another tab meanwhile.
   const waiting = tab === "analytics" && analytics === undefined;
@@ -87,7 +88,10 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = []
           <Chip>{agent.kind}</Chip>
           {agent.archived_at && <Chip tone="muted">Archived</Chip>}
           <span className="flex-1" />
-          <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit</Button>
+          {capabilities?.features.agents?.update !== false && <>
+            <CodingAgentHandoff context={{ kind: "edit", agentId: agent.agent_id, revision: agent.revision }} serverUrl={v2.endpoint} label="Edit with your coding agent" />
+            <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit</Button>
+          </>}
         </div>
         {d.description && <p className="mt-2 max-w-3xl text-[14px] text-muted-foreground">{d.description}</p>}
         <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2" aria-label="Current revision">
@@ -96,17 +100,17 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = []
           ))}
         </dl>
       </header>
-      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} />}
-      <div className="flex border-b px-5 md:px-8" role="tablist">
+      {!agent.archived_at && <RunBar agent={agent} endpoint={v2.endpoint} />}
+      {tabs.length > 0 && <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map((t) => (
           <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}
             className={cn("caps -mb-px border-b-2 px-3 py-3 text-[12px]", at.id === t.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>
             {t.label}
           </button>
         ))}
-      </div>
-      <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
-        {waiting ? <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading...</p> : <at.Body agent={agent} v2={v2} go={go} stats={stats} />}
+      </div>}
+      <div role={at ? "tabpanel" : undefined} aria-label={waiting ? undefined : at?.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
+        {waiting ? <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading...</p> : at ? <at.Body agent={agent} v2={v2} go={go} stats={stats} canEdit={capabilities?.features.agents?.update !== false} /> : <p role="status" className="text-[13px] text-muted-foreground">This server does not support run history.</p>}
       </div>
     </div>
   );
@@ -166,7 +170,7 @@ function RunsTab({ agent, v2 }: TabProps) {
 }
 
 /** The current revision's workflow as its graph, read-only; editing it is the editor's Workflow step. */
-function WorkflowTab({ agent, go }: TabProps) {
+function WorkflowTab({ agent, go, canEdit }: TabProps) {
   const doc = agent.definition.workflow;
   const graph = useMemo(() => workflowGraph(doc), [doc]);
   const marks = useMemo(() => ({ meta: metaOf(doc, graph) }), [doc, graph]);
@@ -176,7 +180,7 @@ function WorkflowTab({ agent, go }: TabProps) {
         <span className="caps text-[11px] font-semibold">Graph</span>
         <span className="font-mono text-[11px] text-muted-foreground">{graph.nodes.length} nodes · rev {agent.definition.version}</span>
         <span className="flex-1" />
-        <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit the workflow</Button>
+        {canEdit !== false && <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit the workflow</Button>}
       </div>
       <div className="min-h-[360px] overflow-auto bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] px-4 py-5">
         {graph.nodes.length ? <WorkflowGraph graph={graph} marks={marks} label="The workflow's graph" minScale={0.55} />

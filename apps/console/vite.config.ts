@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { devProxy } from "./src/lib/devProxy";
+import { consoleBoundary } from "./build-boundary.mjs";
 
 // The console builds to static files with relative URLs, so AgentRun Server can serve them from any path.
 // `npm run dev` proxies /v2 as src/lib/devProxy.ts says: to the AgentRun Server AGENTRUN_URL names, else the one on this
@@ -12,7 +13,7 @@ const v2 = devProxy(process.env)["/v2"];
 
 export default defineConfig({
   base: "./",
-  plugins: [react()],
+  plugins: [react(), consoleBoundary()],
   server: {
     proxy: {
       "/v2": {
