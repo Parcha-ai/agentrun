@@ -125,22 +125,3 @@ export async function publicFetch(url: string, options: PublicFetchOptions = {})
     }
   }
 }
-
-/** An HTML page's title, its text as markdown, and the absolute http(s) URLs it links to (resolved against its
- *  `<base href>` or `url`), each once, in page order. */
-export async function readPage(html: string, url: string): Promise<{ title: string; text: string; links: string[] }> {
-  const [{ parse }, { NodeHtmlMarkdown }] = await Promise.all([import("node-html-parser"), import("node-html-markdown")]);
-  const root = parse(html);
-  let base = url;
-  const baseHref = root.querySelector("base[href]")?.getAttribute("href");
-  if (baseHref) { try { base = new URL(baseHref, url).href; } catch { /* a base that does not parse: the page's own URL stands */ } }
-  const links = new Set<string>();
-  for (const anchor of root.querySelectorAll("a[href]")) {
-    try {
-      const link = new URL(anchor.getAttribute("href")!, base);
-      link.hash = "";
-      if (/^https?:$/.test(link.protocol)) links.add(link.href);
-    } catch { /* an href that does not parse is no link */ }
-  }
-  return { title: root.querySelector("title")?.text.trim() ?? "", text: NodeHtmlMarkdown.translate(html, { keepDataImages: false }).trim(), links: [...links] };
-}
