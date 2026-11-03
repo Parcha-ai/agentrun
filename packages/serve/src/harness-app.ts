@@ -23,7 +23,7 @@
 // the session has it, so a process that dies between the two sends it again rather than never.
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
-import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
+import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
 import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
@@ -97,11 +97,12 @@ export interface AdapterRun {
   onOpen(run: DurableRun): Promise<void>;
 }
 
-/** The door and the open of a run whose session is `spec` on `adapter`, with the file tools `tools` names (built at the
- *  open, over the run's environment). `budgetUsd`: the run's spend cap. `cancelled`: whether the run was cancelled
- *  (request-start.ts `cancelledIn`): once it says so, no model request leaves, as on pi. `cwd`: the run's workspace, the
- *  directory its file tools confine to, where the harness works too (the adapter's io.cwd), so a path the model builds
- *  from its working directory is one the tools take. */
+/** The door and the open of a run whose session is `spec` on `adapter`, with the host tools `tools` names (built at the
+ *  open, over the run's environment; its coding tools from `coding`, the run's coding source, host-tools.ts).
+ *  `budgetUsd`: the run's spend cap. `cancelled`: whether the run was cancelled (request-start.ts `cancelledIn`): once it
+ *  says so, no model request leaves, as on pi. `cwd`: the run's workspace, the directory its file tools confine to, where
+ *  the harness works too (the adapter's io.cwd), so a path the model builds from its working directory is one the tools
+ *  take (in a box, coding-tools.ts names it at the box's work dir). */
 export function adapterRun(
   make: (confine?: ConfineChild) => Promise<AgentAdapter>,
   harness: string,
@@ -113,6 +114,7 @@ export function adapterRun(
   cap?: CapGuard,
   cancelled: () => boolean = () => false,
   cwd?: string,
+  coding?: readonly ToolRegistration[],
 ): AdapterRun {
   // web_fetch's Parallel key, read as the run's app loads, before its process starts one of its own (web-fetch.ts).
   if (tools.includes(WEB_FETCH_TOOL)) parallelOf(process.env);
@@ -457,7 +459,7 @@ export function adapterRun(
       // Each request the session booked and the root does not have, or has at unknown cost only: written now, once.
       for (const [request, usage] of inSession(await writer.read()).booked) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
-      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       queue.push(...accepted.values());
       openedDone();
       if (session.state === "open_turn") runTurns(() => session!.recover());
