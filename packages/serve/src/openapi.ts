@@ -51,12 +51,21 @@ const GROUP = {
   tokens: { ...COUNT, description: "Input, cache read, cache write and output tokens, summed over `runs_with_metrics`." },
   cost_usd: USD, unknown_cost_runs: { ...COUNT, description: "Runs with no known cost: running, or ended without one." },
 };
+/** Runs ended with their cost unknown and a bound kept for it (costbound/1), in /stats's cost and analytics totals. */
+const BOUNDED_UNKNOWN = {
+  ...closed(
+    { runs: COUNT, at_most_usd: { type: ["number", "null"], minimum: 0, description: "Their `at_most_usd` summed, rounded to 1e-6; null when there are none." } },
+    "Of the runs whose cost is unknown, those that ended with `at_most_usd`: the known costs plus the worst case measured for each request whose cost is unknown (the one a spend cap holds against). How many, and those bounds summed; never added to a known sum.",
+  ),
+  "x-agentrun-serve": "costbound/1",
+};
 /** GET /stats's `analytics` (stats.ts analyticsView). */
 const ANALYTICS = closed({
   filter: closed({ from: { type: ["string", "null"], format: "date-time" }, to: { type: ["string", "null"], format: "date-time" }, agent: { type: ["string", "null"] } }, "The query's bounds, each null when not given: runs started at or after `from` and before `to`, of `agent`."),
   totals: closed({
     ...GROUP, input: COUNT, cache_read: COUNT, cache_write: COUNT, output: COUNT,
     requests: { ...COUNT, description: "Model requests." }, unmetered: { ...COUNT, description: "Of `requests`, those whose tokens are unknown: in no token sum." },
+    bounded_unknown: BOUNDED_UNKNOWN,
   }, "Over every run the filter picks. `input` excludes cached input: the whole input is `input + cache_read + cache_write`."),
   time: closed({ ended_runs: COUNT, wall_ms: { ...COUNT, description: "Ended minus started, summed over `ended_runs`." }, active_runs: COUNT, active_ms: { ...COUNT, description: "How long the runs were at work, summed over the `active_runs` whose metrics say." } }),
   by_harness_effort: { type: "array", description: "By the revision's harness (`pi` when it names none, `workflow` for a workflow revision), then the effort the run's metrics name (null: unset, or no metrics).", items: closed({ harness: { type: "string" }, effort: { type: ["string", "null"] }, ...GROUP }) },
@@ -80,6 +89,7 @@ const STATS = closed({
       usd: { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." },
       basis: { type: ["string", "null"], enum: ["estimate", null], description: "`estimate` (what the runs report: their model requests' cost and their paid tools' charges) when `usd` is a number; null when it is null." },
       unknown_runs: COUNT,
+      bounded_unknown: BOUNDED_UNKNOWN,
     },
     "Over the runs not archived: `usd` sums the cost of each run that ended with one; every other run (running, or ended with no cost) is in `unknown_runs`.",
   ),
@@ -553,6 +563,15 @@ const REVIEW: Json = {
   description: "Set when a workflow run escalated: it completed, and waits for a person to review it. Like every workflow run, it takes no messages (501 unsupported_here).",
   "x-agentrun-serve": "review/1",
 };
+/** The most a cost no one knows can be: on a run's cost (Run, RunSummary, a timeline page) and on its usage row. */
+const AT_MOST: Json = {
+  type: "number",
+  minimum: 0,
+  description:
+    "Present only when `usd` is null because requests were cut or stopped before their end (a crash, a drain, a stop) and each has a worst case on its marks (its input bound and output ceiling at its model's price, with or without a spend cap): the known costs plus those worst cases, rounded to 1e-6. Absent when `usd` is a number, or when anything else is unknown (a model with no price, a request with no worst case). A client shows \"unknown, at most\" this amount, never it as the cost.",
+  "x-agentrun-serve": "costbound/1",
+};
+
 const LEARNING_REASON = { enum: [...LEARNING_REASONS, null], description: `Set only when \`state\` is \`dropped\`, from a closed list: ${LEARNING_REASONS.map((reason) => `\`${reason}\``).join(", ")}, the agent's learning folder could not be read or made, or its notes copied, so the run started with nothing learned. A new reason is announced before it ships.` };
 const LEARNING_NULL = "Null for a run that does not learn: its agent's `learning` is not true, the server's learning was off when it started (`capabilities.features.learning`), or it is a workflow's or an imported run.";
 /** A run's learning (runs.ts): whether it started from what its agent learned. */
@@ -606,6 +625,8 @@ const RUN_PLACE: Json = {
   "x-agentrun-serve": "place/1",
 };
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  Cost: { at_most_usd: AT_MOST },
+  TimelineUsage: { at_most_usd: AT_MOST },
   RunCreate: {
     place: { const: "runner", description: "Narrows the run's place to the runner, whatever its revision's: the run has no box, and no bash. Absent, the revision's place. No other place may be named: a request never widens a place.", "x-agentrun-serve": "place/1" },
   },

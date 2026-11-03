@@ -15,7 +15,7 @@ import { basename, join, resolve } from "node:path";
 import { createRegistry, type Extension, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
-import { capBefore, capModels, capOf, spentIn } from "./cap.js";
+import { capBefore, capModels, capOf, measureBefore, measureModels, spentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
@@ -77,7 +77,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves, and
   // gets a start mark of its own, which its error entry answers.
   const marked = await markRequests(chosen.models, cancelledIn(where.root));
-  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced, refused: marked.refused });
+  // With no cap each request still carries its worst case to its marks, so a cost no one knows has a bound; nothing is refused.
+  const models = cap === undefined ? await measureModels(marked.models, { unpriced: chosen.unpriced }) : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced, refused: marked.refused });
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   // The run's place, as its start resolved and kept it (serve.json): in a box, its coding tools run there (run-box.ts).
   const meta = await readJson(join(where.root, RUN_META));
@@ -106,7 +107,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
     const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
-    const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never, { listed: !chosen.unpriced.has(model!.modelId) });
+    const runModel = chosen.models.getModel(model!.provider, model!.modelId) as never;
+    const listed = !chosen.unpriced.has(model!.modelId);
+    // With no cap, a guard that refuses nothing and only measures each request's worst case for the run's marks.
+    const guard = cap === undefined ? await measureBefore(runModel, { listed }) : await capBefore(cap, runModel, { listed });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
     const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools);
     return { models: {}, registry: createRegistry(), door, onOpen } as unknown as AppOptions;

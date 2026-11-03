@@ -15,7 +15,7 @@ const usd = (value) => (value === null ? null : Math.round(value * 1e6) / 1e6);
 const rounded = (groups) => groups.map((g) => ({ ...g, costUsd: usd(g.costUsd) }));
 /** A group's counts: `completed` includes the escalated runs, which `needsReview` also counts; `failed` never does. */
 const group = (runs, completed, failed, runsWithMetrics, tokens, costUsd, unknownCostRuns, needsReview = 0) => ({ runs, completed, needsReview, failed, runsWithMetrics, tokens, costUsd, unknownCostRuns });
-const NONE = { totals: { ...group(0, 0, 0, 0, 0, null, 0), input: 0, cacheRead: 0, cacheWrite: 0, output: 0, requests: 0, unmetered: 0 }, time: { endedRuns: 0, wallMs: 0, activeRuns: 0, activeMs: 0 }, byHarnessEffort: [], byDay: [], bySource: [], tools: [] };
+const NONE = { totals: { ...group(0, 0, 0, 0, 0, null, 0), input: 0, cacheRead: 0, cacheWrite: 0, output: 0, requests: 0, unmetered: 0, boundedUnknown: { runs: 0, atMostUsd: null } }, time: { endedRuns: 0, wallMs: 0, activeRuns: 0, activeMs: 0 }, byHarnessEffort: [], byDay: [], bySource: [], tools: [] };
 
 /** A store with three agents (chat on pi by default, coder on codex, flow a workflow) and runs of each, at fixed times:
  *  ended with and without metrics, running, opened again, imported, and archived. */
@@ -67,7 +67,7 @@ test("analytics sums the ended runs' metrics with coverage, by harness and effor
   reader.close();
   assert.deepEqual({ ...a.totals, costUsd: usd(a.totals.costUsd) }, {
     ...group(8, 5, 1, 5, 1445, 0.82, 4, 1),
-    input: 318, cacheRead: 1002, cacheWrite: 53, output: 72, requests: 8, unmetered: 1,
+    input: 318, cacheRead: 1002, cacheWrite: 53, output: 72, requests: 8, unmetered: 1, boundedUnknown: { runs: 0, atMostUsd: null },
   }, "eight runs, five with metrics: the running ones (one opened again keeps its last end's metrics) are not counted");
   assert.deepEqual(a.time, { endedRuns: 6, wallMs: 316_500, activeRuns: 2, activeMs: 5000 });
   assert.deepEqual(rounded(a.byHarnessEffort), [
@@ -140,7 +140,7 @@ test("a store written before the metrics and import tables answers its runs with
   const a = reader.analytics();
   reader.close();
   assert.deepEqual(a, {
-    totals: { ...group(1, 1, 0, 0, 0, 0.2, 0), input: 0, cacheRead: 0, cacheWrite: 0, output: 0, requests: 0, unmetered: 0 },
+    totals: { ...group(1, 1, 0, 0, 0, 0.2, 0), input: 0, cacheRead: 0, cacheWrite: 0, output: 0, requests: 0, unmetered: 0, boundedUnknown: { runs: 0, atMostUsd: null } },
     time: { endedRuns: 1, wallMs: 1000, activeRuns: 0, activeMs: 0 },
     byHarnessEffort: [{ harness: "pi", effort: null, ...group(1, 1, 0, 0, 0, 0.2, 0) }],
     byDay: [{ day: "2026-10-02", ...group(1, 1, 0, 0, 0, 0.2, 0) }],

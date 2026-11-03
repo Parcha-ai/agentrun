@@ -76,7 +76,7 @@ test("GET /v2/stats counts by status, sums only known costs, leaves archived out
       { agent_id: "regions", name: "regions", runs: 1 },
       { agent_id: "slow", name: "slow", runs: 1 },
     ],
-    cost: { usd: 1.75, basis: "estimate", unknown_runs: 3 },
+    cost: { usd: 1.75, basis: "estimate", unknown_runs: 3, bounded_unknown: { runs: 0, at_most_usd: null } },
     archived: { agents: 1, runs: 2 },
   });
   assert.deepEqual([analytics.totals.runs, analytics.totals.runs_with_metrics, analytics.totals.tokens], [6, 0, 0], "rows with no metrics: runs, none of them covered");
@@ -147,7 +147,7 @@ test("GET /v2/stats's analytics sums the runs' metrics by harness and effort, da
   assert.equal(status, 200, JSON.stringify(body));
   assert.deepEqual(body.analytics, {
     filter: { from: null, to: null, agent: null },
-    totals: { ...row(3, 2, 1, 3, 1190, 0.75, 1), input: 155, cache_read: 1000, cache_write: 0, output: 35, requests: 4, unmetered: 0 },
+    totals: { ...row(3, 2, 1, 3, 1190, 0.75, 1), input: 155, cache_read: 1000, cache_write: 0, output: 35, requests: 4, unmetered: 0, bounded_unknown: { runs: 0, at_most_usd: null } },
     time: { ended_runs: 3, wall_ms: 66_000, active_runs: 1, active_ms: 3000 },
     by_harness_effort: [
       { harness: "codex", effort: "low", ...row(1, 0, 1, 1, 60, null, 1) },
@@ -209,7 +209,7 @@ test("GET /v2/stats answers null for the total when every cost is unknown, never
   const { data } = await seeded(t, [["alpha", "Alpha"]], [["alpha", "completed", null], ["alpha", "failed", null]]);
   const { api, baseUrl } = await serve(t, { data });
   const { body } = await api("GET", "/stats");
-  assert.deepEqual(body.cost, { usd: null, basis: null, unknown_runs: 2 });
+  assert.deepEqual(body.cost, { usd: null, basis: null, unknown_runs: 2, bounded_unknown: { runs: 0, at_most_usd: null } });
   const { doc, schema } = await statsSchema(baseUrl);
   assert.deepEqual(schemaProblems(doc, schema, body), []);
 });
@@ -223,7 +223,7 @@ test("a running run this server does not hold is status_unknown: never counted a
   db.close();
   const { body } = await api("GET", "/stats");
   assert.deepEqual(body.runs, { total: 2, active: 0, needs_input: 0, failed: 0, needs_review: 0, status_unknown: 1 });
-  assert.deepEqual(body.cost, { usd: 0.5, basis: "estimate", unknown_runs: 1 });
+  assert.deepEqual(body.cost, { usd: 0.5, basis: "estimate", unknown_runs: 1, bounded_unknown: { runs: 0, at_most_usd: null } });
   assertRunningPartitioned(data, body);
   const { doc, schema } = await statsSchema(baseUrl);
   assert.deepEqual(schemaProblems(doc, schema, body), []);
@@ -254,7 +254,7 @@ test("GET /v2/stats over 1,000 runs across several agents answers within 500 ms,
     // The states cycle completed, failed, stopped, escalated; the archived runs (every 50th) are completed or stopped, so
     // 250 failed and 250 escalated runs stay counted.
     assert.deepEqual(stats.body.runs, { total: 980, active: 0, needs_input: 0, failed: 250, needs_review: 250, status_unknown: 0 });
-    assert.deepEqual(stats.body.cost, { usd: 5, basis: "estimate", unknown_runs: 480 });
+    assert.deepEqual(stats.body.cost, { usd: 5, basis: "estimate", unknown_runs: 480, bounded_unknown: { runs: 0, at_most_usd: null } });
     assert.deepEqual(stats.body.per_agent.map((a) => a.runs), [180, 200, 200, 200, 200], "a1 lost its 20 archived runs");
     assert.deepEqual(stats.body.archived, { agents: 0, runs: 20 });
   } finally {
@@ -270,7 +270,7 @@ test("a held run still queued (launched, its work not started) counts as active;
   const store = {
     agents: 1, archivedAgents: 0, archivedRuns: 0,
     runs: { total: 3, running: 3, completed: 0, failed: 0, stopped: 0, escalated: 0 },
-    cost: { usd: null, known: 0, unknown: 3 },
+    cost: { usd: null, known: 0, unknown: 3, boundedUnknown: { runs: 0, atMostUsd: null } },
     byAgent: [{ id: "a", name: "A", runs: 3 }],
     running: ["q", "w", "elsewhere"],
   };

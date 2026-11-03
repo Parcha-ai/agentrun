@@ -14,6 +14,8 @@ const BUCKET: Record<Status, Bucket> = { queued: "active", working: "active", pa
 
 /** As GET /usage rounds its sums; null stays null. */
 const round = (usd: number | null) => (usd === null ? null : Math.round(usd * 1e6) / 1e6);
+/** The runs ended with their cost unknown and a bound kept for it, and their bounds summed. */
+const boundedView = (b: { runs: number; atMostUsd: number | null }) => ({ runs: b.runs, at_most_usd: round(b.atMostUsd) });
 
 export function statsView(stats: StoreStats, runs: Runs) {
   const running: Record<Bucket, number> = { active: 0, needs_input: 0, status_unknown: 0 };
@@ -26,7 +28,7 @@ export function statsView(stats: StoreStats, runs: Runs) {
     agents: stats.agents,
     runs: { total: stats.runs.total, active: running.active, needs_input: running.needs_input, failed: stats.runs.failed, needs_review: stats.runs.escalated, status_unknown: running.status_unknown },
     per_agent: stats.byAgent.map((a) => ({ agent_id: a.id, name: a.name, runs: a.runs })),
-    cost: { usd, basis: usd === null ? null : "estimate", unknown_runs: stats.cost.unknown },
+    cost: { usd, basis: usd === null ? null : "estimate", unknown_runs: stats.cost.unknown, bounded_unknown: boundedView(stats.cost.boundedUnknown) },
     archived: { agents: stats.archivedAgents, runs: stats.archivedRuns },
   };
 }
@@ -76,7 +78,7 @@ export function analyticsView(a: StoreAnalytics, filter: AnalyticsFilter) {
   const t = a.totals;
   return {
     filter: { from: filter.from ?? null, to: filter.to ?? null, agent: filter.agent ?? null },
-    totals: { ...group(t), input: t.input, cache_read: t.cacheRead, cache_write: t.cacheWrite, output: t.output, requests: t.requests, unmetered: t.unmetered },
+    totals: { ...group(t), input: t.input, cache_read: t.cacheRead, cache_write: t.cacheWrite, output: t.output, requests: t.requests, unmetered: t.unmetered, bounded_unknown: boundedView(t.boundedUnknown) },
     time: { ended_runs: a.time.endedRuns, wall_ms: a.time.wallMs, active_runs: a.time.activeRuns, active_ms: a.time.activeMs },
     by_harness_effort: a.byHarnessEffort.map((g) => ({ harness: g.harness, effort: g.effort, ...group(g) })),
     by_day: a.byDay.map((g) => ({ day: g.day, ...group(g) })),

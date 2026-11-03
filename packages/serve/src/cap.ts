@@ -31,12 +31,12 @@ import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model
 export const CAP_ENV = "AGENTRUN_SERVE_MAX_COST_USD";
 /** How a request the cap refused begins its error, which the server ends the run with. */
 export const SPEND_CAP_REACHED = "spend_cap_reached";
-/** The option a request's worst case rides on from the cap to its marks (request-start.ts): what the cap held for it. A
- *  symbol, so no provider ever sends it. */
+/** The option a request's worst case rides on to its marks (request-start.ts): what the cap held for it, or with no cap
+ *  what measureModels measured. A symbol, so no provider ever sends it. */
 export const HELD_USD = Symbol.for("agentrun.serve.held_usd");
 /** The field of a request's end mark (REQUEST_ENDED) that says what the cap held for it, when its stream ended aborted
- *  or its summary failed: the request counts at that figure. Optional: an end with none (an older store, a run with no
- *  cap) leaves the request cut, at an unknown cost. */
+ *  or its summary failed: the request counts at that figure. Optional: an end with none (an older store, a request with
+ *  no figure) leaves the request cut, at an unknown cost. */
 export const HELD_FIELD = "heldUsd";
 /** The field of the start mark (REQUEST_STARTED) written for a request this cap refused: it never left, and pi's error
  *  entry for it answers this mark, never an earlier request's. */
@@ -337,20 +337,16 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
   };
 }
 
-/** `models`, refusing each request whose worst case would take the run past `cap` after `spent` USD, and, under the cap,
- *  each request to a model in `unpriced` (one serve has no price for) or whose output is priced and that has no output
- *  ceiling, each whose input cannot be bounded, and every request once what the run has spent is unknown: `spent` null
- *  (spentIn), or an answer since whose cost is unknown. A request's input is inputBound of its context, plus
- *  `overhead(model, context)` (piOverhead), what its provider adds server-side; undefined is unmeasured, never 0. Each
- *  request sent carries its worst case (HELD_USD) to the marks below, and one stopped before its end counts at it.
- *  `refused` (markRequests') writes the start mark of a refused model request before pi writes its error entry. */
-export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: () => Promise<void> } = {}): Promise<M> {
-  const [{ calculateCost, createAssistantMessageEventStream }, { clampMaxTokensToContext }] = await Promise.all([
+/** A request's worst case at its model's price, as a cap holds it: its input (inputBound of its context, plus `overhead`,
+ *  what its provider adds server-side) at the dearer of its input and cache-write prices, and its output (`ceiling`, or the
+ *  request's own maxTokens when larger, clamped to what its context leaves; none for a ceiling of 0) at its output price.
+ *  Undefined when its input cannot be measured. */
+export async function requestWorst(overhead: (model: Model<Api>, context: Context) => number | undefined = piOverhead) {
+  const [{ calculateCost }, { clampMaxTokensToContext }] = await Promise.all([
     import("@earendil-works/pi-ai"),
     import("@earendil-works/pi-ai/api/simple-options"),
   ]);
-  let held = 0;
-  const worstCase = (model: Model<Api>, context: Context, ceiling: number, options?: { maxTokens?: number }) => {
+  return (model: Model<Api>, context: Context, ceiling: number, options?: { maxTokens?: number }) => {
     const transcript = context as unknown as Parameters<typeof clampMaxTokensToContext>[1];
     const added = overhead(model, context);
     if (added === undefined) return undefined;
@@ -360,6 +356,18 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const output = ceiling === 0 ? 0 : clampMaxTokensToContext(model, transcript, Math.max(options?.maxTokens ?? 0, ceiling));
     return worstOf(calculateCost, model)(input, output) + (side?.maxFeeUsd ?? 0);
   };
+}
+
+/** `models`, refusing each request whose worst case would take the run past `cap` after `spent` USD, and, under the cap,
+ *  each request to a model in `unpriced` (one serve has no price for) or whose output is priced and that has no output
+ *  ceiling, each whose input cannot be bounded, and every request once what the run has spent is unknown: `spent` null
+ *  (spentIn), or an answer since whose cost is unknown. A request's input is inputBound of its context, plus
+ *  `overhead(model, context)` (piOverhead), what its provider adds server-side; undefined is unmeasured, never 0. Each
+ *  request sent carries its worst case (HELD_USD) to the marks below, and one stopped before its end counts at it.
+ *  `refused` (markRequests') writes the start mark of a refused model request before pi writes its error entry. */
+export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: () => Promise<void> } = {}): Promise<M> {
+  const [{ createAssistantMessageEventStream }, worstCase] = await Promise.all([import("@earendil-works/pi-ai"), requestWorst(overhead)]);
+  let held = 0;
   /** A request's worst case, or why the cap refuses it. */
   const judge = (model: Model<Api>, context: Context, options?: { maxTokens?: number }): { worst: number } | { why: string } => {
     if (unpriced.has(model.id)) return { why: noPrice(cap) };
@@ -452,4 +460,64 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+}
+
+/** `models` for a pi run with no cap: each request sent carries its worst case (requestWorst, HELD_USD) to its marks, as a
+ *  capped run's does, so a request whose cost never comes in leaves the run's cost unknown but bounded. It never refuses
+ *  and never throws: a model in `unpriced`, one with no output ceiling, an input it cannot measure, or an error while
+ *  measuring sends the request with no figure. */
+export async function measureModels<M extends Models>(models: M, { unpriced = new Set<string>(), overhead = piOverhead }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined } = {}): Promise<M> {
+  const worstCase = await requestWorst(overhead);
+  const figure = (model: Model<Api>, context: Context, options?: { maxTokens?: number }): number | undefined => {
+    try {
+      const ceiling = unpriced.has(model.id) ? undefined : outputBound(model);
+      const worst = ceiling === undefined ? undefined : worstCase(model, context, ceiling, options);
+      return typeof worst === "number" && Number.isFinite(worst) && worst >= 0 ? worst : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const measured = (send: (model: Model<Api>, context: Context, options?: { maxTokens?: number }) => unknown) =>
+    (model: Model<Api>, context: Context, options?: { maxTokens?: number }) => {
+      const worst = figure(model, context, options);
+      return send(model, context, worst === undefined ? options : ({ ...options, [HELD_USD]: worst } as typeof options));
+    };
+  const sends: Record<PropertyKey, unknown> = {
+    stream: measured(models.stream.bind(models) as never),
+    streamSimple: measured(models.streamSimple.bind(models) as never),
+    complete: measured(models.complete.bind(models) as never),
+    completeSimple: measured(models.completeSimple.bind(models) as never),
+  };
+  return new Proxy(models, {
+    get: (target, key) => {
+      if (key in sends) return sends[key];
+      const value = Reflect.get(target, key, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+/** For a run on another harness with no cap: a guard that refuses nothing and gives the runner each request's worst case
+ *  (`worstOf`, as capBefore's does), which its records and the run's marks carry, so a request whose cost never comes in
+ *  leaves the run's cost unknown but bounded. None for a model it cannot price (none, unpriced, or with no output
+ *  ceiling); no figure for an input it cannot measure. It never throws: an error while measuring gives no figure. */
+export async function measureBefore(model: Model<Api> | undefined, { listed = true }: { listed?: boolean } = {}): Promise<CapGuard | undefined> {
+  try {
+    const output = model === undefined || !listed ? undefined : outputBound(model);
+    if (output === undefined) return undefined;
+    const price = worstOf((await import("@earendil-works/pi-ai")).calculateCost, model!);
+    return {
+      beforeRequest: () => undefined,
+      worstOf: ({ inputTokensMax }) => {
+        try {
+          const worst = typeof inputTokensMax === "number" && Number.isFinite(inputTokensMax) ? price(inputTokensMax, output) : undefined;
+          return typeof worst === "number" && Number.isFinite(worst) && worst >= 0 ? worst : undefined;
+        } catch {
+          return undefined;
+        }
+      },
+    };
+  } catch {
+    return undefined;
+  }
 }

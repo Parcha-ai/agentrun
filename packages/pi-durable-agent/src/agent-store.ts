@@ -45,7 +45,8 @@ export type ImportSource = "claude-code" | "codex" | "pi";
 export type ImportedFrom = { source: ImportSource; session: string };
 /** `archivedAt`: when the run was archived, else when its agent was, while it is. `importedFrom`: set on a run imported
  *  from another harness's session, which is read-only. */
-export type RunRow = { id: string; agent: string; revision: string; kind: RevisionKind; state: RunState; startedAt: string; endedAt?: string; costUsd?: number; summary?: string; archivedAt?: string; importedFrom?: ImportedFrom };
+/** `atMostUsd`: for a run that ended with its cost unknown, the most it can be, when its host knew that (carryBack). */
+export type RunRow = { id: string; agent: string; revision: string; kind: RevisionKind; state: RunState; startedAt: string; endedAt?: string; costUsd?: number; atMostUsd?: number; summary?: string; archivedAt?: string; importedFrom?: ImportedFrom };
 /** A run's metrics as the store keeps them: `runMetricsOf` of its entries, plus what only its host knows: `activeMs`, how
  *  long it was at work; `effort`, the effort it ran at; `model`, the model it ran (runMetricsOf's by default); and
  *  `costUsdEst`, an estimate of its cost apart from the cost it carried back, with `costBasis` naming how it was made. */
@@ -57,7 +58,10 @@ export type ArchiveKind = "agent" | "run";
 type RunCounts = Record<RunState, number> & { total: number };
 /** `usd` sums the costs of the `known` runs, those that ended with one; null when there are none, never 0. A run still
  *  running, or one that ended with no cost, is `unknown`. */
-type CostSum = { usd: number | null; known: number; unknown: number };
+/** Ended runs whose cost is unknown with a bound kept for it (carryBack's `atMostUsd`): how many, and their bounds summed,
+ *  null when there are none. */
+type BoundedUnknown = { runs: number; atMostUsd: number | null };
+type CostSum = { usd: number | null; known: number; unknown: number; boundedUnknown: BoundedUnknown };
 /** What `stats` answers. Every number but `archivedAgents` and `archivedRuns` leaves out what is archived; a run of an
  *  archived agent is archived with it. `byAgent`: each agent by name, with its run count; `running`: the ids of the runs
  *  still running. */
@@ -74,7 +78,7 @@ export type AnalyticsGroup = { runs: number; completed: number; needsReview: num
 /** What `analytics` answers: the runs not archived, started in [`from`, `to`) and of `agent` when given, summed from their
  *  rows and their metrics. A running run's metrics are its last end's: it counts as a run without them. */
 export type StoreAnalytics = {
-  totals: AnalyticsGroup & { input: number; cacheRead: number; cacheWrite: number; output: number; requests: number; unmetered: number };
+  totals: AnalyticsGroup & { input: number; cacheRead: number; cacheWrite: number; output: number; requests: number; unmetered: number; boundedUnknown: BoundedUnknown };
   /** `wallMs` sums ended − started over the `endedRuns`; `activeMs` sums the metrics' activeMs over the `activeRuns` that have one. */
   time: { endedRuns: number; wallMs: number; activeRuns: number; activeMs: number };
   /** By the revision's harness (`pi` when it names none, `workflow` for a workflow revision), then the metrics' effort (null when unset). */
@@ -174,9 +178,13 @@ CREATE TABLE IF NOT EXISTS run_tool_metrics (
   calls  INTEGER NOT NULL,
   errors INTEGER NOT NULL,
   PRIMARY KEY (run_id, tool)
+);
+CREATE TABLE IF NOT EXISTS run_cost_bounds (
+  run_id      TEXT PRIMARY KEY REFERENCES runs(id),
+  at_most_usd REAL NOT NULL
 );`;
 
-// archive_changes, runs_by_state, run_imports, run_metrics and run_tool_metrics came after version 1 without a new
+// archive_changes, runs_by_state, run_imports, run_metrics, run_tool_metrics and run_cost_bounds came after version 1 without a new
 // version: an earlier version opens the file and ignores them. run_imports' trigger on runs is in the file, so that
 // version still cannot change an imported run.
 const STORE_VERSION = 1;
@@ -275,6 +283,14 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
 }
 
 /** The reads: plain SQL over the one file, on a read-only handle. `openStoreReader` reads `store.sqlite` in place: it writes nothing and makes no copy, and a store with an unfinished write is named, not rolled back. */
+/** An aggregate's ended runs whose cost is unknown with a bound kept, and their bounds summed (over a row with `cost_usd`,
+ *  `at_most_usd` and `state`). */
+const BOUNDED = "SUM(state <> 'running' AND cost_usd IS NULL AND at_most_usd IS NOT NULL) AS bounded, SUM(CASE WHEN state <> 'running' AND cost_usd IS NULL THEN at_most_usd END) AS bounded_usd";
+const boundedOf = (g: Record<string, unknown> | undefined): BoundedUnknown => {
+  const runs = Number(g?.bounded ?? 0);
+  return { runs, atMostUsd: runs > 0 ? Number(g!.bounded_usd) : null };
+};
+
 export class AgentStoreReader {
   /** A store an earlier version wrote has no archive_changes until a writer opens it: nothing in it is archived. */
   private readonly archives: boolean;
@@ -282,11 +298,14 @@ export class AgentStoreReader {
   private readonly imports: boolean;
   /** And run_metrics with run_tool_metrics: a store without them holds no run's metrics. */
   private readonly metrics: boolean;
+  /** And run_cost_bounds: a store without it keeps no run's bound. */
+  private readonly bounds: boolean;
   constructor(readonly dir: string, protected readonly db: DatabaseSync) {
     const has = (table: string) => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== undefined;
     this.archives = has("archive_changes");
     this.imports = has("run_imports");
     this.metrics = has("run_metrics") && has("run_tool_metrics");
+    this.bounds = has("run_cost_bounds");
   }
   close(): void { this.db.close(); }
 
@@ -297,6 +316,10 @@ export class AgentStoreReader {
   /** The columns and join for a run's import (`r` is the run). */
   private importSql(): { columns: string; join: string } {
     return this.imports ? { columns: "i.source AS import_source, i.session AS import_session", join: "LEFT JOIN run_imports i ON i.run_id = r.id" } : { columns: "NULL AS import_source, NULL AS import_session", join: "" };
+  }
+  /** The column and join for the bound kept on a run's unknown cost (`r` is the run). */
+  private boundSql(): { column: string; join: string } {
+    return this.bounds ? { column: "b.at_most_usd AS at_most_usd", join: "LEFT JOIN run_cost_bounds b ON b.run_id = r.id" } : { column: "NULL AS at_most_usd", join: "" };
   }
   /** A run's own archive time, else its agent's. */
   private runArchivedAtSql(): string {
@@ -323,17 +346,19 @@ export class AgentStoreReader {
   /** Newest first; a run joined to its revision's kind. */
   listRuns(filter: { agent?: string; revision?: string } = {}): RunRow[] {
     const imported = this.importSql();
-    const rows = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary, ${this.runArchivedAtSql()} AS archived_at, ${imported.columns} FROM runs r JOIN revisions v ON v.id = r.revision_id ${imported.join}
+    const bound = this.boundSql();
+    const rows = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, ${bound.column}, r.summary, ${this.runArchivedAtSql()} AS archived_at, ${imported.columns} FROM runs r JOIN revisions v ON v.id = r.revision_id ${imported.join} ${bound.join}
       WHERE (? IS NULL OR r.agent_id = ?) AND (? IS NULL OR r.revision_id = ?) ORDER BY r.started_at DESC, r.rowid DESC`).all(filter.agent ?? null, filter.agent ?? null, filter.revision ?? null, filter.revision ?? null) as Array<Record<string, unknown>>;
-    return rows.map((r) => ({ id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}), ...importedFromOf(r) }));
+    return rows.map((r) => ({ id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.cost_usd === null && typeof r.at_most_usd === "number" ? { atMostUsd: r.at_most_usd } : {}), ...(r.summary ? { summary: r.summary as string } : {}), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}), ...importedFromOf(r) }));
   }
   /** One run: the README's join (runs, agents, revisions) for one run id, in one statement. The run plus its agent's name and its revision's note; undefined for an unknown run. */
   readRun(runId: string): (RunRow & { agentName: string; note?: string }) | undefined {
     const imported = this.importSql();
-    const r = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary, a.name AS agent_name, v.note, ${this.runArchivedAtSql()} AS archived_at, ${imported.columns}
-      FROM runs r JOIN agents a ON a.id = r.agent_id JOIN revisions v ON v.id = r.revision_id ${imported.join} WHERE r.id = :id`).get({ id: checkId(runId, "run") }) as Record<string, unknown> | undefined;
+    const bound = this.boundSql();
+    const r = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, ${bound.column}, r.summary, a.name AS agent_name, v.note, ${this.runArchivedAtSql()} AS archived_at, ${imported.columns}
+      FROM runs r JOIN agents a ON a.id = r.agent_id JOIN revisions v ON v.id = r.revision_id ${imported.join} ${bound.join} WHERE r.id = :id`).get({ id: checkId(runId, "run") }) as Record<string, unknown> | undefined;
     if (!r) return undefined;
-    return { id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}), agentName: r.agent_name as string, ...(r.note ? { note: r.note as string } : {}), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}), ...importedFromOf(r) };
+    return { id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.cost_usd === null && typeof r.at_most_usd === "number" ? { atMostUsd: r.at_most_usd } : {}), ...(r.summary ? { summary: r.summary as string } : {}), agentName: r.agent_name as string, ...(r.note ? { note: r.note as string } : {}), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}), ...importedFromOf(r) };
   }
   /** A run's metrics, as its last carryBack or its import wrote them, with its tools by name and `at`, when they were
    *  written: one statement. Undefined for a run with none, or an unknown run. */
@@ -362,8 +387,8 @@ export class AgentStoreReader {
       const agents = this.db.prepare(`SELECT a.id, a.name, ${this.archivedAtSql("agent", "a.id")} IS NOT NULL AS archived FROM agents a ORDER BY a.name, a.id`).all() as Array<Record<string, unknown>>;
       // One pass over runs_by_agent: a run's own archive state is a group key, so it is looked up once per run.
       const groups = this.db.prepare(`SELECT agent_id, archived, COUNT(*) AS total, ${RUN_STATES.map((state) => `SUM(state = '${state}') AS ${state}`).join(", ")},
-          SUM(CASE WHEN state <> 'running' THEN cost_usd END) AS cost_usd, SUM(state <> 'running' AND cost_usd IS NOT NULL) AS known
-        FROM (SELECT r.agent_id, r.state, r.cost_usd, ${this.archivedAtSql("run", "r.id")} IS NOT NULL AS archived FROM runs r) GROUP BY agent_id, archived`).all() as Array<Record<string, unknown>>;
+          SUM(CASE WHEN state <> 'running' THEN cost_usd END) AS cost_usd, SUM(state <> 'running' AND cost_usd IS NOT NULL) AS known, ${BOUNDED}
+        FROM (SELECT r.agent_id, r.state, r.cost_usd, ${this.boundSql().column}, ${this.archivedAtSql("run", "r.id")} IS NOT NULL AS archived FROM runs r ${this.boundSql().join}) GROUP BY agent_id, archived`).all() as Array<Record<string, unknown>>;
       const running = (this.db.prepare(`SELECT r.id FROM runs r WHERE r.state = 'running' AND ${notArchived}`).all() as Array<{ id: string }>).map((r) => r.id);
       const counts = (r?: Record<string, unknown>): RunCounts => ({ total: Number(r?.total ?? 0), ...(Object.fromEntries(RUN_STATES.map((state) => [state, Number(r?.[state] ?? 0)])) as Record<RunState, number>) });
       const shown = new Map<string, Record<string, unknown>>();
@@ -372,7 +397,7 @@ export class AgentStoreReader {
         if (g.archived) hidden.set(g.agent_id as string, Number(g.total));
         else shown.set(g.agent_id as string, g);
       }
-      const stats: StoreStats = { agents: 0, archivedAgents: 0, runs: counts(), archivedRuns: 0, cost: { usd: null, known: 0, unknown: 0 }, byAgent: [], running };
+      const stats: StoreStats = { agents: 0, archivedAgents: 0, runs: counts(), archivedRuns: 0, cost: { usd: null, known: 0, unknown: 0, boundedUnknown: { runs: 0, atMostUsd: null } }, byAgent: [], running };
       for (const a of agents) {
         const g = shown.get(a.id as string);
         const runs = counts(g);
@@ -389,6 +414,9 @@ export class AgentStoreReader {
         if (known > 0) stats.cost.usd = (stats.cost.usd ?? 0) + Number(g!.cost_usd);
         stats.cost.known += known;
         stats.cost.unknown += runs.total - known;
+        const bounded = boundedOf(g);
+        stats.cost.boundedUnknown.runs += bounded.runs;
+        if (bounded.atMostUsd !== null) stats.cost.boundedUnknown.atMostUsd = (stats.cost.boundedUnknown.atMostUsd ?? 0) + bounded.atMostUsd;
       }
       return stats;
     } finally {
@@ -402,12 +430,12 @@ export class AgentStoreReader {
     const params = { from: filter.from === undefined ? null : checkTime(filter.from, "from"), to: filter.to === undefined ? null : checkTime(filter.to, "to"), agent: filter.agent === undefined ? null : checkId(filter.agent, "agent") };
     const metric = (column: string) => (this.metrics ? `m.${column}` : "NULL");
     // Each run in scope once, with its group keys and, when it has ended, its metrics.
-    const scope = `WITH scope AS (SELECT r.id, r.state, r.started_at, r.ended_at, r.cost_usd,
+    const scope = `WITH scope AS (SELECT r.id, r.state, r.started_at, r.ended_at, r.cost_usd, ${this.boundSql().column},
         CASE WHEN v.kind = 'workflow' THEN 'workflow' ELSE COALESCE(json_extract(v.body_json, '$.harness'), 'pi') END AS harness,
         ${this.imports ? "COALESCE(i.source, 'live')" : "'live'"} AS source, ${this.metrics ? "m.run_id IS NOT NULL" : "0"} AS metered,
         ${["input", "cache_read", "cache_write", "output", "requests", "unmetered", "active_ms", "effort"].map((c) => `${metric(c)} AS ${c}`).join(", ")}
       FROM runs r JOIN revisions v ON v.id = r.revision_id
-        ${this.metrics ? "LEFT JOIN run_metrics m ON m.run_id = r.id AND r.state <> 'running'" : ""} ${this.imports ? "LEFT JOIN run_imports i ON i.run_id = r.id" : ""}
+        ${this.metrics ? "LEFT JOIN run_metrics m ON m.run_id = r.id AND r.state <> 'running'" : ""} ${this.imports ? "LEFT JOIN run_imports i ON i.run_id = r.id" : ""} ${this.boundSql().join}
       WHERE ${this.runArchivedAtSql()} IS NULL AND (:from IS NULL OR r.started_at >= :from) AND (:to IS NULL OR r.started_at < :to) AND (:agent IS NULL OR r.agent_id = :agent))`;
     const group = `COUNT(*) AS runs, SUM(state IN ('completed', 'escalated')) AS completed, SUM(state = 'escalated') AS needs_review, SUM(state = 'failed') AS failed, SUM(metered) AS metered,
       SUM(COALESCE(input + cache_read + cache_write + output, 0)) AS tokens, SUM(CASE WHEN state <> 'running' THEN cost_usd END) AS cost_usd,
@@ -422,9 +450,9 @@ export class AgentStoreReader {
     try {
       const t = all(`SELECT ${group}, SUM(input) AS input, SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write, SUM(output) AS output, SUM(requests) AS requests, SUM(unmetered) AS unmetered,
           SUM(state <> 'running' AND ended_at IS NOT NULL) AS ended, SUM(CASE WHEN state <> 'running' AND ended_at IS NOT NULL THEN MAX(0, ROUND((julianday(ended_at) - julianday(started_at)) * 86400000)) END) AS wall_ms,
-          SUM(active_ms IS NOT NULL) AS active_runs, SUM(active_ms) AS active_ms FROM scope`)[0]!;
+          SUM(active_ms IS NOT NULL) AS active_runs, SUM(active_ms) AS active_ms, ${BOUNDED} FROM scope`)[0]!;
       return {
-        totals: { ...counted(t), input: n(t.input), cacheRead: n(t.cache_read), cacheWrite: n(t.cache_write), output: n(t.output), requests: n(t.requests), unmetered: n(t.unmetered) },
+        totals: { ...counted(t), input: n(t.input), cacheRead: n(t.cache_read), cacheWrite: n(t.cache_write), output: n(t.output), requests: n(t.requests), unmetered: n(t.unmetered), boundedUnknown: boundedOf(t) },
         time: { endedRuns: n(t.ended), wallMs: n(t.wall_ms), activeRuns: n(t.active_runs), activeMs: n(t.active_ms) },
         byHarnessEffort: all(`SELECT harness, effort, ${group} FROM scope GROUP BY harness, effort ORDER BY harness, effort`).map((g) => ({ harness: g.harness as string, effort: (g.effort as string | null) ?? null, ...counted(g) })),
         byDay: all(`SELECT substr(started_at, 1, 10) AS day, ${group} FROM scope GROUP BY day ORDER BY day`).map((g) => ({ day: g.day as string, ...counted(g) })),
@@ -558,9 +586,10 @@ export class AgentStore extends AgentStoreReader {
   /** End a run, once: `state` is how it ended, `summary` a line for the list (cut to 2000 characters, never refused, so a run always ends). A second call for an ended run is refused.
    *  `metrics` (runMetricsOf of the whole run, and what its host knows) replace the run's in the same transaction, so a
    *  run opened again and ended again keeps its latest; with none it has none, as with no cost its cost is unknown. */
-  carryBack(runId: string, result: { state: "completed" | "failed" | "stopped" | "escalated"; costUsd?: number; summary?: string; metrics?: StoredMetrics }): void {
+  carryBack(runId: string, result: { state: "completed" | "failed" | "stopped" | "escalated"; costUsd?: number; atMostUsd?: number; summary?: string; metrics?: StoredMetrics }): void {
     if (!["completed", "failed", "stopped", "escalated"].includes(result?.state)) throw invalid("the state is not completed, failed, stopped or escalated");
     if (result.costUsd !== undefined && !(Number.isFinite(result.costUsd) && result.costUsd >= 0)) throw invalid("the cost is not a number of at least 0");
+    if (result.atMostUsd !== undefined && !(typeof result.atMostUsd === "number" && Number.isFinite(result.atMostUsd) && result.atMostUsd >= 0)) throw invalid("the bound is not a number of at least 0");
     if (result.summary !== undefined && (typeof result.summary !== "string" || result.summary === "")) throw invalid("the summary is not non-empty text");
     const metrics = result.metrics === undefined ? undefined : checkMetrics(result.metrics);
     const id = checkId(runId, "run");
@@ -569,6 +598,9 @@ export class AgentStore extends AgentStoreReader {
     this.tx(() => {
       const done = this.db.prepare("UPDATE runs SET state = ?, ended_at = ?, cost_usd = ?, summary = ? WHERE id = ? AND ended_at IS NULL").run(result.state, at, result.costUsd ?? null, result.summary === undefined ? null : cutSummary(result.summary), id);
       if (done.changes === 0) throw new AgentHomeError(this.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(id) ? "exists" : "missing", "that run is unknown or has already ended");
+      // A bound is kept only beside a cost no one knows, and each end replaces the last (a run opened again ends again).
+      this.db.prepare("DELETE FROM run_cost_bounds WHERE run_id = ?").run(id);
+      if (result.costUsd === undefined && result.atMostUsd !== undefined) this.db.prepare("INSERT INTO run_cost_bounds (run_id, at_most_usd) VALUES (?, ?)").run(id, result.atMostUsd);
       this.writeMetrics(id, metrics, at);
     });
   }

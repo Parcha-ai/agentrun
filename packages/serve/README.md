@@ -957,7 +957,13 @@ newest answer it received, beside its `error`; one stopped before any answer has
 A run's `cost.usd` is $0 before its first model request (a run cancelled before one included), and `null` when a
 response reported no price or a request was cut before its end (a stop, a cancel, a crash): no request costs nothing,
 but a request of unknown price is unknown, never $0. A stopped request shows `null` whether or not its cap counted it at
-its held worst case.
+its held worst case. Each request on a priced model carries its worst case (its input bound and output ceiling at the
+model's price) to its start mark, with or without a cap, on pi, claude-agent and codex; with no cap it is only measured,
+never refused. When every request whose cost is unknown has one, the cost also says `at_most_usd`: the known costs plus
+those worst cases, so a client can show "unknown, at most $X" (`x-agentrun-serve: "costbound/1"`, on the run, the list,
+the timeline page and its usage row). A model with no price, or anything else unknown, leaves no bound. `GET /stats` counts such
+runs apart, in `cost.bounded_unknown` and `analytics.totals.bounded_unknown` (`runs`, and their bounds summed), never in
+the known sum.
 
 ## The faux model
 

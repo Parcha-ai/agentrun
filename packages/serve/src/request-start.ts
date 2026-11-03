@@ -10,10 +10,11 @@
 // tool's own request on the run's models (web_search's, hosted-search.ts) is a side request the same way, under its own
 // label (sideRequests), and its cost is its tokens' plus the fee its tool names.
 //
-// Under a cap (cap.ts), each request comes with the worst case the cap held for it, and its start mark carries that
-// figure (`heldUsd`), as does the end mark of one stopped before its end (or a summary that failed): the cap counts a
-// request a stop or a crash cut at it, in a later process too. The timeline does not read it, so the run's shown cost
-// is unknown as before. A request the cap refused gets a start mark of its own (`capRefused`), written before pi writes
+// Each request on a priced model comes with its worst case: the one a cap held for it (cap.ts), or with no cap the same
+// figure, only measured (measureModels). Its start mark carries that figure (`heldUsd`), as does the end mark of one
+// stopped before its end (or a summary that failed): a cap counts a request a stop or a crash cut at it, in a later
+// process too, and the timeline reads the same figures as the most an unknown cost can be (`at_most_usd`), the cost
+// itself still unknown. A request the cap refused gets a start mark of its own (`capRefused`), written before pi writes
 // its error entry, so that entry answers its own mark and never stands for an earlier request a stop or a crash cut.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -47,7 +48,8 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     errorMessage: why,
   });
   const reason = (error: unknown) => String((error as Error)?.message ?? error).slice(0, 200);
-  /** What the run's cap held for a request (its options' HELD_USD), as an end mark's field; none without a cap. */
+  /** A request's worst case (its options' HELD_USD: held by the run's cap, or measured with none), as an end mark's
+   *  field; none for a request with no figure. */
   const heldOf = (options: unknown): Record<string, number> => {
     const held = (options as Record<symbol, unknown> | undefined)?.[HELD_USD];
     return typeof held === "number" && Number.isFinite(held) ? { [HELD_FIELD]: held } : {};

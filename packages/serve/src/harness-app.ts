@@ -28,7 +28,7 @@ import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPo
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
-import { type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
+import { type CapGuard, capToolSpend, HELD_FIELD, holdsInFlight, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
@@ -182,6 +182,19 @@ export function adapterRun(
   const open = new Set<number>();
   // The model each request asked for, by number: its entry names it.
   const models = new Map<number, string>();
+  // What was held for each request (a cap's worst case; with no cap, only measured), by number, from its start or its
+  // runner record: a cost of it still to come, or one never known, reads at most that.
+  const holds = new Map<number, number>();
+  const heldFor = (request: number): Record<string, number> => (holds.has(request) ? { [HELD_FIELD]: holds.get(request)! } : {});
+  // The requests with a start mark on the root: one a crash cut before its mark landed gets it from its record.
+  const startedOnRoot = new Set<number>();
+  /** The start mark of a cut request whose own never reached the root, from its runner record, written just before its
+   *  answer: the timeline then counts it at what was held for it, never at another request's figure. */
+  const markCut = async (tx: Tx, pending: Pending | undefined) => {
+    if (!pending?.usage.cut || startedOnRoot.has(pending.request)) return;
+    await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: pending.request, ...heldFor(pending.request) } });
+    startedOnRoot.add(pending.request);
+  };
   let booked: () => void = () => {};
   /** Until every admitted request is booked, or `ms` pass. */
   const bookings = async (ms: number) => {
@@ -209,7 +222,7 @@ export function adapterRun(
         if (!unpriced.has(late.request) || priced.has(late.request)) continue;
         const tokens = tokensOf(late.usage);
         await commit(async (tx) => {
-          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request, usd: late.usage.usd ?? null, ...(tokens ? { usage: tokens } : {}) } });
+          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request, usd: late.usage.usd ?? null, ...(tokens ? { usage: tokens } : {}), ...(late.usage.usd == null ? heldFor(late.request) : {}) } });
         });
         priced.add(late.request);
       }
@@ -226,9 +239,11 @@ export function adapterRun(
       const marked = request?.request ?? unbooked;
       if (marked !== undefined) answered.add(marked);
       await commit(async (tx) => {
+        await markCut(tx, request);
         await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls) as never] });
-        // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
-        if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
+        // Its cost still to come: the timeline reads it pending, at most what was held for it, not a cost no one will
+        // ever know.
+        if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked, ...heldFor(unbooked) } });
         if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
       });
       if (marked !== undefined) written.add(marked);
@@ -240,6 +255,7 @@ export function adapterRun(
         if (written.has(next.request)) continue;
         answered.add(next.request);
         await commit(async (tx) => {
+          await markCut(tx, next);
           await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(next.request), next, "", []) as never] });
           await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: next.request } });
         });
@@ -258,7 +274,13 @@ export function adapterRun(
       // Marked on the root as it leaves, as a pi run's request is (request-start.ts): one never answered, a run that ends
       // without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
       // A store that refuses it has refused a write already, and the process ends on that.
-      later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn } })))).catch(() => undefined);
+      // It carries the request's worst case (what a cap holds; with no cap, only measured), as a pi run's mark does: the
+      // timeline bounds the run's cost by it when the request's own cost is never known. A cap reads the runner's records,
+      // never this mark.
+      const held: Record<string, number> = event.heldUsd === undefined ? {} : { [HELD_FIELD]: event.heldUsd };
+      if (event.heldUsd !== undefined) holds.set(event.turn, event.heldUsd);
+      startedOnRoot.add(event.turn);
+      later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...held } })))).catch(() => undefined);
     } else {
       open.delete(event.turn);
       inFlight.ended(event.turn);
@@ -305,20 +327,24 @@ export function adapterRun(
   const inSession = (records: readonly { kind: string; data: unknown }[]) => {
     const asked = new Map<number, string>();
     const booked = new Map<number, ModelUsage>();
+    const held = new Map<number, number>();
     let admitted = 0;
     for (const record of records) {
-      const data = (record.data ?? {}) as { turn?: number; model?: unknown; usd?: number | null; cut?: boolean; unsent?: boolean; usage?: unknown };
+      const data = (record.data ?? {}) as { turn?: number; model?: unknown; usd?: number | null; cut?: boolean; unsent?: boolean; usage?: unknown; heldUsd?: unknown };
       if (record.kind === RUNNER_RECORDS.request) {
         admitted = typeof data.turn === "number" ? data.turn : admitted + 1;
         if (typeof data.model === "string") asked.set(admitted, data.model);
+        if (typeof data.heldUsd === "number" && Number.isFinite(data.heldUsd) && data.heldUsd >= 0) held.set(admitted, data.heldUsd);
       }
       // A request withdrawn as its record was written (a stop came then) never left: it is no request of the run's.
       else if (record.kind === RUNNER_RECORDS.turn && data.unsent !== true) {
         const request = typeof data.turn === "number" ? data.turn : admitted;
-        booked.set(request, { ...(tokensOf(data.usage) ?? { input: 0, output: 0 }), usd: typeof data.usd === "number" ? data.usd : null, estimated: data.usd === null || data.cut === true });
+        // A request booked cut keeps saying so: an open that writes its entry marks it from its record when its start
+        // mark never reached the root, whichever open booked it.
+        booked.set(request, { ...(tokensOf(data.usage) ?? { input: 0, output: 0 }), usd: typeof data.usd === "number" ? data.usd : null, estimated: data.usd === null || data.cut === true, ...(data.cut === true ? { cut: true } : {}) });
       }
     }
-    return { asked, booked };
+    return { asked, booked, held };
   };
 
   /** The person's message: the session's new turn, then its entry and its end on the root. */
@@ -418,6 +444,7 @@ export function adapterRun(
             written.add(data.request);
             (data.unpriced === true ? unpriced : priced).add(data.request);
           } else if (entry.kind === PRICED_LATE && typeof data.request === "number") priced.add(data.request);
+          else if (entry.kind === REQUEST_STARTED && typeof data.request === "number") startedOnRoot.add(data.request);
           else if (entry.kind === MESSAGE && typeof data.id === "string") accepted.set(data.id, { id: data.id, content: String(data.content ?? ""), recorded: Promise.resolve() });
           else if (entry.kind === MESSAGE_END && typeof data.id === "string") accepted.delete(data.id);
         }
@@ -433,7 +460,9 @@ export function adapterRun(
       const writer = await sessions.open(spec.key);
       const records = await writer.read();
       // Before the cut requests are booked, which may write their entries.
-      for (const [request, model] of inSession(records).asked) models.set(request, model);
+      const earlier = inSession(records);
+      for (const [request, model] of earlier.asked) models.set(request, model);
+      for (const [request, usd] of earlier.held) holds.set(request, usd);
       const booking = await modelPortFor(writer, {
         records,
         key: spec.key,

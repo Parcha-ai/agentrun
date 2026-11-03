@@ -192,6 +192,8 @@ export type Run = {
   error?: RunError;
   /** The cost the store recorded when it carried the run back; null when it recorded none (unknown). */
   costUsd?: number | null;
+  /** The bound the store kept beside an unknown cost (`at_most_usd`), when it kept one. */
+  atMostUsd?: number;
   /** A workflow run's decisions' cost, from its receipts once its end is read: null when one is unknown. */
   decisionCost?: number | null;
   /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). */
@@ -298,6 +300,14 @@ export function costView(rows: readonly TimelineEvent[], stored: number | null |
   }
   if (!usage) return stored === undefined ? 0 : stored;
   return usage.usage?.usd ?? null;
+}
+/** The most a cost its rows cannot know can be: the usage row's `at_most_usd`, set only when requests were cut or stopped
+ *  before their end, each with its worst case on its marks. A workflow run's decisions join it when their cost is
+ *  known, as they join `usd`; one unknown leaves no bound. */
+export function boundOf(rows: readonly TimelineEvent[], decisions?: number | null): number | undefined {
+  const atMost = usageOf(rows)?.usage?.at_most_usd;
+  if (atMost === undefined || decisions === null) return undefined;
+  return decisions === undefined ? atMost : Math.round((atMost + decisions) * 1e6) / 1e6;
 }
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
 const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text ?? null;
@@ -569,6 +579,7 @@ export class Runs {
       run.endedAt = row.endedAt;
       // An ended run the store kept no cost for has an unknown cost, never $0.
       run.costUsd = row.costUsd ?? null;
+      run.atMostUsd = row.atMostUsd;
       // A workflow run's decisions' cost too: an unknown one keeps the run's unknown after a restart. Unread, it is unknown.
       if (run.kind === "workflow") await this.readDecisionCost(run).catch(() => void (run.decisionCost = null));
       if (row.importedFrom) run.imported = row.importedFrom;
@@ -1227,9 +1238,11 @@ export class Runs {
     await this.dropBox(run);
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
+    // Unknown, with the worst case of each request whose cost is unknown: the most it can be, kept beside it.
+    const bound = cost === null ? boundOf(run.rows, run.decisionCost) : undefined;
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
-    const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
+    const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(bound === undefined ? {} : { atMostUsd: bound }), ...(line ? { summary: line } : {}) } as const;
     const counted = run.metrics;
     const end = (metrics?: StoredMetrics) => {
       try {
@@ -1261,6 +1274,7 @@ export class Runs {
       warn(run.id, `its end could not be written to the agent store (${(error as Error).message}); trying again every ${(this.options.settleRetryMs ?? SETTLE_RETRY_MS) / 1000} s`);
       // An unknown cost stays unknown: never stored as 0.
       if (cost !== null) run.costUsd = cost;
+      if (bound !== undefined) run.atMostUsd = bound;
       run.endedAt ??= new Date().toISOString();
       run.outcome = outcome;
       run.finishing = undefined;
@@ -1273,6 +1287,7 @@ export class Runs {
     const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
     run.endedAt = row?.endedAt ?? run.endedAt ?? new Date().toISOString();
     if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
+    if (row?.atMostUsd !== undefined) run.atMostUsd = row.atMostUsd;
     this.options.log?.("run_ended", { run: run.id, agent: run.agentId, status: outcome, cost_usd: row?.costUsd ?? cost ?? "unknown" });
     run.outcome = outcome;
     run.finishing = undefined;
@@ -1308,6 +1323,7 @@ export class Runs {
         const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
         if (row?.endedAt) run.endedAt = row.endedAt;
         if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
+        if (row?.atMostUsd !== undefined) run.atMostUsd = row.atMostUsd;
       }, () => this.persistLater(run, persist));
     }, this.options.settleRetryMs ?? SETTLE_RETRY_MS);
     timer.unref();
@@ -1721,7 +1737,10 @@ export class Runs {
   /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
     // An imported run's cost is its source's, for the whole session: its requests may not each have a price.
-    return { usd: run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd, run.decisionCost), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    const usd = run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd, run.decisionCost);
+    // Unknown because requests were cut, each with its worst case: the most it can be.
+    const atMost = usd !== null || run.imported ? undefined : usageOf(run.rows) ? boundOf(run.rows, run.decisionCost) : run.atMostUsd;
+    return { usd, ...(atMost === undefined ? {} : { at_most_usd: atMost }), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
   /** `Run`, as the contract shows it. */
@@ -1787,7 +1806,7 @@ export class Runs {
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
       review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
-      cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
+      cost: { usd: row.costUsd ?? null, ...(row.costUsd === undefined && row.atMostUsd !== undefined ? { at_most_usd: row.atMostUsd } : {}), basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
       archived_at: row.archivedAt ?? null,
       // A run read from its row alone has ended: it waits on nothing.
       pending: null,

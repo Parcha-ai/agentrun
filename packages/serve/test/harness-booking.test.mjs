@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -219,6 +219,129 @@ test("the next open re-books what the session booked with its tokens and model; 
   ], "each request re-booked at its cost, naming its model, with the tokens its booking kept (none for the older one)");
   assert.deepEqual(usage(entries, true), { usd: 0.007, requests: 3 }, "the cost is what it was");
   assert.equal(bookedMarks(entries).length, 3, "each booked once");
+});
+
+/** A guard that admits every request and holds `worst(turn)` for each, as a cap's (or, with no cap, its measuring) does. */
+const holding = (worst) => ({ beforeRequest: () => undefined, worstOf: ({ turn }) => worst(turn) });
+
+/** `opened`, with the run's guard (`cap`) and a wrap of its harness. */
+async function openedUnder(storage, adapter, cap, wrap = (harness) => harness) {
+  const harness = wrap(await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx));
+  const app = adapterRun(async () => adapter, "late", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx, undefined, [], undefined, cap);
+  const events = [];
+  app.door.attach((e) => events.push(e.type));
+  await app.onOpen(runOf(harness));
+  const door = { run: { harness }, signal: new AbortController().signal, emit: (e) => events.push(e.type), adopt: () => {} };
+  return { app, door, events, harness };
+}
+
+test("a request whose cost comes after the wait reads at most what was held for it while its cost is pending, and its cost once it comes", async (t) => {
+  mockClock(t);
+  const storage = new MemoryStorage();
+  const late = lateBooking();
+  const first = await openedUnder(storage, late.adapter, holding(() => 0.5));
+  assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
+  await late.answered;
+  await drained();
+  t.mock.timers.tick(BOOKING_WAIT_MS);
+  await settles(() => first.events.includes("run_end"), "the turn ends once the wait runs out");
+  const pending = await rootOf(first.harness);
+  assert.deepEqual(usage(pending), { usd: null, requests: 1, at_most_usd: 0.5 }, "unknown while it is out, at most its hold, never a bare unknown");
+  assert.deepEqual(pending.filter((e) => e.kind === REQUEST_COST_PENDING).map((e) => e.data), [{ key: "run:1", request: 1, heldUsd: 0.5 }], "the pending mark carries what was held for its request");
+  assert.deepEqual(usage(pending, true), { usd: null, requests: 1, at_most_usd: 0.5 }, "the same if the run ends before its cost comes");
+  late.book();
+  await settles(async () => spend(await rootOf(first.harness)) === 0.003, "the late cost is in");
+  assert.deepEqual(usage(await rootOf(first.harness)), { usd: 0.003, requests: 1 }, "known once it comes: no bound");
+});
+
+/** An adapter whose first request is answered at $0.002 and whose second is admitted and never answered: the process
+ *  is then cut (the test opens the run again on the same store). */
+function cutSecond() {
+  const second = deferred();
+  const adapter = {
+    id: "late",
+    version: "0",
+    capabilities: () => ({ fork: false }),
+    check: () => [],
+    async open(_spec, io) {
+      return {
+        state: "new",
+        async send() {
+          const one = await io.models.beforeRequest({ model: MODEL });
+          io.onEvent({ type: "text", delta: "One." });
+          await io.models.afterRequest({ ...TOKENS, usd: 0.002 }, one ?? undefined);
+          await io.models.beforeRequest({ model: MODEL });
+          second.resolve();
+          await new Promise(() => {});
+        },
+        async recover() {},
+        turnEnd: () => new Promise(() => {}),
+        async interrupt() {},
+        async close() {},
+      };
+    },
+  };
+  return { adapter, second: second.promise };
+}
+
+/** An adapter for a later open that sends nothing. */
+const idle = () => ({ id: "late", version: "0", capabilities: () => ({ fork: false }), check: () => [], async open() { return { state: "new", async send() {}, async recover() {}, turnEnd: async () => ({ status: "completed" }), async interrupt() {}, async close() {} }; } });
+
+/** A run whose second request is cut by a crash after its record, held at `second`, was written and before its root start
+ *  mark landed (its commit is refused: the process went first), opened again on the same store. With
+ *  `crashInRecovery`, that next open goes too, after it booked the cut request in its session and before its root
+ *  entries landed, and the run is opened once more. The root, after. */
+async function cutBeforeItsMark(second, { crashInRecovery = false } = {}) {
+  const storage = new MemoryStorage();
+  let lost = 0;
+  const losing = (harness) => new Proxy(harness, {
+    get: (target, key) => key !== "commit" ? Reflect.get(target, key).bind?.(target) ?? Reflect.get(target, key) : (change, context) =>
+      target.commit((tx) => change(new Proxy(tx, { get: (t, k) => (k === "appendEntry" ? (...args) => (args[1]?.kind === REQUEST_STARTED && args[1]?.data?.request === 2 ? (lost++, Promise.reject(new Error("the process went"))) : t.appendEntry(...args)) : typeof t[k] === "function" ? t[k].bind(t) : t[k]) })), context),
+  });
+  const cut = cutSecond();
+  // The first request's worst case is small, the second's (a longer context) `second`.
+  const first = await openedUnder(storage, cut.adapter, holding((turn) => (turn === 1 ? 0.01 : second)), losing);
+  assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
+  await cut.second;
+  await settles(() => lost === 1, "the second request's start mark is refused");
+  await settles(async () => (await rootOf(first.harness)).some((e) => e.kind === BOOKED && e.data.request === 1), "the first answer is written");
+  const before = await rootOf(first.harness);
+  assert.deepEqual(before.filter((e) => e.kind === REQUEST_STARTED).map((e) => e.data.request), [1], "only the first request's start mark is on the root");
+  if (crashInRecovery) {
+    // The next open books the cut request in its session (bookCut), then goes before any of its root entries lands.
+    let refused = 0;
+    const going = (harness) => new Proxy(harness, {
+      get: (target, key) => key !== "commit" ? Reflect.get(target, key).bind?.(target) ?? Reflect.get(target, key) : (change, context) =>
+        target.commit((tx) => change(new Proxy(tx, { get: (t, k) => (k === "appendEntry" ? (...args) => (args[0] === ROOT_CONVERSATION_ID || args[1] === ROOT_CONVERSATION_ID ? (refused++, Promise.reject(new Error("the process went"))) : t.appendEntry(...args)) : typeof t[k] === "function" ? t[k].bind(t) : t[k]) })), context),
+    });
+    await assert.rejects(openedUnder(storage, idle(), holding(() => 0.5), going), "the recovering open goes before its root entries land");
+    assert.ok(refused > 0, "its root write is refused");
+    const earlier = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+    const records = await (await durableSessions(earlier, ctx).open("run:1")).read();
+    assert.ok(records.some((r) => r.kind === RUNNER_RECORDS.turn && r.data?.turn === 2 && r.data?.cut === true), "the cut request is booked in the session, as cut");
+    assert.deepEqual((await rootOf(earlier)).filter((e) => e.kind === REQUEST_STARTED).map((e) => e.data.request), [1], "and still has no start mark on the root");
+  }
+  // The next open books the cut request from its record.
+  const next = await openedUnder(storage, idle(), holding(() => 0.5));
+  return rootOf(next.harness);
+}
+
+test("a request a crash cut whose start mark never reached the root: the next open marks it from its record before its cut answer, so the cost reads at most the known cost plus its own hold, never another request's", async () => {
+  const after = await cutBeforeItsMark(0.5);
+  assert.deepEqual(usage(after, true), { usd: null, requests: 2, at_most_usd: 0.502 }, "the known $0.002 and the cut request at its own $0.5, never at the first request's $0.01");
+  assert.deepEqual(after.filter((e) => e.kind === REQUEST_STARTED).map((e) => [e.data.request, e.data.heldUsd]), [[1, 0.01], [2, 0.5]], "the cut request is marked from its record, at what was held for it");
+});
+
+test("a request a crash cut whose start mark never reached the root, whose recovering open went too after booking it cut: the open after still marks it from its record, at its own hold", async () => {
+  const after = await cutBeforeItsMark(0.5, { crashInRecovery: true });
+  assert.deepEqual(usage(after, true), { usd: null, requests: 2, at_most_usd: 0.502 }, "the cut request at its own $0.5 after two crashes, never at the first request's $0.01");
+  assert.deepEqual(after.filter((e) => e.kind === REQUEST_STARTED).map((e) => [e.data.request, e.data.heldUsd]), [[1, 0.01], [2, 0.5]], "marked from its record by the open that wrote its entry");
+});
+
+test("a request a crash cut whose start mark never reached the root and whose record holds no figure reads unbounded, never at another request's figure", async () => {
+  const after = await cutBeforeItsMark(undefined);
+  assert.deepEqual(usage(after, true), { usd: null, requests: 2 }, "nothing was held for the cut request: no bound, never $0.012");
+  assert.deepEqual(after.filter((e) => e.kind === REQUEST_STARTED).map((e) => [e.data.request, e.data.heldUsd]), [[1, 0.01], [2, undefined]], "marked from its record, with no figure");
 });
 
 test("the cap's spend read from a store sums each answer's cost and each cost written apart, a compaction's and a late one", () => {
