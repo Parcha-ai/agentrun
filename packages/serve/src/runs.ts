@@ -18,7 +18,7 @@ import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
-import { type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
+import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
@@ -488,6 +488,13 @@ export class Runs {
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
     };
+    // A server that went down while it copied what the run's agent learned saved the run's input and no learning, and
+    // left the copy half made, or whole with its pin: the copy goes, so the run starts again with nothing learned.
+    if (row.state === "running" && stored && !meta.learning && (await dropSeed(dir, join(dir, "work")))) {
+      meta.learning = { state: "dropped", reason: "seed_failed", detail: "The server stopped while it copied what the agent learned into the run, so the run started with nothing learned.", at: new Date().toISOString() };
+      await writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`);
+      warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
+    }
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, known?.revision);
     this.runs.set(row.id, run);
@@ -1254,6 +1261,18 @@ export class Runs {
     });
   }
 
+  /** Writes the serve.json of a run being set up. When it fails, the store has the run as running and no process will
+   *  run it: it ends failed here, never left for a later start to open with half its files. */
+  private async setUp(runId: string, dir: string, meta: RunMeta): Promise<void> {
+    try {
+      await writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`);
+    } catch (error) {
+      const summary = `The run could not be set up: ${(error as Error).message}`;
+      await this.options.agents.request(() => this.store.carryBack(runId, { state: "failed", summary })).catch((undo: Error) => warn(runId, `not ended after its setup failed: ${undo.message}`));
+      throw error;
+    }
+  }
+
   private async start(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
     // A run learns when the server's switch (`--learning`) is on and its agent's definition says `learning: true`. Its
     // seed is read before the run is made, so the folder is read once whatever the run's setup does.
@@ -1261,32 +1280,31 @@ export class Runs {
     const seeded = learns ? await this.seedFor(entry.agent.id) : undefined;
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
     const at = new Date().toISOString();
-    let failed = seeded && "failed" in seeded ? seeded.failed : undefined;
-    if (seeded && "seed" in seeded) {
-      try {
-        await pinSeed(started.dir, started.workspace, seeded.seed);
-        for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
-      } catch (error) {
-        warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
-        failed = "What the agent learned could not be copied into the run, so it started with nothing learned.";
-      }
-    }
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
       created_at: at,
       input: options.input,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
-      ...(seeded ? { learning: failed === undefined ? { state: "seeded", reason: null, detail: null, at } : { state: "dropped", reason: "seed_failed", detail: failed, at } } : {}),
     };
-    try {
-      await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
-    } catch (error) {
-      // The store has the run as running, and no process will run it: it ends failed here, never left for a later
-      // start to open with half its files.
-      const summary = `The run could not be set up: ${(error as Error).message}`;
-      await this.options.agents.request(() => this.store.carryBack(started.runId, { state: "failed", summary })).catch((undo: Error) => warn(started.runId, `not ended after its setup failed: ${undo.message}`));
-      throw error;
+    // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
+    // next one relaunches with its first message.
+    await this.setUp(started.runId, started.dir, meta);
+    if (seeded) {
+      let failed = "failed" in seeded ? seeded.failed : undefined;
+      if ("seed" in seeded) {
+        try {
+          await pinSeed(started.dir, started.workspace, seeded.seed);
+          for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
+        } catch (error) {
+          warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
+          failed = "What the agent learned could not be copied into the run, so it started with nothing learned.";
+        }
+      }
+      // Then its learning, once the copy is whole or gone. A server that goes down during the copy leaves none saved,
+      // and the next one takes the copy back (load).
+      meta.learning = failed === undefined ? { state: "seeded", reason: null, detail: null, at } : { state: "dropped", reason: "seed_failed", detail: failed, at };
+      await this.setUp(started.runId, started.dir, meta);
     }
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
     run.moment = "other";

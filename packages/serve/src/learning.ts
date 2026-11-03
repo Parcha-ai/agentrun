@@ -317,6 +317,17 @@ export async function pinSeed(runDir: string, work: string, seed: Seed): Promise
   }
 }
 
+/** Takes back a seed whose copy a server went down during (runs.ts load): the run's pin, then its `work/.learning/`.
+ *  True when either was there. */
+export async function dropSeed(runDir: string, work: string): Promise<boolean> {
+  const pinFile = join(runDir, LEARNING_PIN);
+  const dir = join(work, LEARNED_DIR);
+  const there = Boolean((await lstat(pinFile).catch(() => null)) ?? (await lstat(dir).catch(() => null)));
+  await rm(pinFile, { force: true });
+  await rm(dir, { recursive: true, force: true });
+  return there;
+}
+
 /** The run's pin, as its process reads it: undefined when the run has none (its agent does not learn, its seed failed, a
  *  workflow's run). A pin out of shape is an error, never read as none. */
 export async function readPin(runDir: string): Promise<Pin | undefined> {
