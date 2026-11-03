@@ -51,7 +51,10 @@ describe("StartHere", () => {
   it("puts the model step first when no harness has a model to run, and no template", () => {
     const h = html({ harnesses: [{ id: "pi", available: true, default_model: null }] });
     expect(h).toContain("Add a model key");
-    expect(h).toContain('href="#/settings/keys"');
+    // The server's own setup: a provider's key or a gateway where it runs (Settings holds tool keys, not models).
+    expect(h).toContain("ANTHROPIC_API_KEY");
+    expect(h).toContain("AGENT_MODEL_BASE_URL");
+    expect(h).not.toContain('href="#/settings/keys"');
     expect(h).not.toContain(">Try it<");
   });
   it("names the imported history when there is some, with a way to browse it", () => {

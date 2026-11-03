@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { choicesOf, failureGroups, hasOwnRun } from "./needs";
+import { choicesOf, failureGroups, hasOwnRun, mergeNeeds, rerunBody } from "./needs";
 import type { Run } from "./v2";
 
 const run = (id: string, over: Partial<Run> = {}): Run => ({
@@ -57,5 +57,36 @@ describe("hasOwnRun", () => {
   it("is true once a run here exists, in the recent runs or in the analytics", () => {
     expect(hasOwnRun([run("r")], [])).toBe(true);
     expect(hasOwnRun([run("i", { imported_from: { source: "pi", session: "s" } })], live(3))).toBe(true);
+  });
+});
+
+// Run again starts the same task again: the run's whole first message, its effort and its spend cap, or a refusal that
+// says why it can't be.
+describe("rerunBody", () => {
+  const base = run("x", { status: "failed", cost: { usd: 0.4, basis: "estimate", charge_state: null, cap_usd: 0.5 }, effort: "high" });
+  it("carries the first message, the effort and the spend cap", () => {
+    expect(rerunBody(base, "Check invoice INV-2299.")).toEqual({ body: { input: { content: "Check invoice INV-2299." }, effort: "high", max_cost_usd: 0.5 } });
+    expect(rerunBody({ ...base, effort: undefined, cost: null }, "Go.")).toEqual({ body: { input: { content: "Go." } } });
+  });
+  it("refuses a workflow run, and a first message the timeline cut, never starting a shortened task", () => {
+    expect(rerunBody({ ...base, kind: "workflow" }, "{}")).toHaveProperty("refusal");
+    const cut = `${"x".repeat(1997)}...`;
+    expect(rerunBody(base, cut)).toEqual({ refusal: `"x": its first message is longer than the timeline keeps; start it again from its agent's page` });
+    expect(rerunBody(base, undefined)).toEqual({ refusal: `"x": its first message could not be read` });
+  });
+});
+
+// The strip's three reads land apart: one that fails keeps what that section showed, and says so.
+describe("mergeNeeds", () => {
+  const ok = <T,>(value: T) => ({ status: "fulfilled" as const, value });
+  const no = (message: string) => ({ status: "rejected" as const, reason: new Error(message) });
+  it("takes each read that landed, keeps the last answer of one that failed, and names what could not be read", () => {
+    const prev = { asking: [run("q")], failed: [run("f")], live: [run("w")] };
+    const next = mergeNeeds(prev, [ok([run("q2")]), no("Failed to fetch"), ok([])]);
+    expect(next.needs.asking.map((r) => r.run_id)).toEqual(["q2"]);
+    expect(next.needs.failed.map((r) => r.run_id)).toEqual(["f"]);
+    expect(next.needs.live).toEqual([]);
+    expect(next.problem).toBe("The failed runs could not be read: Failed to fetch");
+    expect(mergeNeeds(null, [ok([]), ok([]), ok([])]).problem).toBeNull();
   });
 });

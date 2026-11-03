@@ -16,7 +16,7 @@ import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { allPages, type Capabilities, ClientError, createClient, type RunsFilter } from "@/lib/client";
 import { appendRuns, keeper, sendOnce, uuid } from "@/lib/idempotency";
-import { hasOwnRun } from "@/lib/needs";
+import { hasOwnRun, mergeNeeds, type Needs, rerunBody } from "@/lib/needs";
 import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
 import type { Run, RunStatus } from "@/lib/v2";
 
@@ -108,7 +108,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [missionReading, setMissionReading] = useState(false);
   // What needs a person on Mission Control: the runs asking a question, the failures of the last day, the runs at work;
   // read with the page, and again every 10 seconds while it is open. `ownRun`: whether anything of the owner's has run.
-  const [needs, setNeeds] = useState<{ asking: Run[]; failed: Run[]; live: Run[] } | null>(null);
+  const [needs, setNeeds] = useState<Needs | null>(null);
+  const [needsProblem, setNeedsProblem] = useState<string | null>(null);
   const [ownRun, setOwnRun] = useState<boolean | null>(null);
   const [needsTry, setNeedsTry] = useState(0);
   const [runs, setRuns] = useState<Run[] | null>(null);
@@ -189,7 +190,13 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     setMissionError(null); setMissionReading(true);
     const from = rangeFrom(statsRange);
     Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), v2.listRuns(10)])
-      .then(([s, r]) => { if (live) { setMission(missionFrom(s, r.runs)); setOwnRun(hasOwnRun(r.runs, s.analytics.by_source)); } })
+      .then(([s, r]) => {
+        if (!live) return;
+        setMission(missionFrom(s, r.runs));
+        // Whether anything of the owner's has run, decided by a read of every agent; once it has, it stays so. The range
+        // and agent filters show only once it has, so a filter never brings the start-here panel back.
+        if (!statsAgent) setOwnRun((held) => held || hasOwnRun(r.runs, s.analytics.by_source));
+      })
       .catch((e) => { if (live) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); })
       .finally(() => { if (live) setMissionReading(false); });
     return () => { live = false; };
@@ -197,12 +204,18 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   useEffect(() => {
     if (where.section !== "mission") return;
     let live = true;
-    const read = () => Promise.all((["input_required", "failed", "working"] as const).map((status) => v2.listRuns(20, null, { status })))
-      .then(([asking, failed, working]) => {
+    // Up to 100 runs of each status, newest first; each read lands apart, and one that fails keeps its section's last answer.
+    const upTo = (status: RunStatus) => allPages((cursor) => v2.listRuns(50, cursor, { status }), (p) => p.runs, 2);
+    const read = () => Promise.allSettled([upTo("input_required"), upTo("failed"), upTo("working")])
+      .then((reads) => {
         if (!live) return;
         const day = Date.now() - 86_400_000;
-        setNeeds({ asking: asking.runs.filter((r) => r.pending), failed: failed.runs.filter((r) => Date.parse(r.ended_at ?? r.created_at) > day), live: working.runs });
-      }, () => {});
+        setNeedsProblem(mergeNeeds(null, reads).problem);
+        setNeeds((prev) => {
+          const { needs: next } = mergeNeeds(prev, reads);
+          return { asking: next.asking.filter((r) => r.pending), failed: next.failed.filter((r) => Date.parse(r.ended_at ?? r.created_at) > day), live: next.live };
+        });
+      });
     void read();
     const t = setInterval(() => void read(), 10_000);
     return () => { live = false; clearInterval(t); };
@@ -214,18 +227,24 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const answer = async (runId: string, text: string) => {
     try { await sendOnce(answerKeys, runId, text, v2.sendMessage); later(); return null; } catch (e) { return refusal(e); }
   };
-  // A run is started again with its own first message, read from its timeline (a run's read carries no input).
+  // A run is started again with its own whole first message (read from its timeline: a run's read carries no input),
+  // its effort and its spend cap. Each start keeps its key until it lands, so a retry after a lost answer is the same
+  // start; the runs that started are said, so they're never offered again.
+  const againKeys = useRef(new Map<string, string>()).current;
   const runAgain = async (rs: readonly Run[]) => {
+    const started: string[] = [];
     try {
       for (const r of rs) {
-        if (r.kind === "workflow") throw new Error(`"${r.title}" is a workflow run: start it again from its agent's page`);
-        const first = (await v2.getTimeline(r.run_id)).rows.find((row) => row.kind === "user_message");
-        const content = first?.text ?? first?.summary;
-        if (!content) throw new Error(`"${r.title}": its first message could not be read`);
-        await v2.startRun(r.agent_id, { input: { content } }, uuid());
+        const first = r.kind === "workflow" ? undefined : (await v2.getTimeline(r.run_id)).rows.find((row) => row.kind === "user_message");
+        const start = rerunBody(r, first?.text);
+        if ("refusal" in start) throw new Error(start.refusal);
+        const key = againKeys.get(r.run_id) ?? uuid();
+        againKeys.set(r.run_id, key);
+        await v2.startRun(r.agent_id, start.body, key);
+        started.push(r.run_id);
       }
-      later(); return null;
-    } catch (e) { return refusal(e); }
+      later(); return { started, problem: null };
+    } catch (e) { if (started.length) later(); return { started, problem: refusal(e) }; }
   };
   const stop = async (runId: string) => {
     try { await v2.stop(runId); later(); return null; } catch (e) { return refusal(e); }
@@ -260,7 +279,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         : where.section === "mission"
         ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
             scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
-            needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} agentName={agentName} onAnswer={answer} onRunAgain={runAgain} onStop={stop} />}
+            needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} problem={needsProblem} agentName={agentName} onAnswer={answer} onRunAgain={runAgain} onStop={stop} />}
             startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={imported} /> : undefined} />
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}

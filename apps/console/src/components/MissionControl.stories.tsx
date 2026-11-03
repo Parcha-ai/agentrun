@@ -56,7 +56,7 @@ const needRun = (id: string, agent: string, over: Partial<Run>): Run => ({
 const overloaded = { code: "run_failed", message: "529 overloaded: the provider is over capacity, try again shortly", retryable: false };
 const names: Record<string, string> = { "invoice-checker": "Invoice checker", "support-triage": "Support triage", "lead-scorer": "Lead scorer", "meeting-notes": "Meeting notes" };
 const strip = (
-  <NeedsYouStrip agentName={(id) => names[id] ?? id} onAnswer={async () => null} onRunAgain={async () => null} onStop={async () => null}
+  <NeedsYouStrip agentName={(id) => names[id] ?? id} onAnswer={async () => null} onRunAgain={async (runs) => ({ started: runs.map((r) => r.run_id), problem: null })} onStop={async () => null}
     asking={[
       needRun("q1", "invoice-checker", { status: "input_required", state: "waiting", title: "Check invoice INV-2310 from Contoso Freight, a new vendor.", pending: { kind: "question", question: "Contoso Freight isn't on the vendor list yet. Which approval limit applies: the $5,000 standard or the $25,000 preferred tier?", asked_at: ago(9) } }),
       needRun("q2", "support-triage", { status: "input_required", state: "waiting", title: "Triage ticket #4427: refund request over the policy limit.", pending: { kind: "question", question: "Which product or plan was charged twice?", asked_at: ago(3) } }),

@@ -33,12 +33,13 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, startHer
   );
   const spent = costParts(view.cost);
   const name = (id: string) => view.perAgent.find((a) => a.agentId === id)?.name ?? id;
-  // Each count links to its list, filtered to it; the cost has no list of its own.
+  // Each count links to its list, filtered to it; the cost and the active runs have no one list of their own.
   const tiles: [string, string, string | undefined, string?, string?][] = [
     ["Agents", String(view.agents), "#/agents"],
     ["Runs", String(view.runs.total), "#/runs"],
-    // Running runs the server can't tell the state of are in no other count: said under Active, never dropped.
-    ["Active", String(view.runs.active), "#/runs?status=working", undefined, view.runs.statusUnknown ? `${view.runs.statusUnknown} unknown` : undefined],
+    // Running runs the server can't tell the state of are in no other count: said under Active, never dropped. Active
+    // counts queued, working and paused runs, which no one list holds, so it links nowhere (Needs you lists the working).
+    ["Active", String(view.runs.active), undefined, undefined, view.runs.statusUnknown ? `${view.runs.statusUnknown} unknown` : undefined],
     ["Needs input", String(view.runs.needsInput), "#/runs?status=input_required", view.runs.needsInput ? "text-warning-text" : undefined],
     // Escalated runs waiting for review are counted apart from the failed: said under Failed, never in it.
     ["Failed", String(view.runs.failed), "#/runs?status=failed", view.runs.failed ? "text-destructive-text" : undefined, view.runs.needsReview ? `${view.runs.needsReview} ${view.runs.needsReview === 1 ? "needs" : "need"} review` : undefined],

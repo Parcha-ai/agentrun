@@ -267,9 +267,12 @@ describe("the cost of cut runs (bounded_unknown)", () => {
 describe("MissionControl, the counts as links and the latest runs in full", () => {
   it("links each count to its list, filtered to it", () => {
     const html = render(view);
-    for (const [label, href] of [["Agents", "#/agents"], ["Runs", "#/runs"], ["Active", "#/runs?status=working"], ["Needs input", "#/runs?status=input_required"], ["Failed", "#/runs?status=failed"]]) {
+    for (const [label, href] of [["Agents", "#/agents"], ["Runs", "#/runs"], ["Needs input", "#/runs?status=input_required"], ["Failed", "#/runs?status=failed"]]) {
       expect(html, label).toMatch(new RegExp(`<a[^>]*href="${href.replace(/[?]/g, "\\?")}"[^>]*>(?:(?!</a>).)*${label}`));
     }
+  });
+  it("leaves Active unlinked: it counts queued, working and paused runs, which no one list holds", () => {
+    expect(render(view)).not.toContain('href="#/runs?status=working"');
   });
   it("shows each latest run's agent, how long it took, and its cost when known", () => {
     const done: Run = { ...run("run-9", "completed", "idle", "Check invoice INV-2291"), ended_at: "2026-10-30T03:00:42Z", cost: { usd: 0.0086, basis: "estimate", charge_state: null, cap_usd: null } };

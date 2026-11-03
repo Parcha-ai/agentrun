@@ -51,3 +51,33 @@ export function ago(iso: string, now: number): string {
   if (s < 86_400) return `${Math.floor(s / 3600)} h`;
   return `${Math.floor(s / 86_400)} days`;
 }
+
+/** The longest text a timeline row keeps: a longer one keeps its start and ends in "..." (the run timeline's text cap). */
+const TIMELINE_TEXT_CAP = 2000;
+
+/** The start of "Run again": the run's whole first message, with its effort and its spend cap, or why it can't be
+ *  started again from here. A workflow run takes typed input, and a first message the timeline cut would start a
+ *  shortened task: both are refused. */
+export function rerunBody(run: Run, firstMessage: string | null | undefined): { body: { input: { content: string }; effort?: string; max_cost_usd?: number } } | { refusal: string } {
+  if (run.kind === "workflow") return { refusal: `"${run.title}" is a workflow run: start it again from its agent's page` };
+  if (!firstMessage) return { refusal: `"${run.title}": its first message could not be read` };
+  if (firstMessage.length >= TIMELINE_TEXT_CAP && firstMessage.endsWith("...")) return { refusal: `"${run.title}": its first message is longer than the timeline keeps; start it again from its agent's page` };
+  const cap = run.cost?.cap_usd;
+  return { body: { input: { content: firstMessage }, ...(run.effort ? { effort: run.effort } : {}), ...(typeof cap === "number" ? { max_cost_usd: cap } : {}) } };
+}
+
+export type Needs = { asking: Run[]; failed: Run[]; live: Run[] };
+const SECTIONS = [["asking", "The runs asking a question"], ["failed", "The failed runs"], ["live", "The running runs"]] as const;
+
+/** The strip's three reads, landed apart: each that landed is taken, one that failed keeps the section's last answer,
+ *  and `problem` names what could not be read (null when all landed). */
+export function mergeNeeds(prev: Needs | null, reads: readonly PromiseSettledResult<Run[]>[]): { needs: Needs; problem: string | null } {
+  const needs = { asking: prev?.asking ?? [], failed: prev?.failed ?? [], live: prev?.live ?? [] };
+  const problems: string[] = [];
+  SECTIONS.forEach(([key, name], i) => {
+    const read = reads[i];
+    if (read?.status === "fulfilled") needs[key] = read.value;
+    else if (read) problems.push(`${name} could not be read: ${read.reason instanceof Error ? read.reason.message : String(read.reason)}`);
+  });
+  return { needs, problem: problems.length ? problems.join(" · ") : null };
+}

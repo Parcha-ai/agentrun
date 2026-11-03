@@ -23,7 +23,7 @@ const failed = [
 ];
 const live = [run("w1", "notes", { status: "working", state: "working", title: "Draft release notes for 2.15", created_at: "2026-11-03T16:17:30Z", cost: { usd: 0.0031, basis: "estimate", charge_state: null, cap_usd: null } })];
 const names: Record<string, string> = { invoice: "Invoice checker", triage: "Support triage", scorer: "Lead scorer", notes: "Release notes writer" };
-const base: NeedsYouProps = { asking, failed, live, agentName: (id) => names[id] ?? id, now: () => NOW, onAnswer: async () => null, onRunAgain: async () => null, onStop: async () => null };
+const base: NeedsYouProps = { asking, failed, live, agentName: (id) => names[id] ?? id, now: () => NOW, onAnswer: async () => null, onRunAgain: async (runs) => ({ started: runs.map((r) => r.run_id), problem: null }), onStop: async () => null };
 const html = (p: Partial<NeedsYouProps> = {}) => renderToStaticMarkup(createElement(NeedsYouStrip, { ...base, ...p }));
 
 let root: ReturnType<typeof createRoot> | undefined;
@@ -89,7 +89,7 @@ describe("NeedsYouStrip, the failures", () => {
   });
   it("runs every run of a group again on one click, and drops the group once they started", async () => {
     const again: string[][] = [];
-    const host = mount({ onRunAgain: async (runs) => { again.push(runs.map((r) => r.run_id)); return null; } });
+    const host = mount({ onRunAgain: async (runs) => { again.push(runs.map((r) => r.run_id)); return { started: runs.map((r) => r.run_id), problem: null }; } });
     await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Run all again")!.click(); });
     await flush();
     expect(again).toEqual([["f1", "f2"]]);
@@ -109,5 +109,52 @@ describe("NeedsYouStrip, the live runs", () => {
   });
   it("shows nothing at all when no run waits, failed or works", () => {
     expect(html({ asking: [], failed: [], live: [] })).toBe("");
+  });
+});
+
+describe("NeedsYouStrip, keeping track of what started and what is asked", () => {
+  const render = (p: Partial<NeedsYouProps>) => act(() => root!.render(createElement(NeedsYouStrip, { ...base, ...p })));
+  it("leaves the runs a refused Run all again didn't start, with the refusal, and never offers the started ones again", async () => {
+    const again: string[][] = [];
+    const host = mount({ onRunAgain: async (runs) => { again.push(runs.map((r) => r.run_id)); return { started: ["f1"], problem: "agent_not_runnable: the triage agent is archived" }; } });
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Run all again")!.click(); });
+    await flush();
+    expect(host.textContent).toContain("agent_not_runnable: the triage agent is archived");
+    expect(host.textContent).toContain("Started again: 1 run");
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Run again" && b.closest("li")?.textContent?.includes("529"))!.click(); });
+    await flush();
+    expect(again).toEqual([["f1", "f2"], ["f2"]]);
+  });
+  it("offers Run again for a new failure with the same error, after the earlier ones started", async () => {
+    const host = mount();
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Run all again")!.click(); });
+    await flush();
+    render({ failed: [...failed, run("f9", "invoice", { status: "failed", error: overloaded, ended_at: "2026-11-03T16:15:00Z", title: "Check invoice INV-2400" })] });
+    const row = [...host.querySelectorAll("li")].find((li) => li.textContent?.includes("529 overloaded"))!;
+    expect(row.textContent).toContain("Check invoice INV-2400");
+    expect([...row.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Run again"]);
+  });
+  it("shows a new question's form, never the last answer's note, when the run asks again", async () => {
+    const host = mount();
+    const card = () => host.querySelector('[data-run="q2"]')!;
+    const input = card().querySelector("input") as HTMLInputElement;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "The Pro plan"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => { (card().querySelector("form") as HTMLFormElement).requestSubmit(); });
+    await flush();
+    expect(card().textContent).toContain("Answered: The Pro plan");
+    render({ asking: [asking[0]!, { ...asking[1]!, pending: { kind: "question", question: "Was it charged in October or November?", asked_at: "2026-11-03T16:19:50Z" } }] });
+    expect(card().textContent).toContain("Was it charged in October or November?");
+    expect(card().textContent).not.toContain("Answered:");
+    expect(card().querySelector("input")).not.toBeNull();
+  });
+  it("says a live run's cost is not known yet, never that nothing was spent, unless it is an explicit zero", () => {
+    expect(html({ live: [{ ...live[0]!, cost: null }] })).toContain("cost not known yet");
+    expect(html({ live: [{ ...live[0]!, cost: null }] })).not.toContain("nothing spent yet");
+  });
+  it("says what could not be read, and keeps what could", () => {
+    const h = html({ problem: "The failed runs could not be read: Failed to fetch" });
+    expect(h).toContain("The failed runs could not be read: Failed to fetch");
+    expect(h).toContain("Which approval limit applies");
+    expect(html({ asking: [], failed: [], live: [], problem: "The runs could not be read: Failed to fetch" })).toContain("could not be read");
   });
 });

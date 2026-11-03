@@ -16,9 +16,12 @@ export type NeedsYouProps = {
   agentName: (id: string) => string;
   /** Sends an answer to the run; resolves with the refusal to show, or null once it went. */
   onAnswer: (runId: string, text: string) => Promise<string | null>;
-  /** Starts each run again with its own first message; resolves with the refusal to show, or null. */
-  onRunAgain: (runs: readonly Run[]) => Promise<string | null>;
+  /** Starts each run again with its own first message; resolves with the runs it started, and the refusal to show
+   *  for one it couldn't (null when all started). */
+  onRunAgain: (runs: readonly Run[]) => Promise<{ started: string[]; problem: string | null }>;
   onStop: (runId: string) => Promise<string | null>;
+  /** What could not be read, when a read failed: the sections that read are still shown. */
+  problem?: string | null;
   now?: () => number;
 };
 
@@ -26,7 +29,7 @@ const runHref = (id: string) => `#/runs/${encodeURIComponent(id)}`;
 
 /** Mission Control's first section: what needs a person now (each question answered in place, each failure said once
  *  with a way to run it again) and the runs at work, each with its clock. Nothing at all when nothing waits or works. */
-export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onRunAgain, onStop, now = Date.now }: NeedsYouProps) {
+export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onRunAgain, onStop, problem, now = Date.now }: NeedsYouProps) {
   const groups = failureGroups(failed);
   // The live runs' clocks move on their own, once a second.
   const [, tick] = useState(0);
@@ -37,14 +40,15 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onRun
   }, [live.length]);
   const failures = groups.reduce((n, g) => n + g.runs.length, 0);
   const needs = asking.length + failures;
-  if (!needs && !live.length) return null;
+  if (!needs && !live.length && !problem) return null;
   const at = now();
   return (
     <section aria-label="Needs you" className="space-y-3">
       {needs > 0 && <h2 className="caps text-[12px] font-semibold">Needs you <span className="text-warning-text">· {needs}</span></h2>}
+      {problem && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
       {asking.length > 0 && (
         <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-          {asking.map((r) => <Question key={r.run_id} run={r} agentName={agentName(r.agent_id)} at={at} onAnswer={onAnswer} />)}
+          {asking.map((r) => <Question key={`${r.run_id}:${r.pending?.asked_at ?? ""}`} run={r} agentName={agentName(r.agent_id)} at={at} onAnswer={onAnswer} />)}
         </ul>
       )}
       {groups.length > 0 && (
@@ -108,18 +112,29 @@ function Question({ run, agentName, at, onAnswer }: { run: Run; agentName: strin
   );
 }
 
-function Failure({ message, runs, agentName, at, onRunAgain }: { message: string; runs: Run[]; agentName: (id: string) => string; at: number; onRunAgain: NeedsYouProps["onRunAgain"] }) {
+function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: string; runs: Run[]; agentName: (id: string) => string; at: number; onRunAgain: NeedsYouProps["onRunAgain"] }) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const [started, setStarted] = useState(false);
-  const first = runs[0]!;
-  const one = runs.length === 1;
+  // The runs started again, by id: never offered again, while a new failure with the same error is.
+  const [startedIds, setStartedIds] = useState<ReadonlySet<string>>(new Set());
+  const runs = all.filter((r) => !startedIds.has(r.run_id));
+  const startedCount = all.length - runs.length;
   const again = async () => {
     setBusy(true); setProblem(null);
-    const p = await onRunAgain(runs);
-    setBusy(false);
-    if (p) setProblem(p); else setStarted(true);
+    const { started, problem: p } = await onRunAgain(runs);
+    setBusy(false); setProblem(p);
+    setStartedIds((held) => new Set([...held, ...started]));
   };
+  const startedNote = startedCount > 0 && <span className="font-mono text-[12px] text-success-text">Started again: {startedCount === 1 ? "1 run" : `${startedCount} runs`}</span>;
+  if (!runs.length) return (
+    <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 last:border-b-0">
+      <span className="size-2 shrink-0 rounded-full bg-border-strong" aria-hidden />
+      <p className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted-foreground">{message}</p>
+      {startedNote}
+    </li>
+  );
+  const first = runs[0]!;
+  const one = runs.length === 1;
   return (
     <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 last:border-b-0">
       <span className="size-2 shrink-0 rounded-full bg-destructive" aria-hidden />
@@ -137,9 +152,8 @@ function Failure({ message, runs, agentName, at, onRunAgain }: { message: string
         {problem && <p className="mt-1 font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
       </div>
       <span className="font-mono text-[12px] text-muted-foreground">{ago(first.ended_at ?? first.created_at, at)} ago</span>
-      {started
-        ? <span className="font-mono text-[12px] text-success-text">Started again: {one ? "1 run" : `${runs.length} runs`}</span>
-        : <Button type="button" size="sm" disabled={busy} onClick={() => void again()}>{one ? "Run again" : "Run all again"}</Button>}
+      {startedNote}
+      <Button type="button" size="sm" disabled={busy} onClick={() => void again()}>{one ? "Run again" : "Run all again"}</Button>
     </li>
   );
 }
@@ -147,7 +161,8 @@ function Failure({ message, runs, agentName, at, onRunAgain }: { message: string
 function Live({ run, agentName, at, onStop }: { run: Run; agentName: string; at: number; onStop: NeedsYouProps["onStop"] }) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const spent = run.cost?.usd ? `${cost(run.cost)} so far` : "nothing spent yet";
+  const usd = run.cost?.usd;
+  const spent = usd === 0 ? "nothing spent yet" : typeof usd === "number" ? `${cost(run.cost)} so far` : "cost not known yet";
   return (
     <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 last:border-b-0">
       <span className="size-2 shrink-0 rounded-full bg-[hsl(var(--run-active))] shadow-[0_0_0_4px_hsl(var(--run-active)/0.18)]" aria-hidden />
