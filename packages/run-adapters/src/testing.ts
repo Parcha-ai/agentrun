@@ -36,8 +36,10 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
 export type FauxAction =
   | { say: string; usd?: number | null }
   | { call: string; args?: unknown; usd?: number | null }
-  /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls. */
-  | { calls: { call: string; args?: unknown }[]; usd?: number | null }
+  /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls.
+   *  `bookAfter`: the calls run before the answer's cost is booked, as Claude Code runs a call while its response still
+   *  streams, so a call can end before the request that asked for it is paid. */
+  | { calls: { call: string; args?: unknown }[]; usd?: number | null; bookAfter?: boolean }
   | { submit: unknown; usd?: number | null }
   /** The reply ends the turn without a submission. */
   | { end: true; usd?: number | null }
@@ -136,7 +138,9 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             const index = cursor++;
             await append(FAUX_RECORDS.request, { index });
             if ("fail" in action) return await end("failed", action.fail);
-            await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
+            const book = () => io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
+            const bookAfter = "calls" in action && action.bookAfter === true;
+            if (!bookAfter) await book();
             if ("say" in action) io.onEvent({ type: "text", delta: action.say });
             else if ("end" in action) return await end("completed");
             else {
@@ -152,6 +156,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                 await append(FAUX_RECORDS.result, { callId, isError: result.isError === true });
                 io.onEvent({ type: "tool_end", callId, name, isError: result.isError === true });
               }
+              if (bookAfter) await book();
             }
           }
         } catch (error) {

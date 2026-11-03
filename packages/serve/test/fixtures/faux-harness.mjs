@@ -26,6 +26,9 @@ export function script(spec) {
     const runDir = process.argv[process.argv.indexOf("--dir") + 1];
     return [{ call: "write", args: { path: `${runDir}/work/hello.md`, content: "hello" }, usd: 0.001 }, { call: "write", args: { path: "/elsewhere/away.md", content: "x" }, usd: 0.001 }, { say: "Wrote hello.md.", usd: 0.001 }];
   }
+  // The same two calls, run while the answer's response still streams, as Claude Code runs them: each ends before its
+  // request is paid, so its result is in before the answer that asked for it can be written.
+  if (/Write two files while answering\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001, bookAfter: true }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
   if (/Write then read\./.test(text)) return [{ call: "write", args: { path: "note.txt", content: "hello from the tool" }, usd: 0.001 }, { call: "read", args: { path: "note.txt" }, usd: 0.001 }, { say: "Read back.", usd: 0.001 }];
   // Paths at the workspace's edge: one out of it, a file that is not there, then a write into it.
