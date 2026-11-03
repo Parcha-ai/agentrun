@@ -74,6 +74,8 @@ const allowedExtraFiles = {
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
   serve: ['package/launcher/agentrun-serve'],
+  // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build.
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
@@ -136,7 +138,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {
@@ -164,7 +166,7 @@ try {
       const scanned = (allowedEndpoints[directory] ?? []).reduce((text, [file, literal]) => (name === `package/${file}` && text.includes(literal) ? (usedEndpoints.add(`${file} ${literal}`), text.replaceAll(literal, '')) : text), content);
       const scannedDecoded = scanned.replace(/(?:%[0-9a-f]{2})+/gi, value => { try { return decodeURIComponent(value); } catch { return value; } });
       for (const [kind, pattern] of forbid) assert.ok(!pattern.test(scanned) && !pattern.test(scannedDecoded), `${kind} found in ${manifest.name}/${name}; content omitted`);
-      if (name.endsWith('.js') || name.endsWith('.d.ts')) {
+      if (name.endsWith('.js') || name.endsWith('.mjs') || name.endsWith('.d.ts')) {
         const imports = importsOf(content);
         for (const dependency of imports) {
           if (dependency.startsWith('.')) {
@@ -408,6 +410,7 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
   assert.deepEqual(smoke, runtimeSmokeChecks);
   receipt.runtimeSmoke = smoke;
   assert.match((await offlineNode(['node_modules/@parcha/agentrun-serve/dist/cli.js', '--help'])).stdout, /^usage: agentrun-serve /, 'the installed agentrun-serve bin prints its usage');
+  assert.match((await offlineNode(['node_modules/@parcha/agentrun/bin/agentrun.mjs', '--help'])).stdout, /^Usage: npx @parcha\/agentrun /, 'the installed agentrun bin prints its usage');
   if (requireConsole) {
     const index = await readFile(join(consumer, 'node_modules/@parcha/agentrun-serve/dist/console/index.html'), 'utf8').catch(() => '');
     assert.match(index, /\ssrc="\.\/assets\/[^"]+\.js"/, 'the installed agentrun-serve has the console, dist/console/index.html');

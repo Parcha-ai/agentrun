@@ -24,6 +24,23 @@ test("a call is counted failed by the rule its row reads: an error, or a result 
   assert.deepEqual([callFailed("web_fetch", { text: refused, isError: false }), callFailed("read", { text: refused, isError: false }), callFailed("read", { text: "", isError: true })], [true, false, true], "a tool without an outcome fails only on an error");
 });
 
+test("serve's web tools by the same rule: a page followed by a line for the model, and a search that answers {error}, read as failed", () => {
+  const skipped = "\nParallel was picked for web_fetch and gave no page (not tried: this run holds no Parallel key); this one was fetched directly.";
+  const unfetched = JSON.stringify({ ok: false, url: "https://down.example/", status: 0, error: "the host did not answer", via: "direct", parallel: "not tried: this run holds no Parallel key" }) + skipped;
+  const fetched = JSON.stringify({ ok: true, url: "https://example.com/", status: 200, title: "Example Domain", text: "Example", links: [], via: "direct", parallel: "Parallel answered 500" }) + skipped;
+  const unsearched = JSON.stringify({ error: "web_search does not run here: no native search for codex yet" });
+  const searched = `${JSON.stringify({ provider: "exa-keyless", query: "q", results: [] })}\nCite the URL of each result you rely on.`;
+  assert.deepEqual([["web_fetch", unfetched], ["fetch_page", unfetched], ["web_fetch", fetched], ["web_search", unsearched], ["web_search", searched]].map(([tool, text]) => callFailed(tool, { text, isError: false })), [true, true, false, true, false]);
+  const entries = [
+    user("Search, then fetch."),
+    answer([call("s1", "web_search", { query: "q" }), call("s2", "web_search", { query: "q" }), call("w1", "web_fetch", { url: "https://down.example/" })], usage(10, 5)),
+    result("s1", "web_search", unsearched), result("s2", "web_search", searched), result("w1", "web_fetch", unfetched),
+    answer([{ type: "text", text: "Done." }], usage(20, 3)),
+  ];
+  assert.deepEqual(runMetricsOf(entries).tools, { web_search: { calls: 2, errors: 1 }, web_fetch: { calls: 1, errors: 1 } });
+  assert.deepEqual(timelineOf(entries, { settled: true }).filter((r) => r.kind === "tool_result").map((r) => r.tool_status), ["failed", "success", "failed"], "the rows say the same");
+});
+
 test("a result row reads its outcome once, for its summary and its status both: a fetch's outcome parses its whole page", () => {
   const read = [];
   registerOutcome("outcome_once_probe", (result) => {

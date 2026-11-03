@@ -31,7 +31,7 @@ promoted on receipts.
 Node 22.19 or later and git 2.40 or later. In an empty directory:
 
 ```sh
-npm install @parcha/pi-agent-learn@beta @parcha/pi-git-remote@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-agent-learn@latest @parcha/pi-git-remote@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 pi 1.4 is not supported yet; a later release widens the range.
