@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
+import { LONG_ANSWER } from "./fixtures/faux-harness.mjs";
 
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -359,6 +360,26 @@ test("pi: a message sent while a turn works is placed at that turn's end and ans
   const rows = await completesOnlyAfter(api, runId, "Answer 2.");
   assert.deepEqual(rows.filter((r) => ["final_answer", "text_block"].includes(r.kind)).map((r) => r.summary), ["Answer 1.", "Answer 2."]);
   assert.equal(await answer(api, runId), "Answer 2.");
+});
+
+test("after a follow-up whose turn ends showing nothing, the run's answer is the earlier one whole, past the 2,000 characters its summary keeps, on this server and the next", { timeout: 90_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: FAUX, fauxHarness: FAUX_HARNESS, drainTimeout: "5s" });
+  let closed = false;
+  t.after(() => (closed ? undefined : one.close()));
+  const api = client(one.baseUrl, one.token);
+  const runId = await started(api, "long", "The second turn answers nothing, after a long answer.");
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(LONG_ANSWER.length > 2_000, true);
+  assert.equal(await answer(api, runId), LONG_ANSWER, "the first turn's answer, whole");
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
+  await follow(api, runId, ["completed"], { deadlineMs: 20_000 });
+  assert.equal(await answer(api, runId), LONG_ANSWER, "after the turn that showed nothing, still whole: never the summary the store keeps");
+  await one.close();
+  closed = true;
+  const two = await startServe({ data, port: 0, faux: FAUX, fauxHarness: FAUX_HARNESS, drainTimeout: "5s" });
+  t.after(() => two.close());
+  assert.equal(await answer(client(two.baseUrl, two.token), runId), LONG_ANSWER, "and on the next server, read from the run's store");
 });
 
 test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {

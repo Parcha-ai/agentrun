@@ -2,6 +2,9 @@
 // agent's instructions say. The script is read again at every open, so what a later process does can depend on a file.
 import { existsSync } from "node:fs";
 
+/** An answer of 3,000 characters, longer than the 2,000 a run's summary keeps; its end says it was not cut. */
+export const LONG_ANSWER = `${"The long answer goes on. ".repeat(119)}The end.`;
+
 export function script(spec) {
   const text = spec.system.join("\n");
   // As real harnesses do, a request that goes on calls a tool, and the turn's last request is its answer.
@@ -21,6 +24,8 @@ export function script(spec) {
   // A chat whose second turn has a request of unknown price.
   // A follow-up whose turn makes one request and shows nothing, as the Claude CLI's /compact does (a summary request, no
   // text): the turn ends with no answer row after the person's message.
+  // The same, after an answer past the store's 2,000-character summary: the run's answer is the whole of it.
+  if (/The second turn answers nothing, after a long answer\./.test(text)) return [{ say: LONG_ANSWER, usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
   if (/The second turn answers nothing\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
   // A turn that holds in its own process (fetch_page waits for the file, faux-web-hold.mjs), answers, then answers the
   // follow-up the person sent meanwhile in a turn of its own.

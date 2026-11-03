@@ -1521,7 +1521,10 @@ export class Runs {
     const { status, state } = statusOf(run);
     const row = TERMINAL.has(status) ? stored : undefined;
     const answer = answerOf(run.rows);
-    const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : (row?.summary ?? null);
+    // A run that ended on the person's message, which its turn answered with nothing it shows (decide()), answered with its
+    // newest answer: the whole text (answerText, read from the entries again on a later server), never the line the store
+    // keeps, which is cut.
+    const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : status === "completed" ? (lastAnswer(run) ?? row?.summary ?? null) : (row?.summary ?? null);
     // A run its cap stopped keeps the answer it paid for.
     const kept = status === "failed" && run.error?.code === SPEND_CAP_REACHED ? lastAnswer(run) : null;
     const endedAt = TERMINAL.has(status) ? (row?.endedAt ?? run.endedAt ?? run.updatedAt) : null;
