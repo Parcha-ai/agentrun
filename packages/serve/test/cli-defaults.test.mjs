@@ -37,13 +37,13 @@ test("the first free port from a given one passes over one in use; --open opens 
   assert.deepEqual([host.canOpen?.({}, "darwin"), host.canOpen?.({ CI: "1" }, "darwin"), host.canOpen?.({}, "linux"), host.canOpen?.({ DISPLAY: ":0" }, "linux"), host.canOpen?.({ WAYLAND_DISPLAY: "w" }, "freebsd")], [true, false, false, true, true]);
 });
 
-/** agentrun-serve started with `args` and no --port, in a fresh home with no model key; resolves with its base URL once its
- *  banner is out. */
-async function serve(t, args, env = {}) {
+/** agentrun-serve started with `args` and no --port, in a fresh home with no model key, on `data` (else a fresh store);
+ *  resolves with its base URL once its banner is out. */
+async function serve(t, args, env = {}, data = undefined) {
   const home = mkdtempSync(join(tmpdir(), "serve-defaults-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !MODEL_KEYS.includes(name)));
-  const child = spawn(process.execPath, [CLI, "--data", join(home, "agents"), ...args], { env: { ...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [CLI, "--data", data ?? join(home, "agents"), ...args], { env: { ...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
   t.after(async () => { child.kill("SIGTERM"); await exited; });
   let out = "";
@@ -54,7 +54,8 @@ async function serve(t, args, env = {}) {
     assert.ok(i < 600 && child.exitCode === null, `the server printed its banner: ${out}${err}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  return { home, base: /AGENTRUN_BASE_URL=(\S+)\/v2/.exec(out)[1], out };
+  const stop = async () => { child.kill("SIGTERM"); await exited; };
+  return { home, base: /AGENTRUN_BASE_URL=(\S+)\/v2/.exec(out)[1], out, stop };
 }
 
 test("demo: with no --port the server takes the first free port from its default, and a provider key with no model gives it one", { timeout: 120_000 }, async (t) => {
@@ -69,7 +70,7 @@ test("demo: with no --port the server takes the first free port from its default
   assert.equal(caps.models.default, "anthropic/claude-sonnet-5-5");
 });
 
-test("demo: --open opens the console's address in the browser where there is a display, and never in CI", { timeout: 120_000 }, async (t) => {
+test("demo: --open opens the console's address in the browser where there is a display, and never in CI; with accounts off, the banner's sign-in link when this start made the token", { timeout: 180_000 }, async (t) => {
   const fake = mkdtempSync(join(tmpdir(), "serve-open-"));
   t.after(() => rmSync(fake, { recursive: true, force: true }));
   const opened = join(fake, "opened");
@@ -81,6 +82,20 @@ test("demo: --open opens the console's address in the browser where there is a d
   const { base } = await serve(t, ["--port", "0", "--open"], { PATH: path, DISPLAY: ":0" });
   for (let i = 0; !existsSync(opened) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(readFileSync(opened, "utf8"), `${base}/\n`);
+  rmSync(opened);
+  // Accounts off, on a fresh store: the browser gets the link the banner prints, whose token signs it in.
+  const store = join(fake, "store");
+  const made = await serve(t, ["--port", "0", "--open"], { PATH: path, DISPLAY: ":0", AGENTRUN_ACCOUNTS: "0" }, store);
+  for (let i = 0; !existsSync(opened) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+  const link = /^Open (\S+)/m.exec(made.out)?.[1];
+  assert.match(link ?? "", /^http:\/\/127\.0\.0\.1:\d+\/\?token=[\w%.-]+$/, made.out);
+  assert.equal(existsSync(opened) && readFileSync(opened, "utf8"), `${link}\n`, "the sign-in link, as the banner prints it");
+  rmSync(opened);
+  await made.stop();
+  // The same store started again: the token is not printed, so the browser gets the plain address, never a placeholder.
+  const kept = await serve(t, ["--port", "0", "--open"], { PATH: path, DISPLAY: ":0", AGENTRUN_ACCOUNTS: "0" }, store);
+  for (let i = 0; !existsSync(opened) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(existsSync(opened) && readFileSync(opened, "utf8"), `${kept.base}/\n`);
   rmSync(opened);
   await serve(t, ["--port", "0", "--open"], { PATH: path, DISPLAY: ":0", CI: "1" });
   await serve(t, ["--port", "0"], { PATH: path, DISPLAY: ":0" });

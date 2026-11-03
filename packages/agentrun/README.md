@@ -14,8 +14,8 @@ each version of this command runs the server it was released with. Node.js 22.19
 macOS or Linux.
 
 pi runs every agent out of the box. The Claude Code and Codex harnesses need their own packages beside the server; when
-one is missing, AgentRun says so with the one command to paste: `npx` with this package and that harness's package at
-its version, with `--data` naming the same store.
+one is missing, AgentRun says so with the one command to paste: `npx` with this package, the server and that harness's
+package at their versions, with `--data` naming the same store.
 
 With `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY` in your environment and no `AGENT_MODEL`, the server
 runs a current model of that provider. Other commands are the server's: `npx @parcha/agentrun import` brings in your

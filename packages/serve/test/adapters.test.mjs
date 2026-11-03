@@ -200,17 +200,20 @@ test("demo: run from npx, a missing Codex says the npx line that starts this ser
   const claude = adapters.installedHere?.("@anthropic-ai/claude-agent-sdk");
   assert.equal(claude, "0.3.286", "this checkout installs the Claude Agent SDK beside serve");
   assert.ok((await reason(true)).endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun-serve@${SERVE} -p @anthropic-ai/claude-agent-sdk@${claude} -p ${spec} agentrun-serve`));
-  assert.ok((await reason(true, { AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0" })).endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun@0.3.0 -p @anthropic-ai/claude-agent-sdk@${claude} -p ${spec} agentrun`));
+  assert.ok((await reason(true, { AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0" })).endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p @anthropic-ai/claude-agent-sdk@${claude} -p ${spec} agentrun`));
   assert.ok((await reason(false)).endsWith(`; ${codex.CODEX_INSTALL}`));
 });
 
-test("demo: a server started by npx @parcha/agentrun hints that same command, one line for a Claude Code user: the SDK beside it, on ~/.agentrun; the command depends on this server, so it names it", () => {
+test("demo: a server started by npx @parcha/agentrun hints that same command, one line for a Claude Code user: the server at its version and the SDK beside it, on ~/.agentrun", () => {
   const sdk = "@anthropic-ai/claude-agent-sdk@0.3.286";
   const env = home({ AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0", AGENTRUN_SERVE_DATA: `${HOME_DIR}/.agentrun` });
-  assert.equal(adapters.npxLine?.(sdk, env, none), `npx -p @parcha/agentrun@0.3.0 -p ${sdk} agentrun --data ${HOME_DIR}/.agentrun`);
+  assert.equal(adapters.npxLine?.(sdk, env, none), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun --data ${HOME_DIR}/.agentrun`);
   // Following one harness's hint never takes away another already beside the server.
-  assert.equal(adapters.npxLine?.(sdk, env, codexHere), `npx -p @parcha/agentrun@0.3.0 -p @openai/codex@0.164.0 -p ${sdk} agentrun --data ${HOME_DIR}/.agentrun`);
-  assert.equal(adapters.npxLine?.("@openai/codex@0.164.0", env, codexHere), `npx -p @parcha/agentrun@0.3.0 -p @openai/codex@0.164.0 agentrun --data ${HOME_DIR}/.agentrun`, "the harness's own package is named once");
+  assert.equal(adapters.npxLine?.(sdk, env, codexHere), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p @openai/codex@0.164.0 -p ${sdk} agentrun --data ${HOME_DIR}/.agentrun`);
+  assert.equal(adapters.npxLine?.("@openai/codex@0.164.0", env, codexHere), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p @openai/codex@0.164.0 agentrun --data ${HOME_DIR}/.agentrun`, "the harness's own package is named once");
+  // Every version of the command gets the server pinned: 0.3.1 fetches the server on its own, and only the pin puts the
+  // harness's package beside the server that runs.
+  assert.equal(adapters.npxLine?.(sdk, { ...env, AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.1" }, none), `npx -p @parcha/agentrun@0.3.1 -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun --data ${HOME_DIR}/.agentrun`);
   // Only this command's own package at a version is taken from the environment: anything else hints the server's own.
   for (const door of ["@parcha/agentrun", "@parcha/agentrun@latest; rm -rf ~", "other@1.0.0", "@parcha/agentrun-serve@1.0.0"]) {
     assert.equal(adapters.npxLine?.(sdk, { ...env, AGENTRUN_NPX_PACKAGE: door }, none), `npx -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun-serve --data ${HOME_DIR}/.agentrun`, door);
@@ -223,7 +226,7 @@ test("the hinted command opens the store this server has: npx @parcha/agentrun's
   const sdk = "@anthropic-ai/claude-agent-sdk@0.3.286";
   const npx = (env) => adapters.npxLine?.(sdk, { AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0", ...env }, none);
   const serve = (env) => adapters.npxLine?.(sdk, env, none);
-  const agentrun = `npx -p @parcha/agentrun@0.3.0 -p ${sdk} agentrun`;
+  const agentrun = `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun`;
   const plain = `npx -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun-serve`;
   // agentrun-serve's default, which its import and reset-password share; npx @parcha/agentrun never relies on it.
   assert.equal(files.defaultData?.(home()), join(HOME_DIR, ".local", "share", "agentrun", "agents"));
