@@ -321,7 +321,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | tslib | 2.8.1 | 0BSD | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | type-is | 2.1.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
 | typebox | 1.3.27 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 5 |
-| typebox | 1.3.7 | MIT | decisions, dsl, harness, jev, pi, pi-agent-learn, pi-durable-agent, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| typebox | 1.3.7 | MIT | decisions, dsl, harness, jev, learn, pi, pi-agent-learn, pi-durable-agent, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
 | undici-types | 5.26.5 | MIT | harness, pi-browser, serve | no | 1 |
 | undici-types | 6.21.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | undici | 6.29.1 | MIT | harness, pi-browser, serve | no | 1 |

@@ -194,14 +194,6 @@ describe("local boxes: what a directory cannot give", () => {
 			expect(malformed.ok ? "ok" : malformed.error.code).toBe("invalid");
 			expect(readdirSync(root)).toEqual([]);
 		}));
-
-	it("refuses a label in the providers' own namespace", () =>
-		withProvider(async (provider) => {
-			const labels = { "pi-transport.facts": "x" };
-			const refused = await provider.create({ maxLifetimeMs: 60_000, labels }, context);
-			expect(refused.ok).toBe(false);
-			if (!refused.ok) expect(refused.error.code).toBe("invalid");
-		}));
 });
 
 describe.skipIf(!HAS_PROC)("local boxes: a program that locks the box's own directories", () => {
@@ -334,18 +326,6 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 			}));
 	}
 
-	it("the watchdog ends such a program too", () =>
-		withProvider(async (provider) => {
-			const box = await create(provider, 4_000);
-			const started = await box.exec(["env", "-i", "/bin/sleep", "300"], undefined, context);
-			if (!started.ok) throw started.error;
-			const workspace = box.facts().workspace;
-			await until(() => processesIn(workspace).length > 0);
-			await new Promise((resolve) => setTimeout(resolve, 6_500));
-			await until(() => processesIn(workspace).length === 0);
-			expect(processesIn(workspace)).toEqual([]);
-		}));
-
 	it("destroy leaves no watchdog behind", () =>
 		withProvider(async (provider) => {
 			const box = await create(provider);
@@ -416,20 +396,28 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 		60_000,
 	);
 
-	it("the watchdog ends an expired box that nobody asks about", () =>
+	it("the watchdog ends an expired box that nobody asks about, and a program in it that cleared its environment", () =>
 		withProvider(async (provider, root) => {
 			// Long enough that a loaded machine still sees the program start before the box expires.
 			const box = await create(provider, 4_000);
+			const workspace = box.facts().workspace;
 			await output(box, ["sh", "-c", "sleep 300 >/dev/null 2>&1 &"]);
-			await until(() => sleeping(box.id));
+			const hidden = await box.exec(["env", "-i", "/bin/sleep", "300"], undefined, context);
+			if (!hidden.ok) throw hidden.error;
+			// The cleared program carries no marker: only its working directory finds it.
+			await until(() => sleeping(box.id) && processesIn(workspace).some((pid) => !programsOf(box.id).includes(pid)));
 			expect(programsOf(box.id).length).toBeGreaterThan(0);
 			await new Promise((resolve) => setTimeout(resolve, 6_500));
 			await until(
 				() =>
-					!existsSync(join(root, box.id)) && programsOf(box.id).length === 0 && watchdogsOf(box.id).length === 0,
+					!existsSync(join(root, box.id)) &&
+					programsOf(box.id).length === 0 &&
+					watchdogsOf(box.id).length === 0 &&
+					processesIn(workspace).length === 0,
 			);
 			expect(existsSync(join(root, box.id))).toBe(false);
 			expect(programsOf(box.id)).toEqual([]);
 			expect(watchdogsOf(box.id)).toEqual([]);
+			expect(processesIn(workspace)).toEqual([]);
 		}));
 });

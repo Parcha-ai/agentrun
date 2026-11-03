@@ -1,16 +1,20 @@
-// fetch_page: one web page from a public host, as a Page: { ok, url, status, title, text, links, refused?, error? }.
-// The fetch is pi-browser's public-host guard (publicFetch): every redirect hop resolved, checked and dialled at the
+// The guarded direct fetch: one web page from a public host, as a Page: { ok, url, status, title, text, links, refused?,
+// error? }. web_fetch reads a page through it (web-fetch.ts); fetch_page, its legacy name, runs web_fetch. The fetch is
+// pi-browser's public-host guard (publicFetch): every redirect hop resolved, checked and dialled at the
 // address checked, http(s) only, a byte cap and a timeout. Before it, a URL on a port other than 80 or 443 is refused
 // here as well. A refusal or a failure is a Page with ok false, never a throw, so an agent reads why and a workflow can
 // branch on it.
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "@earendil-works/pi-ai";
-import { defineTool } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
-import { forModel } from "./result.js";
 
-export type Page = { ok: boolean; url: string; status: number; title: string; text: string; links: string[]; refused?: string; error?: string };
+/** `truncated` and `original_chars` (its length in characters) when the text was cut at TEXT_CAP. `truncated` and
+ *  `html_chars` (the page's whole length, in characters) when readPage cut the page's HTML before it was read: the
+ *  text is then the start of the page's, and no original_chars is given, since the page's whole text was never read.
+ *  `converted: "text"` when the text is the page's plain text, its conversion to markdown having run out of time. */
+export type Page = { ok: boolean; url: string; status: number; title: string; text: string; truncated?: true; original_chars?: number; html_chars?: number; converted?: "text"; links: string[]; refused?: string; error?: string };
 
+/** web_fetch's legacy name: a revision or a call node naming it runs web_fetch under it (tools.ts). */
 export const FETCH_PAGE_TOOL = "fetch_page";
 /** Under `--faux` only: a module whose default export gives `{ lookup, fetchImpl }` for the fetch (the tests' fake
  *  network), in place of the system's resolver and undici. */
@@ -21,6 +25,9 @@ export const TITLE_CAP = 500;
 export const TIMEOUT_MS = 30_000;
 
 export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+/** A page's text as a Page carries it: cut at TEXT_CAP, saying so, with its whole length when `whole` (a text a provider
+ *  cut already has none to give). No paging. */
+export const pageText = (text: string, whole = true): Pick<Page, "text" | "truncated" | "original_chars"> => ({ text: clip(text, TEXT_CAP), ...(text.length > TEXT_CAP ? { truncated: true as const, ...(whole ? { original_chars: text.length } : {}) } : {}) });
 
 /** The page at `url` as a Page. `options` are the guard's resolver and fetch, for a test; a signal ends it early. */
 export async function fetchPage(url: unknown, options: Omit<PublicFetchOptions, "maxBytes"> = {}): Promise<Page> {
@@ -33,8 +40,11 @@ export async function fetchPage(url: unknown, options: Omit<PublicFetchOptions, 
     const signal = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(options.signal ? [options.signal] : [])]);
     const answer = await publicFetch(url, { ...options, signal });
     if (answer.body === null) return failed({ url: answer.url, status: answer.status, error: `the page answered ${answer.status}` });
-    const page = /html/i.test(answer.contentType) ? await readPage(answer.body, answer.url) : { title: "", text: answer.body, links: [] };
-    return { ok: true, url: answer.url, status: answer.status, title: clip(page.title, TITLE_CAP), text: clip(page.text, TEXT_CAP), links: page.links.slice(0, LINKS_CAP) };
+    // The caller's stop reaches the read too; the timeout is the network's, and readPage keeps its own deadline.
+    const read = /html/i.test(answer.contentType) ? await readPage(answer.body, answer.url, options.signal ? { signal: options.signal } : {}) : null;
+    const page = read ?? { title: "", text: answer.body, links: [] };
+    const cut = read?.truncated ? { truncated: true as const, html_chars: read.html_chars! } : {};
+    return { ok: true, url: answer.url, status: answer.status, title: clip(page.title, TITLE_CAP), ...pageText(page.text, !read?.truncated), ...cut, ...(read?.converted === "text" ? { converted: "text" as const } : {}), links: page.links.slice(0, LINKS_CAP) };
   } catch (error) {
     if (error instanceof BrowserFailureError && error.failure.code === "refused") return failed({ refused: error.message });
     return failed({ error: (error as Error)?.message ?? String(error) });
@@ -55,16 +65,3 @@ export const URL_PARAMETERS = {
   properties: { url: { type: "string", minLength: 1, description: "An absolute http(s) URL." } },
   required: ["url"],
 } as unknown as TSchema;
-
-/** The agent's tool: the Page as JSON text. */
-export const fetchPageTool = (options: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">>) =>
-  defineTool({
-    name: FETCH_PAGE_TOOL,
-    description: "Fetch one web page from a public host and read it. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text (cut at 60,000 characters) and the absolute links it holds. A private or local address, a port other than 80 or 443, a scheme other than http(s), or a page that is not text is refused (ok false, with refused saying why).",
-    parameters: URL_PARAMETERS,
-    replay: "safe",
-    execute: async (args, _api, context) => {
-      const page = await fetchPage((args as { url?: unknown }).url, { ...(await options()), ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
-      return forModel(JSON.stringify(page), { details: page });
-    },
-  });

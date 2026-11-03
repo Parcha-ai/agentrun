@@ -54,9 +54,10 @@ export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
 export const REQUEST_STARTED = "agentrun.request_started";
 /** An end with `unsent: true` withdraws its start: the request was refused after its mark, and never left. */
 export const REQUEST_ENDED = "agentrun.request_ended";
-/** What a request with no `pi.assistant` entry of its own cost (pi's compaction summary, marked with `request:
- *  "compaction"`): `usd`, or null when unknown. It closes that request, as an entry closes a generation's. `failed`: the
- *  request failed, and its counts are taken as they are, as a failed answer's are. */
+/** What a request with no `pi.assistant` entry of its own cost (a side request, marked with a `request` label: pi's
+ *  compaction summary, `"compaction"`, or a tool's own model request, such as a web search's): `usd`, or null when
+ *  unknown. It closes that request, as an entry closes a generation's. `failed`: the request failed, and its counts are
+ *  taken as they are, as a failed answer's are. */
 export const REQUEST_COST = "agentrun.request_cost";
 /** A request the host refused before it left (the run was cancelled): pi answers it with an error entry, which is not a
  *  request and not a failure to show, so the timeline skips the error entry that answers each refusal. */
@@ -82,6 +83,8 @@ export const TOOL_STARTED = "agentrun.tool_started";
 export const REQUEST_CONTINUED = "agentrun.request_continued";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
+/** A side request's mark: its `request` is a label (a generation's, a harness's request number, is not). */
+const isSide = (entry: EntryLike) => typeof obj(entry.data)?.request === "string";
 const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
 /** A tool result an abort wrote (pi-durable's `aborted` diagnostic): the call was cut by a stop or a cancel, which ended
  *  its turn, not failed on its own. */
@@ -176,10 +179,12 @@ function createMeter() {
   // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
   // answer). Earlier answers are a run's from before requests were marked.
   let answered = 0;
-  // Compactions, apart: one may run beside a generation. Each closes with its cost, or with an end when aborted.
+  // Side requests (compactions, a tool's own requests), apart: one may run beside a generation. Each closes with its
+  // cost, or with an end when aborted.
   let compactions = 0;
   let compacting = 0;
-  let compactionOpen = false;
+  // How many are in flight: two side requests (a turn's parallel searches) may be.
+  let sidesOpen = 0;
   const tokens: Tokens = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
   // Requests whose tokens are unknown, and whether the latest answer's were.
   let unmetered = 0;
@@ -204,15 +209,15 @@ function createMeter() {
       // The answer before it, continued: shown, never counted again.
       continued -= 1;
       return "continued";
-    } else if (entry.kind === REQUEST_STARTED && isCompaction(entry)) {
+    } else if (entry.kind === REQUEST_STARTED && isSide(entry)) {
       compacting += 1;
-      compactionOpen = true;
-    } else if (entry.kind === REQUEST_ENDED && isCompaction(entry)) {
+      sidesOpen += 1;
+    } else if (entry.kind === REQUEST_ENDED && isSide(entry)) {
       if (unsent(entry)) compacting -= 1;
-      compactionOpen = false;
+      sidesOpen = Math.max(0, sidesOpen - 1);
     } else if (entry.kind === REQUEST_COST) {
       compactions += 1;
-      compactionOpen = false;
+      sidesOpen = Math.max(0, sidesOpen - 1);
       addCost(data?.usd);
       addTokens(tokensOf(data?.usage, data?.failed === true));
     } else if (entry.kind === TOOL_STARTED) {
@@ -263,7 +268,7 @@ function createMeter() {
     // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
     // process that ended.
     const open = (flying: boolean) => (flying && !settled ? 1 : 0);
-    const cut = marked - open(inFlight) > answered || compacting - open(compactionOpen) > compactions;
+    const cut = marked - open(inFlight) > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
     // A paid tool call cut by a crash: its charge is unknown, so the cost is.
     const cutCalls = settled ? held.size : 0;
     if (!requests && !compactions && !cut && !charges && !cutCalls) return undefined;
@@ -425,7 +430,9 @@ function createProjector(options: TimelineOptions) {
         if (thinking) add(make("thinking", conv, `${base}:${first("thinking")}`, { summary: `Thinking: ${cut(firstSentence(thinking), caps.thinking)}`, text: thinking }));
         const text = textOf(message);
         const final = message.stopReason === "stop" && !blocks.some((block) => block.type === "toolCall");
-        if (text) add(make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text }));
+        // A final stop's text block is its answer even when empty: the model ended its turn on purpose, with nothing to
+        // say. A message with no text block (a request the adapter bridge writes without content) shows none.
+        if (text || (final && first("text") >= 0)) add(make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text }));
         blocks.forEach((block, index) => {
           const [id, name] = [str(block.id), str(block.name)];
           if (block.type !== "toolCall" || !id || !name) return;

@@ -1,47 +1,60 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dirname, extname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { Worker } from "node:worker_threads";
+import { once } from "node:events";
+import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
-import { NODE_TOOLS, toolsView } from "./tools.js";
+import { NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir } from "./files.js";
+import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, ownedByIdentity } from "./home-path.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
+import { IMPORT_ASKED } from "./import.js";
+import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { type LearningMode, learningOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
-import { placesOf } from "./place.js";
+import { type Place, placesOf, resolvePlace } from "./place.js";
+import { fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
-import { boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
+import { type BoxOffer, boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
-import { hostSecrets, SECRET_NAMES, type StoredKeys, withSecrets } from "./secrets.js";
+import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
-import { keyOf, SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
+import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
+import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
-import { openWorkFile, removeWorkFile, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
+import { openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
 import { type ServerLock, takeServerLock } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
+
+/** A process's flags for a worker of it: without --input-type and the code string given with -e, --eval, -p or --print. */
+const workerArgs = (args: readonly string[]): string[] =>
+  args.filter((arg, i) => !arg.startsWith("--input-type") && !/^(?:-e|--eval|-p|--print)(?:=|$)/.test(arg) && !/^(?:-e|--eval|-p|--print)$/.test(args[i - 1] ?? ""));
 export const DEFAULT_PORT = 7340;
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const TOKEN_FILE = ".token";
@@ -56,10 +69,6 @@ const FILE_LIST_CAP = 2_000;
 /** Why a home's PUT or DELETE is 501 where `capabilities.home.writes` is false (workspace.ts writesHeld). */
 const HOME_WRITES_OFF = "This server can't write a home's files safely here: a write needs /proc/self/fd, as on Linux, which this platform lacks. Reads and the list still work.";
 const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
-const TYPES: Record<string, string> = {
-  txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8", csv: "text/csv; charset=utf-8", json: "application/json", jsonl: "application/x-ndjson",
-  html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf",
-};
 const INLINE = new Set(["text/plain; charset=utf-8", "text/markdown; charset=utf-8", "text/csv; charset=utf-8", "application/json", "application/x-ndjson", "image/png", "image/jpeg", "image/gif", "image/webp", "text/html; charset=utf-8"]);
 
 export type ServeOptions = {
@@ -72,6 +81,12 @@ export type ServeOptions = {
   openSetup?: boolean;
   /** With accounts: the address people open (AGENTRUN_PUBLIC_URL), which the printed setup link uses. */
   publicUrl?: string;
+  /** With open setup: the home whose Claude Code, Codex and pi sessions setup offers to import (default this user's),
+   *  and the temp directory whose projects it leaves out (default the OS's). */
+  sessionsHome?: { home: string; temp?: string };
+  /** With open setup on this machine, and no owner yet: count the sessions setup would import as the server starts, so
+   *  the offer has its numbers by the time the page opens (the CLI sets it). */
+  countSessions?: boolean;
   /** With accounts: the most addresses the sign-in limit keeps at once (default 10,000); a new one past it is a 429. */
   signInAddresses?: number;
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
@@ -107,11 +122,17 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export is the fetch the monid tools send through (the tests' fake), in
    *  place of monid's API. */
   fauxMonid?: string;
-  /** With `faux` only: a module whose default export is the fetch web_search sends through (the tests' fake MCP
-   *  server), in place of Exa's keyless endpoint. */
+  /** With `faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through, in
+   *  place of their APIs, for web_search's own request to the provider the revision's model names (model.ts). */
+  fauxUpstream?: string;
+  /** With `faux` only: a module whose default export is the fetch web_search's keyless Exa search sends through, in place
+   *  of Exa's MCP endpoint (exa-keyless.ts). */
   fauxExa?: string;
   /** A module scripting the faux harness (`script(spec)`): every harness but pi runs on it (harness.ts). */
   fauxHarness?: string;
+  /** With `faux` only: a module whose default export, given the data root, is the box provider runs' Docker boxes come
+   *  from (the tests' faux box, pi-transport's local box): docker is then available, and nothing asks Docker. */
+  fauxBox?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
   /** The console's built files, answered at / (default dist/console beside the server, which this package's build copies
@@ -130,6 +151,8 @@ export type ServeOptions = {
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
+  /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
+  beforeAbort?: (runId: string) => Promise<void> | void;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
   /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it (default 5 min). */
@@ -219,6 +242,8 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
+  { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
+  { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
   { method: "PUT", pattern: /^\/settings\/webhook$/, name: "saveWebhook" },
   { method: "DELETE", pattern: /^\/settings\/webhook$/, name: "deleteWebhook" },
@@ -254,23 +279,41 @@ export function workflowTitle(name: string, input: Record<string, unknown>): str
   return words.length ? `${name}${/[?!:.]$/.test(name) ? "" : ":"} ${words.join(", ")}` : name;
 }
 
-/** The server's reading of `base` with its secrets, saved keys among them, and its capabilities on it, the harnesses'
- *  offers included: made at the start and again at each save or delete of a key, so a key saved later can make a harness
- *  available with no restart. */
-export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode) {
+/** `env` as the harnesses' offers are made from it: without the tool keys' fields (TOOL_FIELDS), which no harness reads.
+ *  So the offers never depend on a tool key, and its save or delete leaves them as they are. */
+export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const descriptors = Object.getOwnPropertyDescriptors(env);
+  for (const name of TOOL_FIELDS) delete descriptors[name];
+  return Object.defineProperties({}, descriptors) as NodeJS.ProcessEnv;
+}
+
+/** What of `env` a write can change that the harnesses' offers are made from: each secret but the tool keys' fields (a
+ *  saved key is one of those; the rest of the environment is the server's start's). Held to tell whether a write needs
+ *  the offers probed again, never shown. */
+const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]);
+
+/** The server's reading of `base`, whole: its secrets, saved keys among them (`env`), the harnesses' offers, probed from
+ *  env without the tool keys (offersEnvOf), and its capabilities made from both under its learning switch (`learning`,
+ *  AGENTRUN_SERVE_LEARNING's when not given), its tool settings (`toolSettings`, what each web tool resolves to) and the
+ *  box offers (`boxes`, what the box registry set up at the start, boxes.ts). The server makes it once at its start and
+ *  then remakes only the parts a write changes (startHolding). */
+export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const env = withSecrets(base, "all", stored);
-  return { env, caps: await capabilities(env, maxRuns, learning ?? learningOf(env)) };
+  const offers = await harnessOffers(offersEnvOf(env));
+  return { env, offers, caps: capabilitiesWith(env, maxRuns, offers, learning ?? learningOf(env), toolSettings, boxes) };
 }
 
 /** The capabilities document GET /v2/capabilities answers for `env`: each harness's offer resolved, its `default_model`
  *  included (harnessOffers), so what this returns is what the route serves and what the document's schema holds.
- *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given. */
-export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env)) {
-  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning);
+ *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given; with this
+ *  server's tool settings, what each web tool resolves to (tool-plane.ts); `boxes`, the box offers its places show. */
+export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
+  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, toolSettings, boxes);
 }
 
-/** The capabilities document from offers already resolved: the route builds it once, at start. */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode) {
+/** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
+ *  offers: cheap, made again after each key or tool-settings write with the offers the server holds. */
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -280,11 +323,12 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
     harnesses,
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
-    places: placesOf(env),
+    places: placesOf(boxes),
     models,
-    /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing;
-     *  `key`, the tool key that unlocks it (tool-keys.ts), when one does. */
-    tools: toolsView(env).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
+    /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a
+     *  web tool, what it resolves to on each harness under this server's tool settings; `key`, the tool key that unlocks
+     *  it (tool-keys.ts), when one does. */
+    tools: toolsView(env, toolSettings).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
     /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
     secrets: {
       names: [...SECRET_NAMES],
@@ -314,6 +358,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
       browser: "none",
+      /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): false until the tool gate lands,
+       *  and a save that names one is refused. */
+      tool_permissions: false,
       sign_ins: false,
       vault: false,
       query: false,
@@ -376,8 +423,9 @@ async function oldHomes(data: string): Promise<string[]> {
 }
 
 export async function startServe(options: ServeOptions): Promise<Serve> {
-  const data = resolve(options.data);
-  await mkdir(data, { recursive: true, mode: 0o700 });
+  await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
+  // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
+  const data = await realpath(resolve(options.data));
   // What only reads and refuses comes first: a start refused for it creates nothing in the data root, server.lock included.
   const homes = await oldHomes(data);
   if (homes.length) {
@@ -429,23 +477,49 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
-  // The server's reading, saved keys with it (storedKeys), and its capabilities: made again at each save or
-  // delete of a key, the one writer of its file, so capabilities, the harnesses' offers, save checks and run checks see
-  // it with no restart and no request opening the file. A reading a later write overtook is dropped. The first is made
-  // once saved keys are read (below), so the offers are checked once at the start.
+  // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
+  const settings = new ToolSettings(data);
+  // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
+  // `offers`, what each harness offers, probed from env without the tool keys (offersEnvOf), the one slow part (each
+  // CLI's package and pins, codex's binary hashed); and `caps`, the capabilities document made from both under the tool
+  // settings and the box offers. A write remakes only the parts it changes, before it answers: a PUT of the tool
+  // settings, caps; a save or delete of a key, env and caps, and the offers only when what they are made from changed,
+  // which no tool key is. So a write answers at once, and capabilities, save checks and run checks after it see it, with
+  // no restart and no request opening the file. The offers are probed once saved keys are read (below), at the start.
   let env = withSecrets(base, "all", storedKeys);
-  let caps!: Awaited<ReturnType<typeof readingOf>>["caps"];
-  let latest = 0;
+  let offers!: HarnessCapability[];
+  let caps!: ReturnType<typeof capabilitiesWith>;
+  // The box offers are probed once, below, before the first reading is made.
+  const recompose = () => void (caps = capabilitiesWith(env, maxRuns, offers, learning, settings.get(), boxOffers));
+  // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
+  let offersFrom: readonly (string | undefined)[] | undefined;
+  let probes = 0;
+  const probe = async (why: string) => {
+    const mine = ++probes;
+    const from = offersInputs(env);
+    const started = performance.now();
+    const next = await harnessOffers(offersEnvOf(env));
+    log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
+    if (mine !== probes) return;
+    [offers, offersFrom] = [next, from];
+    recompose();
+  };
+  /** After a save or delete of a key, the one writer of its file: env again, then what reads it. */
   const keysChanged = async () => {
     // A run's learning, as its view, a list and its timeline row show it, is cut of the keys saved now (runs.ts).
     runs.keysChanged();
-    const mine = ++latest;
-    const next = await readingOf(base, maxRuns, storedKeys, learning);
-    if (mine === latest) ({ env, caps } = next);
+    env = withSecrets(base, "all", storedKeys);
+    const inputs = offersInputs(env);
+    if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
+    else await probe("key");
   };
-  // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts). No run uses one yet: the log says which this server has.
+  // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
+  // box stands in for Docker, and nothing asks Docker.
   const boxes = await boxRegistry(env);
-  log?.(logLine("boxes", boxesLog(boxes.offers(), enabledBoxes(env))));
+  const fauxBox = options.faux && options.fauxBox ? await fauxBoxes(resolve(options.fauxBox), data) : undefined;
+  const boxOffers: BoxOffer[] = boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? { id: "docker", available: true, reason: "a faux box (tests)" } : offer));
+  const runBoxes = fauxBox ?? boxes.provider("docker");
+  log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
@@ -453,8 +527,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
+  const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}), ...(options.fauxUpstream ? { fauxUpstream: resolve(options.fauxUpstream) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), toolSettings: () => settings.get(), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(fauxBox ? { fauxBox: resolve(options.fauxBox!) } : {}), ...(runBoxes ? { runBoxes } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
   const expected = digest(`Bearer ${token}`);
+  if (options.beforeAbort) runs.beforeAbort = options.beforeAbort;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
@@ -475,11 +550,89 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
-  await keysChanged();
+  await probe("start");
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
+
+  // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
+  // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
+  // a busy store's wait and the sessions' parsing never hold up a request.
+  const offersImport = options.openSetup === true && options.publicUrl === undefined && isLoopback(host);
+  let closing = false;
+  const workers = new Map<Worker, { task: ImportTask["task"]; exit: Promise<unknown> }>();
+  // Once the server closes, no worker starts: a setup still being answered then leaves its yes for the next start.
+  const onWorker = (task: ImportTask["task"]): Promise<ImportAnswer> =>
+    closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
+      const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
+        // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), and
+        // the keys saved on its Tool keys page, opened now (each cut too, the same rule as the CLI's import: a saved key
+        // and the server's own of the same name may differ), in the worker's memory alone: what the import cuts out of
+        // everything it writes.
+        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = secret(name); return value === undefined ? [] : [[name, value]]; })), stored: toolKeys.values() } satisfies ImportTask,
+        // Started from a string (its launcher runs node --input-type=module -e), the server's flags are given again
+        // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
+        // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
+        // runner's child holds many).
+        ...(process.execArgv.some((arg) => arg.startsWith("--input-type")) ? { execArgv: workerArgs(process.execArgv) } : {}),
+      });
+      workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
+      let answer: ImportAnswer | undefined;
+      worker.on("message", (message: ImportAnswer) => void (answer = message));
+      worker.once("error", failed);
+      worker.once("exit", (code) => {
+        workers.delete(worker);
+        if (answer) answered(answer);
+        else failed(new Error(`the import's worker ended (${code}) with no answer`));
+      });
+    });
+  // The count of what setup would import: started once (at start, or by the page's first read), read as it stands. One
+  // stopped (by close, or by setup) starts again on the next read; one that failed stays failed.
+  let count: { state: "counting" } | { state: "counted"; projects: number; sessions: number } | { state: "failed" } | undefined;
+  const countSessions = () => {
+    if (count) return;
+    count = { state: "counting" };
+    onWorker("plan").then(
+      (answer) => void (count = "sessions" in answer ? { state: "counted", projects: answer.projects, sessions: answer.sessions } : undefined),
+      (error: unknown) => {
+        count = { state: "failed" };
+        process.stderr.write(`agentrun-serve: the count of this machine's sessions failed: ${(error as Error).message}\n`);
+      },
+    );
+  };
+  const stopCount = () => { for (const [worker, { task }] of workers) if (task === "plan") worker.postMessage("stop"); };
+  // The owner's yes, kept until the import ends: a server stopped (or killed) mid-import goes on with it at its next start.
+  const importAsked = join(data, IMPORT_ASKED);
+  let importing: Promise<void> | undefined;
+  /** The import at setup as the owner's console reads it: running, done with what it took, or stopped (the next start
+   *  goes on with it). */
+  let importState: { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" } | undefined;
+  /** Never rejects: whatever stops it (the store held past its wait, a file) is said on stderr, and the server goes on. */
+  const importAtSetup = () =>
+    (importing ??= (async () => {
+      importState = { state: "running" };
+      try {
+        const answer = await onWorker("import");
+        if (!("took" in answer)) return void (importState = { state: "stopped" });
+        // The whole import, every start's part of it: what earlier starts took is kept with the owner's yes.
+        // The yes as setup wrote it is empty: no earlier start took anything.
+        const before = (await readFile(importAsked, "utf8").then((text) => (text.trim() ? (JSON.parse(text) as unknown) : null)).catch(() => null)) as { agents?: unknown; runs?: unknown } | null;
+        const agents = [...new Set([...(Array.isArray(before?.agents) ? before.agents.filter((id): id is string => typeof id === "string") : []), ...answer.took.agents])];
+        const runs = (typeof before?.runs === "number" ? before.runs : 0) + answer.took.runs;
+        if (answer.stopped) {
+          await writeDurable(importAsked, JSON.stringify({ agents, runs }));
+          return void (importState = { state: "stopped" });
+        }
+        await rm(importAsked, { force: true });
+        const took = { agents: agents.length, runs, skipped: answer.took.skipped };
+        importState = { state: "done", ...took };
+        process.stdout.write(`${logLine("import", took)}\n`);
+      } catch (error) {
+        importState = { state: "stopped" };
+        if (!closing) process.stderr.write(`agentrun-serve: the import at setup stopped (the next start goes on with it): ${(error as Error).message}\n`);
+      }
+    })());
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
@@ -553,14 +706,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
-  /** A workflow revision's shape as runnable.ts checks it: its workflow, harness and place. */
-  const workflowShape = ({ workflow, harness, place }: { workflow: unknown; harness?: string; place?: RevisionShape["place"] }): RevisionShape => ({ kind: "workflow", workflow, ...(harness ? { harness } : {}), ...(place ? { place } : {}) });
+  /** A workflow revision's shape as runnable.ts checks it: its workflow, tools, harness, place and tool settings. */
+  const workflowShape = ({ workflow, tools, harness, place, toolSettings }: { workflow: unknown; tools?: readonly string[]; harness?: string; place?: RevisionShape["place"]; toolSettings?: RevisionShape["toolSettings"] }): RevisionShape => ({ kind: "workflow", workflow, tools: tools ?? [], ...(harness ? { harness } : {}), ...(place ? { place } : {}), ...(toolSettings ? { toolSettings } : {}) });
   const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : workflowShape(revision.body));
 
-  /** What keeps `revision` from running here, checked before anything starts with the checks a save makes
-   *  (runnable.ts): one a save refused, or one a setting of this host fixes that it does not have yet. */
-  async function runnable(revision: Revision): Promise<void> {
-    const blockers = await blockersOf(env, shapeOf(revision));
+  /** What keeps `revision` from running here at `place` (its own, or narrowed to the runner), checked before anything
+   *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
+   *  does not have yet. A run narrowed to the runner runs without bash. `capped`: the run has a spend cap, which a web
+   *  tool's resolution reads (tool-plane.ts). */
+  async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
+    const shape = { ...shapeOf(revision), place };
+    if (shape.kind === "agentic" && place.mode === "runner" && revision.body.place?.mode === "sandbox") shape.tools = (shape.tools ?? []).filter((tool) => !toolOf(tool)?.sandboxOnly);
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
@@ -576,7 +733,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision));
+    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision), settings.get(), { boxes: boxOffers, offers });
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);
@@ -595,7 +752,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async () => {
-      const issues = Object.keys(body).filter((k) => !["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+      const issues = Object.keys(body).filter((k) => !["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id", "place"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+      // A run may narrow its agent's place to the runner, never widen it: the only place a request names.
+      if (body.place !== undefined && body.place !== "runner") issues.push({ field: "place", reason: "not_an_option", message: 'place is "runner": a run may narrow its agent\'s place to the runner, and names no other' });
       if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
       if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
       if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
@@ -612,9 +771,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const input = body.input as Json;
       const wrong = await inputIssuesOf(revision, input);
       if (wrong.length) throw invalid(wrong);
-      await runnable(revision);
+      const place = resolvePlace(revision.body.place as Place | undefined, body.place === "runner" ? "runner" : undefined);
+      await runnable(revision, place, { capped: body.max_cost_usd !== undefined });
       const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, input) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-      const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+      const run = await runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
     });
   }
@@ -687,7 +847,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // ---- files ----------------------------------------------------------------------------------------------------------
 
   type FileView = { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true };
-  const fileView = (path: string, st: { size: number; mtimeMs: number }): FileView => ({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null });
+  const fileView = (path: string, st: { size: number; mtimeMs: number }): FileView => ({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: typeOf(path) ?? null });
 
   /** The files under `base` (a run's work/, an agent's home), through no link (workspace.ts): each regular file's own size
    *  and time, a dot-name left out. `deep` when a directory below WALK_DEPTH was there and not entered. In a `home`, a
@@ -725,7 +885,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     });
     if (!opened) throw new ApiError("not_found", "no such file");
     const { handle, stats: st } = opened;
-    const type = TYPES[extname(rel).slice(1).toLowerCase()] ?? "application/octet-stream";
+    const type = typeOf(rel) ?? "application/octet-stream";
     const download = url.searchParams.get("download") === "1" || !INLINE.has(type);
     const name = rel.split("/").at(-1)!.replace(/[^\w.-]/g, "_");
     res.writeHead(200, {
@@ -855,6 +1015,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- the owner ------------------------------------------------------------------------------------------------------
 
+  /** A read only this server's page makes: the browser says so (Sec-Fetch-Site), or its Origin is this server's. A
+   *  same-origin GET carries no Origin and no body, so fromPage's checks would refuse the page itself. */
+  function pageRead(req: IncomingMessage): void {
+    if (req.headers["sec-fetch-site"] === "same-origin" || req.headers.origin?.toLowerCase() === ownOrigin(req)) return;
+    throw new ApiError("forbidden", "this read must come from this server's page");
+  }
+
   /** A write from the page: this server's own origin and a JSON body. A cookie never makes one from anywhere else. */
   function fromPage(req: IncomingMessage): void {
     if (req.headers.origin?.toLowerCase() !== ownOrigin(req)) throw new ApiError("forbidden", "this write must come from this server's page");
@@ -874,18 +1041,42 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out and GET /v2/auth/session, answered before any
    *  credential: their own checks are the setup code (or the token), the password, and the session. */
   async function ownerRoute(req: IncomingMessage, res: ServerResponse, path: string, me: Owner): Promise<void> {
-    const method = path === "/auth/session" ? "GET" : "POST";
+    const method = path === "/auth/session" || path === "/setup/import" ? "GET" : "POST";
     if (req.method !== method) throw new ApiError("method_not_allowed", `${req.method} is not a method of /v2${path}`, {}, { allow: method });
     switch (path) {
       case "/setup": {
         const byToken = req.headers.authorization !== undefined;
         if (byToken && !timingSafeEqual(digest(String(req.headers.authorization)), expected)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
         if (!byToken) fromPage(req);
-        const { password, body } = await passwordIn(req, ["password", "code"]);
-        const made = await me.setFirst(password, body.code, byToken);
+        const { password, body } = await passwordIn(req, ["password", "code", "import"]);
+        if (body.import !== undefined && typeof body.import !== "boolean") throw invalid([{ field: "import", reason: "wrong_type", message: "import is true or false" }]);
+        if (body.import === true && !offersImport) throw invalid([{ field: "import", reason: "not_allowed", message: "Only a server on this machine (no public address, on loopback) imports its sessions at setup: run the import command where they are." }]);
+        // The owner's yes, on the box ticked, is kept with the owner: written durably before the password, so a setup that
+        // cannot keep it sets no owner and can be tried again, and taken back if the password is not written.
+        const along = body.import === true ? { keep: () => writeDurable(importAsked, ""), drop: () => rm(importAsked, { force: true }) } : undefined;
+        const made = await me.setFirst(password, body.code, byToken, along);
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
         if (made === "code") throw new ApiError("forbidden", "that is not the setup code in the server's log, or it has expired");
-        return send(res, 201, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
+        // The count is for the offer, now answered: it stops.
+        stopCount();
+        // Only on the box ticked: the owner, now set, asked for it. It runs after the answer; agents arrive as it goes.
+        if (body.import === true) void importAtSetup();
+        return send(res, 201, { signed_in: true, ...(body.import === true ? { importing: true } : {}) }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
+      }
+      case "/setup/import": {
+        if (!offersImport) throw new ApiError("not_found", "no route /v2/setup/import");
+        // Before the owner is set, to the setup page: that it can import (202 while it counts), and then how many projects
+        // and sessions it would, or null for each when the count failed.
+        if (!me.hasPassword()) {
+          pageRead(req);
+          countSessions();
+          if (count?.state === "counted") return send(res, 200, { projects: count.projects, sessions: count.sessions });
+          if (count?.state === "failed") return send(res, 200, { projects: null, sessions: null });
+          return send(res, 202, { counting: true });
+        }
+        // After, to the signed-in owner: the import asked for at setup, running, done or stopped.
+        if (!signedIn(req, me) || importState === undefined) throw new ApiError("not_found", "no route /v2/setup/import");
+        return send(res, 200, importState);
       }
       case "/auth/sign-in": {
         fromPage(req);
@@ -951,7 +1142,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "getAgent": {
         const entry = await needAgent(id);
-        return send(res, 200, agentView(entry), { etag: etagOf(entry) });
+        // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
+        const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision), caps.tools.map((tool) => tool.name)) : [];
+        return send(res, 200, { ...agentView(entry), tools }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
         const entry = await needAgent(id);
@@ -1109,7 +1302,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const { issues, warnings } = await workflowIssues(body.workflow, body.tools as string[] | undefined);
         // What a save refuses on this host (a model node's tool, a code node where none runs), and what it lacks yet.
         if (!issues.length) {
-          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never }).catch(() => [])) {
+          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never, ...(body.tools ? { tools: body.tools as string[] } : {}) }, settings.get(), { offers }).catch(() => [])) {
             if (blocker.host) warnings.push(blocker.message);
             else issues.push({ path: "", code: "NOT_RUNNABLE_HERE", message: blocker.message });
           }
@@ -1151,6 +1344,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         toolKeys.remove(id);
         await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "getToolSettings":
+        return send(res, 200, withDefaults(settings.get()));
+      case "putToolSettings": {
+        // Replaces the settings: a capability the body leaves out takes its default. Runs launched from now on resolve
+        // on them, and capabilities say so at once.
+        const body = await bodyOf(req);
+        const issues = settingsIssues(body);
+        if (issues.length) throw invalid(issues);
+        settings.put(body as ToolSettingsMap);
+        // A setting changes what the web tools resolve to, never env or what a harness offers: capabilities again.
+        recompose();
+        return send(res, 200, withDefaults(settings.get()));
+      }
       // A person's view and control of what an agent learned (learning-routes.ts). Every text cut of the host's secrets as
       // they are now; a write as the definition's: an archived agent's too.
       case "getAgentLearning": {
@@ -1240,7 +1446,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
-    if (owner && (raw === "/v2/setup" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
+    if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}) })) return;
@@ -1248,9 +1454,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     route(req, res, url, raw.slice(3)).catch(fail);
   });
   const port = options.port ?? DEFAULT_PORT;
-  await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done()))).catch((error: Error) => {
-    throw error;
-  });
+  await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done())));
+  // Only a server that started takes up the import its owner asked for, or counts for setup's offer: one that failed to
+  // listen hands back no close to stop them.
+  if (offersImport && existsSync(importAsked)) void importAtSetup();
+  else if (offersImport && options.countSessions && owner && !owner.hasPassword()) countSessions();
   const address = server.address() as AddressInfo;
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...(options.allowHosts ?? [])].map((h) => `${h.toLowerCase()}:${address.port}`));
   // An address of every interface is reached on this machine at its loopback one.
@@ -1268,6 +1476,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
     async close() {
+      // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
+      // after close.
+      closing = true;
+      for (const worker of workers.keys()) worker.postMessage("stop");
+      await Promise.all([...workers.values()].map((w) => w.exit));
+      await importing;
       // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
       await runs.close();
       await webhooks.close();

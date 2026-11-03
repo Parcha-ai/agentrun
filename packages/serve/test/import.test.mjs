@@ -1050,6 +1050,39 @@ test("a Codex thread resumed in a new file of the same id is one run, in the pro
   }
 });
 
+test("a dry run counts sessions as the import takes them: a thread resumed in a second file of the same id is one session in its project's line and in the plan's total, as the summary found it", async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "counted");
+  mkdirSync(project, { recursive: true });
+  const first = codexSession(home, project, 201);
+  // The thread resumed an hour later, in a new file of the same id.
+  const later = shifted(codexSession(home, project, 202), `rollout-2026-10-20T10-00-00-${sessionId(202)}.jsonl`, 60, (r) => (r.type === "session_meta" ? { ...r, payload: { ...r.payload, id: sessionId(201) } } : r));
+  claudeSession(home, project, 203);
+  const data = join(root, "agents");
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    return lines;
+  };
+  const dry = await run("--dry-run");
+  const line = dry.find((l) => l.startsWith(`${project}  `));
+  assert.match(line, /[ ,]codex 1(,|  )/, "the thread's two files, one session");
+  assert.match(line, /[ ,]claude-code 1(,|  )/);
+  assert.match(line, /cost known 1\/2$/, "a session's cost is known when each of its files' is: the Claude Code session's");
+  assert.match(dry.find((l) => l.includes("nothing was written")), /^1 projects?, 2 sessions; /);
+  assert.match(dry.find((l) => l.startsWith("Found ")), /^Found 2 sessions /, "the summary's count, the same");
+  // Imported, then both of the thread's files touched a minute on (still long ended): planned again, as one session the
+  // store holds already.
+  assert.equal((await run()).find((l) => l.includes("runs imported into")).split(" ")[2], "2");
+  for (const file of [first, later]) {
+    const touched = new Date(statSync(file).mtimeMs + 60_000);
+    utimesSync(file, touched, touched);
+  }
+  const again = (await run("--dry-run")).find((l) => l.startsWith(`${project}  `));
+  assert.match(again, /codex 1 {2}cost known 0\/1 {2}already imported 1$/);
+});
+
 test("a Codex child counts in its thread's run whichever of the thread's files the import keeps", async (t) => {
   for (const why of ["its project is gone", "no message of the person's"]) {
     const { runs, measured, imported } = await measuredAndImported(t, (home, project) => {

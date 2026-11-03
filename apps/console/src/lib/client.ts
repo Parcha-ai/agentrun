@@ -28,6 +28,12 @@ export class ClientError extends Error {
  *  workflow ("" for the document itself). */
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
 
+/** `GET /v2/setup/import`'s answer. Before the owner is set: the server can import, still counting (202), then its counts
+ *  (null for each when the count failed). After: the import's state. */
+export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null };
+export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" };
+export type SetupImport = ImportOffer | ImportState;
+
 /** A runs list's filter (GET /v2/runs's `status` and `archived`): runs in one status, and the archived runs in place of
  *  the others. */
 export type RunsFilter = { status?: RunStatus; archived?: boolean };
@@ -91,7 +97,17 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       throw e;
     }),
     signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
-    setup: (password: string, code?: string) => call<{ signed_in: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}) } }),
+    /** Sets the owner's password. `importSessions`: the owner ticked setup's box, so the server imports this machine's
+     *  sessions once the password is set; never sent otherwise. */
+    setup: (password: string, code?: string, importSessions = false) =>
+      call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importSessions ? { import: true } : {}) } }),
+    /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, how many
+     *  sessions setup's box would import; after, to the signed-in owner, how the import asked for at setup stands. Null
+     *  where the server offers none (404) or refuses the read. */
+    setupImport: () => call<SetupImport>("GET", "/setup/import").catch((e) => {
+      if (e instanceof ClientError && (e.status === 404 || e.status === 403)) return null;
+      throw e;
+    }),
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
@@ -169,7 +185,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** The server's own check of a workflow (the DSL's validator, no code run, nothing stored). 404 on a server without it. */
     validateWorkflow: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => call<WorkflowCheck>("POST", "/workflows/validate", { body, signal }),
     /** GET /v2/stats with its `analytics` bounded: runs started at or after `from`, of `agent`. Every other number is the
-     *  whole store's, and an older server, which has no analytics, leaves both unread. */
+     *  whole store's. */
     statsOver: ({ from, agent: of }: { from?: string; agent?: string }) => {
       const q = new URLSearchParams();
       if (from) q.set("from", from);

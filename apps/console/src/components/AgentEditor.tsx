@@ -4,7 +4,7 @@ import { LearningField } from "@/components/LearningSwitch";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
-import { type Agent, type AgentFields, DECISION, defaultTools, harnessOptions, isStarter, reachesWeb, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, DECISION, defaultTools, harnessOptions, isStarter, reachesWeb, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
@@ -208,7 +208,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     // names shows as such, to untick.
                     const runs = (workflow && t.call_only) || toolsFor(f.harness ?? "pi", caps.tools).some((x) => x.name === t.name);
                     const on = f.tools?.includes(t.name) ?? false;
-                    const why = t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : !t.available ? `Needs ${(t.missing ?? []).join(", ")}` : undefined;
+                    const why = t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : sandboxReason(t, d?.place) ?? (!t.available ? `Needs ${(t.missing ?? []).join(", ")}` : undefined);
                     return (
                       <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
                         <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-[hsl(var(--primary))]" />

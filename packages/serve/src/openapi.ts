@@ -4,16 +4,18 @@
 // own routes are added as operations marked `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed
 // in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
-import { NOTE_STATUSES, NOTE_TYPES } from "@parcha/agentrun-learn";
+import { NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
 import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
-import { BOXES, PLACE_MODES } from "./place.js";
+import { BOX_IDS } from "./boxes.js";
+import { PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
+import { NOT_YET, PICKABLE, PROVIDERS } from "./tool-plane.js";
 
 type Json = Record<string, unknown>;
 
@@ -181,6 +183,35 @@ const TOOL_KEYS_VIEW = closed({
   },
 });
 const KEY_ID = { name: "key_id", in: "path", required: true, description: "The tool key: one of GET /settings/tool-keys' ids.", schema: { type: "string" } };
+/** The tool settings map (tool-plane.ts): the server's (/settings/tools) and an agent's own (definition.tool_settings).
+ *  `permission` is reserved for the tool gate: a save that names it is 422 `not_yet`. */
+const TOOL_SETTINGS = {
+  type: "object", additionalProperties: false,
+  properties: Object.fromEntries(PICKABLE.map((name) => [name, {
+    type: "object", additionalProperties: false,
+    properties: { provider: { enum: [...PROVIDERS[name]], description: `Default ${PROVIDERS[name][0]}.` }, permission: { type: "string", description: `Reserved for the tool gate: refused until then (422 not_yet, "${NOT_YET}").` } },
+  }])),
+};
+/** What a capability resolves to on each harness: `native`, `kernel`, `exa-keyless`, `parallel`, or `unavailable: <reason>`. */
+const RESOLUTION = { type: "string", pattern: "^(native|kernel|exa-keyless|parallel|unavailable: .+)$" };
+const RESOLVES = {
+  type: "object", additionalProperties: false, required: [...HARNESSES], properties: Object.fromEntries(HARNESSES.map((harness) => [harness, RESOLUTION])),
+  description: "What the tool resolves to on each harness: native (the harness's own tool, or on pi one request to the model provider's hosted search), kernel (the guarded direct fetch), exa-keyless (Exa's keyless MCP search), parallel, or unavailable: <reason>.",
+};
+/** GET and PUT /settings/tools's answer: each capability's provider, its default where none is set. */
+const TOOL_SETTINGS_ANSWER = closed(Object.fromEntries(PICKABLE.map((name) => [name, closed({ provider: { enum: [...PROVIDERS[name]] } })])));
+/** GET /agents/{agent_id}'s `tools`: each tool the agent's current revision grants, in capabilities.tools' order; one
+ *  with a provider choice with the provider in force, where it came from, the server's (its default), and what it
+ *  resolves to on the agent's harness and model. */
+const AGENT_TOOLS = {
+  type: "array",
+  description: "Each tool the agent's current revision grants, in capabilities.tools' order. A tool with a provider choice (web_search, web_fetch, and fetch_page, web_fetch's legacy name) carries the provider in force (provider), where it came from (provider_from: agent, its own tool_settings; server, the server's settings; default, the built-in default), the one that applies when the agent sets none (default_provider, the server's), and what it resolves to on the agent's harness and model (resolved). Only GET /agents/{agent_id} answers it.",
+  items: {
+    type: "object", additionalProperties: false, required: ["name"],
+    properties: { name: { type: "string" }, provider: { type: "string" }, provider_from: { enum: ["agent", "server", "default"] }, default_provider: { type: "string" }, resolved: RESOLUTION },
+  },
+  "x-agentrun-serve": "providers/1",
+};
 const WEBHOOK_ID = { name: "webhook_id", in: "path", required: true, description: "The message, as its `webhook-id` names it.", schema: { type: "string" } };
 const WEBHOOK_SET_FIELDS = {
   configured: { const: true }, url: { type: "string" },
@@ -608,6 +639,21 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
   },
+  "/settings/tools": {
+    get: {
+      operationId: "getToolSettings", tags: ["capabilities"], summary: "The server's tool settings",
+      description: "Each capability that has a choice, and its provider: web_search auto (the harness's own search or the model provider's hosted one, else Exa's keyless search), native (that alone), exa-keyless or parallel; web_fetch kernel or parallel. An agent's definition.tool_settings is over these. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent.",
+      responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "providers/1",
+    },
+    put: {
+      operationId: "putToolSettings", tags: ["capabilities"], summary: "Set the providers of web_search and web_fetch",
+      description: `Replaces the settings: a capability the body leaves out takes its default. Kept in the data directory, read by every run launched from then on, and capabilities say so at once. A pick of parallel without PARALLEL_API_KEY resolves unavailable, never to another provider. An unknown capability, a provider not offered for it, and a permission (422 not_yet, "${NOT_YET}") are refused.`,
+      requestBody: { required: true, content: { "application/json": { schema: TOOL_SETTINGS } } },
+      responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider now."), ...errors(400, 401, 415, 422, 429, 500) },
+      "x-agentrun-serve": "providers/1",
+    },
+  },
   [HOME_FILES_AT]: {
     get: {
       operationId: "listHomeFiles", tags: ["agents"], summary: "Every file in the agent's home",
@@ -764,9 +810,22 @@ const PENDING: Json = {
  *  components.schemas, then property names down to the object that takes them). Each is marked x-agentrun-serve with
  *  the addition that made it: `harness/1` and `place/1` are ones a later contract version would take on; `model/1` and
  *  `serve/1` are what this server added before it marked them. */
+/** A run's place, as its start resolved it. */
+const RUN_PLACE: Json = {
+  oneOf: [
+    { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
+    { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
+  ],
+  description: "Where the run executes, as its start resolved it: the request's `runner`, else its revision's place, else runner. In a sandbox place the agent's read, write, edit and bash run in the box, which binds only the run's work/ and has no network and no key; its loop, its log and every key stay on the server.",
+  "x-agentrun-serve": "place/1",
+};
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  RunCreate: {
+    place: { const: "runner", description: "Narrows the run's place to the runner, whatever its revision's: the run has no box, and no bash. Absent, the revision's place. No other place may be named: a request never widens a place.", "x-agentrun-serve": "place/1" },
+  },
   Run: {
     ...RUN_FIELDS,
+    place: RUN_PLACE,
     learning: LEARNING,
     review: REVIEW,
     pending: PENDING,
@@ -824,17 +883,19 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     place: {
       oneOf: [
         { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
-        { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOXES] } } },
+        { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
       ],
-      description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent, this host's default (capabilities.places.default), and an answer shows none; a revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes).",
+      description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent, this host's default (capabilities.places.default), and an answer shows none; a revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes). Only an agentic revision in a sandbox place may name `bash`; a workflow revision's place is runner or none (a sandbox place is 422). A run request may narrow the place to the runner (RunCreate.place).",
       "x-agentrun-serve": "place/1",
     },
+    tool_settings: { ...TOOL_SETTINGS, description: "The agent's own settings of web_search and web_fetch (their provider), over the server's (GET /settings/tools); absent, the server's. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     learning: { type: "boolean", default: false, description: "Whether an agentic revision's runs learn: each starts from what its agent has learned, the index of its notes in its instructions under `# Learned` and the notes in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true or false; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
   },
   AgentCreate: {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
   },
   Agent: {
+    tools: AGENT_TOOLS,
     kind: { enum: ["agentic", "workflow", null], description: "The current revision's kind; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revision: { type: ["string", "null"], description: "The current revision's id; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revisions: { type: "integer", minimum: 0, description: "How many revisions the agent has.", "x-agentrun-serve": "serve/1" },
@@ -846,7 +907,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: {
         modes: { type: "array", items: { enum: [...PLACE_MODES] } },
         default: { enum: [...PLACE_MODES], description: "The mode a revision that names no place runs in here." },
-        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: [...BOXES] }, available: { type: "boolean" }, reason: { type: "string" } } } },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, reason: { type: "string" } } } },
       },
       description: "The places a revision may name, this host's default, and each box: whether this server has it, and when not, why.",
       "x-agentrun-serve": "place/1",
@@ -863,8 +924,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       items: {
         type: "object", additionalProperties: false, required: ["name", "summary", "nodes", "calls", "available", "harnesses"],
         properties: {
-          name: { type: "string" }, summary: { type: "string" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, call_only: { type: "boolean", description: "Only a workflow's call node runs it (pdf_pages, llm): no agentic revision or model node names it." }, available: { type: "boolean" }, missing: { type: "array", items: { type: "string" } },
+          name: { type: "string" }, summary: { type: "string" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, call_only: { type: "boolean", description: "Only a workflow's call node runs it (pdf_pages, llm): no agentic revision or model node names it." }, sandbox_only: { type: "boolean", description: "Only an agent whose place is a sandbox names it (bash): it runs in the box, and a runner has no shell." }, available: { type: "boolean" }, reason: { type: "string", description: "Why the tool is unavailable here, present whenever `available` is false: a provider pick's own words (`web_search is turned off in settings`, `parallel picked, no PARALLEL_API_KEY`), or `Needs` and the variables it is missing." }, missing: { type: "array", items: { type: "string" } },
           harnesses: { type: "array", items: { enum: [...HARNESSES] }, description: "The harnesses that run the tool here; a revision naming it on another harness saves with a warning and its runs are 409 agent_not_runnable.", "x-agentrun-serve": "tool-harness/1" },
+          providers: { type: "array", items: { type: "string" }, description: "A tool with a provider choice: the providers offered for it, its default first.", "x-agentrun-serve": "providers/1" },
+          provider: { type: "string", description: "A tool with a provider choice: the server's, its default where it sets none.", "x-agentrun-serve": "providers/1" },
+          default_provider: { type: "string", description: "A tool with a provider choice: the built-in default.", "x-agentrun-serve": "providers/1" },
+          resolves: { ...RESOLVES, "x-agentrun-serve": "providers/1" },
           key: { enum: TOOL_KEYS.map((row) => row.id), description: "The tool key that unlocks it (GET /settings/tool-keys' id): saved there, it is read by name like a secret the server is started with, and the tool's `missing` goes at once. Absent when no tool key does.", "x-agentrun-serve": "toolkeys/1" },
         },
       },
@@ -929,6 +994,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept `sealed` under the seal key the server was handed; `unavailable` with none, when nothing is kept.",
       "x-agentrun-serve": "toolkeys/1",
     },
+    tool_permissions: { type: "boolean", description: "Whether a tool setting may carry a permission: false until the tool gate lands, and a save that names one is 422 not_yet.", "x-agentrun-serve": "providers/1" },
     webhooks: {
       type: "object", additionalProperties: false, required: ["routes", "events", "signing", "at_rest"],
       properties: { routes: { type: "boolean" }, events: { type: "array", items: { enum: [...WEBHOOK_EVENTS] } }, signing: { const: "standard-webhooks/v1" }, at_rest: { enum: ["sealed", "unavailable"] } },
@@ -954,7 +1020,7 @@ const BLOCKED_DETAILS = {
     unbound: { type: "array", items: { type: "string" }, description: "The tools the revision names that this server does not bind, or does not bind on its harness." },
     missing: { type: "object", additionalProperties: { type: "array", items: { type: "string" } }, description: "Each bound tool this host cannot run yet, with the variables it is missing." },
     harness: { enum: [...HARNESSES], description: "The revision's harness, when this server does not run it (capabilities.harnesses)." },
-    box: { enum: [...BOXES], description: "The box of the revision's place, when this server does not have it (capabilities.places.boxes)." },
+    box: { enum: [...BOX_IDS], description: "The box of the revision's place, when this server does not have it (capabilities.places.boxes)." },
     adapters: { type: "array", items: { type: "string" }, description: "A workflow revision: the adapters it needs that this server does not bind." },
     code: { type: "boolean", description: "A workflow revision: whether it needs code this server does not run." },
     tier: { type: "string", description: "A workflow revision: the model tier this host has no model for." },

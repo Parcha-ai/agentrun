@@ -64,6 +64,7 @@ test("every route the server serves is in the document, and every operation in i
 test("the contract's operations are as vendored; this server's own are added and marked x-agentrun-serve", async (t) => {
   const { doc } = await served(t);
   const vendored = new Map(operations(VENDORED).map(({ path, method, op }) => [`${method} ${path}`, op]));
+  assert.ok(vendored.has("put /agents/{agent_id}/definition") && doc.paths["/agents/{agent_id}/definition"].put["x-agentrun-serve-changed"], "PUT definition is a changed operation, its bodies checked below");
   const own = [];
   for (const { path, method, op } of operations(doc)) {
     const original = vendored.get(`${method} ${path}`);
@@ -95,6 +96,16 @@ test("the contract's operations are as vendored; this server's own are added and
     assert.deepEqual(Object.keys(changes).sort(), ["If-Match", "requestBody"]);
     const schema = (o) => o.requestBody.content["application/json"].schema;
     assert.deepEqual(schema(op).oneOf[0], schema(original), "the contract's body is one of the two");
+    if (path === "/agents/{agent_id}/definition") {
+      // Exactly one of PUT definition's two bodies: the contract's, or this server's {definition, skills?, note?}.
+      assert.deepEqual(changes, { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" });
+      const definition = { id: "a", version: 2, name: "a", instructions: "x", skills: [], tools: [] };
+      const problems = (value) => schemaProblems(doc, schema(op), value);
+      assert.deepEqual(problems(definition), [], "the contract's body");
+      assert.deepEqual(problems({ definition, skills: { "cite/SKILL.md": "# Cite" }, note: "why" }), [], "this server's body");
+      assert.notDeepEqual(problems({ ...definition, definition }), [], "never both at once");
+      assert.notDeepEqual(problems({ note: "why" }), [], "never neither");
+    }
     const plain = (params) => params.map(({ required, description, ...p }) => (p.name === "If-Match" ? p : { required, description, ...p }));
     assert.deepEqual(plain(op.parameters), plain(original.parameters));
     const { requestBody: _a, parameters: _b, ...same } = rest;

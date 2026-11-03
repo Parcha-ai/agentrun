@@ -1,82 +1,127 @@
 # @parcha/agentrun-learn
 
-Self-learning on any harness, as files. An agent's memory is a folder of short markdown notes in Claude Code's own
-auto-memory format: `MEMORY.md`, the index, and one file per note. Every run reads the index; when a run ends, its host
-may ask it one more turn to add notes. This package is the contract, in [SPEC.md](SPEC.md), and the code a host needs
-around that turn: the format, the prompt, the checker of what a run proposes, and the grader's prompt and verdict. It
-runs no git and calls no model: the host does both.
+Self-learning on any harness, as files. An agent keeps its own git repository: its rules, plus the notes, skills and
+workflow drafts it has learned. After a run it writes a memo and commits what it learned to that run's own branch,
+`runs/<run id>`. A review step merges what passes into `main`, and the next run reads `main`. Codex, Claude Code and Pi
+already edit files and run git, so the loop needs no integration with a harness: it is a layout, a memo format and a
+note format, in [SPEC.md](SPEC.md).
 
-Published to npm from the next release (`@beta`), with AgentRun Server, which uses it. Until then it installs from this
-repository.
+This package is that contract plus the one piece of code it needs: a checker that validates a run's branch before any
+merge. The checker is structural. It checks the layout and the locked paths (the agent's rules, the loop's own review
+skill, hooks, CI, package scripts, the spec), the formats, the caps, the run's memo, hidden characters and text shaped
+like a secret. A branch that passes goes on to an injection screen and the review, and what passes them merges
+automatically; [SPEC.md](SPEC.md#the-merge-policy) sets the order. Whether a note is any good is the review's judgment.
 
-## Notes
+Anything an agent learns on any harness must run on the workflow DSL, so a workflow draft must pass the DSL's own
+`validateWorkflow`, given the host's tool list as its `tools` option. With no list, a draft that names a tool is
+refused. A draft merges without a person, so a node that runs code (a `code` node, or a call via shell or executor)
+is refused.
 
-```js
-import { activeNotes, buildIndex, loadedIndex, parseNoteFile, retire, supersede } from "@parcha/agentrun-learn";
+It is held: it is built, tested and verified with the other packages and is not on npm yet. Install it from a packed
+tarball (`npm pack -w @parcha/agentrun-learn`).
 
-const note = parseNoteFile("refund-policy-path.md", text); // { file, name, description, type, status, superseded_by, supersedes, keys, body }, or why not
-const active = activeNotes(notes); // the active ones, by file name
-const index = buildIndex(notes); // "- [name](file.md) — description\n" per active note; "" with none
-const read = loadedIndex(index); // what a run reads: the first 200 lines, within 25 KB
-const marked = supersede(oldText, "refund-v2.md"); // the old note with status: superseded and superseded_by
-const gone = retire(text); // a person's retire: status: retired, and no superseded_by
+## Check a run's branch
+
+Node 22.19 or later and git. On the run's branch, in the agent's repository:
+
+```sh
+agentrun-learn check --base main --tools host-tools.json
 ```
 
-## Asking a run what it learned
+It prints `runs/<run id>: ok` and exits 0, or it names each problem by rule and file and exits 1. A bad command line, or a ref that names no commit, exits 2. It gives the same verdict from any folder of the work tree. Everything it prints, text or JSON, is redacted: a value it refuses, or text shaped like a secret, reads `[redacted]` even in a file's name or the branch's name. A name or detail that holds one in a form it cannot cut out, percent encoded or split by whitespace, prints whole as `[redacted]`.
 
-```js
-import { reflectPrompt } from "@parcha/agentrun-learn";
+| Option | What it does |
+| --- | --- |
+| `--base <ref>` | the ref the run's branch merges into, such as `main` or `origin/main` |
+| `--head <ref>` | the run's commit; `HEAD` by default |
+| `--branch runs/<run id>` | the branch the run pushes; by default the branch `--head` names |
+| `--run-base <ref>` | the commit the host started the run from; the memo's `base` must be it (default: the branch's fork point from `--base`) |
+| `--tools <file.json>` | the host's tool list, a JSON array of names or `{"tools": [...]}`. Without it, a draft that names a tool is refused. A list kept inside the repository is locked against the run |
+| `--refuse-values-from-env NAME,...` | refuse any file that holds the value of one of these variables; a value is never printed |
+| `--json` | print `{ok, run, branch, forkPoint, problems}` |
 
-const prompt = reflectPrompt({ dir: ".learning", active: activeNotes(notes).length });
+The checker reads git objects with plumbing only. It never checks anything out, so no hook, filter, smudge or merge
+driver of the repository runs.
+
+### As a pre-push hook
+
+`.git/hooks/pre-push`:
+
+```sh
+#!/bin/sh
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/runs/*) agentrun-learn check --base origin/main --head "$local_sha" --branch "${remote_ref#refs/heads/}" --tools "$HOME/.config/agentrun/tools.json" || exit 1 ;;
+    refs/heads/main) echo "a run never pushes to main" >&2; exit 1 ;;
+  esac
+done
 ```
 
-Once a run has answered or failed, a host sends `prompt` as one more turn in the same session. It says where the
-run's copy of the folder is, the format of a note, that a memory is replaced by a new note with `supersedes`, never
-edited or deleted, that the host rebuilds `MEMORY.md`, how many index lines are left, that writing nothing is fine, and
-what not to keep. It names no harness's tool. `dir` is the copy's path relative to the run's workspace, where every
-harness's file tools resolve one, so the prompt holds no path of the host's, which a box would not see. It refuses an
-absolute `dir`, and a control or unseen character in it.
+### In CI
 
-## Checking what a run proposes
+```sh
+git fetch origin main
+agentrun-learn check --base origin/main --head "$GITHUB_SHA" --branch "$GITHUB_HEAD_REF" --tools host-tools.json --refuse-values-from-env STORE_API_KEY
+```
+
+## From code
 
 ```js
-import { checkProposal } from "@parcha/agentrun-learn";
+import { checkBranch, checkRun } from "@parcha/agentrun-learn";
 
-const { ok, problems, notes } = checkProposal({
-  base: { files: pathsAtTheRunsSeed, active: activeNotesAtTheRunsSeed },
-  changes: [{ path: "refund-policy-path.md", status: "added", mode: "100644", bytes }],
-  refuseValues: hostSecrets,
+// A git repository: the changes from where the branch starts on base to head.
+const { ok, problems } = await checkBranch({ cwd: "agent-repo", base: "main", tools: ["fetch_page", "browser"] });
+
+// Or changes you already hold: path, status, git mode and the file's bytes at the branch's head.
+const found = checkRun({
+  branch: "runs/2026-10-27-0412-a1b2",
+  tools: ["fetch_page", "browser"],
+  changes: [{ path: "learnings/L-7c21e0a4b9d3.md", status: "added", bytes: Buffer.from(noteText) }],
 });
 ```
 
-The host reads the run's copy itself, regular files only and never following a link, and hands the checker each change
-against the commit the run started from. `ok` means the new notes (`notes`, parsed, with their text) go to the grader;
-each problem is `{ rule, path?, detail }`, printable as it is. [SPEC.md](SPEC.md#the-checks) lists the rules.
-`mergeProblems(base, notes)` asks the merge's own questions again of `main` at merge time.
+Each returns `{ ok, problems }`, and each problem is `{ rule, path?, detail }`. [SPEC.md](SPEC.md#what-the-checker-reports) lists the rules.
 
-`checkNote(path, bytes, refuseValues)` checks one note by itself, as a person writes it through the host: its name, the
-4096-byte cap, UTF-8, hidden characters, secret shapes and the host's values, and its front matter. It answers
-`{ problems, note? }`. A person may set `status` and `superseded_by`; what only a run may not do is `checkProposal`'s.
+## Asking a run to reflect
 
-## Grading it
+```js
+import { reflectBudget, reflectPrompt } from "@parcha/agentrun-learn";
+
+const reserveUsd = reflectBudget(run.maxCostUsd); // a tenth of the cap, at most $0.25; $0.05 with no cap
+const prompt = reflectPrompt({ run: run.id, dir: "/work/.agent/repo" });
+```
+
+Once a run has answered, a host sends `prompt` as one more turn in the same session. The repository is checked out in
+`dir` on `runs/<run id>`, and the host has written the memo's front matter to `memos/<run id>.md`. The agent writes the
+four sections under it and its notes with its own tools, as the reflect skill says, and commits them when it can run
+git. The prompt names no harness's tool. `reflectPrompt` refuses a run id the layout would refuse and a `dir` that is
+not an absolute path or holds a space or an unseen character. The turn's paid requests are held to `reserveUsd`, which
+the host keeps back from the run's cap for it.
+
+## Grade a run's branch
 
 ```js
 import { gradePrompt, parseVerdict } from "@parcha/agentrun-learn";
 
-const prompt = gradePrompt({ run: run.id, instructions: agent.instructions, active: mainActiveNotes, superseded, proposed: notes });
-const verdict = parseVerdict(await grader(prompt), notes); // { merge, reason, items: [{ file, keep, question?, why }] }
+// Once the checker and the injection screen have passed runs/<run id>:
+const prompt = gradePrompt({ run: run.id, instructions: agent.instructions, index: mainIndex, notes: mainNotes, changes });
+const verdict = parseVerdict(await grader(prompt), changes); // { merge, reason, items: [{ path, keep, question?, why }] }
 ```
 
-`active` is every active note on `main` as the index lists it (`{ file, name, description }`, so a parsed note will
-do); `superseded` and `proposed` are `{ file, text }`: the whole text of each active note the new notes supersede, and
-of no other, and the new notes. The prompt holds `GRADE_RUBRIC`, the rubric's one statement, and fences the
-instructions, the index lines and each note as data to judge, never to follow: the fence's token is one no fenced text
-holds, so no text can close its fence. It asks for one JSON verdict with one item per new note. Its size is bounded by
-construction (`GRADE_CAPS`): the instructions cut to 16,000 characters, each index line to 300, at most 8 superseded
-and 8 new notes of at most 4096 bytes each, so it stays under 200,000 characters whatever the folder holds.
+`changes` are the branch's changed files against `main`, `{ path, status, text, before }`: `text` is the branch's, on
+every change but a deletion, and `before` is `main`'s, on a modification. `index` is `main`'s `learnings/INDEX.md`,
+`notes` (optional) the notes on `main` the branch does not change, `{ path, text }`, so the grader reads each rule in
+full and not only its index line, and `instructions` the agent's standing instructions, as the host keeps them. The
+prompt holds `GRADE_RUBRIC`, the rubric's one statement, and fences each file, the index, the notes and the
+instructions as data to judge, never to follow: the fence's token is one no fenced text holds, so no text can close its
+fence. It asks for one JSON verdict, with one item for each changed file but the memo, the index and the host's receipt
+`uses/<run id>.json`, which never reaches `main`.
 
 `parseVerdict` fails closed. It reads one JSON object, alone, in prose or in one fenced block. Two objects, a key
-repeated in one object, a missing item, an item named twice or for a file the grader was not asked about, and `merge`
-with an item not kept are each no merge; so is an answer it cannot read. The reason and each `why` come back as one
-line of at most 500 characters, with control and unseen characters gone. `gradePrompt` throws on input no checked
-proposal holds, and `parseVerdict` never throws on the grader's answer.
+repeated in one object, a missing item, an item named twice or for a path the grader was not asked about, and `merge`
+with an item not kept are each no merge; so is an answer it cannot read, with the reason "the grader's verdict could
+not be read". An item for the receipt is ignored. The reason and each item's `why` come back as one line of at most
+500 characters, with control and unseen characters gone. The branch merges only when `verdict.merge` is true, every
+item kept; otherwise it stays unmerged, with the verdict. Neither function calls a model or runs git: the host does
+both. `gradePrompt` throws on input no checked branch holds (a run id the layout refuses, a path outside the layout, an
+unseen character), and `parseVerdict` never throws on the grader's answer.

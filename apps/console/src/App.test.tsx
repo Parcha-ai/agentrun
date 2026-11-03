@@ -2,6 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, route, runsHash } from "./App";
+import { ANALYTICS } from "@/components/AgentAnalytics.sample";
 import { agentHash } from "@/components/AgentPage";
 import { agentsList, recorded } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
@@ -85,7 +86,7 @@ describe("App, Mission Control after a failed read", () => {
       if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (path === "/v2/stats") return ++statsCalls === 1
         ? json(503, { error: { code: "store_busy", message: "the store is busy", retryable: true } })
-        : json(200, { agents: 3, runs: { total: 9, active: 0, needs_input: 0, failed: 0, status_unknown: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 9 }, archived: { agents: 0, runs: 0 } });
+        : json(200, { agents: 3, runs: { total: 9, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 9 }, archived: { agents: 0, runs: 0 }, analytics: ANALYTICS });
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
     });

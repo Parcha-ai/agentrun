@@ -54,8 +54,9 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     const ctl = new AbortController();
     follow(v2, runId, {
       signal: ctl.signal,
-      // A tool round can write files while the run stays working: re-read them when a new tool result lands.
-      onRows: (r) => { setRows(r); const n = r.filter((x) => x.kind === "tool_result").length; if (n > toolResults.current) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) setFiles(f.files); }).catch(() => {}); } },
+      // A tool round can write files while the run stays working: re-read them when a call ends (its result row; with one
+      // row per action, its own row stopping running).
+      onRows: (r) => { setRows(r); const n = r.filter((x) => x.kind === "tool_result" || (x.kind === "tool_use" && !!x.tool_status && x.tool_status !== "running")).length; if (n > toolResults.current) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) setFiles(f.files); }).catch(() => {}); } },
       // A page names the run's status and state: when they move, the run record (result, error, cost) and files move too.
       onPage: (p) => { const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
     }).catch((e) => { if (!ctl.signal.aborted) setError(asApiError(e)); });

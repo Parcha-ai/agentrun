@@ -110,3 +110,34 @@ describe("LiveRun, its header and its timeline", () => {
     expect(timelines).toBeGreaterThan(1);
   }, 15_000);
 });
+
+// With one row per action, a call's row changes in place, and no result row follows it: the files are read again when a
+// call's row stops running, as they are when an older server's result row lands.
+describe("LiveRun, one row per action", () => {
+  it("reads the files again when an action's row stops running, and not while it runs", async () => {
+    const call = (status: "running" | "success") => ({ id: "c1", seq: 1, kind: "tool_use", summary: status === "running" ? "Wrote one.md" : "Wrote one.md: ok", text: null, timestamp: "2026-10-30T06:00:01Z", tool_name: "write", tool_use_id: "t1", tool_status: status, path: "one.md" });
+    const page = (rows: unknown[], reset: boolean): TimelinePage => ({ run_id: "r1", status: "working", state: "working", rows: rows as TimelinePage["rows"], drop: [], reset, unchanged: false, final: false, has_more: false, next_after: 2 });
+    const reads: Record<string, number> = {};
+    for (const ends of [true, false]) {
+      let files = 0, pages = 0;
+      const v2 = {
+        getRun: async () => at("working", false),
+        listFiles: async () => { files++; return { run_id: "r1", files: [], complete: true, truncated: false }; },
+        // The call runs, then (or not) ends under the same id; after that, the follow waits.
+        getTimeline: () => (++pages === 1 ? Promise.resolve(page([call("running")], true)) : pages === 2 ? Promise.resolve(page([call(ends ? "success" : "running")], false)) : new Promise<TimelinePage>(() => {})),
+        listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      };
+      const host = document.body.appendChild(document.createElement("div"));
+      root = createRoot(host);
+      act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+      // Until the follow has asked past the call's end (its third read), then a moment for the files read to land.
+      for (let i = 0; i < 150 && pages < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+      for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+      expect(pages, `ends ${ends}`).toBeGreaterThanOrEqual(3);
+      reads[String(ends)] = files;
+      act(() => root?.unmount()); root = undefined;
+    }
+    // The same reads either way, and one more when the action ended.
+    expect(reads.true).toBe(reads.false! + 1);
+  });
+});

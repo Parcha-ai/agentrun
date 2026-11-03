@@ -12,9 +12,9 @@ import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { startServe } from "../dist/index.js";
 import { nextMoment } from "../dist/runs.js";
-import { signatureOf, Webhooks } from "../dist/webhooks.js";
+import { ATTEMPTS_KEPT, signatureOf, Webhooks } from "../dist/webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
+import { client, FAUX, follow, printed, scratch, serve, startRun, withEnv } from "./support.mjs";
 
 // The spec's own library, in the lockfile through the Anthropic SDK: what a receiver would install.
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -233,16 +233,24 @@ test("a message whose redelivery is in flight stays in the outbox while other at
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   let release;
   const held = new Promise((resolve) => { release = resolve; });
-  // The second request, the redelivery, is answered only when released.
-  const hook = await receiver(t, (n) => (n === 2 ? held.then(() => 200) : 200));
-  const { api } = await serve(t);
+  // The log is filled before the redelivery starts, so a single attempt pushes the first out while the redelivery
+  // waits: the wait stays far inside the server's fetch timeout. The redelivery is answered only when released.
+  const redelivery = ATTEMPTS_KEPT + 1;
+  const hook = await receiver(t, (n) => (n === redelivery ? held.then(() => 200) : 200));
+  const { api, data } = await serve(t);
   assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
   assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
   const id = hook.got[0].headers["webhook-id"];
+  for (let i = 1; i < ATTEMPTS_KEPT; i++) assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
+  const logged = async () => (await api("GET", "/settings/webhook/deliveries")).body.attempts.some((a) => a.webhook_id === id);
+  assert.ok(await logged(), "the log is full, its first attempt still in it");
   const again = api("POST", `/settings/webhook/deliveries/${id}/redeliver`);
-  await until(() => hook.got.length === 2, "the redelivery in flight");
-  for (let i = 0; i < 50; i++) assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
-  assert.ok(!(await api("GET", "/settings/webhook/deliveries")).body.attempts.some((a) => a.webhook_id === id), "its first attempt has left the log");
+  await until(() => hook.got.length === redelivery, "the redelivery in flight");
+  assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
+  assert.ok(!(await logged()), "its first attempt has left the log");
+  const outbox = JSON.parse(readFileSync(join(data, "webhook-outbox.json"), "utf8"));
+  assert.ok(!outbox.attempts.some((a) => a.webhook_id === id), "nor is it among the outbox's attempts");
+  assert.ok(outbox.messages.some((m) => m.id === id), "the outbox on disk keeps the message in flight");
   release();
   assert.equal((await again).body.status_code, 200);
   const third = await api("POST", `/settings/webhook/deliveries/${id}/redeliver`);
@@ -438,9 +446,7 @@ test("settings: an http or https URL with no user or password, and nothing else;
 async function serverProcess(t, data) {
   const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => child.kill("SIGKILL"));
-  let out = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  await until(() => /AGENTRUN_API_KEY=/.test(out), "the server's banner");
+  const out = await printed(child, /^AGENTRUN_API_KEY=/m);
   return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], readFileSync(join(data, ".token"), "utf8").trim()) };
 }
 
@@ -538,7 +544,9 @@ test("a run waiting for its person when its server dies gives no new notice from
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
   await follow(api, run.run_id, ["input_required"]);
-  await sleep(500);
+  // A notice of the wait is in the outbox by the time the run reads input_required: each one is sent before ids are counted.
+  const outbox = join(data, "webhook-outbox.json");
+  await until(() => JSON.parse(readFileSync(outbox, "utf8")).messages.every((m) => m.status !== "pending"), "the outbox sent");
   // No new notice for the same wait: one webhook-id. The kill can land before the first server records its delivery,
   // and the server that adopts its outbox then sends that same message again, under the same id (at-least-once; the
   // id is the receiver's idempotency key). So ids are counted, never receipts.

@@ -11,6 +11,7 @@ import { pipeline } from "node:stream/promises";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { readJson, tempOf, writeDurable } from "./files.js";
 import { ID, type Json } from "./validate.js";
+import { typeOf } from "./workspace.js";
 
 /** `limits.max_upload_bytes`: the largest file a reservation names and a PUT sends. */
 export const MAX_UPLOAD_BYTES = 50 * 2 ** 20;
@@ -22,7 +23,8 @@ export const INPUTS_DIR = "inputs";
 export const UPLOADS_DIR = "files";
 const RECORD = "file.json";
 const BYTES = "bytes";
-/** How long the answer to a reservation says its upload URL lasts. Nothing refuses a later PUT yet: no upload is deleted. */
+/** The `upload.expires_at` the answer to a reservation gives, which the contract requires: advisory, not enforced in this
+ *  release. A later PUT is still taken, and nothing deletes an upload. */
 const UPLOAD_WINDOW_MS = 86_400_000;
 /** The longest name one path segment takes on disk (NAME_MAX), in bytes. */
 const NAME_MAX = 255;
@@ -124,7 +126,7 @@ export class Uploads {
     return isFile(record) && record.file_id === id ? record : null;
   }
 
-  /** POST /files: the body checked as the contract's FileCreate, then a pending file; with where to send its bytes. */
+  /** POST /v2/files: the body checked as the contract's FileCreate, then a pending file; with where to send its bytes. */
   async reserve(body: Json): Promise<{ file: UploadedFile; upload: { method: "PUT"; url: string; expires_at: string } }> {
     const issues: InputIssue[] = Object.keys(body).filter((key) => !FIELDS.includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
     if (typeof body.path !== "string") issues.push({ field: "path", reason: body.path === undefined ? "missing" : "wrong_type", message: "path is the file's relative path, a string" });
@@ -140,7 +142,8 @@ export class Uploads {
       file_id: uuidv7(now),
       path: body.path as string,
       size_bytes: body.size_bytes as number,
-      content_type: (body.content_type as string | undefined) ?? "application/octet-stream",
+      // Named, or by the path's extension as a run's files are served (`plan.md` is text/markdown), else octet-stream.
+      content_type: (body.content_type as string | undefined) ?? typeOf(body.path as string) ?? "application/octet-stream",
       sha256: (body.sha256 as string | undefined) ?? null,
       status: "pending",
       created_at: new Date(now).toISOString(),
@@ -153,7 +156,7 @@ export class Uploads {
     return { file, upload: { method: "PUT", url: `/files/${file.file_id}`, expires_at: new Date(now + UPLOAD_WINDOW_MS).toISOString() } };
   }
 
-  /** PUT /files/{file_id}: `body` is the bytes, streamed to a file of their own beside the record, never held whole.
+  /** PUT /v2/files/{file_id}: `body` is the bytes, streamed to a file of their own beside the record, never held whole.
    *  Their length must be the reserved `size_bytes` and their hash the reserved `sha256` when one was given (422 at that
    *  field), and they are at most MAX_UPLOAD_BYTES (413). Then they are renamed into place and the file is ready. A
    *  ready file's bytes are checked the same way against its own and kept: the same bytes again change nothing. */
@@ -234,8 +237,8 @@ export class Uploads {
         continue;
       }
       const file = await this.get(id);
-      if (!file) issues.push({ field, reason: "not_an_option", message: `There is no file ${id}: reserve it with POST /files.` });
-      else if (file.status !== "ready") issues.push({ field, reason: "invalid", message: `The file ${id} is not ready: send its bytes with PUT /files/${id} first.` });
+      if (!file) issues.push({ field, reason: "not_an_option", message: `There is no file ${id}: reserve it with POST /v2/files.` });
+      else if (file.status !== "ready") issues.push({ field, reason: "invalid", message: `The file ${id} is not ready: send its bytes with PUT /v2/files/${id} first.` });
       else if (this.problemOf(file.path)) issues.push({ field, reason: "invalid", message: `The file ${id} cannot be copied into a run here: ${this.problemOf(file.path)}.` });
       else files.push(file);
     }
