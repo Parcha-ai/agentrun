@@ -28,7 +28,8 @@ test("pm-1: the policy sends the provider's name for the session's model, on bot
   const sent = policy.apply(body(), route('/v1/messages'));
   assert.equal(sent.model, 'vendor/claude-main-5.5', "the provider's name goes out");
   assert.equal(policy.modelOf(sent), 'claude-main-5-5', "the runner is asked about the session's model");
-  assert.equal(policy.apply(body(), route('/v1/messages/count_tokens')).model, 'vendor/claude-main-5.5', 'a token count names it the same way');
+  const { max_tokens: _unused, ...count } = body();
+  assert.equal(policy.apply(count, route('/v1/messages/count_tokens')).model, 'vendor/claude-main-5.5', 'a token count names it the same way');
   // A model the provider gave no name goes as the CLI sent it.
   const small = policy.apply(body({ model: 'claude-small-5-5' }), route('/v1/messages'));
   assert.equal(small.model, 'claude-small-5-5');

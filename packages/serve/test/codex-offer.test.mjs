@@ -22,7 +22,7 @@ test("codex is offered on the pinned build: available with a model key, unavaila
   assert.deepEqual(await codexOf({ OPENAI_API_KEY: "fake-test-key" }), { id: "codex", available: true, steer: false, default_model: null }, "no default model here");
   const keyless = await codexOf({});
   assert.equal(keyless.available, false);
-  assert.match(keyless.reason, /^codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL\.$/);
+  assert.match(keyless.reason, /^codex needs OPENAI_API_KEY, OPENROUTER_API_KEY \(OpenAI's models through OpenRouter\), or a gateway in AGENT_MODEL_BASE_URL\.$/);
 });
 
 // verifyCodex finds the binary through CODEX_BIN before the platform package, so a script there stands in for an

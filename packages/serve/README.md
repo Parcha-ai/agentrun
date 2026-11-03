@@ -765,11 +765,16 @@ harness this server does not run yet saves with a warning on `definition.harness
 `claude-agent` and `codex` when each adapter's package, pins and provider endpoint check out; the harness's `reason`
 says what is missing.
 
-`claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with Anthropic's own model id, and prices the run
-by it: a revision's `anthropic/<model-id>`, its dots as dashes. A gateway such as OpenRouter names the same models with
-dots (`anthropic/claude-sonnet-5.5`) and takes Anthropic's own id (`claude-sonnet-5-5`), so one name works through it and
-direct. A model with more than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is refused, naming
-the form to use.
+`claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with `ANTHROPIC_API_KEY` and Anthropic's own
+model id, and prices the run by it: a revision's `anthropic/<model-id>`, its dots as dashes, so OpenRouter's dotted name
+(`anthropic/claude-sonnet-5.5`) and Anthropic's own (`claude-sonnet-5-5`) are one model. `codex` sends its requests to
+serve's gateway (`AGENT_MODEL_BASE_URL`), else OpenAI with `OPENAI_API_KEY`. With neither harness's own setting but
+`OPENROUTER_API_KEY`, each runs its vendor's models through OpenRouter (`https://openrouter.ai/api`, the key as a bearer
+token): claude-agent on its Messages endpoint, codex on its Responses API, each model named and priced as OpenRouter's
+(`openrouter/anthropic/claude-sonnet-5.5`, `openrouter/openai/gpt-6.1-sol`, which are their defaults there when nothing
+names one). A model named that way (pi's name for it) goes through OpenRouter on every harness. An endpoint the host
+names never gets OpenRouter's key: `ANTHROPIC_BASE_URL` without `ANTHROPIC_API_KEY` is refused. A model with more than one
+segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is refused, naming the form to use.
 
 `claude-agent` loads the revision's skills itself: the model is shown each as `agentrun:<name>`, loads one with the Skill
 tool and reads its other files with `read_skill_file`, and the system prompt holds the instructions alone. A skill the

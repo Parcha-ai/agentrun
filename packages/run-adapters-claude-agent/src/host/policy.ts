@@ -10,7 +10,8 @@
 //
 // A refusal names the field or the kind of thing it refused, never a value from the request (the proxy reports it).
 // A body may carry only the Messages API's own keys (no MCP server, container or service tier). Its model is the session's
-// (or its small model, for the CLI's background calls); `max_tokens` is clamped, and a thinking budget kept below it.
+// (or its small model, for the CLI's background calls), sent under the provider's own name for it when the provider has
+// one (`providerModels`); `max_tokens` is clamped, and a thinking budget kept below it.
 // Nothing the provider would run or fetch on its own passes: a provider-hosted tool (web search or fetch, code execution,
 // computer use, the server's bash or editor, a tool search) is refused, and a content block may only be of a type the
 // pinned CLI sends (text, thinking, tool calls and results), so no server tool's block, MCP block, image or document
@@ -88,6 +89,10 @@ export interface AnthropicPolicyOptions {
   webSearchAllowance?: number;
   /** How the provider takes its credential. Default `x-api-key` (Anthropic's API). */
   auth?: "x-api-key" | "bearer";
+  /** The provider's own name for a model the CLI asks for, by the CLI's (Anthropic's own id): a gateway that names
+   *  Anthropic's models its own way (OpenRouter's `anthropic/claude-sonnet-5.5` for `claude-sonnet-5-5`). Each request is
+   *  checked as the CLI names its model and sent under the provider's name; a model with none goes as the CLI sent it. */
+  providerModels?: Readonly<Record<string, string>>;
   /** Told when a request on the session's main model carries no thinking and no effort: the model would answer without
    *  reasoning, which a session never asks for (the small model's background calls are not told). */
   onThinkingDisabled?: (request: { model: string }) => void;
@@ -190,6 +195,12 @@ function thinking(value: unknown, maxTokens: number): unknown {
   return { ...value, budget_tokens: maxTokens - 1 };
 }
 
+/** The provider's name for `model`, the CLI's (`providerModels`), or `model` itself where it gives none. */
+const providerModel = (model: string, options: Pick<AnthropicPolicyOptions, "providerModels">): string => (options.providerModels && Object.hasOwn(options.providerModels, model) ? options.providerModels[model]! : model);
+
+/** The CLI's name for `model`, the provider's: the session's model as the runner knows it. */
+const sessionModel = (model: string, options: Pick<AnthropicPolicyOptions, "providerModels">): string => Object.entries(options.providerModels ?? {}).find(([, named]) => named === model)?.[0] ?? model;
+
 /** The body the provider gets for a request on `route`. */
 export function applyAnthropic(body: unknown, route: ProxyRoute, options: AnthropicPolicyOptions): Record<string, unknown> {
   if (!isPlain(body)) return refuse(400, "the body is not an object");
@@ -209,7 +220,8 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
   if (isPlain(choice) && choice.type === "tool" && !chosen) refuse(403, "tool_choice names a tool this session does not have");
   const small = options.smallModel ?? options.model;
   if (body.model !== options.model && body.model !== small) refuse(403, "the model is not this session's");
-  const out: Record<string, unknown> = { ...body, messages: (body.messages as unknown[]).map(withoutImageNotes), ...(tools === undefined ? {} : { tools }) };
+  // Checked as the CLI names it; sent as the provider does.
+  const out: Record<string, unknown> = { ...body, model: providerModel(body.model as string, options), messages: (body.messages as unknown[]).map(withoutImageNotes), ...(tools === undefined ? {} : { tools }) };
   if (count) return out;
   // A main-model request that would not think is said, never passed silently (it is still forwarded: the CLI decides
   // its own requests, and this is the record that one went without reasoning).
@@ -321,8 +333,9 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
       return value;
     },
     apply: (body, route) => applyAnthropic(body, route, options),
-    // `apply` let through only the session's model or its small one.
-    modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
+    // `apply` let through only the session's model or its small one, under the provider's name for it: the runner is
+    // asked about it by the session's.
+    modelOf: (body) => (typeof body.model === "string" ? sessionModel(body.model, options) : undefined),
     serverInputOverhead: options.webSearchAllowance === undefined ? anthropicServerInputOverhead : (body) => anthropicServerInputOverhead(body, options.webSearchAllowance),
     usageOf: anthropicUsage,
   };
