@@ -51,13 +51,21 @@ function installHash(root) {
 
 const filesUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? filesUnder(join(dir, e.name)) : [join(dir, e.name)]));
 
-/** Why an emitting project's outDir does not match its sources, or undefined when it does. */
-export function staleOutputs(parsed, rel = slashed) {
+/** Why an emitting project's outDir does not match its sources, or undefined when it does. Before a compile, an output
+ *  counts as missing only if its source is no newer than the buildinfo (a source added or changed since is compiled
+ *  anyway); after it, every source's outputs must be there. */
+export function staleOutputs(parsed, { compiled = false, rel = slashed } = {}) {
   const outDir = parsed.options.outDir;
   if (!outDir) return undefined;
   const ignoreCase = !ts.sys.useCaseSensitiveFileNames;
-  const expected = new Set(parsed.fileNames.flatMap((file) => ts.getOutputFileNames(parsed, file, ignoreCase)).map((file) => resolve(file)));
-  for (const file of expected) if (!existsSync(file)) return `${rel(file)} is missing`;
+  const builtAt = compiled ? Infinity : existsSync(parsed.options.tsBuildInfoFile) ? statSync(parsed.options.tsBuildInfoFile).mtimeMs : -Infinity;
+  const expected = new Set();
+  for (const source of parsed.fileNames) {
+    const outputs = ts.getOutputFileNames(parsed, source, ignoreCase).map((file) => resolve(file));
+    for (const file of outputs) expected.add(file);
+    const missing = statSync(source).mtimeMs <= builtAt && outputs.find((file) => !existsSync(file));
+    if (missing) return `${rel(missing)} is missing`;
+  }
   const orphan = (existsSync(outDir) ? filesUnder(outDir) : []).find((file) => /\.d\.[cm]?ts$/.test(file) && !expected.has(file));
   return orphan && `${rel(orphan)} has no source any more`;
 }
@@ -158,7 +166,7 @@ export function build({ root = repository, targets = [root], typecheck = false, 
       parsedCache.delete(config);
     }
     const project = parse(config);
-    const stale = emitting && staleOutputs(project, rel);
+    const stale = emitting && staleOutputs(project, { rel });
     if (stale) {
       log(`${rel(config)}: ${stale}; compiling it whole`);
       rmSync(project.options.outDir, { recursive: true, force: true });
@@ -167,6 +175,12 @@ export function build({ root = repository, targets = [root], typecheck = false, 
     const at = performance.now();
     const status = builder.build(config);
     if (status !== ts.ExitStatus.Success) throw Object.assign(new Error(`${rel(config)}: TypeScript reported errors`), { quiet: true });
+    // Left only by a source whose time changed but not its text, after its output was deleted: tsc then emits nothing.
+    const missing = emitting && staleOutputs(project, { compiled: true, rel });
+    if (missing) {
+      rmSync(project.options.tsBuildInfoFile, { force: true });
+      throw new Error(`${rel(config)}: ${missing} after its compile; run the build again to compile it whole`);
+    }
     if (compiled.has(config)) log(`${emitting ? 'built' : 'checked'} ${rel(config)} in ${((performance.now() - at) / 1000).toFixed(1)} s`);
     if (emitting && workspace) runStep(root, workspace, 'build:after', rel);
   }

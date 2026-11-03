@@ -67,6 +67,17 @@ test('a change that keeps the declarations recompiles only its project; one that
   assert.deepEqual(run(root, { typecheck: true }), ['packages/a/tsconfig.json', 'packages/b/tsconfig.json'], "b's own declarations did not change");
 });
 
+test('a new source compiles with the rest, without emptying dist', (t) => {
+  const root = workspace();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  run(root);
+  put(root, 'packages/a/src/more.ts', 'export const more = 2;\n');
+  const lines = [];
+  build({ root, log: (line) => lines.push(line) });
+  assert.ok(!lines.some((line) => line.includes('compiling it whole')), lines.join('\n'));
+  assert.ok(existsSync(join(root, 'packages/a/dist/more.js')) && existsSync(join(root, 'packages/a/dist/after.txt')));
+});
+
 test('a deleted source takes its output with it, and a deleted dist is built again', (t) => {
   const root = workspace();
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -80,6 +91,11 @@ test('a deleted source takes its output with it, and a deleted dist is built aga
   assert.ok(existsSync(join(root, 'packages/a/dist/index.d.ts')));
   rmSync(join(root, 'packages/b/dist/index.js'));
   assert.deepEqual(run(root), ['packages/b/tsconfig.json'], 'one missing output is enough');
+  rmSync(join(root, 'packages/a/dist/index.js'));
+  put(root, 'packages/a/src/index.ts', readFileSync(join(root, 'packages/a/src/index.ts'), 'utf8'));
+  assert.throws(() => run(root), /packages\/a\/dist\/index\.js is missing after its compile; run the build again/, 'touched, not changed: tsc emits nothing');
+  run(root);
+  assert.ok(existsSync(join(root, 'packages/a/dist/index.js')));
 });
 
 test('a new install starts every project from scratch', (t) => {
