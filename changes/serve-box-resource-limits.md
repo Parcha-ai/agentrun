@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-serve, @parcha/pi-transport
+kind: feature
+---
+A run's Docker box has CPU, memory and process limits by default: 2 CPUs (fewer on a machine that has fewer), 4 GiB of memory with swap included, and 1,024 processes and threads (`--cpus 2 --memory 4g --memory-swap 4g --pids-limit 1024`). Before, `docker run` set none, so one run's fork bomb or runaway build could starve the host. `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY` (a size with its unit, such as `8g`) and `AGENTRUN_BOX_PIDS` change them, and `none` drops one. Any other value refuses the start and names the setting.
+- `dockerBoxes` takes `cpus`, `memory` (bytes, or Docker's size such as `4g`) and `pidsLimit`, which become `--cpus`, `--memory` with `--memory-swap` the same, and `--pids-limit`. A spec's own `cpus` or `memoryMb` takes the place of the option's, a spec's `memoryMb` now bounds swap too, and `facts()` reports the limits a box got. A value that is not positive, not a number or not a size throws when the provider is made.

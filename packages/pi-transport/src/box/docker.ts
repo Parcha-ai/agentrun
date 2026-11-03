@@ -35,6 +35,16 @@ export type DockerBoxesOptions = {
 	 * binds its own directories in names its own ids, so what the box writes there stays the host's to manage.
 	 */
 	readonly user?: string;
+	/** The CPUs a box may use (`--cpus`), such as `2` or `1.5`, for a spec that names no `cpus`. Default: no limit. */
+	readonly cpus?: number;
+	/**
+	 * The memory a box may use, for a spec that names no `memoryMb`: a whole number of bytes, or Docker's own size, a
+	 * number and `b`, `k`, `m` or `g` (`512m`, `4g`; a `k` is 1024 bytes). Default: no limit. A box's memory, this or the
+	 * spec's, is also its memory and swap together (`--memory-swap` the same), so swap never adds to it.
+	 */
+	readonly memory?: number | string;
+	/** The most processes and threads a box may have at once (`--pids-limit`), where a fork bomb stops. Default: no limit. */
+	readonly pidsLimit?: number;
 };
 
 type Inspected = {
@@ -173,6 +183,34 @@ async function checkSources(mounts: readonly ParsedMount[]): Promise<BoxError | 
 	return undefined;
 }
 
+const MIB = 1024 * 1024;
+const SIZE_UNITS: Readonly<Record<string, number>> = { "": 1, b: 1, k: 1024, m: MIB, g: 1024 * MIB };
+
+/** `memory` in bytes, when it is a positive whole number of bytes or a size Docker reads (`512m`, `4g`), else `undefined`. */
+function memoryBytes(memory: number | string): number | undefined {
+	if (typeof memory === "number") return Number.isSafeInteger(memory) && memory > 0 ? memory : undefined;
+	if (typeof memory !== "string") return undefined;
+	const size = /^(\d+(?:\.\d+)?)([bkmg]?)$/i.exec(memory);
+	// Docker's own reading: the number times the unit, its fraction of a byte dropped.
+	const bytes = size ? Math.floor(Number(size[1]) * (SIZE_UNITS[(size[2] ?? "").toLowerCase()] ?? 1)) : 0;
+	return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
+}
+
+/** A value as an error names it: a string as JSON, so an empty one shows; a number as JavaScript writes it. */
+const shown = (value: unknown): string => (typeof value === "string" ? JSON.stringify(value) : String(value));
+
+/** The memory option as Docker's flag and as the facts' MiB; throws for a value that is not one. */
+function memoryOption(memory: number | string | undefined): { flag: string; mb: number } | undefined {
+	if (memory === undefined) return undefined;
+	const bytes = memoryBytes(memory);
+	if (bytes === undefined) {
+		throw new Error(
+			`the docker memory ${shown(memory)} is not a positive whole number of bytes, nor a size such as 512m or 4g`,
+		);
+	}
+	return { flag: String(memory), mb: Math.floor(bytes / MIB) };
+}
+
 function createError(stderr: string): BoxError {
 	const message = `docker could not start a box: ${stderr.trim()}`;
 	if (/pull access denied|unauthorized|denied:/i.test(stderr)) return new BoxError("unauthorized", message);
@@ -192,10 +230,21 @@ function createError(stderr: string): BoxError {
  * makes a missing source an empty directory: a source this machine does not have is refused with `not_found` before Docker is
  * asked. The paths go to Docker as given, never resolved here, so the caller passes canonical ones. The daemon must run on this
  * machine, where the sources are checked.
+ *
+ * The options' `cpus`, `memory` and `pidsLimit` bound every box (`--cpus`, `--memory` with `--memory-swap` the same, and
+ * `--pids-limit`); a spec's own `cpus` or `memoryMb` takes the place of the option's, and `facts()` says what a box got.
+ * A value that is not positive, or not a number or size, throws here, before any box.
  */
 export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 	if (options.user !== undefined && !/^\d+(:\d+)?$/.test(options.user)) {
 		throw new Error(`the docker user ${options.user} is not uid or uid:gid`);
+	}
+	if (options.cpus !== undefined && !(Number.isFinite(options.cpus) && options.cpus > 0)) {
+		throw new Error(`the docker cpus ${shown(options.cpus)} is not a positive number`);
+	}
+	const memory = memoryOption(options.memory);
+	if (options.pidsLimit !== undefined && !(Number.isSafeInteger(options.pidsLimit) && options.pidsLimit > 0)) {
+		throw new Error(`the docker pidsLimit ${shown(options.pidsLimit)} is not a positive integer`);
 	}
 	const docker = new Docker(options.docker ?? "docker");
 
@@ -221,11 +270,13 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			if (mounts instanceof BoxError) return err(mounts);
 			const missing = await checkSources(mounts);
 			if (missing !== undefined) return err(missing);
+			const cpus = spec.cpus ?? options.cpus;
+			const boxMemory = spec.memoryMb !== undefined ? { flag: `${spec.memoryMb}m`, mb: spec.memoryMb } : memory;
 			const facts: BoxFacts = {
 				provider: "docker",
 				isolation: "container",
-				cpus: spec.cpus ?? null,
-				memoryMb: spec.memoryMb ?? null,
+				cpus: cpus ?? null,
+				memoryMb: boxMemory?.mb ?? null,
 				gpu: spec.gpu ?? null,
 				workspace: spec.workspace ?? DEFAULT_WORKSPACE,
 				maxLifetimeMs: spec.maxLifetimeMs,
@@ -243,8 +294,10 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			for (const [key, value] of Object.entries(spec.env ?? {})) args.push("--env", `${key}=${value}`);
 			if (network.kind === "none") args.push("--network", "none");
 			if (options.user !== undefined) args.push("--user", options.user);
-			if (spec.cpus !== undefined) args.push("--cpus", String(spec.cpus));
-			if (spec.memoryMb !== undefined) args.push("--memory", `${spec.memoryMb}m`);
+			if (cpus !== undefined) args.push("--cpus", String(cpus));
+			// Memory and swap together are the memory: swap never adds to it.
+			if (boxMemory !== undefined) args.push("--memory", boxMemory.flag, "--memory-swap", boxMemory.flag);
+			if (options.pidsLimit !== undefined) args.push("--pids-limit", String(options.pidsLimit));
 			if (spec.gpu !== undefined) args.push("--gpus", "all");
 			for (const { source, target, readOnly } of mounts) {
 				args.push("--mount", `type=bind,source=${source},target=${target}${readOnly ? ",readonly" : ""}`);

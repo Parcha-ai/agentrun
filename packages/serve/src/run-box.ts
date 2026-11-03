@@ -2,9 +2,10 @@
 // record. A run's process that starts again finds it by that label and first kills the commands the process before it
 // left running. Serve destroys it at every settle (a cancel included) and at archive, and its start sweeps the boxes of
 // runs that have ended. A box gets the run's work/ only, bound at BOX_WORK, a fixed environment (never this process's,
-// so no key or token enters it), no network, and this server's user. pi-transport is an optional peer of this package:
-// it is loaded only for a run whose place is a box.
+// so no key or token enters it), no network, this server's user, and limits on its CPUs, memory and processes. pi-transport
+// is an optional peer of this package: it is loaded only for a run whose place is a box.
 import { lstat, realpath } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
@@ -26,6 +27,43 @@ export const BASH_TIMEOUT_MS = 300_000;
 /** The image a Docker box starts from. */
 export const DOCKER_IMAGE_ENV = "AGENTRUN_DOCKER_IMAGE";
 export const DEFAULT_DOCKER_IMAGE = "debian:bookworm-slim";
+/** The settings that bound a Docker box, each a value or `none` for no limit; unset, their defaults: enough for a build,
+ *  and safe on a laptop, where one run's runaway build or fork bomb would otherwise starve everything else. */
+export const BOX_CPUS_ENV = "AGENTRUN_BOX_CPUS";
+export const BOX_MEMORY_ENV = "AGENTRUN_BOX_MEMORY";
+export const BOX_PIDS_ENV = "AGENTRUN_BOX_PIDS";
+/** 2 CPUs, or this machine's count when it has fewer: Docker refuses more CPUs than it has. */
+export const DEFAULT_BOX_CPUS = 2;
+/** 4 GiB, swap included (--memory-swap the same). */
+export const DEFAULT_BOX_MEMORY = "4g";
+/** Processes and threads at once. */
+export const DEFAULT_BOX_PIDS = 1024;
+
+/** A Docker box's limits, as pi-transport's Docker provider takes them; an absent one is no limit. */
+export type BoxLimits = { cpus?: number; memory?: string; pidsLimit?: number };
+
+/** A Docker box's limits from `env`: each setting's value, `none` for no limit, or its default when unset or empty (the
+ *  CPUs' lowered to `cpusHere`, this machine's count). A value that is none of these throws, naming its setting: the start
+ *  checks them (startServe), so a run never meets one. */
+export function boxLimitsOf(env: NodeJS.ProcessEnv, cpusHere = availableParallelism()): BoxLimits {
+  const read = (name: string, form: RegExp, what: string): string | undefined | null => {
+    const value = env[name];
+    if (!value) return undefined;
+    if (value === "none") return null;
+    const amount = Number.parseFloat(value);
+    if (!form.test(value) || !(amount > 0 && Number.isSafeInteger(Math.ceil(amount)))) throw new Error(`${name} is ${what}, or none for no limit; it is ${JSON.stringify(value)}`);
+    return value;
+  };
+  const cpus = read(BOX_CPUS_ENV, /^\d+(\.\d+)?$/, "a number of CPUs above 0, such as 2 or 1.5");
+  const memory = read(BOX_MEMORY_ENV, /^\d+(\.\d+)?[bkmg]$/i, "a size above 0 with its unit (b, k, m or g), such as 512m or 4g");
+  const pids = read(BOX_PIDS_ENV, /^\d+$/, "a whole number above 0, such as 1024");
+  return {
+    ...(cpus === null ? {} : { cpus: cpus === undefined ? Math.min(DEFAULT_BOX_CPUS, cpusHere) : Number(cpus) }),
+    ...(memory === null ? {} : { memory: memory ?? DEFAULT_BOX_MEMORY }),
+    ...(pids === null ? {} : { pidsLimit: pids === undefined ? DEFAULT_BOX_PIDS : Number(pids) }),
+  };
+}
+
 /** Under `--faux` only: a module whose default export, given the data root, is the provider runs' boxes come from in
  *  place of Docker (the tests' faux box). */
 export const FAUX_BOX_ENV = "AGENTRUN_SERVE_FAUX_BOX";
@@ -53,14 +91,15 @@ export async function boxMounts(root: string, runDir: string, place: Place): Pro
 }
 
 /** The provider runs' boxes come from: under `--faux` with a faux box, its module's; else Docker on this machine, run as
- *  this process's user (serve's: a run's process is its child), so what a box writes in work/ stays serve's. */
+ *  this process's user (serve's: a run's process is its child), so what a box writes in work/ stays serve's, within the
+ *  box limits the server's settings give (boxLimitsOf). */
 export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root: string): Promise<BoxProvider> {
   const faux = env[FAUX_ENV] ? env[FAUX_BOX_ENV] : undefined;
   if (faux) return fauxBoxes(faux, root);
   if (place.mode !== "sandbox" || place.box !== "docker") throw new Error(`runs in the ${place.mode === "sandbox" ? place.box : "runner"} place have no box`);
   const { dockerBoxes } = await import("@parcha/pi-transport/box/docker");
   const user = process.getuid && process.getgid ? `${process.getuid()}:${process.getgid()}` : undefined;
-  return dockerBoxes({ image: env[DOCKER_IMAGE_ENV] || DEFAULT_DOCKER_IMAGE, ...(user ? { user } : {}) });
+  return dockerBoxes({ image: env[DOCKER_IMAGE_ENV] || DEFAULT_DOCKER_IMAGE, ...(user ? { user } : {}), ...boxLimitsOf(env) });
 }
 
 /** The tests' faux box provider, from its module. */

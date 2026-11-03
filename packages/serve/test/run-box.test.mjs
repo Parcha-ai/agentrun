@@ -8,11 +8,13 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { boxMounts, mountSource } from "../dist/run-box.js";
 import { startServe } from "../dist/index.js";
+import { SERVER_LOCK } from "../dist/server-lock.js";
 import { client, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -66,6 +68,10 @@ const running = (pid) => {
 };
 /** The values that follow each `name` in `args`. */
 const flag = (args, name) => args.flatMap((arg, i) => (arg === name ? [args[i + 1]] : []));
+/** Each resource flag of `args` with its value, in order: every `--cpu...`, `--memory...` and `--pids...` there is. */
+const limits = (args) => args.flatMap((arg, i) => (/^--(cpu|memory|pids)/.test(arg) ? [[arg, args[i + 1]]] : []));
+/** The settings that bound a box. */
+const LIMIT_SETTINGS = ["AGENTRUN_BOX_CPUS", "AGENTRUN_BOX_MEMORY", "AGENTRUN_BOX_PIDS"];
 
 async function boxedAgent(api) {
   const made = await api("POST", "/agents", { definition: { id: "boxed", name: "boxed", instructions: "Probe.", place: SANDBOX, tools: ["read", "write", "bash"] } });
@@ -135,9 +141,54 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   for (const label of [`agentrun.run=${runId}`, "agentrun.box=run"]) assert.ok(flag(args, "--label").includes(label), label);
   assert.equal(args[args.indexOf("--entrypoint") + 2], "registry.example/agentrun-box:1", "AGENTRUN_DOCKER_IMAGE");
   for (const never of ["-e", "-v", "--volume", "--privileged", "--env-file", "--cap-add", "-p", "--publish"]) assert.ok(!args.includes(never), never);
+  // Its limits, at their defaults: a runaway build or a fork bomb in the box stops there, and swap adds nothing to the
+  // memory. 2 CPUs, or this machine's count when it has fewer (Docker refuses more than it has).
+  assert.deepEqual(limits(args), [["--cpus", String(Math.min(2, availableParallelism()))], ["--memory", "4g"], ["--memory-swap", "4g"], ["--pids-limit", "1024"]]);
   // Its destroy at the run's end: removed by the id its label lists.
   await until(() => docker.removed().length === 1, "the destroy at the run's end");
   assert.deepEqual(await docker.containers(), [], "no container is left");
+});
+
+test("fake docker: AGENTRUN_BOX_CPUS, AGENTRUN_BOX_MEMORY and AGENTRUN_BOX_PIDS change a run's box's limits, and none drops one", { timeout: 120_000 }, async (t) => {
+  const docker = await fakeDocker(t, { AGENTRUN_BOX_CPUS: "none", AGENTRUN_BOX_MEMORY: "512m", AGENTRUN_BOX_PIDS: "256" });
+  const { api } = await serve(t, { faux: PROBE });
+  await boxedAgent(api);
+  const runId = await probe(api, [{ tool: "bash", args: { command: "true" } }]);
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const [args] = docker.runs();
+  assert.deepEqual(limits(args), [["--memory", "512m"], ["--memory-swap", "512m"], ["--pids-limit", "256"]], "no --cpus: none");
+});
+
+test("a box's limits: each setting's default when it is unset or empty, its value, or none; only the CPUs' default yields to a machine with fewer", async () => {
+  const { boxLimitsOf } = await import("../dist/run-box.js");
+  const defaults = { cpus: 2, memory: "4g", pidsLimit: 1024 };
+  assert.deepEqual(boxLimitsOf({}, 8), defaults);
+  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "", AGENTRUN_BOX_MEMORY: "", AGENTRUN_BOX_PIDS: "" }, 8), defaults);
+  assert.deepEqual(boxLimitsOf({}, 1), { ...defaults, cpus: 1 }, "a one-CPU machine: Docker refuses --cpus 2 there");
+  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "4" }, 1), { ...defaults, cpus: 4 }, "a value given is the operator's, never lowered");
+  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "0.5", AGENTRUN_BOX_MEMORY: "8G", AGENTRUN_BOX_PIDS: "4096" }, 8), { cpus: 0.5, memory: "8G", pidsLimit: 4096 });
+  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "none", AGENTRUN_BOX_MEMORY: "none", AGENTRUN_BOX_PIDS: "none" }, 8), {});
+});
+
+test("a box limit setting that is no limit refuses the start, naming the setting, before the server takes its data directory", async (t) => {
+  withEnv(t, {}, LIMIT_SETTINGS);
+  const refused = async (name, value) => {
+    process.env[name] = value;
+    const data = join(await scratch(t), "agents");
+    try {
+      const started = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+      await started.close();
+      return `started with ${name}=${value}`;
+    } catch (error) {
+      assert.equal(existsSync(join(data, SERVER_LOCK)), false, "refused before the server lock");
+      return error.message;
+    } finally {
+      delete process.env[name];
+    }
+  };
+  for (const value of ["0", "-1", "two", "1,5", "Infinity"]) assert.equal(await refused("AGENTRUN_BOX_CPUS", value), `AGENTRUN_BOX_CPUS is a number of CPUs above 0, such as 2 or 1.5, or none for no limit; it is ${JSON.stringify(value)}`);
+  for (const value of ["4096", "0g", "4 g", "4x", "-1g"]) assert.equal(await refused("AGENTRUN_BOX_MEMORY", value), `AGENTRUN_BOX_MEMORY is a size above 0 with its unit (b, k, m or g), such as 512m or 4g, or none for no limit; it is ${JSON.stringify(value)}`);
+  for (const value of ["0", "1.5", "lots", "-5"]) assert.equal(await refused("AGENTRUN_BOX_PIDS", value), `AGENTRUN_BOX_PIDS is a whole number above 0, such as 1024, or none for no limit; it is ${JSON.stringify(value)}`);
 });
 
 test("fake docker: a run's box is found by its label and taken over, its left commands killed first, with no create", { timeout: 90_000 }, async (t) => {

@@ -686,7 +686,11 @@ go through `work/` by path.
 - It has no network (`--network none`); no setting opens it. Its environment is `LANG=C.UTF-8` and `HOME=/tmp` and the
   image's own: never this server's, so no key or token is in it. It runs as this server's uid:gid, so what it writes in
   `work/` stays this server's. `AGENTRUN_DOCKER_IMAGE` names the image (default `debian:bookworm-slim`, which has no
-  python or git). It has no CPU, memory or process limits yet.
+  python or git). It may use 2 CPUs (fewer on a machine that has fewer), 4 GiB of memory, swap included, and 1,024
+  processes and threads (`--cpus 2 --memory 4g --memory-swap 4g --pids-limit 1024`), so a runaway build or a fork bomb
+  stops in the box. `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY` (with its unit, such as `8g`) and `AGENTRUN_BOX_PIDS`
+  change them, and `none` drops one (rootless Docker without the cpu controller refuses any CPU limit); any other value
+  refuses the start.
 - `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
   command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
   shell in `work/`.
