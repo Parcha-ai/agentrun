@@ -163,7 +163,7 @@ test("with the server missing from beside it, the command says so in one line an
 
 test("demo: with a provider key and no model, the server the command starts runs a current model of that provider", { timeout: 120_000 }, async (t) => {
   const { env } = bare(t);
-  const child = spawn(process.execPath, [BIN, "--no-open"], { env: { ...env, ANTHROPIC_API_KEY: "sk-ant-test-not-a-key" }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [BIN, "--no-open"], { env: { ...env, ANTHROPIC_API_KEY: "not-a-secret" }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
   t.after(async () => { child.kill("SIGTERM"); await exited; });
   let out = "";

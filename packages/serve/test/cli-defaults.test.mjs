@@ -62,7 +62,7 @@ test("demo: with no --port the server takes the first free port from its default
   const held = createServer();
   await new Promise((resolve) => held.listen(busy, "127.0.0.1", resolve));
   t.after(() => held.close());
-  const { base } = await serve(t, [], { ANTHROPIC_API_KEY: "sk-ant-test-not-a-key" });
+  const { base } = await serve(t, [], { ANTHROPIC_API_KEY: "not-a-secret" });
   const port = Number(new URL(base).port);
   assert.ok(port > busy, `${port} passes over ${busy}, which is in use`);
   const caps = await (await fetch(`${base}/v2/capabilities`)).json();
