@@ -3,13 +3,11 @@ import { useEffect, useRef, useState } from "react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timeline } from "@/components/Timeline";
 import { Chip } from "@/components/ui/chip";
-import { type Client, ClientError, follow } from "@/lib/client";
+import { type Client, follow, problemOf } from "@/lib/client";
 import { when } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import { latest } from "@/lib/viewing";
 import type { Run, TimelineRow } from "@/lib/v2";
-
-const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
 
 /** When the run's record is read again after its status moved: at once, then twice more after these pauses. */
 const TRIES_MS = [0, 250, 1000];

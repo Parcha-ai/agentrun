@@ -119,7 +119,7 @@ The model is of those two functions, not of the `submit` tool built on them. The
 <a id="findings"></a>
 ## Findings
 
-The table records counterexamples and their disposition. Findings F6 and F8 have the evidence noted in their rows rather than a shared conformance case. The tests in `packages/dsl/test/lean-findings.test.mjs` assert the intended runtime protections and the fixed validation defect. Static validation cannot predict arbitrary code patches or future model output. [Issue #10](https://github.com/Parcha-ai/agentrun/issues/10) records follow-up opportunities for earlier diagnostics.
+The table records counterexamples and their disposition. Findings F6 and F8 have the evidence noted in their rows rather than a shared conformance case. `packages/dsl/test/lean-conformance.test.mjs` runs each case on the TypeScript interpreter. `packages/dsl/test/lean-findings.test.mjs` keeps what no case pins: F4's error text, F5's typed output, F7's append order in both branch orders, and F8. Static validation cannot predict arbitrary code patches or future model output. [Issue #10](https://github.com/Parcha-ai/agentrun/issues/10) records follow-up opportunities for earlier diagnostics.
 
 Disposition: **fixed** has a regression test, **runtime** needs values produced during execution, **host** is an adapter obligation, and **document** is intentional behavior. The model is separate from the runtime; each runtime fix needs its own TypeScript change and regression test.
 

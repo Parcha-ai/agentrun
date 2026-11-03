@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AnalyticsFilter, MissionAnalytics } from "@/components/MissionAnalytics";
 import type { Agent } from "@/lib/agentForm";
-import { type Client, ClientError } from "@/lib/client";
+import { type Client, problemOf } from "@/lib/client";
 import { rangeFrom, type Stats, type StatsRange } from "@/lib/mission";
-
-const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
 
 /** The range the tab opens on, which the agent page reads first. */
 export const FIRST_RANGE: StatsRange = "30d";
@@ -14,13 +12,13 @@ export const FIRST_RANGE: StatsRange = "30d";
  *  page's answer for the first range, shown as it is; only another range is read again. */
 export function AnalyticsTab({ agent, v2, now = Date.now, stats: first }: { agent: Agent; v2: Client; now?: () => number; stats?: Stats | null }) {
   const [range, setRange] = useState<StatsRange>(FIRST_RANGE);
-  const [stats, setStats] = useState<Stats | null>(first?.analytics ? first : null);
+  const [stats, setStats] = useState<Stats | null>(first ?? null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(!first?.analytics);
+  const [loading, setLoading] = useState(!first);
   const asked = useRef(0);
   // The range whose answer is on screen: the page's first one when it gave it. Read again only for another range, so an
   // effect run twice (React's StrictMode) reads nothing more.
-  const shown = useRef<StatsRange | null>(first?.analytics ? FIRST_RANGE : null);
+  const shown = useRef<StatsRange | null>(first ? FIRST_RANGE : null);
   useEffect(() => {
     // Latest wins: each range picked makes every earlier read stale, the range already on screen included, so a late
     // answer for a range left behind never replaces what the picker shows.
@@ -28,7 +26,7 @@ export function AnalyticsTab({ agent, v2, now = Date.now, stats: first }: { agen
     if (shown.current === range) { setError(null); setLoading(false); return; }
     setLoading(true); setError(null);
     v2.statsOver({ from: rangeFrom(range, now()), agent: agent.agent_id })
-      .then((s) => { if (n === asked.current) { if (s.analytics) { setStats(s); shown.current = range; } else setError("this server gives no analytics"); } })
+      .then((s) => { if (n === asked.current) { setStats(s); shown.current = range; } })
       .catch((e) => { if (n === asked.current) setError(problemOf(e)); })
       .finally(() => { if (n === asked.current) setLoading(false); });
   }, [v2, agent.agent_id, range]); // eslint-disable-line react-hooks/exhaustive-deps

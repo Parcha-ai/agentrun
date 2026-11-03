@@ -2,7 +2,7 @@ import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature } from "./v2";
+import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -21,9 +21,18 @@ export class ClientError extends Error {
   toApiError(): ApiError { return { code: this.code, message: this.message, retryable: this.retryable, request_id: this.requestId, ...(this.details ? { details: this.details } : {}) }; }
 }
 
+/** A failed request as a page says it: a refusal as the server's `code: message`, any other failure by its message. */
+export const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
+
 /** POST /v2/workflows/validate's answer: issues refuse a save, warnings only advise. Paths are JSON Pointers into the
  *  workflow ("" for the document itself). */
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
+
+/** `GET /v2/setup/import`'s answer. Before the owner is set: the server can import, still counting (202), then its counts
+ *  (null for each when the count failed). After: the import's state. */
+export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null };
+export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" };
+export type SetupImport = ImportOffer | ImportState;
 
 /** A runs list's filter (GET /v2/runs's `status` and `archived`): runs in one status, and the archived runs in place of
  *  the others. */
@@ -83,7 +92,17 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       throw e;
     }),
     signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
-    setup: (password: string, code?: string) => call<{ signed_in: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}) } }),
+    /** Sets the owner's password. `importSessions`: the owner ticked setup's box, so the server imports this machine's
+     *  sessions once the password is set; never sent otherwise. */
+    setup: (password: string, code?: string, importSessions = false) =>
+      call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importSessions ? { import: true } : {}) } }),
+    /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, how many
+     *  sessions setup's box would import; after, to the signed-in owner, how the import asked for at setup stands. Null
+     *  where the server offers none (404) or refuses the read. */
+    setupImport: () => call<SetupImport>("GET", "/setup/import").catch((e) => {
+      if (e instanceof ClientError && (e.status === 404 || e.status === 403)) return null;
+      throw e;
+    }),
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
@@ -146,7 +165,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** The server's own check of a workflow (the DSL's validator, no code run, nothing stored). 404 on a server without it. */
     validateWorkflow: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => call<WorkflowCheck>("POST", "/workflows/validate", { body, signal }),
     /** GET /v2/stats with its `analytics` bounded: runs started at or after `from`, of `agent`. Every other number is the
-     *  whole store's, and an older server, which has no analytics, leaves both unread. */
+     *  whole store's. */
     statsOver: ({ from, agent: of }: { from?: string; agent?: string }) => {
       const q = new URLSearchParams();
       if (from) q.set("from", from);
@@ -161,6 +180,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  state, and the server keeps no record of a body that holds the values. */
     saveToolKey: (id: string, values: Record<string, string>) => call<unknown>("PUT", `/settings/tool-keys/${encodeURIComponent(id)}`, { body: { values } }),
     removeToolKey: (id: string) => call<unknown>("DELETE", `/settings/tool-keys/${encodeURIComponent(id)}`),
+    /** The server's provider per capability that has a choice (its default where it sets none). */
+    toolSettings: () => call<ToolSettings>("GET", "/settings/tools"),
+    /** Replaces the server's providers: a capability the body leaves out takes its default. The answer is each one's now. */
+    saveToolSettings: (settings: ToolSettings) => call<ToolSettings>("PUT", "/settings/tools", { body: settings }),
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };

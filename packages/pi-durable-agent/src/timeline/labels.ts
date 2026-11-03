@@ -101,9 +101,10 @@ registerLabel("write", (a) => `Wrote ${path(a) ?? "a file"}`, { many: (n) => `Wr
 registerLabel("edit", (a) => `Edited ${path(a) ?? "a file"}`, { many: (n) => `Edited ${n} files`, subject: (input) => input ?? undefined }, { name: "Edit files" });
 registerLabel("bash", (a) => `Ran \`${cut(scrubUrls(firstLine(str(a.command) ?? "")), 60)}\``, { many: (n) => `Ran ${n} commands` }, { name: "Run commands" });
 /** A fetch that answered its page as a result with `ok: false`: refused (the public-host guard said no, `refused`) or
- *  failed (`error`, or a message). Undefined for a page it fetched. */
+ *  failed (`error`, or a message). Undefined for a page it fetched. The page is the result's JSON, or its first line's
+ *  when a line for the model follows it (serve's web_fetch, saying why a picked Parallel gave no page). */
 const unfetched = (result: { text: string } | undefined) => {
-  const page = result && obj(json(result.text));
+  const page = result && obj(json(result.text) ?? json(firstLine(result.text)));
   if (page?.ok !== false) return undefined;
   const refused = str(page.refused);
   return refused !== undefined ? { refused: true, detail: refused.replace(/^refused:\s*/, "") } : { refused: false, detail: str(page.error) ?? str(page.message) ?? "no detail" };
@@ -123,6 +124,11 @@ registerLabel("web_search", (a) => {
   const query = str(a.query);
   return query ? `Searched the web for "${cut(scrubUrls(query), 60)}"` : "Searched the web";
 }, { many: (n) => `Searched the web ${n} times`, subject: (input) => (input ? `"${cut(input, 40)}"` : undefined) }, { name: "Search the web" });
+// web_search answers its results and a line asking for citations, or `{error}` when the search gave no answer: failed.
+registerOutcome("web_search", (result) => {
+  const error = str(obj(json(result.text))?.error);
+  return error !== undefined ? { failed: true, text: `failed: ${error}` } : undefined;
+});
 registerLabel(
   "browser_read",
   (_a, result) => {

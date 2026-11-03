@@ -35,7 +35,7 @@ where each tool runs. The definition names tools; the host binds them. It does n
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 The package needs Node 22.19 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
@@ -44,7 +44,7 @@ to 1.3.0, the newest its peer range takes. pi 1.4 is not supported yet; a later 
 need a browser, a key or a network.
 
 To try a version that is not on npm yet, `npm pack -w @parcha/pi-durable-agent` in a built checkout writes
-`parcha-pi-durable-agent-<version>.tgz`: install that file's path in place of `@parcha/pi-durable-agent@beta`.
+`parcha-pi-durable-agent-<version>.tgz`: install that file's path in place of `@parcha/pi-durable-agent@latest`.
 
 ## Quickstart (no key, no network)
 
@@ -56,7 +56,7 @@ a later release widens the range), save this as `quickstart.mjs`, and run
 `node --no-warnings=ExperimentalWarning quickstart.mjs` (Node's SQLite is marked experimental and says so):
 
 ```sh
-npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 ```js
@@ -730,8 +730,11 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `runMetricsOf(records)` | What a run that ended used, from the entries of all its conversations, in log order: its tokens (`input`, `cacheRead`, `cacheWrite`, `output`), its `requests` as the usage row counts them and `unmetered`, those of unknown tokens (an aborted response's partial usage, and a usage with no input at all, are never summed), its requests by `provider/model` (`models`) and the busiest `model`, and each tool's `calls` and `errors` (`tools`), their names kept to what the store takes (`METRIC_NAMES`). A `RunMetrics`, for the store's `carryBack` and `importRun` ([Agents in a folder](#agents-in-a-folder-the-agent-store)) |
 | `runMetricsWithDecisions(records, decisions)` | `runMetricsOf`, with a workflow run's decision receipts (`DecisionLike`) beside its entries: each a request by `provider/model`, its `usage` (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, in `unmetered`. serve passes a workflow run's receipts at its end; `runMetricsOf` keeps one parameter, so `.map(runMetricsOf)` stays safe |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
+| `scrubUrls(text)` | `text` with each http(s) URL in it kept to its origin, its path and its query keys: query values, the fragment and credentials are dropped, as on every row. A host that adds rows of its own cleans their strings with it |
+| `cut(text, max)` | `text` cut to `max` characters, the last three `...` when it was longer: how a row's strings are cut to `CAPS` |
 | `METRIC_NAMES` | How `runMetricsOf` keeps tool and model names: `max` 256 characters, the `kept` 100 busiest of each, and the names it sums the rest and a nameless tool under: `otherTools` (`…other tools`), `otherModels` (`…other models`), `unnamedTool` (`…unnamed tool`) |
 | `REQUEST_STARTED`, `REQUEST_ENDED`, `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted; and the cost of a request with no `pi.assistant` entry of its own (a compaction summary, marked `request: "compaction"`). An answer written before its cost came in is followed by `REQUEST_COST_PENDING`, and its cost comes later as `REQUEST_COST_LATE` (`usd`): it adds to the cost and is not counted as a request; the cost reads unknown while one is pending. A call an answer asked for, written after that answer's own entry (a harness reports each call as it runs it), follows `REQUEST_CONTINUED` in a `pi.assistant` of its own: it shows under that answer and counts as a call, not as a request, a cost or tokens. The usage row counts each marked request and sums each cost; one with no entry or cost (cut before its answer) other than the latest still in flight makes the cost unknown. A request the host refused before it left (`REQUEST_REFUSED`) is not counted, and pi's error entry for it is not shown. A conversation with no marks reads as before |
+| `TOOL_STARTED`, `TOOL_COST` | `TOOL_STARTED` marks a paid tool's call before it is sent (`{tool, charged_by, call, heldUsd}`); the `TOOL_COST` of the same `call` settles it, and in a settled timeline one never settled (a crash) makes the cost unknown, as a cut model request does: its `heldUsd` is a host cap's bound, never a charge. `TOOL_COST` is the entry kind a host writes for what a paid tool's call charged (`{tool, charged_by, usd, call?}`, `usd` null when the call may have charged and did not say how much): it adds to the run's cost, which a null makes unknown, and shows as a `phase` row of its own (`Tool cost: monid charged $0.0030 for monid.run`, `tool_name` the tool, `tool_use_id` the call). It is not a request: the usage row names the paid tool calls apart (`... over 1 model request and 1 paid tool call`). The charge's `phase` row carries it as `usage` (`{usd, requests: 0}`), so a host can sum a run's paid tools from the same rows as its cost |
 
 Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`, `OutcomeFn`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,

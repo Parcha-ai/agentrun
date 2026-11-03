@@ -14,15 +14,12 @@ import { APP_NAME, kindSpec, LABELS, loadClient, wantedKinds } from "./modal-liv
 
 const SEEDS = 20;
 const STEPS = 25;
-const SAMPLES = 20;
 // The long cases keep one box for up to this long. The shared limit for a test box is 30 minutes.
 const MAX_LIFETIME_MS = 30 * 60_000;
 const CASE_TIMEOUT_MS = 600_000;
 const DIFFERENTIAL_TIMEOUT_MS = 1_800_000;
 
 const context = BACKGROUND_CONTEXT;
-
-const median = (values: readonly number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] ?? 0;
 
 // Needs Modal credentials in the environment and the SDK (`npm install --no-save modal@0.11.0`), and spends money, so
 // it runs only when asked: `PI_TRANSPORT_LIVE_MODAL=1 npm run test:live`. The GPU kind runs the conformance suite only.
@@ -83,30 +80,6 @@ if (process.env.PI_TRANSPORT_LIVE_MODAL === "1") {
 					},
 					DIFFERENTIAL_TIMEOUT_MS,
 				);
-
-				it("measures one file operation and one short command through boxEnv", async () => {
-					await withBox(async (box) => {
-						const env = boxEnv(box);
-						const timed = async (call: () => Promise<unknown>): Promise<number[]> => {
-							const samples: number[] = [];
-							for (let index = 0; index < SAMPLES; index++) {
-								const before = performance.now();
-								await call();
-								samples.push(performance.now() - before);
-							}
-							return samples;
-						};
-						getOrThrow(await env.writeFile("probe.txt", "hello", context));
-						const read = await timed(async () => getOrThrow(await env.readTextFile("probe.txt", context)));
-						const write = await timed(async () => getOrThrow(await env.writeFile("probe.txt", "hello", context)));
-						const command = await timed(async () =>
-							getOrThrow(await env.exec(["echo", "hi"], undefined, context)),
-						);
-						console.log(
-							`boxEnv on modal ${kind.name}: p50 of ${SAMPLES}: readTextFile ${Math.round(median(read))} ms, writeFile ${Math.round(median(write))} ms, exec echo ${Math.round(median(command))} ms`,
-						);
-					});
-				});
 			}
 
 			// Runs last: by now every box this file started must be gone.

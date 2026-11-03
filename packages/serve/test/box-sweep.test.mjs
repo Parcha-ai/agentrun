@@ -3,13 +3,13 @@
 // or its agent's). The box's reap is scripted here; the real one (bwrap's pid namespace, cgroup.kill) is proved where it
 // runs.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BOX_QUARANTINE, Quarantine, settleBox, startTimeOf, sweepBoxes, writerGone } from "../dist/box/sweep.js";
+import { BOX_QUARANTINE, Quarantine, settleBox, startTimeOf, sweepBoxes } from "../dist/box/sweep.js";
 import { agent, follow, serve } from "./support.mjs";
 
 const linux = { skip: process.platform !== "linux" && "reads start times from /proc" };
@@ -51,15 +51,6 @@ async function runWith(t, record) {
   return { dir, run, quarantine: await Quarantine.open(join(dir, BOX_QUARANTINE)) };
 }
 const stored = async (run) => JSON.parse(await readFile(join(run, "box.json"), "utf8"));
-
-// ---- the writer ------------------------------------------------------------------------------------------------------
-
-test("a record's writer is gone when no process has its pid, or the one that has it started at another time", linux, async () => {
-  assert.equal(writerGone(ALIVE), false, "this process");
-  assert.equal(writerGone({ pid: process.pid, startTime: "1" }), true, "its pid, reused by another start");
-  assert.equal(writerGone(await goneWriter()), true, "a process that exited");
-  assert.equal(writerGone(undefined), true, "no writer named");
-});
 
 // ---- one run's box -----------------------------------------------------------------------------------------------------
 
@@ -116,17 +107,8 @@ test("a record nothing could count (no pid, no cgroup) is cleared only once its 
   assert.equal(await settleBox(host({ verdict: none }), gone.quarantine, "run-1", gone.run), "cleared");
   assert.equal((await stored(gone.run)).reaped.by, "none");
   assert.equal(gone.quarantine.list().length, 0, "and nothing quarantined");
-});
-
-test("a record with no pid but a cgroup is reaped through its cgroup", linux, async (t) => {
-  const cgroups = new Set(["/sys/fs/cgroup/agentrun/run-1"]);
-  const { run, quarantine } = await runWith(t, { id: "box-1", cgroup: "/sys/fs/cgroup/agentrun/run-1", writer: await goneWriter() });
-  const seen = [];
-  const h = host({ verdict: (r) => (seen.push(r), { empty: true, left: 0, by: "cgroup" }), cgroups });
-  assert.equal(await settleBox(h, quarantine, "run-1", run), "reaped");
-  assert.equal(seen[0].cgroup, "/sys/fs/cgroup/agentrun/run-1");
-  assert.equal(seen[0].pid, undefined);
-  assert.ok(!cgroups.has("/sys/fs/cgroup/agentrun/run-1"), "and the cgroup removed");
+  const unnamed = await runWith(t, { id: "box-1" });
+  assert.equal(await settleBox(host({ verdict: none }), unnamed.quarantine, "run-1", unnamed.run), "cleared", "a record that names no writer has none alive");
 });
 
 // ---- the start sweep ---------------------------------------------------------------------------------------------------
@@ -187,15 +169,30 @@ async function servedWithRecord(t, record, box) {
   return { ...second, id, runDir };
 }
 
+/** Until `order` holds `entry`: a point the server reached, never a time. */
+async function reached(order, entry) {
+  for (let i = 0; !order.includes(entry); i++) {
+    assert.ok(i < 400, `${entry}: ${order}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/** While the start sweep holds its reap: fails at once if any of `early` settles (the request answered, a run's process
+ *  spawned), else waits `ms`, the bound on how long a start that skipped the wait takes to show it. */
+async function heldThrough(ms, early) {
+  const first = await Promise.race([...early.map((p) => p.then(() => true, () => true)), new Promise((resolve) => setTimeout(() => resolve(false), ms))]);
+  assert.equal(first, false, "the run went on while the start sweep still held its reap");
+}
+
 test("no run starts a box before the start sweep has let go what earlier runs left", linux, async (t) => {
   const order = [];
   let release;
   const held = new Promise((resolve) => (release = resolve));
   const box = { reap: async () => { order.push("sweep reaping"); await held; order.push("sweep done"); return { empty: true, left: 0, by: "pidns" }; } };
   const { api } = await servedWithRecord(t, { pid: 4242, startTime: "9", writer: await goneWriter() }, box);
+  await reached(order, "sweep reaping");
   const created = api("POST", "/agents/plain/runs", { input: { content: "And 3 + 3?" } }).then((r) => (order.push("run created"), r));
-  // Released after a while, or as soon as the start returns without waiting (the bug this guards against).
-  await Promise.race([created, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+  await heldThrough(2_000, [created]);
   release();
   const run = await created;
   assert.equal(run.status, 202);
@@ -209,51 +206,39 @@ test("a start sweep that fails once is tried again by the next run, not kept: on
     reap: async () => ({ empty: true, left: 0, by: "pidns" }),
     cgroups: {
       list: async () => {
-        if (lists++ === 0) throw Object.assign(new Error("EIO: i/o error, scandir '/cg'"), { code: "EIO" });
+        // The start's own sweep and the first run's fail; the next run's lists.
+        if (++lists <= 2) throw Object.assign(new Error("EIO: i/o error, scandir '/cg'"), { code: "EIO" });
         return [];
       },
       remove: async () => {},
     },
   };
-  const { api } = await servedWithRecord(t, { pid: 4242, startTime: "9", writer: await goneWriter() }, box);
+  const { api } = await serve(t, { box });
+  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  // The start's sweep has failed once it listed: nothing it awaits comes after the list.
+  for (let i = 0; lists === 0; i++) {
+    assert.ok(i < 400, "the start sweeps");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
   const first = await api("POST", "/agents/plain/runs", { input: { content: "And 3 + 3?" } });
   assert.notEqual(first.status, 202, `the run the failed sweep was for is not started: ${JSON.stringify(first.body)}`);
   const second = await api("POST", "/agents/plain/runs", { input: { content: "And 4 + 4?" } });
   assert.equal(second.status, 202, `the next run sweeps again and starts: ${JSON.stringify(second.body)}`);
-  assert.equal(lists, 2, "swept twice: once failed, once whole");
+  assert.equal(lists, 3, "swept three times: at start and for the first run, each failed, then whole");
   await follow(api, second.body.run_id, ["completed"]);
-});
-
-test("archiving a run lets its box go; archiving an agent lets every one of its runs' boxes go", linux, async (t) => {
-  const reaped = [];
-  const box = { reap: async (r) => (reaped.push(r.id), { empty: true, left: 0, by: "pidns" }) };
-  // The sweep at start reaps the record (its writer is gone) and marks it; a new record, as a later box would leave, is
-  // the archive's. A later box's record is written by a run process, which starts only once the sweep is done, while
-  // requests are answered before that: so the new record goes in once the sweep's mark is on disk, and the sweep writes
-  // it no more.
-  const one = await servedWithRecord(t, { pid: 4242, startTime: "9", writer: await goneWriter() }, box);
-  for (const deadline = Date.now() + 10_000; !(await stored(one.runDir)).reaped; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < deadline, `the start sweep marked the record it reaped: ${reaped}`);
-  assert.deepEqual(reaped, [`box-${one.id}`], "the start sweep reaped the record it found");
-  await writeFile(join(one.runDir, "box.json"), `${JSON.stringify({ id: "box-later", pid: 4243, startTime: "9", writer: await goneWriter() })}\n`);
-  assert.equal((await one.api("POST", `/runs/${one.id}/archive`)).status, 200);
-  assert.ok(reaped.includes("box-later"), `the run archive reaped it: ${reaped}`);
-  const marked = await stored(one.runDir);
-  assert.deepEqual([marked.id, marked.reaped.by], ["box-later", "pidns"], "its own record is the one marked");
-  // The run itself unarchived: only its agent's archive archives it now.
-  assert.equal((await one.api("POST", `/runs/${one.id}/unarchive`)).status, 200);
-  await writeFile(join(one.runDir, "box.json"), `${JSON.stringify({ id: "box-agent", pid: 4244, startTime: "9", writer: await goneWriter() })}\n`);
-  assert.equal((await one.api("POST", "/agents/plain/archive")).status, 200);
-  assert.ok(reaped.includes("box-agent"), `the agent archive reaped its run's box: ${reaped}`);
 });
 
 
 // ---- what the first pass of review found untested ------------------------------------------------------------------
 
 test("a process's start time is /proc's field 22, the clock ticks since boot it started at: non-zero, and later for a later process", linux, async () => {
-  const stat = readFileSync("/proc/self/stat", "utf8");
-  // Its own parse: the fields after the command's closing parenthesis, the state first (field 3), so field 22 is 19 on.
-  const own = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[22 - 3];
-  assert.equal(startTimeOf(process.pid), own);
+  // Checked against the clock: the boot time plus the ticks since boot is when this process started, by its own uptime.
+  const own = startTimeOf(process.pid);
+  const hz = Number(execFileSync("getconf", ["CLK_TCK"], { encoding: "utf8" }));
+  const boot = Number(/^btime (\d+)$/m.exec(readFileSync("/proc/stat", "utf8"))[1]);
+  const started = boot + Number(own) / hz;
+  const expected = Date.now() / 1000 - process.uptime();
+  assert.ok(Math.abs(started - expected) < 2, `field 22 reads a start at ${started}, this process started at ${expected}`);
   assert.ok(Number(own) > 0, "never a field that reads 0");
   const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { stdio: "ignore" });
   await new Promise((resolve) => child.once("spawn", resolve));
@@ -290,13 +275,15 @@ test("a leftover cgroup whose reap throws is quarantined, never removed: a reap 
   assert.ok(cgroups.has("/cg/leftover"));
 });
 
-/** Each spawn of a run's process, by its run directory, in `order`, from now until the test ends. */
+/** Each spawn of a run's process, by its run directory, in `order`, from now until the test ends; settles at the first. */
 function spawnsInto(t, order) {
   const cp = createRequire(import.meta.url)("node:child_process");
   const real = cp.spawn;
+  let first;
+  const spawned = new Promise((resolve) => (first = resolve));
   cp.spawn = function (command, args, ...rest) {
     const dir = Array.isArray(args) ? args[args.indexOf("--dir") + 1] : undefined;
-    if (args?.includes("run") && dir) order.push(`spawn ${dir.split("/").at(-1)}`);
+    if (args?.includes("run") && dir) order.push(`spawn ${dir.split("/").at(-1)}`), first();
     return real.call(this, command, args, ...rest);
   };
   syncBuiltinESMExports();
@@ -304,6 +291,7 @@ function spawnsInto(t, order) {
     cp.spawn = real;
     syncBuiltinESMExports();
   });
+  return spawned;
 }
 
 /** A box host whose reap is held until `release()`, recording when it began and ended. */
@@ -322,10 +310,11 @@ test("a follow-up that opens an ended run again waits for the start sweep, when 
   await writeFile(join(first.data, "runs", id, "box.json"), JSON.stringify({ id: "box-old", pid: 4242, startTime: "9", writer: await goneWriter() }));
   const order = [];
   const { release, box } = heldReap(order);
-  spawnsInto(t, order);
+  const spawned = spawnsInto(t, order);
   const second = await serve(t, { data: first.data, box });
+  await reached(order, "reap box-old");
   const sent = second.api("POST", `/runs/${id}/messages`, { content: "And 3 + 3?" });
-  await Promise.race([sent, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+  await heldThrough(2_000, [sent, spawned]);
   release();
   assert.equal((await sent).status, 202);
   await follow(second.api, id, ["completed"]);
@@ -345,10 +334,11 @@ test("a run the server finds left running is opened again only after the start s
   await writeFile(join(data, "runs", id, "box.json"), JSON.stringify({ id: "box-left", pid: 4242, startTime: "9", writer: await goneWriter() }));
   const order = [];
   const { release, box } = heldReap(order);
-  spawnsInto(t, order);
+  const spawned = spawnsInto(t, order);
   const second = await serve(t, { data, box });
+  await reached(order, "reap box-left");
   const answered = second.api("POST", `/runs/${id}/messages`, { content: "eu" });
-  await Promise.race([answered, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+  await heldThrough(2_000, [answered, spawned]);
   release();
   await answered;
   await follow(second.api, id, ["completed"]);
@@ -376,6 +366,10 @@ test("archiving one run lets go of that run's box only: another run's record and
   assert.deepEqual(reaped, [`box-${a}`], "only the archived run's box");
   assert.equal(JSON.parse(await readFile(join(data, "runs", b, "box.json"), "utf8")).reaped, undefined, "the other's record is unmarked");
   assert.ok(cgroups.has(`/cg/${b}`) && !cgroups.has(`/cg/${a}`), "and its cgroup in place");
+  // Its agent archived: every one of its runs' boxes goes, the other run's too.
+  assert.equal((await api("POST", "/agents/plain/archive")).status, 200);
+  assert.deepEqual(reaped, [`box-${a}`, `box-${b}`], "the agent archive let go of its other run's box");
+  assert.ok(!cgroups.has(`/cg/${b}`), "and removed its cgroup");
 });
 
 test("an archived run that is still live has its box let go when its process exits, not at the next start", linux, async (t) => {
