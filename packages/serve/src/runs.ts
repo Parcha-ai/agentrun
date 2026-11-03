@@ -138,8 +138,6 @@ export type Run = {
   revision: string;
   /** The harness its revision names, read at its first message. */
   harness?: string;
-  /** Its agentic revision names the `write` tool: its end-of-run turn can add a note. */
-  writes?: boolean;
   /** The newest store entry the run has shown. */
   lastEntry?: number;
   /** What the live path's rows keep served (keepCommitted), for a learning row shown between its snapshots. */
@@ -158,6 +156,9 @@ export type Run = {
   rows: TimelineEvent[];
   /** The whole text of the run's newest assistant message: a row's text is cut at 2000 characters, an answer is not. */
   answerText?: string;
+  /** The whole text of each assistant message of its end-of-run turn, by store entry: what the turn answered, whose
+   *  notes learning reads (learning-run.ts). */
+  turnText?: Map<number, string>;
   child?: ChildProcess;
   /** The pid of a run process an earlier server started that still serves the run: supervised by its run.json. */
   orphan?: number;
@@ -232,17 +233,17 @@ export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
 }
 
 /** Notes the whole text of the newest assistant message in `entries` (pi's stored entries), and the newest entry. The
- *  end-of-run turn's are never the run's answer. */
+ *  end-of-run turn's are never the run's answer: each is noted by its entry in `turnText`, whole. */
 function noteAnswer(run: Run, entries: readonly unknown[]): void {
   for (const value of entries) {
-    if (isObject(value) && typeof value.id === "number") {
-      run.lastEntry = Math.max(run.lastEntry ?? 0, value.id);
-      if (reflects(run.meta.reflect, value.id)) continue;
-    }
+    const entry = isObject(value) && typeof value.id === "number" ? value.id : undefined;
+    if (entry !== undefined) run.lastEntry = Math.max(run.lastEntry ?? 0, entry);
+    const turn = entry !== undefined && reflects(run.meta.reflect, entry);
     if (!isObject(value) || value.kind !== "pi.assistant" || !Array.isArray(value.model) || !isObject(value.model[0])) continue;
     const content = value.model[0].content;
     const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "";
-    if (text) run.answerText = text;
+    if (turn) (run.turnText ??= new Map()).set(entry, text);
+    else if (text) run.answerText = text;
   }
 }
 
@@ -586,7 +587,7 @@ export class Runs {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
       working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
       ...(revision?.kind === "agentic" && revision.body.tools.includes(WEB_FETCH_TOOL) ? { webFetch: true as const } : {}),
-      ...(revision?.kind === "agentic" ? { harness: revision.body.harness ?? DEFAULT_HARNESS, writes: revision.body.tools.includes("write") } : {}),
+      ...(revision?.kind === "agentic" ? { harness: revision.body.harness ?? DEFAULT_HARNESS } : {}),
     };
   }
 

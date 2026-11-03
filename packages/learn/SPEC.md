@@ -2,7 +2,7 @@
 
 An agent's memory is a folder of short markdown notes in Claude Code's own auto-memory format, kept by its host. Every
 run reads the folder's index in its instructions and finds the notes in a copy of the folder. When a run ends, the host
-may ask it one more turn, in which it may add notes to its copy. The host checks what it added, one grader judges it,
+may ask it one more turn, which answers with the notes it would keep. The host checks them, one grader judges them,
 and the host merges it into the folder. This page is the contract: the format, what a run may propose, the checks, the
 caps and the merge.
 
@@ -54,16 +54,19 @@ notes' front matter every time it merges. A run reads its first 200 lines, withi
 
 ## What a run may propose
 
-When a run ends, its copy of the folder (the active notes and the index, as the run started) may hold new files. The
-host compares the copy with the commit the run started from, reading only regular files and never following a link.
-A run may only add notes:
+When a run ends, its end-of-run turn answers with the notes it would keep, one ` ```note <file>.md ` block each
+(`reflectPrompt`, `parseReflection`). The host reads nothing else: no file the run wrote, in its copy of the folder or
+anywhere, is ever read. It hands each note to the checker as a change against the commit the run started from. A run
+may only add notes:
 
-- one file per new note, in the format above, at the folder's top;
+- one note per block, in the format above, named for a file at the folder's top;
 - to replace a note, a new note whose `supersedes` names it; the old one stays, and the host marks it;
-- never an edit or a deletion of a file that was there, and never `status` or `superseded_by`, which are the host's;
-- `MEMORY.md` is the host's: a change to it is ignored, never refused.
+- never a note with the name of a file that was there (an edit), and never `status` or `superseded_by`, which are the
+  host's;
+- `MEMORY.md` is the host's: a note by that name is ignored, never refused.
 
-Writing nothing is a fine answer: the host drops it as `empty`.
+An answer with no note is a fine answer: the host drops it as `empty`. One that gives notes out of format is dropped as
+`unparsed`, and nothing in it is kept.
 
 ## The caps
 

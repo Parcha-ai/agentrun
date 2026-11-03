@@ -71,15 +71,15 @@ test("the grader reads what the user said in the run, in order and cut of the se
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const { api, token, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("asked", { plan: PLAN }));
-  const runId = await started(api, "asked", `Remember for next time: answer in tables. The server's token is ${token}.`);
+  const runId = await started(api, "asked", `For next time: answer in tables. The server's token is ${token}.`);
   const { view, rows } = await ended(api, runId);
   settled(view, rows, "merged");
   const [call] = callsIn(calls);
-  assert.deepEqual(call.asked, ["1. Remember for next time: answer in tables. The server's token is [redacted]."]);
+  assert.deepEqual(call.asked, ["1. For next time: answer in tables. The server's token is [redacted]."]);
   assert.ok(!JSON.stringify(callsIn(calls)).includes(token), "the token never reached the grader");
   // The proposal keeps them as the grader read them, so a grade after a restart reads the same.
   const proposal = readFileSync(join(data, "runs", runId, "learning-proposal.json"), "utf8");
-  assert.deepEqual(JSON.parse(proposal).asked, ["Remember for next time: answer in tables. The server's token is [redacted]."]);
+  assert.deepEqual(JSON.parse(proposal).asked, ["For next time: answer in tables. The server's token is [redacted]."]);
   assert.ok(!proposal.includes(token));
 });
 
@@ -199,10 +199,10 @@ for (const at of ["proposed", "reflecting"]) {
     const saved = JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8"));
     assert.deepEqual([saved.learning.state, saved.learning.verdict], ["proposed", undefined], "nothing was decided");
     if (at === "reflecting") {
-      // A server that went after the run settled and before its check: what the turn wrote is set aside, not yet checked.
-      writeFileSync(join(data, "runs", runId, "serve.json"), JSON.stringify({ ...saved, learning: { ...saved.learning, state: "reflecting", reason: null, detail: "The end-of-run turn ended; what it wrote waits to be checked." } }));
+      // A server that went after the run settled and before its check: what the turn answered is kept, not yet checked.
+      writeFileSync(join(data, "runs", runId, "serve.json"), JSON.stringify({ ...saved, learning: { ...saved.learning, state: "reflecting", reason: null, detail: "The end-of-run turn ended; what it answered waits to be checked." } }));
       rmSync(join(data, "runs", runId, "learning-proposal.json"));
-      assert.ok(existsSync(join(data, "runs", runId, "learning-turn", "check-units.md")), "the turn's copy is set aside");
+      assert.match(JSON.parse(readFileSync(join(data, "runs", runId, "learning-turn.json"), "utf8")).answer, /^```note check-units\.md\n/, "the turn's answer is kept");
     }
     // The next server: the follow-up answers, the run ends, and its learning goes on from where it was.
     delete process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD;
@@ -282,13 +282,14 @@ test("GET /v2/usage books each grade under the meter learning, by agent and by d
   const first = await serve(t, { learning: "on", faux: LEARN });
   const { api, data } = first;
   await made(api, learner("counted", { plan: PLAN, once: true }));
-  await made(api, agent("mute", { learning: true }));
+  // An agent whose end-of-run turn gives its note out of format: no ```note block.
+  await made(api, learner("mute", { instructions: `Answer: ${JSON.stringify("Keep this:\n---\nname: Loose\ndescription: Out of format\ntype: reference\n---\nA note with no block.\n")}` }));
   await made(api, agent("plain", { tools: ["write"] }));
   const merged = await ended(api, await started(api, "counted"));
   const empty = await ended(api, await started(api, "counted"));
   const mute = await ended(api, await started(api, "mute"));
   await ended(api, await started(api, "plain"));
-  assert.deepEqual([merged.view.learning.state, empty.view.learning.reason, mute.view.learning.reason], ["merged", "empty", "no_write_tool"]);
+  assert.deepEqual([merged.view.learning.state, empty.view.learning.reason, mute.view.learning.reason], ["merged", "empty", "unparsed"]);
   const grade = (await savedOf(data, merged.view.run_id)).learning.cost_usd.grade;
   assert.ok(grade > 0);
   for (const { view } of [empty, mute]) await savedOf(data, view.run_id);
@@ -298,9 +299,9 @@ test("GET /v2/usage books each grade under the meter learning, by agent and by d
   assert.ok(byMeter.lines.find((entry) => entry.meter === "tokens").usd > 0, "the runs' own cost stays under tokens");
   assert.ok((await api("GET", "/usage?group_by=agent")).body.lines.find((entry) => entry.group === "counted").usd >= line.usd);
 
-  const want = { runs: 3, merged: 1, dropped: { empty: 1, no_write_tool: 1 }, in_progress: 0 };
+  const want = { runs: 3, merged: 1, dropped: { empty: 1, unparsed: 1 }, in_progress: 0 };
   assert.deepEqual((await api("GET", "/stats")).body.learning, want);
-  assert.deepEqual((await api("GET", "/stats?agent=mute")).body.learning, { runs: 1, merged: 0, dropped: { no_write_tool: 1 }, in_progress: 0 });
+  assert.deepEqual((await api("GET", "/stats?agent=mute")).body.learning, { runs: 1, merged: 0, dropped: { unparsed: 1 }, in_progress: 0 });
   assert.deepEqual((await api("GET", `/stats?from=${new Date(Date.now() + 60_000).toISOString()}`)).body.learning, { runs: 0, merged: 0, dropped: {}, in_progress: 0 });
   // One ledger line per run that tried to learn, once its end was saved: the grade's spend on the merged one, none on the
   // others, which were never graded.
@@ -310,7 +311,7 @@ test("GET /v2/usage books each grade under the meter learning, by agent and by d
   assert.deepEqual(lines.sort((a, b) => a.run.localeCompare(b.run)), [
     { run: merged.view.run_id, agent: "counted", state: "merged", reason: null, at: "string", cost: grade, tokens: saved.learning.tokens.grade },
     { run: empty.view.run_id, agent: "counted", state: "dropped", reason: "empty", at: "string", cost: 0, tokens: zero },
-    { run: mute.view.run_id, agent: "mute", state: "dropped", reason: "no_write_tool", at: "string", cost: 0, tokens: zero },
+    { run: mute.view.run_id, agent: "mute", state: "dropped", reason: "unparsed", at: "string", cost: 0, tokens: zero },
   ].sort((a, b) => a.run.localeCompare(b.run)));
   await first.close();
   const again = await serve(t, { learning: "on", faux: LEARN, data });
@@ -319,7 +320,7 @@ test("GET /v2/usage books each grade under the meter learning, by agent and by d
   chmodSync(runs, 0o000);
   try {
     assert.deepEqual((await again.api("GET", "/stats")).body.learning, want, "read back from the ledger");
-    assert.deepEqual((await again.api("GET", "/stats?agent=mute")).body.learning, { runs: 1, merged: 0, dropped: { no_write_tool: 1 }, in_progress: 0 });
+    assert.deepEqual((await again.api("GET", "/stats?agent=mute")).body.learning, { runs: 1, merged: 0, dropped: { unparsed: 1 }, in_progress: 0 });
   } finally {
     chmodSync(runs, 0o700);
   }

@@ -771,12 +771,12 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
 - `runs/<id>/learning.json` pins that commit (`seed`). It is written once: a resume or a follow-up reads the same
   commit, however `main` moves on.
 - The first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own) go into the run's
-  instructions after the agent's, under `# Learned`, with one line saying the notes are in `.learning/` and to open one
-  when it applies. That is pi's system prompt and claude-agent's and codex's instructions: the same channel `CLAUDE.md`
+  instructions after the agent's, under `# Learned`, with one line saying the notes are in `.learning/`, to open one
+  when it applies, and that only what the run answers when it is asked at the end is kept. That is pi's system prompt and claude-agent's and codex's instructions: the same channel `CLAUDE.md`
   and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project settings off, so a
   `.claude/` in the work never loads), and no skill is learned.
-- `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh; a superseded or retired
-  note is not.
+- `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh, for the run to read; a
+  superseded or retired note is not.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
@@ -786,26 +786,28 @@ git 2.40 or later is one such fault, said once on stderr.
 ### What a run learns
 
 When a run that learns answers or fails, the server asks the same session one more turn before it lets the run go,
-whatever its harness: one message through the run's door under the fixed request id `learn-reflect-<run id>`, so a
-server that restarts mid-turn asks again and the run takes it once. The server alone sends it, with the origin
-`reflect`; no request field sets it. Before it, `work/.learning/` is laid again from the seed, so only the turn's own
-writes count. The message (packages/learn's `reflectPrompt`) names that folder as `.learning/`, relative to the run's
-work, where every harness's file tools resolve it (no host path, which a box would not see), the note format, that a memory is replaced by a new note with `supersedes: [old.md]` and never edited or deleted, that the
-server rebuilds `MEMORY.md`, how many index lines are left (200 less the active notes), that writing nothing is fine,
-and what not to keep. The turn runs under the run's own cap, with no reserve, and within 5 minutes; its rows are
-labelled `learning`, and the run's answer stays the job's.
+whatever its harness and whatever tools its agent has: one message through the run's door under the fixed request id
+`learn-reflect-<run id>`, so a server that restarts mid-turn asks again and the run takes it once. The server alone
+sends it, with the origin `reflect`; no request field sets it. The message (packages/learn's `reflectPrompt`) asks the
+agent to look back over the whole conversation, what the user asked it to remember included, and to answer with each
+note to keep as one ` ```note <file>.md ` block in the note format, and to use no tool: no `write` tool is needed, and
+nothing the run wrote in `work/.learning/`, during the task or the turn, counts. It also says that a memory is replaced
+by a new note with `supersedes: [old.md]` and never by reusing a name, how many index lines are left (200 less the
+active notes), that `No notes.` is a fine answer, and what not to keep. The turn runs under the run's own cap, with no
+reserve, and within 5 minutes; its rows are labelled `learning`, and the run's answer stays the job's.
 
-As the run settles, before it reads ended and before a follow-up can open it again, the server moves the turn's
-`work/.learning/` whole, with one rename, to `runs/<id>/learning-turn/`, outside the run's work; a follow-up finds
-`work/.learning/` laid again from the seed. Once the run has ended, in the agent's queue, the server reads what the turn
-left from that snapshot alone, never from the work: the folder's top only, each entry with lstat and never a link
-followed, at most 4096 bytes of a note, and never past 64 changed paths. packages/learn's `checkProposal` refuses, before anything is written anywhere, an edited or deleted note, a path
-that is not a `.md` file at the top, a bad name, a link or anything not a regular file, front matter out of shape or
-setting `status`, a `supersedes` naming a note that is not active, more than 8 notes superseded, more than 8 new notes
-or a note over 4096 bytes, an index past 200 lines, hidden characters, non-UTF-8, and text shaped like a secret or
-holding one of the server's own secrets (the launcher's, the keys and tokens in its environment, its API and door
-tokens), in a note or its name.
-`MEMORY.md` as the turn left it is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`.
+As the run settles, before it reads ended and before a follow-up can open it again, the server keeps what the turn
+answered, the whole text of each of its messages, and what the user said in the run, in `runs/<id>/learning-turn.json`.
+Once the run has ended, in the agent's queue, the server reads the notes from that answer alone (packages/learn's
+`parseReflection`): an answer with no note is `empty`, and one that gives notes out of format (a note outside a block,
+a block not closed, with no file name, or a name given twice) is `unparsed`, nothing kept. packages/learn's
+`checkProposal` then refuses, before anything is written anywhere, a note that reuses an existing note's name, a path
+that is not a `.md` file at the top, a bad name, front matter out of shape or setting `status`, a `supersedes` naming a
+note that is not active, more than 8 notes superseded, more than 8 new notes or a note over 4096 bytes, an index past
+200 lines, hidden characters, and text shaped like a secret or holding one of the server's own secrets (the
+launcher's, the keys and tokens in its environment, its API and door tokens), in a note or its name. A `MEMORY.md` the
+answer gives is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`, with what the
+user said, each message cut of the server's secrets.
 
 Then one grader decides, one grade at a time per agent: packages/learn's `gradePrompt`, bounded (3 minutes), against
 `main` as it is then, and read by `parseVerdict`, which fails closed. It runs on the model the server grades on:
@@ -826,10 +828,10 @@ merged, never twice. The merge's own questions are asked again of `main` first: 
 refused as `exists`. A server that goes between steps picks the run up at its next start, once.
 
 The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run lists) says how it went: `seeded`, then
-`reflecting` during the turn and until what it wrote is checked, `proposed` while it is graded, and `merged`, or
-`dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `no_write_tool`, `cancelled`,
-`crashed`, `reflect_timeout`, `reflect_failed`, `empty`, `propose_failed`, `checker`, `screen`, `screen_down`,
-`grader`, `grade_failed`; `tool_denied` is reserved for a tool gate this server does not have yet). It is `null` for a
+`reflecting` during the turn and until what it answered is checked, `proposed` while it is graded, and `merged`, or
+`dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`,
+`reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `screen`, `screen_down`,
+`grader`, `grade_failed`). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
 workflow's or an imported run). Once it is proposed, merged or dropped (`seed_failed` included), the run's timeline has
 one row of kind `learning` that says so. Each run's learning end is written once to the learning ledger,

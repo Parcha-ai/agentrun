@@ -2,9 +2,10 @@
 
 Self-learning on any harness, as files. An agent's memory is a folder of short markdown notes in Claude Code's own
 auto-memory format: `MEMORY.md`, the index, and one file per note. Every run reads the index; when a run ends, its host
-may ask it one more turn to add notes. This package is the contract, in [SPEC.md](SPEC.md), and the code a host needs
-around that turn: the format, the prompt, the checker of what a run proposes, and the grader's prompt and verdict. It
-runs no git and calls no model: the host does both.
+may ask it one more turn, which answers with the notes it would keep. This package is the contract, in
+[SPEC.md](SPEC.md), and the code a host needs around that turn: the format, the prompt and the parser of its answer, the
+checker of what a run proposes, and the grader's prompt and verdict. It runs no git and calls no model: the host does
+both.
 
 Published to npm from the next release (`@beta`), with AgentRun Server, which uses it. Until then it installs from this
 repository.
@@ -25,17 +26,25 @@ const gone = retire(text); // a person's retire: status: retired, and no superse
 ## Asking a run what it learned
 
 ```js
-import { reflectPrompt } from "@parcha/agentrun-learn";
+import { parseReflection, reflectPrompt } from "@parcha/agentrun-learn";
 
 const prompt = reflectPrompt({ dir: ".learning", active: activeNotes(notes).length });
+const parsed = parseReflection(answerOfThatTurn); // { ok: true, notes: [{ file, text }] } | { ok: false, reason: "empty" | "unparsed" }
 ```
 
-Once a run has answered or failed, a host sends `prompt` as one more turn in the same session. It says where the
-run's copy of the folder is, the format of a note, that a memory is replaced by a new note with `supersedes`, never
-edited or deleted, that the host rebuilds `MEMORY.md`, how many index lines are left, that writing nothing is fine, and
-what not to keep. It names no harness's tool. `dir` is the copy's path relative to the run's workspace, where every
-harness's file tools resolve one, so the prompt holds no path of the host's, which a box would not see. It refuses an
-absolute `dir`, and a control or unseen character in it.
+Once a run has answered or failed, a host sends `prompt` as one more turn in the same session. It asks the agent to
+look back over the whole conversation, what the user asked it to remember included, and to answer with each note to
+keep as one ` ```note <file>.md ` block in the note format, with no tool: only that answer is kept, never a file the run
+wrote. It also says where the run's copy of the folder is (to read, and to name a note it supersedes), that a memory is
+replaced by a new note with `supersedes` and never by reusing a name, how many index lines are left, that `No notes.` is
+fine, and what not to keep. The answer is text, so the turn is the same on every harness and needs no write tool. `dir`
+is the copy's path relative to the run's workspace, so the prompt holds no path of the host's, which a box would not
+see. It refuses an absolute `dir`, and a control or unseen character in it.
+
+`parseReflection` reads the answer's ` ```note ` blocks, each the file it names and its text whole, in order, and
+leaves every other line and block alone. An answer with none is `empty`. One that gives notes out of format is
+`unparsed`, with why: a note outside a block, a block not closed, one with no file name or two, a name given twice, or
+an answer over `ANSWER_MAX` characters. What a note says, its name included, is the checker's to judge.
 
 ## Checking what a run proposes
 
@@ -49,8 +58,8 @@ const { ok, problems, notes } = checkProposal({
 });
 ```
 
-The host reads the run's copy itself, regular files only and never following a link, and hands the checker each change
-against the commit the run started from. `ok` means the new notes (`notes`, parsed, with their text) go to the grader;
+The host hands the checker each note the run's answer gave, as a change against the commit the run started from (a
+note with an existing note's name is `modified`). `ok` means the new notes (`notes`, parsed, with their text) go to the grader;
 each problem is `{ rule, path?, detail }`, printable as it is. [SPEC.md](SPEC.md#the-checks) lists the rules.
 `mergeProblems(base, notes)` asks the merge's own questions again of `main` at merge time.
 

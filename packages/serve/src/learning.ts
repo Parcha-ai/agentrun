@@ -9,9 +9,10 @@
 // empty `MEMORY.md`), resolves main's commit and reads it with plumbing, never the working tree. It copies that commit's
 // index and active notes into the run's `work/.learning/` and pins the commit in the run's directory (`learning.json`),
 // with what the run reads of the index. The run's process reads that pin (withLearned, for app.ts) and never runs git, so
-// it may run anywhere its directory is. When the run ends the server asks it one more turn, in which it may add notes to
-// that copy (learning-run.ts). As the run settles, before anything can open it again, the copy is moved whole out of its work
-// (snapshotLearned); what the turn added is checked from there (propose.ts), graded and merged into main (grade.ts).
+// it may run anywhere its directory is. When the run ends the server asks it one more turn, which answers with the notes
+// it would keep (learning-run.ts). As the run settles, before anything can open it again, that answer is kept in the
+// run's directory (`learning-turn.json`); its notes are checked from there (propose.ts), graded and merged into main
+// (grade.ts). The copy in the run's work is only for reading: nothing the run writes there is ever kept.
 //
 // The host never follows a symbolic link into the folder (agentFolder): a link at the agent's home, at its `learning/`
 // or at `learning/.git`, or a `MEMORY.md` that is one when the host writes it, is refused, and the run starts with
@@ -20,7 +21,7 @@
 // way (readFolder, agentFolder), and a link there is an error.
 import { spawn } from "node:child_process";
 import { constants, existsSync } from "node:fs";
-import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, type Verdict } from "@parcha/agentrun-learn";
 import { homeOf, writeDurable } from "./files.js";
@@ -39,12 +40,11 @@ export function learningOf(env: NodeJS.ProcessEnv, given?: string): LearningMode
 }
 
 /** Where a run's learning stands (its `learning`, runs.ts): `seeded` once it starts from what its agent learned,
- *  `reflecting` while its end-of-run turn runs and until what it wrote is checked, `proposed` once that passed the checks
- *  and is kept in the run's directory (propose.ts), `merged` once it is on main (grade.ts), or `dropped` with a reason
- *  from the closed list. A learning fault never refuses a run: it starts with nothing learned, `seed_failed`.
- *  `tool_denied` is the tool gate's, which this server does not have yet: no run reads it today. */
+ *  `reflecting` while its end-of-run turn runs and until what it answered is checked, `proposed` once that passed the
+ *  checks and is kept in the run's directory (propose.ts), `merged` once it is on main (grade.ts), or `dropped` with a
+ *  reason from the closed list. A learning fault never refuses a run: it starts with nothing learned, `seed_failed`. */
 export const LEARNING_STATES = ["seeded", "reflecting", "proposed", "merged", "dropped"] as const;
-export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "no_write_tool", "tool_denied", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "propose_failed", "checker", "screen", "screen_down", "grader", "grade_failed"] as const;
+export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "screen", "screen_down", "grader", "grade_failed"] as const;
 export type LearningState = (typeof LEARNING_STATES)[number];
 export type LearningReason = (typeof LEARNING_REASONS)[number];
 /** Tokens by the platform's names, as a run's metrics and /v2/stats count them: `input` is the input neither read from
@@ -75,9 +75,10 @@ export type Proposal = { seed: string; notes: { file: string; text: string }[]; 
 export const LEARNING_PIN = "learning.json";
 /** Where a run finds its agent's notes: in its work, a copy the run may read and nothing reads back. */
 export const LEARNED_DIR = ".learning";
-/** Where that copy goes once the run's end-of-run turn ended and the run settles: in the run's directory, outside its
- *  work, where the host alone reads it (snapshotLearned). */
-export const LEARNED_SNAPSHOT = "learning-turn";
+/** What the run's end-of-run turn answered, and what the user said in the run, kept in the run's directory as the run
+ *  settles (learning-run.ts beforeSettle), where the host alone reads it: what propose.ts checks. */
+export const LEARNING_TURN = "learning-turn.json";
+export type Turn = { answer: string; asked: string[] };
 /** What a run's pin holds: the commit of main it was seeded from, and what it reads of the index, when that holds a line. */
 export type Pin = { seed: string; learned?: string };
 /** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
@@ -365,21 +366,20 @@ export const learningTestHooks: {
 } = {};
 
 /** As the run in `runDir` settles after its end-of-run turn ended, before it reads ended and before a follow-up can
- *  open it again: its copy, `work/.learning/` as the turn left it, moved whole to `<run dir>/learning-turn/` with one
- *  rename on the run's own filesystem, so nothing the run does after its end reaches what is checked. The move takes
- *  whatever is there, a link or a file included, never following one; harvest refuses those. A snapshot already there
- *  stays (a server that went after the move); a copy the turn removed is an empty snapshot. `work` itself must be a
- *  folder, never a link the move would reach through. Throws when the move fails. */
-export async function snapshotLearned(runDir: string): Promise<void> {
-  const snapshot = join(runDir, LEARNED_SNAPSHOT);
-  if (await lstat(snapshot).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? false : Promise.reject(error)))) return;
-  await refuseLink(runDir, join(runDir, "work"));
-  try {
-    await rename(join(runDir, "work", LEARNED_DIR), snapshot);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await mkdir(snapshot, { mode: 0o700 });
-  }
+ *  open it again: what the turn answered and what the user said, kept whole in `<run dir>/learning-turn.json`, so
+ *  nothing the run does after its end reaches what is checked. One already there stays (a server that went after it
+ *  was written). Throws when the write fails. */
+export async function keepTurn(runDir: string, turn: Turn): Promise<void> {
+  const file = join(runDir, LEARNING_TURN);
+  if (await lstat(file).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? false : Promise.reject(error)))) return;
+  await writeDurable(file, `${JSON.stringify(turn)}\n`);
+}
+
+/** The turn a run's directory keeps (keepTurn). One that is not there, or out of shape, throws. */
+export async function readTurn(runDir: string): Promise<Turn> {
+  const turn = JSON.parse(await readFile(join(runDir, LEARNING_TURN), "utf8")) as unknown;
+  if (!isObject(turn) || typeof turn.answer !== "string" || !Array.isArray(turn.asked) || !turn.asked.every((message) => typeof message === "string")) throw new Error(`the run's ${LEARNING_TURN} is not a turn`);
+  return turn as Turn;
 }
 
 /** Lays `seed`'s index and active notes in `dir`, made fresh: whatever was there goes. */
@@ -441,7 +441,7 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
 
 /** The heading and the lines before the index, in a run's instructions. */
 export const LEARNED_HEADING = "# Learned";
-const LEARNED_INTRO = `What you learned in earlier runs, one line per note. Each note is a file in \`${LEARNED_DIR}/\` in your working directory: open one when it applies to what you are doing.`;
+const LEARNED_INTRO = `What you learned in earlier runs, one line per note. Each note is a file in \`${LEARNED_DIR}/\` in your working directory: open one when it applies to what you are doing. At the end of the run you are asked what to keep, and only your answer then is kept: a file you write in \`${LEARNED_DIR}/\` is not.`;
 
 /** A run's instructions, with what its pin in `runDir` says it learned after them, under `# Learned`. The one path for
  *  every harness (app.ts): pi's system prompt, claude-agent's and codex's instructions. */

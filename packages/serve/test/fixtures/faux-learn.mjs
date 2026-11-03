@@ -1,8 +1,14 @@
 // A faux model and a faux harness for learning's tests, no key and no network. A run answers "Job answer." (or, when
-// its instructions say "Say your prompt.", the system prompt it was given), and its end-of-run turn writes the notes its
-// instructions plan, one write a request, then says "Reflected.". The instructions plan with one line:
-// - `Learn: <JSON>`: an array of [file, text] pairs, each written into the run's copy of the folder;
-// - `Learn once: <JSON>`: the same, less the files the run's index names already (a later run of the agent adds none).
+// its instructions say "Say your prompt.", the system prompt it was given), and its end-of-run turn answers with the
+// notes its instructions plan, one ```note block each (reflectPrompt's format), then "Reflected.", and calls no tool.
+// The instructions plan with one line:
+// - `Learn: <JSON>`: an array of [file, text] pairs, each a note of the answer;
+// - `Learn once: <JSON>`: the same, less the files the run's index names already (a later run of the agent adds none);
+// - `Answer: <JSON>`: the turn's whole answer, as given (a string), in place of the planned notes.
+// A user message "Remember for next time: <text>" is what a person asks the agent to keep: on pi the job turn writes it
+// to `.learning/notes.txt` first and says it saved it (what models do), and the end-of-run turn, which reads the whole
+// conversation, answers it as a note, `remembered.md`. A job turn whose instructions say `Scribble: <JSON>` ([file, text]
+// pairs) writes each into `.learning/` before it answers, one write a request.
 // On pi the instructions can also say "Answer once <file> exists." (the job's answer holds until the test makes that
 // file), "Reflect once <file> exists." (the turn holds until the test makes that file) or "Reflect slowly." (the turn
 // answers after a minute, or when it is aborted). A later message `Write: <JSON>` ([file, text] pairs) writes each file
@@ -31,8 +37,19 @@ export function planned(system) {
   return always ? JSON.parse(always) : [];
 }
 
-/** A note's file, as an end-of-run turn writes one. */
+/** A note's file, as an end-of-run turn gives one. */
 export const note = (name, description, body = `${description}.\n`, extra = "") => `---\nname: ${name}\ndescription: ${description}\ntype: reference\n${extra}---\n${body}`;
+
+/** The end-of-run turn's answer for `notes` ([file, text] pairs): one ```note block each, then "Reflected.". */
+export const answerWith = (notes) => [...notes.map(([file, text]) => `\`\`\`note ${file}\n${text}${text.endsWith("\n") ? "" : "\n"}\`\`\``), "Reflected."].join("\n\n");
+
+/** What a person asked the agent to keep, in `users` (the user messages' texts): the note the end-of-run turn gives for it. */
+const remembered = (users) => {
+  const said = users.map((text) => /Remember for next time: (.+)/.exec(text)?.[1]).filter(Boolean);
+  return said.length ? [["remembered.md", `---\nname: What the user asked to keep\ndescription: The user's standing request\ntype: user\n---\n${said.join("\n")}\n`]] : [];
+};
+/** The end-of-run turn's whole answer, from the instructions in `system` and the conversation's user messages. */
+const reflection = (system, users) => /^Answer: (".*")$/m.exec(system)?.[1] ? JSON.parse(/^Answer: (".*")$/m.exec(system)[1]) : answerWith([...planned(system), ...remembered(users)]);
 
 const answerOf = (system) => (/Say your prompt\./.test(system) ? system : "Job answer.");
 
@@ -80,6 +97,13 @@ export default function reply(context, faux) {
     if (done >= files.length) return faux.message("Written.");
     return faux.message(faux.toolCall("write", { path: `.learning/${files[done][0]}`, content: files[done][1] }), { stopReason: "toolUse" });
   }
+  // The job's own turn: a person's "remember" written down first, then any scribbles, then its answer.
+  if (!asked) {
+    const said = /Remember for next time: (.+)/.exec(last)?.[1];
+    const notes = [...(said ? [["notes.txt", `${said}\n`]] : []), ...JSON.parse(/^Scribble: (\[.*\])$/m.exec(system)?.[1] ?? "[]")];
+    if (done < notes.length) return faux.message(faux.toolCall("write", { path: `.learning/${notes[done][0]}`, content: notes[done][1] }), { stopReason: "toolUse" });
+    if (said) return faux.message("Got it: I saved that in .learning/notes.txt.");
+  }
   const held = /Answer once (\S+) exists\./.exec(system)?.[1];
   if (!asked && held) {
     return (async () => {
@@ -88,20 +112,16 @@ export default function reply(context, faux) {
     })();
   }
   if (!asked) return faux.message(answerOf(system));
-  const plan = planned(system);
   return (async () => {
     const gate = /Reflect once (\S+) exists\./.exec(system)?.[1];
-    while (gate && done === 0 && !(await access(gate).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
+    while (gate && !(await access(gate).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
     if (/Reflect slowly\./.test(system)) return slow(faux, 60_000, "Too late.");
-    if (done >= plan.length) return faux.message("Reflected.");
-    const [file, content] = plan[done];
-    return faux.message(faux.toolCall("write", { path: `${asked[1]}${file}`, content }), { stopReason: "toolUse" });
+    return faux.message(reflection(system, users));
   })();
 }
 
-/** As a faux harness (claude-agent and codex): the job's answer, then the end-of-run turn's writes, each a request. */
+/** As a faux harness (claude-agent and codex): the job's answer, then the end-of-run turn's answer, its notes in it. */
 export function script(spec) {
   const system = spec.system.join("\n");
-  const writes = planned(system).map(([file, content]) => ({ call: "write", args: { path: `.learning/${file}`, content }, usd: 0.001 }));
-  return [{ say: answerOf(system), usd: 0.001 }, { end: true, usd: 0.001 }, ...writes, { say: "Reflected.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  return [{ say: answerOf(system), usd: 0.001 }, { end: true, usd: 0.001 }, { say: reflection(system, []), usd: 0.001 }, { end: true, usd: 0.001 }];
 }

@@ -147,5 +147,7 @@ export default function reply(context, faux) {
   if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
   if (first.includes("as JSON")) return faux.message(first.includes("wrongly") ? '{"answer": "forty-two"}' : '```json\n{"answer": 42}\n```');
+  // Asked at a learning run's end what to keep (packages/learn reflectPrompt): nothing.
+  if (last.startsWith("The task is done. Before the run ends")) return faux.message("No notes.");
   return faux.message(`On ${last}: done.`);
 }

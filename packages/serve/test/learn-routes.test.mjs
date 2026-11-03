@@ -8,7 +8,7 @@ import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync, renameSync
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, git, LEARN, learner, made, objects, repoOf, savedOf, settled, started, turnCopyOf } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learner, made, objects, repoOf, savedOf, settled, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { learningTestHooks } from "../dist/learning.js";
 import { agent, call, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -179,8 +179,8 @@ test("a person sees what the agent learned and controls it: the view, the log by
   const third = await ended(api, three);
   assert.equal(learnedIn(third.view.result.final_answer), index, third.view.result.final_answer);
   // Its copy, as the run settled: set aside from its work, as its end-of-run turn left it.
-  assert.ok(existsSync(join(turnCopyOf(data, three), "ask-first.md")) && !existsSync(join(turnCopyOf(data, three), "quote-sources.md")), "the retired note is not in its .learning/");
-  assert.equal(readFileSync(join(turnCopyOf(data, three), "check-units.md"), "utf8"), EDITED);
+  assert.ok(existsSync(join(copyOf(data, three), "ask-first.md")) && !existsSync(join(copyOf(data, three), "quote-sources.md")), "the retired note is not in its .learning/");
+  assert.equal(readFileSync(join(copyOf(data, three), "check-units.md"), "utf8"), EDITED);
 
   // Pages: opaque cursors, each read at the commit the first page was, so a write between pages moves nothing.
   const page1 = (await api("GET", `/agents/${id}/learning/notes?limit=1`)).body;

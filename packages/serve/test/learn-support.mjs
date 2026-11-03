@@ -11,10 +11,10 @@ import { agent, follow } from "./support.mjs";
 export const LEARN = new URL("./fixtures/faux-learn.mjs", import.meta.url).pathname;
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** An agent with learning on and the write tool its end-of-run turn adds notes with, planning `plan` ([file, text]
- *  pairs) after its instructions. */
+/** An agent with learning on and no tool: its end-of-run turn answers with the notes `plan` ([file, text] pairs) holds,
+ *  planned after its instructions. */
 export const learner = (id, { plan, once = false, instructions = "Answer the question.", ...extra } = {}) =>
-  agent(id, { tools: ["write"], learning: true, instructions: [instructions, ...(plan ? [`Learn${once ? " once" : ""}: ${JSON.stringify(plan)}`] : [])].join("\n"), ...extra });
+  agent(id, { learning: true, instructions: [instructions, ...(plan ? [`Learn${once ? " once" : ""}: ${JSON.stringify(plan)}`] : [])].join("\n"), ...extra });
 
 export async function made(api, definition) {
   const res = await api("POST", "/agents", definition);
@@ -68,8 +68,8 @@ export const objects = (repo) => spawnSync("git", ["cat-file", "--batch-all-obje
 /** The agent's learning folder: `learning/` in its home, as files.ts homeOf names the home. */
 export const repoOf = (data, agentId) => join(homeOf(data, agentId), "learning");
 export const copyOf = (data, runId) => join(data, "runs", runId, "work", ".learning");
-/** That copy once the run ended after its end-of-run turn: set aside in the run's directory, outside its work. */
-export const turnCopyOf = (data, runId) => join(data, "runs", runId, "learning-turn");
+/** What the run's end-of-run turn answered, and what the user said, as its directory kept them when the run settled. */
+export const turnOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "learning-turn.json"), "utf8"));
 /** The commits on main that name run `runId` in a Run-Id trailer. */
 export const mergesOf = (repo, runId) => git(repo, ["log", "--format=%H %(trailers:key=Run-Id,valueonly)", "main"]).split("\n").filter((entry) => entry.split(" ")[1] === runId);
 

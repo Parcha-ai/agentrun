@@ -224,9 +224,8 @@ const LEARNING_REASON = {
     "Set only when `state` is `dropped`, from a closed list; a new reason is announced before it ships.",
     "`seed_failed`: the agent's learning folder could not be read or made, or its notes copied, so the run started with nothing learned.",
     "`no_budget`: the run's cap left no room for the end-of-run turn, or refused its request. `unknown_cost`: a capped run whose spend is unknown.",
-    "`no_write_tool`: the agent has no `write` tool. `tool_denied`: the agent's tool permissions deny `write` (not sent by this server yet).",
     "`cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_timeout`, `reflect_failed`: the end-of-run turn did not end in time, or ended on an error.",
-    "`empty`: the turn added no note. `propose_failed`: what it wrote could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git.",
+    "`empty`: the turn's answer gave no note. `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git.",
     "`screen`, `screen_down`: the injection screen (only with an independent judge) refused a new note, or could not judge one. `grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.",
   ].join(" "),
 };
@@ -693,7 +692,7 @@ const LEARNING = {
     }),
     { type: "null" },
   ],
-  description: `What the run learns from and what it learned: a run of an agent whose \`learning\` is true starts from its agent's learning folder, the index of its notes in its instructions and the notes in \`.learning/\` in its working directory. Once it answers or fails, the server asks the same harness one more turn, under the run's cap, to add notes there; what it adds is checked, graded by one grader (on the server's grade model or strong tier, else the agent's own model), and merged into the folder, or dropped. ${LEARNING_NULL}`,
+  description: `What the run learns from and what it learned: a run of an agent whose \`learning\` is true starts from its agent's learning folder, the index of its notes in its instructions and the notes in \`.learning/\` in its working directory. Once it answers or fails, the server asks the same harness one more turn, under the run's cap, which answers with the notes it would keep (no tool is needed, and nothing the run writes in \`.learning/\` counts); what it answers is checked, graded by one grader (on the server's grade model or strong tier, else the agent's own model), and merged into the folder, or dropped. ${LEARNING_NULL}`,
   "x-agentrun-serve": "learning/1",
 };
 const LEARNING_SHORT = { oneOf: [closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON }), { type: "null" }], description: `The run's learning, in short (GET /runs/{run_id} has it whole). ${LEARNING_NULL}`, "x-agentrun-serve": "learning/1" };

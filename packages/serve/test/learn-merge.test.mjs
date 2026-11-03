@@ -1,7 +1,7 @@
-// What an end-of-run turn adds is checked before anything is written to git, and merged as one host commit on main: new
-// notes added, the ones they supersede marked, MEMORY.md rebuilt by the host. A run edits nothing that was there, its
-// MEMORY.md is ignored, and a name another run took since is refused at the merge. A link in the run's copy is never
-// followed, and a secret the launcher holds never reaches a git object.
+// What an end-of-run turn answers is checked before anything is written to git, and merged as one host commit on main:
+// new notes added, the ones they supersede marked, MEMORY.md rebuilt by the host. A run edits nothing that was there, a
+// MEMORY.md it gives is ignored, and a name another run took since is refused at the merge. Nothing the run put in its
+// copy of the folder is read, a link included, and a secret the launcher holds never reaches a git object.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, reflectRows, repoOf, savedOf, settled, sleep, started, turnCopyOf } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { client, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
@@ -53,8 +53,8 @@ test("a note that supersedes one: the old note is marked superseded by the new o
   await plans(api, "replacer", undefined);
   const next = await started(api, "replacer");
   await ended(api, next);
-  assert.deepEqual(existsSync(join(turnCopyOf(data, next), "refunds.md")), false);
-  assert.ok(existsSync(join(turnCopyOf(data, next), "refunds-v2.md")));
+  assert.deepEqual(existsSync(join(copyOf(data, next), "refunds.md")), false);
+  assert.ok(existsSync(join(copyOf(data, next), "refunds-v2.md")));
 });
 
 test("two runs at once that add different notes both merge, and the index has both; the same name added by two runs at once merges once, and the second is refused as exists at the merge", { timeout: 150_000 }, async (t) => {
@@ -155,7 +155,7 @@ test("a turn that adds nothing is dropped as empty, and the run's answer stands"
   assert.equal(git(repoOf(data, "idle"), ["rev-list", "--count", "main"]), "1");
 });
 
-test("a link in the run's copy, to a file or a folder, is refused and never followed: its target's text is nowhere", { timeout: 120_000 }, async (t) => {
+test("nothing the run put in its copy of the folder is read: links planted there, to a file or a folder, and a note written there, while the turn holds; only the turn's answer merges, and the links' target's text is nowhere", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   const outside = await scratch(t);
   const secret = ["outside", process.pid, Date.now().toString(36)].join("-");
@@ -165,21 +165,21 @@ test("a link in the run's copy, to a file or a folder, is refused and never foll
   const go = join(outside, "go");
   await made(api, learner("linker", { instructions: `Reflect once ${go} exists.`, plan: [["fine.md", note("Fine", "A rule beside the links")]] }));
   const runId = await started(api, "linker");
-  // Planted while the turn holds, once it was asked (its copy laid), as an agent with a shell would.
+  // Planted while the turn holds, once it was asked, as an agent with a shell would.
   for (let i = 0; !reflectRows((await api("GET", `/runs/${runId}/timeline`)).body.rows ?? []).some((row) => row.kind === "user_message"); i++) {
     assert.ok(i < 600, "the turn is asked");
     await sleep(50);
   }
   symlinkSync(join(outside, "note.md"), join(copyOf(data, runId), "leak.md"));
   symlinkSync(join(outside, "folder"), join(copyOf(data, runId), "folder.md"));
+  writeFileSync(join(copyOf(data, runId), "written.md"), note("Written", "A note the run wrote in its copy"));
   writeFileSync(go, "");
   const { view, rows } = await ended(api, runId);
-  settled(view, rows, "dropped", "checker");
-  const { learning } = await savedOf(data, runId);
-  assert.deepEqual(learning.problems.map(({ rule, path, detail }) => [rule, path, detail]).sort(), [["file_mode", "folder.md", "a link: never followed"], ["file_mode", "leak.md", "a link: never followed"]]);
+  settled(view, rows, "merged");
   const repo = repoOf(data, "linker");
+  assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md", "fine.md"], "the answer's note alone");
   assert.ok(!objects(repo).includes(secret), "no git object holds the target's text");
-  assert.ok(!JSON.stringify([view, rows, learning]).includes(secret));
+  assert.ok(!JSON.stringify([view, rows, await savedOf(data, runId)]).includes(secret));
 });
 
 /** The server, started by its launcher with `env`: the launcher hands its secrets over and the server holds them, none

@@ -55,7 +55,17 @@ async function ran(api, id) {
   const run = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+  await learningEnded(api, run.body.run_id);
   return { runId: run.body.run_id, prompt: await answer(api, run.body.run_id) };
+}
+
+/** Once the run's learning has ended (it does not learn, or it merged or dropped): its end-of-run turn, which the faux
+ *  model answers with its prompt, gives no note. */
+async function learningEnded(api, runId) {
+  for (let i = 0; ["seeded", "reflecting", "proposed"].includes((await api("GET", `/runs/${runId}`)).body.learning?.state); i++) {
+    assert.ok(i < 600, "the run's learning ends");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 /** Agent `id` with learning on, created, and its folder made by a first run, with `files` then committed on main. */
@@ -98,10 +108,10 @@ test("a new agent with learning on: its first run makes its folder, main checked
   assert.deepEqual(pinOf(data, runId), { seed: git(repo, ["rev-parse", "main"]) });
   assert.deepEqual(readdirSync(learnedDir(data, runId)), ["MEMORY.md"]);
   assert.ok(prompt.includes("Answer the question.") && !prompt.includes("# Learned"), `an empty index adds no section: ${prompt}`);
-  // Seeded, then, as its agent has no write tool, asked no end-of-run turn (learn-reflect.test.mjs).
+  // Seeded, then asked the end-of-run turn, which (the faux model says its prompt) gave no note (learn-reflect.test.mjs).
   const { whole, short } = await learningOf(api, "fresh", runId);
-  assert.deepEqual({ ...whole, at: typeof whole.at }, { state: "dropped", reason: "no_write_tool", detail: "The agent has no write tool to add a note with.", at: "string" });
-  assert.deepEqual(short, { state: "dropped", reason: "no_write_tool" });
+  assert.deepEqual({ ...whole, at: typeof whole.at }, { state: "dropped", reason: "empty", detail: "The end-of-run turn added no note.", at: "string" });
+  assert.deepEqual(short, { state: "dropped", reason: "empty" });
   // A server started again reads the run's learning back from its serve.json, whole and in a list.
   await first.close();
   const again = await serve(t, { data, faux: SYSTEM });
@@ -130,7 +140,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const skills = join(data, "runs", runId, "work", ".agents", "skills");
     assert.deepEqual(existsSync(skills) ? readdirSync(skills) : [], [], "no learned skill is written");
     const { whole, short } = await learningOf(api, id, runId);
-    assert.deepEqual([whole.state, whole.reason, short], ["dropped", "no_write_tool", { state: "dropped", reason: "no_write_tool" }], "seeded, and asked no end-of-run turn");
+    assert.deepEqual([whole.state, whole.reason, short], ["dropped", "empty", { state: "dropped", reason: "empty" }], "seeded, and its end-of-run turn gave no note");
   });
 }
 
@@ -195,13 +205,14 @@ test("two runs of a new agent made at once: one folder made, one commit on main,
   const made = await Promise.all([1, 2].map(() => api("POST", "/agents/twice/runs", { input: { content: "hi" } })));
   for (const run of made) assert.equal(run.status, 202, JSON.stringify(run.body));
   for (const run of made) await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+  for (const run of made) await learningEnded(api, run.body.run_id);
   const repo = repoOf(data, "twice");
   const main = git(repo, ["rev-parse", "main"]);
   assert.equal(git(repo, ["rev-list", "--count", "--all"]), "1");
   assert.equal(git(repo, ["reflog", "show", "--format=%H", "refs/heads/main"]), main, "main was set once");
   assert.deepEqual(made.map((run) => pinOf(data, run.body.run_id).seed), [main, main]);
   assert.deepEqual(readdirSync(homeOf(data, "twice")), ["learning"]);
-  for (const run of made) assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.learning.reason, "no_write_tool", "seeded, and asked no end-of-run turn");
+  for (const run of made) assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.learning.reason, "empty", "seeded, and its end-of-run turn gave no note");
 });
 
 test("two agents whose ids differ only in case: each has its own learning folder, in homes whose names differ in any case, and what one learned never seeds the other's run", { timeout: 120_000 }, async (t) => {
