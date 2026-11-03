@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -855,4 +855,63 @@ test("a run is continued only once its end's run.ended is in the outbox: refused
   rmdirSync(blocked);
   await until(async () => (await api("POST", `/runs/${run.run_id}/messages`, { content: "And now?" })).status === 202, "let through once the outbox holds the end", 20_000);
   assert.equal(endNotice(data, run.run_id)?.queued, true);
+});
+
+/** A data directory as an older server leaves a run it ended and announced: no record of the notice with the run, and
+ *  (its outbox pruned) none in the outbox either; `since` the time the newer server first started. */
+function asAnOlderServerLeftIt(data, runId, since) {
+  const file = join(data, "runs", runId, "serve.json");
+  const { end_notice: _, ...kept } = JSON.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, `${JSON.stringify(kept)}\n`);
+  writeFileSync(join(data, "webhook-outbox.json"), `${JSON.stringify({ v: 2, messages: [], attempts: [] })}\n`);
+  if (since !== undefined) writeFileSync(join(data, "end-notices-since"), `${since}\n`);
+}
+
+test("an end from before this kind of server first started (no record of its notice, as an older server leaves it) is never sent again", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  const api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "older", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, sent then");
+  await first.close();
+  stopped = true;
+  // The run ended a moment before the newer server first started.
+  asAnOlderServerLeftIt(data, run.run_id, new Date(Date.parse(endedIn(data, run.run_id)) + 1_000).toISOString());
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await sleep(1_500);
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "not sent again");
+});
+
+test("a server that cannot write when it first started takes now, says so, and sends no earlier end again", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  const api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "unwritable", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, sent then");
+  await first.close();
+  stopped = true;
+  asAnOlderServerLeftIt(data, run.run_id);
+  // Where the time is kept, a directory: neither read nor written.
+  rmSync(join(data, "end-notices-since"), { force: true });
+  mkdirSync(join(data, "end-notices-since"));
+  const lines = [];
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", log: (line) => lines.push(line) });
+  t.after(() => next.close());
+  assert.equal((await client(next.baseUrl, next.token)("GET", "/health")).status, 200, "it started");
+  assert.ok(lines.some((line) => line.includes("condition=notices_since_unwritable")), "and said so");
+  await sleep(1_500);
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "nothing ended before it is sent again");
 });

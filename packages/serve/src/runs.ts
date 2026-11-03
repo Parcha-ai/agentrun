@@ -5,7 +5,7 @@
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, openSync, rmSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, rmSync } from "node:fs";
 import { open as openFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
@@ -77,6 +77,9 @@ const UNREADABLE_TICKS = 10;
 /** How far back a start looks for an end whose run.ended a kill kept from the outbox: past the outbox's own retries,
  *  which end within about a day (webhooks.ts RETRY_MS), a notice would not be sent any more. */
 const END_NOTICE_WINDOW_MS = 24 * 3_600_000;
+/** In the data directory: when a server that records its ends' notices first started. An end before it was an older
+ *  server's, which kept no record of its notice, so it is never queued again. */
+const END_NOTICES_SINCE = "end-notices-since";
 const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
@@ -737,7 +740,7 @@ export class Runs {
 
   async recover(): Promise<void> {
     await this.sweepOnce();
-    const since = Date.now() - END_NOTICE_WINDOW_MS;
+    const since = this.options.notify ? Math.max(this.noticesSince(), Date.now() - END_NOTICE_WINDOW_MS) : Infinity;
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
       if (row.importedFrom) continue;
       if (row.state !== "running") {
@@ -747,6 +750,26 @@ export class Runs {
       const run = await this.adopt(row).catch((error: Error) => (warn(row.id, `not recovered: ${error.message}; the next start tries again`), null));
       if (run && !this.live(run) && !run.outcome) await this.settle(run, null, false);
     }
+  }
+
+  /** When this data directory's servers began recording their ends' notices (END_NOTICES_SINCE): read, or written now,
+   *  once and durably, at the first start of such a server. One that cannot be written is taken as now, and said, so a
+   *  start never sends an older server's ends again. */
+  private noticesSince(): number {
+    const file = join(this.options.agents.dir, END_NOTICES_SINCE);
+    try {
+      const at = Date.parse(readFileSync(file, "utf8").trim());
+      if (Number.isFinite(at)) return at;
+    } catch {}
+    const now = Date.now();
+    try {
+      writeDurableSync(file, `${new Date(now).toISOString()}\n`);
+    } catch (error) {
+      const fields = { condition: "notices_since_unwritable", file, error: (error as NodeJS.ErrnoException).code ?? "unknown" };
+      if (this.options.log) this.options.log("webhook", fields);
+      else process.stderr.write(`agentrun-serve: event=webhook condition=${fields.condition} file=${file} error=${fields.error}\n`);
+    }
+    return now;
   }
 
   /** An ended run whose run.ended is not recorded as queued for its end (its server was killed between the store's end

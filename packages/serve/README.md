@@ -378,7 +378,8 @@ store has the end, so a receiver that reads the run back on its message (`GET /v
 store refuses the end (a full disk, a busy store), nothing is sent, until a later try of the write or the next server
 stores it. It is recorded with the run (`serve.json`) once the outbox holds it on disk, and a server that starts queues
 any end of the last day that record does not name, under the same `webhook-id`: one lost to a kill, or a record lost to
-a crash of the machine. A run is continued only once its end's `run.ended` is in the outbox (`503` meanwhile), so a
+a crash of the machine. The first start of a server that keeps these records writes when it began
+(`DIR/end-notices-since`); an end before that time, an older server's, is never sent again. A run is continued only once its end's `run.ended` is in the outbox (`503` meanwhile), so a
 continued run's next end is its own, under its own id.
 
 ```json
