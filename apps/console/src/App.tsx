@@ -132,24 +132,33 @@ export function AgentRunConsole() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
   const [names, setNames] = useState<Record<string, string>>({});
+  // A complete lookup includes all supported lists. Only then does an absent name identify an agent that is gone.
+  const [namesRead, setNamesRead] = useState(false);
+  const namesAsked = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const asked = useRef(0);
   const go = (hash: string) => { location.hash = hash; setAddress(hash); };
   useEffect(() => { const on = () => setAddress(location.hash); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
+  // Refresh names across navigation, including active and archived agents. A partial answer keeps the names already
+  // read, without treating an absent name as an agent that is gone. Only the newest request may update the lookup.
   useEffect(() => {
-    if (!caps || caps.features.agents?.list === false) return;
-    // Every page of agents, for their names.
-    (async () => {
-      const all: Record<string, string> = {};
-      for (let c: string | null | undefined = undefined, i = 0; i < 50; i++) {
-        const page = await v2.listAgents({ cursor: c });
-        for (const x of page.agents) all[x.agent_id] = x.definition.name ?? x.agent_id;
-        if (!page.next_cursor) break;
-        c = page.next_cursor;
-      }
-      setNames(all);
-    })().catch(() => {});
-  }, [v2, caps, where.section, where.agent, where.run]);
+    const n = ++namesAsked.current;
+    setNamesRead(false);
+    if (!caps || caps.features.agents?.list === false) {
+      setNames({});
+      return;
+    }
+    const lists = caps.features.archive?.agents === false ? [false] : [false, true];
+    void Promise.allSettled(lists.map((archived) => allPages((cursor) => v2.listAgents({ archived, cursor }), (p) => p.agents))).then((reads) => {
+      if (n !== namesAsked.current) return;
+      const fresh = Object.fromEntries(reads.flatMap((r) => (r.status === "fulfilled" ? r.value : [])).map((x) => [x.agent_id, x.definition.name ?? x.agent_id]));
+      const whole = reads.every((r) => r.status === "fulfilled");
+      setNames((held) => (whole ? fresh : { ...held, ...fresh }));
+      setNamesRead(whole);
+    });
+    return () => { namesAsked.current++; };
+  }, [v2, caps, where]);
+
   const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
   useEffect(() => {
     if (!caps || caps.features.runs?.list === false || where.section !== "runs" || where.run) return;
@@ -160,7 +169,8 @@ export function AgentRunConsole() {
       .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); } })
       .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
   }, [v2, where, caps]);
-  const agentName = (id: string) => names[id] ?? id;
+  // A name the lookup lacks while a read of it is under way shows as nothing yet, never as the id.
+  const agentName = (id: string) => names[id] ?? (namesRead ? id : "");
   // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
   const editorCaps: EditorCaps = { harnesses: caps?.harnesses ?? [], tools: toolOffers(caps?.tools), thinking: caps?.features?.thinking ?? [], defaultModel: caps?.models?.default ?? undefined, agents: caps?.features.agents, archive: caps?.features.archive?.agents };
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", settings: "#/settings/keys" }[s]);
