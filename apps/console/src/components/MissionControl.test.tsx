@@ -228,3 +228,36 @@ describe("runs that need review (needs_review)", () => {
   });
 });
 
+// Runs whose cost is unknown but bounded (the server's cost bounds, requests cut or stopped): the total stays the known
+// sum, and "up to $y more" says the rest.
+describe("the cost of cut runs (bounded_unknown)", () => {
+  atNow();
+  it("costParts says the known total as before and, apart, up to how much more the cut runs can add", () => {
+    expect(costParts({ usd: 0.5, basis: "estimate", unknownRuns: 3, bounded: { runs: 2, atMostUsd: 0.0517 } })).toEqual({ total: "$0.50 est.", note: "3 runs unknown", bound: "up to $0.06 more for 2 cut runs" });
+    expect(costParts({ usd: null, basis: null, unknownRuns: 1, bounded: { runs: 1, atMostUsd: 0.004 } })).toEqual({ total: "Unknown", bound: "up to $0.0040 for 1 cut run" });
+    expect(costLine({ usd: 0.5, basis: "estimate", unknownRuns: 3, bounded: { runs: 2, atMostUsd: 0.0517 } })).toBe("$0.50 est. · 3 runs unknown · up to $0.06 more for 2 cut runs");
+  });
+  it("without the field, or with no bound known, says what it always did", () => {
+    const before = { usd: 0.5, basis: "estimate" as const, unknownRuns: 3 };
+    expect(costParts(before)).toEqual({ total: "$0.50 est.", note: "3 runs unknown" });
+    expect(costParts({ ...before, bounded: { runs: 0, atMostUsd: null } })).toEqual(costParts(before));
+    expect(costParts({ ...before, bounded: { runs: 2, atMostUsd: null } })).toEqual(costParts(before));
+  });
+  it("missionFrom reads /v2/stats' bounded_unknown, and the page shows it under the total and under the analytics' cost", () => {
+    const stats: Stats = { agents: 1, runs: { total: 4, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: 0.012, basis: "estimate", unknown_runs: 2, bounded_unknown: { runs: 2, at_most_usd: 0.0311 } }, analytics: analytics() };
+    const v = missionFrom(stats, []);
+    expect(v.cost.bounded).toEqual({ runs: 2, atMostUsd: 0.0311 });
+    const a = analytics({ totals: { ...analytics().totals, bounded_unknown: { runs: 1, at_most_usd: 0.25 } } });
+    const html = render({ ...v, analytics: a }, scope);
+    expect(html).toContain("up to $0.04 more for 2 cut runs");
+    expect(html).toContain("up to $0.25 more for 1 cut run");
+    // The known total stays the known sum.
+    expect(html).toContain("$0.01 est.");
+  });
+  it("stats with no bounded_unknown read exactly as before", () => {
+    const stats: Stats = { agents: 1, runs: { total: 4, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: 0.012, basis: "estimate", unknown_runs: 2 }, analytics: analytics() };
+    const v = missionFrom(stats, []);
+    expect(v.cost).toEqual({ usd: 0.012, basis: "estimate", unknownRuns: 2 });
+    expect(render({ ...v, analytics: analytics() }, scope)).not.toContain("cut run");
+  });
+});

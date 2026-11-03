@@ -7,7 +7,10 @@ export type RunState = "working" | "waiting" | "idle";
 /** `details`: what the server says beyond the message, by code (a 409 `agent_not_runnable` names the harness or box it lacks). */
 export type ApiError = { code: string; message: string; retryable: boolean; request_id?: string; details?: Record<string, unknown> };
 
-export type Cost = { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null };
+/** `at_most_usd`: the run's cost bound, when the server knows one. It is set only while `usd` is null because requests
+ *  were cut or stopped, each with a worst case, and it is the most the run can have cost. Absent, the cost is unknown with
+ *  no bound. */
+export type Cost = { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null; at_most_usd?: number | null };
 
 export type Run = {
   run_id: string;

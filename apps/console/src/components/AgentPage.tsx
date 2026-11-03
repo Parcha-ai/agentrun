@@ -10,7 +10,7 @@ import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
-import { cost, when } from "@/lib/format";
+import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel } from "@/lib/models";
 import { elapsed, metaOf } from "@/lib/runGraph";
@@ -153,7 +153,7 @@ function RunsTab({ agent, v2 }: TabProps) {
               {r.effort && <Chip>effort {r.effort}</Chip>}
               <span className="font-mono text-[12px] text-muted-foreground">{when(r.created_at)}</span>
               {r.ended_at && <span className="font-mono text-[12px] text-muted-foreground" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
-              {r.cost && r.cost.usd !== null && <span className="font-mono text-[12px] text-muted-foreground">{cost(r.cost)}</span>}
+              {r.cost && (r.cost.usd !== null || bounded(r.cost)) && <span className="font-mono text-[12px] text-muted-foreground">{cost(r.cost)}{bounded(r.cost) && ` · ${CUT_NOTE}`}</span>}
             </a>
           </li>
         ))}
