@@ -141,17 +141,22 @@ test("demo (pi): in a Docker place read, write, edit and bash run in the run's b
   await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
 });
 
-test("demo (claude-agent, codex): the faux harness's bash, write and read run in the box through the host tools; out.txt shows in the run's files, and no key or token is in the box", { timeout: 150_000 }, async (t) => {
+test("demo (claude-agent, codex): the faux harness's bash, write and read run in the box through the host tools; out.txt shows in the run's files, and no key or token is in the box; an absolute path under the harness's cwd (the run's work/) is the same file in the box", { timeout: 150_000 }, async (t) => {
   const server = await boxed(t);
   const { api, data } = server;
+  withEnv(t, { AGENTRUN_TEST_DATA: realpathSync(data) });
   for (const harness of ["claude-agent", "codex"]) {
     const calls = [
       { call: "bash", args: { command: "printf hi > out.txt" } },
       { call: "write", args: { path: "w.txt", content: "from the host tool" } },
       { call: "read", args: { path: "w.txt" } },
       { call: "bash", args: { command: ENV_PROBE } },
-      // The harness's own cwd on this machine is no box path.
+      // Another run's directory on this machine is no box path.
       { call: "read", args: { path: join(data, "runs", "any", "harness", "work", "out.txt") } },
+      // The harness works in the run's work/ on this machine: an absolute path it builds there is the box's same file,
+      // and one out of it is refused.
+      { call: "write", args: { path: "{work}/abs.txt", content: "absolute" } },
+      { call: "read", args: { path: "{work}/../serve.json" } },
     ];
     const id = `boxed-${harness}`;
     assert.equal((await api("POST", "/agents", { definition: { id, name: id, harness, instructions: `Box calls: ${JSON.stringify(calls)}`, place: SANDBOX, tools: ["read", "write", "bash"] } })).status, 201);
@@ -159,8 +164,11 @@ test("demo (claude-agent, codex): the faux harness's bash, write and read run in
     assert.equal(run.status, 202, JSON.stringify(run.body));
     await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
     const said = answers(data, run.body.run_id);
-    assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["write", false], ["read", false], ["bash", false], ["read", true]], `${harness}: ${JSON.stringify(said)}`);
+    assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["write", false], ["read", false], ["bash", false], ["read", true], ["write", false], ["read", true]], `${harness}: ${JSON.stringify(said)}`);
     assert.match(said[4].text, /: outside the workspace \/run\/agentrun\/run\/work$/);
+    assert.equal(await readFile(join(data, "runs", run.body.run_id, "work", "abs.txt"), "utf8"), "absolute");
+    assert.match(said[6].text, /outside the workspace/);
+    assert.ok(!said[6].text.includes(realpathSync(data)), said[6].text);
     assert.equal(said[2].text, "from the host tool");
     assert.equal(await readFile(join(data, "runs", run.body.run_id, "work", "out.txt"), "utf8"), "hi");
     assert.ok((await api("GET", `/runs/${run.body.run_id}/files`)).body.files.some((f) => f.path === "out.txt"), harness);

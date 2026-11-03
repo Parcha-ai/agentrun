@@ -20,12 +20,13 @@ Auth: the API's routes take `Authorization: Bearer <token>`, all but `GET /v2/he
 - `GET /v2/runs/{id}/timeline?after=0&limit=100` pages its steps; follow `next_after` until a page is `final` with `has_more` false.
 - `GET /v2/runs/{id}/files`, then `GET /v2/runs/{id}/files/{path}`: what it wrote.
 - `POST /v2/runs/{id}/messages` with `{content}` answers a run that asked a question (`input_required`), or follows up; `POST /v2/runs/{id}/cancel` ends one.
-- The console, for a person: `/console/`, a run at `/console/#/runs/{id}`.
+- The console, for a person: `/`, a run at `/#/runs/{id}`.
 
 ## MCP
 
 - [MCP endpoint](/v2/mcp): Streamable HTTP, one JSON-RPC message per POST, answered as JSON, stateless. Ten tools: `whoami`, `agents_list`, `agents_create`, `agents_revise`, `runs_start`, `runs_get`, `runs_events`, `runs_files`, `runs_respond`, `runs_cancel`. Each calls the routes above and answers as they do; a refusal is a tool error holding the route's `error`.
 - A run is started, then polled: `runs_start`, then `runs_get` every few seconds until `completed`, `failed` or `cancelled`. `input_required` is a question (`runs_get`'s `pending`), answered with `runs_respond` or by a person in the console.
+- A cancelled run cannot be continued: `runs_respond` to it is `409 not_continuable`; start a new run. A stopped run (`POST /v2/runs/{id}/stop`, or Stop in the console) can: a follow-up starts a fresh turn with its history, and the cut turn is not replayed.
 - Claude Code: `claude mcp add --transport http agentrun "$AGENTRUN_BASE_URL/mcp" --header "Authorization: Bearer $AGENTRUN_API_KEY"`.
 - Codex: `codex mcp add agentrun --url "$AGENTRUN_BASE_URL/mcp" --bearer-token-env-var AGENTRUN_API_KEY`.
 

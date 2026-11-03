@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ArchilCodingTools } from "@parcha/pi-durable-disk";
-import { CodingTools, codingSource } from "../dist/coding-tools.js";
+import { boxPath, CodingTools, codingSource } from "../dist/coding-tools.js";
 import { BOUND_TOOLS, missingEnv, TOOLS } from "../dist/tools.js";
 
 const names = (extension) => (extension.tools ?? []).map((tool) => tool.name);
@@ -73,4 +73,23 @@ test("in a box a file tool's path stays in the box's work dir: a host path, a wa
     await read.execute({ path }, { output() {}, diagnostic() {} }, {}).catch(() => undefined);
   }
   assert.equal(asked.length, 3, "each path in the work dir reaches the box");
+});
+
+test("in a box a path under the run's own host work dir is the same file at the box's work dir, one for one; every other host path stays refused", async () => {
+  const hostWork = "/var/lib/agentrun/runs/r1/work";
+  assert.equal(boxPath(`${hostWork}/x.md`, hostWork), "/run/agentrun/run/work/x.md");
+  assert.equal(boxPath(`${hostWork}/sub/y.md`, hostWork), "/run/agentrun/run/work/sub/y.md");
+  assert.equal(boxPath(hostWork, hostWork), "/run/agentrun/run/work");
+  for (const path of ["/var/lib/agentrun/runs/r1/x.md", "/var/lib/agentrun/runs/r1/harness/work/x.md", "/var/lib/agentrun/.token", `${hostWork}/../x.md`, `${hostWork}x/y.md`, "/var/lib/agentrun/runs/r2/work/x.md"]) {
+    assert.equal(boxPath(path, hostWork), undefined, path);
+  }
+  assert.equal(boxPath("x.md", hostWork), "x.md", "a relative path is the box's own");
+  // Through the tools: the mapped call reaches the box under the box's path; a refused one never asks for the box.
+  const asked = [];
+  const source = codingSource({ mode: "sandbox", box: "docker" }, { hostWork, env: async () => (asked.push("env"), { cwd: "/run/agentrun/run/work" }) });
+  const read = source.tools.find((tool) => tool.name === "read");
+  await assert.rejects(read.execute({ path: "/var/lib/agentrun/runs/r1/x.md" }, {}, {}), new Error("/var/lib/agentrun/runs/r1/x.md: outside the workspace /run/agentrun/run/work"));
+  assert.deepEqual(asked, []);
+  await read.execute({ path: `${hostWork}/x.md` }, { output() {}, diagnostic() {} }, {}).catch(() => undefined);
+  assert.deepEqual(asked, ["env"]);
 });

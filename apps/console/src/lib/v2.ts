@@ -4,7 +4,8 @@
 export type RunStatus = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled" | "paused";
 export type RunState = "working" | "waiting" | "idle";
 
-export type ApiError = { code: string; message: string; retryable: boolean; request_id?: string };
+/** `details`: what the server says beyond the message, by code (a 409 `agent_not_runnable` names the harness or box it lacks). */
+export type ApiError = { code: string; message: string; retryable: boolean; request_id?: string; details?: Record<string, unknown> };
 
 /** `source` (a serve extension): "reported" when every part of the cost is a provider's own report, else "estimate".
  *  An older server leaves it out, and then `basis` says whether the number is an estimate. */
@@ -21,6 +22,8 @@ export type Run = {
   status: RunStatus;
   state: RunState;
   title: string;
+  /** The effort the run was started with; absent when it was started with none. */
+  effort?: string;
   created_at: string;
   updated_at?: string;
   ended_at: string | null;

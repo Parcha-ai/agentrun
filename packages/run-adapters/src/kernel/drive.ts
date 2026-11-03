@@ -102,7 +102,7 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
       await writer.append(written);
     } catch (error) {
       // A newer drive holds the session: this one must rebuild from the log, and nothing it was writing counts.
-      if (error instanceof SessionFenced) throw new Restart(`agentrun-adapters: ${error.message}`);
+      if (error instanceof SessionFenced) throw new Restart(`agentrun-kernel: ${error.message}`);
       throw error;
     }
     records = [...records, ...written];
@@ -167,12 +167,12 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
       const known = state.effects.get(k);
       if (known?.status === "completed") return known.output as T;
       if (known?.status === "failed") throw new EffectFailure(known.error ?? { message: "failed" });
-      if (known?.status === "running" || inflight.has(k)) throw new Fatal(`agentrun-adapters: effect ${k} is already running in this drive`);
+      if (known?.status === "running" || inflight.has(k)) throw new Fatal(`agentrun-kernel: effect ${k} is already running in this drive`);
       if (signal.aborted) throw signal.reason;
       const placing = effectOptions.placed ?? [];
       // A withdraw already in the log beat this placement: refuse before writing anything, so no intent is left for
       // recovery to report. One appended but not folded yet is caught after the intent, below.
-      if (placing.some((id) => state.withdrawn.has(id))) throw new Restart(`agentrun-adapters: effect ${k} would place a withdrawn submission; the drive must be rebuilt`);
+      if (placing.some((id) => state.withdrawn.has(id))) throw new Restart(`agentrun-kernel: effect ${k} would place a withdrawn submission; the drive must be rebuilt`);
       inflight.add(k);
       try {
         const attempt = known ? known.attempt + 1 : 0;
@@ -180,7 +180,7 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
         await append([{ kind: KERNEL_RECORDS.start, data: { key: k, stepId, name: effectOptions.name, replay: effectOptions.replay, input: effectOptions.input as never, placed: placing, attempt, startedAt: new Date().toISOString() } }]);
         // A withdraw appended while this intent was being written beat the placement: what the caller would send next
         // is not what the log placed, so it must rebuild instead of running.
-        if (placing.length && state.effects.get(k)?.placed.length !== placing.length) throw new Restart(`agentrun-adapters: effect ${k} placed a withdrawn submission; the drive must be rebuilt`);
+        if (placing.length && state.effects.get(k)?.placed.length !== placing.length) throw new Restart(`agentrun-kernel: effect ${k} placed a withdrawn submission; the drive must be rebuilt`);
         const partial: unknown[] = [];
         let output: T;
         try {

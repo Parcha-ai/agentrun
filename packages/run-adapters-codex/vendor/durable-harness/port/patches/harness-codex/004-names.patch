@@ -34,7 +34,7 @@ index 7490fab..1a5fef0 100644
  export function checkConfig(config: Record<string, TomlValue> | undefined): void {
    if (config === undefined) return;
 -  if (!isTable(config)) throw new TypeError('harness-world-codex: config must be an object of config.toml settings');
-+  if (!isTable(config)) throw new TypeError('agentrun-codex: config must be an object of config.toml settings');
++  if (!isTable(config)) throw new TypeError('agentrun-harness-codex: config must be an object of config.toml settings');
    const check = (table: Record<string, TomlValue>, prefix: string) => {
      for (const [k, v] of Object.entries(table)) {
        const path = `${prefix}${k}`;
@@ -42,7 +42,7 @@ index 7490fab..1a5fef0 100644
        const last = path.slice(path.lastIndexOf('.') + 1);
        if (RESERVED_CONFIG_KEYS.includes(path) || RESERVED_CONFIG_KEYS.some((r) => path.startsWith(`${r}.`)) || RESERVED_CONFIG_SUFFIXES.some((x) => last.endsWith(x))) {
 -        throw new TypeError(`harness-world-codex: config.${path} is set by the harness (docs/workspaces.md §3.3: ${RESERVED_CONFIG_KEYS.join(', ')} and any key ending ${RESERVED_CONFIG_SUFFIXES.join(', ')} are reserved)`);
-+        throw new TypeError(`agentrun-codex: config.${path} is set by the harness (docs/workspaces.md §3.3: ${RESERVED_CONFIG_KEYS.join(', ')} and any key ending ${RESERVED_CONFIG_SUFFIXES.join(', ')} are reserved)`);
++        throw new TypeError(`agentrun-harness-codex: config.${path} is set by the harness (docs/workspaces.md §3.3: ${RESERVED_CONFIG_KEYS.join(', ')} and any key ending ${RESERVED_CONFIG_SUFFIXES.join(', ')} are reserved)`);
        }
        if (isTable(v)) check(v, `${path}.`);
      }
@@ -51,7 +51,7 @@ index 7490fab..1a5fef0 100644
    if (typeof v === 'string') return JSON.stringify(v);
    if (typeof v === 'number') {
 -    if (!Number.isFinite(v)) throw new TypeError(`harness-world-codex: not a TOML number: ${v}`);
-+    if (!Number.isFinite(v)) throw new TypeError(`agentrun-codex: not a TOML number: ${v}`);
++    if (!Number.isFinite(v)) throw new TypeError(`agentrun-harness-codex: not a TOML number: ${v}`);
      return String(v);
    }
    if (typeof v === 'boolean') return String(v);
@@ -73,7 +73,7 @@ index 15d7228..8c1b93b 100644
  export class RolloutTailError extends Error {
    constructor(cause: unknown) {
 -    super(`harness-world-codex: the rollout can no longer be mirrored (${String((cause as Error)?.message ?? cause).slice(0, 200)}): the drive stops, and the next one rebuilds CODEX_HOME from the log`, { cause });
-+    super(`agentrun-codex: the rollout can no longer be mirrored (${String((cause as Error)?.message ?? cause).slice(0, 200)}): the drive stops, and the next one rebuilds CODEX_HOME from the log`, { cause });
++    super(`agentrun-harness-codex: the rollout can no longer be mirrored (${String((cause as Error)?.message ?? cause).slice(0, 200)}): the drive stops, and the next one rebuilds CODEX_HOME from the log`, { cause });
      this.name = 'RolloutTailError';
    }
  }
@@ -85,7 +85,7 @@ index 15d7228..8c1b93b 100644
 +  return new Unavailable(`Codex runs only on a session machine its adapter made: ${why}`, {
      code: 'sandbox_required',
 -    hint: "Use durable-harness/codex's codex() or codexHarness() with workspace: sandbox() (the default).",
-+    hint: "Run Codex through @parcha/agentrun-codex's codexAdapter(), which makes the session machine.",
++    hint: "Run Codex through @parcha/agentrun-harness-codex's codexAdapter(), which makes the session machine.",
    });
  }
  
@@ -94,14 +94,14 @@ index 15d7228..8c1b93b 100644
  export function codexHarness(options: CodexHarnessOptions = {}): Harness {
    for (const [key, why] of Object.entries(REMOVED)) {
 -    if ((options as Record<string, unknown>)[key] !== undefined) throw new TypeError(`harness-world-codex: the ${key} option is gone: ${why}`);
-+    if ((options as Record<string, unknown>)[key] !== undefined) throw new TypeError(`agentrun-codex: the ${key} option is gone: ${why}`);
++    if ((options as Record<string, unknown>)[key] !== undefined) throw new TypeError(`agentrun-harness-codex: the ${key} option is gone: ${why}`);
    }
    const builtinsOn = options.builtins ?? false;
    if (options.sandboxMode !== undefined) {
 -    if (!SANDBOX_MODES.has(options.sandboxMode)) throw new TypeError(`harness-world-codex: sandboxMode must be 'read-only', 'workspace-write' or 'danger-full-access'`);
 -    if (!builtinsOn) throw new TypeError('harness-world-codex: sandboxMode needs builtins: true (with the built-ins off, Codex runs no command)');
-+    if (!SANDBOX_MODES.has(options.sandboxMode)) throw new TypeError(`agentrun-codex: sandboxMode must be 'read-only', 'workspace-write' or 'danger-full-access'`);
-+    if (!builtinsOn) throw new TypeError('agentrun-codex: sandboxMode needs builtins: true (with the built-ins off, Codex runs no command)');
++    if (!SANDBOX_MODES.has(options.sandboxMode)) throw new TypeError(`agentrun-harness-codex: sandboxMode must be 'read-only', 'workspace-write' or 'danger-full-access'`);
++    if (!builtinsOn) throw new TypeError('agentrun-harness-codex: sandboxMode needs builtins: true (with the built-ins off, Codex runs no command)');
    }
    checkConfig(options.config);
    if (options.test) testGuard();
@@ -110,13 +110,13 @@ index 15d7228..8c1b93b 100644
        // Everything the drive waits on also ends when the child dies, the link is lost or the drive stops.
        const stopped = new Promise<never>((_, reject) => {
 -        const fail = () => reject(ctx.signal.reason ?? new Error('harness-world-codex: the drive stopped'));
-+        const fail = () => reject(ctx.signal.reason ?? new Error('agentrun-codex: the drive stopped'));
++        const fail = () => reject(ctx.signal.reason ?? new Error('agentrun-harness-codex: the drive stopped'));
          if (ctx.signal.aborted) fail();
          else ctx.signal.addEventListener('abort', fail, { once: true });
        });
        const lost = new Promise<never>((_, reject) => {
 -        const fail = () => reject(new Error("harness-world-codex: the link to the session's sandbox was lost"));
-+        const fail = () => reject(new Error("agentrun-codex: the link to the session's sandbox was lost"));
++        const fail = () => reject(new Error("agentrun-harness-codex: the link to the session's sandbox was lost"));
          if (machine.signal.aborted) fail();
          else machine.signal.addEventListener('abort', fail, { once: true });
        });
@@ -129,5 +129,5 @@ index 975fb05..e5cf871 100644
      if (isRolloutPath(rel, threadId)) return rel;
    }
 -  throw new Error('harness-world-codex: app-server named a rollout file the driver would not derive for the thread (outside CODEX_HOME, or not sessions/…/rollout-<ts>-<threadId>.jsonl)');
-+  throw new Error('agentrun-codex: app-server named a rollout file the driver would not derive for the thread (outside CODEX_HOME, or not sessions/…/rollout-<ts>-<threadId>.jsonl)');
++  throw new Error('agentrun-harness-codex: app-server named a rollout file the driver would not derive for the thread (outside CODEX_HOME, or not sessions/…/rollout-<ts>-<threadId>.jsonl)');
  }

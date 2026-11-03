@@ -6,18 +6,14 @@
 // it), and the run keeps the place it resolved to. Runs execute in Docker only, for now: every other box says it does
 // not run yet. A harness's own tools in the box, when they come, are an option of sandbox, never a third mode.
 import { join } from "node:path";
+import { BOX_IDS, type BoxId, type BoxOffer } from "./boxes.js";
 import type { InputIssue } from "./errors.js";
 
 export const PLACE_MODES = ["runner", "sandbox"] as const;
 export type PlaceMode = (typeof PLACE_MODES)[number];
-export const BOXES = ["bwrap", "docker", "modal", "daytona"] as const;
-export type BoxId = (typeof BOXES)[number];
 export const DEFAULT_PLACE_MODE: PlaceMode = "runner";
 
 export type Place = { mode: "runner" } | { mode: "sandbox"; box: BoxId };
-
-/** One box as capabilities lists it: whether this server has it, and when not, why. */
-export type BoxOffer = { id: BoxId; available: boolean; reason?: string };
 
 /** The boxes runs execute in so far. */
 export const RUN_BOXES: readonly BoxId[] = ["docker"];
@@ -25,7 +21,7 @@ export const RUN_BOXES: readonly BoxId[] = ["docker"];
 /** The boxes this server gives runs, from what its registry set up at its start (boxes.ts): a box runs execute in
  *  that the registry has, and no other. */
 export function boxAvailability(registry: readonly BoxOffer[]): BoxOffer[] {
-  return BOXES.map((id) => {
+  return BOX_IDS.map((id) => {
     const offer = registry.find((o) => o.id === id);
     if (!offer) return { id, available: false, reason: `${id} is not set up on this server.` };
     if (!offer.available || RUN_BOXES.includes(id)) return { ...offer };
@@ -41,7 +37,7 @@ export const resolvePlace = (revision: Place | undefined, requested?: "runner"):
 
 /** The place a run kept (its serve.json), or runner for a run kept before runs had one. */
 export function storedPlace(value: unknown): Place {
-  if (!isObject(value) || value.mode !== "sandbox" || !listed(BOXES, value.box)) return { mode: "runner" };
+  if (!isObject(value) || value.mode !== "sandbox" || !listed(BOX_IDS, value.box)) return { mode: "runner" };
   return { mode: "sandbox", box: value.box as BoxId };
 }
 
@@ -62,7 +58,7 @@ export function placeIssues(place: unknown, field: string): InputIssue[] {
   if (extra.length) return bad("not_allowed", `${field} keeps only mode and box, not ${extra.join(" or ")}`, `Remove ${extra.map((key) => `${field}.${key}`).join(" and ")}.`);
   if (!listed(PLACE_MODES, place.mode)) return bad(place.mode === undefined ? "missing" : "not_an_option", `${field}.mode is one of ${PLACE_MODES.join(", ")}`);
   if (place.mode === "runner") return place.box === undefined ? [] : bad("not_allowed", "a runner place uses no box", `Remove ${field}.box.`);
-  if (place.box === undefined) return bad("missing", `a sandbox place names its box: one of ${BOXES.join(", ")}`);
-  if (!listed(BOXES, place.box)) return bad("not_an_option", `${field}.box is one of ${BOXES.join(", ")}`);
+  if (place.box === undefined) return bad("missing", `a sandbox place names its box: one of ${BOX_IDS.join(", ")}`);
+  if (!listed(BOX_IDS, place.box)) return bad("not_an_option", `${field}.box is one of ${BOX_IDS.join(", ")}`);
   return [];
 }

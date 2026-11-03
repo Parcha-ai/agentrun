@@ -79,6 +79,8 @@ export default function reply(context, faux) {
     const ms = first.includes("Take your time") ? 60_000 : first.includes("Answer soon") ? 1_500 : 0;
     return ms ? slow(faux, ms, "").then((m) => (m.stopReason === "aborted" ? m : submit)) : submit;
   }
+  // A follow-up that asks the person: the question its turn ends on.
+  if (users.length > 1 && last === "Ask me now.") return answered ? faux.message("Asked.") : faux.message(faux.toolCall("ask_person", { question: "Which one?" }), { stopReason: "toolUse" });
   // Asks the person through ask_person; for an agent without it the call fails, and the reply goes on without asking.
   if (first.includes("Pick a region")) {
     if (users.length === 1 && !answered) return faux.message(faux.toolCall("ask_person", { question: "Which region should I use?" }), { stopReason: "toolUse" });
@@ -88,6 +90,13 @@ export default function reply(context, faux) {
   if (first.includes("Which variables do you see?")) {
     const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
     return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
+  }
+  // Runs monid's /slow, which holds until it is stopped; then says so.
+  if (first.includes("Run monid's /slow.")) return results === 0 ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/slow" }), { stopReason: "toolUse" }) : faux.message("Ran.");
+  // Searches the web once for what follows "Search the web for ", then answers with the search's answer.
+  if (first.includes("Search the web for ")) {
+    const query = first.slice(first.indexOf("Search the web for ") + "Search the web for ".length).replace(/\.$/, "");
+    return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 2 }), { stopReason: "toolUse" }) : faux.message(`Found: ${textOf(context.messages.at(-1))}`);
   }
   // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
   if (first.includes("Enrich with monid")) {
@@ -103,6 +112,14 @@ export default function reply(context, faux) {
   if (browse) return results === 0 ? faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" }) : faux.message(`Seen: ${textOf(context.messages.at(-1))}`);
   // A follow-up whose answer starts only after a minute: a stop before then cuts it before its first content.
   if (users.length > 1 && last === "Slowly, please.") return slow(faux, 60_000, "Done slowly.");
+  // "Write a file, then signal <file> and wait.": a write, then a request that makes <file> as it starts and answers only
+  // after a minute, so a stop cuts it after the tool round; a follow-up then answers at once.
+  const signalWait = /^Write a file, then signal (\S+) and wait\.$/.exec(first);
+  if (signalWait) {
+    if (users.length > 1) return faux.message("Went on.");
+    if (results === 0) return faux.message(faux.toolCall("write", { path: "a.md", content: "a" }), { stopReason: "toolUse" });
+    return import("node:fs").then(({ writeFileSync }) => (writeFileSync(signalWait[1], ""), slow(faux, 60_000, "Done slowly.")));
+  }
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   if (first.includes("Write the report")) {
     if (answered) return faux.message("I wrote report.md.");

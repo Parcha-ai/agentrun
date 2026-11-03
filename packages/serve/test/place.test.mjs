@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Agents } from "../dist/agents.js";
+import { BOX_IDS } from "../dist/boxes.js";
 import { agent, flowAgent, follow, scratch, serve } from "./support.mjs";
 
 const storedBodies = (data) => {
@@ -176,4 +177,22 @@ test("capabilities lists the place modes, this host's default, and each box: non
   assert.equal(places.default, "runner");
   assert.deepEqual(places.boxes.map((b) => [b.id, b.available]), [["bwrap", false], ["docker", false], ["modal", false], ["daytona", false]]);
   for (const box of places.boxes) assert.equal(box.reason, box.id === "bwrap" ? "the bwrap box is not in this release yet" : "not enabled on this server");
+});
+
+test("one box table: capabilities' boxes, a place's 422 and every box enum of the OpenAPI document come from the box registry's ids", async (t) => {
+  const { api } = await serve(t);
+  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.map((b) => b.id), [...BOX_IDS]);
+  const refused = await api("POST", "/agents", agent("podman", { place: { mode: "sandbox", box: "podman" } }));
+  assert.equal(refused.status, 422);
+  assert.equal(refused.body.error.fields[0].message, `definition.place.box is one of ${BOX_IDS.join(", ")}`);
+  const doc = (await api("GET", "/openapi.json")).body;
+  const enums = [];
+  const walk = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node.enum) && node.enum.includes("docker")) enums.push(node.enum);
+    for (const value of Object.values(node)) walk(value);
+  };
+  walk(doc);
+  assert.ok(enums.length >= 4, `the place box (definition and run), capabilities' boxes and a refusal's box: ${enums.length}`);
+  for (const values of enums) assert.deepEqual(values, [...BOX_IDS]);
 });

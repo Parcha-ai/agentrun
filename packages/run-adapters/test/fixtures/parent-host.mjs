@@ -5,7 +5,7 @@
 // Then it waits to be killed. argv: <watch: pdeathsig|shim> <workers> <end-worker: yes|no> <child args (JSON)>
 import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
-import { parentWatched } from "@parcha/agentrun-adapters/host";
+import { parentWatched } from "@parcha/agentrun-kernel/host";
 
 const [how, workers, endWorker, childArgs] = process.argv.slice(2);
 const threads = Array.from({ length: Number(workers) }, () => new Worker("setInterval(() => {}, 1000);", { eval: true }));

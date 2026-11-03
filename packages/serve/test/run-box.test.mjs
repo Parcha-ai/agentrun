@@ -255,4 +255,35 @@ test("a link a box's command plants in work/ never turns the server's own writes
   await rm(join(work, "evidence", "monid"));
   assert.match(await monidText(huge, work, "run"), /the whole answer is in the run's files at evidence\/monid\/run_1\.json\]$/);
   assert.equal(readFileSync(join(work, "evidence", "monid", "run_1.json"), "utf8"), JSON.stringify(huge));
+  // The same answer again: filed already, its file kept.
+  assert.match(await monidText(huge, work, "run"), /the whole answer is in the run's files at evidence\/monid\/run_1\.json\]$/);
+  // A link planted at the answer's own name is no filing: the answer says it could not be saved, and names no path.
+  const other = { runId: "run_2", output: "y".repeat(CLIP + 10) };
+  await symlink(join(outside, "target.md"), join(work, "evidence", "monid", "run_2.json"));
+  const linked = await monidText(other, work, "run");
+  assert.match(linked, /the whole answer could not be saved \(EEXIST\)\]$/);
+  assert.doesNotMatch(linked, /evidence\/monid\/run_2\.json/);
+  assert.equal(readFileSync(join(outside, "target.md"), "utf8"), "kept");
+});
+
+test("where this host reaches a run's directories by path (no /proc/self/fd, as on macOS), the server files nothing in a sandbox run's work/, and still files in a runner run's", async (t) => {
+  const { monidText, CLIP } = await import("../dist/monid.js");
+  const { evidenceIn } = await import("../dist/tools.js");
+  const { workspaceTestHooks } = await import("../dist/workspace.js");
+  workspaceTestHooks.byPath = true;
+  t.after(() => void (workspaceTestHooks.byPath = undefined));
+  const huge = { runId: "run_1", output: "x".repeat(CLIP + 10) };
+  const runDir = async (place) => {
+    const dir = realpathSync(await scratch(t));
+    await mkdir(join(dir, "work"));
+    await writeFile(join(dir, "serve.json"), JSON.stringify({ title: "t", created_at: new Date().toISOString(), place }));
+    return join(dir, "work");
+  };
+  const boxed = await runDir({ mode: "sandbox", box: "docker" });
+  assert.match(await monidText(huge, boxed, "run"), /the whole answer could not be saved \(ENOTSUP\)\]$/);
+  await assert.rejects(evidenceIn(boxed).file("page", { tool: "browser_read", facts: {}, body: "text" }), (error) => error.code === "ENOTSUP");
+  assert.deepEqual(await readdir(boxed), [], "nothing was written in the box's work/");
+  const runner = await runDir({ mode: "runner" });
+  assert.match(await monidText(huge, runner, "run"), /the whole answer is in the run's files at evidence\/monid\/run_1\.json\]$/);
+  assert.equal(readFileSync(join(runner, "evidence", "monid", "run_1.json"), "utf8"), JSON.stringify(huge));
 });

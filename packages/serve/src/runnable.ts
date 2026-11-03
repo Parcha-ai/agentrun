@@ -7,8 +7,9 @@ import { DECISION_ADAPTER, providerMissing, providersNamed } from "./decisions.j
 import { REPLAY } from "./host-tools.js";
 import type { InputIssue } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
-import { chooseModel, llmTiers, nodeTiers, workflowNodes } from "./model.js";
-import { boxAvailability, type BoxOffer } from "./place.js";
+import { chooseModel, llmTiers, type ModelRef, nodeTiers, workflowNodes } from "./model.js";
+import type { BoxOffer } from "./boxes.js";
+import { boxAvailability } from "./place.js";
 import { BOUND_TOOLS, CALL_TOOLS, missingEnv, NODE_TOOLS, TOOLS, workflowTools } from "./tools.js";
 
 /** A revision's body as it is saved or stored. */
@@ -21,6 +22,29 @@ export type RevisionShape =
  *  (code nodes this server does not run), `shell` (a shell or executor call), `tier`, `harness` and `box` (the place's,
  *  which this server does not have) name it for a run's 409 details. */
 export type Blocker = InputIssue & { host: boolean; tool?: string; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string };
+
+/**
+ * The model `harness` runs an agentic revision on here: `ref`, its own `provider/model-id`, or with none this host's
+ * default for that harness. `why`: the model itself is the problem (`host`, a setting of this host could fix it);
+ * `refused`: the harness runs here but refuses that model. Undefined when claude-agent does not run here: its model is
+ * its own, and the harness says why. A save, a run and capabilities' `harnesses[].default_model` all ask this, so they
+ * cannot drift.
+ */
+export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref: string | undefined, available: boolean): Promise<{ model: ModelRef } | { why: string; host: boolean } | { refused: string } | undefined> {
+  // claude-agent's model is its own (adapters.ts), never routed through the other harnesses' gateway; on the faux
+  // harness every harness takes the run's usual model.
+  const own = harness === "claude-agent" && !env[FAUX_HARNESS_ENV];
+  if (own && !available) return undefined;
+  const chosen = own ? (await import("./adapters.js")).claudeModel(env, ref) : await chooseModel(env, ref);
+  if ("why" in chosen) return chosen;
+  // The harness runs here; whether it runs this model (the revision's, or the default) is checked on it.
+  if (harness !== DEFAULT_HARNESS && available) {
+    const { harnessReason } = await import("./adapters.js");
+    const refused = await harnessReason(harness, env, { model: chosen.model, models: { getModel: () => undefined } });
+    if (refused !== undefined) return { refused };
+  }
+  return { model: chosen.model };
+}
 
 /** The reason a warning gives: the revision runs once this host has what it names. */
 export const NOT_SET_UP = "not_set_up_here";
@@ -54,23 +78,15 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       // A shell runs only in a box: no place, or the runner, has none (a run narrowed to the runner drops it, server.ts).
       else if (TOOLS[tool]!.sandboxOnly && (place?.mode ?? "runner") === "runner") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} runs only in a box: name it on an agent whose place is sandbox. A runner place has no shell.`, host: false, tool });
       else if (TOOLS[tool]!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} writes the run's files from this machine by paths a box's command could turn through a link: it runs on the runner only, not in a sandbox place yet.`, host: false, tool });
-      // Another harness gets the host tools only (host-tools.ts: the file tools, fetch_page and web_fetch): any other
-      // tool this host binds, ask_person among them, is pi's here and refuses the run, never runs without it.
+      // Another harness gets the host tools only (host-tools.ts: the file tools, fetch_page, web_fetch and monid's): any
+      // other tool this host binds, ask_person among them, is pi's here and refuses the run, never runs without it.
       else if (harness !== DEFAULT_HARNESS && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
       else unset(`definition.tools[${index}]`, tool);
     });
-    // claude-agent's model is its own (adapters.ts), never routed through the other harnesses' gateway; on the faux
-    // harness every harness takes the run's usual model. A harness that does not run here has said why already.
-    const own = harness === "claude-agent" && !env[FAUX_HARNESS_ENV];
-    if (own && !offer?.available) return out;
-    const chosen = own ? (await import("./adapters.js")).claudeModel(env, revision.model) : await chooseModel(env, revision.model);
-    if ("why" in chosen) out.push({ field: "definition.model", reason: chosen.host ? NOT_SET_UP : "not_an_option", message: chosen.why, host: chosen.host });
-    // The harness runs here; whether it runs this revision's model (its own, or the server's default) is checked on it.
-    else if (harness !== DEFAULT_HARNESS && offer?.available) {
-      const { harnessReason } = await import("./adapters.js");
-      const why = await harnessReason(harness, env, { model: chosen.model, models: { getModel: () => undefined } });
-      if (why !== undefined) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: why, host: true, harness });
-    }
+    const resolved = await harnessModel(env, harness, revision.model, offer?.available === true);
+    if (!resolved) return out;
+    if ("why" in resolved) out.push({ field: "definition.model", reason: resolved.host ? NOT_SET_UP : "not_an_option", message: resolved.why, host: resolved.host });
+    else if ("refused" in resolved) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: resolved.refused, host: true, harness });
     return out;
   }
   // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.

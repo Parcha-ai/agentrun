@@ -1,7 +1,7 @@
 // The small JSON files the server reads and writes beside the agent store.
-import { randomBytes } from "node:crypto";
-import { closeSync, constants, existsSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
-import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { closeSync, constants, fsyncSync, openSync, renameSync, type Stats, unlinkSync, writeSync } from "node:fs";
+import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Json } from "./validate.js";
 
@@ -15,6 +15,14 @@ export const RUN_CANCELLED = "cancelled";
 export const RUN_LAUNCHING = "launching";
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
+
+export const HOMES_DIR = "homes";
+/** Paths in an agent's home that only the host writes (another component owns them): read through the API, never written through it. */
+export const HOME_HOST_OWNED = ["learning"];
+/** An agent's home directory's name: its id in lower case, then 16 hex digits of the id's SHA-256. Ids that differ only
+ *  in case get names that differ in any case, so on a disk that folds case (macOS's, by default) they never share one. */
+export const homeKey = (agentId: string): string => `${agentId.toLowerCase()}-${createHash("sha256").update(agentId, "utf8").digest("hex").slice(0, 16)}`;
+export const homeOf = (data: string, agentId: string): string => join(data, HOMES_DIR, homeKey(agentId));
 
 /** The file parsed as JSON, or null when it is missing, unreadable, or not whole JSON (a half-written file). */
 export const readJson = (path: string): Promise<Json | null> =>
@@ -33,13 +41,25 @@ export async function writeWhole(path: string, text: string, mode = 0o600): Prom
   await rename(temp, path);
 }
 
-/** Writes `text` to `path` whole and durably: the temporary file is synced before the rename, and the directory after it,
- *  so once this resolves a crash, even of the machine, leaves the new text in place, never the old or none. */
-export async function writeDurable(path: string, text: string, mode = 0o600): Promise<void> {
+/** Syncs the directory `path`, so the entries made in it survive a crash of the machine. */
+export async function syncDir(path: string): Promise<void> {
+  const dir = await open(path, constants.O_RDONLY | constants.O_DIRECTORY);
+  try {
+    await dir.sync();
+  } finally {
+    await dir.close();
+  }
+}
+
+/** Writes `text` (or bytes) to `path` whole and durably: the temporary file is synced before the rename, and the
+ *  directory after it, so once this resolves a crash, even of the machine, leaves the new text in place, never the old or
+ *  none. `temp` is the temporary file, created only if nothing is there yet: a link planted at it is never written through.
+ *  Answers the stats of the file it wrote, read before the rename: a write of `path` that lands after it is not them. */
+export async function writeDurable(path: string, text: string | Uint8Array, mode = 0o600, temp = tempOf(path)): Promise<Stats> {
   // Its own temporary file: a box's record can be let go by two settlements at once (a run's archive and its agent's).
-  const temp = tempOf(path);
-  const bytes = Buffer.from(text);
-  const file = await open(temp, "w", mode);
+  const bytes = typeof text === "string" ? Buffer.from(text) : text;
+  const file = await open(temp, "wx", mode);
+  let stats: Stats;
   try {
     // Every byte, or an error: a short write (a disk nearly full) is never synced and renamed as if whole.
     for (let at = 0; at < bytes.length; ) {
@@ -48,19 +68,19 @@ export async function writeDurable(path: string, text: string, mode = 0o600): Pr
       at += bytesWritten;
     }
     await file.sync();
+    stats = await file.stat();
   } catch (error) {
     await file.close();
     await unlink(temp).catch(() => {});
     throw error;
   }
   await file.close();
-  await rename(temp, path);
-  const dir = await open(dirname(path), "r");
-  try {
-    await dir.sync();
-  } finally {
-    await dir.close();
-  }
+  await rename(temp, path).catch(async (error) => {
+    await unlink(temp).catch(() => {});
+    throw error;
+  });
+  await syncDir(dirname(path));
+  return stats;
 }
 
 /** writeDurable, synchronously: on disk, the file and then its directory synced, when it returns. For a record that
@@ -91,38 +111,5 @@ export function writeDurableSync(path: string, text: string, mode = 0o600): void
     fsyncSync(dir);
   } finally {
     closeSync(dir);
-  }
-}
-
-const DIRECTORY = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
-const NEW_FILE = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
-const HELD_PATHS = existsSync("/proc/self/fd");
-
-/** Writes `data` as a new file `name` in `dirs` below the run's `work`, never through a link: a box's command can plant
- *  one there, and this process writes with the server's rights. Each directory is made when missing and opened without
- *  following a link, the next reached through the one held before it (`/proc/self/fd`), and the file is created, never
- *  replaced: a link in the way refuses the write (ELOOP, ENOTDIR or EEXIST). Without /proc, each step is reached by its
- *  path, which a link swapped in between two steps could still turn. */
-export async function writeInWork(work: string, dirs: readonly string[], name: string, data: string | Uint8Array): Promise<void> {
-  let dir = await open(work, DIRECTORY);
-  let path = work;
-  const below = (part: string) => (HELD_PATHS ? `/proc/self/fd/${dir.fd}/${part}` : join(path, part));
-  try {
-    for (const part of dirs) {
-      await mkdir(below(part)).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "EEXIST") throw error;
-      });
-      const next = await open(below(part), DIRECTORY);
-      await dir.close();
-      [dir, path] = [next, join(path, part)];
-    }
-    const file = await open(below(name), NEW_FILE, 0o644);
-    try {
-      await file.writeFile(data);
-    } finally {
-      await file.close();
-    }
-  } finally {
-    await dir.close();
   }
 }
