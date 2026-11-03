@@ -52,6 +52,13 @@ export default function reply(context, faux) {
   assert.deepEqual(told.said, [`Summarize the attached file.\n\nFiles for this run: inputs/notes.txt (${notes.length} B).`]);
   assert.equal(told.answer, `Summary: ${notes.toString().trim()}`);
 
+  // A file deeper than a run's file list goes is named too: as deep as an upload's path may be.
+  const deep = `${Array.from({ length: 20 }, (_, i) => `d${i}`).join("/")}/deep.txt`;
+  const deepId = await upload(server, deep, Buffer.from("down here"));
+  const below = await run(api, "summarizer", "Summarize the attached file.", [deepId]);
+  assert.deepEqual(below.said, [`Summarize the attached file.\n\nFiles for this run: inputs/${deep} (9 B).`]);
+  assert.equal(below.answer, "Summary: down here");
+
   const plain = await run(api, "summarizer", "Summarize the attached file.");
   assert.deepEqual(plain.said, ["Summarize the attached file."], "no files, no line");
   assert.equal(plain.answer, "I see no attached file.");
@@ -76,5 +83,6 @@ test("the line names at most MANIFEST_ENTRIES files, then counts the rest; sizes
   assert.ok(line.endsWith(`inputs/f${MANIFEST_ENTRIES - 1}.txt (${MANIFEST_ENTRIES - 1} B), and 5 more.`), line);
   assert.equal(filesLine("Files for this run", []), undefined);
   assert.equal(filesLine("Files", [{ path: "inputs/a\nb\u0007.txt", size: 3 }]), "Files: inputs/a?b?.txt (3 B).");
+  assert.equal(filesLine("Files", [{ path: "inputs/notes\u2028final\u2029\u0085.txt", size: 3 }]), "Files: inputs/notes?final??.txt (3 B).", "a line or paragraph separator too");
   assert.deepEqual([0, 1023, 1024, 1536, 1024 * 1024, 5 * 1024 * 1024 + 1].map(sizeOf), ["0 B", "1023 B", "1.0 KB", "1.5 KB", "1.0 MB", "5.0 MB"]);
 });
