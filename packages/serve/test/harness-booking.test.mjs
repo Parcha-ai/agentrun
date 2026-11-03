@@ -67,6 +67,9 @@ function lateBooking() {
  *  when its stream closes. */
 function scripted(turns) {
   const tickets = new Map();
+  // Each turn's script finished, by its index: the turn's end on the harness's side, before the booking wait.
+  const done = [];
+  const doneOf = (i) => (done[i] ??= deferred());
   let io;
   const book = (request, usd) => io.models.afterRequest({ ...TOKENS, usd }, tickets.get(request));
   const adapter = {
@@ -88,9 +91,12 @@ function scripted(turns) {
         state: "new",
         async send() {
           ended = deferred();
-          const script = turns[next++];
+          const at = next++;
+          const script = turns[at];
           // A script may end its turn as the harness says it ended (a failure, say); by default it completed.
-          ended.resolve((script ? await script({ ask, book, say }) : undefined) ?? { status: "completed" });
+          const status = script ? await script({ ask, book, say }) : undefined;
+          doneOf(at).resolve();
+          ended.resolve(status ?? { status: "completed" });
         },
         async recover() {},
         turnEnd: () => ended.promise,
@@ -99,7 +105,7 @@ function scripted(turns) {
       };
     },
   };
-  return { adapter, book };
+  return { adapter, book, ended: (i) => doneOf(i).promise };
 }
 
 const runOf = (harness) => ({ harness, env: async () => ({ confinePrefix: () => ["/usr/bin/setpriv", "--no-new-privs", "--"] }) });
@@ -238,7 +244,17 @@ const pricings = (entries) => {
   return counts;
 };
 
-test("a late cost booked after a later request's (held past its turn's wait, and past the next request's booking) is written at once, once: the run's cost is known as that turn ends, not after an open", { timeout: BOOKING_WAIT_MS * 6 }, async () => {
+/** Turn `i` of `script` has ended on the harness's side with a booking still out: the turn's end waits for it until the
+ *  booking wait runs out on the mocked clock, then the run ends its turn (its `ends`-th run_end). */
+const waitedOut = async (t, script, i, events, ends) => {
+  await script.ended(i);
+  await drained();
+  t.mock.timers.tick(BOOKING_WAIT_MS);
+  await settles(() => events.filter((e) => e === "run_end").length === ends, `turn ${i + 1} ends once the wait runs out`);
+};
+
+test("a late cost booked after a later request's (held past its turn's wait, and past the next request's booking) is written at once, once: the run's cost is known as that turn ends, not after an open", async (t) => {
+  mockClock(t);
   const storage = new MemoryStorage();
   // Request 1's booking is held past its turn's end. In the next turn request 2 is booked first, then request 1.
   const script = scripted([
@@ -255,10 +271,11 @@ test("a late cost booked after a later request's (held past its turn's wait, and
   ]);
   const first = await opened(storage, script.adapter);
   assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
-  await until(() => first.events.includes("run_end"), BOOKING_WAIT_MS * 3);
+  await waitedOut(t, script, 0, first.events, 1);
   assert.deepEqual(usage(await rootOf(first.harness)), { usd: null, requests: 1 }, "request 1 written at unknown cost, its cost still out");
   assert.deepEqual(await first.app.door.submit({ requestId: "m2", content: "again", whenBusy: "followUp" }, first.door), { accepted: true });
-  await until(() => first.events.filter((e) => e === "run_end").length === 2, BOOKING_WAIT_MS * 3);
+  // Turn 2 books both of its costs in the turn: it ends on them, the clock never moved.
+  await settles(() => first.events.filter((e) => e === "run_end").length === 2, "turn 2 ends");
   const entries = await rootOf(first.harness);
   assert.deepEqual(lateCosts(entries), [[1, 0.003]], "request 1's late cost, once");
   assert.deepEqual(usage(entries), { usd: 0.005, requests: 2 }, "the run's cost is known as the turn ends");
@@ -274,7 +291,8 @@ test("a late cost booked after a later request's (held past its turn's wait, and
   assert.deepEqual(usage(after, true), { usd: 0.005, requests: 2 });
 });
 
-test("costs that trail their requests by more than a turn: each request still gets one entry and its cost once, so the run's cost is known once they are in, not after an open", { timeout: BOOKING_WAIT_MS * 8 }, async () => {
+test("costs that trail their requests by more than a turn: each request still gets one entry and its cost once, so the run's cost is known once they are in, not after an open", async (t) => {
+  mockClock(t);
   const storage = new MemoryStorage();
   // Turn 1 asks requests 1 and 2: 2 is booked, 1 is held past the turn's end. Turn 2 asks request 3 and books request 1;
   // request 3 is booked only after turn 2 has ended.
@@ -294,11 +312,11 @@ test("costs that trail their requests by more than a turn: each request still ge
   ]);
   const first = await opened(storage, script.adapter);
   assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
-  await until(() => first.events.includes("run_end"), BOOKING_WAIT_MS * 3);
+  await waitedOut(t, script, 0, first.events, 1);
   assert.deepEqual(await first.app.door.submit({ requestId: "m2", content: "again", whenBusy: "followUp" }, first.door), { accepted: true });
-  await until(() => first.events.filter((e) => e === "run_end").length === 2, BOOKING_WAIT_MS * 3);
+  await waitedOut(t, script, 1, first.events, 2);
   await script.book(3, 0.004);
-  for (const released = Date.now(); spend(await rootOf(first.harness)) !== 0.007 && Date.now() - released < 1_000; ) await new Promise((resolve) => setTimeout(resolve, 10));
+  await settles(async () => spend(await rootOf(first.harness)) === 0.007, "request 3's cost is in, with no turn running");
   const entries = await rootOf(first.harness);
   assert.deepEqual(requestsOf(entries, BOOKED).sort((a, b) => a - b), [1, 2, 3], "every request on the root, once");
   assert.deepEqual(pricings(entries), { 1: 1, 2: 1, 3: 1 }, "each one's cost written once, with its entry or after it");
@@ -311,7 +329,8 @@ test("costs that trail their requests by more than a turn: each request still ge
   assert.equal(spend(after), 0.007);
 });
 
-test("a booking that comes in as the run ends: before its process lets the store go it is written, after that it is refused, and either way the next open books it once", { timeout: BOOKING_WAIT_MS * 8 }, async () => {
+test("a booking that comes in as the run ends: before its process lets the store go it is written, after that it is refused, and either way the next open books it once", async (t) => {
+  mockClock(t);
   // Turn 1 asks requests 1 and 2: 2 is booked in the turn, 1 only after it, as the server decides the run is done and
   // stops its process. The process lets its store go by closing its Harness, which the release does first; the next
   // open reads the store as a new process opens it.
@@ -325,7 +344,7 @@ test("a booking that comes in as the run ends: before its process lets the store
   const ended = async (storage, script) => {
     const first = await opened(storage, script.adapter);
     assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
-    await until(() => first.events.includes("run_end"), BOOKING_WAIT_MS * 3);
+    await waitedOut(t, script, 0, first.events, 1);
     return first;
   };
   const reopened = async (storage) => {
@@ -339,10 +358,7 @@ test("a booking that comes in as the run ends: before its process lets the store
     const script = scripted([turn]);
     const first = await ended(storage, script);
     await script.book(1, 0.001);
-    for (const at = Date.now(); !requestsOf(await rootOf(first.harness), BOOKED).includes(1); ) {
-      assert.ok(Date.now() - at < 1_000, "written as it came in, with no turn running");
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await settles(async () => requestsOf(await rootOf(first.harness), BOOKED).includes(1), "written as it came in, with no turn running");
     await first.harness.close(ctx);
     const entries = await reopened(storage);
     assert.deepEqual(requestsOf(entries, BOOKED).sort((a, b) => a - b), [1, 2], "each request once");
@@ -365,14 +381,13 @@ test("a booking that comes in as the run ends: before its process lets the store
 });
 
 /** A wrap for the run's Harness that can hold one commit before it reaches the store, chosen by what it writes: `hold(match)`
- *  makes the next commit with an entry `match` takes wait until `release()`, and `reached` says it is waiting. Its entries
- *  are read by running the change on a recorder first, only while a hold is set; a change that does more than append
- *  entries (it reads, or makes a conversation) throws there and is never held. Held before it is sent, it leaves the
- *  store's line free, so the run's other writes, a booking's among them, go on meanwhile. */
+ *  makes the next commit with an entry `match` takes wait until `release()`, and `reached()` says it is waiting (a state a
+ *  test waits on with `settles`). Its entries are read by running the change on a recorder first, only while a hold is set;
+ *  a change that does more than append entries (it reads, or makes a conversation) throws there and is never held. Held
+ *  before it is sent, it leaves the store's line free, so the run's other writes, a booking's among them, go on meanwhile.
+ *  Each hold keeps its own gate: one set while another waits releases only itself. */
 function holding() {
-  let rule;
-  let gate;
-  let reached;
+  let current;
   const entriesOf = async (change) => {
     const entries = [];
     const recorder = { appendEntry: async (...args) => void entries.push(args.length === 3 ? { conversation: args[1], ...args[2] } : { conversation: args[0], ...args[1] }) };
@@ -385,36 +400,25 @@ function holding() {
   };
   const wrap = (harness) => new Proxy(harness, {
     get: (target, key) => key !== "commit" ? Reflect.get(target, key).bind?.(target) ?? Reflect.get(target, key) : async (change, context) => {
-      if (rule && (await entriesOf(change)).some(rule)) {
-        const wait = gate.promise;
-        rule = undefined;
-        reached.resolve();
-        await wait;
+      const own = current;
+      if (own && (await entriesOf(change)).some(own.match) && current === own) {
+        current = undefined;
+        own.reached = true;
+        await own.gate.promise;
       }
       return target.commit(change, context);
     },
   });
-  // Each hold keeps its own gate: one set while another waits releases only itself.
   const hold = (match) => {
-    const own = { gate: deferred(), reached: deferred() };
-    rule = match;
-    gate = own.gate;
-    reached = own.reached;
-    return { reached: own.reached.promise, release: () => own.gate.resolve() };
+    const own = { match, gate: deferred(), reached: false };
+    current = own;
+    return { reached: () => own.reached, release: () => own.gate.resolve() };
   };
   return { wrap, hold };
 }
 
-/** `promise`, or a failure naming `what` after `ms`. Its timer is a ref'd one, so a test that waits on a promise keeps the
- *  event loop alive: the turn's booking wait holds only an unref'd timer, and with none other node's runner cancels the
- *  test as soon as the loop is idle. */
-const within = (promise, ms, what) => {
-  let timer;
-  const late = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`${what}: not within ${ms} ms`)), ms)));
-  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
-};
-
-test("a message that comes in while a turn's last costs are written waits its place: the run's start and end stay paired, and it never reads idle while it works", { timeout: BOOKING_WAIT_MS * 8 }, async () => {
+test("a message that comes in while a turn's last costs are written waits its place: the run's start and end stay paired, and it never reads idle while it works", async (t) => {
+  mockClock(t);
   const storage = new MemoryStorage();
   const held = holding();
   // Turn 1 books request 1 and asks request 2, then fails. Request 2 is booked only while the turn's error is being
@@ -438,20 +442,21 @@ test("a message that comes in while a turn's last costs are written waits its pl
   const run = await opened(storage, script.adapter, held.wrap, (e, app) => e.type === "run_end" && busyAtEnd.push(app.door.busy()));
   const failure = held.hold((e) => typeof e.model?.[0]?.errorMessage === "string");
   assert.deepEqual(await run.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, run.door), { accepted: true });
-  await within(failure.reached, BOOKING_WAIT_MS * 3, "the turn's error entry, held");
+  // Request 2's booking is out as the turn ends: the turn's end waits for it until the wait runs out, then writes its error.
+  await script.ended(0);
+  await drained();
+  t.mock.timers.tick(BOOKING_WAIT_MS);
+  await settles(() => failure.reached(), "the turn's error entry, held");
   await script.book(2, 0.002);
   const cost = held.hold((e) => e.kind === BOOKED && e.data.request === 2);
   failure.release();
-  await within(cost.reached, BOOKING_WAIT_MS * 3, "the flush of request 2's cost, held");
-  // The follow-up, while the turn's last cost waits to be written.
+  await settles(() => cost.reached(), "the flush of request 2's cost, held");
+  // The follow-up, while the turn's last cost waits to be written: what it does at once has run when the queue drains.
   const followUp = run.app.door.submit({ requestId: "m2", content: "again", whenBusy: "followUp" }, run.door);
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await drained();
   cost.release();
-  assert.deepEqual(await within(followUp, BOOKING_WAIT_MS * 3, "the follow-up accepted"), { accepted: true });
-  for (let at = Date.now(); !assistants(await rootOf(run.harness)).some((m) => m.content.some((c) => c.text === "Second.")) || run.events.at(-1) !== "run_end" || run.app.door.busy(); ) {
-    assert.ok(Date.now() - at < BOOKING_WAIT_MS * 4, "the follow-up's turn ends");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  assert.deepEqual(await followUp, { accepted: true });
+  await settles(async () => assistants(await rootOf(run.harness)).some((m) => m.content.some((c) => c.text === "Second.")) && run.events.at(-1) === "run_end" && !run.app.door.busy(), "the follow-up's turn ends");
   assert.deepEqual(run.events.filter((e) => e === "run_start" || e === "run_end").every((e, i) => e === (i % 2 === 0 ? "run_start" : "run_end")), true, `each run_start ended before the next: ${run.events.join(" ")}`);
   assert.deepEqual(busyAtEnd.filter(Boolean), [], "no run_end while a turn worked");
   const entries = await rootOf(run.harness);
