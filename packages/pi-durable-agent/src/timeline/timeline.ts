@@ -162,7 +162,9 @@ function createMeter() {
   // whether its answer's tokens were unknown: its late cost's usage then stands in for them).
   let known = 0;
   let unknown = 0;
-  const pending: { unmetered: boolean; figure: number | undefined }[] = [];
+  const pending: { unmetered: boolean; figure: number | undefined; id: string | undefined }[] = [];
+  /** The request a pending or late cost names, by its host's key and number; none for an older mark. */
+  const idOf = (data: Obj | undefined) => (data?.request !== undefined && data?.request !== null ? JSON.stringify([data.key ?? null, data.request]) : undefined);
   // For the bound on a cost no one knows: each request's worst case, by kind, as its start mark
   // says (undefined: it says none; a cap's refusal marks no request and holds nothing), and as the end mark of one stopped
   // before its end says. Each cost unknown after the first mark is one request's, by kind; one before it (a run from
@@ -250,7 +252,7 @@ function createMeter() {
       // for it (on this mark), else by its start's figure.
       if (unknown > 0) {
         unknown -= 1;
-        pending.push({ unmetered: lastUnmetered, figure: everMarked ? heldOf(entry) : undefined });
+        pending.push({ unmetered: lastUnmetered, figure: everMarked ? heldOf(entry) : undefined, id: idOf(data) });
         // Its cost is on its way, not missing: no price named for it.
         unpriced = unpricedBefore;
         if (unknownOf.generation > 0) unknownOf.generation -= 1;
@@ -259,7 +261,10 @@ function createMeter() {
     } else if (entry.kind === REQUEST_COST_LATE) {
       // The answer it prices was written before its usage came in: its usage, when it has one, is that answer's tokens.
       const late = tokensOf(data?.usage);
-      if (pending.shift()?.unmetered && late) (unmetered -= 1), addTokens(late);
+      // It closes the pending cost of the request it names; one that names none (an older mark), the oldest.
+      const named = idOf(data) === undefined ? -1 : pending.findIndex(({ id }) => id === idOf(data));
+      const [closed] = pending.splice(named >= 0 ? named : 0, pending.length ? 1 : 0);
+      if (closed?.unmetered && late) (unmetered -= 1), addTokens(late);
       addCost(data?.usd);
       // Of unknown cost after all: at what its host held for it, when it says, as a stopped request's end counts.
       if (!(typeof data?.usd === "number" && Number.isFinite(data.usd)) && everMarked && heldOf(entry) !== undefined) figures.generation.ends.push(heldOf(entry)!);
