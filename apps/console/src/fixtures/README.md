@@ -10,8 +10,9 @@ Names: `run.<status>.<state>.<n>` is a run in that status and state, with `.time
 Two recordings on 2026-10-28 from the same seed: one right after a restart (`run.working.idle.1`, `run.queued.working.1`:
 runs not yet relaunched) and one 15 seconds later (`run.working.working.*`: the same runs relaunched, a live turn).
 
-`capabilities.json`'s `tools` is a later recording than the rest of that file (2026-11-03, a server on the faux model
-with no keys): the console reads a tool only as the object serve sends, and the first recording listed bare names.
+`capabilities.json`'s `tools` and `harnesses` are later recordings than the rest of that file (2026-11-03, a server on
+the faux model with no keys): the console reads a tool only as the object serve sends, and a harness's default model only
+from its `default_model`, and the first recording had bare tool names and no `default_model`.
 
 `error.definition-stale-etag` is a definition PUT with an `If-Match` that is not the current revision (412);
 `error.definition-invalid-body` is one whose body is not `{definition, skills?, note?}` (422).

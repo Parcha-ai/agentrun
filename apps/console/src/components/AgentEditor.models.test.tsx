@@ -6,7 +6,7 @@ import type { Agent } from "@/lib/agentForm";
 
 // The editor's Model field on a server whose models come through a gateway: the default without the gateway's routing
 // prefix (the full id in a title), and no default offered to a harness that does not run it.
-const caps = { harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: true }], tools: [], thinking: [], defaultModel: "agent-model/gpt-6-luna", modelSource: "gateway", routePrefix: "agent-model" };
+const caps = { harnesses: [{ id: "pi", available: true, default_model: "agent-model/gpt-6-luna" }, { id: "claude-agent", available: true, default_model: null }, { id: "codex", available: true, default_model: null }], tools: [], thinking: [], routePrefix: "agent-model" };
 const agentOn = (harness: string, model?: string): Agent => ({ agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness, skills: [], tools: [], ...(model ? { model } : {}) } });
 const settings = (agent: Agent) => renderToStaticMarkup(createElement(AgentEditor, { agent, caps, step: "settings" }));
 
@@ -28,12 +28,23 @@ describe("AgentEditor, the Model field", () => {
     expect(html).toContain(`Empty uses the server&#x27;s default (<span title="agent-model/gpt-6-luna">gpt-6-luna</span>).`);
     expect(html).toContain('placeholder="provider/model"');
   });
-  it("from a server that does not name each harness's default, offers none to claude-agent or codex", () => {
+  it("where the server names no default for the harness, offers none to claude-agent or codex", () => {
     for (const harness of ["claude-agent", "codex"]) {
       const html = settings(agentOn(harness));
       expect(html, harness).toContain("No default for this harness: choose a model.");
       expect(html, harness).not.toContain("gpt-6-luna");
       expect(html, harness).toContain('placeholder="provider/model"');
     }
+  });
+});
+
+describe("AgentEditor, the Model field's default on a server with no gateway", () => {
+  // capabilities.harnesses[].default_model with no routing prefix: the id is shown whole, with no title.
+  const direct = { harnesses: [{ id: "pi", available: true, default_model: "faux/faux-1" }, { id: "claude-agent", available: true, default_model: null }], tools: [], thinking: [], routePrefix: null };
+  it("names the harness's default whole, and none where the server names none", () => {
+    const pi = renderToStaticMarkup(createElement(AgentEditor, { agent: agentOn("pi"), caps: direct, step: "settings" }));
+    expect(pi).toContain("Empty uses the server&#x27;s default (<span>faux/faux-1</span>).");
+    const claude = renderToStaticMarkup(createElement(AgentEditor, { agent: agentOn("claude-agent"), caps: direct, step: "settings" }));
+    expect(claude).toContain("No default for this harness: choose a model.");
   });
 });

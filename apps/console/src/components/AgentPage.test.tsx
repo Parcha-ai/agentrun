@@ -38,10 +38,10 @@ type Answer = { run: Run } | { refused: string };
 const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
 const endedPage = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run> };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { route_prefix: string | null }; harnesses?: { id: string; default_model?: string | null }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run> };
 /** By default the server's stats carry the sample analytics. `followed` lists the latest run's reads (its
  *  timeline's pages and its record), apart from the page's own reads in `asked`. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses, hold, strict = false, timeline, reread }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses = editorCaps.harnesses, hold, strict = false, timeline, reread }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const followed: string[] = [];
@@ -69,7 +69,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  const props = { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, routePrefix: models?.route_prefix, harnesses, efforts, go: (h: string) => went.push(h), tab };
+  const props = { v2: v2 as never, agentId: agent.agent_id, routePrefix: models?.route_prefix, harnesses, efforts, go: (h: string) => went.push(h), tab };
   act(() => root!.render(strict ? createElement(StrictMode, null, createElement(AgentPage, props)) : createElement(AgentPage, props)));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
@@ -104,8 +104,8 @@ describe("AgentPage", () => {
     expect(page.host.querySelector("h1")?.textContent).toBe("Invoice checker");
     expect(page.fact("Harness")).toBe("pi");
     expect(page.fact("Thinking")).toBe("high");
-    // No model of its own: the server's default, named as the default.
-    expect(page.fact("Model")).toBe(`${editorCaps.defaultModel} (default)`);
+    // No model of its own: the recorded server's default for pi, named as the default.
+    expect(page.fact("Model")).toBe("faux/faux-1 (default)");
     expect(page.fact("Revision")).toBe("rev 3 of 3");
     expect(page.host.textContent).not.toContain("Archived");
     await page.click(/^Edit$/);
@@ -461,7 +461,7 @@ describe("AgentPage", () => {
 });
 
 describe("AgentPage, the model on a gateway server", () => {
-  const gateway = { default: "agent-model/gpt-6-luna", source: "gateway", route_prefix: "agent-model" };
+  const gateway = { route_prefix: "agent-model" };
   const on = (harness: string, model?: string): Agent => {
     const a = agentFixture("invoice-checker");
     const { model: _m, ...definition } = a.definition;
@@ -469,7 +469,7 @@ describe("AgentPage, the model on a gateway server", () => {
   };
   const modelOf = (page: Awaited<ReturnType<typeof open>>) => [...page.host.querySelectorAll("dt")].find((t) => t.textContent === "Model")!.nextElementSibling as HTMLElement;
   it("shows the default without the gateway's routing prefix, the full id in its title", async () => {
-    const page = await open(on("pi"), { models: gateway });
+    const page = await open(on("pi"), { models: gateway, harnesses: [{ id: "pi", default_model: "agent-model/gpt-6-luna" }] });
     expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
     expect(modelOf(page).title).toBe("agent-model/gpt-6-luna");
   });
@@ -484,5 +484,39 @@ describe("AgentPage, the model on a gateway server", () => {
     const page = await open(on("claude-agent"), { models: gateway });
     expect(modelOf(page).textContent).toBe("no default: choose a model");
     expect(page.host.textContent).not.toContain("gpt-6-luna");
+  });
+});
+
+// The Model fact as a person reads it, on a server that names each harness's default (capabilities'
+// harnesses[].default_model) and its gateway's routing prefix (models.route_prefix).
+describe("AgentPage, the Model fact", () => {
+  const gateway = { route_prefix: "agent-model" };
+  const direct = { route_prefix: null };
+  const named = (pi: string | null) => [{ id: "pi", default_model: pi }, { id: "claude-agent", default_model: null }, { id: "codex", default_model: pi }];
+  const on = (harness: string, model?: string): Agent => {
+    const a = agentFixture("invoice-checker");
+    const { model: _m, ...definition } = a.definition;
+    return { ...a, definition: { ...definition, harness, ...(model ? { model } : {}) } };
+  };
+  const modelOf = (page: Awaited<ReturnType<typeof open>>) => [...page.host.querySelectorAll("dt")].find((t) => t.textContent === "Model")!.nextElementSibling as HTMLElement;
+  it("an agent's own model: the gateway's routing prefix off, the full id in its title; any other id whole", async () => {
+    const own = await open(on("pi", "agent-model/gpt-6-mini"), { models: gateway, harnesses: named("agent-model/gpt-6-luna") });
+    expect([modelOf(own).textContent, modelOf(own).title]).toEqual(["gpt-6-mini", "agent-model/gpt-6-mini"]);
+    act(() => root?.unmount());
+    const provider = await open(on("pi", "openai/gpt-5"), { models: gateway, harnesses: named("agent-model/gpt-6-luna") });
+    expect([modelOf(provider).textContent, modelOf(provider).title]).toEqual(["openai/gpt-5", ""]);
+    act(() => root?.unmount());
+    const plain = await open(on("pi", "anthropic/claude-x"), { models: direct, harnesses: named("faux/faux-1") });
+    expect([modelOf(plain).textContent, modelOf(plain).title]).toEqual(["anthropic/claude-x", ""]);
+  });
+  it("no model of its own: the harness's default, marked (default), and none where the server names none", async () => {
+    const viaGateway = await open(on("pi"), { models: gateway, harnesses: named("agent-model/gpt-6-luna") });
+    expect([modelOf(viaGateway).textContent, modelOf(viaGateway).title]).toEqual(["gpt-6-luna (default)", "agent-model/gpt-6-luna"]);
+    act(() => root?.unmount());
+    const plain = await open(on("codex"), { models: direct, harnesses: named("faux/faux-1") });
+    expect([modelOf(plain).textContent, modelOf(plain).title]).toEqual(["faux/faux-1 (default)", ""]);
+    act(() => root?.unmount());
+    const none = await open(on("claude-agent"), { models: direct, harnesses: named("faux/faux-1") });
+    expect(modelOf(none).textContent).toBe("no default: choose a model");
   });
 });
