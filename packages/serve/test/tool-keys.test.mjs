@@ -340,7 +340,7 @@ test("a key saved later makes a harness available with no restart: each key writ
   const claude = async () => (await readingOf(base, 4, stored)).caps.harnesses.find((offer) => offer.id === "claude-agent");
   assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY."]);
   saved = ["not-a-secret", "anthropic"].join("-");
-  assert.deepEqual(await claude(), { id: "claude-agent", available: true, steer: false }, "saved: offered");
+  assert.deepEqual(await claude(), { id: "claude-agent", available: true, steer: false, default_model: null }, "saved: offered");
   saved = undefined;
   assert.equal((await claude()).available, false, "deleted: not offered");
 });
