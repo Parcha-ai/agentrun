@@ -136,9 +136,11 @@ export interface SessionIO {
 /** An event of a session, as the adapter reports it. The runner adds the node it belongs to. A call's `tool_end` is sent
  *  only once its outcome is durable in the session's records, so a host never shows a result its store does not have;
  *  `result` is the text recorded, when the adapter reports it. A call stopped before its outcome was recorded gets no
- *  `tool_end`: its turn's `turn_end` closes it. */
+ *  `tool_end`: its turn's `turn_end` closes it. `thinking` is one whole thinking block's text as the model's provider
+ *  returned it (a summary of the reasoning, never the raw chain), for the host to show; a block with no text is not sent. */
 export type AdapterEvent =
   | { type: "text"; delta: string }
+  | { type: "thinking"; text: string }
   | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
   | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string }
   | { type: "turn_end"; status: TurnStatus };

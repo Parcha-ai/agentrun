@@ -309,7 +309,8 @@ async function oneNode(t, model, extra = {}, { during, cliRefused = [] } = {}) {
     sessionsDir: join(dir, 'sessions'),
     log: (message, detail) => logged.push({ message, ...detail }),
   });
-  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: 10, timeoutMs: 100_000 });
+  const events = [];
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: 10, timeoutMs: 100_000, onEvent: (e) => events.push(e) });
   const output = await runNode({ kind: 'agent', label: 'wire', system: ['Answer.'], user: 'Say ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [], ...extra });
   assert.deepEqual(output, { answer: 'ok' });
   const forwarded = provider.requests.filter((r) => r.authorized);
@@ -322,7 +323,9 @@ async function oneNode(t, model, extra = {}, { during, cliRefused = [] } = {}) {
   const calls = proxyServer()[1].filter((r) => r.bearer);
   assert.ok(calls.length >= 1 && calls.every((r) => CLI_AGENT.test(r.userAgent ?? '')), `${model}: the CLI calls as claude-cli/: ${JSON.stringify([...new Set(calls.map((r) => r.userAgent))])}`);
   const betas = forwarded.flatMap((r) => (r.headers['anthropic-beta'] ?? '').split(',').map((b) => b.trim()).filter(Boolean));
-  return { main, betas, logged, blocks: forwarded.flatMap((r) => blockTypes(r.body)), efforts: [...new Set(main.map((r) => r.body.output_config?.effort))] };
+  // What the host heard the model think: the summaries the CLI got back, in order (the redacted block has none to show).
+  const thoughts = events.filter((e) => e.type === 'thinking').map((e) => e.text);
+  return { main, betas, logged, thoughts, blocks: forwarded.flatMap((r) => blockTypes(r.body)), efforts: [...new Set(main.map((r) => r.body.output_config?.effort))] };
 }
 
 // The models a host runs now. The CLI's betas and its thinking depend on the model: a model it sends a beta for that the
@@ -330,15 +333,17 @@ async function oneNode(t, model, extra = {}, { during, cliRefused = [] } = {}) {
 // wire; claude-haiku-5-5's own default is high, so the adapter's default is what puts medium there.
 const CURRENT_MODELS = ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'];
 
-test("on each current model, a node that names no level thinks at medium on the wire, a node's own level reaches it, and the betas and content blocks the CLI sends are the allowlists", { skip, timeout: 240_000 }, async (t) => {
+test("on each current model, a node that names no level thinks at medium on the wire with its thinking summarized, a node's own level reaches it, the host hears each summary, and the betas and content blocks the CLI sends are the allowlists", { skip, timeout: 240_000 }, async (t) => {
   const seen = new Set();
   const sent = new Set();
   for (const model of CURRENT_MODELS) {
-    const { main, betas, blocks, efforts } = await oneNode(t, model);
+    const { main, betas, blocks, efforts, thoughts } = await oneNode(t, model);
     for (const type of blocks) sent.add(type);
     for (const b of betas) { assert.ok(CLAUDE_BETAS.has(b), `${model}: the CLI sent the beta ${b}`); seen.add(b); }
-    for (const r of main) assert.equal(r.body.thinking?.type, 'adaptive', `${model}: ${JSON.stringify(r.body.thinking)}`);
+    // Summarized, or the current models stream each thinking block empty ("omitted" is their default display).
+    for (const r of main) assert.deepEqual(r.body.thinking, { type: 'adaptive', display: 'summarized' }, `${model}: ${JSON.stringify(r.body.thinking)}`);
     assert.deepEqual(efforts, ['medium'], model);
+    assert.deepEqual(thoughts, ['plan'], `${model}: the thinking the model sent back reaches the host as an event`);
     t.diagnostic(`${model}: ${main.length} main-model requests, betas ${[...new Set(betas)].sort().join(',')}`);
   }
   const high = await oneNode(t, 'claude-sonnet-5-5', { thinking: 'high' });

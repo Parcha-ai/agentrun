@@ -340,3 +340,15 @@ test("the run's thinking level reaches the harness's session: the revision's, an
     assert.equal(await answer(api, run.body.run_id), said);
   }
 });
+
+// What a harness's model thought shows as pi's does: a Thinking row of its first sentence, before the answer it led to.
+test("a harness's thinking summary is a Thinking row of the run, before the answer, as a pi run's is", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "thinks", "Think, then answer.");
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const thinking = rows.filter((r) => r.kind === "thinking");
+  assert.deepEqual(thinking.map((r) => [r.summary, r.text]), [["Thinking: Plan the answer first.", "Plan the answer first. Then write it."]], JSON.stringify(rows.map((r) => [r.kind, r.summary])));
+  assert.ok(rows.indexOf(thinking[0]) < rows.findIndex((r) => r.kind === "final_answer"), "the thinking comes before the answer");
+  assert.equal(await answer(api, runId), "Thought it through.");
+  assert.deepEqual(usageOf(rows), { usd: 0.001, requests: 1 }, "still one request");
+});

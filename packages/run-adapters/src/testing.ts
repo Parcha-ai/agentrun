@@ -32,12 +32,13 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
   };
 }
 
-/** One model request of the faux harness, and what its reply does. */
+/** One model request of the faux harness, and what its reply does. `think`: the reply's thinking summary, reported (a
+ *  `thinking` event) before its text or its calls, as a thinking model's comes first. */
 export type FauxAction =
-  | { say: string; usd?: number | null }
-  | { call: string; args?: unknown; usd?: number | null }
+  | { say: string; think?: string; usd?: number | null }
+  | { call: string; args?: unknown; think?: string; usd?: number | null }
   /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls. */
-  | { calls: { call: string; args?: unknown }[]; usd?: number | null }
+  | { calls: { call: string; args?: unknown }[]; think?: string; usd?: number | null }
   | { submit: unknown; usd?: number | null }
   /** The reply ends the turn without a submission. */
   | { end: true; usd?: number | null }
@@ -137,6 +138,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             await append(FAUX_RECORDS.request, { index });
             if ("fail" in action) return await end("failed", action.fail);
             await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
+            if ("think" in action && action.think) io.onEvent({ type: "thinking", text: action.think });
             if ("say" in action) io.onEvent({ type: "text", delta: action.say });
             else if ("end" in action) return await end("completed");
             else {

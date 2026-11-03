@@ -214,7 +214,7 @@ test("every model request reaches the host with its tokens and its price: reques
   }
 });
 
-test("every session thinks: medium when its node names no level, the node's level when it does, and never off", async (t) => {
+test("every session thinks, its thinking summarized so a person sees it: medium when its node names no level, the node's level when it does, and never off", async (t) => {
   const seen = [];
   const { adapter } = await claude(t, { script: ['call submit {"value":{"answer":"ok"}}', 'call submit {"value":{"answer":"ok"}}', 'call submit {"value":{"answer":"ok"}}'], sdk: { onQuery: (options) => seen.push([options.thinking, options.effort]) } });
   const runNode = createHarnessRunner(adapter, { store: memorySessionStore() });
@@ -222,7 +222,10 @@ test("every session thinks: medium when its node names no level, the node's leve
   await ask({});
   await ask({ thinking: 'high' });
   await ask({ effort: 'minimal' });
-  assert.deepEqual(seen, [[{ type: 'adaptive' }, 'medium'], [{ type: 'adaptive' }, 'high'], [{ type: 'adaptive' }, 'low']]);
+  // Summarized: the current models' default display is "omitted", which streams every thinking block with empty text,
+  // so a run would show no Thinking row at any level.
+  const shown = { type: 'adaptive', display: 'summarized' };
+  assert.deepEqual(seen, [[shown, 'medium'], [shown, 'high'], [shown, 'low']]);
   assert.deepEqual([thinkingOf({}, 'medium'), thinkingOf({ effort: 'high' }, 'medium'), thinkingOf({ thinking: 'low', effort: 'high' }, 'medium')], ['medium', 'high', 'low']);
   // A level that would turn reasoning off is refused when the adapter is made, typed.
   for (const level of ['off', 'none', 'disabled', '']) {
