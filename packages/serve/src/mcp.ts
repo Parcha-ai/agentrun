@@ -47,7 +47,7 @@ const optionalText = (args: Json, name: string): string | undefined => (args[nam
 const id = encodeURIComponent;
 const pick = (args: Json, keys: string[]): Json => Object.fromEntries(keys.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
 const without = (args: Json, keys: string[]): Json => Object.fromEntries(Object.entries(args).filter(([k]) => !keys.includes(k)));
-const runLink = (origin: string, run: string) => `${origin}/console/#/runs/${id(run)}`;
+const runLink = (origin: string, run: string) => `${origin}/#/runs/${id(run)}`;
 
 /** A route's JSON answer as a tool's result: the body as structured content and, for a client without it, as text; a
  *  refusal (4xx, 5xx) as an error result holding the route's error envelope. `extra` is added to a body that is no
@@ -96,7 +96,7 @@ export const TOOLS: Tool[] = [
       const caps = json(answer) as { harnesses?: { id: string; available: boolean }[]; tools?: { name: string; available: boolean }[]; models?: Json; features?: { efforts?: string[]; thinking?: string[] } };
       const me = {
         authenticated: true, credential: "token", server: "agentrun-serve", version: context.version,
-        base_url: `${context.origin}/v2`, console_url: `${context.origin}/console/`,
+        base_url: `${context.origin}/v2`, console_url: `${context.origin}/`,
         harnesses: (caps.harnesses ?? []).filter((h) => h.available).map((h) => h.id),
         tools: (caps.tools ?? []).filter((t) => t.available).map((t) => t.name),
         efforts: caps.features?.efforts ?? [], thinking: caps.features?.thinking ?? [], models: caps.models ?? {},
@@ -204,13 +204,13 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "runs_respond", title: "Answer a run", annotations: { ...WRITE, openWorldHint: true },
-    description: "Sends an agentic run a message (POST /v2/runs/{run_id}/messages): the answer to the question it asked (its status is input_required; runs_get's pending holds the question), or a follow-up once it completed. mode in the answer says which. Then poll runs_get again.",
+    description: "Sends an agentic run a message (POST /v2/runs/{run_id}/messages): the answer to the question it asked (its status is input_required; runs_get's pending holds the question), or a follow-up once it completed or was stopped: a fresh turn with its history (a stopped turn is not replayed). mode in the answer says which. A cancelled run takes none: 409 not_continuable, start a new run. Then poll runs_get again.",
     inputSchema: { type: "object", required: ["run_id", "content"], properties: { run_id: RUN_ID, content: { type: "string", description: "The answer, or the message." } } },
     run: routed((args) => ({ method: "POST", path: `/runs/${id(text(args, "run_id"))}/messages`, body: without(args, ["run_id"]) })),
   },
   {
     name: "runs_cancel", title: "Cancel a run", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-    description: "Ends a run for good (POST /v2/runs/{run_id}/cancel): its status turns cancelled once its process has exited. It keeps what it did, and takes no more messages.",
+    description: "Ends a run for good (POST /v2/runs/{run_id}/cancel): its status turns cancelled once its process has exited. It keeps what it did, and takes no more messages: a message to it is 409 not_continuable, so go on in a new run (runs_start).",
     inputSchema: { type: "object", required: ["run_id"], properties: { run_id: RUN_ID } },
     run: routed((args) => ({ method: "POST", path: `/runs/${id(text(args, "run_id"))}/cancel` })),
   },

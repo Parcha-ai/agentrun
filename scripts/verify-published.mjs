@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { releasePackageNames, releasePackages } from './release-preflight.mjs';
 import { buildOverrides, findDrift } from './pi-family-pins.mjs';
+import { isMain } from './is-main.mjs';
 
 const exec = promisify(execFile);
 
@@ -164,7 +165,7 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
   }
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   assert.equal(process.argv[2], '--package', 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi|pi-durable-disk|all [--allow-absent]');
   assert.ok(process.argv.length === 4 || (process.argv.length === 5 && process.argv[4] === '--allow-absent'));
   const selected = process.argv[3];
