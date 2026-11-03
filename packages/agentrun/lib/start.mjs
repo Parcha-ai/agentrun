@@ -95,14 +95,36 @@ export const USAGE = "Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-
  *  `-c` command, a workspace), which would make that `npm exec` refuse its arguments or look for a workspace. */
 export const fetchEnv = (env) => Object.fromEntries(Object.entries(env).filter(([name]) => !/^npm_config_(call|workspaces?|include_workspace_root)$/i.test(name)));
 
-/** The server's command: an installed server's launcher, else `npm exec` of the latest release, by its own bin name: the
- *  package named with --package, the bin after `--`, so the server gets only its own arguments. */
+/** The `npm exec` that fetches the server's latest release, the package named with --package, into npm's own cache as npx
+ *  does, and names its bin's path: it runs nothing else. */
+export const FETCH = ["exec", "--yes", `--package=${SERVE_SPEC}`, "--", "sh", "-c", "command -v agentrun-serve"];
+
+/** The server's command: an installed server's launcher; with none, `fetched`, and the command is the bin fetchServer
+ *  names. Either way the server gets only its own arguments. */
 export function server(args, resolve = createRequire(import.meta.url).resolve) {
   try {
     return { command: join(dirname(resolve("@parcha/agentrun-serve/package.json")), "launcher", "agentrun-serve"), args, fetched: false };
   } catch {
-    return { command: "npm", args: ["exec", "--yes", `--package=${SERVE_SPEC}`, "--", "agentrun-serve", ...args], fetched: true };
+    return { command: undefined, args, fetched: true };
   }
+}
+
+/** With no server beside this command: npm exec installs the server's latest release and names its bin, which this command
+ *  then runs itself, so no npm stands between them and a stop reaches the server (an npm exec ends on a SIGTERM or a
+ *  SIGHUP and leaves what it started). npm's own lines go to stderr; it never gets an outer npm's settings (fetchEnv). */
+export function fetchServer(env) {
+  return new Promise((resolve, reject) => {
+    const npm = spawn("npm", FETCH, { stdio: ["ignore", "pipe", "inherit"], env: fetchEnv(env) });
+    let out = "";
+    npm.stdout.setEncoding("utf8");
+    npm.stdout.on("data", (chunk) => (out += chunk));
+    npm.on("error", reject);
+    npm.on("exit", (code) => {
+      const path = out.trim().split("\n").at(-1);
+      if (code === 0 && path) resolve(path);
+      else reject(new Error(`npm exec could not fetch the server, ${SERVE_SPEC} (exit ${code})`));
+    });
+  });
 }
 
 export async function main(argv, env = process.env) {
@@ -116,7 +138,9 @@ export async function main(argv, env = process.env) {
   // A subcommand (import, reset-password) is the server's own, on the same data directory.
   if (rest[0] && !rest[0].startsWith("-")) {
     const { command, args, fetched } = server([rest[0], "--data", dir, ...rest.slice(1)]);
-    return new Promise((resolve) => spawn(command, args, { stdio: "inherit", env: fetched ? fetchEnv(childEnv) : childEnv }).on("exit", (code) => resolve(code ?? 1)));
+    const bin = fetched ? await fetchServer(childEnv).catch((error) => void console.error(`AgentRun: ${error.message}`)) : command;
+    if (!bin) return 1;
+    return new Promise((resolve) => spawn(bin, args, { stdio: "inherit", env: childEnv }).on("exit", (code) => resolve(code ?? 1)));
   }
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const p = rest.indexOf("--port");
@@ -124,21 +148,18 @@ export async function main(argv, env = process.env) {
   const passed = rest.filter((arg, i) => arg !== "--no-open" && !(p >= 0 && (i === p || i === p + 1)));
   const { command, args, fetched } = server(["--data", dir, "--port", String(port), ...passed]);
   if (fetched) console.error(`Starting AgentRun (the first run fetches its server, ${SERVE_SPEC})...`);
+  const bin = fetched ? await fetchServer(childEnv).catch((error) => void console.error(`AgentRun: ${error.message}`)) : command;
+  if (!bin) return 1;
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line.
-  // The server in a process group of its own, which every stop signals whole: with no server beside this command, its
-  // child is another `npm exec`, which ends on a SIGTERM or a SIGHUP and leaves the server it started. A terminal's
-  // signals reach this command, which passes each on.
-  const child = spawn(command, args, { stdio: ["ignore", "pipe", "inherit"], env: fetched ? fetchEnv(childEnv) : childEnv, detached: true });
+  // The server is this command's own child (fetchServer runs nothing between them): a stop signals it alone, and it drains
+  // its runs, each once. A SIGHUP to this command alone (not the terminal's, which reaches the server too) asks the server
+  // to stop as a SIGTERM does.
+  const child = spawn(bin, args, { stdio: ["ignore", "pipe", "inherit"], env: childEnv });
   const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
-  const stop = (signal) => {
-    try {
-      process.kill(-child.pid, signal);
-    } catch {
-      child.kill(signal);
-    }
-  };
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => stop(signal));
+  const stop = (signal) => child.kill(signal);
+  for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => stop(signal));
+  process.on("SIGHUP", () => stop("SIGTERM"));
   // Started by npx, this runs under npm exec and its `sh -c`. A signal to npm alone (a process manager's SIGTERM or
   // SIGKILL) ends npm and leaves this, and the server, with nobody to stop them: when that npm is gone, it stops the server,
   // as SIGTERM would, and ends. Started any other way, it watches nothing, so a shell's own rules apply (`&`, nohup).
