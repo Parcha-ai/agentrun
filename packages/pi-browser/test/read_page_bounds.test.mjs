@@ -158,3 +158,14 @@ test("a quote no quote closes, opened in 40,000 tags on a 2 MB page: each tag en
   assert.ok(run.page.text.includes("para 0 of the page, kept"), "the page is not eaten by the open quote");
   assert.ok(run.page.text.includes("para 1 of the page, kept"));
 });
+
+test("a link is a's own href attribute: an \"href=\" inside another attribute's quoted value is that value's text, as markdown and as plain text", async () => {
+  const html = "<html><head><title>Links</title></head><body><p><a title=\"see href='https://wrong.example/'\" href=\"/right\">Right</a></p>"
+    + "<p><a data-x='see href=\"https://mention.example/\"'>Not a link</a></p><p><a class=\"x\"href=\"/tight\">Tight</a></p></body></html>";
+  for (const deadlineMs of [undefined, 0]) {
+    const page = await readPage(html, "https://site.example/", deadlineMs === undefined ? {} : { deadlineMs });
+    const how = deadlineMs === undefined ? "markdown" : "text";
+    assert.equal(page.converted, how);
+    assert.deepEqual(page.links, ["https://site.example/right", "https://site.example/tight"], how);
+  }
+});

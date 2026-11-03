@@ -120,3 +120,33 @@ test("browser_read's markdown is of the page's first article, else its main, els
   assert.equal((await readHere(chrome("<h1>Plain</h1>"))).body, "[Menu](/)\n\n# Plain\n\nFooter");
   assert.equal((await readHere("<h1>Bare</h1><p>No body tag.</p>")).body, "# Bare\n\nNo body tag.");
 });
+
+/** browser_read on `html` in this process: what the judge was shown of the page. */
+async function judgedHere(html) {
+  const driver = { url: async () => URL_, page: async () => ({ url: URL_, title: "Page", text: "", html }) };
+  const session = { driver, tag: "ar-run-1-1", sessionId: "sess-1", record: { lastUrl: URL_ }, notice: null, interrupted: null, recorded: false, effects: null, downloads: null };
+  const port = { session: async () => session, dispatching: async () => {}, journal: async () => {}, mark: async () => {}, settle: async () => {}, ended: async () => false, dropped: async () => {} };
+  const judged = [];
+  const call = {
+    callId: "c1", conversationId: 1, signal: undefined, label: "node", redact: (value) => value,
+    evidence: { file: async () => ({ path: "evidence/node/1-browser_read.md", bodyLine: 9 }) },
+    classifyPage: async (seen) => { judged.push(seen); return { wall: "content", injection: null, confidence: 0.9 }; },
+  };
+  const out = await pageTools().browser_read({ what: "text" }, port, call);
+  assert.equal(out.isError, undefined, out.content[0].text);
+  assert.equal(judged.length, 1);
+  return judged[0];
+}
+
+test("browser_read's frames are read from each frame's own src attribute: a \"src=\" inside another attribute's quoted value is that value's text, as a browser reads it", async () => {
+  const html = "<html><head><base target=\"_self href='https://wrong-base.example/'\" href=\"https://cdn.example/app/\"></head><body>"
+    + "<iframe title=\"Example src='https://docs.example/'\" src=\"https://challenge.example/\"></iframe>"
+    + "<iframe alt='say src=\"https://quoted.example/\"'>Only a mention</iframe>"
+    + "<iframe data-note=\"x\"src=\"https://tight.example/\"></iframe>"
+    + "<iframe data-src=\"https://lazy.example/\" SRC = 'frames/one.html'></iframe>"
+    + "<iframe src=\"https://first.example/\" src=\"https://second.example/\"></iframe></body></html>";
+  const seen = await judgedHere(html);
+  assert.deepEqual(seen.frames, ["https://challenge.example", "https://tight.example", "https://cdn.example", "https://first.example"],
+    "each frame's own src, in page order: a quoted mention is no source, an attribute right after a quote counts, the base href is its own, the first of two src holds");
+  assert.deepEqual(seen.frameText, ["Only a mention"]);
+});
