@@ -7,15 +7,15 @@ npx @parcha/agentrun
 ```
 
 It starts [AgentRun Server](https://github.com/Parcha-ai/agentrun/tree/main/packages/serve) on the first free port from
-7340 on this machine's loopback, keeps its data where the server does, `~/.local/share/agentrun/agents` (under
-`$XDG_DATA_HOME` when that is set), prints the address the server says to open and opens it in your browser
-(`--no-open`, a CI run or a machine with no display skips that). The server, `@parcha/agentrun-serve`, is this
-package's one dependency, at its exact version, so `npx` installs the two together and each version of this command
-runs the server it was released with. Node.js 22.19 or newer on 22, or 24.2 or newer, on macOS or Linux.
+7340 on this machine's loopback, keeps its data in `~/.agentrun`, prints the address the server says to open and opens
+it in your browser (`--no-open`, a CI run or a machine with no display skips that). The server,
+`@parcha/agentrun-serve`, is this package's one dependency, at its exact version, so `npx` installs the two together and
+each version of this command runs the server it was released with. Node.js 22.19 or newer on 22, or 24.2 or newer, on
+macOS or Linux.
 
 pi runs every agent out of the box. The Claude Code and Codex harnesses need their own packages beside the server; when
-one is missing, AgentRun says so with the one command to paste: `npx` with this package and that harness's
-package at its version, on the same data.
+one is missing, AgentRun says so with the one command to paste: `npx` with this package and that harness's package at
+its version, with `--data` naming the same store.
 
 With `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY` in your environment and no `AGENT_MODEL`, the server
 runs a current model of that provider. Other commands are the server's: `npx @parcha/agentrun import` brings in your

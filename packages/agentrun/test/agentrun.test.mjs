@@ -1,8 +1,8 @@
-// `npx @parcha/agentrun`: the bin runs AgentRun Server, its dependency at its exact version, with the arguments it was given
-// and the browser opened unless --no-open; the server picks the port, the data directory and the model a key gives. The
-// bin prints the console's address on one line, and a subcommand goes to the server's own CLI. With no model key the
-// server starts and says it has no model, and the console asks for its first password. npm exec of the packed package
-// runs this bin.
+// `npx @parcha/agentrun`: the bin runs AgentRun Server, its dependency at its exact version, with the arguments it was given,
+// its data in ~/.agentrun unless --data names another, and the browser opened unless --no-open; the server picks the port
+// and the model a key gives. The bin prints the console's address on one line, and a subcommand goes to the server's own
+// CLI. With no model key the server starts and says it has no model, and the console asks for its first password. npm
+// exec of the packed package runs this bin.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -17,8 +17,10 @@ const BIN = join(PACKAGE, "bin", "agentrun.mjs");
 const MANIFEST = JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8"));
 const VERSION = MANIFEST.version;
 const SERVE_VERSION = JSON.parse(readFileSync(new URL("../../serve/package.json", import.meta.url), "utf8")).version;
-/** The server's default store, under the fresh home `bare` makes: the one every entry point opens with no --data. */
-const STORE = (home) => join(home, ".local", "share", "agentrun", "agents");
+/** This command's store, under the fresh home `bare` makes: ~/.agentrun, handed to the server as --data. */
+const STORE = (home) => join(home, ".agentrun");
+/** The server's own default store (agentrun-serve with no --data), which this command never uses. */
+const SERVE_STORE = (home) => join(home, ".local", "share", "agentrun", "agents");
 const MODEL_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENTRUN_TOKEN"];
 
 /** This environment with a fresh home, no model key, and no browser. */
@@ -51,14 +53,14 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   assert.equal((await (await fetch(`${base}/v2/capabilities`)).json()).models.default, null, "no model: none was given");
   // Until a single-use sign-in link replaces the plain address, the console's first visit sets the owner's password.
   assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { password_set: false, signed_in: false });
-  assert.ok(existsSync(join(STORE(home), ".token")), "the data directory is the server's own default, which its hints and `agentrun-serve` open too");
-  assert.equal(existsSync(join(home, ".agentrun")), false, "no second store");
+  assert.ok(existsSync(join(STORE(home), ".token")), "the data directory is ~/.agentrun");
+  assert.equal(existsSync(SERVE_STORE(home)), false, "no second store");
   child.kill("SIGTERM");
   assert.equal(await exited, 0, err);
   assert.equal(out.split("\n").filter(Boolean).length, 1, "nothing more on stdout");
 });
 
-test("a subcommand is the server's own, on the same store: import --dry-run", { timeout: 60_000 }, async (t) => {
+test("a subcommand is the server's own, on ~/.agentrun: import --dry-run", { timeout: 60_000 }, async (t) => {
   const { home, env } = bare(t);
   const child = spawn(process.execPath, [BIN, "import", "--dry-run"], { env, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
@@ -67,7 +69,19 @@ test("a subcommand is the server's own, on the same store: import --dry-run", { 
   assert.equal(await new Promise((resolve) => child.on("exit", resolve)), 0, out);
   assert.match(out, /0 projects, 0 sessions; nothing was written \(dry run\)/);
   assert.equal(existsSync(join(STORE(home), ".token")), false, "a dry run writes nothing");
-  assert.equal(existsSync(join(home, ".agentrun")), false, "nor makes a directory of its own");
+  assert.equal(existsSync(SERVE_STORE(home)), false, "nor opens the server's own default store");
+  // reset-password says which store it cleared: ~/.agentrun, or the one --data names.
+  const reset = (...args) => spawnSync(process.execPath, [BIN, "reset-password", ...args], { env, encoding: "utf8", timeout: 30_000 });
+  mkdirSync(STORE(home), { mode: 0o700 });
+  const cleared = reset();
+  assert.equal(cleared.status, 0, cleared.stderr);
+  assert.ok(cleared.stdout.includes(`(${STORE(home)})`), cleared.stdout);
+  const other = join(home, "other");
+  mkdirSync(other, { mode: 0o700 });
+  const named = reset("--data", other);
+  assert.equal(named.status, 0, named.stderr);
+  assert.ok(named.stdout.includes(`(${other})`), named.stdout);
+  assert.equal(existsSync(SERVE_STORE(home)), false, "never the server's own default store");
 });
 
 test("npm exec of the packed package runs this package's own agentrun bin", { timeout: 120_000 }, (t) => {
@@ -113,7 +127,7 @@ process.on("SIGTERM", () => process.exit(0));
 setInterval(() => {}, 1000);
 `);
   chmodSync(join(serve, "launcher", "agentrun-serve"), 0o755);
-  const { env: base } = bare(t);
+  const { home, env: base } = bare(t);
   const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), ...args], { env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
   t.after(async () => { child.kill("SIGTERM"); await exited; });
@@ -123,18 +137,20 @@ setInterval(() => {}, 1000);
   child.stderr.on("data", (chunk) => (err += chunk));
   for (let i = 0; !out.includes("\n") && child.exitCode === null && i < 300; i++) await new Promise((resolve) => setTimeout(resolve, 100));
   child.kill("SIGTERM");
-  return { out, err, code: await exited, ...(existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {}) };
+  return { home, out, err, code: await exited, ...(existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {}) };
 }
 
-test("the command passes its arguments through to the server, with --open unless --no-open; it picks no port, data directory or model of its own", { timeout: 60_000 }, async (t) => {
+test("the command passes its arguments through to the server, with its store (~/.agentrun unless --data names one) and --open unless --no-open; it picks no port or model of its own", { timeout: 60_000 }, async (t) => {
   const plain = await throughStub(t, [], { ANTHROPIC_API_KEY: "sk-test" });
-  assert.deepEqual([plain.args, plain.model, plain.npx], [["--open"], null, `@parcha/agentrun@${VERSION}`], plain.err);
+  assert.deepEqual([plain.args, plain.model, plain.npx], [["--open", "--data", STORE(plain.home)], null, `@parcha/agentrun@${VERSION}`], plain.err);
   assert.equal(plain.out, "AgentRun is running at http://127.0.0.1:7399/\n");
   assert.equal(plain.code, 0, plain.err);
   const given = await throughStub(t, ["--no-open", "--port", "7400", "--data", "/srv/agents"]);
-  assert.deepEqual(given.args, ["--port", "7400", "--data", "/srv/agents"], given.err);
+  assert.deepEqual(given.args, ["--data", "/srv/agents", "--port", "7400"], given.err);
   const sub = await throughStub(t, ["--data", "/srv/agents", "import", "--dry-run"]);
   assert.deepEqual(sub.args, ["import", "--data", "/srv/agents", "--dry-run"], "a subcommand first, on the same data directory");
+  const own = await throughStub(t, ["import", "--dry-run"]);
+  assert.deepEqual(own.args, ["import", "--data", STORE(own.home), "--dry-run"], "a subcommand on ~/.agentrun");
 });
 
 test("with the server missing from beside it, the command says so in one line and exits 1", (t) => {

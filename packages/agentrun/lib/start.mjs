@@ -4,6 +4,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export const SERVE_PACKAGE = "@parcha/agentrun-serve";
@@ -66,16 +67,18 @@ export async function main(argv, env = process.env) {
   const launcher = installedServer();
   if (launcher === undefined) return console.error(`AgentRun's server (${SERVE_PACKAGE}) is not installed beside this command; run it as npx ${OWN_SPEC}.`), 1;
   const childEnv = { AGENTRUN_LOG: "quiet", ...env, AGENTRUN_NPX_PACKAGE: OWN_SPEC };
-  // A subcommand (import, reset-password) is the server's own, on the same data directory, wherever --data is given.
+  // The data directory is ~/.agentrun unless --data names one, handed to the server and its subcommands (import,
+  // reset-password) as --data (the server's own default is another directory). The server's hints name it too, so each
+  // opens this same store.
   const at = argv.indexOf("--data");
-  const data = at >= 0 ? argv.slice(at, at + 2) : [];
+  const data = ["--data", at >= 0 ? argv[at + 1] : join(homedir(), ".agentrun")];
   const rest = at >= 0 ? [...argv.slice(0, at), ...argv.slice(at + 2)] : argv;
   if (rest[0] && !rest[0].startsWith("-")) {
     return new Promise((resolve) => spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv }).on("exit", (code) => resolve(code ?? 1)));
   }
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line. What it prints on stderr (why it did not start) comes through as it is.
-  const child = spawn(launcher, serverArgs(argv), { stdio: ["ignore", "pipe", "inherit"], env: childEnv });
+  const child = spawn(launcher, serverArgs([...data, ...rest]), { stdio: ["ignore", "pipe", "inherit"], env: childEnv });
   const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
   let timer;

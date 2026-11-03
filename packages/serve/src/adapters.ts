@@ -54,8 +54,9 @@ const shellWord = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? wor
 /**
  * The one command that starts this same AgentRun again with `spec` beside it: the command the person ran
  * (`npx @parcha/agentrun`, which NPX_PACKAGE_ENV names, or the server's own at this server's version), every other
- * harness's package already here (so following one harness's hint never takes another away), and `--data` when this
- * server's store is not the default one, so the command opens this same store.
+ * harness's package already here (so following one harness's hint never takes another away), and `--data` with this
+ * server's store, so the command opens this same store: always after `npx @parcha/agentrun`, whose own store
+ * (~/.agentrun) is not the server's default, and after the server's own command when the store is not its default.
  */
 export function npxLine(spec: string, env: NodeJS.ProcessEnv = {}, installed: (name: string) => string | undefined = installedHere): string {
   const door = env[NPX_PACKAGE_ENV];
@@ -68,7 +69,7 @@ export function npxLine(spec: string, env: NodeJS.ProcessEnv = {}, installed: (n
   // That command depends on this server at its exact version, so naming it names this server.
   const packages = [command ?? `@parcha/agentrun-serve@${SERVE_VERSION}`, ...kept, spec];
   const data = env[DATA_ENV];
-  const named = data && resolve(data) !== resolve(defaultData(env)) ? ` --data ${shellWord(data)}` : "";
+  const named = data && (command || resolve(data) !== resolve(defaultData(env))) ? ` --data ${shellWord(resolve(data))}` : "";
   return `npx ${packages.map((name) => `-p ${name}`).join(" ")} ${command ? "agentrun" : "agentrun-serve"}${named}`;
 }
 
