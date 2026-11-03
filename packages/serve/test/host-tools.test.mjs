@@ -19,6 +19,55 @@ test("read, fetch_page and web_fetch are replay-safe; write and edit never repla
   for (const tool of tools) assert.equal(tool.inputSchema.type, "object", `${tool.name} keeps pi's parameters`);
 });
 
+test("in a box the coding source gives read, write, edit and bash (never replayed); the network tools stay this machine's, and a source holding another tool is refused", async () => {
+  const { codingSource } = await import("../dist/coding-tools.js");
+  const source = codingSource({ mode: "sandbox", box: "docker" }, { env: async () => ({}) });
+  const tools = hostTools({}, ["read", "write", "edit", "bash", "fetch_page", "web_fetch"], ctx, new Map(), source.tools);
+  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["bash", "never"], ["fetch_page", "safe"], ["web_fetch", "safe"]]);
+  assert.equal(tools.find((tool) => tool.name === "bash").inputSchema.properties.command.type, "string", "pi's bash schema");
+  const stray = { ...source.tools[0], name: "fetch_page" };
+  assert.throws(() => hostTools({}, ["fetch_page"], ctx, new Map(), [stray]), /holds fetch_page, which is no coding tool/);
+});
+
+test("a host tool's answer keeps the tail of a long output within pi's limits, then its diagnostics, also when the tool failed", async () => {
+  const run = { env: async () => ({}) };
+  const chatty = {
+    name: "bash", description: "d", parameters: { type: "object" }, outputLimits: { retain: "tail" },
+    async execute(args, api) {
+      for (let i = 0; i < 5000; i++) api.output(`line ${i} ${"x".repeat(40)}\n`);
+      api.diagnostic({ severity: "info", code: "full_output", message: "Full output: /tmp/full.txt" });
+      if (args.fail) throw new Error("Command exited with code 3");
+      return {};
+    },
+  };
+  for (const fail of [false, true]) {
+    const results = new Map();
+    const [tool] = hostTools(run, ["bash"], ctx, results, [chatty]);
+    const answer = await tool.call({ fail }, { callId: `c-${fail}`, signal: new AbortController().signal });
+    assert.equal(answer.isError, fail);
+    assert.ok(Buffer.byteLength(answer.text) < 52 * 1024, `bounded: ${Buffer.byteLength(answer.text)} bytes`);
+    assert.match(answer.text, /^\[earlier output omitted\]\n/);
+    assert.match(answer.text, /line 4999 x+\n/, "the tail is kept");
+    assert.doesNotMatch(answer.text, /line 0 /);
+    assert.ok(answer.text.endsWith(fail ? "\n\nCommand exited with code 3\n\nFull output: /tmp/full.txt" : "\n\nFull output: /tmp/full.txt"), answer.text.slice(-120));
+    assert.equal(results.get(`c-${fail}`), answer);
+  }
+});
+
+test("a tool answering as pi 1.2's bash does (its retained output asked for, its exit a result diagnostic) answers with that output and the diagnostic", async () => {
+  const run = { env: async () => ({}) };
+  const bash12 = {
+    name: "bash", description: "d", parameters: { type: "object" }, outputLimits: { retain: "tail" },
+    async execute(_args, api) {
+      api.output("first line\nlast line\n");
+      const retained = api.retainedOutput();
+      return { structuredOutput: { output: retained.text, truncated: retained.truncated, exitCode: 2 }, isError: true, diagnostics: [{ severity: "error", code: "exit_code", message: "Command exited with code 2" }] };
+    },
+  };
+  const [tool] = hostTools(run, ["bash"], ctx, new Map(), [bash12]);
+  assert.deepEqual(await tool.call({}, { callId: "c", signal: new AbortController().signal }), { text: "first line\nlast line\n\n\nCommand exited with code 2", isError: true });
+});
+
 test("a run naming no monid tool never reads its claim: the other tools are built from a run with none", () => {
   assert.deepEqual(hostTools({}, ["read", "fetch_page", "web_fetch"], ctx, new Map()).map((tool) => tool.name), ["read", "fetch_page", "web_fetch"]);
 });
