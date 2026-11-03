@@ -407,7 +407,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
-| `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. The agent's runs, newest first. |
+| `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what it waits on, by `kind`, such as `{kind: "question", question, asked_at}` for a question it asked a person; else null) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
@@ -415,6 +415,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
+| `POST /files`, `PUT /files/{id}` | [Uploads](#uploads): a file reserved, then its bytes sent. |
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
 | `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. The query bounds `analytics` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; a poll never answers `home_busy` (`stale: true` marks a last whole view). An agentic run has none (`404`). |
@@ -425,10 +426,24 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
-Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
-feature, and capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
+Home export and import, quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the feature, and
+capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
 browser sign-ins (`sign_ins: false`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
+
+## Uploads
+
+A run's input files. `POST /v2/files` with `{path, size_bytes, content_type?, sha256?}` reserves one, `pending`, and
+answers where to send its bytes: `upload.url`, relative to `/v2`. `PUT` them there as the raw body, any content type.
+They are streamed to disk, never held whole, so `max_body_bytes` does not apply; their length must be `size_bytes` and
+their SHA-256 the `sha256` given (`422 input_invalid` at that field), and then the file is `ready`, with its `sha256`. A
+file is at most `limits.max_upload_bytes`, 50 MiB (`413`). The same bytes sent again change nothing; other bytes are a
+`422`. A run names up to `limits.max_files_per_run`, 20, ready files in `file_ids`: an unknown, pending or repeated one is
+`422` at `file_ids` before anything starts. Each is copied, never linked, into the run's `work/inputs/` at its `path`,
+folders kept, before the run's process starts; a name already taken gets a suffix (`notes-2.txt`, `docs-2/`), the same
+for the same files in the same order. The run reads them as any file of its workspace, and `GET /v2/runs/{id}/files`
+lists them. Each upload is kept in `DIR/files/<file_id>/`, 0600. Nothing deletes one yet: `upload.expires_at` is a day
+after the reservation, and a later `PUT` is still taken.
 
 ## Agent home
 
@@ -621,7 +636,8 @@ token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the printed link (
 without the token. The cookie's value is derived from the token, never the token itself, and it lasts until the browser
 closes. Without it, the console says to open the link. Either cookie takes the place of `Authorization: Bearer` on
 `/api/*` and `/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
-and its body is `application/json`. A request that sends an `Authorization` header is checked on that header alone.
+and its body is `application/json`, or, on a `PUT` to a route that takes bytes (`PUT /v2/files/{id}`), of any content
+type. A request that sends an `Authorization` header is checked on that header alone.
 
 The server's build copies the console's build (`npm ci && npm run build` in `apps/console`, run first) into
 `dist/console`; the image always carries it. A server built without it answers `/` with a 404 that says so. `/console/`
