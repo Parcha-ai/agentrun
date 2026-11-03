@@ -341,7 +341,8 @@ function createProjector(options: TimelineOptions) {
   const answers = new Map<number, number | undefined>();
   // Per conversation, the text answer that ended its request, until its turn shows whether it was the last thing said: a
   // later answer, or a continuation, with text or a call makes it a text_block (a harness's commentary before a tool of
-  // its own, which its host never sees as a call); a person's message settles it.
+  // its own, which its host never sees as a call); a person's message settles it. A later answer of the same turn, an
+  // empty one too, takes its place, so the earlier one is a text_block then.
   const provisional = new Map<number, TimelineEvent>();
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
@@ -444,7 +445,14 @@ function createProjector(options: TimelineOptions) {
         if (text || (final && first("text") >= 0)) {
           const row = make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text });
           add(row);
-          if (final) provisional.set(conv, row);
+          if (final) {
+            const earlier = provisional.get(conv);
+            if (earlier) {
+              earlier.kind = "text_block";
+              touch(earlier);
+            }
+            provisional.set(conv, row);
+          }
         }
         blocks.forEach((block, index) => {
           const [id, name] = [str(block.id), str(block.name)];
