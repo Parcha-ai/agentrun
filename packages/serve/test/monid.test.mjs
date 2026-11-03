@@ -277,8 +277,9 @@ test("a pi run's model finds, reads and runs a monid endpoint through monid_disc
   // The timeline names each call by the name pi registered, the wire name: mapping it back to the catalog name is later work.
   const rows = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body.rows;
   assert.deepEqual(rows.filter((row) => row.kind === "tool_use").map((row) => [row.tool_name, row.tool_status]), [["monid_discover", "success"], ["monid_inspect", "success"], ["monid_run", "success"]]);
-  // The run's charge is booked once, on a line of its own, and is the run's cost: the faux model is $0.
-  assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.tool_name === "monid.run").map((row) => [row.summary, typeof row.tool_use_id]), [["Tool cost: monid charged $0.0030 for monid.run", "string"]]);
+  // The run's charge is booked once, shown on its call's own row, and is the run's cost: the faux model is $0.
+  assert.deepEqual(rows.filter((row) => row.kind === "phase" && /^Tool cost/.test(row.summary ?? "")), [], "no line of its own");
+  assert.match(rows.find((row) => row.tool_name === "monid_run").summary, /^Ran faux \/person\/enrich: ok · charged \$0\.0030$/);
   assert.equal((await api("GET", `/runs/${started.body.run_id}`)).body.cost.usd, 0.003);
   // Marked before it was sent at the price its inspect quoted, then settled by its charge.
   const db = new DatabaseSync(join(data, "runs", started.body.run_id, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });

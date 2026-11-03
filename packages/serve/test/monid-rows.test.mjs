@@ -2,7 +2,7 @@
 // a run of one did and was charged, the charge on the run's own row.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
+import { timelineOf, timelineReducer, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import "../dist/monid.js";
 
 const at = (s) => ({ timestamp: Date.UTC(2026, 10, 3, 18, 0, s) });
@@ -27,10 +27,12 @@ test("an endpoint looked up says what a call of it costs", () => {
   assert.equal(row.summary, "Checked faux /person/enrich: $0.0030 a call");
 });
 
-test("a run of an endpoint carries its charge on its own row", () => {
+test("a run of an endpoint carries its charge, as booked, on its own row", () => {
   const record = { runId: "r1", provider: "faux", endpoint: "/person/enrich", status: "COMPLETED", output: { full_name: "Ada" }, price: PRICE, cost: { value: 0.0049, currency: "USD" } };
-  const row = rowOf("u1", "monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }, record, { details: { cost: record.cost } });
-  assert.deepEqual([row.summary, row.tool_status], ["Ran faux /person/enrich: ok · charged $0.0049", "success"]);
+  const args = { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } };
+  const booked = { kind: TOOL_COST, id: next++, conversationId: 1, data: { tool: "monid.run", charged_by: "monid", usd: 0.0049, call: "u1" } };
+  const rows = timelineOf([user("Find Ada."), asks("u1", "monid_run", args), answers("u1", "monid_run", record, { details: { cost: record.cost } }), booked], { settled: true });
+  assert.deepEqual(rows.filter((row) => row.kind === "tool_use" || row.kind === "phase").map((row) => [row.summary, row.tool_status]), [["Ran faux /person/enrich: ok · charged $0.0049", "success"]]);
   const free = rowOf("u2", "monid_run", { provider: "faux", endpoint: "/person/enrich", input: {} }, { ...record, cost: undefined });
-  assert.equal(free.summary, "Ran faux /person/enrich: ok", "no charge said when none was made");
+  assert.equal(free.summary, "Ran faux /person/enrich: ok", "no charge said when none was booked");
 });

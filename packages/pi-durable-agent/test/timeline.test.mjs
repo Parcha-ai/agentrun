@@ -362,22 +362,26 @@ test("cost: a tool's own request, marked with its label as a compaction is, is a
   assert.deepEqual(timelineOf([started, a, searching, searching, priced(0.012)], { settled: true }).at(-1).usage, { usd: null, requests: 3 }, "settled with one never priced");
 });
 
-test("cost: a paid tool's charge is summed with the requests and shown on a line of its own; an unknown one makes the cost unknown; it is no request", () => {
-  const a = assistant([{ type: "text", text: "a" }], 0);
+test("cost: a paid tool's charge is summed with the requests and shown on its call's own row, whichever came first; an unknown one makes the cost unknown; it is no request", () => {
+  const asked = () => assistant([call("c1", "monid_run", { provider: "faux", endpoint: "/e" })], 0);
+  const ran = () => result("c1", "monid_run", "{}", 1);
+  const answered = () => assistant([{ type: "text", text: "a" }], 2);
   const charged = (usd) => custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", usd, call: "c1" });
-  const rows = timelineOf([a, charged(0.003)]);
-  assert.deepEqual(rows.map((r) => [r.kind, r.summary, r.tool_name, r.tool_use_id]), [
-    ["final_answer", "a", null, null],
-    ["phase", "Tool cost: monid charged $0.0030 for monid.run", "monid.run", "c1"],
-    ["usage", "Cost so far: $0.0130 over 1 model request and 1 paid tool call", null, null],
-  ]);
-  assert.deepEqual(rows.at(-1).usage, { usd: 0.013, requests: 1 });
-  assert.deepEqual(rows[1].usage, { usd: 0.003, requests: 0 }, "its line carries the charge alone, no request");
-  const unknown = timelineOf([a, charged(null)]);
-  assert.deepEqual(unknown.find((r) => r.kind === "phase").usage, { usd: null, requests: 0 });
-  assert.equal(unknown.find((r) => r.kind === "phase").summary, "Tool cost: monid charged an unknown amount for monid.run");
-  assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 1 }, "never $0");
-  assert.deepEqual(timelineOf([charged(0.003)]).at(-1).usage, { usd: 0.003, requests: 0 }, "a charge alone makes the row");
+  for (const entries of [[asked(), charged(0.003), ran(), answered()], [charged(0.003), asked(), ran(), answered()], [asked(), ran(), charged(0.003), answered()]]) {
+    const rows = timelineOf(entries);
+    assert.deepEqual(rows.map((r) => [r.kind, r.summary, r.tool_use_id]), [
+      ["tool_use", "Used monid_run: ok · charged $0.0030", "c1"],
+      ["final_answer", "a", null],
+      ["usage", "Cost so far: $0.0230 over 2 model requests and 1 paid tool call", null],
+    ], "no row of its own, before or after its call");
+    assert.deepEqual(rows[0].usage, { usd: 0.003, requests: 0 }, "the call's row carries the charge alone, no request");
+  }
+  const unknown = timelineOf([asked(), ran(), charged(null), answered()]);
+  assert.deepEqual([unknown[0].summary, unknown[0].usage], ["Used monid_run: ok · charged an unknown amount", { usd: null, requests: 0 }]);
+  assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 2 }, "never $0");
+  const alone = timelineOf([charged(0.003)]);
+  assert.deepEqual(alone.map((r) => [r.kind, r.summary]), [["phase", "Tool cost: monid charged $0.0030 for monid.run"], ["usage", "Cost so far: $0.0030 over 0 model requests and 1 paid tool call"]], "a charge whose call never shows keeps a line of its own");
+  assert.deepEqual(alone.at(-1).usage, { usd: 0.003, requests: 0 });
 });
 
 test("cost: a paid tool call marked before it is sent is in flight while the run is; settled unsettled, a crash cut it and the cost is unknown, never its held figure; its charge settles it", () => {
