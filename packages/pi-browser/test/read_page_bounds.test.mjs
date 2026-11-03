@@ -54,6 +54,9 @@ function inChild(which, chars, options = {}) {
   });
 }
 
+/** A file's row in the markdown table: a table pads each column to its widest cell. */
+const row = (name) => new RegExp(`\\| \\[${name.replaceAll(".", "\\.")}\\]\\(/dl/${name.replaceAll(".", "\\.")}\\) +\\| Archive +\\|`);
+
 /** The run answered within GUARD_MS and within `wallMs`, its event loop never held 100 ms. */
 function quick(run, wallMs) {
   assert.ok(!run.hung, `no answer within ${GUARD_MS / 1000} s`);
@@ -68,7 +71,7 @@ test("a 3 MB page of tables is read within 10 s, its event loop never held 100 m
   assert.deepEqual([page.converted, page.truncated, page.html_chars, page.title], ["markdown", true, htmlChars, "All releases & downloads"]);
   assert.match(page.text, /^# All releases\n/);
   assert.match(page.text, /\| File name +\| Kind +\| OS +\| Arch +\| Size +\| SHA256 Checksum +\|/);
-  assert.ok(page.text.includes(`| [${first}](/dl/${first}) | Archive`), "the first row, as a markdown table row");
+  assert.match(page.text, row(first), "the first row, as a markdown table row");
   assert.ok(!page.text.includes(last), "the rows past the cut are not read");
   assert.ok(page.text.length > 4 * 60_000, `${page.text.length} characters: room to page past the first 60,000`);
   assert.ok(page.links.includes(`${URL_}${first}`), "the first download is a link");
@@ -98,7 +101,7 @@ test("a read whose signal ends mid-conversion stops at once, with the signal's r
 test("the local coding agent's web backup reads a 3 MB page within 10 s without holding the event loop", async () => {
   const run = await inChild("httpBackup", 3_000_000);
   quick(run, 10_000);
-  assert.ok(run.page.text.includes(`| [${run.first}](/dl/${run.first}) | Archive`));
+  assert.match(run.page.text, row(run.first));
   assert.ok(!run.page.text.includes(run.last));
 });
 
