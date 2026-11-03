@@ -25,7 +25,14 @@ test("the files a run wrote are listed and served raw; dot segments, .. and syml
   assert.equal(await report.text(), "# Report\n\nThe answer is 42.\n");
   assert.equal(report.headers.get("x-content-type-options"), "nosniff");
   const page = await fetch(`${baseUrl}/runs/${run_id}/files/page.html`, { headers: { authorization: `Bearer ${token}` } });
-  assert.match(page.headers.get("content-security-policy"), /default-src 'none'.*sandbox/);
+  // The V1 rule: agent-written HTML is served inline, only under a sandbox CSP (an opaque origin, no scripts, no
+  // network).
+  const csp = page.headers.get("content-security-policy");
+  assert.equal(csp, "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'");
+  assert.doesNotMatch(csp, /allow-scripts/);
+  assert.doesNotMatch(csp, /allow-same-origin/);
+  assert.equal(page.headers.get("content-disposition"), null, "inline, not a download");
+  assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
   const spaced = await fetch(`${baseUrl}/runs/${run_id}/files/sub/a%20b.txt?download=1`, { headers: { authorization: `Bearer ${token}` } });
   assert.deepEqual([await spaced.text(), spaced.headers.get("content-disposition")], ["spaced", 'attachment; filename="a_b.txt"']);
   const { request } = await import("node:http");

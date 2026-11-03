@@ -9,11 +9,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { env } from 'node:process';
 import { after, test } from 'node:test';
-import { createHarnessRunner } from '@parcha/agentrun-adapters';
-import { foldSession, openDrive } from '@parcha/agentrun-adapters/kernel';
-import { journalRecords, NativeJournal } from '@parcha/agentrun-adapters/process';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { codexAdapter } from '@parcha/agentrun-codex';
+import { createHarnessRunner } from '@parcha/agentrun-kernel';
+import { foldSession, openDrive } from '@parcha/agentrun-kernel/kernel';
+import { journalRecords, NativeJournal } from '@parcha/agentrun-kernel/process';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { codexAdapter } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 

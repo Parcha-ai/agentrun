@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
+import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, follow, scratch, serve } from "./support.mjs";
 
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
@@ -55,7 +55,7 @@ test("one server offers pi, claude-agent and codex, each on its own settings: a 
     ANTHROPIC_BASE_URL: anthropic.url,
   });
   const { api } = await serve(t, { faux: undefined });
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses, [{ id: "pi", available: true, steer: true }, { id: "claude-agent", available: true, steer: false }, { id: "codex", available: true, steer: false }]);
+  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses, [{ id: "pi", available: true, steer: true, default_model: "agent-model/gpt-test" }, { id: "claude-agent", available: true, steer: false, default_model: null }, { id: "codex", available: true, steer: false, default_model: "agent-model/gpt-test" }]);
   assert.equal((await api("POST", "/agents", agent("coder", { harness: "codex" }))).status, 201);
   const claude = await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${CLAUDE_MODEL}` }));
   assert.equal(claude.status, 201);

@@ -13,9 +13,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { BOX_KEYS } from "../dist/boxes.js";
-import { processAlive } from "@parcha/agentrun-adapters/host";
-import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
-import { agent, client, FAUX, flowAgent, follow, scratch } from "./support.mjs";
+import { processAlive } from "@parcha/agentrun-kernel/host";
+import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
+import { agent, client, FAUX, flowAgent, follow, printed, scratch } from "./support.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
@@ -135,13 +135,7 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
     }
     await rm(dir, { recursive: true, force: true });
   });
-  let out = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  child.stderr.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_BASE_URL=(\S+)/.test(out); i++) {
-    assert.ok(i < 300, `the server started: ${out}`);
-    await sleep(50);
-  }
+  const out = await printed(child, /^AGENTRUN_BASE_URL=\S+$/m);
   assert.deepEqual(readdirSync(tmp), [], "the launcher's FIFO and its directory are gone");
   return { root: child.pid, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], env.AGENTRUN_TOKEN) };
 }

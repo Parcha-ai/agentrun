@@ -67,16 +67,33 @@ test('a poll wait past the timer limit waits: one check, no second one, until th
   assert.equal(timers(), before, 'the cancelled wait left its timer armed');
 });
 
-test('a poll wait with a fraction of a millisecond waits it out', async () => {
+test('a poll wait with a fraction of a millisecond waits it out', async (t) => {
+  // The driver waits on Date and setTimeout, both faked here, so the 200.5 ms wait is pinned exactly, never measured.
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const faked = globalThis.setTimeout;
+  let armed, fired = false;
+  const waitArmed = new Promise((resolve) => { armed = resolve; });
+  t.mock.method(globalThis, 'setTimeout', (fn, ms, ...rest) => {
+    if (ms >= 1000) return faked(fn, ms, ...rest); // the 30 s deadlines
+    armed(ms);
+    return faked(() => { fired = true; fn(); }, ms, ...rest);
+  });
   const workflow = doc({ node: 'call', label: 'status', via: 'tool', tool: 'jobs.status', args: {}, out: 'Status', as: 'job', deadline_s: 30,
     poll: { until: { predicate: 'in', path: 'status', values: ['COMPLETED'] }, interval_s: 0.2005, deadline_s: 30 } });
   const driver = await openRecovery(memoryStore(), workflow, { key: 'long' });
-  const at = [];
-  const runEffect = async () => { at.push(performance.now()); return { status: at.length < 2 ? 'PENDING' : 'COMPLETED' }; };
-  const result = await runWorkflow(workflow, {}, withRecovery(driver, { runEffect }));
+  let checks = 0;
+  const runEffect = async () => { checks += 1; return { status: checks < 2 ? 'PENDING' : 'COMPLETED' }; };
+  const running = runWorkflow(workflow, {}, withRecovery(driver, { runEffect }));
+  await waitArmed;
+  assert.equal(checks, 1);
+  t.mock.timers.tick(200);
+  assert.equal(fired, false, 'the wait ended at 200 ms of 200.5');
+  t.mock.timers.tick(1);
+  assert.equal(fired, true, 'the wait did not end by 201 ms');
+  const result = await running;
   await driver.close();
   assert.equal(result.status, 'complete');
-  assert.ok(at[1] - at[0] >= 199, `the second check came ${at[1] - at[0]} ms after the first`);
+  assert.equal(checks, 2);
 });
 
 test('control: a whole-millisecond deadline still fires on time from its durable clock, with the TimeoutError a host reads as a deadline', async () => {

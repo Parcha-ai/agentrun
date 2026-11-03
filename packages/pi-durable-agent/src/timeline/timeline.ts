@@ -1,4 +1,4 @@
-import { BROWSER_OPENERS, endsTurn, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
+import { BROWSER_OPENERS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 
 export type TimelineKind =
@@ -55,7 +55,8 @@ export const REQUEST_STARTED = "agentrun.request_started";
 /** An end with `unsent: true` withdraws its start: the request was refused after its mark, and never left. */
 export const REQUEST_ENDED = "agentrun.request_ended";
 /** What a request with no `pi.assistant` entry of its own cost (pi's compaction summary, marked with `request:
- *  "compaction"`): `usd`, or null when unknown. It closes that request, as an entry closes a generation's. */
+ *  "compaction"`): `usd`, or null when unknown. It closes that request, as an entry closes a generation's. `failed`: the
+ *  request failed, and its counts are taken as they are, as a failed answer's are. */
 export const REQUEST_COST = "agentrun.request_cost";
 /** A request the host refused before it left (the run was cancelled): pi answers it with an error entry, which is not a
  *  request and not a failure to show, so the timeline skips the error entry that answers each refusal. */
@@ -66,9 +67,19 @@ export const REQUEST_COST_PENDING = "agentrun.request_cost_pending";
 /** The cost (`usd`, or null when unknown) of an answer written earlier with its cost pending: it closes one pending cost
  *  and adds to the run's cost. It is not a request of its own: the answer already counted that. */
 export const REQUEST_COST_LATE = "agentrun.request_cost_late";
+/** Written right before a `pi.assistant` that continues the answer before it: a call that answer asked for, written once
+ *  the answer's own entry was already in (a harness reports each call as it runs it, and its host writes an answer at its
+ *  first call's end). It shows as that answer's, and is no request: no count, no cost, no tokens. */
+export const REQUEST_CONTINUED = "agentrun.request_continued";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
 const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
+/** A tool result an abort wrote (pi-durable's `aborted` diagnostic): the call was cut by a stop or a cancel, which ended
+ *  its turn, not failed on its own. */
+const abortedCall = (entry: EntryLike) => {
+  const diagnostics = obj(entry.data)?.diagnostics;
+  return Array.isArray(diagnostics) && diagnostics.some((diagnostic) => obj(diagnostic)?.code === "aborted");
+};
 
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
@@ -134,7 +145,8 @@ function tokensOf(usage: unknown, failed = false): Tokens | undefined {
 
 /** A run's model requests as its entries mark them: how many, what they cost and the tokens they used. The usage row
  *  and runMetricsOf count through it. `push` says what an entry was: an answer (a `pi.assistant` that is a request), a
- *  mark (a request's mark or cost, or pi's answer to a request that never left: nothing to show), or neither. */
+ *  continuation of the answer before it (shown with it, not a request), a mark (a request's mark or cost, or pi's answer
+ *  to a request that never left: nothing to show), or neither. */
 function createMeter() {
   let requests = 0;
   // The run's cost: the known sum, the costs no one knows, and the costs written as pending, still to come (each with
@@ -146,6 +158,8 @@ function createMeter() {
   let marked = 0;
   let inFlight = false;
   let refused = 0;
+  // Continuations of an answer still to come (REQUEST_CONTINUED): each next pi.assistant shows and is not counted.
+  let continued = 0;
   // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
   // answer). Earlier answers are a run's from before requests were marked.
   let answered = 0;
@@ -163,7 +177,7 @@ function createMeter() {
   };
   const models = new Map<string, number>();
 
-  function push(entry: EntryLike): "answer" | "mark" | undefined {
+  function push(entry: EntryLike): "answer" | "continued" | "mark" | undefined {
     const message = entry.model?.[0];
     const data = obj(entry.data);
     if (entry.kind === REQUEST_REFUSED) {
@@ -171,6 +185,12 @@ function createMeter() {
     } else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") {
       // pi's answer to a request that never left: nothing to count or show.
       refused -= 1;
+    } else if (entry.kind === REQUEST_CONTINUED) {
+      continued += 1;
+    } else if (entry.kind === "pi.assistant" && continued > 0 && message) {
+      // The answer before it, continued: shown, never counted again.
+      continued -= 1;
+      return "continued";
     } else if (entry.kind === REQUEST_STARTED && isCompaction(entry)) {
       compacting += 1;
       compactionOpen = true;
@@ -181,7 +201,7 @@ function createMeter() {
       compactions += 1;
       compactionOpen = false;
       addCost(data?.usd);
-      addTokens(tokensOf(data?.usage));
+      addTokens(tokensOf(data?.usage, data?.failed === true));
     } else if (entry.kind === REQUEST_COST_PENDING) {
       // The answer just before it was counted as a cost unknown: it is one still to come.
       if (unknown > 0) (unknown -= 1), pending.push(lastUnmetered);
@@ -229,9 +249,24 @@ function createMeter() {
     return { usd: unknown > 0 || pending.length > 0 || cut ? null : Math.round(known * 1e6) / 1e6, requests: count };
   }
 
+  // A workflow's decision requests (Jev, Parallel), from its receipts: requests of their own, beside its entries'.
+  let decided = 0;
+  function decide(row: DecisionLike): void {
+    decided += 1;
+    const name = str(row.model);
+    if (name) {
+      const key = metricName(str(row.provider) ? `${str(row.provider)}/${name}` : name);
+      models.set(key, (models.get(key) ?? 0) + 1);
+    }
+    // A cancelled request's tokens are unknown, as an aborted answer's are; so are those of one whose spend its driver's
+    // state keeps, which no record here holds.
+    const u = obj(row.usage);
+    addTokens(row.status === "cancelled" || row.driver_spend === true || !u ? undefined : tokensOf({ input: u.input_tokens, output: u.output_tokens }, row.status === "failed"));
+  }
+
   /** The counts of a run that ended: a request it cut has unknown tokens. */
   function settled(): Omit<RunMetrics, "tools"> {
-    const all = usage(true)?.requests ?? 0;
+    const all = (usage(true)?.requests ?? 0) + decided;
     const cut = Math.max(0, marked - answered) + Math.max(0, compacting - compactions);
     let model: string | undefined;
     for (const [key, n] of models) if (model === undefined || n > models.get(model)!) model = key;
@@ -239,7 +274,7 @@ function createMeter() {
     return { ...tokens, requests: all, unmetered: Math.min(all, unmetered + cut), models: kept, ...(model !== undefined ? { model } : {}) };
   }
 
-  return { push, usage, settled };
+  return { push, decide, usage, settled };
 }
 
 type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean };
@@ -265,6 +300,9 @@ function createProjector(options: TimelineOptions) {
   // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
   // the person's next message, not a steer.
   const ended = new Map<number, boolean>();
+  // Conversations whose turn an abort cut since their latest tool round (a stop, a cancel): an aborted tool, or a model
+  // request that had left and was aborted. That turn is over too, so the next message comes in a new turn, never a steer.
+  const cutTurns = new Set<number>();
   const systems = new Set<number>();
   const browsers = new Set<number>();
   const children = new Map<number, string>();
@@ -274,6 +312,8 @@ function createProjector(options: TimelineOptions) {
   let root: number | undefined;
   let current = options.conversationId ?? 0;
   const meter = createMeter();
+  // Each conversation's latest answer, by entry id: a continuation's calls show under it.
+  const answers = new Map<number, number | undefined>();
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -299,12 +339,13 @@ function createProjector(options: TimelineOptions) {
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
   /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
-  /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. */
+  /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. Its
+   *  outcome is read once, for the summary and the status both. */
   const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, parent?: string) => {
     const outcome = outcomeOf(tool.name, view);
     return make("tool_result", conv, rowId, {
       summary: view.isError ? `${named} failed: ${failure(view.text)}` : outcome ? `${named}: ${scrubUrls(firstLine(outcome.text))}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
-      tool_status: view.isError || outcome?.failed ? "failed" : "success", tool_result_preview: view.text ? cut(scrubUrls(view.text), caps.preview) : null,
+      tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: view.text ? cut(scrubUrls(view.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
     });
   };
@@ -341,7 +382,9 @@ function createProjector(options: TimelineOptions) {
     const metered = meter.push(entry);
     if (metered === "mark") {
       // A request's mark or cost, or pi's answer to a request that never left: counted, nothing to show.
-    } else if (metered === "answer" && message) {
+    } else if ((metered === "answer" || metered === "continued") && message) {
+      const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
+      if (metered === "answer") answers.set(conv, entry.id);
       if (message.stopReason === "error") {
         const why = str(message.errorMessage) ?? "unknown error";
         add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
@@ -361,8 +404,8 @@ function createProjector(options: TimelineOptions) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "Opened a live browser session" }));
           }
-          const use = useRow(conv, `${base}:${index}`, id, name, args, { round: entry.id });
-          calls.set(`${conv}:${id}`, { conv, name, args, round: entry.id, use, done: false });
+          const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
+          calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: false });
           add(use);
         });
       }
@@ -373,6 +416,10 @@ function createProjector(options: TimelineOptions) {
       const view = viewOf(message);
       // A call that failed ended nothing: the agent goes on after it, so a message then is still a steer.
       ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name) && !view.isError);
+      // One an abort cut did end the turn. A round's results come in as its calls end, so one that ended before the abort
+      // comes first and never clears it.
+      if (abortedCall(entry)) cutTurns.add(conv);
+      else cutTurns.delete(conv);
       const args = call?.args ?? {};
       const named = label(name, args, view);
       if (call) {
@@ -415,11 +462,14 @@ function createProjector(options: TimelineOptions) {
       else if (state === "declined") add(make("user_message", conv, base, { summary: "You declined to sign in", session }));
     } else if (message?.role === "user" && (entry.kind === "pi.user" || !entry.kind.startsWith("pi."))) {
       const author = str(obj(entry.data)?.author);
-      const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv);
+      const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv) && !cutTurns.has(conv);
       const text = textOf(message);
       add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text }));
     }
     if (["pi.user", "pi.assistant", "pi.tool-result"].includes(entry.kind)) previous.set(conv, entry.kind);
+    // A model request an abort cut after the round: its end mark is written only for an aborted request (not a withdrawn
+    // one, nor a compaction's). The turn it would have gone on with is over.
+    else if (entry.kind === REQUEST_ENDED && !unsent(entry) && !isCompaction(entry)) cutTurns.add(conv);
     return out;
   }
 
@@ -447,14 +497,17 @@ function createProjector(options: TimelineOptions) {
     return [call.use, row];
   }
 
-  /** A call with no result that will never get one. */
+  /** A call with no result that will never get one. Its row takes the call's place, right after it, whenever the
+   *  interruption is found: at this turn's end, or at a later process's (a call a stop or a crash cut off, which the next
+   *  process resumes past) or a settled read. What came after the call, such as that process's answer, stays after it. */
   function interrupt(call: OpenCall, id: string): TimelineEvent {
     call.done = true;
     const row = make("tool_result", call.conv, `${call.conv}:interrupted:${id}`, {
       summary: `${label(call.name, call.args)} interrupted`, tool_name: call.name, tool_use_id: id, tool_status: "failed", round: call.round,
-      parent_tool_use_id: call.use.parent_tool_use_id,
+      parent_tool_use_id: call.use.parent_tool_use_id, seq: call.use.seq,
     });
-    rows.push(row);
+    const at = rows.indexOf(call.use);
+    rows.splice(at < 0 ? rows.length : at + 1, 0, row);
     return row;
   }
 
@@ -494,14 +547,25 @@ export function timelineOf(entries: readonly EntryLike[], options: TimelineOptio
   return usage ? [...projector.rows(), usage] : [...projector.rows()];
 }
 
+/** A workflow's decision receipt as its run's store keeps it (`@parcha/agentrun-pi/durable`'s DecisionRow): the fields
+ *  runMetricsOf reads. */
+export type DecisionLike = { usage?: unknown; model?: unknown; provider?: unknown; status?: unknown; driver_spend?: unknown };
+
 /** What a run that ended used, from the entries of every conversation of its store, in log order (`SELECT record FROM
  *  entries ORDER BY id`): its model requests and their tokens, counted as its usage row counts them (a cut request's
- *  tokens are unknown), and its tool calls. Pure, like timelineOf. */
+ *  tokens are unknown), and its tool calls. One parameter, so `.map(runMetricsOf)` is safe. Pure, like timelineOf. */
 export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
+  return runMetricsWithDecisions(records, []);
+}
+
+/** runMetricsOf, with a workflow run's decision receipts beside its entries: each a request, its `usage`
+ *  (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, unmetered. */
+export function runMetricsWithDecisions(records: readonly EntryLike[], decisions: readonly DecisionLike[]): RunMetrics {
   const meter = createMeter();
   const seen = new Set<string>();
-  // Each call by `conversation:id`, its tool's name as kept, and whether a result closed it, as the timeline pairs them.
-  const calls = new Map<string, { name: string; done: boolean }>();
+  // Each call by `conversation:id`, its tool's name as kept and as called, and whether a result closed it, as the timeline
+  // pairs them.
+  const calls = new Map<string, { name: string; called: string; done: boolean }>();
   const tools = new Map<string, ToolMetrics>();
   // Each tool's place by its first call, or its first result with no call: a tie for the last kept place goes by it.
   const order = new Map<string, number>();
@@ -520,22 +584,26 @@ export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
       seen.add(`${conv}:${entry.id}`);
     }
     const message = entry.model?.[0];
-    if (meter.push(entry) === "answer" && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
+    const metered = meter.push(entry);
+    if ((metered === "answer" || metered === "continued") && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
       for (const block of blocksOf(message)) {
         const [id, name] = [str(block.id), str(block.name)];
         if (block.type !== "toolCall" || !id || !name) continue;
         const key = metricName(name);
-        calls.set(`${conv}:${id}`, { name: key, done: false });
+        calls.set(`${conv}:${id}`, { name: key, called: name, done: false });
         see(key);
       }
     } else if (entry.kind === "pi.tool-result" && message) {
       const call = calls.get(`${conv}:${str(message.toolCallId) ?? ""}`);
       if (call) call.done = true;
       const named = str(message.toolName);
-      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), message.isError === true);
+      // Failed as the call's row reads it (callFailed): an error, or a result its tool reads as failed (a refused fetch).
+      const called = call?.called ?? named ?? "";
+      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), callFailed(called, { text: textOf(message), isError: message.isError === true }));
     }
   }
   for (const call of calls.values()) if (!call.done) tally(call.name, true);
+  for (const row of decisions) meter.decide(row);
   const ordered = new Map([...tools].sort(([a], [b]) => order.get(a)! - order.get(b)!));
   return { ...meter.settled(), tools: keepBusiest(ordered, (t) => t.calls, (a, b) => ({ calls: a.calls + b.calls, errors: a.errors + b.errors }), METRIC_NAMES.otherTools) };
 }

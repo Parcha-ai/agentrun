@@ -1,4 +1,4 @@
-// An agent whose definition says `learning: true` keeps what it learned in `<data>/homes/<agent id>/learning/`, in Claude
+// An agent whose definition says `learning: true` keeps what it learned in its home's `learning/` (homeOf), in Claude
 // Code's auto-memory format (MEMORY.md, the index, and a file per note), and every run of it starts from main there: the
 // index in its instructions under `# Learned`, and the index and active notes in `work/.learning/`, on pi, claude-agent
 // and codex alike. Learning is off unless the agent says so, and the server's switch turns it off for all. A learning
@@ -9,7 +9,8 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
+import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
+import { homeKey, homeOf } from "../dist/files.js";
 import { learningTestHooks } from "../dist/learning.js";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -30,7 +31,7 @@ function git(cwd, args) {
   return out.stdout.trim();
 }
 
-const repoOf = (data, id) => join(data, "homes", id, "learning");
+const repoOf = (data, id) => join(homeOf(data, id), "learning");
 const pinOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "learning.json"), "utf8"));
 const learnedDir = (data, runId) => join(data, "runs", runId, "work", ".learning");
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "";
@@ -93,7 +94,7 @@ test("a new agent with learning on: its first run makes its folder, main checked
   // Any reader sees main's files: the working tree and the index are main's.
   assert.equal(readFileSync(join(repo, "MEMORY.md"), "utf8"), "");
   assert.equal(git(repo, ["status", "--porcelain"]), "");
-  assert.deepEqual(readdirSync(join(data, "homes", "fresh")), ["learning"]);
+  assert.deepEqual(readdirSync(homeOf(data, "fresh")), ["learning"]);
   assert.deepEqual(pinOf(data, runId), { seed: git(repo, ["rev-parse", "main"]) });
   assert.deepEqual(readdirSync(learnedDir(data, runId)), ["MEMORY.md"]);
   assert.ok(prompt.includes("Answer the question.") && !prompt.includes("# Learned"), `an empty index adds no section: ${prompt}`);
@@ -199,8 +200,32 @@ test("two runs of a new agent made at once: one folder made, one commit on main,
   assert.equal(git(repo, ["rev-list", "--count", "--all"]), "1");
   assert.equal(git(repo, ["reflog", "show", "--format=%H", "refs/heads/main"]), main, "main was set once");
   assert.deepEqual(made.map((run) => pinOf(data, run.body.run_id).seed), [main, main]);
-  assert.deepEqual(readdirSync(join(data, "homes", "twice")), ["learning"]);
+  assert.deepEqual(readdirSync(homeOf(data, "twice")), ["learning"]);
   for (const run of made) assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.learning.reason, "no_write_tool", "seeded, and asked no end-of-run turn");
+});
+
+test("two agents whose ids differ only in case: each has its own learning folder, in homes whose names differ in any case, and what one learned never seeds the other's run", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: SYSTEM });
+  const sha = await learned(api, data, "Twin", { instructions: "Answer the question." });
+  assert.equal((await api("POST", "/agents", agent("twin", { learning: true, instructions: "Answer the question." }))).status, 201);
+  const other = await ran(api, "twin");
+  // The homes as the server made them: named by homeKey, so apart even on a disk that folds case.
+  const homes = readdirSync(join(data, "homes")).sort();
+  assert.deepEqual(homes, [homeKey("Twin"), homeKey("twin")].sort());
+  assert.equal(new Set(homes.map((name) => name.toLowerCase())).size, 2, "the names differ in any case");
+  // The other's folder is a new one: one host commit holding an empty MEMORY.md, and its run learned nothing of Twin's.
+  const repo = repoOf(data, "twin");
+  assert.equal(git(repo, ["rev-list", "--count", "main"]), "1");
+  assert.deepEqual(git(repo, ["ls-tree", "-r", "--name-only", "main"]).split("\n"), ["MEMORY.md"]);
+  assert.equal(learnedIn(other.prompt), undefined, other.prompt);
+  assert.ok(!other.prompt.includes("Refund policy path") && !other.prompt.includes("Prefers tables"), other.prompt);
+  assert.deepEqual(readdirSync(learnedDir(data, other.runId)), ["MEMORY.md"]);
+  assert.equal(readFileSync(join(learnedDir(data, other.runId), "MEMORY.md"), "utf8"), "");
+  assert.notEqual(pinOf(data, other.runId).seed, sha);
+  // The one that learned still starts from its own.
+  const own = await ran(api, "Twin");
+  assert.equal(learnedIn(own.prompt), INDEX.trim(), own.prompt);
+  assert.deepEqual(pinOf(data, own.runId), { seed: sha, learned: INDEX });
 });
 
 test("no hook runs on the host's git calls: neither the folder's own (its hooks folder, core.hooksPath, an fsmonitor) nor a template, hooks folder or config the environment names", { timeout: 120_000 }, async (t) => {
@@ -342,8 +367,8 @@ async function refusedLink(api, data, id, runId, prompt, target, said) {
 // at its learning folder, at the folder's .git, or at MEMORY.md in a folder whose making stopped before main. The host
 // refuses it and never follows it, so its git init, writes and commits never land where the link points.
 const PLANTED = {
-  "homes/<agent>": (data, id, target) => (mkdirSync(join(data, "homes"), { recursive: true }), symlinkSync(target, join(data, "homes", id))),
-  "homes/<agent>/learning": (data, id, target) => (mkdirSync(join(data, "homes", id), { recursive: true }), symlinkSync(target, repoOf(data, id))),
+  "homes/<key>": (data, id, target) => (mkdirSync(dirname(homeOf(data, id)), { recursive: true }), symlinkSync(target, homeOf(data, id))),
+  "homes/<key>/learning": (data, id, target) => (mkdirSync(homeOf(data, id), { recursive: true }), symlinkSync(target, repoOf(data, id))),
   "learning/.git": (data, id, target) => (mkdirSync(repoOf(data, id), { recursive: true }), symlinkSync(target, join(repoOf(data, id), ".git"))),
   "learning/MEMORY.md": (data, id, target) => (mkdirSync(repoOf(data, id), { recursive: true }), symlinkSync(join(target, "kept"), join(repoOf(data, id), "MEMORY.md"))),
 };
@@ -365,7 +390,7 @@ test("a link swapped in for the learning folder the host has just made is caught
   assert.equal((await api("POST", "/agents", agent("swapped", { learning: true, instructions: "Answer the question." }))).status, 201);
   const repo = repoOf(data, "swapped");
   learningTestHooks.afterMkdir = (dir) => {
-    if (!dir.endsWith(join("swapped", "learning"))) return;
+    if (dir !== repo) return;
     rmSync(dir, { recursive: true });
     symlinkSync(target, dir);
   };

@@ -451,14 +451,14 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
 
 /** A Claude Code subagent's session under parent session `n`, as the CLI writes it in <session id>/subagents/: its
  *  task, a Grep call and its result, and its answer, each request with its usage, on `model`. */
-export function claudeSubagent(home, cwd, n, k, { model = "claude-haiku-5", slug = cwd.replaceAll("/", "-") } = {}) {
+export function claudeSubagent(home, cwd, n, k, { model = "claude-haiku-5", slug = cwd.replaceAll("/", "-"), answer = "It is config.json." } = {}) {
   const base = { sessionId: sessionId(n), cwd, isSidechain: true, userType: "external", version: "2.1.0", agentId: `a${k}` };
   const usage = (input, output) => ({ input_tokens: input, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: output });
   const records = [
     { ...base, type: "user", uuid: `s${k}-u1-${n}`, timestamp: at(1), message: { role: "user", content: "Find the config." } },
     { ...base, type: "assistant", uuid: `s${k}-a1-${n}`, timestamp: at(1), message: { id: `msg_sub${k}_1_${n}`, role: "assistant", model, content: [{ type: "tool_use", id: `toolu_sub${k}`, name: "Grep", input: { pattern: "config" } }], usage: usage(11, 13) } },
     { ...base, type: "user", uuid: `s${k}-u2-${n}`, timestamp: at(2), message: { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_sub${k}`, content: "config.json" }] } },
-    { ...base, type: "assistant", uuid: `s${k}-a2-${n}`, timestamp: at(2), message: { id: `msg_sub${k}_2_${n}`, role: "assistant", model, content: [{ type: "text", text: "It is config.json." }], usage: usage(17, 19) } },
+    { ...base, type: "assistant", uuid: `s${k}-a2-${n}`, timestamp: at(2), message: { id: `msg_sub${k}_2_${n}`, role: "assistant", model, content: [{ type: "text", text: answer }], usage: usage(17, 19) } },
   ];
   return writeSession(join(home, ".claude", "projects", slug, sessionId(n), "subagents", `agent-a${k}.jsonl`), records);
 }

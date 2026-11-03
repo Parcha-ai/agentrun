@@ -1,6 +1,6 @@
 # @parcha/agentrun-decisions
 
-Held: this package is in the repository and is built and tested with the others, but is not on npm yet.
+Published to npm from the next release (`@beta`), with AgentRun Server, which uses it. Until then it installs from this repository.
 
 Third-party decision models for the AgentRun DSL's decision nodes (`judge`, `pick`, `sift`, a judged `route`, `ask` and a `verify` clause). Each is a `DecisionProvider`, the seam in `@parcha/agentrun-dsl`, and runs through `judgeFromProvider`, with no agent harness. Jev's provider is `jevProvider` in `@parcha/agentrun-jev`.
 
@@ -24,6 +24,7 @@ What it does with Parallel's answers:
 - **Refusals.** Parallel may decline a question (`{ "type": "refusal" }`). It stays a refusal: the DSL never decodes it to a value. The run escalates for a person (`decision_refused`), or a route takes its `unsure` branch.
 - **Confidence.** A choice or score that comes back without a confidence gets one derived from its probabilities, and the decision receipt's `confidence_source` says so.
 - **Evidence.** Parallel's citations apply to the whole request, not to one answer, so each is evidence with `scope: "call"`.
+- **Grounding.** Parallel answers from live web evidence as well as the state it is given. A claim the web knows nothing about (a private or fictional fact) can score lower than the state alone supports, with citations to unrelated pages. For a judgment that must rest on the state alone, use Jev (`jevProvider`), which judges only what it is given.
 - **Cost.** The response carries no cost, so the answered request is booked at Parallel's list price, `PARALLEL_LIST_PRICE_USD` ($0.001 per request), with `cost_basis: "estimate"`. So is one sent whose outcome was lost (below). Its `decision_id` is the `provider_request_id`.
 - **Replay.** The API takes no idempotency key, so the provider declares `replay: "never"`: a paid request is never re-sent unasked. It is sent again only when it provably never reached Parallel (no DNS answer, no connection, no TLS handshake), or on a 429 that says when to retry (`Retry-After`). A 408, a 5xx or a connection lost after sending is sent once and fails `outcome_unknown`, booked at list price as an estimate. The run then escalates the decision for a person as interrupted (`decision_interrupted`), and it is never asked again.
 - **Errors.** Each one is a `DecisionProviderError`:

@@ -6,7 +6,7 @@
 // starting is never written off.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { BoxRecord, Reaped } from "@parcha/agentrun-adapters/host";
+import type { BoxRecord, Reaped } from "@parcha/agentrun-kernel/host";
 import { readJson, writeDurable } from "../files.js";
 import { BOX_RECORD } from "./record.js";
 
@@ -88,7 +88,7 @@ export class Quarantine {
   // temporary file, and one could lose another's entries or fail its rename.
   private saving: Promise<void> = Promise.resolve();
   private save(): Promise<void> {
-    const next = this.saving.catch(() => {}).then(() => writeDurable(this.file, `${JSON.stringify(this.list())}\n`));
+    const next = this.saving.catch(() => {}).then(async () => void (await writeDurable(this.file, `${JSON.stringify(this.list())}\n`)));
     this.saving = next;
     return next;
   }

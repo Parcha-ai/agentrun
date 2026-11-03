@@ -18,7 +18,7 @@ Each package's README is its API reference. Packages with no dependency on the o
 
 | Path | What an agent must know |
 | --- | --- |
-| `packages/dsl` | `@parcha/agentrun-dsl`: types, validator, interpreter (`src/workflow.ts`), CLI (`agentrun`). Node reference: `skills/author/references/language.md`, generated from `src/author.ts` (edit the source); judgment design: `jev-decisions.md` beside it. `schema/workflow.schema.json` is generated too |
+| `packages/dsl` | `@parcha/agentrun-dsl`: types, validator, interpreter (`src/workflow.ts`), CLI (`agentrun-dsl`). Node reference: `skills/author/references/language.md`, generated from `src/author.ts` (edit the source); judgment design: `jev-decisions.md` beside it. `schema/workflow.schema.json` is generated too |
 | `packages/jev`, `packages/pi` | `runJudge` adapter for Jev, and `jevProvider` (Jev as a `DecisionProvider`); the Pi extension (`/agentrun`) and Pi-backed `runNode` |
 | `packages/pi-durable-disk` | Durable pi host on Archil. Tests run on `src/*.ts`; `PDA_LIVE=1` suites need Archil (or Daytona) credentials and run nowhere by default |
 | `packages/pi-browser` | Synced snapshot of the agentrun harness's `packages/pi-browser`: never edit it here. Real-Chrome suites run only in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`) |
@@ -44,7 +44,9 @@ rest, never published; removing the flag lifts a hold. Release order: `scripts/r
 ## Setup and checks
 
 Use Node 22.19+ or 24.2+ (`.nvmrc` pins 22.23.2, the release toolchain) and npm 11 (CI pins 11.21.0).
-`scripts/check-node.mjs` refuses Node 23 and 24.0-24.1, which have no `import.meta.main`.
+`scripts/check-node.mjs` refuses Node 23 and 24.0-24.1, which have no `import.meta.main`. A script in `scripts/`
+decides it is the command with `isMain(import.meta)` (`scripts/is-main.mjs`), which refuses the command on such a Node
+instead of exiting 0 having done nothing.
 Regenerate `package-lock.json` only with npm 11 (`npm install --package-lock-only`), never by hand,
 then `npm run export:source` and commit `docs/dependencies.md`: CI's `check-generated.mjs` fails on
 a stale one and `npm run check` does not catch it.

@@ -5,10 +5,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
+import { homeOf } from "../dist/files.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, flowAgent, follow, serve } from "./support.mjs";
+import { capabilities } from "../dist/index.js";
+import { agent, FAUX, flowAgent, follow, serve } from "./support.mjs";
 
 const VENDORED = JSON.parse(await readFile(new URL("../src/openapi/agentrun-v2.openapi.json", import.meta.url), "utf8"));
 const METHODS = ["get", "put", "post", "delete", "patch", "head", "options", "trace"];
@@ -53,8 +55,8 @@ test("every route the server serves is in the document, and every operation in i
     else assert.equal(op["x-agentrun-serve-unsupported"], undefined, `${op.operationId} is served`);
     if (route.capability) assert.equal(op["x-agentrun-serve-unsupported"].capability, route.capability);
   }
-  assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 6, "the six this server answers 501");
-  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported.length, 6);
+  assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 4, "the four this server answers 501");
+  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported.length, 4);
 });
 
 test("the contract's operations are as vendored; this server's own are added and marked x-agentrun-serve", async (t) => {
@@ -113,6 +115,17 @@ test("the contract's operations are as vendored; this server's own are added and
       }
       if (property["x-agentrun-serve"] === undefined) {
         strip(property, `${at}.${field}`);
+        continue;
+      }
+      // A contract property whose enum this server widens (models.source) is marked on the property, each value it adds
+      // listed, as RunStatus is: cut back to the vendored enum and description, it is the contract's.
+      const vendored = at.split(".").slice(1).reduce((object, key) => object?.properties?.[key], VENDORED.components.schemas[at.split(".")[0]])?.properties?.[field];
+      if (Array.isArray(vendored?.enum) && Array.isArray(property.enum)) {
+        for (const value of property.enum.filter((v) => !vendored.enum.includes(v))) marked.push(`${at}.${field}.${value}`);
+        property.enum = property.enum.filter((v) => vendored.enum.includes(v));
+        if (vendored.description === undefined) delete property.description;
+        else property.description = vendored.description;
+        delete property["x-agentrun-serve"];
         continue;
       }
       assert.match(property["x-agentrun-serve"], /^[a-z]+\/\d+$/, `${at}.${field} names its addition`);
@@ -240,6 +253,32 @@ test("live answers meet the served document: capabilities, and an agent made, re
   assert.notDeepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, { ...(await api("GET", "/capabilities")).body, unheard_of: 1 }), []);
 });
 
+// The exported helper is what the route serves: every harness's offer resolved, its default_model included, so a direct
+// caller's document holds the schema the server publishes (the field is required), on a server with a gateway, with
+// providers, and with the faux harness.
+const NOT_A_KEY = "fake";
+test("capabilities(), the exported helper, gives a document that passes the published Capabilities schema whole", async (t) => {
+  const { doc } = await served(t);
+  const shape = { $ref: "#/components/schemas/Capabilities" };
+  const sources = [];
+  for (const env of [{}, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENT_MODEL: "m-1" }, { AGENT_MODEL: "anthropic/claude-sonnet-5", ANTHROPIC_API_KEY: NOT_A_KEY }, { AGENTRUN_SERVE_FAUX: FAUX }]) {
+    const caps = await capabilities(env);
+    sources.push(caps.models.source);
+    assert.deepEqual(schemaProblems(doc, shape, caps), [], JSON.stringify(env));
+    for (const harness of caps.harnesses) assert.ok("default_model" in harness, `${harness.id} names its default_model`);
+  }
+  assert.deepEqual(sources, ["providers", "gateway", "providers", "faux"], "every source this server answers with is proven against the schema");
+  // models/2 widens the contract's enum to what this server answers with, marked as its own addition.
+  const source = doc.components.schemas.Capabilities.properties.models.properties.source;
+  assert.equal(source["x-agentrun-serve"], "models/2");
+  assert.deepEqual(source.enum, ["managed", "chatgpt", "env", "faux", "gateway", "providers"]);
+  // The positive controls: a source outside the enum, and a harness without its default_model, are refused by the same schema.
+  const plain = await capabilities({});
+  assert.notDeepEqual(schemaProblems(doc, shape, { ...plain, models: { ...plain.models, source: "elsewhere" } }), []);
+  const caps = await capabilities({});
+  assert.notDeepEqual(schemaProblems(doc, shape, { ...caps, harnesses: caps.harnesses.map(({ default_model, ...offer }) => offer) }), []);
+});
+
 test("the decision providers' widening to parallel is its own addition, decisions/2, and info lists it", async (t) => {
   const { doc } = await served(t);
   const decisions = doc.components.schemas.Capabilities.properties.workflows.properties.decisions;
@@ -281,8 +320,8 @@ test("learning is this server's own addition, learning/1: the definition's switc
   assert.equal((await api("POST", "/agents", agent("learner", { learning: true }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("blocked", { learning: true }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
-  await mkdir(join(data, "homes", "blocked"), { recursive: true });
-  await writeFile(join(data, "homes", "blocked", "learning"), "not a folder");
+  await mkdir(homeOf(data, "blocked"), { recursive: true });
+  await writeFile(join(homeOf(data, "blocked"), "learning"), "not a folder");
   const want = { learner: ["dropped", "no_write_tool"], blocked: ["dropped", "seed_failed"], plain: null };
   for (const id of Object.keys(want)) {
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
@@ -304,4 +343,44 @@ test("learning is this server's own addition, learning/1: the definition's switc
   assert.notDeepEqual(schemaProblems(doc, schemas.Run.properties.learning, { state: "dropped", reason: "conflict", detail: null, at: new Date().toISOString() }), []);
   assert.notDeepEqual(schemaProblems(doc, schemas.Run.properties.learning, { state: "merged", reason: null, detail: null, at: new Date().toISOString(), verdict: null }), []);
   assert.notDeepEqual(schemaProblems(doc, stats, { ...counted, dropped: { conflict: 1 } }), []);
+});
+
+test("an agent's home is its own addition, home/1: its routes and capabilities.home marked and listed, beside the contract's packed home, and its answers meet the document", async (t) => {
+  const { api, baseUrl, token, data } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const at = "/agents/{agent_id}/home/files";
+  const files = doc.paths[at];
+  const file = doc.paths[`${at}/{path}`];
+  for (const [op, name] of [[files.get, "listHomeFiles"], [file.get, "readHomeFile"], [file.put, "writeHomeFile"], [file.delete, "deleteHomeFile"]]) {
+    assert.deepEqual([op.operationId, op["x-agentrun-serve"]], [name, "home/1"]);
+    assert.ok(op.responses["404"] && op.responses["401"], `${name} answers 401 and 404`);
+  }
+  assert.ok(file.put.responses["403"] && file.put.responses["413"] && file.delete.responses["403"], "a write answers 403, and a PUT 413");
+  assert.deepEqual(Object.keys(doc.paths["/agents/{agent_id}/home"]).sort(), Object.keys(VENDORED.paths["/agents/{agent_id}/home"]).sort(), "the contract's packed home keeps its path and methods");
+  assert.equal(doc.paths["/agents/{agent_id}/home"].get["x-agentrun-serve-unsupported"].capability, "home.export");
+  assert.equal(doc.components.schemas.Capabilities.properties.home["x-agentrun-serve"], "home/1");
+  assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.home"));
+
+  assert.equal((await api("POST", "/agents", agent("keeper"))).status, 201);
+  const headers = { authorization: `Bearer ${token}` };
+  const home = `${baseUrl}/agents/keeper/home/files`;
+  const written = await fetch(`${home}/notes/a.md`, { method: "PUT", headers, body: "# A\n" });
+  assert.equal(written.status, 200);
+  const json = (op, status) => op.responses[status].content["application/json"].schema;
+  assert.deepEqual(schemaProblems(doc, json(file.put, "200"), await written.json()), []);
+  // A host-owned note, planted as the server would: learning lists as one entry of its own shape, the note not at all.
+  await mkdir(join(homeOf(data, "keeper"), "learning"));
+  await writeFile(join(homeOf(data, "keeper"), "learning", "l.md"), "learned");
+  const listed = (await api("GET", "/agents/keeper/home/files")).body;
+  assert.deepEqual(listed.files.map((f) => [f.path, f.host_owned]), [["learning", true], ["notes/a.md", undefined]]);
+  assert.deepEqual(schemaProblems(doc, json(files.get, "200"), listed), []);
+  // Each entry is exactly one of the two shapes: a file's entry is no host entry, and a host entry no file's.
+  assert.notDeepEqual(schemaProblems(doc, json(files.get, "200"), { ...listed, files: [{ ...listed.files[1], host_owned: true }] }), []);
+  const read = await (await fetch(`${home}/learning/l.md`, { headers })).json();
+  assert.deepEqual([read.error.code, read.error.details], ["system_file_forbidden", { reason: "host_owned" }]);
+  const forbidden = await (await fetch(`${home}/learning/l.md`, { method: "PUT", headers, body: "x" })).json();
+  const shape = doc.components.schemas.ErrorBody.properties.details["x-agentrun-serve-details"]?.system_file_forbidden;
+  assert.ok(shape, "the document gives system_file_forbidden's details");
+  assert.deepEqual(schemaProblems(doc, shape, forbidden.error.details), [], JSON.stringify(forbidden.error));
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Error" }, forbidden), []);
 });

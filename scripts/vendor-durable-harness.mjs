@@ -14,6 +14,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PRISTINE_DIR, UPSTREAM, UPSTREAM_FILE } from './upstream-attribution.mjs';
+import { isMain } from './is-main.mjs';
 
 /** A file's git blob id, as `git hash-object` computes it. */
 export const gitBlob = (bytes) => createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex');
@@ -105,7 +106,7 @@ export function linesChanged(from, text, what, command = 'diff') {
   return diff.split('\n').filter((line) => /^[-+](?![-+]{2} )/.test(line)).length;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const root = join(fileURLToPath(new URL('.', import.meta.url)), '..');
   const problems = [];
   for (const entry of await readdir(join(root, 'packages'), { withFileTypes: true })) {
