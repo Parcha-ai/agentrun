@@ -125,11 +125,13 @@ export async function sessionFiles(home: string, source: Source): Promise<string
 }
 
 /** Claude Code's subagents' session files under `home`, in <session id>/subagents/ (a workflow's a folder deeper), each
- *  with the session it ran under: the folder it sits in. Never through a link. */
-export async function childFiles(home: string): Promise<{ file: string; parent: string }[]> {
+ *  with the session file it ran under (`of`): the one beside the folder it sits in. A session moved to another project
+ *  folder keeps its id there, with copies of its subagents' files: each folder's are its own file's. Never through a
+ *  link. */
+export async function childFiles(home: string): Promise<{ file: string; of: string }[]> {
   const entries = async (dir: string): Promise<Dirent[]> => readdir(dir, { withFileTypes: true }).catch(() => []);
   const root = join(home, ".claude", "projects");
-  const out: { file: string; parent: string }[] = [];
+  const out: { file: string; of: string }[] = [];
   for (const project of await entries(root)) {
     if (!project.isDirectory()) continue;
     for (const session of await entries(join(root, project.name))) {
@@ -137,7 +139,7 @@ export async function childFiles(home: string): Promise<{ file: string; parent: 
       const walk = async (dir: string, depth: number): Promise<void> => {
         for (const entry of await entries(dir)) {
           if (entry.isDirectory() && depth < 3) await walk(join(dir, entry.name), depth + 1);
-          else if (entry.isFile() && entry.name.endsWith(".jsonl")) out.push({ file: join(dir, entry.name), parent: session.name });
+          else if (entry.isFile() && entry.name.endsWith(".jsonl")) out.push({ file: join(dir, entry.name), of: join(root, project.name, `${session.name}.jsonl`) });
         }
       };
       // The folder itself is no link: one that points elsewhere holds no subagent of this session's.
@@ -268,11 +270,18 @@ export async function readSession(file: string, source: Source, { turns: keep = 
   if (last !== undefined) session.endedAt = new Date(last).toISOString();
   session.activeMs = Math.round(session.activeMs);
   session.turns = turns;
-  // As the model of most requests is a run's model: the first seen of a tie.
+  const effort = mostEffortOf(turns);
+  if (effort) session.effort = effort;
+  return session;
+}
+
+/** The effort most of `turns`' requests ran at, as the model of most requests is a run's model: the first seen of a tie. */
+export function mostEffortOf(turns: readonly Turn[]): string | undefined {
   const efforts = new Map<string, number>();
   for (const turn of turns) if (turn.role === "assistant" && turn.effort) efforts.set(turn.effort, (efforts.get(turn.effort) ?? 0) + 1);
-  for (const [effort, n] of efforts) if (session.effort === undefined || n > efforts.get(session.effort)!) session.effort = effort;
-  return session;
+  let most: string | undefined;
+  for (const [effort, n] of efforts) if (most === undefined || n > efforts.get(most)!) most = effort;
+  return most;
 }
 
 type Into = {
@@ -316,12 +325,13 @@ function claudeRecord(value: Record<string, unknown>, at: number, session: Sessi
     session.costUsd = typeof value.totalCostUSD === "number" && Number.isFinite(value.totalCostUSD) && value.totalCostUSD >= 0 && value.hasUnknownModelCost !== true ? value.totalCostUSD : undefined;
     return;
   }
-  if ((value.type !== "user" && value.type !== "assistant") || !isObject(value.message)) return;
-  if (value.isMeta === true || value.isCompactSummary === true || value.isVisibleInTranscriptOnly === true) return;
-  // A record written twice (a session carried on in its own file, or copied into a resumed one's) is read once.
+  // A record written twice (a session carried on in its own file, or copied into a resumed one's) is read once, and moves
+  // no time a second time, whatever its type.
   const uuid = str(value.uuid);
   if (uuid && current.seen.has(`u:${uuid}`)) return false;
   if (uuid) current.seen.add(`u:${uuid}`);
+  if ((value.type !== "user" && value.type !== "assistant") || !isObject(value.message)) return;
+  if (value.isMeta === true || value.isCompactSummary === true || value.isVisibleInTranscriptOnly === true) return;
   const mark = uuid ? { uuids: [uuid] } : {};
   const message = value.message;
   if (value.type === "assistant") {

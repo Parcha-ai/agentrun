@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsOf, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
@@ -32,6 +32,7 @@ import { EFFORT_ENV, FAUX_ENV, thinkingOf, withoutFaux } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
+import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
@@ -185,6 +186,9 @@ export type Run = {
   relaunches: number;
   /** Its newest launch has not reported back: its mark (RUN_LAUNCHING) is on disk. */
   launching?: boolean;
+  /** Its files being copied into its work/ before its first launch, until they are: nothing launches it meanwhile (a
+   *  request that would waits for it), and nothing but a cancel settles it. */
+  preparing?: Promise<void>;
   settled: boolean;
   settling?: Promise<void>;
   /** The newest write of its serve.json: one at a time, in order. */
@@ -324,11 +328,14 @@ export function statusOf(run: Run): { status: Status; state: State } {
 
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
+/** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. */
+export type StartOptions = { input: Json; title: string; effort?: string; maxCostUsd?: number; inputs?: (work: string) => Promise<unknown> };
+
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; learning?: LearningMode; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify };
+export type RunsOptions = { agents: Agents; token: string; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxExa?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; learning?: LearningMode; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify };
 /** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
  *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
 export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => void;
@@ -560,13 +567,14 @@ export class Runs {
     }
     const root = read.reduce((min, r) => Math.min(min, r.conversation), Infinity);
     const entries = read.flatMap((r) => (run.kind === "workflow" || r.conversation === root ? [r.entry] : []));
-    if (atEnd) run.metrics = runMetricsOf(read.map((r) => r.entry) as never);
     if (run.kind === "workflow") {
       const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
       // Decisions it cannot read add no rows: the run's cost read says unknown (readDecisionCost).
       try { run.decisions = durableDecisions(file); } catch { run.decisions = undefined; }
       run.llmRead = (await readNodeLog(run.dir)).filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done").length;
     }
+    // Its decision requests count with its model requests: each receipt's tokens, or unmetered without them.
+    if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteAnswer(run, entries);
     this.take(run, timelineOf(entries as never, { settled: true }));
@@ -811,6 +819,14 @@ export class Runs {
     const deadline = Date.now() + timeoutMs;
     // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
     await this.sweepOnce();
+    // And for its files, which its start copies before it launches it: within the time left.
+    const copying = run.preparing;
+    if (copying) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([copying, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, deadline - Date.now()))))]);
+      clearTimeout(timer);
+      if (run.preparing === copying) throw new ApiError("unavailable", "the run's files are still being copied into its workspace", { retry_after_ms: 1000 }, { "retry-after": "1" });
+    }
     for (let launched = false; ; await sleep(100)) {
       const record = await this.record(run);
       // Checked after the read: a settle may end the run while it is read, and nothing starts a run that ended.
@@ -879,7 +895,7 @@ export class Runs {
   }
 
   private launch(run: Run): void {
-    if (run.child || this.closing || run.cancel || run.outcome || run.finishing) return;
+    if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing) return;
     // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts).
     const secrets = handover(RUN_SECRETS);
     const env: NodeJS.ProcessEnv = {
@@ -889,6 +905,7 @@ export class Runs {
       ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}), ...(this.options.fauxParallel ? { [FAUX_PARALLEL_ENV]: this.options.fauxParallel } : {}), ...(this.options.fauxOpenrouter ? { [FAUX_OPENROUTER_ENV]: this.options.fauxOpenrouter } : {}) } : {}),
       ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
       ...(this.options.faux && this.options.fauxMonid ? { [FAUX_MONID_ENV]: this.options.fauxMonid } : {}),
+      ...(this.options.faux && this.options.fauxExa ? { [FAUX_EXA_ENV]: this.options.fauxExa } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
       ...(this.options.documents ? { [DOCUMENTS_ENV]: this.options.documents } : {}),
     };
@@ -1000,6 +1017,9 @@ export class Runs {
   /** `exited`: the process this server supervised exited. Exiting on an error before it released fails the run; going
    *  any other way before the run ended (killed, or found gone at a start) opens it again. */
   private async settleOnce(run: Run, code: number | null, exited: boolean): Promise<void> {
+    // A run whose files are still being copied has had no process yet: its start launches it, and only a cancel ends it
+    // first (a recovery that lists it meanwhile must not fail it for its launch mark).
+    if (run.preparing && !run.cancel) return;
     run.feed?.abort();
     run.feed = undefined;
     run.working = false;
@@ -1204,7 +1224,8 @@ export class Runs {
     this.starting++;
   }
 
-  async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  /** `inputs` copies the run's files into its work/ (uploads.ts), after the store made it and before its process starts. */
+  async create(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
     await this.sweepOnce();
     await this.takePlace();
     try {
@@ -1233,7 +1254,7 @@ export class Runs {
     });
   }
 
-  private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  private async start(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
     // A run learns when the server's switch (`--learning`) is on and its agent's definition says `learning: true`. Its
     // seed is read before the run is made, so the folder is read once whatever the run's setup does.
     const learns = this.options.learning !== "off" && revision.kind === "agentic" && revision.body.learning === true;
@@ -1273,6 +1294,13 @@ export class Runs {
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;
     this.refresh(run);
+    if (options.inputs) {
+      // Listed from here, so a request may reach it while it copies: `preparing` holds it until its files are in.
+      const prepared = this.prepare(run, started.workspace, options.inputs).finally(() => void (run.preparing = undefined));
+      // Never rejected: a request waiting on it reads how the start ended from the run; the start's own error is the create's.
+      run.preparing = prepared.then(() => undefined, () => undefined);
+      if (!(await prepared)) return run;
+    }
     this.launch(run);
     if (revision.kind === "workflow") return run;
     void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => {
@@ -1284,6 +1312,31 @@ export class Runs {
       else if (!run.cancel) void this.settle(run, 1, true);
     });
     return run;
+  }
+
+  /** Copies the run's files into its work/ under the launch mark: a server that goes down while it copies leaves the
+   *  mark, and the next start fails the run rather than run it on part of its files. Copied whole, the mark goes, and the
+   *  launch makes its own. False when the copy failed, and the run ended so (or was cancelled meanwhile). */
+  private async prepare(run: Run, work: string, inputs: (work: string) => Promise<unknown>): Promise<boolean> {
+    try {
+      // The mark itself may fail (a full disk): the run ends as when the copy does.
+      this.markLaunching(run);
+      await inputs(work);
+    } catch (error) {
+      run.submitted = 0;
+      // Cancelled while it copied: it ends so.
+      if (!(run.outcome || run.cancel)) {
+        run.error = { code: "run_failed", message: `The run's files could not be copied into its workspace: ${(error as Error).message}`, retryable: false };
+        await this.carryBack(run, "failed");
+      }
+      // The mark goes only once the store has the run's end: a server that goes down before then finds it, and fails the
+      // run rather than launch it on part of its files.
+      const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
+      if (row && row.state !== "running") this.reportedBack(run);
+      return false;
+    }
+    this.reportedBack(run);
+    return true;
   }
 
   private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number): Promise<void> {
@@ -1365,10 +1418,23 @@ export class Runs {
     }
   }
 
+  /** Waits, up to a request's deadline, until a live run's rows show every message sent to it, and any rows at all: its
+   *  record has caught up with its process. Its end, a cancel or its process going ends the wait. */
+  private async caughtUp(run: Run): Promise<void> {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.submitted > 0 || !run.rows.length; await sleep(100)) {
+      if (!this.live(run) || run.finishing || run.outcome || run.cancel || Date.now() > deadline) return;
+    }
+  }
+
   /** Abort the turn that is running; the run stays open, `input_required` and idle. A workflow run has no turn to stop. */
   async stop(run: Run): Promise<boolean> {
     // The contract's stop has no refusal: an imported run answers as any ended one, stopped false, and nothing moves.
     if (run.imported) return false;
+    // A message sent to the run shows in its rows only once its door's events bring it: until then the run reads queued
+    // (state working), or holds a message not shown, however far its process is into the turn. The stop waits for its
+    // rows first, so the mark it saves (the person's last message) covers the message the turn answers; then it stops
+    // the turn as it stops any working run.
+    if (run.kind !== "workflow") await this.caughtUp(run);
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.

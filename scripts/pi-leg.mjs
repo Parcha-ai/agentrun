@@ -17,6 +17,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { isMain } from './is-main.mjs';
 
 /** The pi family: the packages that are released together and break together in a minor. */
 export const FAMILY = ['@earendil-works/pi-durable', '@earendil-works/chord', '@earendil-works/pi-ai', '@earendil-works/pi-agent-core', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', '@earendil-works/pi-codemode'];
@@ -266,6 +267,6 @@ function main() {
   process.exit(failed ? 1 : 0);
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   try { main(); } catch (error) { console.error(`pi-leg: ${error.message}`); process.exit(2); }
 }
