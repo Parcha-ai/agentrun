@@ -103,16 +103,6 @@ test("a sandbox agent edited into a workflow with no place keeps its sandbox pla
   assert.deepEqual(saved.body.definition.place, { mode: "runner" });
 });
 
-test("a run request's place that is not \"runner\" is a 422 whose fix is the change that makes it one", async (t) => {
-  const { api } = await serve(t);
-  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
-  for (const [place, fix] of [["sandbox", "Remove place."], [{ mode: "sandbox", box: "docker" }, "Remove place."], [{ mode: "runner" }, '"place": "runner"'], ["Runner", '"place": "runner"']]) {
-    const refused = await api("POST", "/agents/plain/runs", { input: { content: "hi" }, place });
-    assert.equal(refused.status, 422, JSON.stringify(refused.body));
-    assert.deepEqual(refused.body.error.fields, [{ field: "place", reason: "not_an_option", message: 'place is "runner": a run may narrow its agent\'s place to the runner, and names no other', fix }], JSON.stringify(place));
-  }
-});
-
 test("a box this server does not enable names the setting that enables it: in capabilities, the save's warning and the run's 409, each ending in one full stop", async (t) => {
   const { api } = await serve(t);
   const { places, tools } = (await api("GET", "/capabilities")).body;

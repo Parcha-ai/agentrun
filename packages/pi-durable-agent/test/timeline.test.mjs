@@ -638,13 +638,13 @@ test("a failed call answered only by the harness's diagnostics block is summariz
       call("d", "bash", { command: "make" }),
     ], 0),
     result("a", "bash", "<harness>\n[error] Tool bash is not available\n</harness>", 1, { isError: true }),
-    result("b", "bash", "<harness>\n[warning] Output truncated: 3 lines, 9 bytes dropped\n[error] bash is not available: this run's place is the runner\n</harness>", 1, { isError: true }),
+    result("b", "bash", "<harness>\n[warning] Output truncated: 3 lines, 9 bytes dropped\n[error] Tool call blocked: refused by the permission gate\n</harness>", 1, { isError: true }),
     result("c", "read", "<harness>\n[error]\n</harness>", 1, { isError: true }),
     result("d", "bash", "make: *** No rule to make target\n<harness>\n[error] Command exited with code 2\n</harness>", 1, { isError: true }),
   ]);
   const summary = (id) => rows.find((row) => row.tool_use_id === id && row.kind === "tool_result").summary;
   assert.equal(summary("a"), "Ran `true` failed: Tool bash is not available");
-  assert.equal(summary("b"), "Ran `ls` failed: bash is not available: this run's place is the runner", "the error, before any warning");
+  assert.equal(summary("b"), "Ran `ls` failed: Tool call blocked: refused by the permission gate", "the error, before any warning");
   assert.equal(summary("c"), "Read a.md failed: no detail");
   assert.equal(summary("d"), "Ran `make` failed: make: *** No rule to make target", "a result with output keeps its first line");
   assert.equal(rows.find((row) => row.tool_use_id === "a" && row.kind === "tool_result").tool_result_preview, "<harness>\n[error] Tool bash is not available\n</harness>", "the preview is the result as it is");
