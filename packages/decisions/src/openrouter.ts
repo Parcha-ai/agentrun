@@ -127,6 +127,17 @@ function readResponse(body: unknown, questions: DecisionRequest["questions"], at
   };
 }
 
+/** `promise`, or `signal`'s reason once it aborts first. The promise itself runs on: the catalog read is shared by every
+ *  request, so one request's cut does not end it for the others. */
+function raced<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) { promise.catch(() => {}); return Promise.reject(signal.reason); }
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+  });
+}
+
 /** The image-capable Decisions models the public catalog lists, read once; null when it cannot be read. */
 function catalogReader(fetcher: typeof fetch, root: string): () => Promise<Set<string> | null> {
   let read: Promise<Set<string> | null> | undefined;
@@ -163,9 +174,25 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
       const model = request.model ?? options.model;
       if (typeof model !== "string" || !model.trim()) throw new DecisionProviderError("invalid_request", "An OpenRouter decision names its model (the node's model, such as liquid/d1); this one names none.");
       const images = request.images && Object.keys(request.images).length ? request.images : undefined;
+      // The deadline starts here, before the image check, and the check ends on a cancel or the deadline like the request.
+      const budgetMs = Math.min(timeoutMs, ctx.deadlineMs ?? Infinity);
+      const deadlineAt = Date.now() + budgetMs;
+      const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(budgetMs)]);
+      const stopped = (attempts: number) => new DecisionProviderError("aborted", "The OpenRouter request was cancelled.", { attempts });
       let state: unknown = request.state ?? null;
       if (images) {
-        if (!(await takesImages(model))) throw new DecisionProviderError("invalid_request", `The OpenRouter model ${model} takes no image input.`);
+        let takes: boolean;
+        try { takes = await raced(Promise.resolve().then(() => takesImages(model)), signal); }
+        catch (error) {
+          if (!signal.aborted) throw error;
+          // Nothing was sent, and the error says so (unsent), so a host's node timeout never takes it for a billed request.
+          // A cancel is aborted; a deadline is timeout, the node's own timeoutMs (its cut's TimeoutError) included.
+          const cancelled = ctx.signal.aborted && (ctx.signal.reason as { name?: unknown } | null)?.name !== "TimeoutError";
+          throw cancelled
+            ? new DecisionProviderError("aborted", "The OpenRouter request was cancelled before it was sent.", { attempts: 0, unsent: true })
+            : new DecisionProviderError("timeout", `Whether the OpenRouter model ${model} takes images was not known before the deadline; nothing was sent.`, { attempts: 0, unsent: true });
+        }
+        if (!takes) throw new DecisionProviderError("invalid_request", `The OpenRouter model ${model} takes no image input.`);
         if (readsTokenAnywhere(model)) {
           const places = [...tokenPlaces(request.state, request.questions)];
           const unplaced = Object.keys(images).filter((token) => !places.some((text) => text.includes(token)));
@@ -184,10 +211,6 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
       const key = options.apiKey ?? process.env[KEY_VARIABLE];
       if (typeof key !== "string" || !key.trim()) throw new DecisionProviderError("configuration", `${KEY_VARIABLE} is not set.`);
       const payload = { state, model, questions: request.questions };
-      const budgetMs = Math.min(timeoutMs, ctx.deadlineMs ?? Infinity);
-      const deadlineAt = Date.now() + budgetMs;
-      const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(budgetMs)]);
-      const stopped = (attempts: number) => new DecisionProviderError("aborted", "The OpenRouter request was cancelled.", { attempts });
       // Sent and lost: it may have been answered and billed, so it is never sent again, at an unknown cost.
       const lost = (attempts: number, what: string, status?: number) => new DecisionProviderError("outcome_unknown", `OpenRouter ${what} after the request was sent; it may have been answered, and is not sent again.`, { attempts, ...(status !== undefined ? { status } : {}), costUsd: null, costBasis: "unknown" });
       const app = { ...(options.app?.url ? { "HTTP-Referer": options.app.url } : {}), ...(options.app?.title ? { "X-Title": options.app.title } : {}) };
