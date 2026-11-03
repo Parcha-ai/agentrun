@@ -61,7 +61,8 @@ jobs:
       - run: node scripts/generate-schema.mjs --check
       - run: npm run export:source
       - run: node scripts/check-generated.mjs
-      - run: npm run verify:packages
+      # --console: a server archive without the console and its notices stops the release.
+      - run: npm run verify:packages -- --console
       - run: npm run verify:source
       - run: node scripts/release-preflight.mjs --tag "$RELEASE_TAG"
       - name: Publish exact verified archives in dependency order

@@ -137,6 +137,12 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
   const [names, setNames] = useState<Record<string, string>>({});
+  // Whether `names` is the whole answer of the newest read (both of its reads landed): a name it lacks then is an agent
+  // gone, and shows as its id.
+  const [namesRead, setNamesRead] = useState(false);
+  const namesAsked = useRef(0);
+  // The `refreshed` the names were last read for.
+  const namesAfter = useRef(-1);
   const [error, setError] = useState<string | null>(null);
   const asked = useRef(0);
   const go = (hash: string) => { location.hash = hash; };
@@ -166,19 +172,26 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   }, [v2]);
   useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
   useEffect(() => { v2.capabilities().then(setCaps).catch(() => {}); }, [v2]);
+  // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
+  // view opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere, is named at once, and
+  // again when an import at setup ends while this page watches (`refreshed`).
+  // Only the newest read lands.
   useEffect(() => {
-    // Every page of agents, for their names.
-    (async () => {
-      const all: Record<string, string> = {};
-      for (let c: string | null | undefined = undefined, i = 0; i < 50; i++) {
-        const page = await v2.listAgents({ cursor: c });
-        for (const x of page.agents) all[x.agent_id] = x.definition.name ?? x.agent_id;
-        if (!page.next_cursor) break;
-        c = page.next_cursor;
-      }
-      setNames(all);
-    })().catch(() => {});
-  }, [v2, refreshed]);
+    if (namesAsked.current && where.section !== "runs" && namesAfter.current === refreshed) return;
+    namesAfter.current = refreshed;
+    const n = ++namesAsked.current;
+    setNamesRead(false);
+    void Promise.allSettled([false, true].map((archived) => allPages((cursor) => v2.listAgents({ archived, cursor }), (p) => p.agents))).then((reads) => {
+      if (n !== namesAsked.current) return;
+      const fresh = Object.fromEntries(reads.flatMap((r) => (r.status === "fulfilled" ? r.value : [])).map((x) => [x.agent_id, x.definition.name ?? x.agent_id]));
+      // Each read's answer is kept. Both landed: the names are theirs. One failed: what came back goes over the names
+      // held, and the lookup is not complete, so a name it lacks (an agent the failed read would have named) shows as
+      // nothing yet, never as an id read as gone; the next runs view reads again.
+      const whole = reads.every((r) => r.status === "fulfilled");
+      setNames((held) => (whole ? fresh : { ...held, ...fresh }));
+      setNamesRead(whole);
+    });
+  }, [v2, where, refreshed]);
   const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
   useEffect(() => {
     if (where.section !== "runs" || where.run) return;
@@ -189,7 +202,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); } })
       .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
   }, [v2, where, refreshed]);
-  const agentName = (id: string) => names[id] ?? id;
+  // A name the lookup lacks while a read of it is under way shows as nothing yet, never as the id.
+  const agentName = (id: string) => names[id] ?? (namesRead ? id : "");
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string } } | null;
   // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };

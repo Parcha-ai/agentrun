@@ -43,8 +43,10 @@ const runNode = createHarnessRunner(
   provider-hosted tools and anything the provider would run or fetch on its own, offers the model only the session's
   tools, and asks the runner before every paid request. Every paid request is booked once; the runner alone accounts
   spend.
-- **A private, empty machine.** A session runs in its own directories with an empty working directory. The CLI's
-  environment is an allowlist (`PATH`, `LANG`, `TZ`, its own homes and the proxy's address and key).
+- **A private machine.** A session runs in its own directories. Its working directory is the host's workspace when the
+  host names one (`io.cwd`, where the host's file tools write), so a path the model builds from it is one those tools
+  take; otherwise it is an empty directory of the session's. The CLI keeps nothing there. The CLI's environment is an
+  allowlist (`PATH`, `LANG`, `TZ`, its own homes and the proxy's address and key).
 - **Durable.** The CLI's transcript is mirrored into the session's records (the SDK's session store), so a session a
   process died inside resumes from them on any machine.
 
