@@ -107,6 +107,9 @@ export interface ClaudeAgentAdapterOptions {
    *  then admits. Each search the provider reports is booked at `CLAUDE_WEB_SEARCH_USD` on top of `price`, into the
    *  session's cost and so its spend cap. WebFetch stays off (it would fetch from the CLI's own process). Default off. */
   webSearch?: boolean;
+  /** With `webSearch`: the input tokens a search request may read in beyond its body, added to its input bound, so a cap
+   *  can hold it (`inputTokensMax`). Absent, a search request has no input bound. */
+  webSearchAllowance?: number;
   /** Diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /**
@@ -353,7 +356,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           hooks: io.models,
           tools: tools.map((t) => t.name),
           ...(builtins.length ? { builtins } : {}),
-          ...(webSearch ? { webSearch: true } : {}),
+          ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(options.provider.auth ? { auth: options.provider.auth } : {}),
