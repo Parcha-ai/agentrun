@@ -1072,6 +1072,12 @@ carries no cost at all, as from a provider that does not price the model. The te
 
 ## Safety
 
+- An import (`agentrun-serve import`, and setup's import) cuts secrets out of everything it writes: the values of the
+  environment's key-shaped variables and the keys saved on this server, and the keys [secretlint](https://github.com/secretlint/secretlint)'s
+  recommended rules find in what it reads (Anthropic, OpenAI, GitHub, Slack and Stripe keys, AWS secret keys beside their
+  name, private keys, database URLs with a password, and more). Each becomes `[redacted]`, and the import says how many
+  it removed. Known key formats are removed. Other secrets in your session history, like passwords in config files, are
+  imported as they are.
 - The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`) are never in a run's environment or files: a workflow run's
   process gets them on a pipe of their own, for its decision providers alone ([decision workflows](#decision-workflows)).
 - `web_fetch`'s direct fetch dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this

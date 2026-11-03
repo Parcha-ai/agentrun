@@ -1,7 +1,8 @@
-// The keys and tokens cut out of text this server keeps (what the importer writes: a transcript can hold a key a tool
-// printed or was given). Two kinds: the values of an environment's key-shaped variables (the rule of the harness log's
-// cut), and any key or token by its shape, whoever's it is (a rotated key, a colleague's, one an agent printed from a
-// .env). Each cut counts what it removes.
+// The values of an environment's key-shaped variables, cut out of text this server keeps: the rule of the harness log's
+// cut, for what the importer writes (a transcript can hold a key a tool printed or was given). The import adds the keys
+// secretlint finds in what it reads (`secretsIn`): keys of a known format, whoever's they are.
+import { lintSource } from "@secretlint/core";
+import { creator as recommended } from "@secretlint/secretlint-rule-preset-recommend";
 
 /** Names whose values are secrets. */
 const SECRET_NAME = /(_API_KEY|_TOKEN)$|SECRET/i;
@@ -19,20 +20,19 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
     .map(([, value]) => value as string)
     // The longest first: a key that holds a shorter one is cut whole.
     .sort((a, b) => b.length - a.length);
-  // After the environment's values, every key or token of a known shape (shapedCut). `text.removed` counts the keys and
-  // tokens cut, each once however many times it was met. `text.probe` cuts the same and counts nothing: for a string
-  // that is never kept (a path with a folder blanked, to find which folders a key touches).
+  // `text.removed` counts the values it cut, each once however often it was met; `text.probe` cuts the same and counts
+  // nothing (a string never kept); `add` takes more values to cut (the keys secretlint found).
   const removed = new Set<string>();
-  const cut = (value: string, count: boolean): string => {
-    const own = secrets.reduce((out, secret) => {
-      const parts = out.split(secret);
-      if (parts.length > 1 && count) removed.add(secret);
-      return parts.join(REDACTED);
+  // Each value as it is, and as a JSON string holds it (a quote or a backslash in it escaped).
+  const cut = (value: string, count: boolean) =>
+    secrets.reduce((out, secret) => {
+      for (const form of new Set([secret, JSON.stringify(secret).slice(1, -1)])) {
+        const parts = out.split(form);
+        if (parts.length > 1 && count) removed.add(secret);
+        out = parts.join(REDACTED);
+      }
+      return out;
     }, value);
-    const shaped = shapedCut(own);
-    if (count) for (const found of shaped.cut) removed.add(found);
-    return shaped.text;
-  };
   const text = Object.assign(
     (value: string): string => {
       const out = cut(value, true);
@@ -41,128 +41,42 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
     },
     { removed: 0, probe: (value: string): string => cut(value, false) },
   );
+  const add = (values: readonly string[]) => {
+    const fresh = values.filter((value) => value.length >= 8 && !secrets.includes(value));
+    if (fresh.length) secrets.splice(0, secrets.length, ...[...secrets, ...fresh].sort((a, b) => b.length - a.length));
+  };
   const json = (value: unknown): unknown => {
     if (typeof value === "string") return text(value);
     if (Array.isArray(value)) return value.map(json);
-    if (value !== null && typeof value === "object")
-      return Object.fromEntries(
-        Object.entries(value).map(([name, inner]) => {
-          // A field whose name says its value is a secret (a tool's structured input): its value, the name beside it.
-          const named = typeof inner === "string" ? namedSecret(name, inner) : undefined;
-          if (named !== undefined) {
-            removed.add(named);
-            text.removed = removed.size;
-            return [text(name), REDACTED];
-          }
-          return [text(name), json(inner)];
-        }),
-      );
+    if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, inner]) => [text(name), json(inner)]));
     return value;
   };
-  return { text, json };
+  return { text, json, add };
 }
 
-/** Keys and tokens by their shape: the rules gitleaks and trufflehog lead with, the ones a transcript holds most. Each
- *  is anchored at a word edge and bounded (no quantifier nested in another), and together they run as one pass. */
-const SHAPED = new RegExp(
-  [
-    // Anthropic and OpenAI keys (project, service account, admin and classic), never inside a word (`task-…`).
-    String.raw`(?<![A-Za-z0-9_-])sk-(?:ant-|proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,300}`,
-    // GitHub tokens: classic (ghp_, gho_, ghu_, ghs_, ghr_) and fine-grained.
-    String.raw`(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{36,255}`,
-    String.raw`(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{22,255}`,
-    // AWS access key ids.
-    String.raw`(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])`,
-    // Slack tokens.
-    String.raw`(?<![A-Za-z0-9])xox[abpr]-[A-Za-z0-9-]{10,250}`,
-    // Stripe live keys.
-    String.raw`(?<![A-Za-z0-9])(?:sk|rk|pk)_live_[A-Za-z0-9]{16,250}`,
-    // A PEM private key, its lines as text or escaped in a JSON string.
-    String.raw`-----BEGIN (?:[A-Z0-9]+ ){0,3}PRIVATE KEY-----[\s\S]{1,10000}?-----END (?:[A-Z0-9]+ ){0,3}PRIVATE KEY-----`,
-  ].join("|"),
-  "g",
-);
-/** An AWS secret access key: 40 characters of base64, only beside its name, the shape alone being too common. */
-const AWS_SECRET = /(aws_?secret_?access_?key|aws_?secret_?key|aws_secret)(["']?\s{0,3}[:=]\s{0,3}["']?)([A-Za-z0-9/+]{40})(?![A-Za-z0-9/+=])/gi;
-/** An AWS access key id, and a 40-character run of base64 (an AWS secret access key's shape) near one. */
-const AWS_ID = /(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])/g;
-const KEY_40 = /[A-Za-z0-9/+]{40}/g;
-/** A bearer token (`Authorization: Bearer …`, a curl -H line, a JWT): its value, when it looks like a key. */
-const BEARER = /(?<![A-Za-z0-9_])(bearer\s{1,3})([A-Za-z0-9._~+/=-]{20,2000})/gi;
-/** `NAME=value` or `name: value` where the name says key, token, secret or password and the value looks like one. */
-const ASSIGNED = /(?<![A-Za-z0-9_])([A-Za-z0-9_]{0,40}(?:api_?key|access_?key|secret|token|password|passwd|private_?key)[A-Za-z0-9_]{0,20})(["']?\s{0,3}[=:]\s{0,3}["']?)([^\s"'`<>,;]{16,300})/gi;
+const SECRETLINT = { rules: [{ id: "@secretlint/secretlint-rule-preset-recommend", rule: recommended }] };
 
-/** Whether `value` reads as a key, not a word, a path, a reference or a placeholder: two kinds of character or more,
- *  and the entropy of random text. */
-function keyLike(value: string): boolean {
-  if (/^(?:\$|~|\/|\.\/|https?:|\[redacted\])/i.test(value)) return false;
-  const kinds = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((kind) => kind.test(value)).length;
-  if (kinds < 2) return false;
-  const counts = new Map<string, number>();
-  for (const c of value) counts.set(c, (counts.get(c) ?? 0) + 1);
-  let bits = 0;
-  for (const n of counts.values()) bits -= (n / value.length) * Math.log2(n / value.length);
-  return bits >= 3.2;
-}
-
-/** `value` with every key or token of a known shape cut, and the ones cut. */
-export function shapedCut(value: string): { text: string; cut: string[] } {
-  const cut: string[] = [];
-  if (value.length < 16) return { text: value, cut };
-  let out = value;
-  // An AWS secret access key pasted beside its access key id (within 100 characters, either side), its name nowhere:
-  // trufflehog's pairing, before the id itself is cut below. Only the text around each id is looked at.
-  if (/A[KS]IA/.test(out)) {
-    const pairs = new Set<string>();
-    for (const id of out.matchAll(AWS_ID)) {
-      const from = Math.max(0, id.index - 140);
-      for (const key of out.slice(from, id.index + id[0].length + 140).matchAll(KEY_40)) {
-        const at = from + key.index;
-        // Whole in the text itself, not a cut through a longer run at the window's edge.
-        if (!/[A-Za-z0-9/+]/.test(out[at - 1] ?? "") && !/[A-Za-z0-9/+=]/.test(out[at + 40] ?? "")) pairs.add(key[0]);
-      }
+/** The keys secretlint's recommended rules find in `content`, in one pass: each as the rule names it (the secret
+ *  itself where the rule gives it, else what it matched), and as a JSON string holding it would read it, decoded up to
+ *  three times, so the cut finds it in a record's parsed text and in a shell's output kept in one as JSON. */
+export async function secretsIn(content: string): Promise<string[]> {
+  if (!content) return [];
+  const { messages } = await lintSource({ source: { content, filePath: "/import.txt", ext: ".txt", contentType: "text" }, options: { config: SECRETLINT, maskSecrets: false } });
+  const decoded = (value: string): string | undefined => {
+    try {
+      const out = JSON.parse(`"${value}"`) as unknown;
+      return typeof out === "string" && out !== value ? out : undefined;
+    } catch {
+      return undefined;
     }
-    for (const secret of pairs) {
-      cut.push(secret);
-      out = out.split(secret).join(REDACTED);
+  };
+  const found = new Set<string>();
+  for (const message of messages) {
+    const named = Object.values(message.data ?? {}).filter((value): value is string => typeof value === "string" && value.length >= 8 && content.includes(value));
+    for (const each of named.length ? named : [content.slice(message.range[0], message.range[1])]) {
+      let value: string | undefined = each;
+      for (let level = 0; value !== undefined && level < 3; level++) (found.add(value), (value = decoded(value)));
     }
   }
-  out = out.replace(SHAPED, (found) => {
-    // A classic OpenAI key holds a digit; a long hyphenated slug after a bare `sk-` holds none. A key under a known
-    // prefix (`sk-ant-`, `sk-proj-`, `sk-svcacct-`, `sk-admin-`) is cut whatever its body.
-    if (/^sk-(?!ant-|proj-|svcacct-|admin-)/.test(found) && !/[0-9]/.test(found)) return found;
-    cut.push(found);
-    return REDACTED;
-  });
-  if (/aws/i.test(out))
-    out = out.replace(AWS_SECRET, (_, name: string, between: string, secret: string) => {
-      cut.push(secret);
-      return `${name}${between}${REDACTED}`;
-    });
-  if (/bearer/i.test(out))
-    out = out.replace(BEARER, (found, word: string, token: string) => {
-      if (!keyLike(token)) return found;
-      cut.push(token);
-      return `${word}${REDACTED}`;
-    });
-  if (/[=:]/.test(out))
-    out = out.replace(ASSIGNED, (found, name: string, between: string, value: string) => {
-      // A sentence's own punctuation after an unquoted value ends it: `PASSWORD=<key>.` is the key, the period the
-      // sentence's, when the rest still reads as a key. A quoted value is the key whole, its punctuation and all, and
-      // a value too short without its punctuation is cut whole, as it was before the punctuation was set apart.
-      const trimmed = /["']$/.test(between) ? value : value.replace(/[.:)\]}!?]+$/, "");
-      const secret = [trimmed, value].find((candidate) => candidate.length >= 16 && keyLike(candidate));
-      if (secret === undefined) return found;
-      cut.push(secret);
-      return `${name}${between}${REDACTED}${value.slice(secret.length)}`;
-    });
-  return { text: out, cut };
-}
-
-/** The value of a field named for a secret, when the value reads as one: an AWS secret access key under its name, or a
- *  key-like value under a KEY / TOKEN / SECRET / PASSWORD name, as `name=value` in text would be cut. */
-function namedSecret(name: string, value: string): string | undefined {
-  if (/^(?:aws_?secret_?access_?key|aws_?secret_?key|aws_secret)$/i.test(name) && /^[A-Za-z0-9/+]{40}$/.test(value)) return value;
-  if (value.length >= 16 && value.length <= 300 && /^[A-Za-z0-9_]{0,40}(?:api_?key|access_?key|secret|token|password|passwd|private_?key)[A-Za-z0-9_]{0,20}$/i.test(name) && !/[\s"'`<>,;]/.test(value) && keyLike(value)) return value;
-  return undefined;
+  return [...found];
 }

@@ -5,7 +5,7 @@
 // are left out by name; an imported run takes no message, and a stop, a cancel or a restart moves nothing of it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -354,34 +354,27 @@ test("the CLI's import cuts the server's own keys out of what it keeps, wherever
   assert.equal(after.listRuns().length, runs.length, "no run made twice");
 });
 
-/** Keys and tokens of every shape the import cuts though no environment holds them: each made here, random, so no
- *  scanner reads this file as holding one, and none is anyone's. */
+/** A key of every format secretlint's recommended rules find, though no environment holds it: each made here, random
+ *  (the private key a real one, made here), so no scanner reads this file as holding one, and none is anyone's. */
 function shapedKeys() {
   const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
   const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  const B64 = `${ALNUM}/+`;
-  const lines = [pick(64, B64), pick(64, B64), pick(40, B64)];
+  const URL64 = `${ALNUM}_-`;
+  const OPENAI = ["T3Blbk", "FJ"].join("");
+  const pem = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey.trim();
   return {
-    anthropic: ["sk", "ant", "api03", pick(80, ALNUM)].join("-") + "AA",
-    openaiProject: ["sk", "proj", pick(64, ALNUM)].join("-"),
-    openai: ["sk", `${pick(47, ALNUM)}7`].join("-"),
+    anthropic: ["sk", "ant", "api03", pick(93, URL64)].join("-") + "AA",
+    openaiProject: ["sk", "proj", `${pick(74, ALNUM)}${OPENAI}${pick(74, ALNUM)}`].join("-"),
+    openai: ["sk", `${pick(20, ALNUM)}${OPENAI}${pick(20, ALNUM)}`].join("-"),
     github: `${["gh", "p"].join("")}_${pick(36, ALNUM)}`,
-    githubFine: ["github", "pat", pick(22, ALNUM), pick(59, ALNUM)].join("_"),
-    awsId: `${["AK", "IA"].join("")}${pick(16, UPPER)}`,
-    awsSecret: pick(40, B64),
+    githubFine: ["github", "pat", pick(82, `${ALNUM}_`)].join("_"),
     slack: [["xo", "xb"].join(""), pick(12, "0123456789"), pick(13, "0123456789"), pick(24, ALNUM)].join("-"),
     stripe: ["sk", "live", pick(24, ALNUM)].join("_"),
-    pem: { block: [`-----BEGIN RSA ${"PRIVATE"} KEY-----`, ...lines, `-----END RSA ${"PRIVATE"} KEY-----`].join("\n"), lines },
-    assigned: `${pick(26, ALNUM)}9z`,
-    bearer: [pick(36, ALNUM), pick(120, ALNUM), pick(43, ALNUM)].join("."),
-    // An AWS key pair pasted with no name beside the secret.
-    awsIdBare: `${["AS", "IA"].join("")}${pick(16, UPPER)}`,
-    awsSecretBare: pick(40, B64),
+    pem: { block: pem, lines: pem.split("\n").slice(1, -1) },
   };
 }
 
-test("an import cuts every key or token of a known shape that no environment holds, wherever a session or project holds one, and says how many it removed", async (t) => {
+test("an import cuts every key secretlint finds though no environment holds it, wherever a session or project holds one, and says how many it removed", async (t) => {
   const root = await scratch(t);
   const at = join(root, "home");
   const site = join(at, "code", "payments");
@@ -392,10 +385,10 @@ test("an import cuts every key or token of a known shape that no environment hol
   mkdirSync(join(site, ".claude", "skills", `rotate-${k.github}`), { recursive: true });
   writeFileSync(join(site, ".claude", "skills", `rotate-${k.github}`, "SKILL.md"), "---\nname: rotate-again\n---\nThe second one.\n");
   writeFileSync(join(site, "CLAUDE.md"), `Deploy with ${k.stripe}.\n${k.pem.block}\n`);
-  writeFileSync(join(site, ".claude", "skills", `rotate-${k.githubFine}`, "SKILL.md"), `---\nname: rotate\n---\nThe old id was ${k.awsId}, aws_secret_access_key = ${k.awsSecret}\n`);
+  writeFileSync(join(site, ".claude", "skills", `rotate-${k.githubFine}`, "SKILL.md"), `---\nname: rotate\n---\nThe old key was ${k.openai}\n`);
   // A session's text (a .env an agent printed), its first message (the run's title), a subagent's answer, and a
   // session file named after a key (its records carry no session id, so the import names the session after its file).
-  claudeSession(at, site, 1, { prompt: `Rotate ${k.anthropic} and ${k.github} today.`, output: `cat .env:\nOPENAI_API_KEY=${k.openai}\nDATABASE_PASSWORD=${k.assigned}\nSLACK=${k.slack}\ncurl -H "Authorization: ${"Bearer"} ${k.bearer}" https://api.example.com/v1/me\nRotate these: ${k.awsIdBare} ${k.awsSecretBare}` });
+  claudeSession(at, site, 1, { prompt: `Rotate ${k.anthropic} and ${k.github} today.`, output: `cat .env:\nOPENAI_API_KEY=${k.openai}\nSLACK=${k.slack}` });
   claudeSubagent(at, site, 1, 1, { answer: `The colleague's key is ${k.openai} and the bot's ${k.slack}.` });
   const named = claudeSession(at, site, 2, { prompt: "Check the logs.", output: `Found ${k.openaiProject} in the logs.` });
   const records = readFileSync(named, "utf8").trimEnd().split("\n").map((line) => { const { sessionId: _, ...rest } = JSON.parse(line); return JSON.stringify(rest); });
@@ -428,7 +421,7 @@ test("an import cuts every key or token of a known shape that no environment hol
   // Nothing it printed names a key: the skipped file's name is cut where it is printed.
   for (const [kind, value] of [...Object.entries(values).flatMap(([kind, v]) => (Array.isArray(v) ? v : [v]).map((x) => [kind, x])), ["skipped file", unnamed]]) assert.ok(![...dry, ...lines].some((l) => l.includes(value)), `${kind} printed`);
   assert.ok(lines.some((l) => l.startsWith("skipped ") && l.includes("[redacted].jsonl")), "the skipped line, its name cut");
-  // Each is counted once, however many places held it: the 14 values (the PEM block one of them).
+  // Each is counted once, however many places held it (the private key one of them).
   assert.ok(lines.includes(`${kinds} secrets removed`), `the import says it removed ${kinds}: ${lines.filter((l) => /removed/.test(l))}`);
   const reader = openStoreReader(data);
   t.after(() => reader.close());
@@ -439,38 +432,74 @@ test("an import cuts every key or token of a known shape that no environment hol
   assert.ok(skills.every((path) => /redacted-[0-9a-f]{12}\//.test(path)), skills.join(" "));
 });
 
-test("the shape rules cut a prefixed key whatever its body, an AWS pair with no name, and a field named for its secret", async () => {
-  const { REDACTED, secretCut, shapedCut } = await import("../dist/secret-cut.js");
-  const letters = (n) => Array.from(randomBytes(n), (b) => "abcdefghijklmnopqrstuvwxyz"[b % 26]).join("");
-  const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+";
-  const b64 = (n) => Array.from(randomBytes(n), (b) => B64[b % B64.length]).join("");
-  const project = ["sk", "proj", letters(48)].join("-");
-  assert.deepEqual(shapedCut(`the key is ${project}`), { text: "the key is [redacted]", cut: [project] }, "a prefixed key with no digit in its body");
-  const id = `${["AK", "IA"].join("")}${letters(16).toUpperCase()}`;
-  const secret = b64(40);
-  assert.deepEqual(shapedCut(`Rotate these: ${id} ${secret} today`).text, "Rotate these: [redacted] [redacted] today", "the pair, the secret after its id");
-  assert.equal(shapedCut(`${secret}\n${id}`).text, "[redacted]\n[redacted]", "the secret before its id");
-  // A value a sentence ends on: the key alone is cut and counted, the period stays. (Each password here starts with a
-  // letter: a value that starts with "/" reads as a path, and is left, by design.)
-  const value = `x${b64(21)}9z`;
-  assert.deepEqual(shapedCut(`Set DATABASE_PASSWORD=${value}. Then restart.`), { text: "Set DATABASE_PASSWORD=[redacted]. Then restart.", cut: [value] });
-  // A 16-character password whose last character is punctuation: quoted, it is cut whole; unquoted, it is too short
-  // without its punctuation to be a key, so it is cut whole too.
-  // (The name is a variable: the source holds no quoted password literal for the source export to flag.)
-  const bang = `x${b64(12)}9z!`;
-  const pw = "DATABASE_PASSWORD";
-  assert.deepEqual(shapedCut(`${pw}="${bang}"`), { text: `${pw}="${REDACTED}"`, cut: [bang] }, "a quoted password ending in punctuation");
-  assert.deepEqual(shapedCut(`export ${pw}=${bang}`), { text: `export ${pw}=${REDACTED}`, cut: [bang] }, "an unquoted one");
-  // A JWT as a bearer token: base64url, "_" and "-" in it, cut whole.
-  const jwt = [`eyJ${letters(30)}`, `${letters(20)}_${b64(20).replace(/[/+]/g, "-")}_${letters(12)}`, letters(43)].join(".");
-  assert.deepEqual(shapedCut(`curl -H "Authorization: ${"Bearer"} ${jwt}" https://api.example.com`), { text: `curl -H "Authorization: ${"Bearer"} [redacted]" https://api.example.com`, cut: [jwt] }, "a JWT bearer token");
-  const sha = "9fe2d9110a1b2c3d4e5f60718293a4b5c6d7e8f9";
-  assert.equal(shapedCut(`commit ${sha} merged`).text, `commit ${sha} merged`, "a git SHA with no id near it");
-  const cut = secretCut({ PATH: "/usr/bin" });
-  const password = `x${b64(21)}9z`;
-  const input = { aws_secret_access_key: secret, DATABASE_PASSWORD: password, cacheKey: "a1", token_url: "https://auth.example.com/oauth/token", note: "ok" };
-  assert.deepEqual(cut.json(input), { ...input, aws_secret_access_key: REDACTED, DATABASE_PASSWORD: REDACTED }, "a tool's structured input");
-  assert.equal(cut.text.removed, 2);
+test("keys in a JSON string a session holds, as Codex keeps a shell's output and as Claude Code keeps a printed file, are cut and counted once", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "vault");
+  mkdirSync(site, { recursive: true });
+  const k = shapedKeys();
+  const config = JSON.stringify({ anthropic: k.anthropic, github: k.github, slack: k.slack, stripe: k.stripe, private_key: k.pem.block });
+  // Codex: the shell's output is a JSON string in the record, the printed file a JSON string inside that.
+  codexSession(at, site, 1, { output: JSON.stringify({ output: `$ cat config.json\n${config}`, metadata: { exit_code: 0, duration_seconds: 0.4 } }) });
+  // Claude Code: the printed file is the tool result's text.
+  claudeSession(at, site, 2, { output: config });
+  const data = join(root, "agents");
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+  for (const value of [k.anthropic, k.github, k.slack, k.stripe, ...k.pem.lines]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(value), `${file.slice(data.length + 1)} holds ${value.slice(0, 8)}…`);
+  assert.ok(lines.includes("5 secrets removed"), lines.filter((l) => /removed/.test(l)).join(" "));
+});
+
+test("this repository's own source, imported as a session's output, has nothing cut from it", async (t) => {
+  const repo = new URL("../../../", import.meta.url).pathname;
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (["node_modules", "dist", ".git", "coverage", "storybook-static"].includes(entry.name)) continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (/\.(ts|tsx|mjs)$/.test(entry.name)) files.push(path);
+    }
+  };
+  for (const top of ["packages", "apps"]) walk(join(repo, top));
+  // One file holds a key-shaped literal on purpose: packages/learn/test/check.test.mjs, whose checker test plants a Slack
+  // bot token's shape (its `xoxb-` string) to see it refused. It is left out; every other file must come through whole.
+  const source = files.filter((file) => !file.endsWith(join("learn", "test", "check.test.mjs")));
+  assert.ok(source.length > 300, `the source read: ${source.length} files`);
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "agentrun");
+  mkdirSync(site, { recursive: true });
+  // Each file printed whole by a session, about a megabyte of source a session.
+  let [n, chunk, size] = [1, [], 0];
+  const flushed = () => (chunk.length && claudeSession(at, site, n++, { prompt: "Read the source.", output: chunk.join("\n") }), (chunk = []), (size = 0));
+  for (const file of source) {
+    const text = readFileSync(file, "utf8");
+    chunk.push(`==> ${file.slice(repo.length)}\n${text}`);
+    size += text.length;
+    if (size > 1_000_000) flushed();
+  }
+  flushed();
+  const data = join(root, "agents");
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+  assert.ok(lines.includes("0 secrets removed"), `${source.length} files: ${lines.filter((l) => /removed/.test(l)).join(" ")}`);
+});
+
+test("secretlint finds nothing in code that names keys and passwords", async () => {
+  const { secretsIn } = await import("../dist/secret-cut.js");
+  for (const line of [
+    "const apiKey = process.env.OPENAI_API_KEY;",
+    "user.password = bcrypt.hashSync(password, 10);",
+    "const { accessKeyId, secretAccessKey } = await sts.assumeRole({ RoleArn: roleArn }).promise();",
+    'headers: { "x-api-key": config.apiKey, authorization: `Bearer ${session.accessToken}` }',
+  ])
+    assert.deepEqual(await secretsIn(line), [], line);
+});
+
+test("the README says what an import removes and what it leaves", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+  assert.ok(readme.includes("Known key formats are removed. Other secrets in your session history, like passwords in config files, are imported as they are."));
 });
 
 test("a key of the environment's that holds a slash, across a skill's folders, leaves no part of itself in what the import keeps, and the skill stays one skill", async (t) => {
@@ -510,10 +539,8 @@ test("a key of the environment's that holds a slash, across a skill's folders, l
 test("a key in a project's path counts once, in the dry run and in the import: finding the folders it touches counts nothing", async (t) => {
   const root = await scratch(t);
   const at = join(root, "home");
-  // An assignment in a folder's name: its value runs on through the path's "/", so a folder after it, blanked to find
-  // the folders the key touches, leaves a shorter value that is no key removed.
-  const pw = ["PASS", "WORD"].join("");
-  const site = join(at, "code", `${pw}=x${randomBytes(10).toString("hex")}Q9`, "app");
+  // A key in a folder's name, with a folder after it: blanking each to find the folders the key touches is no cut.
+  const site = join(at, "code", `keys-${shapedKeys().github}`, "app");
   mkdirSync(site, { recursive: true });
   claudeSession(at, site, 1, { prompt: "Build it." });
   const data = join(root, "agents");
@@ -540,216 +567,6 @@ test("a key of the environment's that holds a slash, across a project's own fold
   const { agent } = reader.readAgent(agentIdOf(site));
   assert.match(agent.name, /^redacted-[0-9a-f]{12}$/, `the agent's name holds no half of the key: ${agent.name}`);
   for (const half of [head, tail]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(half), `${file} holds a half of the key`);
-});
-
-/** A seeded random source (mulberry32), so a failing sweep's seed replays it: IMPORT_SWEEP_SEED=<seed>. */
-const seeded = (seed) => {
-  let s = seed >>> 0;
-  const next = () => {
-    s = (s + 0x6d2b79f5) >>> 0;
-    let t = s;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-  const int = (n) => Math.floor(next() * n);
-  return { int, pick: (list) => list[int(list.length)], chars: (n, set) => Array.from({ length: n }, () => set[int(set.length)]).join("") };
-};
-
-/** One planted key of `kind`: `text` as it is written in text, `parts` its pieces between "/" when it can be a path's,
- *  `env` the environment's value when the environment holds it, and `material`, what no 12 characters of may be kept. */
-function sweepKey(r, kind, n) {
-  const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  const B64 = `${ALNUM}/+`;
-  // A letter first and a digit last: a value that starts with "/" reads as a path, and is left, by design.
-  const word = (len) => `${r.pick("abcdefghjkmnpqrstuvwxyz")}${r.chars(len - 2, ALNUM)}${r.pick("23456789")}`;
-  const named = (text, value) => ({ text, material: [value] });
-  const path = (value) => ({ text: value, parts: value.split("/"), material: [value] });
-  switch (kind) {
-    case "env-base64": {
-      // A base64 value: "+" inside, "=" padding, and a "/" or two, as a path's folders can hold it.
-      const value = Array.from({ length: 2 + r.int(2) }, () => `${r.chars(6 + r.int(18), `${ALNUM}+`)}${r.pick(ALNUM)}`).join("/") + r.pick(["", "=", "=="]);
-      return { ...path(value), env: [`SWEEP${n}_API_KEY`, value] };
-    }
-    case "env-dotted": {
-      // A JWT-like value of dotted parts, or a dashed one: "." and "-", and no "/".
-      const sep = r.pick([".", "-"]);
-      const value = Array.from({ length: 3 }, () => r.chars(8 + r.int(16), ALNUM)).join(sep);
-      return { ...path(value), env: [`SWEEP${n}_TOKEN`, value] };
-    }
-    case "env-plain": {
-      const value = r.chars(24 + r.int(24), ALNUM);
-      return { ...path(value), env: [`SWEEP${n}_SECRET`, value] };
-    }
-    case "anthropic":
-      return path(["sk", "ant", "api03", r.chars(80, ALNUM)].join("-") + "AA");
-    case "openai-project":
-      return path(["sk", "proj", r.chars(64, ALNUM)].join("-"));
-    case "openai":
-      return path(["sk", `${r.chars(47, ALNUM)}7`].join("-"));
-    case "github":
-      return path(`${["gh", r.pick(["p", "o", "s"])].join("")}_${r.chars(36, ALNUM)}`);
-    case "github-fine":
-      return path(["github", "pat", r.chars(22, ALNUM), r.chars(59, ALNUM)].join("_"));
-    case "aws-id":
-      return path(`${["AK", "IA"].join("")}${r.chars(16, UPPER)}`);
-    case "slack":
-      return path([["xo", "xb"].join(""), r.chars(12, "0123456789"), r.chars(13, "0123456789"), r.chars(24, ALNUM)].join("-"));
-    case "stripe":
-      return path(["sk", "live", r.chars(24, ALNUM)].join("_"));
-    case "pem": {
-      const lines = [r.chars(64, B64), r.chars(64, B64), r.chars(40, B64)];
-      return { text: [`-----BEGIN RSA ${"PRIVATE"} KEY-----`, ...lines, `-----END RSA ${"PRIVATE"} KEY-----`].join("\n"), material: lines };
-    }
-    case "assigned": {
-      // 16 to 29 characters, its last one punctuation or not: a quoted or unquoted 16 ending in "!" among them.
-      const mark = r.pick(["", "!", "#", "%"]);
-      const value = `${word((mark ? 15 : 16) + r.int(14))}${mark}`;
-      const name = r.pick(["DATABASE_PASSWORD", "api_key", "SERVICE_TOKEN", "client_secret"]);
-      const quote = r.pick(["", '"', "'"]);
-      return named(`${r.pick(["", "export "])}${name}${r.pick(["=", ": ", " = "])}${quote}${value}${quote}`, value);
-    }
-    case "bearer": {
-      const token = [r.chars(36, ALNUM), r.chars(80, `${ALNUM}-_`), r.chars(43, ALNUM)].join(".");
-      return named(`${r.pick(["Authorization: ", "-H 'Authorization: ", ""])}${"Bearer"} ${token}`, token);
-    }
-    case "aws-pair": {
-      const id = `${["AS", "IA"].join("")}${r.chars(16, UPPER)}`;
-      const secret = `${r.pick("abcdefghjkmnpqrstuvwxyz")}${r.chars(39, B64)}`;
-      return { text: r.int(2) ? `${id} ${secret}` : `${secret}\n${id}`, material: [id, secret] };
-    }
-    default: {
-      // "aws-named": an AWS secret access key under its name.
-      const secret = `${r.pick("abcdefghjkmnpqrstuvwxyz")}${r.chars(39, B64)}`;
-      return named(`aws_secret_access_key${r.pick(["=", " = ", ": "])}${secret}`, secret);
-    }
-  }
-}
-
-const SWEEP_KINDS = ["env-base64", "env-dotted", "env-plain", "anthropic", "openai-project", "openai", "github", "github-fine", "aws-id", "slack", "stripe", "pem", "assigned", "bearer", "aws-pair", "aws-named"];
-const SWEEP_PLACES = ["title", "transcript", "instructions", "skill text", "skill path", "project path"];
-const SWEEP_CASES = 200;
-const SWEEP_BATCH = 20;
-
-test("a seeded sweep: random keys of every kind, planted at random in titles, transcripts, instructions, skills and path names at every depth, leave no 12 characters of themselves in what the import keeps, and every skill stays whole", async (t) => {
-  const seed = Number(process.env.IMPORT_SWEEP_SEED ?? randomBytes(4).readUInt32BE(0));
-  t.diagnostic(`seed ${seed}, ${SWEEP_CASES} cases`);
-  const r = seeded(seed);
-  const root = await scratch(t);
-  const failures = [];
-  for (let batch = 0; batch < SWEEP_CASES / SWEEP_BATCH; batch++) {
-    const at = join(root, `home-${batch}`);
-    const env = { PATH: "/usr/bin" };
-    const cases = [];
-    for (let i = 0; i < SWEEP_BATCH; i++) {
-      const n = batch * SWEEP_BATCH + i;
-      const kind = r.pick(SWEEP_KINDS);
-      const key = sweepKey(r, kind, n);
-      if (key.env) env[key.env[0]] = key.env[1];
-      const place = r.pick(key.parts ? SWEEP_PLACES : SWEEP_PLACES.slice(0, 4));
-      // In text, the key sits between any of a sentence's marks; in a path, it starts a folder's or a file's name or
-      // follows a mark, and ends it or comes before an extension or a mark.
-      const inText = `Rotate ${r.pick(["", "(", '"', "'", "key: ", "\n"])}${key.text}${r.pick(["", ")", '"', "'", ".", ",", ";", "\n", ". Then restart"])} before the release.`;
-      const lead = () => r.pick(["", "x.", "run@", "v="]);
-      const trail = () => r.pick(["", ".md", ".txt", "@2", "~"]);
-      // The project's folders under code/, and its skill's: a folder, up to two folders in it, and a file.
-      let project = ["app", `p${n}`];
-      let skill = ["tidy", ...Array.from({ length: r.int(3) }, (_, k) => `part${k}`), "notes.md"];
-      const plant = (segments, from) => {
-        const pieces = [...key.parts];
-        pieces[0] = `${lead()}${pieces[0]}`;
-        pieces[pieces.length - 1] = `${pieces[pieces.length - 1]}${trail()}`;
-        return [...segments.slice(0, from), ...pieces, ...segments.slice(from + pieces.length)];
-      };
-      if (place === "skill path") {
-        // Its pieces from any depth (the skill's folder, a folder in it, the file's name), split across as many.
-        const room = Math.max(skill.length, key.parts.length);
-        while (skill.length < room) skill.splice(skill.length - 1, 0, `part${skill.length}`);
-        skill = plant(skill, r.int(skill.length - key.parts.length + 1));
-        if (skill.at(-1) === "SKILL.md") skill[skill.length - 1] = "notes.md";
-      }
-      if (place === "project path") {
-        // The project's own folder's name, or folders above it: the agent is named after the last.
-        const room = Math.max(project.length, key.parts.length);
-        while (project.length < room) project.unshift(`up${project.length}`);
-        project = plant(project, r.int(project.length - key.parts.length + 1));
-      }
-      const cwd = join(at, "code", ...project);
-      const folder = join(cwd, ".claude", "skills", skill[0]);
-      mkdirSync(join(folder, ...skill.slice(1, -1)), { recursive: true });
-      const skillText = place === "skill text" ? inText : "Keep it tidy.";
-      const inSkillMd = r.int(2) === 0;
-      writeFileSync(join(folder, "SKILL.md"), `---\nname: tidy\n---\n${inSkillMd ? skillText : "Tidy up."}\n`);
-      writeFileSync(join(folder, ...skill.slice(1)), `${inSkillMd ? "Notes." : skillText}\n`);
-      writeFileSync(join(cwd, "CLAUDE.md"), place === "instructions" ? `${inText}\n` : "Be brief.\n");
-      // A mark that is no key, in every transcript: the scan below must find it, or it reads nothing.
-      const control = `control-${r.chars(20, "abcdefghijklmnopqrstuvwxyz")}`;
-      claudeSession(at, cwd, n, { prompt: place === "title" ? inText : "Tidy the project.", output: `${place === "transcript" ? inText : "done"} ${control}` });
-      cases.push({ n, kind, place, key, cwd, skill: skill.join("/"), control });
-    }
-    const data = join(root, `agents-${batch}`);
-    const printed = [];
-    assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env, out: (line) => printed.push(line) }), 0, `seed ${seed}, batch ${batch}`);
-    // Every 12 characters of every key, to the case it came from.
-    const windows = new Map();
-    for (const one of cases) for (const value of one.key.material) for (let i = 0; i + 12 <= value.length; i++) windows.set(value.slice(i, i + 12), one);
-    const scan = (where, text) => {
-      for (let i = 0; i + 12 <= text.length; i++) {
-        const one = windows.get(text.slice(i, i + 12));
-        if (one) {
-          failures.push(`case ${one.n} (${one.kind} in its ${one.place}${one.place.endsWith("path") ? ` ${one.place === "skill path" ? one.skill : one.cwd.slice(at.length)}` : ""}): ${JSON.stringify(text.slice(i, i + 12))} in ${where}`);
-          return;
-        }
-      }
-    };
-    // Every name under the data directory and every byte of every file (the SQLite stores, their logs, each run's own),
-    // as raw bytes; and what the CLI printed.
-    const controls = new Set();
-    const walk = (dir) => {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        const path = join(dir, entry.name);
-        scan(`the name ${path.slice(data.length + 1)}`, path.slice(data.length + 1));
-        if (entry.isDirectory()) walk(path);
-        else {
-          const bytes = readFileSync(path).toString("latin1");
-          scan(path.slice(data.length + 1), bytes);
-          for (const one of cases) if (bytes.includes(one.control)) controls.add(one.n);
-        }
-      }
-    };
-    walk(data);
-    scan("what the CLI printed", printed.join("\n"));
-    assert.equal(controls.size, SWEEP_BATCH, `seed ${seed}, batch ${batch}: the scan reads every transcript (its mark that is no key found)`);
-    // Each skill stays whole: its SKILL.md and its file under one folder, kept or redacted alike.
-    const reader = openStoreReader(data);
-    for (const one of cases) {
-      const agent = reader.readAgent(agentIdOf(one.cwd));
-      const paths = Object.keys(agent?.revisions.find((rev) => rev.current)?.body.skills ?? {});
-      const folders = new Set(paths.map((path) => path.split("/")[0]));
-      if (paths.length !== 2 || folders.size !== 1 || !paths.includes(`${[...folders][0]}/SKILL.md`)) failures.push(`case ${one.n} (${one.kind} in its ${one.place} ${one.skill}): the skill is not whole: ${paths.join(" ")}`);
-    }
-    reader.close();
-  }
-  assert.deepEqual(failures, [], `seed ${seed} (IMPORT_SWEEP_SEED=${seed} replays it): ${failures.length} of ${SWEEP_CASES} cases`);
-});
-
-test("the shape rules leave ordinary text alone: ids, hashes, an image, a placeholder, prose", async () => {
-  const { shapedCut } = await import("../dist/secret-cut.js");
-  const ordinary = [
-    "00000000-0000-4000-8000-000000000001 and 3f2a9c1e-7b4d-4e8f-9a01-23456789abcd",
-    "commit 9fe2d9110a1b2c3d4e5f60718293a4b5c6d7e8f9 merged; tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904",
-    `<img src="data:image/png;base64,${"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==".repeat(3)}">`,
-    "Set PASSWORD=<your password> and API_KEY=${API_KEY} in .env, then TOKEN_FILE=/run/secrets/token.",
-    'const cacheKey = "a1"; config.token_url = "https://auth.example.com/oauth/token";',
-    // A word ending in "sk" before a long hyphenated name (made here, so the source holds no such run of characters).
-    `The task-runner and the ${"desk"}-lamp-controller-module-v2 ship with scikit-learn; ask the risk-assessment team.`,
-    "Our AWS account is in us-east-1; the key rotation runbook lives in docs/aws-secret-rotation.md.",
-    "passwords should be long: a passphrase like correct horse battery staple",
-    "pip install sk-learn is a typo; a risk-free task-1234 and sk-v2 stay as they are.",
-    "Send the Bearer token in the Authorization header: Authorization: Bearer ${TOKEN}, or Bearer <your token>.",
-  ];
-  for (const text of ordinary) assert.deepEqual(shapedCut(text), { text, cut: [] }, text.slice(0, 60));
 });
 
 /** The server's own key names: the launcher's SECRETS list, read as secrets.ts reads it (loading secrets.ts here would take
@@ -1346,14 +1163,12 @@ test("a subagent whose file names no parent is no session and no run: its tokens
   assert.equal(store.listRuns().length, 1, "no run for the subagent");
 });
 
-test("a tool key saved through the settings API is cut through the seal key from every file the import writes: opened on the host with it, the key is known and cut; with no seal key, printed in a form no shape rule takes, it is kept", async (t) => {
+test("a tool key saved through the settings API is cut from every file the import writes, opened on the host with the seal key; with no seal key it is not known, so not cut", async (t) => {
   const root = await scratch(t);
   const h = home(root);
   const seal = randomBytes(32).toString("base64");
   const saved = `not-a-secret-saved-${randomBytes(8).toString("hex")}`;
-  // Printed as no shape rule takes it (`MONID_API_KEY=<value>` is cut whatever the seal key: an assignment named for a
-  // key), so the control shows the seal key is what cuts it here.
-  assert.ok(readFileSync(claudeSession(h.at, h.site, 13, { prompt: "Which key?", output: `monid: ${saved}` })).includes(saved));
+  assert.ok(readFileSync(claudeSession(h.at, h.site, 13, { prompt: "Which key?", output: `MONID_API_KEY=${saved}` })).includes(saved));
   const into = async (name, env) => {
     const data = join(root, name);
     mkdirSync(data, { recursive: true });

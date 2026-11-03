@@ -6,7 +6,7 @@
 // the owner's only. Read again, it imports only the sessions it has not.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { parseArgs } from "node:util";
@@ -21,7 +21,7 @@ import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js"
 import { catalogPrices, type Listed } from "./model.js";
 import { logLine } from "./print.js";
 import { DEFAULT_PORT } from "./server.js";
-import { REDACTED, secretCut } from "./secret-cut.js";
+import { REDACTED, secretCut, secretsIn } from "./secret-cut.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { ToolKeys } from "./tool-keys.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
@@ -74,7 +74,8 @@ export type ProjectPlan = {
  *  session's subagents, whose usage is its run's: Claude Code's by the session file beside them, Codex's by `source:thread`; `untied`, those of subagents whose file names
  *  no parent, counted in a summary's totals alone. `found`: each other planned session measured,
  *  when the plan was made to (`measure`). */
-export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, string[]>; untied: { file: string; source: Source }[]; found?: Found[]; secretsFound?: number };
+/** `keys`: what secretlint found in each session file the plan read (subagents' included), read once, for the cut. */
+export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, string[]>; keys: Map<string, string[]>; untied: { file: string; source: Source }[]; found?: Found[]; secretsFound?: number };
 export type ImportReport = {
   agents: {
     id: string;
@@ -88,7 +89,8 @@ export type ImportReport = {
   }[];
   skipped: Skipped[];
   already: number;
-  /** Keys and tokens cut out of what it wrote (secret-cut.ts): the environment's values, and any of a known shape. */
+  /** Keys and tokens cut out of what it wrote (secret-cut.ts): the environment's values, the saved keys, and those of a
+   *  known format secretlint found. */
   secretsRemoved?: number;
 };
 
@@ -100,8 +102,35 @@ const hash = (text: string) => createHash("sha256").update(text).digest("hex");
  *  import keep it from the same keys, or a later import would not find the run an earlier one made. */
 const keptId = (envs: readonly NodeJS.ProcessEnv[]) => {
   const { text } = secretCut(envs, SECRET_NAMES);
-  return (id: string) => (text(id) === id ? id : `redacted-${hash(id).slice(0, 16)}`);
+  return (id: string, found: readonly string[] = []) => (text(id) === id && !found.some((key) => id.includes(key)) ? id : `redacted-${hash(id).slice(0, 16)}`);
 };
+
+/** The keys secretlint finds in a session file, in one pass over its path and its records' strings once parsed (a line
+ *  that is no record, as it is): a key in a record's text reads there as the import cuts it. */
+async function keysInFile(file: string): Promise<string[]> {
+  const strings: string[] = [file];
+  const collect = (value: unknown): void => {
+    if (typeof value === "string") strings.push(value);
+    else if (Array.isArray(value)) value.forEach(collect);
+    else if (value !== null && typeof value === "object") for (const [name, inner] of Object.entries(value)) (strings.push(name), collect(inner));
+  };
+  for (const line of (await readFile(file, "utf8").catch(() => "")).split("\n")) {
+    if (!line) continue;
+    try {
+      collect(JSON.parse(line));
+    } catch {
+      strings.push(line);
+    }
+  }
+  return secretsIn(strings.join("\n"));
+}
+
+/** What secretlint found in each of `files` (read by the plan), together. */
+const keysOf = (plan: Plan, files: Iterable<string>) => [...new Set(files)].flatMap((file) => plan.keys.get(file) ?? []);
+
+/** A project's own text for secretlint: its path, its instructions, and its skills' paths and text. */
+const projectText = (cwd: string, files: { instructions: Record<string, string>; skills: Record<string, string> }) =>
+  [cwd, ...Object.values(files.instructions), ...Object.entries(files.skills).flat()].join("\n");
 export const agentIdOf = (cwd: string) => `imp-${hash(`dir:${cwd}`).slice(0, 32)}`;
 /** The sessions the store holds already, as `source:session`, to their run's id. */
 const importedIn = (store: AgentStoreReader) => new Map(store.listRuns().flatMap((run) => (run.importedFrom ? [[`${run.importedFrom.source}:${run.importedFrom.session}`, run.id] as const] : [])));
@@ -137,6 +166,7 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   const held: string[] = [];
   const found: Found[] = [];
   const children = new Map<string, string[]>();
+  const keys = new Map<string, string[]>();
   const child = (owner: string, file: string) => void children.set(owner, [...(children.get(owner) ?? []), file]);
   const untied: Plan["untied"] = [];
   const projects = new Map<string, ProjectPlan>();
@@ -166,8 +196,10 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
       const session = await readSession(file, source, { turns: false }).catch((error: unknown) => void skipped.push(unread(file, error)));
       if (!session) continue;
-      session.id = idOf(session.id);
-      if (session.parent) session.parent = idOf(session.parent);
+      const found = await keysInFile(file);
+      keys.set(file, found);
+      session.id = idOf(session.id, found);
+      if (session.parent) session.parent = idOf(session.parent, found);
       // A subagent's session is no run of its own: its usage is its parent's, when its file names the parent (a Codex
       // thread's, whichever of its files); else it counts in the totals alone, where its project would.
       if (session.child && session.parent) {
@@ -218,15 +250,20 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
     if (source === "claude-code") for (const { file, of } of await childFiles(home)) child(of, file);
   }
   ownRuns(projects, rank);
-  const plan: Plan = { projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, untied };
+  // Each subagent's file read through secretlint once too, for the run it is part of.
+  for (const files of children.values()) for (const file of files) if (!keys.has(file)) keys.set(file, await keysInFile(file));
+  const plan: Plan = { projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, keys, untied };
   if (!measure) return plan;
   const counting = secretCut(env, SECRET_NAMES);
-  // A new agent's own text (its name, its path, its instructions and skills) is the import's to cut too: counted here.
+  // A new agent's own text (its name, its path, its instructions and skills) is the import's to cut too: counted here,
+  // after the keys secretlint finds in its sessions' files and its own text, as the import finds them before it cuts.
   for (const project of plan.projects) {
+    const files = await projectFiles(project.cwd, []);
+    counting.add(keysOf(plan, project.sessions.map((session) => session.file)));
+    counting.add(await secretsIn(projectText(project.cwd, files)));
     if (store?.readAgent(project.agentId)) continue;
     counting.text(project.name);
     counting.text(project.cwd);
-    const files = await projectFiles(project.cwd, []);
     for (const text of Object.values(files.instructions)) counting.text(text);
     for (const [path, text] of Object.entries(files.skills)) (counting.text(path), counting.text(text));
   }
@@ -255,6 +292,7 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
       counting.json(session.turns);
       if (session.firstPrompt) counting.text(session.firstPrompt);
       const subagents = await readChildren(plan, session, read, seen(session.source));
+      counting.add(keysOf(plan, subagents.map((child) => child.file)));
       found.push({ source: session.source, agent: project.agentId, ...measured(session, subagents) });
     }
   }
@@ -765,7 +803,7 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
 /** The plan, into `store`: the agents it does not hold, and the runs it does not. A run an earlier import made whose
  *  transcript never landed (the process stopped between the two) has it written now. */
 export async function runImport(store: AgentStore, plan: Plan, options: ImportOptions): Promise<ImportReport> {
-  const { text, json } = secretCut([options.env, options.stored ?? {}], SECRET_NAMES);
+  const { text, json, add } = secretCut([options.env, options.stored ?? {}], SECRET_NAMES);
   const idOf = keptId([options.env, options.stored ?? {}]);
   const report: ImportReport = { agents: [], skipped: [...plan.skipped], already: plan.already };
   let prices: Promise<Map<string, Listed[]>> | undefined;
@@ -774,13 +812,16 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
   for (const project of plan.projects) {
     if (options.signal?.aborted) break;
     const created = !store.readAgent(project.agentId);
+    const files = await projectFiles(project.cwd, report.skipped);
+    // The keys secretlint finds in its sessions' files and its own text, cut with the environment's from here on.
+    add(keysOf(plan, project.sessions.map((session) => session.file)));
+    add(await secretsIn(projectText(project.cwd, files)));
     if (created)
       store.createAgent({
         id: project.agentId,
         name: keptName(project, text),
         description: text(project.cwd),
       });
-    const files = await projectFiles(project.cwd, report.skipped);
     const byStart = [...project.sessions].sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? ""));
     const latest = byStart.at(-1)!;
     // The latest session's harness is the agent's current revision; its model, each harness's latest.
@@ -821,10 +862,11 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       const session = merged(parts);
       // Its id as the plan has it.
       // Its id as the plan keeps it; one holding a key counts among the keys removed.
-      const keptAs = idOf(session.id);
+      const keptAs = idOf(session.id, keysOf(plan, files.map((f) => f.file)));
       if (keptAs !== session.id) text(session.id);
       session.id = keptAs;
       const subagents = await readChildren(plan, session, searched, seen(listed.source));
+      add(keysOf(plan, subagents.map((child) => child.file)));
       // The transcript is whole before its run is: written beside the store, then moved into the run's directory.
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
       let started: { runId: string; dir: string; storePath: string } | undefined;
@@ -903,84 +945,94 @@ export async function importCommand(
     out?: (line: string) => void;
   } = {},
 ): Promise<number> {
-  // What it prints goes through the cut what it keeps does: a file or project named after a key is printed cut.
-  const printed = secretCut(env, SECRET_NAMES).text;
+  // What it prints goes through the cut what it keeps does, with the keys secretlint finds in the lines themselves: a
+  // file or project named after a key is printed cut. The lines are held until the end, then scanned and printed.
+  const printed = secretCut(env, SECRET_NAMES);
   const print = out;
-  out = (line: string) => print(printed(line));
-  let values;
-  try {
-    ({ values } = parseArgs({
-      args,
-      options: {
-        data: { type: "string" },
-        from: { type: "string" },
-        "dry-run": { type: "boolean" },
-        all: { type: "boolean" },
-        port: { type: "string" },
-      },
-    }));
-  } catch (error) {
-    console.error(`${(error as Error).message}\n\n${usage}`);
-    return 2;
-  }
-  const port = values.port === undefined ? DEFAULT_PORT : Number(values.port);
-  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
-    console.error(`--port takes a port number\n\n${usage}`);
-    return 2;
-  }
-  const open = openAt(env, port);
-  const sources = values.from === undefined ? SOURCES : values.from.split(",").map((s) => s.trim());
-  const unknown = sources.filter((s) => !(SOURCES as readonly string[]).includes(s));
-  if (unknown.length) {
-    console.error(`--from takes ${SOURCES.join(", ")}: not ${unknown.join(", ")}\n\n${usage}`);
-    return 2;
-  }
-  const dir = values.data ?? join(env.XDG_DATA_HOME || join(home, ".local", "share"), "agentrun", "agents");
-  // The tool keys the server keeps in this directory, opened here on the host with the seal key this process was handed:
-  // an imported transcript keeps none of them. One that does not open is not known here, so not cut: said, as the
-  // server says it at its start.
-  const keys = new ToolKeys(dir, env, (fields) => console.error(`agentrun-serve import: ${logLine("tool_keys", fields)}`));
-  keys.view();
-  const options: ImportOptions = {
-    home,
-    sources: sources as Source[],
-    all: values.all === true,
-    env,
-    stored: keys.values(),
+  const lines: string[] = [];
+  out = (line: string) => void lines.push(line);
+  const flush = async () => {
+    printed.add(await secretsIn(lines.join("\n")));
+    for (const line of lines.splice(0)) print(printed.text(line));
   };
-  if (values["dry-run"]) {
-    // A dry run writes nothing, not even a store: one there already is only read.
-    const reader = existsSync(join(dir, STORE_FILE)) ? openStoreReader(dir) : undefined;
-    let plan: Plan;
-    let found: Found[];
-    try {
-      plan = await planImport({ ...options, measure: true }, reader);
-      for (const line of describePlan(plan, reader)) out(line);
-      found = [...plan.found!, ...(reader ? await foundAll(reader, plan.held) : []), ...(await untiedFound(plan))];
-    } finally {
-      reader?.close();
-    }
-    out(`${plan.projects.length} projects, ${sessionsOf(plan.projects.flatMap((p) => p.sessions)).length} sessions; nothing was written (dry run)`);
-    if (plan.secretsFound !== undefined) out(`${plan.secretsFound} secret${plan.secretsFound === 1 ? "" : "s"} would be removed`);
-    for (const line of summaryLines(found, open, { dryRun: true })) out(line);
-    return 0;
-  }
-  const store = openStore(dir);
   try {
-    const plan = await planImport(options, store);
-    const report = await runImport(store, plan, options);
-    for (const agent of report.agents) out(`${agent.cwd}  ${agent.created ? "new agent" : "agent held"} ${agent.id}  imported ${agent.runs}${agent.finished ? `, finished ${agent.finished}` : ""}${agent.already ? `, already imported ${agent.already}` : ""}`);
-    if (report.already) out(`already imported, unchanged: ${report.already} session files (not read again)`);
-    for (const s of report.skipped) out(`skipped ${s.what}: ${s.why}`);
-    out(`${report.agents.length} agents, ${report.agents.reduce((n, a) => n + a.runs, 0)} runs imported into ${dir}`);
-    out(`${report.secretsRemoved ?? 0} secret${report.secretsRemoved === 1 ? "" : "s"} removed`);
-    // Every session found: those imported now, those held before, and those whose file an earlier import read whole.
-    const held = importedIn(store);
-    const runs = [...plan.projects.flatMap((p) => p.sessions.flatMap((s) => held.get(`${s.source}:${s.id}`) ?? [])), ...plan.held];
-    for (const line of summaryLines([...(await foundAll(store, runs)), ...(await untiedFound(plan))], open)) out(line);
-    return 0;
+    let values;
+    try {
+      ({ values } = parseArgs({
+        args,
+        options: {
+          data: { type: "string" },
+          from: { type: "string" },
+          "dry-run": { type: "boolean" },
+          all: { type: "boolean" },
+          port: { type: "string" },
+        },
+      }));
+    } catch (error) {
+      console.error(`${(error as Error).message}\n\n${usage}`);
+      return 2;
+    }
+    const port = values.port === undefined ? DEFAULT_PORT : Number(values.port);
+    if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+      console.error(`--port takes a port number\n\n${usage}`);
+      return 2;
+    }
+    const open = openAt(env, port);
+    const sources = values.from === undefined ? SOURCES : values.from.split(",").map((s) => s.trim());
+    const unknown = sources.filter((s) => !(SOURCES as readonly string[]).includes(s));
+    if (unknown.length) {
+      console.error(`--from takes ${SOURCES.join(", ")}: not ${unknown.join(", ")}\n\n${usage}`);
+      return 2;
+    }
+    const dir = values.data ?? join(env.XDG_DATA_HOME || join(home, ".local", "share"), "agentrun", "agents");
+    // The tool keys the server keeps in this directory, opened here on the host with the seal key this process was handed:
+    // an imported transcript keeps none of them. One that does not open is not known here, so not cut: said, as the
+    // server says it at its start.
+    const keys = new ToolKeys(dir, env, (fields) => console.error(`agentrun-serve import: ${logLine("tool_keys", fields)}`));
+    keys.view();
+    const options: ImportOptions = {
+      home,
+      sources: sources as Source[],
+      all: values.all === true,
+      env,
+      stored: keys.values(),
+    };
+    if (values["dry-run"]) {
+      // A dry run writes nothing, not even a store: one there already is only read.
+      const reader = existsSync(join(dir, STORE_FILE)) ? openStoreReader(dir) : undefined;
+      let plan: Plan;
+      let found: Found[];
+      try {
+        plan = await planImport({ ...options, measure: true }, reader);
+        for (const line of describePlan(plan, reader)) out(line);
+        found = [...plan.found!, ...(reader ? await foundAll(reader, plan.held) : []), ...(await untiedFound(plan))];
+      } finally {
+        reader?.close();
+      }
+      out(`${plan.projects.length} projects, ${sessionsOf(plan.projects.flatMap((p) => p.sessions)).length} sessions; nothing was written (dry run)`);
+      if (plan.secretsFound !== undefined) out(`${plan.secretsFound} secret${plan.secretsFound === 1 ? "" : "s"} would be removed`);
+      for (const line of summaryLines(found, open, { dryRun: true })) out(line);
+      return 0;
+    }
+    const store = openStore(dir);
+    try {
+      const plan = await planImport(options, store);
+      const report = await runImport(store, plan, options);
+      for (const agent of report.agents) out(`${agent.cwd}  ${agent.created ? "new agent" : "agent held"} ${agent.id}  imported ${agent.runs}${agent.finished ? `, finished ${agent.finished}` : ""}${agent.already ? `, already imported ${agent.already}` : ""}`);
+      if (report.already) out(`already imported, unchanged: ${report.already} session files (not read again)`);
+      for (const s of report.skipped) out(`skipped ${s.what}: ${s.why}`);
+      out(`${report.agents.length} agents, ${report.agents.reduce((n, a) => n + a.runs, 0)} runs imported into ${dir}`);
+      out(`${report.secretsRemoved ?? 0} secret${report.secretsRemoved === 1 ? "" : "s"} removed`);
+      // Every session found: those imported now, those held before, and those whose file an earlier import read whole.
+      const held = importedIn(store);
+      const runs = [...plan.projects.flatMap((p) => p.sessions.flatMap((s) => held.get(`${s.source}:${s.id}`) ?? [])), ...plan.held];
+      for (const line of summaryLines([...(await foundAll(store, runs)), ...(await untiedFound(plan))], open)) out(line);
+      return 0;
+    } finally {
+      store.close();
+    }
   } finally {
-    store.close();
+    await flush();
   }
 }
 
