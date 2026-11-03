@@ -78,6 +78,12 @@ export type Session = {
   /** The whole session's cost, when the source records it; absent is unknown. */
   costUsd?: number;
   firstPrompt?: string;
+  /** The source's own title for the session, as Claude Code shows it: the person's (/rename's custom-title), else the one
+   *  it wrote itself (ai-title; summary in older files, the one whose last message this session holds), the latest. */
+  sourceTitle?: string;
+  /** The first of the person's own words (personsWords): the first user text that is not a CLI's command, its output or
+   *  its preamble. The run's title when the source wrote none. */
+  titleText?: string;
   /** A subagent's or another session's child: not imported as a run; its usage is its parent's. */
   child: boolean;
   /** A child's parent session, when its file names it (Codex's parent thread). */
@@ -229,10 +235,12 @@ export async function readSession(file: string, source: Source, { turns: keep = 
   const provider: { name?: string } = {};
   const current: Into["current"] = { keyed: new Map(), seen: seen ?? new Set(), copied: new Set() };
   const codex: Into["codex"] = { events: false, held: [], records: false, responses: new Set(), items: new Map(), results: new Map() };
+  const titles: Into["titles"] = { summaries: [], uuids: new Set() };
   const add = (turn: Turn, index = turns.length) => {
     if (turn.role === "user") {
       session.users += 1;
       session.firstPrompt ??= turn.text;
+      session.titleText ??= personsWords(turn.text);
     }
     if (keep) turns.splice(index, 0, turn);
   };
@@ -251,7 +259,7 @@ export async function readSession(file: string, source: Source, { turns: keep = 
     if (!isObject(value)) continue;
     const at = timeOf(value.timestamp);
     // A copy of a record read already moves no time: its time was counted where it was first read.
-    const copy = record(value, at ?? last ?? 0, session, { add, names, turns, priced, provider, current, codex }) === false;
+    const copy = record(value, at ?? last ?? 0, session, { add, names, turns, priced, provider, current, codex, titles }) === false;
     if (copy) session.copies += 1;
     if (at !== undefined && !copy) {
       first ??= at;
@@ -266,6 +274,8 @@ export async function readSession(file: string, source: Source, { turns: keep = 
   // writes the user message alone. One source per file, so no turn counts twice.
   if (!codex.events) codex.held.forEach(({ index, turn }, k) => add(turn, index + k));
   if (!session.id) session.id = source === "pi" ? basename(file, ".jsonl").split("_").pop()! : basename(file, ".jsonl");
+  const sourceTitle = titles.custom ?? titles.ai ?? titles.summaries.findLast(({ leaf }) => leaf === undefined || titles.uuids.has(leaf))?.title;
+  if (sourceTitle) session.sourceTitle = sourceTitle;
   if (first !== undefined) session.startedAt = new Date(first).toISOString();
   if (last !== undefined) session.endedAt = new Date(last).toISOString();
   session.activeMs = Math.round(session.activeMs);
@@ -295,6 +305,8 @@ type Into = {
    *  records and messages read, in this file and those the import read before ("u:" uuid, "m:" message id); and the
    *  calls of messages that were copies, whose results are copies too. */
   current: { effort?: string; keyed: Map<string, Answer>; seen: Set<string>; copied: Set<string> };
+  /** Claude Code's titles in this file (titleRecord), and its records' uuids, for the summaries' leaves. */
+  titles: { custom?: string; ai?: string; summaries: { title: string; leaf?: string }[]; uuids: Set<string> };
   /** Codex: whether the file has user_message events, and its user messages, each with its place among the turns, held
    *  to the file's end. `open`: the request the model's output items join, until a result of one of its calls; `unpaid`,
    *  the latest request whose usage has not come (written after its calls' results at times); `records`, whether the
@@ -314,12 +326,43 @@ type Into = {
 };
 
 const INTERRUPTED = /^\[Request interrupted by user/;
+// The titles Claude Code writes into a session's file, each again as it changes, and the field each holds it in.
+const CLAUDE_TITLES = new Map([
+  ["custom-title", "customTitle"],
+  ["ai-title", "aiTitle"],
+  ["summary", "summary"],
+]);
+/** One of Claude Code's title records: kept by kind, the latest of each. A summary names the last message of the
+ *  conversation it titles (leafUuid), which can be another session's: held until the file's end. */
+function titleRecord(value: Record<string, unknown>, session: Session, titles: Into["titles"]): void {
+  // As written: the cut matches a key or a passphrase as the source wrote it, so the title is put on one line after it.
+  const title = str(value[CLAUDE_TITLES.get(value.type as string)!])?.trim();
+  if (!title || (str(value.sessionId) && value.sessionId !== session.id)) return;
+  if (value.type === "custom-title") titles.custom = title;
+  else if (value.type === "ai-title") titles.ai = title;
+  else titles.summaries.push({ title, ...(str(value.leafUuid) ? { leaf: value.leafUuid as string } : {}) });
+}
+// What Claude Code writes into a user message for the person's slash command (/clear, /model, /init, /resume …): the
+// command's name, message and arguments, each in its own element, then its output and the preamble it puts before a
+// local command's output. Only these elements, whole: a prompt the person wrote around them is theirs.
+const CLI_ELEMENT = /<(command-name|command-message|command-args|local-command-stdout|local-command-stderr)>[\s\S]*?<\/\1>/g;
+const CLI_PREAMBLE = /^Caveat: The messages below were generated by the user while running local commands\b/;
+/** The person's own words in a user message's text, as they wrote them (spaces and lines kept, so a cut still matches
+ *  a secret in them): none when the CLI wrote all of it (a slash command, its output, its preamble), or when there are
+ *  no words at all. */
+export function personsWords(text: string): string | undefined {
+  const words = text.replace(CLI_ELEMENT, " ").trim();
+  const line = words.replace(/\s+/g, " ");
+  return line && !CLI_PREAMBLE.test(line) && !INTERRUPTED.test(line) ? words : undefined;
+}
 
 /** Claude Code's record; false for one read already (the import's earlier file, or this file's own repeat). */
-function claudeRecord(value: Record<string, unknown>, at: number, session: Session, { add, names, current }: Into): boolean | void {
+function claudeRecord(value: Record<string, unknown>, at: number, session: Session, { add, names, current, titles }: Into): boolean | void {
   if (!session.id && str(value.sessionId)) session.id = value.sessionId as string;
   if (!session.cwd && str(value.cwd)) session.cwd = value.cwd as string;
   if (value.isSidechain === true) session.child = true;
+  if (CLAUDE_TITLES.has(value.type as string)) return titleRecord(value, session, titles);
+  if (str(value.uuid)) titles.uuids.add(value.uuid as string);
   if (value.type === "cost-state") {
     // The last one is the session's: unknown when the CLI could not price a model it used.
     session.costUsd = typeof value.totalCostUSD === "number" && Number.isFinite(value.totalCostUSD) && value.totalCostUSD >= 0 && value.hasUnknownModelCost !== true ? value.totalCostUSD : undefined;
