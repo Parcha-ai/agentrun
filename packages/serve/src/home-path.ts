@@ -28,7 +28,7 @@ export function checkedPath(rel: string, own: string): string {
 const IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
 /** Whether `segment` is plain text: its own NFC form, with no default-ignorable code point. A disk may take two
  *  spellings that differ only in such code points for one name; a plain segment is the one spelling. */
-export const plainSegment = (segment: string): boolean => segment === segment.normalize("NFC") && !IGNORABLE.test(segment);
+const plainSegment = (segment: string): boolean => segment === segment.normalize("NFC") && !IGNORABLE.test(segment);
 
 const MARKS = /\p{M}/gu;
 /** `name` as a disk that folds names could take it: its compatibility form, upper then lower case, and without combining
@@ -65,7 +65,7 @@ export function homePath(raw: string, agentId: string, write: boolean): string {
 }
 
 /** Whether two stats are of one entry on disk: the same device and inode. */
-export const sameEntry = (a: Pick<BigIntStats, "dev" | "ino">, b: Pick<BigIntStats, "dev" | "ino">): boolean => a.dev === b.dev && a.ino === b.ino;
+const sameEntry = (a: Pick<BigIntStats, "dev" | "ino">, b: Pick<BigIntStats, "dev" | "ino">): boolean => a.dev === b.dev && a.ino === b.ino;
 
 /** The host-owned path of `home` that the first segment of `rel` (a path homePath took) is on this disk, if any: both
  *  there, and one entry. A disk that takes another spelling for a host-owned name answers so, whatever the spelling. */

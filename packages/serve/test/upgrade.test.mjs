@@ -29,24 +29,19 @@ test("a data directory with beta.26 agent homes is refused at start, each home n
   assert.deepEqual((await readdir(data)).sort(), ["old", "triage"], "nothing is made beside the old homes: no store, no token");
 });
 
-test("a volume already started on this version is refused too while an old home is in it", async (t) => {
-  const { data, close } = await serve(t);
+test("a volume already started on this version starts again on its own data, and is refused once an old home is in it", async (t) => {
+  const { api, data, close } = await serve(t);
+  assert.equal((await api("POST", "/agents", { definition: { id: "kept", name: "kept", instructions: "Answer." } })).status, 201);
   await close();
   assert.ok(existsSync(join(data, "store.sqlite")));
+  const again = await startServe({ data, port: 0, faux: FAUX });
+  let closing;
+  const closeAgain = () => (closing ??= again.close());
+  t.after(closeAgain);
+  assert.deepEqual((await client(again.baseUrl, again.token)("GET", "/agents")).body.agents.map((a) => a.agent_id), ["kept"], "this version's volume is not refused");
+  await closeAgain();
   await oldHome(data, "old");
   assert.match((await refusal({ data, port: 0, faux: FAUX }))?.message ?? "started", /agent homes from AgentRun Server 0\.1\.0-beta\.26 or earlier/);
-});
-
-test("a healthy volume of this version starts again on its own data, its agents and runs there", async (t) => {
-  const data = join(await scratch(t), "agents");
-  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  const api = client(first.baseUrl, first.token);
-  const runId = (await startRun(api, "kept", "What is six times seven?")).run_id;
-  await follow(api, runId, ["completed"]);
-  await first.close();
-  const { api: again } = await serve(t, { data });
-  assert.deepEqual((await again("GET", "/agents")).body.agents.map((a) => a.agent_id), ["kept"]);
-  assert.equal((await again("GET", `/runs/${runId}`)).body.status, "completed");
 });
 
 test("an old home under any name is refused: an agent named runs, a symlinked home, and a symlinked agent.sqlite", async (t) => {

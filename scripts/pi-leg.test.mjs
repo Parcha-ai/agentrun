@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
@@ -144,6 +144,54 @@ test('a run type-checks and tests only the suites of its half, and says which ru
   const misspelt = leg(root, '--pi', '1.2.0', '--plan', '--tests', '@parcha/pi-transprot');
   assert.equal(misspelt.status, 2);
   assert.match(misspelt.stderr, /@parcha\/pi-transprot is not in the leg/);
+});
+
+test('--shard runs its part of the leg\'s type-checks and test files, planned by time; the parts together run each once', () => {
+  // Three pi workspaces; each test file and type-check appends its name to ran.log. Two parts, weights from ci-timings.json.
+  const record = (what) => `node -e "require('fs').appendFileSync(require('path').join(process.env.LOG_DIR, 'ran.log'), '${what}\\n')"`;
+  const suite = (name) => ws(name, WIDE, {}, { typecheck: record(`typecheck ${name}`), test: "node --test 'test/*.test.mjs'" });
+  const root = repoOf('parts', [suite('@parcha/agentrun-pi'), suite('@parcha/pi-transport'), suite('@parcha/pi-vision')]);
+  const files = { 'agentrun-pi': ['long', 'short'], 'pi-transport': ['mid'], 'pi-vision': ['tiny'] };
+  for (const [dir, names] of Object.entries(files)) {
+    for (const file of names) write(join(root, 'packages', dir, 'test', `${file}.test.mjs`), `import { appendFileSync } from 'node:fs'; import { join } from 'node:path'; appendFileSync(join(process.env.LOG_DIR, 'ran.log'), 'file ${dir}/${file}\\n');`);
+  }
+  write(join(root, 'scripts/ci-shards.json'), { pools: { any: { shards: 1 } }, pi: { shards: 2 } });
+  write(join(root, 'scripts/ci-timings.json'), { files: { 'packages/agentrun-pi/test/long.test.mjs': 100, 'packages/agentrun-pi/test/short.test.mjs': 5, 'packages/pi-transport/test/mid.test.mjs': 60, 'packages/pi-vision/test/tiny.test.mjs': 1 }, typecheck: { '@parcha/agentrun-pi': 10, '@parcha/pi-transport': 10, '@parcha/pi-vision': 10 } });
+  const npm = join(root, 'fake-npm.mjs');
+  write(npm, "if (process.argv.includes('--version')) console.log('11.21.0'); else if (process.argv[2] === 'ls') console.log('workspace@0.0.0');");
+  // The parts' own node --test runs are not nested in this file's: node skips a run it finds inside another.
+  const { NODE_TEST_CONTEXT: _nested, ...env } = process.env;
+  const part = (k) => {
+    rmSync(join(root, 'ran.log'), { force: true });
+    const out = spawnSync(process.execPath, [script, '--root', root, '--pi', '1.2.0', '--scratch', '--require-all', '--shard', String(k), '--npm', `${process.execPath} ${npm}`, '--out', join(root, `part-${k}.json`)], { encoding: 'utf8', env: { ...env, LOG_DIR: root } });
+    assert.equal(out.status, 0, out.stdout + out.stderr);
+    assert.ok(existsSync(join(root, 'ran.log')), out.stdout + out.stderr);
+    return { out: out.stdout, ran: readFileSync(join(root, 'ran.log'), 'utf8').trim().split('\n').sort() };
+  };
+  const [one, two] = [part(1), part(2)];
+  assert.match(one.out, /^pi 1\.2\.0: part 1 of 2 \(\d+ s modelled\): @parcha\/agentrun-pi \(2\)$/m);
+  assert.deepEqual(one.ran, ['file agentrun-pi/long', 'file agentrun-pi/short']);
+  assert.deepEqual(two.ran, ['file pi-transport/mid', 'file pi-vision/tiny', 'typecheck @parcha/agentrun-pi', 'typecheck @parcha/pi-transport', 'typecheck @parcha/pi-vision']);
+  assert.equal(JSON.parse(readFileSync(join(root, 'part-2.json'), 'utf8')).shard.units.length, 5);
+  assert.match(two.out, /^pi 1\.2\.0: @parcha\/pi-transport test \(1 of its files\) passed$/m);
+  const outside = leg(root, '--pi', '1.2.0', '--plan', '--shard', '3');
+  assert.equal(outside.status, 2);
+  assert.match(outside.stderr, /--shard 3 is not one of 1 to 2/);
+  const both = leg(root, '--pi', '1.2.0', '--plan', '--shard', '1', '--tests', '@parcha/pi-vision');
+  assert.equal(both.status, 2);
+  assert.match(both.stderr, /give --shard or --tests \/ --tests-except, not both/);
+});
+
+test('a part with nothing to run fails, before it installs anything, as an empty test shard does', () => {
+  // One pi workspace with one test file and no type-check, planned in two parts: the second gets nothing.
+  const root = repoOf('empty-part', [ws('@parcha/pi-vision', WIDE, {}, { test: "node --test 'test/*.test.mjs'" })]);
+  write(join(root, 'packages/pi-vision/test/only.test.mjs'), '');
+  write(join(root, 'scripts/ci-shards.json'), { pools: { any: { shards: 1 } }, pi: { shards: 2 } });
+  const first = leg(root, '--pi', '1.2.0', '--plan', '--shard', '1');
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  const empty = leg(root, '--pi', '1.2.0', '--plan', '--shard', '2');
+  assert.equal(empty.status, 1, empty.stdout + empty.stderr);
+  assert.match(empty.stdout, /^pi 1\.2\.0: FAILED: part 2 of 2 has nothing to run$/m);
 });
 
 test('an empty leg installs nothing and passes, saying so; an unread range shape, a missing version or no mode stops the script', () => {
