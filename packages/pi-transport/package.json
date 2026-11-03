@@ -33,6 +33,7 @@
     "./box/bwrap-args": null,
     "./box/child": null,
     "./box/files": null,
+    "./box/left-commands": null,
     "./box/network": null,
     "./box/probe": null,
     "./box/receipts": null,

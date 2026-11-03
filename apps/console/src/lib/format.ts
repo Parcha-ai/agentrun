@@ -12,9 +12,8 @@ export function bytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** Whether a cost is an estimate, by whose number it is: the server's source when it gives one, else its basis (an
- *  older server). The label's "est." and the run page's billing disclaimer both read it. */
-export const isEstimate = (c: Cost) => (c.source ? c.source === "estimate" : c.basis === "estimate");
+/** Whether a cost is an estimate, by its basis. The label's "est." and the run page's billing disclaimer both read it. */
+export const isEstimate = (c: Cost) => c.basis === "estimate";
 
 /** A local estimate stays an estimate, and a cost the server does not know says so: the contract's "Null while unknown.
  *  A client shows null as unknown, never as $0" (a request cut before its answer, a cost still pending, or a model with
@@ -30,7 +29,8 @@ export function cost(c: Cost | null | undefined): string {
 /** Said beside a bounded cost: why it is a bound and not a figure. */
 export const CUT_NOTE = "some requests were cut";
 
-/** A cost the server does not know but bounds (`at_most_usd`): requests were cut, each with a recorded figure. */
+/** The run's cost bound, when the server knows one (`at_most_usd`): the cost is unknown because requests were cut, each
+ *  with a worst case. */
 export const bounded = (c: Cost | null | undefined): c is Cost & { at_most_usd: number } => !!c && c.usd === null && typeof c.at_most_usd === "number";
 
 /** A bound in dollars, rounded up so it never reads below the bound: $0.0001 steps under a cent, cents above. */
