@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { LAUNCH_COUNT_ENV, LAUNCH_JAM_ENV, LAUNCH_KILL_ENV } from "./fixtures/faux-launch-kills-server.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, client, scratch, storeRun } from "./support.mjs";
+import { agent, client, printed, scratch, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const FAUX_LAUNCH = new URL("./fixtures/faux-launch-kills-server.mjs", import.meta.url).pathname;
@@ -22,10 +22,7 @@ async function serverProcess(t, data, env) {
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (err += chunk));
-  for (let i = 0; !/AGENTRUN_API_KEY=/.test(out); i++) {
-    assert.ok(i < 2400, `the server did not start: ${out}${err}`);
-    await sleep(50);
-  }
+  await printed(child, /^AGENTRUN_API_KEY=/m);
   const value = (name) => new RegExp(`${name}=(\\S+)`).exec(out)[1];
   return { child, stdout: () => out, stderr: () => err, api: client(value("AGENTRUN_BASE_URL"), (await readFile(join(data, ".token"), "utf8")).trim()) };
 }

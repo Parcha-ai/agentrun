@@ -12,7 +12,7 @@ import { unseal } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, client, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, client, cookieOf, FAUX, printed, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "AGENTRUN_SEAL_KEY"];
@@ -238,10 +238,7 @@ async function launched(t, data, config, token) {
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_BASE_URL=(\S+)/.test(out); i++) {
-    assert.ok(i < 300, `the server started: ${out}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  await printed(child, /^AGENTRUN_BASE_URL=\S+$/m);
   return { api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], token), stop: async () => (await stop(), out) };
 }
 
