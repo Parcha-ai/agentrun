@@ -41,7 +41,8 @@ function useSecondsTo(at: number | null): number {
 }
 
 /** The console's one word on its link, above every page: while the server can't be reached, "Reconnecting" with the
- *  next try and Retry now, over the page as it was; once back, "Resumed" for a few seconds. Nothing while online. */
+ *  next try and Retry now, over the page as it was; once back, "Resumed" for a few seconds (the server is back; the page's
+ *  own reads say when they land). Nothing while online. */
 export function ConnectionBanner() {
   const c = useContext(ConnectionContext);
   const link = useLink();
@@ -50,7 +51,7 @@ export function ConnectionBanner() {
   if (link.state === "resumed") return (
     <div data-connection="resumed" role="status" className="flex shrink-0 items-center gap-2 border-b bg-card px-5 py-2 text-[13px] md:px-8">
       <RefreshCw className="size-4 text-success-text" aria-hidden />
-      <span><span className="font-semibold">Resumed.</span> agentrun-serve is back, and this page is up to date.</span>
+      <span><span className="font-semibold">Resumed.</span> agentrun-serve is back.</span>
     </div>
   );
   return (

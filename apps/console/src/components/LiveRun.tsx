@@ -104,7 +104,8 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     if (!error) return <RunSkeleton />;
     // A run this server has no record of: said so, with the runs list to find it in.
     if (error.cause instanceof ClientError && error.cause.status === 404) return <NotHere what="run" id={runId} list={{ href: "#/runs", label: "Open the runs list" }} />;
-    return <ProblemCard problem={problem(error.cause, "the run")} onRetry={() => { setError(null); void refresh(); }} />;
+    // Try again reads the run and its files, and follows its timeline again (a failed first read ended that).
+    return <ProblemCard problem={problem(error.cause, "the run")} onRetry={() => { setError(null); void refresh(); setFollows((n) => n + 1); }} />;
   }
   return (
     <div className="flex h-full min-h-0 flex-col">

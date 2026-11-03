@@ -1,7 +1,10 @@
 /** Whether the console can reach the server it is served from, and a fetch that rides out the server going away (a
  *  restart, a laptop asleep): a read waits and is sent again once the server answers, so a page keeps what it shows and
  *  carries on; a write is refused at once with Unreachable, since only the person can say whether to send it again.
- *  While away, one probe at a time (GET /v2/health, which needs no session) asks again on a backoff. */
+ *  A failed request is first checked against GET /v2/health (no session needed), one check shared by all that fail at
+ *  once: while the server answers it, the failure is the request's own (a proxy's 504 on a slow read, a dropped long
+ *  poll), so the caller gets it, a dropped read sent again at most twice first, and the link stays up. While away, one
+ *  probe at a time asks again on a backoff, each given up after `probeMs`. */
 
 export type Link =
   | { state: "online" }
@@ -29,13 +32,15 @@ const aborted = (signal: AbortSignal) => (signal.reason instanceof Error ? signa
 
 export type Connection = ReturnType<typeof createConnection>;
 
-export function createConnection({ fetch: f = (input, init) => globalThis.fetch(input, init), probe = "/v2/health", resumedMs = 5000 }: { fetch?: typeof fetch; probe?: string; resumedMs?: number } = {}) {
+export function createConnection({ fetch: f = (input, init) => globalThis.fetch(input, init), probe = "/v2/health", resumedMs = 5000, probeMs = 5000 }: { fetch?: typeof fetch; probe?: string; resumedMs?: number; probeMs?: number } = {}) {
   let link: Link = { state: "online" };
   const watchers = new Set<() => void>();
   const resumes = new Set<() => void>();
   let waiting: (() => void)[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let probing = false;
+  // The probe under way, dropped when a newer one starts (Retry now) or its deadline passes.
+  let probing: AbortController | null = null;
+  let checking: Promise<boolean> | null = null;
   const set = (next: Link) => { link = next; for (const w of [...watchers]) w(); };
   const schedule = (attempt: number) => {
     const ms = backoffMs(attempt);
@@ -54,17 +59,27 @@ export function createConnection({ fetch: f = (input, init) => globalThis.fetch(
     for (const r of [...resumes]) r();
     timer = setTimeout(() => { if (link.state === "resumed") set({ state: "online" }); }, resumedMs);
   };
+  /** Whether the server answers GET /v2/health within `probeMs` (any answer of its own, a 503 too). */
+  async function answers(ctl: AbortController): Promise<boolean> {
+    const deadline = setTimeout(() => ctl.abort(), probeMs);
+    try { return !inFront(await f(probe, { method: "GET", cache: "no-store", credentials: "same-origin", signal: ctl.signal })); }
+    catch { return false; }
+    finally { clearTimeout(deadline); }
+  }
   async function probeNow() {
-    if (link.state !== "offline" || probing) return;
+    if (link.state !== "offline") return;
     clearTimeout(timer);
-    probing = true;
-    let answered = false;
-    try { answered = !inFront(await f(probe, { method: "GET", cache: "no-store", credentials: "same-origin" })); } catch { answered = false; }
-    probing = false;
+    probing?.abort();
+    const ctl = (probing = new AbortController());
+    const answered = await answers(ctl);
+    if (probing !== ctl) return;
+    probing = null;
     if (link.state !== "offline") return;
     if (answered) back();
     else schedule(link.attempt + 1);
   }
+  /** One check of the server for every request that fails while the link is up. */
+  const check = () => (checking ??= answers(new AbortController()).finally(() => { checking = null; }));
   /** Resolves once the server is back; rejects when `signal` aborts first. */
   const untilBack = (signal?: AbortSignal | null) => new Promise<void>((resolve, reject) => {
     if (signal?.aborted) return reject(aborted(signal));
@@ -77,10 +92,19 @@ export function createConnection({ fetch: f = (input, init) => globalThis.fetch(
   const watched: typeof fetch = async (input, init) => {
     const method = (init?.method ?? "GET").toUpperCase();
     const read = method === "GET" || method === "HEAD";
-    for (;;) {
-      let res: Response | undefined;
-      try { res = await f(input, init); } catch (e) { if (init?.signal?.aborted || isAbort(e)) throw e; }
+    for (let tries = 0; ; tries++) {
+      let res: Response | undefined, failure: unknown;
+      try { res = await f(input, init); } catch (e) { if (init?.signal?.aborted || isAbort(e)) throw e; failure = e; }
       if (res && !inFront(res)) { back(); return res; }
+      if (link.state !== "offline" && await check()) {
+        // The server answers: this failure is the request's own. A proxy's answer goes to the caller as it is; a read
+        // whose connection was cut is sent again, twice at most.
+        if (res) return res;
+        if (!read) throw new Unreachable();
+        if (tries >= 2) throw failure;
+        await new Promise((r) => setTimeout(r, backoffMs(tries)));
+        continue;
+      }
       lost();
       if (!read) throw new Unreachable();
       await untilBack(init?.signal);

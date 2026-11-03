@@ -10,12 +10,16 @@ afterEach(() => { vi.useRealTimers(); });
 
 /** A server that can be taken away and brought back; every request it was asked is in `asked`. */
 function server() {
-  const s = { up: true, asked: [] as string[], answer: (path: string) => json(200, { path }) };
+  const s = { up: true, stall: false, drop: 0, asked: [] as string[], answer: (path: string) => json(200, { path }) };
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     s.asked.push(`${init?.method ?? "GET"} ${path}`);
     if (init?.signal?.aborted) throw new DOMException("aborted", "AbortError");
+    // A health check that never answers (a server half up), until its signal gives up on it.
+    if (s.stall && path === "/v2/health") return new Promise<Response>((_, no) => init?.signal?.addEventListener("abort", () => no(new DOMException("aborted", "AbortError"))));
     if (!s.up) throw new TypeError("Failed to fetch");
+    // A connection cut on this one request (a proxy dropping a long poll) while the server answers the rest.
+    if (s.drop > 0 && path !== "/v2/health") { s.drop -= 1; throw new TypeError("Failed to fetch"); }
     return s.answer(path);
   }) as typeof globalThis.fetch;
   return { s, fetch };
@@ -42,7 +46,8 @@ describe("createConnection", () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(body).toEqual({ path: "/v2/runs/r1" });
     expect(c.link().state).toBe("resumed");
-    expect(s.asked).toEqual(["GET /v2/runs/r1", "GET /v2/health", "GET /v2/runs/r1"]);
+    // The failure is checked against /v2/health at once (is it the server, or this request?), then probed on the backoff.
+    expect(s.asked).toEqual(["GET /v2/runs/r1", "GET /v2/health", "GET /v2/health", "GET /v2/runs/r1"]);
   });
 
   it("probes once per wait, on the backoff, however many reads are waiting", async () => {
@@ -52,14 +57,16 @@ describe("createConnection", () => {
     for (const p of ["/v2/a", "/v2/b", "/v2/c"]) void c.fetch(p);
     await flush();
     const probes = () => s.asked.filter((a) => a.endsWith("/v2/health")).length;
-    await vi.advanceTimersByTimeAsync(999);
-    expect(probes()).toBe(0);
-    await vi.advanceTimersByTimeAsync(1);
+    // One check at once, shared by the three reads that failed together.
     expect(probes()).toBe(1);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(probes()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(probes()).toBe(2);
     const at = (c.link() as { retryAt: number }).retryAt;
     expect(at - Date.now()).toBe(2000);
     await vi.advanceTimersByTimeAsync(2000 + 4000 + 8000 + 10000 + 10000);
-    expect(probes()).toBe(6);
+    expect(probes()).toBe(7);
     expect(s.asked.filter((a) => !a.endsWith("/v2/health"))).toEqual(["GET /v2/a", "GET /v2/b", "GET /v2/c"]);
   });
 
@@ -158,5 +165,63 @@ describe("createConnection", () => {
     expect((await c.fetch("/v2/runs/r1/messages", { method: "POST" })).ok).toBe(true);
     expect(c.link().state).toBe("resumed");
     expect((await read).ok).toBe(true);
+  });
+
+  it("a proxy's 5xx on one read while /v2/health answers is that read's own failure: handed back, and the link stays up", async () => {
+    const { s, fetch } = server();
+    const c = createConnection({ fetch });
+    s.answer = (path) => (path === "/v2/stats" ? new Response("Gateway Timeout", { status: 504, headers: { "content-type": "text/plain" } }) : json(200, { path }));
+    expect((await c.fetch("/v2/stats")).status).toBe(504);
+    expect(c.link().state).toBe("online");
+    await vi.advanceTimersByTimeAsync(60_000);
+    // Nothing sends it again by itself, and nothing piles up.
+    expect(s.asked.filter((a) => a.endsWith("/v2/stats"))).toHaveLength(1);
+  });
+
+  it("a read whose connection was cut while the server answers (a long poll a proxy dropped) is sent again, at most twice", async () => {
+    const { s, fetch } = server();
+    const c = createConnection({ fetch });
+    s.drop = 1;
+    let body: unknown;
+    void c.fetch("/v2/runs/r1/timeline?after=3").then(async (r) => { body = await r.json(); });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(body).toEqual({ path: "/v2/runs/r1/timeline?after=3" });
+    expect(c.link().state).toBe("online");
+    s.drop = 3;
+    const failed = c.fetch("/v2/runs/r1/timeline?after=4").catch((e) => e);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(await failed).toBeInstanceOf(TypeError);
+    expect(s.asked.filter((a) => a.endsWith("after=4"))).toHaveLength(3);
+  });
+
+  it("a health check that never answers gives up after its deadline, so the next probe and Retry now still run", async () => {
+    const { s, fetch } = server();
+    const c = createConnection({ fetch, probeMs: 5000 });
+    s.up = false;
+    s.stall = true;
+    void c.fetch("/v2/runs");
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(c.link().state).toBe("offline");
+    // The probe at 1 s stalls too; Retry now drops it and asks afresh, which the server, back, answers.
+    await vi.advanceTimersByTimeAsync(1000);
+    s.stall = false;
+    s.up = true;
+    c.retryNow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.link().state).toBe("resumed");
+  });
+
+  it("a stalled probe left alone times out and the backoff goes on", async () => {
+    const { s, fetch } = server();
+    const c = createConnection({ fetch, probeMs: 5000 });
+    s.up = false;
+    s.stall = true;
+    void c.fetch("/v2/runs");
+    await vi.advanceTimersByTimeAsync(5000 + 1000 + 5000);
+    expect((c.link() as { attempt: number }).attempt).toBe(1);
+    s.stall = false;
+    s.up = true;
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(c.link().state).toBe("resumed");
   });
 });

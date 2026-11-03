@@ -16,7 +16,10 @@ vi.setConfig({ testTimeout: 20_000 });
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const CAPS = { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } };
 const STATS = { agents: 1, runs: { total: 1, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 1 }, archived: { agents: 0, runs: 0 }, analytics: ANALYTICS };
-const RUN = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: null as string | null, result: null as unknown, error: null, cost: null, archived_at: null };
+const RUN0 = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: null as string | null, result: null as unknown, error: null, cost: null, archived_at: null };
+// The run as each test starts it; a test that moves it on (it ends while the server is away) is put back after.
+const RUN = { ...RUN0 };
+afterEach(() => { Object.assign(RUN, RUN0); });
 const ROW = { id: "u1", seq: 1, kind: "user_message", summary: "What is two and two?", text: "What is two and two?", timestamp: "2026-10-30T06:00:00Z", tool_name: null };
 // A row the run wrote while the server was away, which only the timeline's own read, carried on, brings.
 const LATER = { id: "t2", seq: 2, kind: "tool_use", summary: "Read notes.txt", text: null, timestamp: "2026-10-30T06:00:30Z", tool_name: "read", tool_status: "success" };
@@ -95,6 +98,8 @@ describe("a server that can't be reached", () => {
     files = 2;
     s.up = true;
     await wait(() => !!host.textContent?.includes("Resumed"), "the banner says Resumed");
+    // It says the server is back, never that the page is up to date before its reads have landed.
+    expect(host.querySelector('[data-connection]')?.textContent).not.toMatch(/up to date/);
     await wait(() => !!runHeader(host)?.textContent?.includes("Completed"), "the run reads completed");
     expect(host.textContent).toContain("Files 2");
     await wait(() => !!host.textContent?.includes("Read notes.txt"), "the timeline's read carried on from its cursor");
@@ -124,6 +129,29 @@ describe("a server that can't be reached", () => {
     await wait(() => !!host.textContent?.includes("Resumed"), "the banner says Resumed");
     await wait(() => !!host.textContent?.includes("Files 3"), "the files are read again");
     expect(runHeader(host)?.textContent).toContain("Working");
+  });
+});
+
+describe("a run page that failed", () => {
+  it("a run page whose first reads failed: Try again reads the run and starts its timeline again", async () => {
+    let broken = true;
+    serve((path, u) => {
+      const fail = json(500, { error: { code: "internal", message: "The store could not be read.", retryable: false } });
+      if (path === "/v2/runs/r1") return broken ? fail : json(200, RUN);
+      if (path === "/v2/runs/r1/files") return broken ? fail : json(200, { run_id: "r1", files: [], complete: true, truncated: false });
+      if (path === "/v2/runs/r1/timeline") {
+        if (broken) return fail;
+        if (!u.searchParams.has("after")) return json(200, { run_id: "r1", status: "working", state: "working", rows: [ROW, LATER], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 2 });
+        return new Promise((r) => setTimeout(() => r(json(200, { run_id: "r1", status: "working", state: "working", rows: [], drop: [], reset: false, unchanged: true, final: false, has_more: false, next_after: 2 })), 40));
+      }
+      return undefined;
+    });
+    const host = mount("#/runs/r1");
+    await wait(() => !!host.querySelector('[role="alert"]')?.textContent?.includes("The run could not be read."), "the run's read failed, in words");
+    broken = false;
+    await act(async () => { button(host, /^Try again$/)!.click(); });
+    await wait(() => !!runHeader(host)?.textContent?.includes("Working"), "the run reads working");
+    await wait(() => !!host.textContent?.includes("Read notes.txt"), "the timeline is followed again");
   });
 });
 
