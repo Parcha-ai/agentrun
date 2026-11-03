@@ -122,7 +122,11 @@ for (const [seam, learning] of [["beforePin", null], ["afterPin", { state: "drop
     assert.equal(storeRun(data, runId).state, "running");
     assert.equal(existsSync(join(runDir, "learning.json")), seam === "afterPin", "a pin only once the copy was whole");
     const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-    t.after(() => next.close());
+    // Closed in the body, before the data directory's hook removes it: the control run below learns, and its check and
+    // grade still write into its directory after it reads completed. close() returns once they ended.
+    let closed;
+    const stop = () => (closed ??= next.close());
+    t.after(stop);
     const api = client(next.baseUrl, next.token);
     const { rows } = await follow(api, runId, ["completed"]);
     const read = (await api("GET", `/runs/${runId}`)).body;
@@ -143,6 +147,7 @@ for (const [seam, learning] of [["beforePin", null], ["afterPin", { state: "drop
     await follow(api, control, ["completed"]);
     const saved = JSON.parse(await readFile(join(data, "runs", control, "serve.json"), "utf8"));
     assert.equal(typeof saved.reflect?.after, "number", JSON.stringify(saved));
+    await stop();
   });
 }
 
