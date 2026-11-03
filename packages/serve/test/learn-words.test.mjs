@@ -3,13 +3,14 @@
 // nothing was kept: the grader's own reason, its first sentence; what the checks refused, in words. Never the machine's
 // words: no "main", "merged into", "end-of-run turn", "grader's verdict" or "proposal". The reason codes do not change.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { firstSentence, said, STOPPED } from "../dist/learning-words.js";
+import { firstSentence, said, STOPPED, wordsOf } from "../dist/learning-words.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, LEARN, learner, learningRows, made, settled, sleep, started, UNSAID } from "./learn-support.mjs";
-import { agent, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 const FIRST = note("Check units first", "Convert amounts to one unit before any comparison", "Convert first, then compare.\n", "supersedes: [check-units.md]\n");
@@ -19,11 +20,11 @@ test("the words: notes counted as a person counts them, what was learned by name
   assert.deepEqual([said.proposed(1), said.proposed(2)], ["Checking 1 new note…", "Checking 2 new notes…"]);
   assert.equal(said.merged([{ name: "Try /policies/refund-policy first", supersedes: ["old.md"] }]), "Learned: Try /policies/refund-policy first (replaces 1 older note)");
   assert.equal(said.merged([{ name: "Alpha", supersedes: [] }, { name: "Beta", supersedes: ["a.md", "b.md"] }]), "Learned 2 notes: Alpha; Beta (replaces 2 older notes)");
-  assert.equal(said.merged([{ name: `${"long ".repeat(40)}name`, supersedes: [] }]).length <= "Learned: ".length + 100, true, "a long name is cut");
+  assert.equal(said.merged([{ name: `${"long ".repeat(40)}name`, supersedes: [] }]), `Learned: ${"long ".repeat(40)}name`, "a long name is said whole: a read cuts it short, once it is cut of secrets");
   assert.equal(firstSentence("Too specific, e.g. one shop only. Drop it."), "Too specific, e.g. one shop only.");
   assert.equal(firstSentence("It came from https://shop.example/policies/refund-policy. That page said so."), "It came from https://shop.example/policies/refund-policy.");
   assert.equal(firstSentence("  Tied to one shop's failure\n(kith.com). Nothing to reuse.  "), "Tied to one shop's failure (kith.com).");
-  assert.ok(firstSentence(`${"word ".repeat(100)}end.`).endsWith("…") && firstSentence(`${"word ".repeat(100)}end.`).length <= 200);
+  assert.equal(firstSentence(`${"word ".repeat(100)}end. More.`), `${"word ".repeat(100)}end.`, "whole: a read cuts it short, once it is cut of secrets");
   assert.equal(said.grader("A note is about the one case it came from. It holds nothing general."), "Not kept: A note is about the one case it came from.");
   assert.equal(said.grader(""), "Not kept: it was not judged worth remembering.");
   assert.equal(said.checker([{ rule: "too_large" }, { rule: "secret_value" }, { rule: "too_large" }]), "Not kept: it held something that must not be stored (one of this server's secrets).");
@@ -35,6 +36,11 @@ test("the words: notes counted as a person counts them, what was learned by name
     ...["secret_value", "secret_shape", "invisible_unicode", "too_many_files", "outside", "file_name", "file_mode", "encoding", "edited", "deleted", "exists", "too_large", "too_many_notes", "note", "status", "supersedes", "index_full"].flatMap((rule) => [said.checker([{ rule }]), said.stale([{ rule }])]),
     said.noWriteTool, said.noBudget, said.unknownCost, said.screen, ...Object.values(STOPPED).map(said.stopped),
   ];
+  // A read says a name and a reason again from their parts, each cut first: a value inside them is found whole.
+  const cut = (text) => text.replaceAll("SECRET-VALUE", "[redacted]");
+  assert.equal(wordsOf({ state: "merged", reason: null, detail: "Learned: SECRET-VALUE", learned: [{ file: "a.md", name: "Use SECRET-VALUE first", supersedes: ["b.md"] }] }, cut), "Learned: Use [redacted] first (replaces 1 older note)");
+  assert.equal(wordsOf({ state: "dropped", reason: "grader", detail: "Not kept: SECRET-VALUE", verdict: { merge: false, reason: "It names SECRET-VALUE. Drop it.", items: [] } }, cut), "Not kept: It names [redacted].");
+  assert.equal(wordsOf({ state: "dropped", reason: "empty", detail: said.empty }, cut), said.empty);
   for (const text of all) {
     assert.doesNotMatch(text, UNSAID, text);
     assert.doesNotMatch(text, /_/, `no rule's code: ${text}`);
@@ -111,4 +117,39 @@ test("each run's learning in words, from its start to its end, its learning row 
   const held = await started(api, "held");
   await until("its new note is being checked", async () => (await learning(held))?.state === "proposed");
   assert.equal((await learning(held)).detail, "Checking 1 new note…");
+});
+
+test("a note's name and a grader's reason holding a long value that becomes a secret after the run show no part of it: each read cuts the value whole before it shortens anything, in the run's view, the run lists, the timeline's learning row and the run's whole learning", { timeout: 240_000 }, async (t) => {
+  // Built at the run, longer than any cut a detail makes: no file of this repository holds it, and it is saved as a tool
+  // key only after both runs learned.
+  const value = `zq${process.pid}${Date.now().toString(36)}${randomBytes(100).toString("hex")}`;
+  const parts = [value.slice(0, 24), value.slice(60, 84), value.slice(-24)];
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY", "PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD"]);
+  const { api } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("named", { plan: [["use-it.md", note(`Use ${value} first`, "A rule named for a value")]] }));
+  await made(api, learner("quoted", { instructions: `Answer the question. Grade: drop saying ${value}.`, plan: [["narrow.md", note("Narrow", "One shop's page")]] }));
+  const named = await ended(api, await started(api, "named"));
+  const quoted = await ended(api, await started(api, "quoted"));
+  settled(named.view, named.rows, "merged");
+  settled(quoted.view, quoted.rows, "dropped", "grader");
+  // Shown whole while it is no secret: the run's view cuts nothing short that it can show.
+  assert.equal(named.view.learning.detail, `Learned: Use ${value} first`);
+  assert.equal(quoted.view.learning.detail, `Not kept: A note is about ${value} alone, which no later run can use.`);
+
+  // Saved as a key, the server running on: every read after it cuts the value whole, and only then shortens.
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: value } })).status, 204);
+  const reads = [];
+  for (const { view } of [named, quoted]) {
+    const runId = view.run_id;
+    const read = (await api("GET", `/runs/${runId}`)).body.learning;
+    const row = (await follow(api, runId, ["completed"])).rows.find((one) => one.kind === "learning");
+    const whole = (await api("GET", `/runs/${runId}/learning`)).body;
+    const lists = [(await api("GET", "/runs")).body.runs, (await api("GET", `/agents/${view.agent_id}/runs`)).body.runs].map((runs) => runs.find((one) => one.run_id === runId).learning);
+    assert.match(read.detail, /\[redacted\]/, read.detail);
+    assert.deepEqual([row.summary, row.text, row.learning.detail, whole.detail], [read.detail, read.detail, read.detail, read.detail], "the row and the run's whole learning say the same");
+    for (const listed of lists) assert.ok(listed.detail.length <= 140 && read.detail.startsWith(listed.detail.replace(/…$/, "")), listed.detail);
+    reads.push(read, row, whole, ...lists);
+  }
+  const shown = JSON.stringify(reads);
+  for (const part of parts) assert.ok(!shown.includes(part), `no part of the value is shown: ${part}`);
 });

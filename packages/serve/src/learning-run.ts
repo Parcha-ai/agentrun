@@ -15,16 +15,16 @@
 // the kernel writes.
 import { lstat, readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
-import { INDEX_FILE, parseNoteFile, parseVerdict, redactSecrets, type Verdict } from "@parcha/agentrun-learn";
+import { INDEX_FILE, parseNoteFile, redactSecrets, type Verdict } from "@parcha/agentrun-learn";
 import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
-import { activeOf, dropSeed, KEPT_LEARNING, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, secretsShown, shortLearning, type Shown, snapshotLearned, withAgentGrade } from "./learning.js";
+import { activeOf, detailShown, dropSeed, KEPT_LEARNING, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, secretsShown, shortLearning, type Shown, snapshotLearned, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
-import { said, STOPPED } from "./learning-words.js";
+import { notKept, said, STOPPED } from "./learning-words.js";
 import { ended, outcomeOf, outcomes, record } from "./usage.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -88,17 +88,12 @@ export function notesRead(reflect: Reflect | undefined, rows: readonly TimelineE
   return [...read];
 }
 
-/** The reasons packages/learn's parseVerdict gives of its own, never the grader's: an answer it could not read, and one
- *  it refused (an item for a file it was not asked about, a file judged twice, a new note with no item, a merge that
- *  did not keep every note). Found by asking it, so they follow it. */
-const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[]}', '{"merge":false,"reason":"r","items":[{"file":"b.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"},{"file":"a.md","keep":false,"why":"w"}]}'].map((answer) => parseVerdict(answer, ["a.md"]).reason));
-/** Why a verdict kept nothing, in a person's words: the grader's own reason, or when the reason is parseVerdict's own,
- *  the grader's word on the first note it did not keep; an answer that held neither is said as such. */
-const notKept = (verdict: Verdict): string => {
-  if (!OWN_REASONS.has(verdict.reason)) return said.grader(verdict.reason);
-  const why = verdict.items.find((item) => !item.keep)?.why;
-  return why ? said.grader(why) : said.stopped(STOPPED.unread);
-};
+/** `verdict` with its reason, and each item's question and why, cut of `values` (packages/learn redactSecrets). */
+const cutVerdict = (verdict: Verdict, values: readonly string[]): Verdict => ({
+  ...verdict,
+  reason: redactSecrets(verdict.reason, values),
+  items: verdict.items.map((item) => ({ ...item, ...(item.question === undefined ? {} : { question: redactSecrets(item.question, values) }), why: redactSecrets(item.why, values) })),
+});
 
 /** The notes a run's learning added, from its proposal: each note's file, name and the notes it supersedes. */
 const learnedOf = (proposal: Proposal): NoteLearned[] => proposal.notes.flatMap(({ file, text }) => {
@@ -107,11 +102,11 @@ const learnedOf = (proposal: Proposal): NoteLearned[] => proposal.notes.flatMap(
 });
 
 /** The run's learning row, once its learning was proposed, merged or dropped (`seed_failed` included): its state, reason
- *  and detail, its summary the detail itself (learning-words.ts), cut of the host's secrets now (`shown`). One row,
- *  which says where the learning ended. */
+ *  and detail, its summary the detail itself as the run's view says it (learning.ts detailShown: cut of the host's
+ *  secrets now, `shown`, then cut short). One row, which says where the learning ended. */
 export function withLearning(rows: readonly TimelineEvent[], learning: Learning | undefined, shown: Shown): TimelineEvent[] {
   if (!learning || learning.state === "seeded" || learning.state === "reflecting") return [...rows];
-  const detail = learning.detail === null ? null : shown.text(learning.detail);
+  const detail = detailShown(learning, shown);
   const row = {
     id: LEARNING_LABEL, timestamp: learning.at, created_at: learning.at, kind: "learning" as const, summary: detail ?? `Learning ${learning.state}`, agent_label: LEARNING_LABEL,
     tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: detail,
@@ -721,9 +716,10 @@ export class LearningRuns {
           warn(run.id, `its grader gave no verdict: ${judged.error.message}`);
           return await end("dropped", "grade_failed", said.stopped(STOPPED.noReview));
         }
-        kept.verdict = judged.verdict;
-        // The grader's own reason, its first sentence (notKept), cut of every secret the run's notes were checked against.
-        if (!judged.verdict.merge) return await end("dropped", "grader", redactSecrets(notKept(judged.verdict), this.refused(run)));
+        // Kept cut of every secret the run's notes were checked against, the keys its launches handed it included, which a
+        // read no longer knows: its reason and its items' words are what the run's words are said from again (wordsOf).
+        kept.verdict = cutVerdict(judged.verdict, this.refused(run));
+        if (!kept.verdict.merge) return await end("dropped", "grader", notKept(kept.verdict));
         // Kept before the merge: a restart merges on this verdict, and never asks the grader again.
         this.setLearning(run, "proposed", null, before.detail, kept);
         await this.kernel.save(run);

@@ -1,9 +1,14 @@
 // What a person reads of a run's learning: every `detail` of Run.learning, which the run's learning row in its timeline
 // shows as its summary too, in one place and in a user's words. Never the machine's: no "main", "merged into", "end-of-run
 // turn", "grader's verdict" or "proposal". The reason codes (learning.ts LEARNING_REASONS) stay as they are for machines;
-// only these sentences are for people. Text a model wrote (a note's name, the grader's reason) is shortened here and cut
-// of the host's secrets by the caller.
-import { CAPS, type Problem } from "@parcha/agentrun-learn";
+// only these sentences are for people.
+//
+// Text a model wrote (a note's name, the grader's reason) is never shortened where it is said: a value that becomes a
+// secret later is found only whole, so a part of it kept would show for good. A run's learning keeps the parts its
+// words are made of (`learned`, `verdict`), and each read says them again (wordsOf): every part cut of the host's
+// secrets as they are then, and only then the words cut short (DETAIL_MAX for a run, LIST_DETAIL for a list's row).
+import { CAPS, parseVerdict, type Problem, type Verdict } from "@parcha/agentrun-learn";
+import type { Learning } from "./learning.js";
 
 /** `n` of `one`, said as a person says it: "1 note", "2 notes". */
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
@@ -16,15 +21,16 @@ export function short(text: string, max: number): string {
   return `${(word > max / 2 ? cut.slice(0, word) : cut).replace(/[\s,;:.]+$/, "")}…`;
 }
 
-/** The most a run list's row says of a run's learning: its detail, cut short (learning.ts shortLearning). */
+/** The most a run's view, its whole learning and its timeline row say of its learning (its detail, cut short once it is
+ *  cut of the host's secrets), and the most a run list's row says. */
+export const DETAIL_MAX = 300;
 export const LIST_DETAIL = 140;
 
 const SENTENCES = new Intl.Segmenter("en", { granularity: "sentence" });
 /** The first sentence of `text`, by Unicode's sentence rules (so "e.g." or a URL's dot does not end it), read as one
- *  line (a model's line break is no sentence's end), at most 200 characters; empty for an empty text. */
+ *  line (a model's line break is no sentence's end), whole; empty for an empty text. */
 export function firstSentence(text: string): string {
-  const first = SENTENCES.segment(text.replace(/\s+/g, " ").trim())[Symbol.iterator]().next().value?.segment ?? "";
-  return short(first, 200);
+  return (SENTENCES.segment(text.replace(/\s+/g, " ").trim())[Symbol.iterator]().next().value?.segment ?? "").trim();
 }
 
 /** A checker's rule, in words. Every rule packages/learn's checker has; one it adds later reads as its code. */
@@ -79,9 +85,9 @@ export const said = {
   /** The end-of-run turn's message, as a person reads it in the timeline: never the prompt the model is sent. */
   asked: "Looking back on this run.",
   proposed: (notes: number) => `Checking ${count(notes, "new note")}…`,
-  /** What it learned, by name (each at most 100 characters), and how many older notes they replace. */
+  /** What it learned, by name, and how many older notes they replace. */
   merged: (learned: readonly { name: string; supersedes: readonly string[] }[]) => {
-    const names = learned.map((note) => short(note.name, 100));
+    const names = learned.map((note) => note.name.replace(/\s+/g, " ").trim());
     const replaced = learned.reduce((n, note) => n + note.supersedes.length, 0);
     return `${names.length === 1 ? `Learned: ${names[0]}` : `Learned ${names.length} notes: ${names.join("; ")}`}${replaced ? ` (replaces ${count(replaced, "older note")})` : ""}`;
   },
@@ -100,3 +106,25 @@ export const said = {
   screen: "Not kept: a new note read like instructions planted in a page, not a lesson.",
   stopped: (cause: string) => `Not kept: learning stopped (${cause}).`,
 };
+
+/** The reasons packages/learn's parseVerdict gives of its own, never the grader's: an answer it could not read, and one
+ *  it refused (an item for a file it was not asked about, a file judged twice, a new note with no item, a merge that
+ *  did not keep every note). Found by asking it, so they follow it. */
+const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[]}', '{"merge":false,"reason":"r","items":[{"file":"b.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"},{"file":"a.md","keep":false,"why":"w"}]}'].map((answer) => parseVerdict(answer, ["a.md"]).reason));
+/** Why a verdict kept nothing, in a person's words: the grader's own reason, or when the reason is parseVerdict's own,
+ *  the grader's word on the first note it did not keep; an answer that held neither is said as such. */
+export function notKept(verdict: Pick<Verdict, "reason" | "items">): string {
+  if (!OWN_REASONS.has(verdict.reason)) return said.grader(verdict.reason);
+  const why = verdict.items.find((item) => !item.keep)?.why;
+  return why ? said.grader(why) : said.stopped(STOPPED.unread);
+}
+
+/** A run's learning in words as a read says them, whole: what it learned or why the grader kept nothing, said again
+ *  from its parts (`learned`, `verdict`) each cut by `cut` first (the host's secrets as they are now); any other detail,
+ *  the server's own sentence, cut as well. The caller cuts the words short after. */
+export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" | "learned" | "verdict">, cut: (text: string) => string): string | null {
+  const { learned, verdict } = learning;
+  if (learning.state === "merged" && Array.isArray(learned) && learned.length) return said.merged(learned.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })));
+  if (learning.state === "dropped" && learning.reason === "grader" && verdict) return notKept({ reason: cut(verdict.reason), items: (verdict.items ?? []).map((item) => ({ ...item, why: cut(item.why) })) });
+  return learning.detail === null ? null : cut(learning.detail);
+}

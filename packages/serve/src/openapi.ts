@@ -308,7 +308,7 @@ const RUN_LEARNING = {
   oneOf: [
     closedWith({
       run: { type: "string" }, state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON,
-      detail: { ...NULL_STRING, description: "Run.learning's detail: one sentence in a person's words, cut of the host's secrets as they are now." }, at: { type: "string", format: "date-time" },
+      detail: { ...NULL_STRING, maxLength: 300, description: "Run.learning's detail, the same words: at most 300 characters, cut of the host's secrets as they are now before it is cut short." }, at: { type: "string", format: "date-time" },
       seed: { ...NULL_STRING, description: "The commit of main the run started from; null when its seed failed." },
       merged: { ...NULL_STRING, description: "Its merge commit on main, once merged." },
       verdict: { oneOf: [closed({ merge: { type: "boolean" }, reason: { type: "string" }, items: { type: "array", items: VERDICT_ITEM, description: "One for each new note the run proposed." } }), { type: "null" }], description: "The grader's, once it judged; null when no grade ran." },
@@ -722,7 +722,7 @@ const LEARNING = {
     closedWith({
       state: { enum: [...LEARNING_STATES], description: "`seeded` when the run started from what its agent learned; `reflecting` while its end-of-run turn runs, and until what it wrote is checked (after the run ended, so it may still read `reflecting` once the run reads completed or failed); `proposed` once the new notes passed the checks, while they are graded; `merged` once they are on the folder's main; `dropped` when learning was skipped or refused, with `reason`." },
       reason: LEARNING_REASON,
-      detail: { type: ["string", "null"], description: "Where the run's learning stands, in one sentence in a person's words, the same as its timeline row says: \"Started from 2 notes.\", \"Looking back on this run…\", \"Checking 1 new note…\", \"Learned: <note's name> (replaces 1 older note)\", \"Nothing new to remember from this run.\", \"Not kept: <the grader's reason, its first sentence>\", \"Not kept: learning stopped (<why>).\" and so on. Never a secret or a value from the input, cut of the host's secrets as they are now. For a person: a client that acts on it reads `state` and `reason`, whose codes do not change." },
+      detail: { type: ["string", "null"], maxLength: 300, description: "Where the run's learning stands, in one sentence in a person's words (at most 300 characters, ending in an ellipsis when cut; a note's name or the grader's reason in it is cut of the host's secrets as they are now before it is cut short, so none is shown in part), the same as its timeline row says: \"Started from 2 notes.\", \"Looking back on this run…\", \"Checking 1 new note…\", \"Learned: <note's name> (replaces 1 older note)\", \"Nothing new to remember from this run.\", \"Not kept: <the grader's reason, its first sentence>\", \"Not kept: learning stopped (<why>).\" and so on. Never a secret or a value from the input, cut of the host's secrets as they are now. For a person: a client that acts on it reads `state` and `reason`, whose codes do not change." },
       at: { type: "string", format: "date-time", description: "When the state last changed." },
     }, LEARNING_NOTES),
     { type: "null" },

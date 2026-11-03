@@ -24,7 +24,7 @@ import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join, relative } from "node:path";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, valueMatcher, type Verdict } from "@parcha/agentrun-learn";
 import { homeOf, writeDurable } from "./files.js";
-import { LIST_DETAIL, short } from "./learning-words.js";
+import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
 
 /** The server's learning switch (`--learning`, AGENTRUN_SERVE_LEARNING; capabilities.features.learning). `on`, the
@@ -97,11 +97,17 @@ export function notesView({ state, used, learned }: Learning, shown: Shown, sett
   const added = state === "merged" && Array.isArray(learned) ? learned.filter((note) => isText(note?.file) && isText(note.name) && Array.isArray(note.supersedes) && note.supersedes.every(isText)).map(({ file, name, supersedes }) => ({ file: shown.name(file), name: shown.text(name), supersedes: supersedes.map(shown.name) })) : [];
   return { ...(read.length ? { used: read } : {}), ...(added.length ? { learned: added } : {}) };
 }
-/** A run's learning as its view shows it: the state, why in a person's words (learning-words.ts) cut of the host's
- *  secrets now, and when, and the notes it read and learned (notesView). */
+/** A run's learning in a person's words as a read shows them (learning-words.ts wordsOf): each part cut of the host's
+ *  secrets as they are now (`shown`) first, then the words cut short to `max`, so a secret is never shown in part. */
+export const detailShown = (learning: Learning, shown: Shown, max = DETAIL_MAX): string | null => {
+  const words = wordsOf(learning, shown.text);
+  return words === null ? null : short(words, max);
+};
+/** A run's learning as its view shows it: the state, why in a person's words (detailShown), and when, and the notes it
+ *  read and learned (notesView). */
 export const learningView = (learning: Learning, shown: Shown, settled: boolean) => {
-  const { state, reason, detail, at } = learning;
-  return { state, reason, detail: detail === null ? null : shown.text(detail), at, ...notesView(learning, shown, settled) };
+  const { state, reason, at } = learning;
+  return { state, reason, detail: detailShown(learning, shown), at, ...notesView(learning, shown, settled) };
 };
 /** A run's learning as a list shows it: its state and reason, its detail cut of the host's secrets and then short (at
  *  most LIST_DETAIL characters, so a secret is never cut in half and shown), and the notes it read and learned

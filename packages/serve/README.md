@@ -833,8 +833,11 @@ workflow's or an imported run). Its `detail` says the same in a person's words, 
 notes.", "Looking back on this run…", "Checking 1 new note…", "Learned: Check units (replaces 1 older note)", "Nothing new
 to remember from this run.", "Not kept: <the grader's reason, its first sentence>", "Not kept: it held something that must
 not be stored (one of this server's secrets).", "Not kept: learning stopped (looking back took too long)." and so on
-(`learning-words.ts`); a client that acts on it reads `state` and `reason`. Once it is proposed, merged or dropped
-(`seed_failed` included), the run's timeline has one row of kind `learning` whose summary is that detail.
+(`learning-words.ts`); a client that acts on it reads `state` and `reason`. A note's name or the grader's reason in it
+is said again at each read from what the run keeps (its `learned` notes, the grader's verdict), cut of the server's
+secrets as they are then before the words are cut short (300 characters, 140 in a list), so a value that became a secret
+after the run is never shown in part. Once it is proposed, merged or dropped (`seed_failed` included), the run's
+timeline has one row of kind `learning` whose summary is that detail.
 
 Two more fields say what the run used and learned (`learning/2`), on its read and in run lists alike, each absent when it
 holds no note: `used`, `[{file, name}]`, the notes its job read from `.learning/`, found once as the run settles from its

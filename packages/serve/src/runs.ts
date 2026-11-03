@@ -1746,6 +1746,13 @@ export class Runs {
     };
   }
 
+  /** A key was saved on this server or deleted from it: each held run's learning row shown again, cut of the keys as
+   *  they are now (learning-run.ts shown), as its view and its lists already are from the next read on. */
+  keysChanged(): void {
+    this.learning.keysChanged();
+    for (const run of this.runs.values()) if (run.meta.learning) this.show(run);
+  }
+
   /** A held run's learning, in short (learning-run.ts heldLearning). */
   heldLearning(runId: string): { state: LearningState; reason: LearningReason | null } | null | undefined {
     return this.learning.heldLearning(runId);
