@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AnalyticsFilter, MissionAnalytics } from "@/components/MissionAnalytics";
 import type { Agent } from "@/lib/agentForm";
-import { type Client, ClientError } from "@/lib/client";
+import { type Client, problemOf } from "@/lib/client";
 import { rangeFrom, type Stats, type StatsRange } from "@/lib/mission";
-
-const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
 
 /** The range the tab opens on, which the agent page reads first. */
 export const FIRST_RANGE: StatsRange = "30d";
