@@ -40,6 +40,10 @@ export const RESULT_SIZE_KEY = "anthropic/maxResultSizeChars";
  */
 export const MCP_OUTPUT_TOKENS = HOST_RESULT_MAX_CHARS;
 
+/** `tools` as the server lists them to the CLI (`tools/list`): each as the host gave it, with the host's result bound as
+ *  its result size. */
+export const listedTools = (tools: readonly ServedTool[]) => tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, _meta: { [RESULT_SIZE_KEY]: HOST_RESULT_MAX_CHARS } }));
+
 /** The SDK's in-process server config for `tools`: `call(name, args, toolUseId)` answers each call. */
 export async function toolServer(name: string, tools: readonly ServedTool[], call: (tool: string, args: unknown, toolUseId: unknown) => Promise<ServedResult>) {
   const [{ McpServer }, { CallToolRequestSchema, ListToolsRequestSchema }] = await Promise.all([
@@ -47,7 +51,7 @@ export async function toolServer(name: string, tools: readonly ServedTool[], cal
     import("@modelcontextprotocol/sdk/types.js"),
   ]);
   const server = new McpServer({ name, version: "1.0.0" }, { capabilities: { tools: {} } });
-  const listed = tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, _meta: { [RESULT_SIZE_KEY]: HOST_RESULT_MAX_CHARS } }));
+  const listed = listedTools(tools);
   const names = new Set(tools.map((t) => t.name));
   server.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listed }));
   server.server.setRequestHandler(CallToolRequestSchema, async (request) => {

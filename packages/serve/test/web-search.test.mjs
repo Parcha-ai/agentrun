@@ -58,14 +58,14 @@ test("an answer is held to the host's result bound: past it, the least relevant 
   assert.equal(searches.searchText({ error: "no" }), '{"error":"no"}');
   const quoted = { provider: "parallel", query: "widgets", results: Array.from({ length: 25 }, (_, i) => hit(i, '"'.repeat(3_000))) };
   const text = searches.searchText(quoted);
-  assert.equal(typeof kernel.HOST_RESULT_MAX_CHARS, "number");
-  assert.ok(text.length <= kernel.HOST_RESULT_MAX_CHARS, `${text.length} characters`);
+  assert.ok(searches.SEARCH_MAX_CHARS < kernel.HOST_RESULT_MAX_CHARS, "under the host's result bound");
+  assert.ok(text.length <= searches.SEARCH_MAX_CHARS, `${text.length} characters`);
   assert.ok(text.endsWith(`\n${searches.CITE}`));
   const kept = JSON.parse(text.slice(0, -searches.CITE.length - 1));
   assert.ok(kept.results.length > 10 && kept.results.length < 25, `${kept.results.length} kept`);
   assert.deepEqual(kept.results, quoted.results.slice(0, kept.results.length), "the most relevant, in order, each whole");
   assert.equal(kept.omitted, 25 - kept.results.length);
-  assert.ok(text.length > kernel.HOST_RESULT_MAX_CHARS - 7_000, "as many as fit");
+  assert.ok(text.length > searches.SEARCH_MAX_CHARS - 7_000, "as many as fit");
 });
 
 test("n is 1 to 25, 10 when it is not a number above zero", async (t) => {

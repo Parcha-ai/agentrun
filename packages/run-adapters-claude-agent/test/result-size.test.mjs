@@ -56,7 +56,8 @@ async function oneCall(t, tool) {
 }
 
 test("on the pinned CLI, a host tool's text result past the CLI's 50,000-character default reaches the model whole, never saved to a file it is told to read", { skip, timeout: 240_000 }, async (t) => {
-  const size = 99_000;
+  // Just under the host's bound (past the CLI's default token limit too, at four characters a token).
+  const size = kernel.HOST_RESULT_MAX_CHARS - 1_000;
   const text = pageOf(size);
   const page = { name: 'page', description: 'A long page.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text }) };
   const result = await oneCall(t, page);
@@ -64,12 +65,12 @@ test("on the pinned CLI, a host tool's text result past the CLI's 50,000-charact
   assert.ok(!/<persisted-output>|Output too large|Output has been saved to|exceeds maximum allowed tokens/.test(got), `not saved to a file: ${got.slice(0, 300)}`);
   assert.equal(got.length, size, 'every character');
   assert.equal(got, text);
-  assert.ok(size <= kernel.HOST_RESULT_MAX_CHARS, 'a result the host bound allows');
 });
 
 test("on the pinned CLI, a result with an image whose text is past the CLI's default token limit reaches the model whole: its MCP token limit is the host's bound", { skip, timeout: 240_000 }, async (t) => {
   // An image keeps a result from being saved to a file: the token check cuts it instead, at 25,000 tokens by default.
-  const size = 120_000;
+  // Just under the host's bound, past 100,000 characters (25,000 tokens at four characters a token).
+  const size = kernel.HOST_RESULT_MAX_CHARS - 1_000;
   const text = pageOf(size);
   const shot = { name: 'shot', description: 'A long page and its screenshot.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text, images: [{ mimeType: 'image/png', data: PNG }] }) };
   const result = await oneCall(t, shot);

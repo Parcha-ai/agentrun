@@ -28,12 +28,13 @@ import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/ho
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
- * Codex's `tool_output_token_limit`: the host's result bound (HOST_RESULT_MAX_CHARS), as tokens. Codex keeps a tool's
- * output in the model's history within its truncation policy (10,000 tokens for each model its catalog holds, less for
- * one it does not) and cuts the middle of a longer one; this sets the policy. Codex counts a token as four bytes, and a
- * character takes at most three, so a result within the bound is within the limit.
+ * Codex's `tool_output_token_limit`: the host's result bound (HOST_RESULT_MAX_CHARS), as Codex counts it. Codex keeps a
+ * tool's output in the model's history within its truncation policy (10,000 tokens for each model its catalog holds, less
+ * for one it does not) and cuts the middle of a longer one; this sets the policy. Codex counts a token as four bytes of
+ * UTF-8, and a character (a UTF-16 unit) takes at most three, so a result within the bound in any script takes at most
+ * three quarters of a token a character: not a quarter, which holds for ASCII alone.
  */
-export const CODEX_TOOL_OUTPUT_TOKENS = HOST_RESULT_MAX_CHARS;
+export const CODEX_TOOL_OUTPUT_TOKENS = Math.ceil((HOST_RESULT_MAX_CHARS * 3) / 4);
 
 export interface CodexProvider {
   /** The provider's origin (`https://api.openai.com`): the proxy forwards to its `/v1/responses` only. */

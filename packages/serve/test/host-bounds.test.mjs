@@ -7,7 +7,8 @@
 // RESULTS_MAX results with SNIPPET_MAX snippets; monid's answer past CLIP; pi's read and bash past their 2,000 lines or
 // 50 KB (host-tools' MAX_LINES and MAX_BYTES, as pi's own descriptions state them), with their notes; write and edit with
 // the longest file name. Text that the answer must escape (quotes, backslashes) is used wherever it can grow a result.
-// A tool added to the host tools with no largest result here fails the test.
+// A tool added to the host tools with no largest result here fails the test. So does one the Claude Agent adapter would
+// list to its CLI without the bound as its `anthropic/maxResultSizeChars`, or a CLI knob set below the bound.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,6 +17,10 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import * as kernel from "@parcha/agentrun-kernel";
+import * as claude from "@parcha/agentrun-harness-claude";
+import * as codex from "@parcha/agentrun-harness-codex";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { codingSource, CodingTools } from "../dist/coding-tools.js";
 import * as pages from "../dist/fetch-page.js";
 import * as hosts from "../dist/host-tools.js";
@@ -79,5 +84,25 @@ test("every host tool's largest result is within the host's result bound, which 
 
   t.diagnostic(`bound ${bound}: ${JSON.stringify(largest)}`);
   assert.deepEqual(Object.keys(largest).sort(), Object.keys(hosts.REPLAY).sort(), "every host tool has its largest result here");
-  for (const [tool, size] of Object.entries(largest)) assert.ok(size <= bound, `${tool}'s largest result is ${size} characters, past the bound ${bound}`);
+  for (const [tool, size] of Object.entries(largest)) assert.ok(size < bound, `${tool}'s largest result is ${size} characters, not under the bound ${bound}`);
+  assert.ok(search.SEARCH_MAX_CHARS < bound, "web_search's own budget is under the bound");
+
+  // Every host tool, as the Claude Agent adapter lists it to its CLI (its tool server's tools/list, read by an MCP
+  // client), carries the bound as its result size; the CLI takes one up to 500,000.
+  const all = hosts.hostTools({ ...run, claim: { work } }, Object.keys(hosts.REPLAY), ctx, new Map(), box.tools);
+  assert.deepEqual(all.map((tool) => tool.name).sort(), Object.keys(hosts.REPLAY).map((name) => name.replace(".", "_")).sort(), "every host tool, under its wire name");
+  const server = await claude.toolServer("hands", all.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), async () => ({ content: [] }));
+  const [near, far] = InMemoryTransport.createLinkedPair();
+  await server.instance.connect(far);
+  const client = new Client({ name: "host-bounds", version: "1.0.0" });
+  await client.connect(near);
+  t.after(() => client.close());
+  const { tools: listed } = await client.listTools();
+  assert.deepEqual(listed.map((tool) => [tool.name, tool._meta?.[claude.RESULT_SIZE_KEY]]).sort(), all.map((tool) => [tool.name, bound]).sort(), "each listed with the bound as its result size");
+  assert.equal(claude.RESULT_SIZE_KEY, "anthropic/maxResultSizeChars");
+  assert.ok(bound <= 500_000, "within what the CLI takes as a tool's result size");
+  // The CLI's token check: it estimates a quarter of a token a character and 1,600 an image, and counts exactly only past
+  // half of MAX_MCP_OUTPUT_TOKENS. Codex counts four bytes of UTF-8 a token, and a character takes at most three.
+  assert.ok(bound / 4 + 2 * 1_600 <= claude.MCP_OUTPUT_TOKENS / 2, `MAX_MCP_OUTPUT_TOKENS ${claude.MCP_OUTPUT_TOKENS}: a result at the bound with two images is never counted`);
+  assert.ok(codex.CODEX_TOOL_OUTPUT_TOKENS * 4 >= bound * 3, `tool_output_token_limit ${codex.CODEX_TOOL_OUTPUT_TOKENS}: a result at the bound in any script is within it`);
 });

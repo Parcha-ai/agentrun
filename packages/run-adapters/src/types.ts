@@ -22,10 +22,11 @@ export interface ToolImage {
  * The most characters a host tool's result may hold: its text as the model reads it (`text.length`). Each harness tells
  * its CLI to pass a result this long to the model whole: the Claude Agent CLI otherwise saves one past 50,000 characters
  * to a file and tells the model to read it (which a confined session cannot), and Codex cuts the middle of one past its
- * truncation policy. A host keeps each of its tools' results within it, and pages what is longer; serve's host-bounds
- * test holds every one of its host tools to it.
+ * truncation policy. It is a ceiling over the tools' own caps, with room: a host keeps each of its tools' results under
+ * it, and pages what is longer; serve's host-bounds test holds every one of its host tools to it. The Claude Agent CLI
+ * takes at most 500,000 here.
  */
-export const HOST_RESULT_MAX_CHARS = 100_000;
+export const HOST_RESULT_MAX_CHARS = 120_000;
 
 /** A tool the host gives a session. */
 export interface HostTool {

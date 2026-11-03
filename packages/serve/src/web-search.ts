@@ -8,13 +8,11 @@
 // answer with its sources), followed for the model by one line asking it to cite the URLs it relies on; or `{error}`:
 // no provider here, no key, a refused key, a status other than 2xx, nothing within 60 s. Nothing else is searched
 // instead. The query is cut at 200 characters, 1 to 25 results (10 by default), and a result's snippet (its excerpts
-// joined, links reduced to their text) is cut at 3,000 characters. An answer is held to the host's result bound
-// (SEARCH_MAX_CHARS, within HOST_RESULT_MAX_CHARS): past it, its least relevant results are left out, and `omitted`
-// counts them.
+// joined, links reduced to their text) is cut at 3,000 characters. An answer is held to SEARCH_MAX_CHARS, under the host's
+// result bound: past it, its least relevant results are left out, and `omitted` counts them.
 // Parallel is asked through the run's one client (web-fetch.ts), on the key the server handed the run's process: a 401
 // or 403 to either web tool stops both for the rest of the run. No request is retried.
 import type { TSchema } from "@earendil-works/pi-ai";
-import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { clip, TITLE_CAP } from "./fetch-page.js";
@@ -37,9 +35,9 @@ const RESULTS_DEFAULT = 10;
 export const SNIPPET_MAX = 3_000;
 /** The most of the provider's own short answer (`text`) a search keeps (hosted-search.ts). */
 export const ANSWER_MAX = 4_000;
-/** The most characters a search's answer takes, its citing line included: the host's result bound, less room for what a
- *  harness says beside a result. */
-export const SEARCH_MAX_CHARS = HOST_RESULT_MAX_CHARS - 1_000;
+/** The most characters a search's answer takes, its citing line included: about RESULTS_MAX results with whole snippets,
+ *  under the host's result bound (HOST_RESULT_MAX_CHARS), which the host-bounds test holds it to. */
+export const SEARCH_MAX_CHARS = 100_000;
 const REFUSED = "Parallel refused this run's key (401 or 403): it is not asked again in this run";
 
 export type Hit = { url: string; title: string; snippet: string; published?: string };
