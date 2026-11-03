@@ -4,6 +4,8 @@
 // since the arm in the file TURN_END_HELD names, then holds (60 s at most) for the test's SIGKILL. The session then has the
 // turn over and the root has the turn's last entry, with no end. Once TURN_END_HELD exists nothing holds, so the process
 // opened next writes as it would. The arm file may hold a number: that many turn ends pass first, then the next is held.
+// "<n> after": n turn ends pass, then the first record of any kind written after the n-th (in a commit of its own, after
+// that turn end's) is held instead; TURN_END_HELD then also names that record's kind (`at`).
 // TURN_END_GATE, once TURN_END_HELD exists: the process opened next waits in its open, before it writes anything of the
 // reopen's, until it has answered an event stream (the server's, its snapshot written with the door idle), then notes so
 // in the file TURN_END_GATE names. serve imports this module in the run's open (adapters.ts adapterFor), after the door
@@ -23,11 +25,14 @@ if (arm && held && process.argv.includes("--app")) {
     if (typeof record === "string" && record.startsWith("{") && existsSync(arm) && !existsSync(held)) {
       let kind;
       try { kind = JSON.parse(record).kind; } catch { kind = undefined; }
-      if (kind === "adapter.turn_end" && (passed.has(record) || passed.size < (Number(readFileSync(arm, "utf8").trim()) || 0))) {
+      const [count, mode] = readFileSync(arm, "utf8").trim().split(/\s+/);
+      const pass = Number(count) || 0;
+      const after = mode === "after";
+      if (kind === "adapter.turn_end" && (passed.has(record) || passed.size < pass)) {
         passed.add(record);
         since.push(kind);
-      } else if (kind === "adapter.turn_end") {
-        writeFileSync(held, JSON.stringify({ pid: process.pid, since }));
+      } else if (after ? typeof kind === "string" && passed.size >= pass : kind === "adapter.turn_end") {
+        writeFileSync(held, JSON.stringify({ pid: process.pid, since, at: kind }));
         const nap = new Int32Array(new SharedArrayBuffer(4));
         for (let i = 0; i < 3_000; i++) Atomics.wait(nap, 0, 0, 20);
       } else if (typeof kind === "string") since.push(kind);

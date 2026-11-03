@@ -30,6 +30,7 @@ const TOKENS = { input: 10, output: 5, cacheRead: 40, cacheWrite: 2 };
 /** An adapter whose one request is answered, and its turn ended, before the test lets its booking through. */
 function lateBooking() {
   const book = deferred();
+  const answered = deferred();
   const adapter = {
     id: "late",
     version: "0",
@@ -48,6 +49,7 @@ function lateBooking() {
           io.onEvent({ type: "text", delta: "Answered." });
           void book.promise.then(() => io.models.afterRequest({ ...TOKENS, usd: 0.003 }, ticket ?? undefined));
           ended.resolve({ status: "completed" });
+          answered.resolve();
         },
         async recover() {},
         turnEnd: () => ended.promise,
@@ -56,7 +58,7 @@ function lateBooking() {
       };
     },
   };
-  return { adapter, book: () => book.resolve() };
+  return { adapter, book: () => book.resolve(), answered: answered.promise };
 }
 
 const runOf = (harness) => ({ harness, env: async () => ({ confinePrefix: () => ["/usr/bin/setpriv", "--no-new-privs", "--"] }) });
@@ -92,49 +94,52 @@ const bookedMarks = (entries) => entries.filter((e) => e.kind === BOOKED);
 /** An answer's model and tokens, as its entry names them. */
 const named = (m) => ({ provider: m.provider, model: m.model, input: m.usage.input, output: m.usage.output, cacheRead: m.usage.cacheRead, cacheWrite: m.usage.cacheWrite, totalTokens: m.usage.totalTokens });
 const NONE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
-const until = async (check, ms = 10_000) => {
-  for (const end = Date.now() + ms; !check(); ) {
-    assert.ok(Date.now() < end, "in time");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+/** The booking wait on a mocked clock that moves only when the test ticks it (`t.mock.timers`): what is queued runs
+ *  out (`drained`), and `settles` waits on `check` with no timer, bounded on the real clock. */
+const mockClock = (t) => t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+const drained = () => new Promise((resolve) => setImmediate(resolve));
+const settles = async (check, what) => {
+  for (const end = performance.now() + 10_000; !(await check()); await drained()) assert.ok(performance.now() < end, what);
 };
 
-test("a request booked just after its turn ended: the turn's end waits for its cost, and the answer is written with it, booked once", async () => {
+test("a request booked just after its turn ended: the turn's end waits for its cost, and the answer is written with it, booked once", async (t) => {
+  mockClock(t);
   const storage = new MemoryStorage();
   const late = lateBooking();
   const { app, door, events, harness } = await opened(storage, late.adapter);
   assert.deepEqual(await app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, door), { accepted: true });
   // The turn has ended on the harness's side; its cost is still on its way.
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await late.answered;
+  await drained();
   assert.ok(!events.includes("run_end"), "the run waits for the cost");
-  const released = Date.now();
+  // The clock never moves: the turn ends on its cost coming in, not on the wait running out.
   late.book();
-  await until(() => events.includes("run_end"));
-  assert.ok(Date.now() - released < 500, `the turn ends as soon as its cost is in: ${Date.now() - released} ms`);
+  await settles(() => events.includes("run_end"), "the turn ends as soon as its cost is in");
   const entries = await rootOf(harness);
   assert.deepEqual(answers(entries).map((m) => [m.content.map((c) => c.text).join(""), m.usage?.cost?.total]), [["Answered.", 0.003]], "the answer, at its cost");
   assert.deepEqual(answers(entries).map(named), [{ provider: "late", model: MODEL, ...TOKENS, totalTokens: 57 }], "the model its request asked for, and its tokens");
   assert.equal(bookedMarks(entries).length, 1, "booked once");
 });
 
-test("a request whose cost comes after the wait: its answer is written at unknown cost and marked booked, its cost then counted once, and the next open adds nothing", { timeout: BOOKING_WAIT_MS * 5 }, async () => {
+test("a request whose cost comes after the wait: its answer is written at unknown cost and marked booked, its cost then counted once, and the next open adds nothing", async (t) => {
+  mockClock(t);
   const storage = new MemoryStorage();
   const late = lateBooking();
   const first = await opened(storage, late.adapter);
   assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
-  await until(() => first.events.includes("run_end"), BOOKING_WAIT_MS * 3);
+  await late.answered;
+  await drained();
+  assert.ok(!first.events.includes("run_end"), "the turn's end waits for the cost");
+  t.mock.timers.tick(BOOKING_WAIT_MS);
+  await settles(() => first.events.includes("run_end"), "the turn ends once the wait runs out");
   // Its cost not in yet: the run's cost reads unknown, never a known $0.
   assert.deepEqual(usage(await rootOf(first.harness)), { usd: null, requests: 1 }, "one request, its cost unknown while it is out");
-  // The cost comes in after the answer was written: it goes in at once, with no next turn to carry it.
-  const released = Date.now();
+  // The cost comes in after the answer was written: it goes in on its own, with no next turn to carry it.
   late.book();
-  for (; spend(await rootOf(first.harness)) !== 0.003; ) {
-    assert.ok(Date.now() - released < 500, "the late cost is in the run's spend at once");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  await settles(async () => spend(await rootOf(first.harness)) === 0.003, "the late cost is in the run's spend with no next turn");
   // A next turn in the same process flushes again: the late cost still belongs to the answer already written.
   assert.deepEqual(await first.app.door.submit({ requestId: "m2", content: "again", whenBusy: "followUp" }, first.door), { accepted: true });
-  await until(() => first.events.filter((e) => e === "run_end").length === 2, BOOKING_WAIT_MS * 3);
+  await settles(() => first.events.filter((e) => e === "run_end").length === 2, "the next turn ends");
   const before = await rootOf(first.harness);
   assert.deepEqual(answers(before).map((m) => [m.content.map((c) => c.text).join(""), m.usage?.cost?.total]), [["Answered.", undefined]], "one answer, written at unknown cost");
   assert.equal(spend(before), 0.003, "its cost, come in late, is in the run's spend");
@@ -152,22 +157,27 @@ test("a request whose cost comes after the wait: its answer is written at unknow
   assert.equal(bookedMarks(after).length, 1, "still booked once");
 });
 
-test("a late cost the session booked but the root never got (its process went first) is written by the next open, once", { timeout: BOOKING_WAIT_MS * 5 }, async () => {
+test("a late cost the session booked but the root never got (its process went first) is written by the next open, once", async (t) => {
+  mockClock(t);
   const storage = new MemoryStorage();
   const late = lateBooking();
   // The first process goes before it writes the late cost: its commit of that cost fails, as a process cut there.
+  let went = 0;
   const cut = (harness) => new Proxy(harness, {
     get: (target, key) => key !== "commit" ? Reflect.get(target, key).bind?.(target) ?? Reflect.get(target, key) : (change, context) =>
-      target.commit((tx) => change(new Proxy(tx, { get: (t, k) => (k === "appendEntry" ? (...args) => (args[1]?.kind === PRICED_LATE ? Promise.reject(new Error("the process went")) : t.appendEntry(...args)) : typeof t[k] === "function" ? t[k].bind(t) : t[k]) })), context),
+      target.commit((tx) => change(new Proxy(tx, { get: (t, k) => (k === "appendEntry" ? (...args) => (args[1]?.kind === PRICED_LATE ? (went++, Promise.reject(new Error("the process went"))) : t.appendEntry(...args)) : typeof t[k] === "function" ? t[k].bind(t) : t[k]) })), context),
   });
   const first = await opened(storage, late.adapter, cut);
   assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
-  await until(() => first.events.includes("run_end"), BOOKING_WAIT_MS * 3);
+  await late.answered;
+  await drained();
+  t.mock.timers.tick(BOOKING_WAIT_MS);
+  await settles(() => first.events.includes("run_end"), "the turn ends once the wait runs out");
   late.book();
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await settles(() => went > 0, "the first process tries to write the late cost");
   assert.equal(spend(await rootOf(first.harness)), 0, "the first process never wrote the late cost");
+  // The next open writes what it finds before it is done opening.
   const next = await opened(storage, lateBooking().adapter);
-  await new Promise((resolve) => setTimeout(resolve, 200));
   const after = await rootOf(next.harness);
   assert.equal(answers(after).length, 1, "one answer");
   assert.equal(spend(after), 0.003, "the next open wrote the cost the session booked");

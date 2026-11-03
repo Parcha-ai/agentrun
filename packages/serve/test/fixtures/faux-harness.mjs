@@ -1,6 +1,11 @@
 // The faux harness's script for serve's tests: one action per paid request, across the session's turns, by what the
 // agent's instructions say. The script is read again at every open, so what a later process does can depend on a file.
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+
+/** Told the options the harness's own adapter would be built with (serve's adapters.ts): filed, for a test to see. */
+export function opened(harness, options) {
+  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ harness, options })}\n`);
+}
 
 /** An answer of 3,000 characters, longer than the 2,000 a run's summary keeps; its end says it was not cut. */
 export const LONG_ANSWER = `${"The long answer goes on. ".repeat(119)}The end.`;
@@ -16,6 +21,14 @@ const hangSignalled = (signal) => new Proxy({ hang: true }, { has(target, key) {
 
 export function script(spec) {
   const text = spec.system.join("\n");
+  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ tools: spec.tools.map((tool) => tool.name) })}\n`);
+  // A research turn: the session's web_search when it has one as a tool (its harness's own search is not one), then the
+  // page with web_fetch, then report.md citing it.
+  const research = /Research (.+?) on the web, read (\S+) and write report\.md\./.exec(text);
+  if (research) {
+    const search = spec.tools.some((tool) => tool.name === "web_search") ? [{ call: "web_search", args: { query: research[1], n: 2 }, usd: 0.001 }] : [];
+    return [...search, { call: "web_fetch", args: { url: research[2] }, usd: 0.001 }, { call: "write", args: { path: "report.md", content: `# ${research[1]}\n\nThe answer is forty-two (Public page, ${research[2]}).\n` }, usd: 0.001 }, { say: "Wrote report.md.", usd: 0.001 }];
+  }
   // As real harnesses do, a request that goes on calls a tool, and the turn's last request is its answer.
   // One answer that asks for two tools, as a model writing two files in one turn does, then the closing answer.
   if (/Write two files in one answer\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001 }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
@@ -28,8 +41,20 @@ export function script(spec) {
   if (link) return [{ call: "write", args: { path: "first.txt", content: "x" }, usd: 0.001 }, ...(existsSync(link) ? [] : [{ hang: true }]), { call: "read", args: { path: "out.txt" }, usd: 0.001 }, { say: "Tried.", usd: 0.001 }];
   const page = /Fetch (\S+) and say its title(?: with (\w+))?\./.exec(text);
   if (page) return [{ call: page[2] ?? "fetch_page", args: { url: page[1] }, usd: 0.001 }, { say: "Fetched.", usd: 0.001 }];
+  const query = /Search the web for (.+?) and say what you found\./.exec(text)?.[1];
+  if (query) return [{ call: "web_search", args: { query, n: 3 }, usd: 0.001 }, { say: "Searched.", usd: 0.001 }];
+  // Calls each tool the line lists, in order, then says so: `Box calls: [{"call": "bash", "args": {...}}, ...]`. `{work}`
+  // in a call names the run's work directory on this machine, the harness's cwd (from AGENTRUN_TEST_DATA, the data root).
+  const boxed = /^Box calls: (\[.*\])$/m.exec(text)?.[1];
+  const work = `${process.env.AGENTRUN_TEST_DATA}/runs/${spec.key.slice("run:".length)}/work`;
+  if (boxed) return [...JSON.parse(boxed.replaceAll("{work}", work)).map((step) => ({ ...step, usd: 0.001 })), { say: "Done in the box.", usd: 0.001 }];
+  // monid's run, called as a harness calls it: by its wire name.
+  const endpoint = /Run monid's (\S+) on Ada\./.exec(text)?.[1];
+  if (endpoint) return [{ call: "monid_run", args: { provider: "faux", endpoint, input: { name: "Ada" } }, usd: 0.001 }, { say: "Ran.", usd: 0.001 }];
   if (/Say your thinking\./.test(text)) return [{ say: `Thinking ${spec.thinking}.`, usd: 0.001 }];
   if (/Price unknown\./.test(text)) return [{ say: "Priced unknown.", usd: null }];
+  // One request that costs more than its run's cap allows: a native search's input is held at an allowance, not a bound.
+  if (/Overspend\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.5 }, { say: "Not sent.", usd: 0.001 }];
   // A chat whose second turn has a request of unknown price.
   // A follow-up whose turn makes one request and shows nothing, as the Claude CLI's /compact does (a summary request, no
   // text): the turn ends with no answer row after the person's message.

@@ -10,6 +10,15 @@ Names: `run.<status>.<state>.<n>` is a run in that status and state, with `.time
 Two recordings on 2026-10-28 from the same seed: one right after a restart (`run.working.idle.1`, `run.queued.working.1`:
 runs not yet relaunched) and one 15 seconds later (`run.working.working.*`: the same runs relaunched, a live turn).
 
+`capabilities.json`'s `tools` is a later recording than the rest of that file (2026-11-03, a server on the faux model
+with no keys): the console reads a tool only as the object serve sends, and the first recording listed bare names.
+
+`timeline.<shape>.<state>` are one pi run's timeline (`GET /v2/runs/{id}/timeline`) in both of the server's shapes,
+recorded by its timeline projector: `actions` one row per action (capabilities' `timeline.actions`: a call's own
+`tool_use` row changing in place), `legacy` a call row then its result row. `completed` is the run settled, `working`
+the same run live, a write still running. The run reads a missing file, reads three, searches and fetches the web, fails
+a write outside its workspace, writes, asks a question, has a write interrupted and retried, and answers.
+
 `error.definition-stale-etag` is a definition PUT with an `If-Match` that is not the current revision (412);
 `error.definition-invalid-body` is one whose body is not `{definition, skills?, note?}` (422).
 

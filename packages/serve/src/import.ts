@@ -19,10 +19,15 @@ import { readJson, RUN_META } from "./files.js";
 import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
 import { catalogPrices, type Listed } from "./model.js";
+import { logLine } from "./print.js";
 import { DEFAULT_PORT } from "./server.js";
 import { secretCut } from "./secret-cut.js";
+import { SECRET_NAMES, withSecrets } from "./secrets.js";
+import { ToolKeys } from "./tool-keys.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 
+/** In the data directory while an import the owner asked for at setup has not ended: the server's next start goes on with it. */
+export const IMPORT_ASKED = ".import-at-setup";
 /** A session file written to this recently may still be running: it is left for a later import. */
 export const LIVE_MS = 10 * 60_000;
 /** The most of one session file read. */
@@ -46,9 +51,14 @@ export type ImportOptions = {
   all?: boolean;
   /** The environment whose key-shaped values are cut out of everything written. */
   env: NodeJS.ProcessEnv;
+  /** The tool keys saved through the settings API, opened (tool-keys.ts' `values`): cut out by the same rule. */
+  stored?: Record<string, string>;
   now?: number;
   /** The temp directory whose projects are left out (default the OS's). */
   temp?: string;
+  /** Stops the import between two session files, planned or taken (a server shutting down): what is written stays, and
+   *  the next import goes on from there. */
+  signal?: AbortSignal;
   /** Read each session's turns while planning, and measure it (`Plan.found`): what a dry run's summary counts. */
   measure?: boolean;
 };
@@ -81,6 +91,15 @@ export type ImportReport = {
 };
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+
+/** A session's id as an import keeps it: as it is, unless it holds one of the keys the import cuts, the environment's or
+ *  one saved on the server (a session named after its file can), then `redacted-` and a hash of it, the same each time
+ *  and different for each id, so two such sessions stay two runs and a later import finds each one's. The plan and the
+ *  import keep it from the same keys, or a later import would not find the run an earlier one made. */
+const keptId = (envs: readonly NodeJS.ProcessEnv[]) => {
+  const { text } = secretCut(envs, SECRET_NAMES);
+  return (id: string) => (text(id) === id ? id : `redacted-${hash(id).slice(0, 16)}`);
+};
 export const agentIdOf = (cwd: string) => `imp-${hash(`dir:${cwd}`).slice(0, 32)}`;
 /** The sessions the store holds already, as `source:session`, to their run's id. */
 const importedIn = (store: AgentStoreReader) => new Map(store.listRuns().flatMap((run) => (run.importedFrom ? [[`${run.importedFrom.source}:${run.importedFrom.session}`, run.id] as const] : [])));
@@ -106,7 +125,10 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 /** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Keeps no turns
  *  (with `measure`, only until each session is measured), and reads no file `store`'s imports already read whole and
  *  that has not changed since. */
-export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
+export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, signal }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
+  // A session's id that holds a key (one named after its file can) is kept as a hash of it: every lookup of an earlier
+  // import's run then goes by the id as kept.
+  const idOf = keptId([env, stored ?? {}]);
   const skipped: Skipped[] = [];
   const seen = store ? await filesIn(store) : new Map<string, SourceFile & { run: string }>();
   let already = 0;
@@ -121,6 +143,7 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
     for (const { file, stats } of await inOrder(await sessionFiles(home, source), source)) {
+      if (signal?.aborted) break;
       const known = seen.get(hash(file));
       if (sameFile(known, stats)) {
         already += 1;
@@ -141,6 +164,8 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
       const session = await readSession(file, source, { turns: false }).catch((error: unknown) => void skipped.push(unread(file, error)));
       if (!session) continue;
+      session.id = idOf(session.id);
+      if (session.parent) session.parent = idOf(session.parent);
       // A subagent's session is no run of its own: its usage is its parent's, when its file names the parent (a Codex
       // thread's, whichever of its files); else it counts in the totals alone, where its project would.
       if (session.child && session.parent) {
@@ -267,6 +292,11 @@ function byRun(sessions: readonly Session[]): Session[][] {
   for (const session of sessions) runs.set(`${session.source}:${session.id}`, [...(runs.get(`${session.source}:${session.id}`) ?? []), session]);
   return [...runs.values()];
 }
+
+/** The sessions `files` write, as the import takes them: one per source and session id, however many files write it
+ *  (`byRun`), with its cost known when each of its files' is (as `merged` prices it). What a dry run counts. */
+export const sessionsOf = (files: readonly Session[]): { source: Source; key: `${Source}:${string}`; priced: boolean }[] =>
+  byRun(files).map((parts) => ({ source: parts[0]!.source, key: `${parts[0]!.source}:${parts[0]!.id}` as const, priced: parts.every((s) => s.costUsd !== undefined) }));
 
 /** A session's files, read in the import's order with its `seen` (which file keeps a copied record), as the one run the
  *  store keeps of it: their turns in the order they ran (each file's by its start; each answer with its own file's model
@@ -719,12 +749,14 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
 /** The plan, into `store`: the agents it does not hold, and the runs it does not. A run an earlier import made whose
  *  transcript never landed (the process stopped between the two) has it written now. */
 export async function runImport(store: AgentStore, plan: Plan, options: ImportOptions): Promise<ImportReport> {
-  const { text, json } = secretCut(options.env);
+  const { text, json } = secretCut([options.env, options.stored ?? {}], SECRET_NAMES);
+  const idOf = keptId([options.env, options.stored ?? {}]);
   const report: ImportReport = { agents: [], skipped: [...plan.skipped], already: plan.already };
   let prices: Promise<Map<string, Listed[]>> | undefined;
   const catalog = () => (prices ??= catalogPrices());
   const held = importedIn(store);
   for (const project of plan.projects) {
+    if (options.signal?.aborted) break;
     const created = !store.readAgent(project.agentId);
     if (created)
       store.createAgent({
@@ -743,6 +775,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
     // A record or response counted once across the import's files, those its runs here hold already included.
     const seen = await seenIn(store, project.agentId);
     for (const files of byRun(project.sessions)) {
+      if (options.signal?.aborted) break;
       const listed = files[0]!;
       const heldRun = held.get(`${listed.source}:${listed.id}`);
       if (heldRun !== undefined && existsSync(store.runStorePath(heldRun))) {
@@ -770,6 +803,8 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       }
       if (!read) continue;
       const session = merged(parts);
+      // Its id as the plan has it.
+      session.id = idOf(session.id);
       const subagents = await readChildren(plan, session, searched, seen(listed.source));
       // The transcript is whole before its run is: written beside the store, then moved into the run's directory.
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
@@ -817,15 +852,17 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
   return report;
 }
 
-/** The plan as a person reads it: one line per project, then what is left out and why. */
+/** The plan as a person reads it: one line per project, its sessions counted as the import takes them, then what is
+ *  left out and why. */
 export function describePlan(plan: Plan, store?: AgentStoreReader): string[] {
   const held = store ? importedIn(store) : undefined;
   const lines = plan.projects.map((project) => {
+    const sessions = sessionsOf(project.sessions);
     const by = new Map<string, number>();
-    for (const s of project.sessions) by.set(s.source, (by.get(s.source) ?? 0) + 1);
-    const already = held ? project.sessions.filter((s) => held.has(`${s.source}:${s.id}`)).length : 0;
-    const priced = project.sessions.filter((s) => s.costUsd !== undefined).length;
-    return `${project.cwd}  ${[...by].map(([source, n]) => `${source} ${n}`).join(", ")}  cost known ${priced}/${project.sessions.length}${already ? `  already imported ${already}` : ""}`;
+    for (const s of sessions) by.set(s.source, (by.get(s.source) ?? 0) + 1);
+    const already = held ? sessions.filter((s) => held.has(s.key)).length : 0;
+    const priced = sessions.filter((s) => s.priced).length;
+    return `${project.cwd}  ${[...by].map(([source, n]) => `${source} ${n}`).join(", ")}  cost known ${priced}/${sessions.length}${already ? `  already imported ${already}` : ""}`;
   });
   return [...lines, ...(plan.already ? [`already imported, unchanged: ${plan.already} session files`] : []), ...plan.skipped.map((s) => `skipped ${s.what}: ${s.why}`)];
 }
@@ -836,7 +873,9 @@ export async function importCommand(
   usage: string,
   {
     home = homedir(),
-    env = process.env,
+    // The server's own keys, which its start moved out of process.env (secrets.ts), read back in: the import cuts them
+    // out of what it keeps, as it cuts every other key in the environment.
+    env = withSecrets(process.env),
     out = console.log,
   }: {
     home?: string;
@@ -873,11 +912,17 @@ export async function importCommand(
     return 2;
   }
   const dir = values.data ?? join(env.XDG_DATA_HOME || join(home, ".local", "share"), "agentrun", "agents");
+  // The tool keys the server keeps in this directory, opened here on the host with the seal key this process was handed:
+  // an imported transcript keeps none of them. One that does not open is not known here, so not cut: said, as the
+  // server says it at its start.
+  const keys = new ToolKeys(dir, env, (fields) => console.error(`agentrun-serve import: ${logLine("tool_keys", fields)}`));
+  keys.view();
   const options: ImportOptions = {
     home,
     sources: sources as Source[],
     all: values.all === true,
     env,
+    stored: keys.values(),
   };
   if (values["dry-run"]) {
     // A dry run writes nothing, not even a store: one there already is only read.
@@ -891,7 +936,7 @@ export async function importCommand(
     } finally {
       reader?.close();
     }
-    out(`${plan.projects.length} projects, ${plan.projects.reduce((n, p) => n + p.sessions.length, 0)} sessions; nothing was written (dry run)`);
+    out(`${plan.projects.length} projects, ${sessionsOf(plan.projects.flatMap((p) => p.sessions)).length} sessions; nothing was written (dry run)`);
     for (const line of summaryLines(found, open, { dryRun: true })) out(line);
     return 0;
   }
