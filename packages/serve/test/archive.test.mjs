@@ -17,8 +17,9 @@ async function two(t) {
   return { ...server, kept: kept.run_id, old: old.run_id };
 }
 
-test("archiving an agent hides it and its runs from every list, keeps every read by id, and unarchiving brings them back", async (t) => {
+test("archiving an agent hides it and its runs from every list, keeps every read by id, lists it under ?archived=true, still counts its spend in /usage, and unarchiving brings them back", async (t) => {
   const { api, kept, old } = await two(t);
+  const spent = (await api("GET", "/usage")).body.total_usd;
   const archived = await api("POST", "/agents/old/archive");
   assert.equal(archived.status, 200, JSON.stringify(archived.body));
   assert.equal(archived.body.agent_id, "old");
@@ -32,21 +33,21 @@ test("archiving an agent hides it and its runs from every list, keeps every read
   assert.deepEqual([run.status, run.body.archived_at, run.body.status], [200, archived.body.archived_at, "completed"]);
   assert.equal((await api("GET", `/runs/${old}/timeline`)).status, 200);
   assert.equal((await api("GET", "/agents/kept")).body.archived_at, null);
-  const back = await api("POST", "/agents/old/unarchive");
-  assert.deepEqual([back.status, back.body.archived_at], [200, null]);
-  assert.deepEqual(ids((await api("GET", "/agents")).body.agents, "agent_id").sort(), ["kept", "old"]);
-  assert.equal((await api("GET", "/runs")).body.runs.length, 2);
-});
-
-test("?archived=true lists only what is archived; another value is 400", async (t) => {
-  const { api, old } = await two(t);
-  await api("POST", "/agents/old/archive");
   assert.deepEqual(ids((await api("GET", "/agents?archived=true")).body.agents, "agent_id"), ["old"]);
   assert.deepEqual(ids((await api("GET", "/runs?archived=true")).body.runs, "run_id"), [old]);
   assert.deepEqual(ids((await api("GET", "/agents/old/runs?archived=true")).body.runs, "run_id"), [old]);
   assert.deepEqual(ids((await api("GET", "/agents?archived=false")).body.agents, "agent_id"), ["kept"]);
   const bad = await api("GET", "/runs?archived=yes");
   assert.deepEqual([bad.status, bad.body.error.code], [400, "bad_request"]);
+  // The spend happened: /usage counts a run archived, and a run of an archived agent.
+  assert.equal((await api("POST", `/runs/${old}/archive`)).status, 200);
+  assert.equal((await api("GET", "/usage")).body.total_usd, spent);
+  assert.deepEqual(ids((await api("GET", "/usage?group_by=agent")).body.lines, "group").sort(), ["kept", "old"]);
+  assert.equal((await api("POST", `/runs/${old}/unarchive`)).status, 200);
+  const back = await api("POST", "/agents/old/unarchive");
+  assert.deepEqual([back.status, back.body.archived_at], [200, null]);
+  assert.deepEqual(ids((await api("GET", "/agents")).body.agents, "agent_id").sort(), ["kept", "old"]);
+  assert.equal((await api("GET", "/runs")).body.runs.length, 2);
 });
 
 test("archiving one run hides only it; archive and unarchive are idempotent, and an unknown id is 404", async (t) => {
@@ -61,15 +62,6 @@ test("archiving one run hides only it; archive and unarchive are idempotent, and
   assert.deepEqual([(await api("POST", `/runs/${kept}/unarchive`)).body.archived_at, (await api("POST", `/runs/${kept}/unarchive`)).body.archived_at], [null, null]);
   assert.equal((await api("POST", "/agents/nope/archive")).status, 404);
   assert.equal((await api("POST", "/runs/nope/archive")).status, 404);
-});
-
-test("/usage still counts an archived run: the spend happened", async (t) => {
-  const { api, old } = await two(t);
-  const before = (await api("GET", "/usage")).body.total_usd;
-  await api("POST", "/agents/old/archive");
-  await api("POST", `/runs/${old}/archive`);
-  assert.equal((await api("GET", "/usage")).body.total_usd, before);
-  assert.deepEqual(ids((await api("GET", "/usage?group_by=agent")).body.lines, "group").sort(), ["kept", "old"]);
 });
 
 test("a run of an archived agent is refused, 409 agent_not_runnable saying it is archived; a run already going keeps going", async (t) => {
