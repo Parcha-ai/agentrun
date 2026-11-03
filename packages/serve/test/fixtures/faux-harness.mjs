@@ -94,6 +94,10 @@ export function script(spec) {
   // answers too, so a follow-up sent twice shows.
   const queuedBehind = /Queue a follow-up behind a turn held until (\S+)\./.exec(text)?.[1];
   if (queuedBehind) return [{ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(queuedBehind)}` }, usd: 0.001 }, { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2, sent again.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  // A turn held on a fetch until the file exists, so a follow-up waits its place; the turn then fails (its next request
+  // does), and the follow-up's turn answers.
+  const failedBehind = /Fail a turn held until (\S+), with a follow-up behind it\./.exec(text)?.[1];
+  if (failedBehind) return [{ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(failedBehind)}` }, usd: 0.001 }, { fail: "the faux turn failed" }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }];
   // The same with a cap: an answer under the cap, then a request held until the cancel cuts it, booked then at $0.002 (over it).
   const booked = /Answer, then hold a request the cancel cuts and books \(signal (\S+)\)\./.exec(text)?.[1];
   if (booked) return [{ say: "Done.", usd: 0.0005 }, cutBookedSignalled(booked, 0.002)];

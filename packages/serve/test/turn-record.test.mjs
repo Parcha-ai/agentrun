@@ -179,6 +179,30 @@ for (const harness of ADAPTERS) {
   });
 }
 
+// ---- a failed turn with a message queued behind it ----------------------------------------------------------------
+
+// The run's status is its last turn's end: the queued message's turn ran and completed, so the run completed, and the
+// failed turn stays in its timeline as history, as an error in a chat followed by a good answer does.
+for (const harness of ADAPTERS) {
+  test(`${harness}: a turn that fails with a message queued behind it, whose own turn then completes, ends the run completed with that turn's answer; the failure stays in the timeline`, { timeout: 90_000 }, async (t) => {
+    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: WEB_HOLD });
+    const go = join(await scratch(t), "go");
+    const runId = await start(api, harness, `Fail a turn held until ${go}, with a follow-up behind it.`, { input: "hi", tools: ["fetch_page"] });
+    // Held on its fetch until `go` exists: the follow-up waits its place behind it.
+    await watch(api, runId, (view) => view.status === "working" && view.state === "working", "the first turn works");
+    await until("the first turn has the person's message", async () => (await rowsOf(api, runId)).some((r) => r.kind === "user_message"));
+    const sent = await api("POST", `/runs/${runId}/messages`, { content: "and then?" });
+    assert.deepEqual([sent.status, sent.body.mode], [202, "follow_up"], JSON.stringify(sent.body));
+    await writeFile(go, "");
+    const { seen } = await watch(api, runId, terminal, "the queued turn ends the run");
+    const view = await endsAs(api, runId, seen, "completed");
+    assert.equal(view.result?.final_answer, "Answer 2.", "the last turn's answer");
+    const rows = await rowsOf(api, runId);
+    assert.ok(rows.some((r) => r.kind === "error" && String(r.text ?? r.summary).includes("the faux turn failed")), `the failed turn stays in the timeline: ${JSON.stringify(rows.map((r) => [r.kind, r.summary]))}`);
+    assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: hi", "You: and then?"]);
+  });
+}
+
 // ---- a working turn's liveness -----------------------------------------------------------------------------------
 
 for (const harness of ALL) {
