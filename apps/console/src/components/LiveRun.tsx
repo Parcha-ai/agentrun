@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import { useResumed } from "@/components/Connection";
+import { NotHere, ProblemCard } from "@/components/Problem";
 import { RunDetail } from "@/components/RunDetail";
 import { RunError } from "@/components/RunError";
 import { type GraphActions, GraphUnavailable, isPermanent, RunGraphView, useRunGraph } from "@/components/RunGraphView";
+import { RunSkeleton } from "@/components/Skeleton";
 import { type Capabilities, type Client, ClientError, follow } from "@/lib/client";
 import { keeper, sendOnce } from "@/lib/idempotency";
+import { problem, refusalTitle } from "@/lib/problem";
 import { type HarnessRead, messageOffer, readHarness } from "@/lib/liveRun";
 import { costOf, type RunGraph, usd } from "@/lib/runGraph";
 import { latest } from "@/lib/viewing";
@@ -16,13 +20,18 @@ const graphCostText = (g: RunGraph) => { const c = costOf(g); return `${usd(c.us
 
 const asApiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: true });
 
+/** A request that failed, kept as the page shows it: the server's error, and a title in words ("refused" only for a
+ *  refusal; a server away or in trouble says that instead). */
+type Failure = { api: ApiError; title: string; cause: unknown };
+const failure = (e: unknown): Failure => ({ api: asApiError(e), title: refusalTitle(e), cause: e });
+
 /** A run from the live server: its record, its timeline followed from the cursor, its files, and stop, cancel and
  *  messages. A write's acceptance is not its effect: the page shows what the run and its timeline say afterwards. */
 export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: string; caps: Capabilities | null; agentName: (id: string) => string }) {
   const [run, setRun] = useState<Run | null>(null);
   const [rows, setRows] = useState<TimelineRow[]>([]);
   const [files, setFiles] = useState<RunFile[]>([]);
-  const [error, setError] = useState<ApiError | null>(null);
+  const [error, setError] = useState<Failure | null>(null);
   const [busy, setBusy] = useState<"stop" | "cancel" | "archive" | null>(null);
   const [follows, setFollows] = useState(0);
   // An imported run whose transcript the import at setup has still to write: said, until a page has it.
@@ -47,9 +56,12 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     try {
       const [r, f] = await Promise.all([v2.getRun(runId), v2.listFiles(runId)]);
       if (runReads.current(n)) { setRun(r); setFiles(f.files); }
-    } catch (e) { if (runReads.current(n)) setError(asApiError(e)); }
+    } catch (e) { if (runReads.current(n)) setError(failure(e)); }
   };
   useEffect(() => { void refresh(); }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Back after the server was away (a restart): the run and its files are read again, as the run may have moved on
+  // meanwhile; the timeline's own read, which waited, carries on from its cursor.
+  useResumed(() => { void refresh(); });
   useEffect(() => {
     const ctl = new AbortController();
     follow(v2, runId, {
@@ -59,13 +71,13 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
       onRows: (r) => { setRows(r); const n = r.filter((x) => x.kind === "tool_result" || (x.kind === "tool_use" && !!x.tool_status && x.tool_status !== "running")).length; if (n > toolResults.current) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) setFiles(f.files); }).catch(() => {}); } },
       // A page names the run's status and state: when they move, the run record (result, error, cost) and files move too.
       onPage: (p) => { setImporting(p.transcript === "importing"); const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
-    }).catch((e) => { if (!ctl.signal.aborted) setError(asApiError(e)); });
+    }).catch((e) => { if (!ctl.signal.aborted) setError(failure(e)); });
     return () => ctl.abort();
   }, [runId, follows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const act = async (what: "stop" | "cancel") => {
     setBusy(what);
-    try { await v2[what](runId); setError(null); } catch (e) { setError(asApiError(e)); }
+    try { await v2[what](runId); setError(null); } catch (e) { setError(failure(e)); }
     setBusy(null); await refresh(); setFollows((n) => n + 1);
   };
   // Only the archive's own effect is taken from its answer, at once: the run may have moved on since it was read (a final
@@ -76,13 +88,13 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     try {
       const r = await (run.archived_at ? v2.unarchiveRun(runId) : v2.archiveRun(runId));
       setRun((cur) => (cur ? { ...cur, archived_at: r.archived_at } : r)); setError(null);
-    } catch (e) { setError(asApiError(e)); }
+    } catch (e) { setError(failure(e)); }
     setBusy(null); void refresh();
   };
   const message = async (text: string) => {
     let ok = true;
     // The same text sent again after a lost or refused answer goes under the same key: the server never takes it twice.
-    try { await sendOnce(messageKeys, runId, text, v2.sendMessage); setError(null); } catch (e) { setError(asApiError(e)); ok = false; }
+    try { await sendOnce(messageKeys, runId, text, v2.sendMessage); setError(null); } catch (e) { setError(failure(e)); ok = false; }
     await refresh(); setFollows((n) => n + 1);
     return ok;
   };
@@ -91,10 +103,16 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   // open. A server without the route gives the run's other views only.
   const graph = useRunGraph((signal) => v2.getRunGraph(runId, signal), { key: runId, enabled: run?.kind === "workflow" });
   const noGraph = !graph.data && isPermanent(graph.error);
-  if (!run) return error ? <div className="p-8"><RunError title="The server refused the request" error={error} /></div> : <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the run...</p>;
+  if (!run) {
+    if (!error) return <RunSkeleton />;
+    // A run this server has no record of: said so, with the runs list to find it in.
+    if (error.cause instanceof ClientError && error.cause.status === 404) return <NotHere what="run" id={runId} list={{ href: "#/runs", label: "Open the runs list" }} />;
+    // Try again reads the run and its files, and follows its timeline again (a failed first read ended that).
+    return <ProblemCard problem={problem(error.cause, "the run")} onRetry={() => { setError(null); void refresh(); setFollows((n) => n + 1); }} />;
+  }
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {error && <div className="border-b p-3"><RunError title="The server refused the request" error={error} /></div>}
+      {error && <div className="border-b p-3"><RunError title={error.title} error={error.api} /></div>}
       {importing && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] md:px-8" role="status">This session's transcript is still being imported. It shows here as soon as it lands.</p>}
       <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
@@ -111,7 +129,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
 function LiveGraph({ v2, runId, graph, onMoved }: { v2: Client; runId: string; graph: ReturnType<typeof useRunGraph>; onMoved: () => void }) {
   const { data: read, error, readAt, reload } = graph;
   const [busy, setBusy] = useState<GraphActions["busy"]>(null);
-  const [actError, setActError] = useState<ApiError | null>(null);
+  const [actError, setActError] = useState<Failure | null>(null);
   const [said, setSaid] = useState<{ paused: boolean; status?: string; at: number } | null>(null);
   const act = async (what: "pause" | "resume") => {
     setBusy(what);
@@ -119,14 +137,14 @@ function LiveGraph({ v2, runId, graph, onMoved }: { v2: Client; runId: string; g
       const r = (await (what === "pause" ? v2.pauseRun(runId) : v2.resumeRun(runId))) as { paused: boolean; status?: string };
       setSaid({ paused: r.paused, status: r.status, at: Date.now() });
       setActError(null);
-    } catch (e) { setActError(asApiError(e)); }
+    } catch (e) { setActError(failure(e)); }
     setBusy(null); reload(); onMoved();
   };
   const data = read && said && readAt < said.at ? { ...read, run: { ...read.run, paused: said.paused, ...(said.status ? { status: said.status } : {}) } } : read;
   if (!data) return <GraphUnavailable error={error} />;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {actError && <div className="border-b p-3"><RunError title="The server refused the request" error={actError} /></div>}
+      {actError && <div className="border-b p-3"><RunError title={actError.title} error={actError.api} /></div>}
       <div className="min-h-0 flex-1"><RunGraphView data={data} lastRead={readAt} fileUrl={(ref) => v2.fileUrl(runId, ref)} actions={{ onPause: () => void act("pause"), onResume: () => void act("resume"), busy }} /></div>
     </div>
   );

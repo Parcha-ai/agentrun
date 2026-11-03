@@ -1,10 +1,12 @@
 import { KeyRound, TriangleAlert } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
+import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError } from "@/lib/client";
-import type { ApiError, ToolKey, ToolKeyField, ToolKeys, ToolKeysReenter } from "@/lib/v2";
+import { when } from "@/lib/format";
+import type { ApiError, ToolKey, ToolKeyCheck, ToolKeyField, ToolKeys, ToolKeysReenter } from "@/lib/v2";
 
 const REASON: Record<ToolKeysReenter["reason"], string> = {
   seal_key_missing: "This server was started without its seal key, so the keys saved here can't be opened.",
@@ -13,6 +15,13 @@ const REASON: Record<ToolKeysReenter["reason"], string> = {
 };
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
+
+/** A saved key's check, as its row says it; null when there is none to say. */
+function checkLine(label: string, check: ToolKeyCheck | null | undefined): string | null {
+  if (!check) return null;
+  if (check.state === "accepted") return `${label} accepted this key · ${when(check.at)}`;
+  return `Not checked: ${check.reason}${check.at ? ` · ${when(check.at)}` : ""}`;
+}
 
 function fieldState(f: ToolKeyField): string {
   if (f.source === "server") return "set · from the server";
@@ -52,7 +61,7 @@ export function KeysPage({ v2, atRest, onChange }: { v2: Client; atRest?: "seale
 
   if (!view) return loadError
     ? <ReadError error={loadError} onRetry={load} />
-    : <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
+    : <div className="p-5 md:p-8"><ListSkeleton label="Loading the tool keys" rows={3} /></div>;
   const reenter = view.reenter;
   return (
     <div className="h-full overflow-auto">
@@ -143,6 +152,7 @@ function KeyRow({ tool: k, cantStore, again, open, problem, onOpen, onSave, onRe
           <p className="mt-1.5 font-mono text-[12px] text-muted-foreground">
             Unlocks {k.unlocks.join(", ")} · Harnesses {k.harnesses.length === 1 ? `${k.harnesses[0]} only` : k.harnesses.join(", ")}
           </p>
+          {checkLine(k.label, k.check) && <p className={`mt-1.5 text-[12px] ${k.check?.state === "accepted" ? "text-success-text" : "text-muted-foreground"}`}>{checkLine(k.label, k.check)}</p>}
           <ul className="mt-3 space-y-1">
             {k.fields.map((f) => (
               <li key={f.name} className="flex flex-wrap gap-x-3 font-mono text-[12px]">

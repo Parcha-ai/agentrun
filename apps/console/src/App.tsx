@@ -3,6 +3,7 @@ import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { KeysPage } from "@/components/KeysPage";
+import { ConnectionProvider, Unreached, useLink, useResumed } from "@/components/Connection";
 import { Settings, type SettingsPage } from "@/components/Settings";
 import { ToolsPage } from "@/components/ToolsPage";
 import { LiveRun } from "@/components/LiveRun";
@@ -14,8 +15,10 @@ import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
-import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
+import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, type RunsFilter } from "@/lib/client";
+import { createConnection } from "@/lib/connection";
 import { appendRuns } from "@/lib/idempotency";
+import { type Problem, problem } from "@/lib/problem";
 import { toolChoices } from "@/lib/toolSettings";
 import type { Run, RunStatus } from "@/lib/v2";
 
@@ -99,9 +102,11 @@ function importLine(s: ImportState): string {
   return `Imported ${runs} into ${s.agents.toLocaleString("en-US")} agent${s.agents === 1 ? "" : "s"}${s.skipped ? `; ${s.skipped.toLocaleString("en-US")} left out` : ""}.`;
 }
 
-/** The console over the server it is served from, behind its sign-in: agents, runs, and a run followed live. */
+/** The console over the server it is served from, behind its sign-in: agents, runs, and a run followed live. Its reads
+ *  ride out the server going away (lib/connection): they wait, and carry on once it answers. */
 export function App() {
-  const v2 = useMemo(() => createClient(), []);
+  const [connection] = useState(createConnection);
+  const v2 = useMemo(() => createClient({ fetch: connection.fetch }), [connection]);
   const [auth, setAuth] = useState<AuthMode | null>(null);
   // The setup code, taken from the address once and removed from it (and from the history entry).
   const [setupCode] = useState(setupCodeOnce);
@@ -136,7 +141,7 @@ export function App() {
     })();
     return () => { live = false; };
   }, [v2, auth]);
-  if (auth === null) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
+  if (auth === null) return <ConnectionProvider connection={connection}><Starting /></ConnectionProvider>;
   if (auth !== "signed_in") {
     return (
       <SignIn key={auth} mode={auth} code={setupCode} offer={offer} onSubmit={async (password, code, importSessions) => {
@@ -144,12 +149,18 @@ export function App() {
         catch (e) {
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
           if (e instanceof ClientError && e.status === 403 && auth === "setup") { await readSession().catch(() => {}); }
-          return e instanceof ClientError ? signInProblem(e) : String(e);
+          return e instanceof ClientError ? signInProblem(e) : e instanceof Error ? e.message : String(e);
         }
       }} />
     );
   }
-  return <Console v2={v2} onSignedOut={() => setAuth("sign_in")} />;
+  return <ConnectionProvider connection={connection}><Console v2={v2} onSignedOut={() => setAuth("sign_in")} /></ConnectionProvider>;
+}
+
+/** Before the console knows who is signed in: a quiet page, or, while the server can't be reached, that said with the
+ *  next try (never the password page, where a password would go nowhere). */
+function Starting() {
+  return useLink().state === "offline" ? <Unreached /> : <p className="p-8 text-center font-mono text-[13px] text-muted-foreground" role="status">Connecting…</p>;
 }
 
 function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onSignedOut: () => void }) {
@@ -158,7 +169,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [caps, setCaps] = useState<Capabilities | null>(null);
   // Mission Control: the store's counts (GET /v2/stats) and the latest runs, read each time the page opens.
   const [mission, setMission] = useState<MissionView | null>(null);
-  const [missionError, setMissionError] = useState<string | null>(null);
+  const [missionError, setMissionError] = useState<Problem | null>(null);
   const [missionTry, setMissionTry] = useState(0);
   // The range and agent Mission Control's analytics are asked for; a change reads them again, the page kept meanwhile.
   const [statsRange, setStatsRange] = useState<StatsRange>("30d");
@@ -174,7 +185,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const namesAsked = useRef(0);
   // The `refreshed` the names were last read for.
   const namesAfter = useRef(-1);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Problem | null>(null);
+  const [runsTry, setRunsTry] = useState(0);
   const asked = useRef(0);
   const go = (hash: string) => { location.hash = hash; };
   // The import asked for at setup (here, or before the server restarted): read until it ends, a failed read tried again.
@@ -241,8 +253,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     setRuns(null); setError(null);
     (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, null, runsFilter) : v2.listRuns(50, null, runsFilter))
       .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); } })
-      .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
-  }, [v2, where, refreshed]);
+      .catch((e) => { if (n === asked.current) setError(problem(e, "the runs")); });
+  }, [v2, where, refreshed, runsTry]);
   // While an import runs, the list's first page again, over what it shows: a failed read leaves it. A list read past its
   // first page, or reading more, is the person's: left as it is.
   useEffect(() => {
@@ -282,7 +294,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         const active = a.filter((x) => !x.archived_at);
         setPick((p) => (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
       })
-      .catch((e) => { if (n === agentsAsked.current) setStartError(problemOf(e)); });
+      .catch((e) => { if (n === agentsAsked.current) { const p = problem(e, "the agents"); setStartError(`${p.why} ${p.next}${p.said ? ` (${p.said})` : ""}`); } });
   }, [v2, where.section, retry, refreshed]);
   // Only the newest of Mission Control's reads lands: one for an earlier range, or a tick's begun before it, never
   // replaces it.
@@ -297,7 +309,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     setMissionError(null); setMissionReading(true);
     readMission()
       .then(([s, r]) => { if (n === missionAsked.current) setMission(missionFrom(s, r.runs)); })
-      .catch((e) => { if (n === missionAsked.current) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); })
+      .catch((e) => { if (n === missionAsked.current) setMissionError(problem(e, "Mission Control")); })
       .finally(() => { if (n === missionAsked.current) setMissionReading(false); });
   }, [v2, where.section, missionTry, statsRange, statsAgent, refreshed]); // eslint-disable-line react-hooks/exhaustive-deps
   // While an import runs, Mission Control again, over what it shows: a failed read (the store busy with the import's
@@ -311,6 +323,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .catch(() => {})
       .finally(() => { if (n === missionAsked.current) setMissionReading(false); });
   }, [tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Back after the server was away: Mission Control reads again what may have moved meanwhile, keeping the page.
+  useResumed(() => setMissionTry((n) => n + 1));
   const revsAsked = useRef(0);
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
@@ -370,9 +384,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={where.agent ?? "new"} v2={v2} choices={choices} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows) }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
-        : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
+        : <RunsList runs={runs} agentName={agentName} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
-            onMore={cursor ? () => { const n = ++asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); } }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
+            onMore={cursor ? () => { const n = ++asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); setError(null); } }).catch((e) => setError(problem(e, "more runs"))).finally(() => setMore(false)); } : undefined} />}
     </Shell>
   );
 }
