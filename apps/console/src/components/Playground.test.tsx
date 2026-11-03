@@ -13,7 +13,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 async function open(kind: "agentic" | "workflow", answers = [202], props: Partial<PlaygroundProps> = {}) {
   const agent = agentFixture(kind === "agentic" ? "invoice-checker" : "support-triage");
   const requests: { url: string; body: StartBody; key: string | null }[] = [];
-  const client = createClient({ fetch: (async (url: string, init: RequestInit) => {
+  const client = createClient({ base: props.apiBase ?? "/v2", ...(props.apiBase?.startsWith("https://") ? { auth: { type: "bearer" as const, token: "not-a-secret" } } : {}), fetch: (async (url: string, init: RequestInit) => {
     requests.push({ url, body: JSON.parse(String(init.body)), key: new Headers(init.headers).get("idempotency-key") });
     const status = answers.shift() ?? 202;
     if (!status) throw new Error("Response lost");
@@ -109,4 +109,24 @@ it("keeps the draft and shows revision-read failures instead of sending an unres
   expect(page.button(/^Send request$/).disabled).toBe(true);
   expect(page.host.querySelector("textarea")!.value).toBe("Keep this task.");
   expect(page.requests).toEqual([]);
+});
+
+it.each([
+  ["/proxy/v2", 'http://localhost:7340/proxy/v2/agents/agent%20%2F%3F%25%23%22next/runs'],
+  ["https://server.example/native-endpoint", 'https://server.example/native-endpoint/agents/agent%20%2F%3F%25%23%22next/runs'],
+])("copies the same encoded API address that execution uses for %s", async (apiBase, expected) => {
+  const agent = { ...agentFixture("invoice-checker"), agent_id: 'agent /?%#"next' };
+  const page = await open("agentic", [202], { agents: [agent], agentId: agent.agent_id, apiBase });
+  page.type("Check this.");
+  const curl = [...page.host.querySelectorAll("pre")].at(-1)!.textContent!;
+  expect(curl).toContain(`curl -X POST '${expected}'`);
+  expect(curl).toContain('$AGENTRUN_TOKEN');
+  expect(page.host.querySelector('[aria-label="Request URL"]')?.textContent).toBe(expected);
+  await page.click(/^JavaScript$/);
+  const javascript = [...page.host.querySelectorAll("pre")].at(-1)!.textContent!;
+  expect(javascript).toContain(`fetch(${JSON.stringify(expected)},`);
+  expect(javascript).toContain('process.env.AGENTRUN_TOKEN');
+  expect(curl + javascript).not.toContain("not-a-secret");
+  await page.click(/^Send request$/);
+  expect(new URL(page.requests[0].url, "http://localhost:7340").href).toBe(expected);
 });

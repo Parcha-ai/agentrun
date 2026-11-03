@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
-import { curlFor, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
+import { curlFor, exampleInput, keeper, runStartUrl, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { cn } from "@/lib/utils";
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
@@ -18,6 +18,8 @@ export type PlaygroundProps = {
   revisionsError?: string | null;
   efforts: string[];
   origin: string;
+  /** The actual API endpoint, including any proxy prefix. Origin-only callers default to /v2. */
+  apiBase?: string;
   agentId?: string;
   revision?: string;
   onAgent?: (id: string) => void;
@@ -31,7 +33,7 @@ export type PlaygroundProps = {
 
 /** The hosted console's API playground for starting a run: the request on the left (a form, or its JSON), the same
  *  request as code on the right, and the server's answer, with a way into the run it started. */
-export function Playground({ agents, revisions = [], revisionsError, efforts, origin, agentId: initialAgent, revision: initialRevision, onAgent, onSend, onOpenRun, result: initialResult = null, live }: PlaygroundProps) {
+export function Playground({ agents, revisions = [], revisionsError, efforts, origin, apiBase, agentId: initialAgent, revision: initialRevision, onAgent, onSend, onOpenRun, result: initialResult = null, live }: PlaygroundProps) {
   const [agentId, setAgentId] = useState(initialAgent ?? agents[0]?.agent_id ?? "");
   // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept.
   useEffect(() => {
@@ -72,8 +74,9 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
   const built = startBody(kind, { text, revision: revision || agent?.revision, effort, maxCostUsd: cap });
   const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text };
   const key = agentId ? keys.keyFor(agentId, body) : "";
-  const code = lang === "curl" ? curlFor(origin, agentId, body, key)
-    : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
+  const target = runStartUrl(origin, agentId || "{agent_id}", apiBase);
+  const code = lang === "curl" ? curlFor(origin, agentId, body, key, apiBase)
+    : `const res = await fetch(${JSON.stringify(runStartUrl(origin, agentId, apiBase))}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
   const send = async () => {
     if (!built.ok || !onSend || unresolved || sending) return;
     setSending(true);
@@ -90,7 +93,7 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
             {agents.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name}</option>)}
           </select>
         </label>
-        <span className="font-mono text-[12px]"><span className="text-primary">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>
+        <span className="min-w-0 break-all font-mono text-[12px]"><span className="text-primary">POST</span> <span className="text-muted-foreground" aria-label="Request URL">{target}</span></span>
         <span className="flex-1" />
         <span className="caps text-[11px] text-muted-foreground">Live API</span>
       </div>

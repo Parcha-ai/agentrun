@@ -24,10 +24,21 @@ describe("MissionControl", () => {
     const now = Date.parse("2026-10-30T03:02:00Z");
     vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(now);
     try {
-      const activity = [run("active", "working", "working", "Active task"), run("waiting", "input_required", "waiting", "Waiting task"), run("failed", "failed", "idle", "Failed task")];
+      const activity = [
+        run("active", "working", "working", "Active task"), run("queued", "queued", "idle", "Queued task"),
+        run("waiting", "input_required", "waiting", "Waiting task"), run("paused", "paused", "idle", "Paused task"),
+        { ...run("review", "completed", "idle", "Review task"), review: { kind: "decision", node: "judge", reason: "Needs human review" } },
+        { ...run("escalated", "failed", "idle", "Escalated task"), error: { code: "escalated", message: "Needs human review", retryable: false } },
+        run("failed", "failed", "idle", "Failed task"),
+      ];
       const html = renderToStaticMarkup(createElement(MissionControl, { view: { ...view, activity, activityComplete: false, nextCursor: "page2", readAt: now }, onMore: () => {}, onRefresh: () => {} }));
       for (const label of ["Active work", "Needs attention", "Failed runs", "Active task", "Waiting task", "Failed task", "rev 1", "2 min", "Load more", "Partial activity", "Snapshot current"]) expect(html).toContain(label);
       for (const id of ["active", "waiting", "failed"]) expect(html).toContain(`href="#/runs/${id}"`);
+      const page = new DOMParser().parseFromString(html, "text/html");
+      for (const [title, statuses] of [["Active work", ["queued", "working"]], ["Needs attention", ["input_required", "paused", "completed", "failed"]], ["Failed runs", ["failed"]]] as const) {
+        const section = page.querySelector(`section[aria-label="${title}"]`)!;
+        expect([...section.querySelectorAll('a[href^="#/runs?"]')].map((link) => link.getAttribute("href"))).toEqual(statuses.map((status) => `#/runs?status=${status}`));
+      }
     } finally { vi.useRealTimers(); }
   });
 
@@ -305,4 +316,3 @@ describe("the cost of cut runs (bounded_unknown)", () => {
     expect(render({ ...v, analytics: analytics() }, scope)).not.toContain("cut run");
   });
 });
-

@@ -98,6 +98,89 @@ describe("App, Mission Control after a failed read", () => {
   });
 });
 
+describe("App, Mission Control's loaded recent range", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  async function open() {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(Date.parse("2026-10-30T06:00:00Z"));
+    let version = 1;
+    const run = (id: string) => ({ run_id: id, agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: id, created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: null, error: null, cost: null, archived_at: null });
+    let rows = Array.from({ length: 25 }, (_, i) => run(`r${i + 1}`));
+    let hold: "head" | "tail" | undefined;
+    let release: (() => void) | undefined;
+    const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const u = new URL(url, "http://serve.test");
+      if (u.pathname === "/v2/auth/session") return json({ password_set: true, signed_in: true });
+      if (u.pathname === "/v2/capabilities") return json({ harnesses: [], features: {} });
+      if (u.pathname === "/v2/agents") return json({ agents: [], next_cursor: null });
+      if (u.pathname === "/v2/stats") return json({ agents: 1, runs: { total: rows.length, active: 0, needs_input: 0, failed: 0, status_unknown: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: rows.length } });
+      if (u.pathname === "/v2/runs") {
+        if (u.searchParams.has("status")) return json({ runs: [], next_cursor: null });
+        const cursor = u.searchParams.get("cursor");
+        if (cursor && !cursor.startsWith(`${version}:`)) return new Response(JSON.stringify({ error: { code: "invalid_cursor", message: "cursor belongs to an older listing", retryable: false } }), { status: 400 });
+        const start = cursor ? Number(cursor.split(":")[1]) : 0;
+        const end = start + Number(u.searchParams.get("limit"));
+        const response = json({ runs: rows.slice(start, end), next_cursor: end < rows.length ? `${version}:${end}` : null });
+        if (hold === (cursor ? "tail" : "head")) {
+          hold = undefined;
+          return new Promise<Response>((resolve) => { release = () => { release = undefined; resolve(response); }; });
+        }
+        return response;
+      }
+      throw new Error(`Unexpected request: ${u}`);
+    });
+    location.hash = "";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(App)); });
+    const recent = () => [...host.querySelectorAll("section")].find((section) => section.querySelector("h2")?.textContent === "Recent runs")!;
+    const ids = () => [...recent().querySelectorAll<HTMLAnchorElement>('a[href^="#/runs/"]')].map((link) => link.getAttribute("href")!.slice("#/runs/".length));
+    const click = async (label: string) => { await act(async () => { [...host.querySelectorAll("button")].find((button) => button.textContent === label)!.click(); }); };
+    return { host, ids, click, change: () => { version++; rows = [run("new"), ...rows.filter((row) => row.run_id !== "r15")]; }, hold: (page: "head" | "tail") => { hold = page; }, release: async () => { expect(release).toBeTypeOf("function"); await act(async () => { release!(); }); } };
+  }
+
+  it.each(["poll", "manual"] as const)("refreshes the loaded range from new cursors after a %s refresh", async (refresh) => {
+    const page = await open();
+    await page.click("Load more");
+    expect(page.ids()).toHaveLength(20);
+    expect(page.ids()).toContain("r20");
+    page.change();
+    if (refresh === "poll") await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    else await page.click("Refresh");
+    expect(page.ids()).toHaveLength(20);
+    expect(page.ids()).toContain("new");
+    expect(page.ids()).toContain("r20");
+    expect(page.ids()).not.toContain("r15");
+    await page.click("Load more");
+    expect(page.ids()).toHaveLength(25);
+    expect(new Set(page.ids()).size).toBe(25);
+    expect(page.ids()).toContain("r25");
+    expect(page.host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it.each(["more", "poll"] as const)("keeps the expanded fresh range when an older %s response arrives last", async (pending) => {
+    const page = await open();
+    page.hold(pending === "more" ? "tail" : "head");
+    if (pending === "more") await page.click("Load more");
+    else await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    page.change();
+    if (pending === "more") await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    else await page.click("Load more");
+    expect(page.ids()).toHaveLength(20);
+    expect(page.ids()).toContain("new");
+    expect(page.ids()).not.toContain("r15");
+    await page.release();
+    expect(page.ids()).toHaveLength(20);
+    expect(page.ids()).toContain("new");
+    expect(page.ids()).not.toContain("r15");
+    await page.click("Load more");
+    expect(page.ids()).toHaveLength(25);
+    expect(page.host.querySelector('[role="alert"]')).toBeNull();
+  });
+});
+
 // Settings always describes the connection; key editing is present only when this server supports it.
 describe("App, Settings", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });

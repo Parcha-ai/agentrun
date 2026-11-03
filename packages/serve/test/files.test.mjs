@@ -12,6 +12,14 @@ test("the files a run wrote are listed and served raw; dot segments, .. and syml
     throw new Error(`${error.message}: ${JSON.stringify((await api("GET", `/runs/${run_id}`)).body)}`);
   });
   const work = join(data, "runs", run_id, "work");
+  const media = [
+    ["audio.MP3", "audio/mpeg"], ["audio.wav", "audio/wav"], ["audio.flac", "audio/flac"],
+    ["audio.m4a", "audio/mp4"], ["audio.ogg", "audio/ogg"], ["audio.oga", "audio/ogg"], ["audio.weba", "audio/webm"],
+    ["video.mp4", "video/mp4"], ["video.webm", "video/webm"], ["video.ogv", "video/ogg"],
+    ["untrusted.svg", null],
+  ];
+  const bytes = Uint8Array.of(0, 255, 128, 1, 2);
+  for (const [path] of media) await writeFile(join(work, path), bytes);
   await writeFile(join(work, "page.html"), "<script>alert(1)</script>");
   await mkdir(join(work, "sub"));
   await writeFile(join(work, "sub", "a b.txt"), "spaced");
@@ -19,8 +27,17 @@ test("the files a run wrote are listed and served raw; dot segments, .. and syml
   await symlink(join(data, "outside.txt"), join(work, "link.txt"));
   const list = await api("GET", `/runs/${run_id}/files`);
   assert.equal(list.status, 200);
-  assert.deepEqual(list.body.files.map((f) => f.path), ["page.html", "report.md", "sub/a b.txt"], "no dotfile, no .agents/skills, no symlink");
+  assert.deepEqual(list.body.files.map((f) => f.path).sort(), [...media.map(([path]) => path), "page.html", "report.md", "sub/a b.txt"].sort(), "no dotfile, no .agents/skills, no symlink");
   assert.deepEqual([list.body.complete, list.body.truncated], [true, false]);
+  for (const [path, type] of media) {
+    assert.equal(list.body.files.find((file) => file.path === path).content_type, type, `${path} list MIME`);
+    const raw = await fetch(`${baseUrl}/runs/${run_id}/files/${path}`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(raw.status, 200);
+    assert.equal(raw.headers.get("content-type"), type ?? "application/octet-stream", `${path} response MIME`);
+    assert.equal(raw.headers.get("x-content-type-options"), "nosniff");
+    assert.match(raw.headers.get("content-disposition"), /^attachment;/);
+    assert.deepEqual(new Uint8Array(await raw.arrayBuffer()), bytes, `${path} raw bytes`);
+  }
   const report = await fetch(`${baseUrl}/runs/${run_id}/files/report.md`, { headers: { authorization: `Bearer ${token}` } });
   assert.equal(await report.text(), "# Report\n\nThe answer is 42.\n");
   assert.equal(report.headers.get("x-content-type-options"), "nosniff");

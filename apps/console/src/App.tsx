@@ -127,6 +127,7 @@ export function AgentRunConsole() {
   const [missionReading, setMissionReading] = useState(false);
   const [missionMore, setMissionMore] = useState(false);
   const missionAsked = useRef(0);
+  const missionPages = useRef(1);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
@@ -190,9 +191,20 @@ export function AgentRunConsole() {
     const statuses: RunStatus[] = ["queued", "working", "input_required", "failed", ...(caps?.features.runs?.pause_workflow_runs ? ["paused" as const] : [])];
     const read = () => {
       const n = ++missionAsked.current;
+      const readRecent = async () => {
+        let recent: Run[] = [], nextCursor: string | null = null;
+        const count = missionPages.current;
+        for (let i = 0; i < count; i++) {
+          const page = await v2.listRuns(10, nextCursor);
+          recent = appendRuns(recent, page.runs);
+          nextCursor = page.next_cursor;
+          if (!nextCursor) break;
+        }
+        return { runs: recent, next_cursor: nextCursor };
+      };
       return Promise.all([
       v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }),
-      v2.listRuns(10),
+      readRecent(),
       Promise.all(statuses.map((status) => v2.listRuns(50, null, { status }))),
     ])
       .then(([s, r, pages]) => {
@@ -203,7 +215,7 @@ export function AgentRunConsole() {
         setMissionError(null);
       })
       .catch((e) => { if (live && n === missionAsked.current) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); })
-      .finally(() => { if (live && n === missionAsked.current) setMissionReading(false); });
+      .finally(() => { if (live && n === missionAsked.current) { setMissionReading(false); setMissionMore(false); } });
     };
     void read();
     const poll = setInterval(() => { setMissionReading(true); void read(); }, 15000);
@@ -251,15 +263,13 @@ export function AgentRunConsole() {
         ? <MissionControl view={mission} error={missionError} canCreate={caps.features.agents?.create !== false} onRetry={() => setMissionTry((n) => n + 1)} onRefresh={() => setMissionTry((n) => n + 1)} loadingMore={missionMore}
             onMore={mission?.nextCursor ? () => {
               if (missionMore) return;
-              const n = missionAsked.current;
+              missionPages.current++;
               setMissionMore(true);
-              void v2.listRuns(10, mission.nextCursor).then((page) => {
-                if (n === missionAsked.current) setMission((held) => held ? { ...held, recent: appendRuns(held.recent, page.runs), nextCursor: page.next_cursor } : held);
-              }).catch((e) => { if (n === missionAsked.current) setMissionError(e instanceof Error ? e.message : String(e)); }).finally(() => setMissionMore(false));
+              setMissionTry((n) => n + 1);
             } : undefined}
             scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
         : where.section === "playground"
-        ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} revisionsError={revsError} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} revision={where.startRevision} onAgent={(id) => { setPick(id); go(`#/playground?agent=${encodeURIComponent(id)}`); }} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
+        ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} revisionsError={revsError} efforts={efforts} origin={location.origin} apiBase={new URL(v2.endpoint, location.href).href} agentId={pick ?? undefined} revision={where.startRevision} onAgent={(id) => { setPick(id); go(`#/playground?agent=${encodeURIComponent(id)}`); }} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
         : where.section === "agents"
         ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} capabilities={caps} go={go} />
