@@ -3,8 +3,9 @@
 // CLI, at the top or nested, and a tree whose Codex CLI is missing or is not the build @parcha/agentrun-harness-codex is pinned to.
 // The Dockerfile removes the Claude packages after the build and runs the check on the final image's tree.
 //
-// A tree's Codex is the adapter's built dist and the pinned binary of this machine's platform (a link to the installed
-// one). Without that binary the Codex cases skip; with AGENTRUN_CODEX_REQUIRE_BINARY=1 (CI) they fail.
+// A tree's Codex is the adapter's built dist, the kernel's it imports, and the pinned binary of this machine's platform
+// (a link to the installed one). Without that binary the Codex cases skip; with AGENTRUN_CODEX_REQUIRE_BINARY=1 (CI) they
+// fail.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -19,6 +20,7 @@ import { verifyCodexBinary } from "../../run-adapters-codex/dist/verify.js";
 const CHECK = fileURLToPath(new URL("../docker/image-check.sh", import.meta.url));
 const DOCKERFILE = new URL("../docker/Dockerfile", import.meta.url);
 const CODEX_PACKAGE = fileURLToPath(new URL("../../run-adapters-codex/", import.meta.url));
+const KERNEL_PACKAGE = fileURLToPath(new URL("../../run-adapters/", import.meta.url));
 
 const installed = findCodex();
 const verified = verifyCodexBinary(installed);
@@ -29,14 +31,16 @@ const target = codexTarget();
 // below sets it to prove that).
 const check = (root, extra = {}) => spawnSync("sh", [CHECK, root], { cwd: dirname(root), env: { ...env, ...extra }, encoding: "utf8" });
 
-/** Lays the adapter (its package.json and built dist), the launcher and this platform's package into `root`, the way npm
- *  does. `binary` is what sits at the platform package's binary path: the installed pinned one (a link), a script, or
- *  nothing. */
+/** Lays the adapter and the kernel it depends on (each its package.json and built dist), the launcher and this platform's
+ *  package into `root`, the way npm does. `binary` is what sits at the platform package's binary path: the installed
+ *  pinned one (a link), a script, or nothing. */
 async function codexInto(root, { binary = "pinned", platformVersion } = {}) {
-  const adapter = join(root, "node_modules/@parcha/agentrun-harness-codex");
-  await mkdir(adapter, { recursive: true });
-  await cp(join(CODEX_PACKAGE, "package.json"), join(adapter, "package.json"));
-  await cp(join(CODEX_PACKAGE, "dist"), join(adapter, "dist"), { recursive: true });
+  for (const [name, from] of [["agentrun-harness-codex", CODEX_PACKAGE], ["agentrun-kernel", KERNEL_PACKAGE]]) {
+    const to = join(root, "node_modules/@parcha", name);
+    await mkdir(to, { recursive: true });
+    await cp(join(from, "package.json"), join(to, "package.json"));
+    await cp(join(from, "dist"), join(to, "dist"), { recursive: true });
+  }
   const launcher = join(root, "node_modules/@openai/codex");
   await mkdir(launcher, { recursive: true });
   await writeFile(join(launcher, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.164.0" }));

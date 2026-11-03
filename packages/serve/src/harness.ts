@@ -40,7 +40,8 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
         const { harnessReason } = await import("./adapters.js");
         return Promise.all(HARNESSES.map(async (id): Promise<HarnessOffer> => {
           if (id === DEFAULT_HARNESS) return { id, available: true, steer: true };
-          const reason = await harnessReason(id, env, undefined);
+          // The start's probe: these offers hold until a restart (server.ts), so the reason says so where installing fixes it.
+          const reason = await harnessReason(id, env, undefined, { atStart: true });
           return reason === undefined ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), reason };
         }));
       })();
