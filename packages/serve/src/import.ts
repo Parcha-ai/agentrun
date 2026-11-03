@@ -722,7 +722,7 @@ async function revisionFor(
     skills: Record<string, string>;
   },
   model: string | undefined,
-  cut: (text: string) => string,
+  cut: Cut,
   current: boolean,
 ): Promise<Revision> {
   const note = `imported from ${source}`;
@@ -997,12 +997,17 @@ function openAt(env: NodeJS.ProcessEnv, port: number): string {
   return `http://${LOCAL}:${port === 0 ? "<the port the server picks>" : port}`;
 }
 
+/** A cut as `secretCut` makes it: its `probe` cuts the same and counts nothing. */
+type Cut = ((text: string) => string) & { probe?: (text: string) => string };
+
 /** The "/"-segments of `path` a key touches (by their index): each whose blanking takes a key out of the path. Blanked
- *  with spaces, which end every shape and are in no environment's key. */
-function touchedSegments(path: string, cut: (text: string) => string): number[] {
+ *  with spaces, which end every shape and are in no environment's key; the blanked paths are never kept, so they go
+ *  through the cut's probe, which counts nothing (a shorter value a blank leaves is no key removed). */
+function touchedSegments(path: string, cut: Cut): number[] {
   const out = cut(path);
   if (out === path) return [];
-  const keys = (text: string) => cut(text).split(REDACTED).length;
+  const probe = cut.probe ?? cut;
+  const keys = (text: string) => probe(text).split(REDACTED).length;
   const held = out.split(REDACTED).length;
   const parts = path.split("/");
   return parts.flatMap((segment, at) => (keys([...parts.slice(0, at), " ".repeat(segment.length), ...parts.slice(at + 1)].join("/")) < held ? [at] : []));
@@ -1012,7 +1017,7 @@ function touchedSegments(path: string, cut: (text: string) => string): number[] 
  *  every segment a key touches (one, or several when an environment's value holds "/") is kept as `redacted-` and a hash
  *  of it (as `keptId` keeps a session's id), so two folders named after two keys stay two and no part of a key is left.
  *  A folder kept so is kept so for every file under it, so a skill's files stay one skill. */
-function keptSkills(skills: Record<string, string>, cut: (text: string) => string): Record<string, string> {
+function keptSkills(skills: Record<string, string>, cut: Cut): Record<string, string> {
   const redacted = (segment: string) => `redacted-${hash(segment).slice(0, 12)}`;
   // The folders (and files) a key touches, by their path from the skills' root.
   const touched = new Set<string>();
@@ -1031,7 +1036,7 @@ function keptSkills(skills: Record<string, string>, cut: (text: string) => strin
 
 /** A project's name as an import keeps it (its folder's name): cut, or kept as `redacted-` and a hash of it when a key
  *  touches it, one across the project's path ending in it among them, so no part of the key is left in the name. */
-function keptName(project: { cwd: string; name: string }, cut: (text: string) => string): string {
+function keptName(project: { cwd: string; name: string }, cut: Cut): string {
   const parts = project.cwd.split("/");
   const last = parts.length - 1;
   return parts[last] === project.name && touchedSegments(project.cwd, cut).includes(last) ? `redacted-${hash(project.name).slice(0, 12)}` : cut(project.name);

@@ -20,21 +20,26 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
     // The longest first: a key that holds a shorter one is cut whole.
     .sort((a, b) => b.length - a.length);
   // After the environment's values, every key or token of a known shape (shapedCut). `text.removed` counts the keys and
-  // tokens cut, each once however many times it was met.
+  // tokens cut, each once however many times it was met. `text.probe` cuts the same and counts nothing: for a string
+  // that is never kept (a path with a folder blanked, to find which folders a key touches).
   const removed = new Set<string>();
+  const cut = (value: string, count: boolean): string => {
+    const own = secrets.reduce((out, secret) => {
+      const parts = out.split(secret);
+      if (parts.length > 1 && count) removed.add(secret);
+      return parts.join(REDACTED);
+    }, value);
+    const shaped = shapedCut(own);
+    if (count) for (const found of shaped.cut) removed.add(found);
+    return shaped.text;
+  };
   const text = Object.assign(
     (value: string): string => {
-      const own = secrets.reduce((out, secret) => {
-        const parts = out.split(secret);
-        if (parts.length > 1) removed.add(secret);
-        return parts.join(REDACTED);
-      }, value);
-      const shaped = shapedCut(own);
-      for (const found of shaped.cut) removed.add(found);
+      const out = cut(value, true);
       text.removed = removed.size;
-      return shaped.text;
+      return out;
     },
-    { removed: 0 },
+    { removed: 0, probe: (value: string): string => cut(value, false) },
   );
   const json = (value: unknown): unknown => {
     if (typeof value === "string") return text(value);

@@ -507,6 +507,25 @@ test("a key of the environment's that holds a slash, across a skill's folders, l
   assert.ok(printed.includes("1 secret removed"), printed.join("\n"));
 });
 
+test("a key in a project's path counts once, in the dry run and in the import: finding the folders it touches counts nothing", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  // An assignment in a folder's name: its value runs on through the path's "/", so a folder after it, blanked to find
+  // the folders the key touches, leaves a shorter value that is no key removed.
+  const pw = ["PASS", "WORD"].join("");
+  const site = join(at, "code", `${pw}=x${randomBytes(10).toString("hex")}Q9`, "app");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1, { prompt: "Build it." });
+  const data = join(root, "agents");
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    return lines.filter((line) => /secrets? (would be )?removed/.test(line));
+  };
+  assert.deepEqual(await run("--dry-run"), ["1 secret would be removed"]);
+  assert.deepEqual(await run(), ["1 secret removed"]);
+});
+
 test("a key of the environment's that holds a slash, across a project's own folders, leaves no part of itself in the agent's name", async (t) => {
   const root = await scratch(t);
   const at = join(root, "home");
@@ -1327,12 +1346,14 @@ test("a subagent whose file names no parent is no session and no run: its tokens
   assert.equal(store.listRuns().length, 1, "no run for the subagent");
 });
 
-test("a tool key saved through the settings API is cut from every file the import writes, opened on the host with the seal key; with no seal key it is not known, so not cut", async (t) => {
+test("a tool key saved through the settings API is cut through the seal key from every file the import writes: opened on the host with it, the key is known and cut; with no seal key, printed in a form no shape rule takes, it is kept", async (t) => {
   const root = await scratch(t);
   const h = home(root);
   const seal = randomBytes(32).toString("base64");
   const saved = `not-a-secret-saved-${randomBytes(8).toString("hex")}`;
-  assert.ok(readFileSync(claudeSession(h.at, h.site, 13, { prompt: "Which key?", output: `MONID_API_KEY=${saved}` })).includes(saved));
+  // Printed as no shape rule takes it (`MONID_API_KEY=<value>` is cut whatever the seal key: an assignment named for a
+  // key), so the control shows the seal key is what cuts it here.
+  assert.ok(readFileSync(claudeSession(h.at, h.site, 13, { prompt: "Which key?", output: `monid: ${saved}` })).includes(saved));
   const into = async (name, env) => {
     const data = join(root, name);
     mkdirSync(data, { recursive: true });
