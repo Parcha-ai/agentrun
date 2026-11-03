@@ -497,21 +497,65 @@ test("secretlint finds nothing in code that names keys and passwords", async () 
     assert.deepEqual(await secretsIn(line), [], line);
 });
 
-test("a plan for setup's count reads no session through secretlint; a plan for an import reads each session file once", async (t) => {
+test("setup's count reads no session through secretlint; an import reads each run once, as it reads it, and a plan only each session's id", async (t) => {
   const { secretlintCalls } = await import("../dist/secret-cut.js");
   const root = await scratch(t);
   const at = join(root, "home");
   const site = join(at, "code", "count");
   mkdirSync(site, { recursive: true });
   for (let n = 1; n <= 5; n++) claudeSession(at, site, n);
+  const env = { PATH: "/usr/bin" };
   const before = secretlintCalls.count;
   // As setup's count asks for it (import-worker.ts): a listing, no transcript kept, so no scan.
-  const counted = await planImport({ home: at, env: { PATH: "/usr/bin" }, all: true, keys: false });
+  const counted = await planImport({ home: at, env, all: true, keys: false });
   assert.equal(counted.projects[0].sessions.length, 5);
   assert.equal(secretlintCalls.count, before, "the count read no session through secretlint");
-  await planImport({ home: at, env: { PATH: "/usr/bin" }, all: true });
-  assert.equal(secretlintCalls.count, before + 5, "an import's plan reads each session file once");
+  const store = openStore(join(root, "agents"));
+  t.after(() => store.close());
+  const plan = await planImport({ home: at, env, all: true }, store);
+  const planned = secretlintCalls.count;
+  assert.equal(planned - before, 5, "the import's plan reads each session's id alone, no file");
+  await runImport(store, plan, { home: at, env, all: true });
+  assert.equal(secretlintCalls.count - planned, 1 + 5, "the import: its project's own text once, and each run once");
 });
+
+test("a key a session still being written adds after the plan read it is cut all the same: the import finds keys in what it reads", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "live");
+  mkdirSync(site, { recursive: true });
+  const file = claudeSession(at, site, 1, { prompt: "Deploy it." });
+  const env = { PATH: "/usr/bin" };
+  const data = join(root, "agents");
+  const store = openStore(data);
+  t.after(() => store.close());
+  const plan = await planImport({ home: at, env, all: true }, store);
+  // Written after the plan: one more message of the person's, holding a key.
+  const key = shapedKeys().github;
+  const first = JSON.parse(readFileSync(file, "utf8").split("\n").find((line) => line.includes('"type":"user"')));
+  appendFileSync(file, `${JSON.stringify({ ...first, uuid: "late-1", timestamp: minute(30), message: { role: "user", content: `Rotate ${key} now.` } })}\n`);
+  const report = await runImport(store, plan, { home: at, env, all: true });
+  assert.equal(report.agents[0]?.runs, 1, JSON.stringify(report.agents));
+  for (const [path, bytes] of keptUnder(data)) assert.ok(!bytes.includes(key), `${path.slice(data.length + 1)} holds the key`);
+  assert.equal(report.secretsRemoved, 1);
+});
+
+test("an import's plan reads no subagent file through secretlint: a subagent of a session the import leaves out is never read", async (t) => {
+  const { secretlintCalls } = await import("../dist/secret-cut.js");
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "fresh");
+  mkdirSync(site, { recursive: true });
+  // A session written a moment ago (left out: it may still be running), with a subagent's file.
+  const live = claudeSession(at, site, 1);
+  utimesSync(live, new Date(), new Date());
+  claudeSubagent(at, site, 1, 1, { answer: "notes ".repeat(10_000) });
+  const before = secretlintCalls.count;
+  const plan = await planImport({ home: at, env: { PATH: "/usr/bin" }, all: false });
+  assert.equal(plan.projects.length, 0, "the live session is left out");
+  assert.equal(secretlintCalls.count, before, "no subagent file read through secretlint");
+});
+
 
 test("the README says what an import removes and what it leaves", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");

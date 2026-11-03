@@ -273,11 +273,11 @@ test("under its launcher (node started from a string), setup counts this machine
   mkdirSync(temp, { recursive: true });
   const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
   const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config } });
-  const exited = new Promise((resolve) => child.once("exit", resolve));
+  // Its group is signalled only while it is alive: once it has exited, the group's number may be another's.
+  let alive = true;
+  const exited = new Promise((resolve) => child.once("exit", () => resolve((alive = false))));
   t.after(async () => {
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch {}
+    if (alive) process.kill(-child.pid, "SIGTERM");
     await exited;
   });
   let [out, err] = ["", ""];
@@ -368,11 +368,11 @@ test("a server stopped while setup counts a big home's sessions exits within its
   const [DRAIN, DRAIN_MS] = ["2s", 2_000];
   const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
   const child = spawn(LAUNCHER, ["--data", data, "--port", "0", "--drain-timeout", DRAIN], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config } });
-  const exited = new Promise((resolve) => child.once("exit", resolve));
+  // Its group is signalled only while it is alive: once it has exited, the group's number may be another's.
+  let alive = true;
+  const exited = new Promise((resolve) => child.once("exit", () => resolve((alive = false))));
   t.after(async () => {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {}
+    if (alive) process.kill(-child.pid, "SIGKILL");
     await exited;
   });
   let [out, err] = ["", ""];
@@ -387,7 +387,7 @@ test("a server stopped while setup counts a big home's sessions exits within its
   const read = await call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
   assert.ok([200, 202].includes(read.status), read.text);
   const stopped = Date.now();
-  process.kill(-child.pid, "SIGTERM");
+  if (alive) process.kill(-child.pid, "SIGTERM");
   const outcome = await Promise.race([exited.then(() => "exited"), sleep(DRAIN_MS + 1_500).then(() => "still running")]);
   assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM with a ${DRAIN} drain window (the count ${read.status === 202 ? "running" : "done"} when stopped)`);
 });
@@ -409,11 +409,11 @@ test("under its launcher, setup's import cuts each of the server's own secrets o
   mkdirSync(temp, { recursive: true });
   const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
   const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config, ...keys } });
-  const exited = new Promise((resolve) => child.once("exit", resolve));
+  // Its group is signalled only while it is alive: once it has exited, the group's number may be another's.
+  let alive = true;
+  const exited = new Promise((resolve) => child.once("exit", () => resolve((alive = false))));
   t.after(async () => {
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch {}
+    if (alive) process.kill(-child.pid, "SIGTERM");
     await exited;
   });
   let [out, err] = ["", ""];
