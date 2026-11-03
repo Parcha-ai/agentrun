@@ -148,7 +148,11 @@ test("a run's own process cannot approve: every credential it holds, its door to
   let pid;
   for (let i = 0; !pid; i++) {
     assert.ok(i < 600, "the run's process is up");
-    pid = JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder?.pid;
+    try {
+      pid = JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder?.pid;
+    } catch {
+      // Not written yet.
+    }
     if (!pid) await sleep(50);
   }
   const environ = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").filter(Boolean).map((entry) => entry.slice(entry.indexOf("=") + 1));
