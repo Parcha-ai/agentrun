@@ -256,7 +256,7 @@ export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TO
 /** What a stored revision's tools resolve from (tool-plane.ts): the tools it grants, its harness, model and settings. */
 export async function toolingOf(revision: Revision): Promise<Tooling> {
   const tools = await grantedTools(revision.kind === "agentic" ? { kind: "agentic", tools: revision.body.tools } : { kind: "workflow", tools: revision.body.tools, workflow: revision.body.workflow });
-  return { tools, ...(revision.body.harness ? { harness: revision.body.harness } : {}), ...(revision.kind === "agentic" && revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.toolSettings ? { overrides: revision.body.toolSettings as ToolSettingsMap } : {}) };
+  return { tools, ...(revision.kind === "workflow" ? { workflow: true as const } : {}), ...(revision.body.harness ? { harness: revision.body.harness } : {}), ...(revision.kind === "agentic" && revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.toolSettings ? { overrides: revision.body.toolSettings as ToolSettingsMap } : {}) };
 }
 
 /** The variables `entry` needs that `env` does not set, by name. */

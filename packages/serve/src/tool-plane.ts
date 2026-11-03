@@ -101,7 +101,7 @@ const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettin
  *  its search asks (the one the resolution read). */
 export type Plane = Partial<Record<Pickable, Resolution>> & { model?: string };
 /** The facts of a pinned revision its run's tools resolve from. */
-export type Tooling = { harness?: string; tools: readonly string[]; model?: string; overrides?: ToolSettingsMap };
+export type Tooling = { harness?: string; tools: readonly string[]; model?: string; overrides?: ToolSettingsMap; workflow?: true };
 
 /** The run's process's description of its tools' providers: JSON of its Plane. */
 export const TOOL_PLANE_ENV = "AGENTRUN_SERVE_TOOL_PLANE";
@@ -109,7 +109,9 @@ export const TOOL_PLANE_ENV = "AGENTRUN_SERVE_TOOL_PLANE";
 /** The Plane of a run of `tooling`, in the server's `env` (with its secrets) under its `settings`. */
 export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap): Plane {
   const harness = tooling.harness ?? DEFAULT_HARNESS;
-  const model = tooling.model ?? env.AGENT_MODEL;
+  // A workflow's model nodes may each run on another tier's model, and a native search asks one model's provider: a
+  // workflow's search resolves with no model (keyless Exa, or Parallel where picked), never on a model a node may not use.
+  const model = tooling.workflow ? undefined : (tooling.model ?? env.AGENT_MODEL);
   const plane: Plane = {};
   const granted = tooling.tools.map(capabilityOf);
   for (const name of PICKABLE) {

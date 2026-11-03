@@ -301,6 +301,8 @@ provider the user picked, optional: the agent's own (`definition.tool_settings`)
 (`PUT /settings/tools`); (2) the native tool, the harness's own or its model provider's hosted one; (3) the kernel's
 keyless fallback. A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex,
 `web_search` is keyless Exa (or Parallel, picked) until Codex's own search is bound in a follow-up.
+A workflow's model nodes may each run on another tier's model, so a workflow's `web_search` never searches natively:
+it is keyless Exa, or Parallel where picked, and a pick of `native` alone is unavailable for a workflow.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |

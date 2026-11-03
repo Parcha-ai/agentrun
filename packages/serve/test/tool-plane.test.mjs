@@ -61,6 +61,10 @@ test("a run's plane: each web tool its revision names, resolved in the server's 
   assert.deepEqual(planeFor(env, { tools: ["web_search"], overrides: { web_search: { provider: "exa-keyless" } } }, { web_search: { provider: "parallel" } }), { web_search: "exa-keyless" });
   assert.deepEqual(planeFor({}, { tools: ["read"] }, {}), {}, "no web tool, nothing to say");
   assert.deepEqual(planeFor(env, { tools: ["fetch_page"] }, { web_fetch: { provider: "parallel" } }), { web_fetch: "parallel" }, "fetch_page resolves as web_fetch does");
+  // A workflow's nodes may each run on another tier's model: its search never asks one model's provider natively.
+  assert.deepEqual(planeFor(env, { tools: ["web_search"], workflow: true }, {}), { web_search: "exa-keyless" }, "a workflow searches keyless, never on the default model a fast node may not use");
+  assert.deepEqual(planeFor(env, { tools: ["web_search"], workflow: true }, { web_search: { provider: "parallel" } }), { web_search: "parallel" }, "Parallel picked: as for any run");
+  assert.deepEqual(planeFor(env, { tools: ["web_search"], workflow: true }, { web_search: { provider: "native" } }), { web_search: "unavailable: no native search for a model with none named" }, "native only: refused, never one node's model");
 });
 
 test("settings are checked before anything is kept: an unknown capability, a provider not offered for it, and a permission, which waits for the tool gate", () => {
