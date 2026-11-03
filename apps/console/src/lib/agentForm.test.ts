@@ -227,8 +227,7 @@ describe("tools by default (tools on, Miguel's rule), and whether the agent reac
     { name: "read", available: true }, { name: "write", available: true }, { name: "edit", available: true },
     { name: "fetch_page", available: true }, { name: "ask_person", available: true }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] },
   ]);
-  it("takes the server's tools as objects, or as names from an older server", () => {
-    expect(toolOffers(["read", "write"])).toEqual([{ name: "read", available: true }, { name: "write", available: true }]);
+  it("takes the server's tools as objects", () => {
     expect(offers.find((t) => t.name === "browser")).toEqual({ name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] });
   });
   it("a new pi agent starts with every tool the server can run ticked, never one it can't", () => {
