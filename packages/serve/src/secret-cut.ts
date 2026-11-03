@@ -141,9 +141,12 @@ export function shapedCut(value: string): { text: string; cut: string[] } {
     });
   if (/[=:]/.test(out))
     out = out.replace(ASSIGNED, (found, name: string, between: string, value: string) => {
-      // A sentence's own punctuation after the value ends it: `PASSWORD=<key>.` is the key, the period the sentence's.
-      const secret = value.replace(/[.:)\]}!?]+$/, "");
-      if (secret.length < 16 || !keyLike(secret)) return found;
+      // A sentence's own punctuation after an unquoted value ends it: `PASSWORD=<key>.` is the key, the period the
+      // sentence's, when the rest still reads as a key. A quoted value is the key whole, its punctuation and all, and
+      // a value too short without its punctuation is cut whole, as it was before the punctuation was set apart.
+      const trimmed = /["']$/.test(between) ? value : value.replace(/[.:)\]}!?]+$/, "");
+      const secret = [trimmed, value].find((candidate) => candidate.length >= 16 && keyLike(candidate));
+      if (secret === undefined) return found;
       cut.push(secret);
       return `${name}${between}${REDACTED}${value.slice(secret.length)}`;
     });

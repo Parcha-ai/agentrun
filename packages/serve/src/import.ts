@@ -765,7 +765,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
     if (created)
       store.createAgent({
         id: project.agentId,
-        name: text(project.name),
+        name: keptName(project, text),
         description: text(project.cwd),
       });
     const files = await projectFiles(project.cwd, report.skipped);
@@ -987,24 +987,28 @@ function openAt(env: NodeJS.ProcessEnv, port: number): string {
   return `http://${LOCAL}:${port === 0 ? "<the port the server picks>" : port}`;
 }
 
+/** The "/"-segments of `path` a key touches (by their index): each whose blanking takes a key out of the path. Blanked
+ *  with spaces, which end every shape and are in no environment's key. */
+function touchedSegments(path: string, cut: (text: string) => string): number[] {
+  const out = cut(path);
+  if (out === path) return [];
+  const keys = (text: string) => cut(text).split(REDACTED).length;
+  const held = out.split(REDACTED).length;
+  const parts = path.split("/");
+  return parts.flatMap((segment, at) => (keys([...parts.slice(0, at), " ".repeat(segment.length), ...parts.slice(at + 1)].join("/")) < held ? [at] : []));
+}
+
 /** A project's skills as an import keeps them: each file's text cut, and its path as it is when it holds no key. Else
  *  every segment a key touches (one, or several when an environment's value holds "/") is kept as `redacted-` and a hash
  *  of it (as `keptId` keeps a session's id), so two folders named after two keys stay two and no part of a key is left.
  *  A folder kept so is kept so for every file under it, so a skill's files stay one skill. */
 function keptSkills(skills: Record<string, string>, cut: (text: string) => string): Record<string, string> {
   const redacted = (segment: string) => `redacted-${hash(segment).slice(0, 12)}`;
-  const keys = (text: string) => cut(text).split(REDACTED).length;
   // The folders (and files) a key touches, by their path from the skills' root.
   const touched = new Set<string>();
   for (const path of Object.keys(skills)) {
-    if (cut(path) === path) continue;
     const parts = path.split("/");
-    const held = keys(path);
-    parts.forEach((segment, at) => {
-      // A segment a key touches is one whose blanking (with a character no key holds) takes that key out of the path.
-      const blanked = [...parts.slice(0, at), "\u0000".repeat(segment.length), ...parts.slice(at + 1)].join("/");
-      if (keys(blanked) < held) touched.add(parts.slice(0, at + 1).join("/"));
-    });
+    for (const at of touchedSegments(path, cut)) touched.add(parts.slice(0, at + 1).join("/"));
   }
   return Object.fromEntries(
     Object.entries(skills).map(([path, text]) => {
@@ -1013,4 +1017,12 @@ function keptSkills(skills: Record<string, string>, cut: (text: string) => strin
       return [cut(kept) === kept ? kept : redacted(path), cut(text)];
     }),
   );
+}
+
+/** A project's name as an import keeps it (its folder's name): cut, or kept as `redacted-` and a hash of it when a key
+ *  touches it, one across the project's path ending in it among them, so no part of the key is left in the name. */
+function keptName(project: { cwd: string; name: string }, cut: (text: string) => string): string {
+  const parts = project.cwd.split("/");
+  const last = parts.length - 1;
+  return parts[last] === project.name && touchedSegments(project.cwd, cut).includes(last) ? `redacted-${hash(project.name).slice(0, 12)}` : cut(project.name);
 }
