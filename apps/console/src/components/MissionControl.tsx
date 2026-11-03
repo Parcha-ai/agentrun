@@ -4,6 +4,9 @@ import { when } from "@/lib/format";
 import { costParts, type MissionView } from "@/lib/mission";
 import { cn } from "@/lib/utils";
 import { AnalyticsFilter, MissionAnalytics } from "@/components/MissionAnalytics";
+import { ProblemCard } from "@/components/Problem";
+import { MissionSkeleton } from "@/components/Skeleton";
+import type { Problem } from "@/lib/problem";
 import { RANGES, type StatsRange } from "@/lib/mission";
 
 /** The range and agent the page's analytics are asked for, and how to change them. */
@@ -13,14 +16,9 @@ export type AnalyticsScope = { range: StatsRange; onRange: (range: StatsRange) =
  *  waiting on a person or failed, what they cost (said with its basis, never $0 for a cost not known), runs per agent,
  *  and the latest runs, each a link to its page, with the runs' tokens, time, success and tools over the range picked
  *  (MissionAnalytics). */
-export function MissionControl({ view, error, onRetry, scope }: { view: MissionView | null; error?: string | null; onRetry?: () => void; scope?: AnalyticsScope }) {
-  if (error) return (
-    <div className="m-8 border p-4" role="alert">
-      <p className="font-mono text-[13px] text-destructive-text">Mission Control could not be read: {error}</p>
-      {onRetry && <button type="button" onClick={onRetry} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>}
-    </div>
-  );
-  if (!view) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
+export function MissionControl({ view, error, onRetry, scope }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope }) {
+  if (error) return <ProblemCard problem={error} onRetry={onRetry} />;
+  if (!view) return <MissionSkeleton />;
   const spent = costParts(view.cost);
   const tiles: [string, string, string?, string?][] = [
     ["Agents", String(view.agents)],

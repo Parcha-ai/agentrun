@@ -1,5 +1,6 @@
 import { Archive, ArchiveRestore, Bot, History, Pencil, Plus, Search, Workflow } from "lucide-react";
 import { useState } from "react";
+import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import type { Agent } from "@/lib/agentForm";
@@ -25,7 +26,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
         {!archived && <Button size="lg" variant="primary" onClick={actions.onNew}><Plus aria-hidden /> New agent</Button>}
       </div>
       {error ? <p className="border p-4 font-mono text-[13px] text-destructive-text" role="alert">{error}</p>
-        : !agents ? <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading agents...</p>
+        : !agents ? <ListSkeleton label="Loading the agents" rows={6} />
         : !shown.length ? (
           <div className="border px-4 py-12 text-center">
             <p className="font-mono text-[13px] text-muted-foreground">{q ? "No agent matches." : archived ? "No archived agents." : "No agents yet."}</p>

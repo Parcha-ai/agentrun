@@ -243,7 +243,8 @@ describe("AgentPage", () => {
     expect(count()).toBe(5);
     await page.click(/^Load more$/);
     expect(count()).toBe(5);
-    expect(page.host.textContent).toContain("More runs could not be read: the network went away");
+    expect(page.host.textContent).toContain("More runs could not be read.");
+    expect(page.host.textContent).toContain("the network went away");
     fail = false;
     await page.click(/^Load more$/);
     expect(count()).toBe(runs.length);
