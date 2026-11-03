@@ -102,7 +102,7 @@ function ToolsTable({ tools }: { tools: Analytics["tools"] }) {
           <tbody>
             {tools.map((x) => (
               <tr key={x.tool} className="border-b font-mono last:border-b-0">
-                <td className={td} title={x.tool}>{x.label ?? x.tool}</td><td className={td}>{compact(x.calls)}</td>
+                <td className={td} title={x.tool}>{x.label}</td><td className={td}>{compact(x.calls)}</td>
                 <td className={cn(td, x.errors > 0 && "text-destructive-text")}>{compact(x.errors)}</td>
                 <td className={td}>{percent(x.calls ? x.errors / x.calls : null)}</td>
               </tr>
