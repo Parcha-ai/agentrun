@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+`web_fetch` through Parallel costs one extract per page in a run. Each part of a page asked Parallel's extract again for the page's text up to that part's end, with no ceiling: every part was another billed extract, carrying the whole prefix again. Parallel's extract has no offset, so a run now asks it once for a page's first 1,000,000 characters (and one more, to know if it goes on) and keeps what it gave for ten minutes, within 4 MB: the page's later parts are read from that copy, with no request. A page is read to its first 1,000,000 characters from either provider: an `offset` at or past them is refused before anything is fetched, and the last part a read reaches of a longer page has `beyond_read`. Where Parallel gives no page for a later part, the page is read directly from its start (`restarted`, with a line saying the earlier parts were Parallel's text) and its later parts stay direct for the run, so every part of a page is one text's. A page's links left out past their caps are counted, `links_omitted`.

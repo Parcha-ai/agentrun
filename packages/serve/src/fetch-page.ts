@@ -17,8 +17,9 @@ import type { PublicFetchOptions } from "@parcha/pi-browser";
 /** On a page that was read, `chars`: the length of `text`, the part of the page's text this answer holds. `truncated`
  *  while more of it follows this part, and `next_offset` where that begins; `offset` where this part begins, when not 0;
  *  `original_chars` the whole text's length in characters, when it is known and this part is not all of it;
- *  `beyond_read` on the last part a read reaches of a page that goes on past PAGE_READ_MAX_CHARS. */
-export type Page = { ok: boolean; url: string; status: number; title: string; text: string; chars?: number; truncated?: true; original_chars?: number; beyond_read?: true; offset?: number; next_offset?: number; links: string[]; refused?: string; error?: string };
+ *  `beyond_read` on the last part a read reaches of a page that goes on past PAGE_READ_MAX_CHARS; `links_omitted`, with the
+ *  first part, how many of the page's links its caps left out. */
+export type Page = { ok: boolean; url: string; status: number; title: string; text: string; chars?: number; truncated?: true; original_chars?: number; beyond_read?: true; offset?: number; next_offset?: number; links: string[]; links_omitted?: number; refused?: string; error?: string };
 
 /** web_fetch's legacy name: a revision or a call node naming it runs web_fetch under it (tools.ts). */
 export const FETCH_PAGE_TOOL = "fetch_page";
@@ -108,19 +109,22 @@ export function pageText(text: string, part: Part = {}, whole = true): Pick<Page
 }
 
 /** A page's links as an answer holds them: with its first part only, in page order, at most LINKS_CAP of them, each one
- *  that fits in what is left of LINKS_CHARS (as JSON, with its comma). */
-export function linksWithin(links: Iterable<string>, part: Part = {}): string[] {
-  if (partOf(part).offset > 0) return [];
+ *  that fits in what is left of LINKS_CHARS (as JSON, with its comma); and how many of them that left out, when any. */
+export function linksWithin(links: Iterable<string>, part: Part = {}): Pick<Page, "links" | "links_omitted"> {
+  if (partOf(part).offset > 0) return { links: [] };
   const kept: string[] = [];
   let used = 0;
+  let omitted = 0;
   for (const link of links) {
-    if (kept.length === LINKS_CAP) break;
     const cost = JSON.stringify(link).length + 1;
-    if (used + cost > LINKS_CHARS) continue;
+    if (kept.length === LINKS_CAP || used + cost > LINKS_CHARS) {
+      omitted += 1;
+      continue;
+    }
     kept.push(link);
     used += cost;
   }
-  return kept;
+  return { links: kept, ...(omitted ? { links_omitted: omitted } : {}) };
 }
 
 /** The part `options` names of the page at `url`, as a Page. The rest of `options` are the guard's resolver and fetch,
@@ -138,7 +142,7 @@ export async function fetchPage(url: unknown, { offset, maxChars, ...options }: 
     const answer = await publicFetch(url, { ...options, signal });
     if (answer.body === null) return failed({ url: clip(answer.url, URL_MAX), status: answer.status, error: `the page answered ${answer.status}` });
     const page = /html/i.test(answer.contentType) ? await readPage(answer.body, answer.url) : { title: "", text: answer.body, links: [] };
-    return { ok: true, url: clip(answer.url, URL_MAX), status: answer.status, title: clip(page.title, TITLE_CAP), ...pageText(page.text, part), links: linksWithin(page.links, part) };
+    return { ok: true, url: clip(answer.url, URL_MAX), status: answer.status, title: clip(page.title, TITLE_CAP), ...pageText(page.text, part), ...linksWithin(page.links, part) };
   } catch (error) {
     if (error instanceof BrowserFailureError && error.failure.code === "refused") return failed({ refused: error.message });
     return failed({ error: (error as Error)?.message ?? String(error) });

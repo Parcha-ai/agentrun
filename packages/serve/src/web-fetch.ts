@@ -25,7 +25,7 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
-import { clip, fetchOptions, fetchPage, LINKS_CAP, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, pageText, type Part, partProblem, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
+import { clip, fetchOptions, fetchPage, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, pageText, type Part, partProblem, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 import { isUnavailable, planeOf } from "./tool-plane.js";
@@ -56,11 +56,12 @@ type GuardOptions = Omit<PublicFetchOptions, "maxBytes">;
  *  whether a page's parts are read directly in this run (`readDirectly` sets it), Parallel having given none of it. */
 export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal, part?: Part): Promise<Page | string>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response>; readsDirectly(url: string): boolean; readDirectly(url: string, direct: boolean): void };
 
-/** The absolute http(s) URLs a markdown text links to (`[text](url)`), each once and without its fragment, in order. A
- *  URL ends at whitespace or at the ")" that closes the link, so parentheses it holds in pairs (a wiki title's) stay. */
+/** The absolute http(s) URLs a markdown text links to (`[text](url)`), each once and without its fragment, in order (all
+ *  of them: linksWithin keeps those within the caps, and counts the rest). A URL ends at whitespace or at the ")" that
+ *  closes the link, so parentheses it holds in pairs (a wiki title's) stay. */
 function linksOf(markdown: string): string[] {
   const links = new Set<string>();
-  for (let at = markdown.indexOf("]("); at !== -1 && links.size < LINKS_CAP; at = markdown.indexOf("](", at + 2)) {
+  for (let at = markdown.indexOf("]("); at !== -1; at = markdown.indexOf("](", at + 2)) {
     let end = at + 2;
     for (let depth = 0; end < markdown.length && !/\s/.test(markdown[end]!); end++) {
       if (markdown[end] === "(") depth++;
@@ -100,7 +101,7 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch, { no
     }
   };
   /** The part `part` names of a kept page, as a Page. */
-  const answer = (page: Kept, part: Part): Page => ({ ok: true, url: page.url, status: 200, title: page.title, ...pageText(page.text, part, page.whole), links: linksWithin(page.links, part) });
+  const answer = (page: Kept, part: Part): Page => ({ ok: true, url: page.url, status: 200, title: page.title, ...pageText(page.text, part, page.whole), ...linksWithin(page.links, part) });
   const post: Extract["post"] = async (url, body, signal) => {
     const response = await send(url, {
       method: "POST",
@@ -244,7 +245,7 @@ export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): Too
   if (planeOf(env).web_fetch === "parallel") parallelOf(env);
   return defineTool({
     name,
-    description: `Read one web page from a public host, a part at a time. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page). A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
+    description: `Read one web page from a public host, a part at a time. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page). A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {

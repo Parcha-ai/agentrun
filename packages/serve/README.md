@@ -293,14 +293,19 @@ redirect to one are all refused, as is any scheme but http(s). A URL on a port o
 a part of the page's text: about `max_chars` characters from `offset` (20,000 by default, at least 200, at most
 50,000; a quote or a line break counts two, as the JSON answer holds it, and a part holds one character at least, so
 it always advances), its length as `chars`. A part that is not the whole page says so: `truncated` while more follows,
-`next_offset` where it begins, `original_chars` the page's whole length where it is known (Parallel's extract gives it
-only for a page shorter than it was asked for), and for an agent a line after the JSON says which characters these are
-and the call that reads on. The links, absolute http(s) only, come with the part at offset 0: at most 200, in 20,000
-characters. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
-reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via:
-"tool", tool: "web_fetch"` gets it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by
-default, `out` a schema of that shape). A call node naming a tool the table cannot run that way is refused before the
-run starts (`409`).
+`next_offset` where it begins, `original_chars` the page's whole length where it is known, and for an agent a line
+after the JSON says which characters these are and the call that reads on. A page is read to its first 1,000,000
+characters: an `offset` at or past them is refused, and the last part a read reaches of a longer page has
+`beyond_read`. The links, absolute http(s) only, come with the part at offset 0: at most 200, in 20,000 characters,
+with `links_omitted` counting those left out. Through Parallel, a run's first read of a page asks Parallel's extract
+for its first 1,000,000 characters (the extract has no offset, and each is billed), and the run keeps what it gave for
+ten minutes, within 4 MB: the page's later parts are read from that, with no request. Where Parallel gives no page for
+a later part, the page is read directly from its start (`restarted`, and a line saying the earlier parts were
+Parallel's text), and its later parts stay direct for the run, so a page's parts are always one text's. A refusal or a
+failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent reads why, and a workflow
+can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via: "tool", tool: "web_fetch"` gets
+it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by default, `out` a schema of that
+shape). A call node naming a tool the table cannot run that way is refused before the run starts (`409`).
 
 On another harness, every host tool's result stays under the host's bound of 120,000 characters
 (`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`), and each CLI adapter tells its CLI to pass a result that long to
