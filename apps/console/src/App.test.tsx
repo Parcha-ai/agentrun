@@ -103,14 +103,20 @@ describe("App, Mission Control after a failed read", () => {
 describe("App, Settings", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const keys = { keys: [{ id: "monid", label: "Monid", fields: [{ name: "MONID_API_KEY", set: false, source: null }], unlocks: ["monid.run"], harnesses: ["pi"] }], reenter: null };
-  async function open(features: Record<string, unknown>, hash: string) {
+  // capabilities.tools with a choice of provider (web_search, web_fetch), as a server with tool settings lists them.
+  const choiceTools = [
+    { name: "web_search", summary: "Search the web", nodes: true, calls: true, available: true, harnesses: ["pi"], providers: ["auto", "native", "exa-keyless", "parallel"], provider: "auto", default_provider: "auto", resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } },
+    { name: "web_fetch", summary: "Fetch a page", nodes: true, calls: true, available: true, harnesses: ["pi"], providers: ["kernel", "parallel"], provider: "kernel", default_provider: "kernel", resolves: { pi: "kernel", "claude-agent": "native", codex: "native" } },
+  ];
+  async function open(features: Record<string, unknown>, hash: string, tools: unknown[] = []) {
     const asked: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       asked.push(`${init?.method ?? "GET"} ${path}`);
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
       if (path.startsWith("/v2/settings/tool-keys/")) return new Response(null, { status: 204 });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
+      if (path === "/v2/settings/tools") return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } });
       if (path === "/v2/settings/tool-keys") return json(200, keys);
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
@@ -126,10 +132,62 @@ describe("App, Settings", () => {
     return { host, nav, asked };
   }
 
+  it("two saves in a row: only the newest capabilities read lands, so an older resolution never comes back", async () => {
+    const tool = (provider: string, resolved: string) => [{ ...choiceTools[0], provider, resolves: { pi: resolved, "claude-agent": resolved, codex: resolved } }];
+    let caps = 0;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") {
+        const n = ++caps;
+        const body = (tools: unknown[]) => json(200, { harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+        // The read after the first save answers last, with what was true before the second save.
+        if (n === 2) { await new Promise((r) => setTimeout(r, 300)); return body(tool("native", "native")); }
+        return body(n === 1 ? tool("auto", "exa-keyless") : tool("parallel", "parallel"));
+      }
+      if (path === "/v2/settings/tools") return json(200, init?.method === "PUT" ? JSON.parse(String(init.body)) : { web_search: { provider: "auto" } });
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/settings/tools";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const wait = async (ok: () => boolean) => { const end = Date.now() + 3000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 20)); }); };
+    const select = () => host.querySelector<HTMLSelectElement>('tr[data-tool="web_search"] select');
+    await wait(() => !!select());
+    const choose = async (p: string) => { await act(async () => { const s = select()!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, p); s.dispatchEvent(new Event("change", { bubbles: true })); }); };
+    await choose("native");
+    await choose("parallel");
+    await wait(() => caps >= 3 && !!host.querySelector('tr[data-tool="web_search"]')?.textContent?.includes("Parallel"));
+    await act(async () => { await new Promise((r) => setTimeout(r, 400)); });
+    const row = host.querySelector('tr[data-tool="web_search"]')!.textContent!;
+    expect(row).toContain("pi: Parallel");
+    expect(row).not.toContain("pi: native");
+  });
+
   it("has no Settings in the nav when the server has no features.tool_keys", async () => {
     const page = await open({}, "#/runs");
     expect(page.nav()).toContain("Runs");
     expect(page.nav()).not.toContain("Settings");
+  });
+
+  it("#/settings/tools opens Tools, with a tab for each settings page, when the server offers a choice of provider", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/tools", choiceTools);
+    expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["Tool keys", null], ["Tools", "page"]]);
+    expect(page.host.querySelector('tr[data-tool="web_search"] select')).toBeTruthy();
+    expect(page.asked).toContain("GET /v2/settings/tools");
+  });
+
+  it("a server with a choice of provider and no tool keys has Settings, which opens on Tools", async () => {
+    const page = await open({}, "#/runs", choiceTools);
+    expect(page.nav()).toContain("Settings");
+    await act(async () => { [...page.host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Navigation"] button')].find((b) => b.textContent?.trim() === "Settings")!.click(); });
+    for (let i = 0; i < 20; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(location.hash).toBe("#/settings/tools");
+    expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
+    expect(page.host.querySelector('nav[aria-label="Settings"]')).toBeNull();
   });
 
   it("shows Settings when the server has the routes, and #/settings/keys opens Tool keys", async () => {
@@ -326,5 +384,25 @@ describe("App, the agents' names", () => {
     // The archived agent's name could not be read: its run shows neither a name nor an id that would read as gone.
     expect(rows()[1]).not.toContain(kept.agent_id);
     expect(rows()[1]).not.toContain(kept.definition.name!);
+  });
+});
+
+describe("App, the playground when its agents can't be read", () => {
+  it("says the server's refusal as code and message", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/agents") return json(400, { error: { code: "invalid_cursor", message: "that cursor is not one this server gave", retryable: false } });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/playground";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const end = Date.now() + 4000;
+    while (!host.textContent?.includes("could not be read") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(host.querySelector('[role="alert"] p')?.textContent).toBe("The agents could not be read: invalid_cursor: that cursor is not one this server gave");
   });
 });
