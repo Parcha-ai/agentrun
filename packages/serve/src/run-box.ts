@@ -205,21 +205,48 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
 }
 
 /** What a pull of a remote box brought back; undefined when the run has no box (none made, or it is gone). */
-export type RemotePull = Pick<PullReceipt, "changed" | "files" | "bytes" | "removed" | "skipped" | "stopped">;
+export type RemotePull = { -readonly [K in "changed" | "files" | "bytes" | "removed"]: PullReceipt[K] };
+
+/** A pull that did not bring the box's work/ back whole: what it wrote is kept, with its mark, and the box must stay.
+ *  `lasting`: a stop another pull will meet again (an archive the extractor cannot read, or a limit a pull that wrote
+ *  nothing reached); else the copy failed, and a later pull may land. */
+export class PullIncomplete extends Error {
+  readonly lasting: boolean;
+  constructor(message: string, lasting: boolean) {
+    super(message);
+    this.lasting = lasting;
+  }
+}
+
+/** How many pulls one copy back takes at most: each pull past a limit brings the next part, up to the limit again. */
+const PULL_ROUNDS = 8;
 
 /** The server's side of a remote box: what changed in the box's work/ since its mark, pulled into the run's work/ by the
  *  safe extractor (nothing outside work/, no link, safe names only). A file this machine changed since the mark stays
- *  (`if_unchanged`), and what the box removed is removed here too. Throws when the copy fails, the mark kept. */
+ *  (`if_unchanged`), and what the box removed is removed here too. A pull a limit stopped after it wrote something is
+ *  followed by another, which asks only for the rest. Throws when the copy fails (the mark kept), and PullIncomplete when
+ *  it is not whole: a caller then keeps the box. */
 export async function pullRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context): Promise<RemotePull | undefined> {
   const box = await attachRunBox(boxes, run.id, context);
   if (!box) return undefined;
-  const kept = await markOf(run.dir);
   const { pullDir } = await import("@parcha/pi-transport/sync");
-  const pulled = await pullDir(box, { from: BOX_WORK, to: join(run.dir, "work"), ...(kept?.box === box.id ? { since: kept.mark } : {}), mirrorDeletes: true, overwrite: "if_unchanged" }, context);
-  if (!pulled.ok) throw new Error(`the run's files could not be copied back from its box: ${pulled.error.message}`);
-  await keepMark(run.dir, { box: box.id, mark: pulled.value.mark });
-  const { changed, files, bytes, removed, skipped, stopped } = pulled.value;
-  return { changed, files, bytes, removed, skipped, ...(stopped ? { stopped } : {}) };
+  const total: RemotePull = { changed: 0, files: 0, bytes: 0, removed: 0 };
+  for (let round = 1; ; round++) {
+    const kept = await markOf(run.dir);
+    const pulled = await pullDir(box, { from: BOX_WORK, to: join(run.dir, "work"), ...(kept?.box === box.id ? { since: kept.mark } : {}), mirrorDeletes: true, overwrite: "if_unchanged" }, context);
+    if (!pulled.ok) throw new Error(`the run's files could not be copied back from its box: ${pulled.error.message}`);
+    // What it wrote is whole and in the mark, a stopped pull's too: the next pull asks only for the rest.
+    await keepMark(run.dir, { box: box.id, mark: pulled.value.mark });
+    const { changed, files, directories, bytes, removed, stopped } = pulled.value;
+    if (round === 1) total.changed = changed;
+    total.files += files;
+    total.bytes += bytes;
+    total.removed += removed;
+    if (!stopped) return total;
+    const wrote = files + directories + removed > 0;
+    if (stopped.reason === "copy_failed") throw new PullIncomplete(`the copy back from the run's box stopped: ${stopped.message}`, false);
+    if (stopped.reason === "malformed" || !wrote || round >= PULL_ROUNDS) throw new PullIncomplete(`the copy back from the run's box stopped (${stopped.reason}): ${stopped.message}`, true);
+  }
 }
 
 /** The running box labelled with run `runId`, if any. */

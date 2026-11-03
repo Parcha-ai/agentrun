@@ -39,7 +39,7 @@ import { isObject, type Json } from "./validate.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
-import { destroyRunBoxes, ensureRemoteBox, FAUX_BOX_ENV, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
+import { destroyRunBoxes, ensureRemoteBox, FAUX_BOX_ENV, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
 import type { BoxProvider } from "@parcha/pi-transport";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 
@@ -768,10 +768,11 @@ export class Runs {
   }
 
   /** A sandbox run's box (run-box.ts), destroyed by its label: at every settle, a cancel included, and at archive. A
-   *  remote box's work/ is pulled first, and its box goes only once that pull landed (or there is no box): at a run's end
-   *  (`ending`) a pull that fails throws PullPending, and the end is tried again; at an archive it only warns, the box
-   *  kept for the run's end or the next start's sweep. A destroy that fails only warns: the next start's sweep tries
-   *  again, and the box's lifetime bounds it. */
+   *  remote box's work/ is pulled first, and its box goes only once that pull brought it back whole (or there is no box).
+   *  A copy that stopped for good (an archive the extractor cannot read, a limit it cannot pass) keeps the box, said in
+   *  the log, its lifetime bounding it, and the run ends. Any other failure at a run's end (`ending`) throws
+   *  PullPending, and the end is tried again; at an archive it only warns, the box kept for the run's end or the next
+   *  start's sweep. A destroy that fails only warns: the next start's sweep tries again, and the box's lifetime bounds it. */
   private async dropBox(run: Run, ending = false): Promise<void> {
     const place = run.meta.place;
     if (place?.mode !== "sandbox") return;
@@ -782,6 +783,10 @@ export class Runs {
       try {
         await this.pullBox(run, true);
       } catch (error) {
+        if (error instanceof PullIncomplete && error.lasting) {
+          this.options.log?.("box_kept", { run: run.id, reason: "pull_incomplete" });
+          return warn(run.id, `its box is kept, not destroyed: ${error.message}; what came back is in its files, and the box lives until its lifetime ends`);
+        }
         const why = `its box's last pull failed (${(error as Error).message})`;
         if (ending) throw new PullPending(why);
         return warn(run.id, `${why}; its box is kept for its end`);
@@ -803,7 +808,7 @@ export class Runs {
     // After any pull already running, and after the box's making and seed when one is under way.
     const pull = Promise.all([run.pulling, run.boxing?.catch(() => undefined)]).then(async () => {
       const pulled = await pullRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS));
-      if (pulled) this.options.log?.("box_pulled", { run: run.id, changed: pulled.changed, files: pulled.files, bytes: pulled.bytes, removed: pulled.removed, ...(pulled.stopped ? { stopped: pulled.stopped.reason } : {}) });
+      if (pulled) this.options.log?.("box_pulled", { run: run.id, changed: pulled.changed, files: pulled.files, bytes: pulled.bytes, removed: pulled.removed });
     });
     const settled = pull.catch((error: Error) => {
       if (!strict) warn(run.id, `its box's work/ was not pulled at its turn's end (${error.message}); the next pull brings it`);
@@ -883,9 +888,10 @@ export class Runs {
   /** The run's status, state and whether its rows are all in, as one more change of its log when any of them moves. */
   private mark(run: Run): void {
     const { status, state } = statusOf(run);
-    // A turn's end: what its remote box changed is pulled into work/ now, and a read of the files waits for it.
+    // A turn's end, or a run first read waiting (a start that finds it so, whose last turn's pull may not have landed):
+    // what its remote box changed is pulled into work/ now, and a read of the files waits for it.
     const waiting = status === "input_required";
-    if (waiting && run.waited === false) this.pullBox(run);
+    if (waiting && run.waited !== true) this.pullBox(run);
     run.waited = waiting;
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     const moment = momentOf(run);

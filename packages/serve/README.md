@@ -639,9 +639,12 @@ Daytona sandbox, made on its first `read`, `write`, `edit` or `bash` call, with 
   never a link and nothing outside `work/`, and a file this server changed since the last copy stays as this server
   has it. A file the box removed is removed here too. What the server files in `work/` during the run (monid's long
   answers) is copied into the sandbox as well. The copy's mark is `box-sync.json` beside the run.
-- The sandbox is destroyed after the last copy back: when the run ends, and when it is archived (a copy that fails at an
-  archive keeps the sandbox for the run's end). A start copies back, then destroys, the sandbox of every run that has
-  ended or is archived. One whose copy fails is kept for the next start; its 24-hour lifetime bounds it.
+- The sandbox is destroyed after the last copy back, and only once that copy is whole: when the run ends, and when it
+  is archived (a copy that fails at an archive keeps the sandbox for the run's end). A copy that fails at the run's end
+  is tried again, and the end waits for it. One that stops for good (an archive the server cannot read, or a limit a copy
+  that brought nothing reached) keeps the sandbox, says so in the log, and lets the run end with what did come back; the
+  sandbox's 24-hour lifetime bounds it. A start pulls a run it finds waiting for the person, and copies back, then
+  destroys, the sandbox of every run that has ended or is archived. One whose copy fails is kept for the next start.
 - The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
 
 ## Decision workflows
