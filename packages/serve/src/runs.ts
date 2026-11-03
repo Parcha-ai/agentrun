@@ -491,6 +491,7 @@ export class Runs {
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
+      ...(isObject(stored?.end_notice) && typeof stored.end_notice.ended_at === "string" ? { end_notice: { ended_at: stored.end_notice.ended_at, ...(stored.end_notice.queued === true ? { queued: true as const } : {}) } } : {}),
     };
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, known?.revision);

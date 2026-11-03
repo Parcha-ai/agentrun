@@ -648,10 +648,11 @@ const endedIn = (data, runId) => {
     store.close();
   }
 };
-/** Another connection holding store.sqlite exclusively, so the server's writes of it are refused (store-busy.test's). */
+/** Another connection holding store.sqlite for writing (store-busy.test's IMMEDIATE), so the server's writes of it are
+ *  refused while its reads go on. */
 function hold(t, data) {
   const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
-  store.exec("BEGIN EXCLUSIVE");
+  store.exec("BEGIN IMMEDIATE");
   const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
   t.after(release);
   return release;
