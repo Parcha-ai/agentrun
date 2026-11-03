@@ -7,3 +7,4 @@ OpenRouter's key alone now runs every harness. With `OPENROUTER_API_KEY` set and
 - A model named `openrouter/<vendor>/<model>` (pi's name for it) runs on claude-agent and codex too. claude-agent used to refuse it as more than one segment.
 - pi now takes serve's gateway at `<base>/v1/responses`, after one trailing `/v1` is taken off the base, as codex and claude-agent do. `AGENT_MODEL_BASE_URL=https://openrouter.ai/api` used to send pi to `/api/responses`, a 404 at OpenRouter.
 - With no model here, the words name `OPENROUTER_API_KEY` first, and claude-agent's name it too.
+- A provider's 401 now fails the run with the key by name and where to set it, on every harness: "OpenRouter refused OPENROUTER_API_KEY (401: User not found): set it where AgentRun starts, or save it in Settings → Model keys." Only the provider's first sentence is kept, and never the key. Anthropic's and OpenAI's keys, and serve's gateway key (`AGENT_MODEL_API_KEY`), read the same way.
