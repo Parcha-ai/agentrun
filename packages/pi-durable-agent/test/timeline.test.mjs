@@ -301,6 +301,20 @@ test("a reset, a compaction and a changed prompt are phase rows; the first syste
   assert.deepEqual(rows.map((r) => [r.summary, r.text]), [["Context reset", "Handoff: the invoice is INV-1."], ["Summarized older context", "Summary of the work."], ["Tools changed", null]]);
 });
 
+// A harness other than pi says, on each answer, how its request asked the model to reason and the thinking tokens the
+// provider reported (`reasoning`); the usage row says them after its cost, and its figures stay what they were.
+test("cost: an adapter run's usage row says the effort and thinking its requests asked for, and the thinking tokens they report", () => {
+  const asked = (effort, tokens) => ({ reasoning: { effort, thinking: "adaptive", ...(tokens === undefined ? {} : { tokens }) } });
+  const row = timelineOf([assistant([{ type: "text", text: "a" }], 0, asked("high", 400)), assistant([{ type: "text", text: "b" }], 1, asked("high", 12))]).at(-1);
+  assert.equal(row.summary, "Cost so far: $0.0200 over 2 model requests · high effort · adaptive thinking · 412 thinking tokens");
+  assert.deepEqual(row.usage, { usd: 0.02, requests: 2 }, "the row's figures are as before");
+  // Levels in the order the requests asked for them; a count from the requests that reported one, 0 when that is all.
+  const mixed = timelineOf([assistant([{ type: "text", text: "a" }], 0, asked("low")), assistant([{ type: "text", text: "b" }], 1, asked("high", 0)), assistant([{ type: "text", text: "c" }], 2)]).at(-1);
+  assert.equal(mixed.summary, "Cost so far: $0.0300 over 3 model requests · low/high effort · adaptive thinking · 0 thinking tokens");
+  const unreported = timelineOf([assistant([{ type: "text", text: "a" }], 0, asked("medium"))]).at(-1);
+  assert.equal(unreported.summary, "Cost so far: $0.0100 over 1 model request · medium effort · adaptive thinking", "no count reported, none said");
+});
+
 test("cost: a sum, and unknown when any answer carries none, never $0", () => {
   const known = timelineOf([assistant([{ type: "text", text: "a" }], 0)]).at(-1);
   assert.equal(known.summary, "Cost so far: $0.0100 over 1 model request");

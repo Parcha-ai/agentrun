@@ -4,7 +4,7 @@
 // answered interrupted, never run again.
 import { SessionFenced } from "./errors.js";
 import { abortedOutcome, SessionHalt } from "./kernel/halt.js";
-import type { AdapterSession, AgentAdapter, HostTool, JsonValue, SessionRecord, SessionSpec, SessionState, SessionStore, TurnStatus } from "./types.js";
+import type { AdapterSession, AgentAdapter, HostTool, JsonValue, RequestReasoning, SessionRecord, SessionSpec, SessionState, SessionStore, TurnStatus } from "./types.js";
 
 export { SCHEMA_CHECK_CASES, type SchemaCheckCase } from "./schema-check-cases.js";
 
@@ -32,13 +32,16 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
   };
 }
 
+/** How a faux request reasons: what it asks for (`reasoning`, given to beforeRequest as a proxy reads it from a body)
+ *  and the thinking tokens its answer reports (`thinkingTokens`, in afterRequest's usage). */
+type FauxReasoning = { reasoning?: RequestReasoning; thinkingTokens?: number };
 /** One model request of the faux harness, and what its reply does. `think`: the reply's thinking summary, reported (a
  *  `thinking` event) before its text or its calls, as a thinking model's comes first. */
 export type FauxAction =
-  | { say: string; think?: string; usd?: number | null }
-  | { call: string; args?: unknown; think?: string; usd?: number | null }
+  | ({ say: string; think?: string; usd?: number | null } & FauxReasoning)
+  | ({ call: string; args?: unknown; think?: string; usd?: number | null } & FauxReasoning)
   /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls. */
-  | { calls: { call: string; args?: unknown }[]; think?: string; usd?: number | null }
+  | ({ calls: { call: string; args?: unknown }[]; think?: string; usd?: number | null } & FauxReasoning)
   | { submit: unknown; usd?: number | null }
   /** The reply ends the turn without a submission. */
   | { end: true; usd?: number | null }
@@ -131,13 +134,14 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("hang" in action) return await hang(signal);
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
-            await io.models.beforeRequest({ model: "faux", inputTokensMax: Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8") });
+            const reasoned = action as FauxReasoning;
+            await io.models.beforeRequest({ model: "faux", inputTokensMax: Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8"), ...(reasoned.reasoning ? { reasoning: reasoned.reasoning } : {}) });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             stats.requests += 1;
             const index = cursor++;
             await append(FAUX_RECORDS.request, { index });
             if ("fail" in action) return await end("failed", action.fail);
-            await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
+            await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd, ...(reasoned.thinkingTokens === undefined ? {} : { thinking: reasoned.thinkingTokens }) });
             if ("think" in action && action.think) io.onEvent({ type: "thinking", text: action.think });
             if ("say" in action) io.onEvent({ type: "text", delta: action.say });
             else if ("end" in action) return await end("completed");

@@ -500,6 +500,27 @@ test("run A's key at run B's proxy is refused by name: B books nothing, nothing 
   for (const run of [a, b]) assert.deepEqual({ before: run.seen.before, forwarded: run.seen.forwarded }, { before: 1, forwarded: 1 }, "a run's own request is booked and forwarded once");
 });
 
+// What a person reads of each request's reasoning: the effort and thinking mode it asked for (the body the proxy sent),
+// and the thinking tokens its answer reports (usage.output_tokens_details.thinking_tokens, a part of output_tokens).
+test("each request's effort and thinking mode reach the host with it, and its answer's thinking tokens with its usage", async () => {
+  assert.deepEqual(policy.reasoningOf?.(body({ thinking: { type: 'adaptive', display: 'summarized' }, output_config: { effort: 'high' } })), { effort: 'high', thinking: 'adaptive' });
+  assert.deepEqual(policy.reasoningOf?.(body({ model: 'claude-small' })), {}, 'a request that names neither says so: nothing');
+  const thought = RECORDED_STREAM.replace('"thinking_tokens":0', '"thinking_tokens":412');
+  assert.notEqual(thought, RECORDED_STREAM);
+  assert.equal(policy.usageOf(thought)?.thinking, 412);
+  assert.equal(policy.usageOf(RECORDED_BODY)?.thinking, 0, 'a whole body says its count too');
+  assert.equal(policy.usageOf(RECORDED_BODY.replace(',"output_tokens_details":{"thinking_tokens":0}', ''))?.thinking, undefined, 'no count, no figure');
+  const seen = [];
+  const proxy = await startModelProxy({ policy, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: { beforeRequest: async (r) => { seen.push(r.reasoning); }, afterRequest: async (u) => { seen.push(u.thinking); } }, fetch: async () => new Response(thought, { headers: { 'content-type': 'text/event-stream' } }) }, 'session-key');
+  try {
+    const res = await fetch(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' }, body: JSON.stringify(body({ stream: true, thinking: { type: 'adaptive', display: 'summarized' }, output_config: { effort: 'low' } })) });
+    await res.text();
+  } finally {
+    await proxy.close();
+  }
+  assert.deepEqual(seen, [{ effort: 'low', thinking: 'adaptive' }, 412]);
+});
+
 test("a request on the session's small model is asked about and priced as the small model", async () => {
   const asked = [];
   const rates = { 'claude-main': 15, 'claude-small': 1 };

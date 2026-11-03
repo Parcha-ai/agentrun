@@ -18,7 +18,7 @@ export function script(spec) {
   if (page) return [{ call: page[2] ?? "fetch_page", args: { url: page[1] }, usd: 0.001 }, { say: "Fetched.", usd: 0.001 }];
   if (/Say your thinking\./.test(text)) return [{ say: `Thinking ${spec.thinking}.`, usd: 0.001 }];
   // A request whose answer the model thought about first: the harness reports its thinking summary, then the text.
-  if (/Think, then answer\./.test(text)) return [{ think: "Plan the answer first. Then write it.", say: "Thought it through.", usd: 0.001 }];
+  if (/Think, then answer\./.test(text)) return [{ think: "Plan the answer first. Then write it.", reasoning: { effort: "high", thinking: "adaptive" }, thinkingTokens: 412, say: "Thought it through.", usd: 0.001 }];
   if (/Price unknown\./.test(text)) return [{ say: "Priced unknown.", usd: null }];
   // A chat whose second turn has a request of unknown price.
   if (/Second turn unpriced\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: null }, { end: true, usd: 0.001 }];

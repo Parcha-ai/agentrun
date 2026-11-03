@@ -78,12 +78,24 @@ export interface ModelRequest {
   /** The most input tokens the request can be billed for (the model proxy's `inputTokensMaxOf`: the body's UTF-8 bytes
    *  plus what the provider adds), undefined when it was not measured. */
   inputTokensMax?: number;
+  /** How the request asks the model to reason, as the provider's policy read it from the body sent; absent when the
+   *  harness does not say. */
+  reasoning?: RequestReasoning;
+}
+
+/** How one model request asks the model to reason: its effort level (`high`) and its thinking mode (`adaptive`), each
+ *  as the provider's API names it, and each absent when the request does not name it. */
+export interface RequestReasoning {
+  effort?: string;
+  thinking?: string;
 }
 
 /** What a paid request cost, once it completed. */
 export interface ModelUsage {
   input: number;
   output: number;
+  /** Of `output`, the tokens the model spent thinking, when the provider reports them; absent when it does not. */
+  thinking?: number;
   cacheRead?: number;
   cacheWrite?: number;
   /** Null when the price is unknown; `estimated` when it is not the provider's own figure (the host's price table's). */
@@ -147,7 +159,7 @@ export type AdapterEvent =
 
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
 export type HarnessEvent = (AdapterEvent
-  | { type: "request_start"; turn: number; model: string }
+  | { type: "request_start"; turn: number; model: string; reasoning?: RequestReasoning }
   | { type: "request_end"; turn: number; usage: ModelUsage }) & { key: string; label: string; executionPath?: string };
 
 export type TurnStatus = "completed" | "interrupted" | "failed";

@@ -341,8 +341,9 @@ test("the run's thinking level reaches the harness's session: the revision's, an
   }
 });
 
-// What a harness's model thought shows as pi's does: a Thinking row of its first sentence, before the answer it led to.
-test("a harness's thinking summary is a Thinking row of the run, before the answer, as a pi run's is", { timeout: 60_000 }, async (t) => {
+// What a harness's model thought shows as pi's does: a Thinking row of its first sentence, before the answer it led to;
+// and the run's usage row says how its request asked the model to reason and the thinking tokens the answer reported.
+test("a harness's thinking summary is a Thinking row of the run, before the answer, as a pi run's is; the usage row says the effort, the thinking and its tokens", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "thinks", "Think, then answer.");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -351,4 +352,5 @@ test("a harness's thinking summary is a Thinking row of the run, before the answ
   assert.ok(rows.indexOf(thinking[0]) < rows.findIndex((r) => r.kind === "final_answer"), "the thinking comes before the answer");
   assert.equal(await answer(api, runId), "Thought it through.");
   assert.deepEqual(usageOf(rows), { usd: 0.001, requests: 1 }, "still one request");
+  assert.equal(rows.findLast((r) => r.kind === "usage")?.summary, "Cost so far: $0.0010 over 1 model request · high effort · adaptive thinking · 412 thinking tokens");
 });
