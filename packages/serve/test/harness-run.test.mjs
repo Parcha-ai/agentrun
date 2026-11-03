@@ -333,10 +333,9 @@ for (const harness of ["claude-agent", "codex"]) {
     const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB_HOLD });
     const go = join(await scratch(t), "go");
     const runId = await started(api, `held-${harness}`, `Hold the answer until ${go}.`, harness, ["fetch_page"]);
-    for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_use"); i++) {
-      assert.ok(i < 300, "the turn holds on its fetch");
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    // The turn runs, held on its fetch until the file exists: its call shows only once it ends (the bridge writes a call
+    // with its result), so the turn is read from the run, working with the person's message in.
+    await follow(api, runId, ["working"], { deadlineMs: 30_000 });
     const sent = await api("POST", `/runs/${runId}/messages`, { content: "and then?" });
     assert.deepEqual([sent.status, sent.body.mode], [202, "follow_up"], JSON.stringify(sent.body));
     await writeFile(go, "");
