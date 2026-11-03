@@ -53,6 +53,8 @@ or [`npx @parcha/agentrun`](packages/agentrun/README.md) does it in one command 
 Then **New agent**, **Start a run**, and **All runs**. [AgentRun Server](packages/serve/README.md) has the API, the models, what
 a run may reach, and the container.
 
+An agent with a shell runs it in a Docker container of its own: [Sandbox in 60 seconds](packages/serve/README.md#sandbox-in-60-seconds), from a checkout on a machine with Docker (the image above cannot host one yet).
+
 ## Building blocks
 
 The open packages underneath the platform, each usable on its own in your pi agent. Install the ones you need.
