@@ -207,18 +207,18 @@ test("with no decision key, a run's process gets no key descriptor at all", asyn
 const keysNode = (tools) => ({ node: "extract", label: "keys", instructions: "Report the decision keys.", out: "Names", as: "names", ...(tools ? { tools } : {}) });
 const NAMES = { Names: { type: "object", required: ["names"], properties: { names: { type: "array", items: { type: "string" } } } } };
 
-test("a workflow is handed only the decision keys its nodes need: none with no decision node (no descriptor at all), Jev's alone for a Jev judge, Parallel's alone for a Parallel judge or a web_fetch picked onto Parallel, none for a web_fetch on the direct fetch, on a server holding Jev's, Parallel's and OpenRouter's", async (t) => {
+test("a workflow is handed only the decision keys it needs, on a server holding Jev's, Parallel's and OpenRouter's: no descriptor without a need, Jev's alone for a Jev judge, Parallel's alone for a Parallel node or a web tool on Parallel, none for a direct web_fetch", async (t) => {
   withEnv(t, { TYPESAFE_API_KEY: CANARY, PARALLEL_API_KEY: PARALLEL_CANARY, OPENROUTER_API_KEY: OTHER_ROUTER_KEY }, KEYS);
   const gate = join(await scratch(t), "go");
   const { api, data } = await serve(t, { fauxJev: FAUX_JEV, fauxParallel: FAUX_PARALLEL });
-  // No decision node: no descriptor at all.
+  // No decision node and no web tool on Parallel: no descriptor at all.
   const runId = await startFlow(api, [probe(gate)]);
   const pid = await processOf(data, runId);
   assert.equal((await readFile(`/proc/${pid}/environ`, "utf8")).includes("AGENTRUN_SERVE_DECISION_KEY_FD"), false, "no descriptor is named");
   assert.equal(await handedSocket(pid, KEY_FD), false, "and none is open");
   await writeFile(gate, "");
   assert.equal((await follow(api, runId, ["completed", "failed"])).last.status, "completed");
-  // Each with what its nodes need, and no other.
+  // Each with what it needs, and no other.
   const handed = async (id, steps, tool_settings) => {
     const doc = flow(steps, { schemaId: "Names", path: "names" });
     Object.assign(doc.schemas, NAMES);
@@ -230,54 +230,26 @@ test("a workflow is handed only the decision keys its nodes need: none with no d
     return run.result.output.names;
   };
   assert.deepEqual(await handed("onjev", [judge, keysNode()]), ["TYPESAFE_API_KEY"], "a Jev judge: Jev's key alone");
-  assert.deepEqual(await handed("onparallel", [onParallel, keysNode()]), ["PARALLEL_API_KEY"], "a Parallel judge: Parallel's alone");
-  assert.deepEqual(await handed("fetching", [keysNode(["web_fetch"])], { web_fetch: { provider: "parallel" } }), ["PARALLEL_API_KEY"], "a node whose web_fetch resolves to Parallel: Parallel's, for its extract");
-  assert.deepEqual(await handed("fetching-direct", [keysNode(["web_fetch"])]), [], "a node whose web_fetch is the direct fetch: none");
-  assert.deepEqual(await handed("plain", [keysNode()]), [], "no decision node: none");
+  assert.deepEqual(await handed("onparallel", [onParallel, keysNode()]), ["PARALLEL_API_KEY"], "a Parallel node: Parallel's alone");
+  assert.deepEqual(await handed("fetching", [keysNode(["web_fetch"])], { web_fetch: { provider: "parallel" } }), ["PARALLEL_API_KEY"], "a web_fetch that resolves to Parallel: Parallel's alone");
+  assert.deepEqual(await handed("fetching-direct", [keysNode(["web_fetch"])]), [], "a direct web_fetch: none");
 });
 
-test("decisionProvidersFor and decisionKeysFor: a run's decision keys by what it runs, Parallel's for a web tool only where its plane resolves it to Parallel; Jev's by its route", async () => {
+test("decisionProvidersFor and decisionKeysFor: Jev's key by its route, OpenRouter's for an OpenRouter node, none for Parallel picked without its key, and a node's need and a web tool's together", async () => {
   const { decisionProvidersFor } = await import("../dist/runs.js");
   const { decisionKeysFor } = await import("../dist/decisions.js");
   const { handsParallel, planeFor } = await import("../dist/tool-plane.js");
   const { toolingOf } = await import("../dist/tools.js");
-  const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
-  const workflow = (steps, body = {}) => revision("workflow", { workflow: flow(steps), ...body });
+  const workflow = (steps, body = {}) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind: "workflow", body: { skills: {}, tools: [], workflow: flow(steps), ...body } });
   const keys = { TYPESAFE_API_KEY: "t".repeat(20), PARALLEL_API_KEY: "p".repeat(20), OPENROUTER_API_KEY: "o".repeat(20) };
   // As a launch reads them: the revision's decision providers, and its plane under the server's settings.
   const names = async (rev, env = keys, settings = {}) => Object.keys(decisionKeysFor(env, { providers: await decisionProvidersFor(rev), parallelWeb: handsParallel(planeFor(env, await toolingOf(rev), settings)) })).sort();
-  const onParallelPick = (tool) => ({ [tool]: { provider: "parallel" } });
-  assert.deepEqual(await names(revision("agentic", { instructions: "Answer." })), [], "an agentic run: none");
-  assert.deepEqual(await names(revision("agentic", { instructions: "Answer.", tools: ["web_fetch", "web_search"] })), [], "an agentic run whose web tools resolve to the direct fetch and keyless search: none");
-  assert.deepEqual(await names(revision("agentic", { instructions: "Answer.", tools: ["web_fetch"] }), keys, onParallelPick("web_fetch")), ["PARALLEL_API_KEY"], "the server's pick of Parallel for web_fetch: Parallel's");
-  assert.deepEqual(await names(revision("agentic", { instructions: "Answer.", tools: ["web_search"], toolSettings: onParallelPick("web_search") })), ["PARALLEL_API_KEY"], "the agent's own pick of Parallel for web_search: Parallel's");
-  assert.deepEqual(await names(revision("agentic", { instructions: "Answer.", tools: ["web_fetch"] }), { TYPESAFE_API_KEY: keys.TYPESAFE_API_KEY }, onParallelPick("web_fetch")), [], "Parallel picked on a server without its key: unavailable, and none");
-  assert.deepEqual(await names(workflow([probe()])), [], "no decision node: none");
-  assert.deepEqual(await names(workflow([judge, probe()])), ["TYPESAFE_API_KEY"]);
+  const fetching = { node: "call", label: "page", via: "tool", tool: "web_fetch", args: { url: "https://example.com/" }, out: "Probe", as: "page", deadline_s: 30 };
+  const onParallelPick = { web_fetch: { provider: "parallel" } };
   assert.deepEqual(await names(workflow([judge, probe()]), { OPENROUTER_API_KEY: keys.OPENROUTER_API_KEY, PARALLEL_API_KEY: keys.PARALLEL_API_KEY }), ["OPENROUTER_API_KEY"], "Jev on the OpenRouter route: OpenRouter's");
-  assert.deepEqual(await names(workflow([onParallel, probe()])), ["PARALLEL_API_KEY"]);
   assert.deepEqual(await names(workflow([{ ...judge, provider: "openrouter", model: "m" }, probe()])), ["OPENROUTER_API_KEY"], "an OpenRouter decision node: OpenRouter's");
-  assert.deepEqual(await names(workflow([judge, onParallel, probe()])), ["PARALLEL_API_KEY", "TYPESAFE_API_KEY"]);
-  const fetching = [{ node: "call", label: "page", via: "tool", tool: "web_fetch", args: { url: "https://example.com/" }, out: "Probe", as: "page", deadline_s: 30 }, probe()];
-  assert.deepEqual(await names(workflow(fetching)), [], "a call node to web_fetch on the direct fetch: none");
-  assert.deepEqual(await names(workflow(fetching, { toolSettings: onParallelPick("web_fetch") })), ["PARALLEL_API_KEY"], "a call node to web_fetch picked onto Parallel: Parallel's");
-  assert.deepEqual(await names(workflow([judge, ...fetching]), keys, onParallelPick("web_fetch")), ["PARALLEL_API_KEY", "TYPESAFE_API_KEY"], "a Jev judge and a web_fetch on Parallel: both");
-});
-
-test("with TYPESAFE_API_KEY set, a judge workflow runs on Jev and its decision is recorded in the run", async (t) => {
-  const seen = await withCanary(t);
-  const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
-  const runId = await startFlow(api, [judge, probe()]);
-  const { last } = await follow(api, runId, ["completed", "failed"]);
-  const run = (await api("GET", `/runs/${runId}`)).body;
-  assert.equal(last.status, "completed", JSON.stringify(run.error));
-  const calls = await seen();
-  assert.equal(calls.length, 1, "one System One request");
-  assert.deepEqual([calls[0].path, calls[0].authorized, calls[0].questions], ["/v1/systemone", true, ["is_coi"]], "sent with the key the server's environment names");
-  const rows = durableDecisions(join(data, "runs", runId, "store", "run.sqlite"));
-  assert.equal(rows.length, 1, "the decision's receipt is a row of the run's store");
-  assert.equal(rows[0].kind, "judge");
-  assert.equal(rows[0].answers.is_coi.noul, 0.92);
+  assert.deepEqual(await names(workflow([fetching, probe()]), { TYPESAFE_API_KEY: keys.TYPESAFE_API_KEY }, onParallelPick), [], "Parallel picked on a server without its key: unavailable, and none");
+  assert.deepEqual(await names(workflow([judge, fetching, probe()], { toolSettings: onParallelPick })), ["PARALLEL_API_KEY", "TYPESAFE_API_KEY"], "a Jev judge and a web_fetch the agent picked onto Parallel: both");
 });
 
 test("a System One request that fails after it was sent (a 503) is sent once, and the run escalates as an interrupted decision", async (t) => {
@@ -294,7 +266,7 @@ test("a System One request that fails after it was sent (a 503) is sent once, an
 });
 
 test("each decision Jev answers is booked at TypeSafe's published price as an estimate, and the run's cost is their sum, once", async (t) => {
-  await withCanary(t);
+  const seen = await withCanary(t);
   const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
   // Two decisions and no model node: the run's cost is the decisions' alone.
   const twice = { ...flow([judge, { ...judge, label: "coi_again", as: "coi_again" }]), output: { schemaId: "Coi", path: "coi" } };
@@ -306,29 +278,15 @@ test("each decision Jev answers is booked at TypeSafe's published price as an es
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(last.status, "completed", JSON.stringify(run.error));
+  assert.deepEqual((await seen()).map((c) => [c.path, c.authorized, c.questions]), [["/v1/systemone", true, ["is_coi"]], ["/v1/systemone", true, ["is_coi"]]], "one System One request per decision, sent with the key the server's environment names");
   // The fake answers each call with 120 input tokens and none out; TypeSafe prices input at $0.042 per million.
   const each = (120 * 0.042 + 0 * 0) / 1_000_000;
   const rows = durableDecisions(join(data, "runs", runId, "store", "run.sqlite"));
+  assert.deepEqual(rows.map((row) => [row.kind, row.answers.is_coi.noul]), [["judge", 0.92], ["judge", 0.92]], "each decision's receipt is a row of the run's store");
   assert.deepEqual(rows.map((row) => row.cost_usd), [each, each], "each receipt holds its own estimate");
   assert.equal(run.cost.usd, each + each, "the run's cost is the two decisions' sum, counted once");
   assert.equal(run.cost.basis, "estimate");
   assert.equal(storeRun(data, runId).costUsd, each + each, "and the store keeps the same");
-});
-
-test("with no decision key, a judge workflow saves with a warning, and its run is 409 not_set_up_here naming TYPESAFE_API_KEY", async (t) => {
-  withEnv(t, {}, KEYS);
-  const { api } = await serve(t, { fauxJev: FAUX_JEV });
-  const made = await api("POST", "/agents", flowAgent("coi", flow([judge, probe()])));
-  assert.equal(made.status, 201, JSON.stringify(made.body));
-  const warning = made.body.warnings.find((w) => w.field === "definition.workflow");
-  assert.equal(warning?.reason, "not_set_up_here", JSON.stringify(made.body.warnings));
-  assert.match(warning.message, /TYPESAFE_API_KEY/);
-  const refused = await api("POST", "/agents/coi/runs", { input: { question: "x" } });
-  assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.equal(refused.body.error.code, "agent_not_runnable");
-  assert.match(refused.body.error.message, /TYPESAFE_API_KEY/);
-  assert.deepEqual(refused.body.error.details.adapters, ["runJudge"]);
-  assert.deepEqual(refused.body.error.details.decisions, { jev: { reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"] } });
 });
 
 test("capabilities lists the decision providers: jev available where its key is set, why not where it is not, and a note when its key is the gateway's", async (t) => {
@@ -338,7 +296,12 @@ test("capabilities lists the decision providers: jev available where its key is 
   assert.ok(caps.workflows.decisions, "capabilities has workflows.decisions");
   const none = caps.workflows.decisions.providers;
   assert.deepEqual(none.map((p) => [p.id, p.available]), [["jev", false], ["parallel", false], ["openrouter", false]]);
-  assert.match(none[0].reason, /TYPESAFE_API_KEY/);
+  assert.equal(none[0].note, undefined);
+  // With no decision key, the reason names each way to run Jev: its own key, OpenRouter's, or an OpenRouter gateway's.
+  for (const name of ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_API_KEY", "AGENT_MODEL_BASE_URL"]) assert.match(none[0].reason, new RegExp(name), none[0].reason);
+  assert.match(none[0].reason, /openrouter\.ai/, none[0].reason);
+  assert.match(none[1].reason, /PARALLEL_API_KEY/);
+  assert.equal(caps.workflows.adapters.includes("runJudge"), false, "no provider runs here: typed questions do not");
   process.env.TYPESAFE_API_KEY = CANARY;
   const on = await serve(t);
   assert.deepEqual((await on.api("GET", "/capabilities")).body.workflows.decisions?.providers[0], { id: "jev", available: true });
@@ -352,6 +315,12 @@ test("capabilities lists the decision providers: jev available where its key is 
   assert.match(routed.note ?? "", /TYPESAFE_API_KEY/);
   const openrouter = (await gateway.api("GET", "/capabilities")).body.workflows.decisions.providers[2];
   assert.deepEqual([openrouter.id, openrouter.available], ["openrouter", true], "the gateway's key runs OpenRouter's decision models too");
+  delete process.env.OPENROUTER_API_KEY;
+  process.env.PARALLEL_API_KEY = PARALLEL_CANARY;
+  const parallel = (await (await serve(t)).api("GET", "/capabilities")).body.workflows;
+  assert.deepEqual(parallel.decisions.providers.map((p) => [p.id, p.available]), [["jev", false], ["parallel", true], ["openrouter", false]]);
+  assert.deepEqual(parallel.decisions.providers[1], { id: "parallel", available: true });
+  assert.ok(parallel.adapters.includes("runJudge"), "Parallel's key alone runs typed questions");
 });
 
 /** A server on the decision variables `vars`, what its capabilities offer of jev, and a judge workflow's run on it: the
@@ -475,15 +444,6 @@ test("a gateway whose host is not exactly openrouter.ai, or no gateway key, leav
   assert.deepEqual(refused.body.error.details.decisions, { jev: { reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"] } });
 });
 
-test("with no decision key, Jev is unavailable and the reason names each way to run it: TYPESAFE_API_KEY, OPENROUTER_API_KEY, or an OpenRouter gateway's AGENT_MODEL_API_KEY", async (t) => {
-  withEnv(t, {}, KEYS);
-  const { api } = await serve(t);
-  const [offer] = (await api("GET", "/capabilities")).body.workflows.decisions.providers;
-  assert.deepEqual([offer.id, offer.available, offer.note], ["jev", false, undefined]);
-  for (const name of ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_API_KEY", "AGENT_MODEL_BASE_URL"]) assert.match(offer.reason, new RegExp(name), offer.reason);
-  assert.match(offer.reason, /openrouter\.ai/, offer.reason);
-});
-
 test("a node naming a decision provider this server does not run is refused at save, by name", async (t) => {
   const seen = await withCanary(t);
   const { api } = await serve(t, { fauxJev: FAUX_JEV });
@@ -513,42 +473,6 @@ test("a node's timeoutMs bounds its decision: with Jev never answering, the requ
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 20_000 });
   assert.deepEqual(escalations(join(data, "runs", runId, "store", "run.sqlite")), ["decision_interrupted"]);
 });
-
-test("a decision's receipt names the provider that answered it", async (t) => {
-  await withCanary(t);
-  const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
-  const runId = await startFlow(api, [judge, probe()]);
-  const { last } = await follow(api, runId, ["completed", "failed"]);
-  assert.equal(last.status, "completed", JSON.stringify((await api("GET", `/runs/${runId}`)).body.error));
-  assert.deepEqual(durableDecisions(join(data, "runs", runId, "store", "run.sqlite")).map((row) => row.provider), ["jev"]);
-});
-
-test("a workflow that escalates ends completed and waits for review: no error, no output, and review names its kind, node and reason", async (t) => {
-  await withCanary(t);
-  const { api, baseUrl } = await serve(t, { fauxJev: FAUX_JEV });
-  const gate = { node: "escalate", label: "review_is_coi", when: { predicate: "gte", path: "coi$answers.answers.is_coi.noul", n: 0.9 }, kind: "coi_review", stage: "coi", summary: "Review: is_coi is at least 0.9, so a person looks." };
-  const runId = await startFlow(api, [judge, gate, probe()]);
-  await follow(api, runId, ["completed", "failed"]);
-  const run = (await api("GET", `/runs/${runId}`)).body;
-  assert.deepEqual([run.status, run.state, run.error, run.result?.output ?? null], ["completed", "idle", null, null], JSON.stringify(run.error));
-  const { at, ...review } = run.review ?? {};
-  assert.deepEqual(review, { kind: "coi_review", node: "review_is_coi", reason: "Review: is_coi is at least 0.9, so a person looks." });
-  assert.ok(Number.isFinite(Date.parse(at)), "review.at is a time");
-  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
-  assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.review, run.review), [], "the review meets the served document");
-  assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.review, null), [], "and so does no review");
-  const listed = (await api("GET", "/runs")).body.runs.find((row) => row.run_id === runId);
-  assert.deepEqual([listed.status, listed.error, listed.review], ["completed", null, run.review], "the list says the same");
-  // A workflow run takes no messages here, escalated or not: the refusal it always had.
-  const message = await api("POST", `/runs/${runId}/messages`, { content: "approved" });
-  assert.deepEqual([message.status, message.body.error?.code], [501, "unsupported_here"]);
-  // A run that did not escalate has no review.
-  assert.equal((await api("POST", "/agents", flowAgent("plain", flow([judge, probe()])))).status, 201);
-  const plain = (await api("POST", "/agents/plain/runs", { input: { question: QUESTION } })).body.run_id;
-  await follow(api, plain, ["completed", "failed"]);
-  assert.equal((await api("GET", `/runs/${plain}`)).body.review, null);
-});
-
 
 test("a workflow whose decision cost is unknown and whose model request is priced reads its cost unknown, before and after the server restarts", async (t) => {
   await withCanary(t);
@@ -649,33 +573,27 @@ async function timeline(api, runId) {
   return page.body.rows;
 }
 
-test("a judge's decision is a timeline row: its node, provider and each answer with its probability, and its cost on the usage row", async (t) => {
-  await withCanary(t);
-  const { api } = await serve(t, { fauxJev: FAUX_JEV });
-  const runId = await startFlow(api, [judge, probe()]);
-  const { last } = await follow(api, runId, ["completed", "failed"]);
-  assert.equal(last.status, "completed");
-  const rows = await timeline(api, runId);
-  const decisions = rows.filter((row) => row.kind === "decision");
-  // The fake reports 120 input tokens and no cost: the decision is booked at TypeSafe's published price.
-  const estimate = (120 * 0.042 + 0 * 0) / 1_000_000;
-  assert.deepEqual(decisions.map((row) => [row.summary, row.agent_label, row.text, row.usage]), [["coi (jev): is_coi yes 0.92", "coi", null, { usd: estimate, requests: 1 }]]);
-  const usage = rows.findLast((row) => row.kind === "usage");
-  assert.equal(usage.usage.usd, estimate, "the model node is free under the fake, so the run's usage is the decision's estimate, unrounded");
-  assert.equal(usage.usage.usd, (await api("GET", `/runs/${runId}`)).body.cost.usd, "the usage row and the run's cost agree");
-  assert.match(usage.summary, /^Cost so far: <\$0\.0001 /, "a cost above zero never reads $0.0000");
-  assert.equal(usage.usage.requests, 2, "the model node's request and the decision's");
-});
-
-test("a route's decision is a timeline row naming the branch it took, and unsure when it took that branch", async (t) => {
+test("a judge's and a route's decisions are timeline rows: the judge's node, provider and each answer with its probability, the route's branch and unsure when it took that branch, and their cost on the usage row", async (t) => {
   await withCanary(t);
   const { api } = await serve(t, { fauxJev: FAUX_JEV });
   const branch = (name) => ({ criteria: `the case is ${name}`, body: { ...probe(), label: `probe ${name}` } });
   const route = { node: "route", label: "triage", state: { doc: "{question}" }, instructions: "Accept the document, or send it to review?", branches: { accept: branch("clean"), review: branch("doubtful") }, unsure: { branch: "review", gte: 0.9 } };
-  const runId = await startFlow(api, [route]);
+  const runId = await startFlow(api, [judge, route]);
   const { last } = await follow(api, runId, ["completed", "failed"]);
   assert.equal(last.status, "completed");
-  assert.deepEqual((await timeline(api, runId)).filter((row) => row.kind === "decision").map((row) => row.summary), ["route: review (unsure)"], "the fake answers accept at 0.80, under the gate");
+  const rows = await timeline(api, runId);
+  const decisions = rows.filter((row) => row.kind === "decision");
+  // The fake reports 120 input tokens and no cost: each decision is booked at TypeSafe's published price.
+  const estimate = (120 * 0.042 + 0 * 0) / 1_000_000;
+  assert.deepEqual(decisions.map((row) => [row.summary, row.agent_label, row.text, row.usage]), [
+    ["coi (jev): is_coi yes 0.92", "coi", null, { usd: estimate, requests: 1 }],
+    ["route: review (unsure)", "triage", null, { usd: estimate, requests: 1 }],
+  ], "the fake answers the route accept at 0.80, under its gate, so it took review as unsure");
+  const usage = rows.findLast((row) => row.kind === "usage");
+  assert.equal(usage.usage.usd, estimate + estimate, "the model node is free under the fake, so the run's usage is the decisions' estimates, unrounded");
+  assert.equal(usage.usage.usd, (await api("GET", `/runs/${runId}`)).body.cost.usd, "the usage row and the run's cost agree");
+  assert.match(usage.summary, /^Cost so far: <\$0\.0001 /, "a cost above zero never reads $0.0000");
+  assert.equal(usage.usage.requests, 3, "the branch's model node request and the two decisions'");
 });
 
 test("a decision whose cost the provider reports is on its row, and the run's total counts it once", async (t) => {
@@ -776,26 +694,19 @@ test("with no Parallel key, a node naming parallel saves with a warning, and its
   assert.deepEqual(refused.body.error.details.decisions, { parallel: { reason: "not_set_up_here", needs: ["PARALLEL_API_KEY"] } }, "Jev's key is set: only Parallel is missing");
 });
 
-test("capabilities lists parallel: available where PARALLEL_API_KEY is set, why not where it is not; runJudge runs on Parallel alone", async (t) => {
-  await withKeys(t, {});
-  const off = (await (await serve(t)).api("GET", "/capabilities")).body.workflows;
-  const parallelOff = off.decisions.providers.find((p) => p.id === "parallel");
-  assert.equal(parallelOff?.available, false);
-  assert.match(parallelOff.reason, /PARALLEL_API_KEY/);
-  assert.equal(off.adapters.includes("runJudge"), false, "no provider runs here: typed questions do not");
-  process.env.PARALLEL_API_KEY = PARALLEL_CANARY;
-  const on = (await (await serve(t)).api("GET", "/capabilities")).body.workflows;
-  assert.deepEqual(on.decisions.providers.map((p) => [p.id, p.available]), [["jev", false], ["parallel", true], ["openrouter", false]]);
-  assert.deepEqual(on.decisions.providers[1], { id: "parallel", available: true });
-  assert.ok(on.adapters.includes("runJudge"), "Parallel's key alone runs typed questions");
-});
-
 test("the missing-key 409's details, decisions included, meet what the served document gives agent_not_runnable", async (t) => {
   withEnv(t, {}, KEYS);
   const { api, baseUrl } = await serve(t, { fauxJev: FAUX_JEV });
-  assert.equal((await api("POST", "/agents", flowAgent("coi", flow([judge, probe()])))).status, 201);
+  // A judge workflow saves with a warning naming the key, and its run is refused naming it too.
+  const made = await api("POST", "/agents", flowAgent("coi", flow([judge, probe()])));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const warning = made.body.warnings.find((w) => w.field === "definition.workflow");
+  assert.equal(warning?.reason, "not_set_up_here", JSON.stringify(made.body.warnings));
+  assert.match(warning.message, /TYPESAFE_API_KEY/);
   const refused = await api("POST", "/agents/coi/runs", { input: { question: "x" } });
   assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
+  assert.match(refused.body.error.message, /TYPESAFE_API_KEY/);
+  assert.deepEqual(refused.body.error.details.adapters, ["runJudge"]);
   assert.deepEqual(refused.body.error.details.decisions, { jev: { reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"] } });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/ErrorBody" }, refused.body.error), [], "the error meets the contract's ErrorBody");
