@@ -28,7 +28,7 @@ import { boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
-import { readStored, SECRET_NAMES, withSecrets } from "./secrets.js";
+import { SECRET_NAMES, type StoredKeys, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
@@ -225,8 +225,8 @@ export function workflowTitle(name: string, input: Record<string, unknown>): str
 /** The server's reading of `base` with its secrets, saved keys among them, and its capabilities on it, the harnesses'
  *  offers included: made at the start and again at each save or delete of a key, so a key saved later can make a harness
  *  available with no restart. */
-export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number) {
-  const env = withSecrets(base);
+export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys) {
+  const env = withSecrets(base, "all", stored);
   return { env, caps: capabilities(env, maxRuns, await harnessOffers(env)) };
 }
 
@@ -379,18 +379,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted.
   const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
+  // This server's saved keys, read by name: handed to its own reading and its own runs, never shared with another server.
+  const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
-  // The server's reading, saved keys with it (from readStored below), and its capabilities: made again at each save or
+  // The server's reading, saved keys with it (storedKeys), and its capabilities: made again at each save or
   // delete of a key, the one writer of its file, so capabilities, the harnesses' offers, save checks and run checks see
   // it with no restart and no request opening the file. A reading a later write overtook is dropped. The first is made
   // once saved keys are read (below), so the offers are checked once at the start.
-  let env = withSecrets(base);
+  let env = withSecrets(base, "all", storedKeys);
   let caps!: Awaited<ReturnType<typeof readingOf>>["caps"];
   let latest = 0;
   const keysChanged = async () => {
     const mine = ++latest;
-    const next = await readingOf(base, maxRuns);
+    const next = await readingOf(base, maxRuns, storedKeys);
     if (mine === latest) ({ env, caps } = next);
   };
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts). No run uses one yet: the log says which this server has.
@@ -402,7 +404,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   stops.push(() => webhooks.close());
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
+  const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -424,7 +426,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
-  const unread = readStored((name) => toolKeys.value(name));
   await keysChanged();
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
@@ -777,6 +778,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return meters;
   };
 
+  // A live run's meters: `tools` from its rows, the same records as its cost, so the split never goes negative while a
+  // call is in flight. When both are unknown (an unknown tool charge, a monid.run that timed out), its known model spend
+  // is read from its store as an ended run's is, live (metersIn), so it stays priced. A store a write holds now gives none.
+  const liveMeters = (id: string, live: Run, usd: number | null) => {
+    const tools = toolCostOf(live.rows);
+    if (usd !== null || tools !== null) return { tools, tokens: null };
+    try {
+      return { tools, tokens: metersIn(join(data, "runs", id, "store", "run.sqlite"), { live: true }).tokens };
+    } catch {
+      return { tools, tokens: null };
+    }
+  };
+
   async function usage(url: URL) {
     const now = new Date();
     const fromText = url.searchParams.get("from");
@@ -797,7 +811,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // By meter, what a run's paid tools charged (monid's) is `tools`, the rest `tokens`, both from the same records: a
       // live run's rows (a call still marked is no charge), else its store as it ended (a call a crash cut makes `tools`
       // unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
-      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null } : metersOf(row);
+      const meters = group !== "meter" || usd === 0 ? undefined : live ? liveMeters(row.id, live, usd) : metersOf(row);
       const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
       const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(meters.tools !== 0 ? [["tools", meters.tools] as [string, number | null]] : [])];
       // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
@@ -1167,7 +1181,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   });
   const port = options.port ?? DEFAULT_PORT;
   await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done()))).catch((error: Error) => {
-    unread();
     throw error;
   });
   const address = server.address() as AddressInfo;
@@ -1192,8 +1205,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       await webhooks.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();
-      unread();
-      lock.release();
+        lock.release();
     },
   };
 }

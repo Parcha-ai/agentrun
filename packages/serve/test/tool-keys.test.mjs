@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { unseal } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { readStored, secret } from "../dist/secrets.js";
+import { secret } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -338,9 +338,9 @@ test("under its launcher the seal key is made once, outside the data directory, 
 test("a key saved later makes a harness available with no restart: each key write makes the harnesses' offers again from the server's reading", async (t) => {
   if (secret("ANTHROPIC_API_KEY")) return t.skip("this process holds an Anthropic key of its own");
   let saved;
-  t.after(readStored((name) => (name === "ANTHROPIC_API_KEY" ? saved : undefined)));
+  const stored = (name) => (name === "ANTHROPIC_API_KEY" ? saved : undefined);
   const base = { PATH: process.env.PATH, HOME: process.env.HOME };
-  const claude = async () => (await readingOf(base, 4)).caps.harnesses.find((offer) => offer.id === "claude-agent");
+  const claude = async () => (await readingOf(base, 4, stored)).caps.harnesses.find((offer) => offer.id === "claude-agent");
   assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY."]);
   saved = ["not-a-secret", "anthropic"].join("-");
   assert.deepEqual(await claude(), { id: "claude-agent", available: true, steer: false }, "saved: offered");

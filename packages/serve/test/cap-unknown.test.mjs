@@ -73,6 +73,10 @@ test("a paid tool call a crash cut (marked, never settled) counts at its held fi
   assert.equal(timelineOf(settled, { settled: true }).at(-1).usage.usd, 0.005);
   assert.deepEqual(metersIn(storeOf(t, settled)), { tools: 0.003, tokens: 0.002 });
   assert.equal(metersIn(storeOf(t, [...settled, { kind: TOOL_COST, data: { call: "c2", usd: null } }])).tools, null, "an unknown charge is unknown");
+  // A live run: a call still marked is in flight, no charge yet; an unknown charge (a monid.run that timed out) makes
+  // the tools meter unknown and leaves the model's known spend priced on tokens.
+  assert.deepEqual(metersIn(storeOf(t, cut), { live: true }), { tools: 0, tokens: 0.002 }, "live: a marked call is no charge yet");
+  assert.deepEqual(metersIn(storeOf(t, [...settled, { kind: TOOL_COST, data: { call: "c2", usd: null } }]), { live: true }), { tools: null, tokens: 0.002 }, "live: an unknown charge, the tokens still priced");
   // A live run's tools, from the same rows as its cost: the charge's line, never a mark.
   const { toolCostOf } = await import("../dist/runs.js");
   assert.equal(toolCostOf(timelineOf(cut)), 0);

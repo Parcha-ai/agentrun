@@ -92,3 +92,23 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
   assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
   assert.deepEqual(await refusal("enrich"), [409, "agent_not_runnable", MISSING]);
 });
+
+test("two servers in one process each hand their own runs their own saved key, never the other's", { timeout: 120_000 }, async (t) => {
+  // Built here, so no scanner reads them as credentials.
+  const [first, second] = ["a", "b"].map((tag) => ["not-a-secret", "monid", tag, randomBytes(4).toString("hex")].join("-"));
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["MONID_API_KEY"]);
+  // Both on the custody model: a run reports, by digest, what its process was handed over its pipe.
+  const one = await serve(t, { faux: CUSTODY });
+  const two = await serve(t, { faux: CUSTODY });
+  assert.equal((await one.api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: first } })).status, 204);
+  // Saved on the second server after the first started: a reader shared through the process would now be the second's.
+  assert.equal((await two.api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: second } })).status, 204);
+  const handed = async (api) => {
+    assert.equal((await api("POST", "/agents", agent("holder", { instructions: "Answer.", tools: ["monid.run"] }))).status, 201);
+    const { body } = await api("POST", "/agents/holder/runs", { input: { content: "Report." } });
+    await follow(api, body.run_id, ["completed"]);
+    return JSON.parse((await api("GET", `/runs/${body.run_id}`)).body.result.final_answer).handed.MONID_API_KEY;
+  };
+  assert.equal(await handed(one.api), digest(first), "the first server's run: the first server's key");
+  assert.equal(await handed(two.api), digest(second), "the second server's run: its own");
+});
