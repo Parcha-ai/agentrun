@@ -212,7 +212,7 @@ export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): ClaudeP
   if (model.provider !== "anthropic") throw new HarnessUnavailable(`claude-agent runs Anthropic models; the run's model is ${named}.`);
   const own = claudeModelId(model);
   if (openRouterOnly("claude-agent", env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, "claude-agent", named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", id: `anthropic/${openRouterName(own)}` } };
-  if (!env.ANTHROPIC_API_KEY) throw new HarnessUnavailable(env.ANTHROPIC_BASE_URL ? "claude-agent needs ANTHROPIC_API_KEY." : "claude-agent needs ANTHROPIC_API_KEY, or OPENROUTER_API_KEY to run Anthropic's models through OpenRouter.");
+  if (!env.ANTHROPIC_API_KEY) throw new HarnessUnavailable(env.ANTHROPIC_BASE_URL ? "claude-agent needs ANTHROPIC_API_KEY." : "claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.");
   const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : "https://api.anthropic.com";
   return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", id: own } };
 }
