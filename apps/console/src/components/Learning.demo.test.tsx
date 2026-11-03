@@ -1,7 +1,9 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
 import { AgentPage } from "./AgentPage";
+import { RunHeader } from "./RunHeader";
 import { recorded } from "@/fixtures";
 import { createClient } from "@/lib/client";
 
@@ -73,7 +75,11 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
       "learning.note", "learning.note-newest", "learning.note-stale", "learning.note-refused", "learning.note-saved", "learning.mine", "learning.mine-retired"]);
     const page = await mount(s.v2, "refund-finder");
 
-    // What it learned: two notes in use, where each came from, and the older note the second replaced.
+    // What learning changed: the runs before its first note against the runs that started from one, as the server said.
+    const impact = recorded<{ impact: { before: { runs: number }; after: { runs: number } } }>("learning.view").body.impact;
+    expect(impact.before.runs).toBe(2);
+    expect(page.host.querySelector('section[aria-label^="Since it learned (on 4 runs): answers in "]')).not.toBeNull();
+    // What it learned: two notes in use, where each came from, how many runs used each, and the note the second replaced.
     expect(page.text()).toContain("2 notes in use. Every later run reads them before it starts.");
     const first = page.card(FIRST)!;
     expect(first.textContent).toContain("It answered at once on Taylor Stitch and Brooklinen.");
@@ -82,6 +88,9 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
     expect(source.textContent).toBe("Find this shop's…brooklinen.com");
     expect(source.getAttribute("title")).toBe("Find this shop's refund policy page: https://www.brooklinen.com");
     expect(page.card(MINE)!.textContent).toContain("Written by you");
+    // Allbirds, Kith and Everlane each read both notes first.
+    expect(first.textContent).toContain("Used in 3 runs");
+    expect(page.card(MINE)!.textContent).toContain("Used in 3 runs");
     expect(page.text()).toContain("Earlier notes1 no longer read");
     // What runs kept nothing, and why: Kith's note about its own portal, and three runs with nothing new.
     const notKept = page.host.querySelector('section[aria-label="Not kept"]')!;
@@ -152,5 +161,21 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
     expect(page.text()).toContain("Nothing learned yet");
     // Its tools have no write tool: the tab says it needs one, quietly.
     expect(page.text()).toContain("Needs the write tool, for now");
+  });
+
+  it("a run's header says what it read and kept, each a link to those notes in the agent's Learning tab", async () => {
+    const s = replay(["learning.run-brooklinen", "learning.run-allbirds"]);
+    const brooklinen = recorded<{ run_id: string }>("learning.run-brooklinen").body.run_id;
+    const allbirds = recorded<{ run_id: string }>("learning.run-allbirds").body.run_id;
+    const header = async (id: string) => renderToStaticMarkup(createElement(RunHeader, { run: await s.v2.getRun(id), agentName: "Refund policy finder" }));
+    const b = await header(brooklinen);
+    expect(b).toContain('aria-label="Used 1 note: Shopify refund policy path"');
+    expect(b).toContain('href="#/agents/refund-finder/learning?note=shopify-refund-policy-path.md"');
+    expect(b).toContain('aria-label="Learned 1 note: Try /policies/refund-policy first (replaces 1 older note)"');
+    expect(b).toContain('href="#/agents/refund-finder/learning?note=try-policies-refund-policy-first.md"');
+    // Allbirds read both notes and kept nothing new: one chip.
+    const a = await header(allbirds);
+    expect(a).toContain('aria-label="Used 2 notes: Keep the summary to three lines, Try /policies/refund-policy first"');
+    expect(a).not.toContain("Learned");
   });
 });

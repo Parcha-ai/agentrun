@@ -9,7 +9,7 @@
   },
   "body": {
     "agent": "refund-finder",
-    "main": "4e32292a6ffc13102653270f6fce43cb050f259c",
+    "main": "d1ecb8155b39a8c30119e7dfecfebb464511555c",
     "index": "- [Keep the summary to three lines](keep-it-to-three-lines.md) — The answer is the URL, the window and who pays shipping; nothing else\n- [Try /policies/refund-policy first](try-policies-refund-policy-first.md) — Open /policies/refund-policy before any other page; fall back to /pages/returns\n",
     "notes": {
       "items": [
@@ -50,8 +50,8 @@
           "by": {
             "user": true
           },
-          "commit": "4e32292a6ffc13102653270f6fce43cb050f259c",
-          "at": "2026-11-03T17:04:00.000Z",
+          "commit": "d1ecb8155b39a8c30119e7dfecfebb464511555c",
+          "at": "2026-11-03T17:36:34.000Z",
           "reason": "created by a person: keep-it-to-three-lines.md",
           "files": [
             "MEMORY.md",
@@ -60,10 +60,10 @@
         },
         {
           "by": {
-            "run": "01a1a25e-0f7b-71db-8135-c6a0767ee5f1"
+            "run": "01a1a27b-de62-7da8-81fb-c1232a2d262c"
           },
-          "commit": "27532783d3f289f29d8e890de64af8016455384f",
-          "at": "2026-11-03T17:04:00.000Z",
+          "commit": "79bdc2f8c336cceed2b17e8c2ad8c4e6db957d01",
+          "at": "2026-11-03T17:36:33.000Z",
           "reason": "General and new: it holds for other shops too, and no note says it yet.",
           "files": [
             "MEMORY.md",
@@ -73,10 +73,10 @@
         },
         {
           "by": {
-            "run": "01a1a25d-e2e2-748b-a3e1-ea9d6484c974"
+            "run": "01a1a27b-ae57-7e33-a7b7-6041d888c03f"
           },
-          "commit": "63d3da43f3a57afb4c9fff8cb60637a4e322532f",
-          "at": "2026-11-03T17:03:55.000Z",
+          "commit": "9a3bfe0af1bd7aba1f104ab78654d13d8ade1d30",
+          "at": "2026-11-03T17:36:28.000Z",
           "reason": "General and new: it holds for other shops too, and no note says it yet.",
           "files": [
             "MEMORY.md",
@@ -94,6 +94,18 @@
         "grader": 1
       },
       "in_progress": 0
+    },
+    "impact": {
+      "before": {
+        "runs": 2,
+        "median_duration_s": 11.1,
+        "median_cost_usd": 0.053581
+      },
+      "after": {
+        "runs": 4,
+        "median_duration_s": 3.8,
+        "median_cost_usd": 0.012441
+      }
     }
   }
 }
