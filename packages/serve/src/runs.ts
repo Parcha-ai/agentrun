@@ -613,12 +613,13 @@ export class Runs {
    *  when it stopped, waits or parked. A workflow run ends when its workflow does. */
   private decide(run: Run): { outcome: Status; error?: RunError; abort?: boolean } | undefined {
     if (run.kind === "workflow") return undefined;
+    // A cancel ends the run cancelled, by its settle (whatever the turn it cut wrote, a cost over the cap too): nothing
+    // ends it otherwise meanwhile, so its first terminal status is its last. The cancel has aborted the turn already.
+    if (run.cancel) return undefined;
     const cap = run.meta.max_cost_usd;
     const cost = costOf(run.rows);
     if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, over its cap of $${cap}.`, retryable: false } };
     if (run.working || run.submitted > 0) return undefined;
-    // A cancel ends the run cancelled, by its settle (whatever the turn it cut wrote): nothing completes it meanwhile.
-    if (run.cancel) return undefined;
     const last = meaningful(run.rows);
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
