@@ -5,7 +5,7 @@
 // once, as before.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -24,12 +24,12 @@ async function until(check, what, ms = 60_000) {
   }
 }
 
-/** A server on `data` whose one run is mid-turn: it wrote a file, and its next model request has started (the faux model
- *  makes `signal` as it does) and answers only after a minute, so a stop's 3 s drain cuts it. The signal is removed once
- *  read, so the run's next start of that request makes it again. */
-async function midTurn(t, data) {
+/** A server on `data` (with `options` for its start) whose one run is mid-turn: it wrote a file, and its next model
+ *  request has started (the faux model makes `signal` as it does) and answers only after a minute, so a stop's 3 s drain
+ *  cuts it. The signal is removed once read, so the run's next start of that request makes it again. */
+async function midTurn(t, data, options = {}) {
   const said = [];
-  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "3s", notice: (line) => said.push(line) });
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "3s", notice: (line) => said.push(line), ...options });
   let closed;
   const close = () => (closed ??= first.close());
   t.after(close);
@@ -44,8 +44,11 @@ async function midTurn(t, data) {
   const pid = JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
   assert.ok(alive(pid), "the run's process works");
   t.after(() => alive(pid) && process.kill(pid, "SIGKILL"));
-  return { close, runId, pid, signal, said };
+  return { close, runId, pid, signal, said, first };
 }
+
+/** The data root's own entries, by name. */
+const entries = (data) => readdirSync(data).sort();
 
 test("a start on a data root whose server is stopping waits for that stop, says so, then starts and opens the cut run again", { timeout: 120_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
@@ -112,4 +115,18 @@ test("a start on a data root whose server runs is refused at once, as before, wh
   }
   // The server that runs is untouched.
   assert.equal((await client(first.baseUrl, first.token)("GET", "/agents")).status, 200);
+});
+
+test("a stop adds no entry to the data root: a caller that removes it as soon as it signals the stop meets nothing new there", { timeout: 120_000 }, async (t) => {
+  // The CLI's tests and the published-server check send SIGTERM, then remove the data directory at once: an entry made
+  // while the server stops lands between that removal's read of the directory and its rmdir (ENOTEMPTY).
+  const data = join(await scratch(t), "agents");
+  const { close } = await midTurn(t, data);
+  const before = entries(data);
+  const closing = close();
+  const stopping = entries(data);
+  await closing;
+  const after = entries(data);
+  assert.deepEqual(stopping.filter((name) => !before.includes(name)), [], "an entry made as the stop began");
+  assert.deepEqual(after.filter((name) => !before.includes(name)), [], "an entry made while the server stopped");
 });
