@@ -11,8 +11,9 @@ type Sent = { status: number; runId?: string; problem?: Problem };
 
 /** The agent page's run bar: an agentic agent's first message, or a workflow agent's input as JSON (its example to start
  *  from), and an effort. "default" sends none, so the server's own order applies. A start goes through `submitStart`, so a
- *  retry of a refused or lost start is the same request; a started run opens on its page, and a refusal is said here. */
-export function RunBar({ agent, efforts, v2, go }: { agent: Agent; efforts: string[]; v2: Client; go: (hash: string) => void }) {
+ *  retry of a refused or lost start is the same request; a started run opens on its page, and a refusal is said here.
+ *  `blocked`: why no run can start here (a harness the server can't run): Run is off, and sends nothing. */
+export function RunBar({ agent, efforts, v2, go, blocked }: { agent: Agent; efforts: string[]; v2: Client; go: (hash: string) => void; blocked?: string }) {
   const workflow = agent.kind === "workflow";
   const example = useMemo(() => (workflow ? exampleInput(agent.definition.workflow) : null), [workflow, agent.definition.workflow]);
   const [text, setText] = useState(example?.text ?? "");
@@ -37,7 +38,7 @@ export function RunBar({ agent, efforts, v2, go }: { agent: Agent; efforts: stri
     return () => { mounted.current = false; };
   }, []);
   const start = async () => {
-    if (!built.ok || sending) return;
+    if (!built.ok || sending || blocked) return;
     setSending(true); setProblem(null);
     const r = await submitStart(keys, agent.agent_id, built.body, send);
     if (!mounted.current) return;
@@ -64,7 +65,7 @@ export function RunBar({ agent, efforts, v2, go }: { agent: Agent; efforts: stri
               </select>
             </label>
           )}
-          <Button variant="solid" onClick={() => void start()} disabled={!built.ok || sending}><Play aria-hidden /> {sending ? "Starting" : "Run"}</Button>
+          <Button variant="solid" onClick={() => void start()} disabled={!built.ok || sending || !!blocked} title={blocked}><Play aria-hidden /> {sending ? "Starting" : "Run"}</Button>
         </div>
       </div>
       {example && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{example.from === "example" ? "The workflow's example input. Edit it, then run." : "The workflow's input, its fields empty. Fill them in, then run."}</p>}

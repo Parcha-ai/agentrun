@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NPM_VERSION, resolvedFrom } from './pi-leg.mjs';
+import { isMain } from './is-main.mjs';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 /** The packages a run on the durable entry installs, in the order they depend on each other. */
@@ -87,6 +88,6 @@ function main() {
   process.exit(tests.status === 0 ? 0 : 1);
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   try { main(); } catch (error) { console.error(`pi-cross-version: ${error.message}`); process.exit(2); }
 }

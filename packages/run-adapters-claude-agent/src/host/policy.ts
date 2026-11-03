@@ -82,6 +82,10 @@ export interface AnthropicPolicyOptions {
    *  other hosted tool stays refused, and so does every server tool's block (the CLI's WebSearch answers the model in
    *  text, so it never sends one back). Default off. */
   webSearch?: boolean;
+  /** With the web search on: the input tokens a request carrying the search tool may read in beyond its body (the
+   *  pages each search feeds the model, billed as input), added to that request's input bound. Absent, such a request
+   *  has no input bound, so a cap that holds each request's worst case refuses it. */
+  webSearchAllowance?: number;
   /** How the provider takes its credential. Default `x-api-key` (Anthropic's API). */
   auth?: "x-api-key" | "bearer";
   /** Told when a request on the session's main model carries no thinking and no effort: the model would answer without
@@ -289,15 +293,16 @@ function imagesIn(value: unknown): number {
  *  tool-use system prompt when it has tools, and for each image the most it can be billed as, beyond its bytes. None
  *  can be said for a body with the web search tool: the provider bills the pages it finds as input, on each of its
  *  searches, so its input is unmeasured (undefined), never bounded by its bytes. */
-export function anthropicServerInputOverhead(body: Record<string, unknown>): number | undefined {
-  if (offersWebSearch(body)) return undefined;
+export function anthropicServerInputOverhead(body: Record<string, unknown>, searchAllowance?: number): number | undefined {
+  const searches = offersWebSearch(body);
+  if (searches && searchAllowance === undefined) return undefined;
   const choice = isPlain(body.tool_choice) ? body.tool_choice.type : undefined;
   const shape: InputShape = {
     tools: Array.isArray(body.tools) && body.tools.length > 0,
     ...(choice === "auto" || choice === "none" || choice === "any" || choice === "tool" ? { toolChoice: choice } : {}),
     images: imagesIn(body.messages),
   };
-  return providerInputOverhead("anthropic-messages", shape) as number;
+  return (providerInputOverhead("anthropic-messages", shape) as number) + (searches ? searchAllowance! : 0);
 }
 
 export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy {
@@ -318,7 +323,7 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     apply: (body, route) => applyAnthropic(body, route, options),
     // `apply` let through only the session's model or its small one.
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
-    serverInputOverhead: anthropicServerInputOverhead,
+    serverInputOverhead: options.webSearchAllowance === undefined ? anthropicServerInputOverhead : (body) => anthropicServerInputOverhead(body, options.webSearchAllowance),
     usageOf: anthropicUsage,
   };
 }

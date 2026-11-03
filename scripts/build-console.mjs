@@ -11,9 +11,10 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 /** The console's build inputs, below the repository's root. */
-const INPUTS = ['apps/console/src', 'apps/console/index.html', 'apps/console/package.json', 'apps/console/package-lock.json', 'apps/console/tsconfig.json', 'apps/console/vite.config.ts', 'apps/console/tailwind.config.ts', 'apps/console/postcss.config.js', 'packages/dsl/src'];
+const INPUTS = ['apps/console/src', 'apps/console/index.html', 'apps/console/package.json', 'apps/console/package-lock.json', 'apps/console/tsconfig.json', 'apps/console/vite.config.ts', 'apps/console/third-party-notices.mjs', 'apps/console/tailwind.config.ts', 'apps/console/postcss.config.js', 'packages/dsl/src'];
 export const HASH_FILE = '.build-hash';
 
 const filesUnder = (path) => (statSync(path).isDirectory() ? readdirSync(path).sort().flatMap((name) => filesUnder(join(path, name))) : [path]);
@@ -40,8 +41,11 @@ export function stampConsole(root) {
   writeFileSync(join(root, 'apps', 'console', 'dist', HASH_FILE), `${consoleInputsHash(root)}\n`);
 }
 
+// `npm ci` runs through npm-ci-retry.mjs: once more after a network error, never after any other failure.
+const NPM_CI_RETRY = fileURLToPath(new URL('./npm-ci-retry.mjs', import.meta.url));
 const npm = (args, cwd) => {
-  const done = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', args, { cwd, stdio: 'inherit' });
+  const [bin, argv] = args[0] === 'ci' ? [process.execPath, [NPM_CI_RETRY, ...args.slice(1)]] : [process.platform === 'win32' ? 'npm.cmd' : 'npm', args];
+  const done = spawnSync(bin, argv, { cwd, stdio: 'inherit' });
   if (done.status !== 0) throw new Error(`npm ${args.join(' ')} in ${cwd} exited ${done.status ?? done.signal}`);
 };
 
@@ -69,7 +73,7 @@ export function buildConsole(root, { run = npm, log = (line) => console.log(line
   return 'built';
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   if (process.argv.includes('--stamp')) stampConsole(root);
   else buildConsole(root);

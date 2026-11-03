@@ -1,6 +1,7 @@
-// A script that runs only as the command decides so with import.meta.main. Comparing process.argv[1] with the module's
-// own URL fails when the path goes through a symlink (macOS's temp directory is one): Node resolves the module's URL,
-// not argv[1], so the script exits 0 having done nothing.
+// A script that runs only as the command decides so with isMain(import.meta) from scripts/is-main.mjs. Comparing
+// process.argv[1] with the module's own URL fails when the path goes through a symlink (macOS's temp directory is one):
+// Node resolves the module's URL, not argv[1], so the script exits 0 having done nothing. Reading import.meta.main
+// directly fails where Node has none (20, 23, 24.0-24.1): it is undefined for the command too, with the same exit 0.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -17,6 +18,7 @@ const childScript = 'reads argv[1] only inside the text of a child script (node 
 const label = 'reads argv[1] only as a label for the script being run, and never decides from it whether it is the command';
 const realpathForm = 'compares realpathSync(argv[1]) with its URL, which is symlink-safe; the published package allows Node 23 and 24.0-24.1, which have no import.meta.main';
 const reviewed = new Map([
+  ['scripts/is-main.mjs', 'compares realpathSync(argv[1]) with its URL, symlink-safe, only where Node has no import.meta.main, to refuse the command rather than exit 0'],
   ['packages/pi-durable-disk/src/cli.ts', realpathForm],
   ['packages/pi-durable-disk/src/hosts/daytona-launch.ts', realpathForm],
   ['packages/pi-durable-disk/src/hosts/local-host.ts', childScript],
@@ -54,15 +56,65 @@ test('a file not on the list is red, whatever shape its comparison takes', () =>
   assert.deepEqual(unreviewed([['examples/new-dirname.mjs', dirname]]), ['examples/new-dirname.mjs']);
   assert.deepEqual(unreviewed([['scripts/new-cjs.cjs', 'if (process.argv[1] === __filename) main();']]), ['scripts/new-cjs.cjs']);
   assert.deepEqual(unreviewed([['packages/pi-durable-disk/src/cli.ts', split]]), [], 'a reviewed file passes');
-  assert.deepEqual(unreviewed([['examples/main.mjs', 'if (import.meta.main) main(process.argv[2]);']]), [], 'import.meta.main passes');
+  assert.deepEqual(unreviewed([['examples/main.mjs', 'if (isMain(import.meta)) main(process.argv[2]);']]), [], 'isMain(import.meta) passes');
   assert.deepEqual(unreviewed([['scripts/main.cjs', 'if (require.main === module) main();']]), [], 'require.main resolves symlinks and needs no entry');
 });
 
 test('no tracked script mentions process.argv[1] unless the site is reviewed', () => {
-  assert.deepEqual(unreviewed(tracked()), [], 'use import.meta.main, or review the site and add it here with its reason');
+  assert.deepEqual(unreviewed(tracked()), [], 'use isMain(import.meta), or review the site and add it here with its reason');
 });
 
 test('every reviewed site still mentions process.argv[1]', () => {
   const sources = new Map(tracked());
   assert.deepEqual([...reviewed.keys()].filter((file) => !suspect(sources.get(file) ?? '')), [], 'drop the entries that no longer apply');
+});
+
+// A file that names import.meta.main is red unless it is here, with the reason it is safe: everything else asks isMain.
+const copiedOut = 'an example: examples are copied standalone into consumer and scratch projects (the package check, test:examples), so none imports scripts/; a demo, not a check that could pass silently';
+const ownPackage = "a package's test fixture or live script: it keeps to its own package, so it imports nothing from scripts/; driven by that package's tests, not a check that could pass silently";
+const bare = new Map([
+  ['scripts/is-main.mjs', 'reads it, and where Node has none refuses the command'],
+  ['scripts/is-main.test.mjs', 'names it in comments and checks that this runtime sets it'],
+  ['scripts/check-node.mjs', 'names it in a comment, on why it refuses Node 23 and 24.0-24.1'],
+  ['apps/viewer/build.mjs', 'deploys from apps/viewer alone (vercel.json, wrangler.json), so imports nothing outside it; its .ts imports already fail loudly on Node 20'],
+  ['examples/agent-learn/demo.mjs', copiedOut],
+  ['examples/decision-demos/build.mjs', copiedOut],
+  ['examples/hero/run.ts', copiedOut],
+  ['examples/issue-triage/session.ts', copiedOut],
+  ['examples/reference/gates.ts', copiedOut],
+  ['examples/reference/kill-anywhere.ts', copiedOut],
+  ['examples/reference/run.ts', copiedOut],
+  ['examples/research-eval.mjs', copiedOut],
+  ['examples/research-live.mjs', copiedOut],
+  ['examples/run-rank-candidates.mjs', copiedOut],
+  ['examples/run-support-answer.mjs', copiedOut],
+  ['examples/vision-agent/run.ts', copiedOut],
+  ['examples/web/agents/company-research/config-page.mjs', copiedOut],
+  ['examples/web/agents/company-research/edit-prompts.mjs', copiedOut],
+  ['examples/web/pack-page.mjs', copiedOut],
+  ['examples/web/server.mjs', copiedOut],
+  ['packages/dsl/test/fixtures/graph/generate.mjs', ownPackage],
+  ['packages/dsl/test/fixtures/graph/record.mjs', ownPackage],
+  ['packages/pi-durable-agent/test/fixtures/serve-sample.mjs', ownPackage],
+  ['packages/pi-durable-agent/test/fixtures/store-sample.mjs', ownPackage],
+  ['packages/pi-durable-disk/test/fixtures/paid-api.ts', ownPackage],
+  ['packages/pi-durable-disk/test/live/ci.ts', ownPackage],
+]);
+const readsMain = (source) => source.includes('import.meta.main');
+const unasked = (sources) => sources.filter(([file, source]) => readsMain(source) && !bare.has(file)).map(([file]) => file);
+
+test('a file that reads import.meta.main itself is red, whatever shape the read takes', () => {
+  for (const source of ['if (import.meta.main) main();', 'import.meta.main && main();', 'if (!import.meta.main) process.exit(0);', 'const command = import.meta.main;']) {
+    assert.deepEqual(unasked([['scripts/new.mjs', source]]), ['scripts/new.mjs'], source);
+  }
+  assert.deepEqual(unasked([['scripts/new.mjs', 'if (isMain(import.meta)) main();']]), [], 'isMain(import.meta) passes');
+});
+
+test('no tracked script reads import.meta.main unless the site is reviewed', () => {
+  assert.deepEqual(unasked(tracked()), [], 'use isMain(import.meta) from scripts/is-main.mjs, or review the site and add it here with its reason');
+});
+
+test('every reviewed import.meta.main site still names it', () => {
+  const sources = new Map(tracked());
+  assert.deepEqual([...bare.keys()].filter((file) => !readsMain(sources.get(file) ?? '')), [], 'drop the entries that no longer apply');
 });

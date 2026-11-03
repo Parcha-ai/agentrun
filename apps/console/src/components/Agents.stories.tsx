@@ -25,13 +25,12 @@ const editor = (slug: string, extra: Partial<React.ComponentProps<typeof AgentEd
 // recorded timeline and reads its recorded record.
 const recordedRun = (id: string) => runNames.map(runFixture).find((f) => f.run.run_id === id)!;
 
-// An agent's page over its recorded agent and runs, with the server's efforts; with `analytics`, a server whose stats
-// carry the sample analytics.
-const agentPage = (slug: string, { runs = true, tab, analytics = false }: { runs?: boolean; tab?: "workflow" | "analytics"; analytics?: boolean } = {}) => {
+// An agent's page over its recorded agent and runs, with the server's efforts, and stats carrying the sample analytics.
+const agentPage = (slug: string, { runs = true, tab }: { runs?: boolean; tab?: "workflow" | "analytics" } = {}) => {
   const v2 = {
     getAgent: async () => ({ agent: agentFixture(slug), etag: null }),
     listAgentRuns: async () => (runs ? recorded<unknown>(`agent.${slug}.runs`).body : { runs: [], next_cursor: null }),
-    statsOver: async () => statsWith(analytics ? ANALYTICS : undefined),
+    statsOver: async () => statsWith(ANALYTICS),
     getTimeline: async (id: string) => recordedRun(id).page,
     getRun: async (id: string) => recordedRun(id).run,
   };
@@ -47,7 +46,7 @@ export const ListError: Story = { render: () => page(<AgentsList agents={null} e
 export const AgentRuns: Story = { render: () => agentPage("invoice-checker") };
 export const AgentNoRuns: Story = { render: () => agentPage("invoice-checker", { runs: false }) };
 export const AgentWorkflowGraph: Story = { render: () => agentPage("support-triage", { tab: "workflow" }) };
-export const AgentAnalytics: Story = { render: () => agentPage("invoice-checker", { tab: "analytics", analytics: true }) };
+export const AgentAnalytics: Story = { render: () => agentPage("invoice-checker", { tab: "analytics" }) };
 export const NewAgent: Story = { render: () => page(<AgentEditor agent={null} caps={editorCaps} onSave={async () => null} onBack={noop} />) };
 export const EditContext: Story = { render: () => editor("invoice-checker") };
 export const EditTools: Story = { render: () => editor("invoice-checker", { step: "tools" }) };

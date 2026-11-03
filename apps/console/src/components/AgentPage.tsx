@@ -9,10 +9,10 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import type { Agent } from "@/lib/agentForm";
-import { type Client, ClientError } from "@/lib/client";
+import { type Client, problemOf } from "@/lib/client";
 import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
-import { harnessDefault, modelLabel } from "@/lib/models";
+import { harnessDefault, type HarnessInfo, modelLabel } from "@/lib/models";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import { rangeFrom, type Stats } from "@/lib/mission";
@@ -20,7 +20,7 @@ import type { Run } from "@/lib/v2";
 
 /** `stats`: the page's own read of the agent's stats over the Analytics tab's first range, which that tab starts from. */
 type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null };
-/** What the server gives beside the agent: `analytics`, once its stats are read (an older server has none). */
+/** What the server gives beside the agent: `analytics`, once its stats are read. */
 type Server = { analytics: boolean };
 
 /** The page's tabs, in order, each at `#/agents/{id}/{tab}`. A tab shows only on an agent it has content for; a new one
@@ -31,20 +31,17 @@ const TABS: { id: string; label: string; shows: (a: Agent, server: Server) => bo
   { id: "analytics", label: "Analytics", shows: (_, server) => server.analytics, Body: AnalyticsTab },
 ];
 
-const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
-
 /** An agent's address: its page, one of its tabs, or `edit` for its editor. `#/agents/new` is the create form, so an
  *  agent whose id is "new" is given its Runs tab's address instead. */
 export const agentHash = (id: string, view?: string) => `#/agents/${encodeURIComponent(id)}${view ? `/${view}` : id === "new" ? "/runs" : ""}`;
 
 /** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a run bar (none for an archived
  *  agent, which takes no runs), and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`). */
-export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = [], go, tab }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; efforts?: string[]; go: (hash: string) => void; tab?: string }) {
+export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix, harnesses, efforts = [], go, tab }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The agent's stats over the Analytics tab's first range: undefined until read, null when the read failed. Whether
-  // they carry analytics decides the tab (an older server's have none), and the tab opens on this answer, never a second
-  // read of it.
+  // The agent's stats over the Analytics tab's first range: undefined until read, null when the read failed. A read that
+  // landed gives the tab, which opens on this answer, never a second read of it.
   const [stats, setStats] = useState<Stats | null | undefined>(undefined);
   useEffect(() => {
     let live = true;
@@ -53,7 +50,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = []
     v2.statsOver({ from: rangeFrom(FIRST_RANGE), agent: agentId }).then((r) => { if (live) setStats(r); }, () => { if (live) setStats(null); });
     return () => { live = false; };
   }, [v2, agentId]);
-  const analytics = stats === undefined ? undefined : stats?.analytics !== undefined;
+  const analytics = stats === undefined ? undefined : stats !== null;
   if (error) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">The agent could not be read: {error}</p>;
   if (!agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
   const d = agent.definition;
@@ -62,11 +59,15 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = []
   // A workflow revision has no harness, model or thinking of its own (the server refuses them beside a workflow).
   // The model as a person reads it (the gateway's routing prefix off, the full id in a title): its own, else this
   // harness's default, else none for a harness the server's default is not offered for.
-  const models = { source: modelSource, default: defaultModel };
-  const fallback = harnessDefault(d.harness ?? "pi", defaultModel);
+  const models = { source: modelSource, default: defaultModel, route_prefix: routePrefix };
+  const fallback = harnessDefault(d.harness ?? "pi", harnesses, defaultModel);
   const model = d.model ? modelLabel(d.model, models)
     : fallback ? (({ text, title }) => ({ text: `${text} (default)`, title }))(modelLabel(fallback, models))
-    : { text: (d.harness ?? "pi") === "pi" ? "default" : "no default: choose a model" };
+    // A server that names each harness's default and names none for this one: there is none, for pi too.
+    : { text: (d.harness ?? "pi") === "pi" && !harnesses?.some((h) => h.id === "pi" && "default_model" in h) ? "default" : "no default: choose a model" };
+  // A harness the server can't run: why, where its Run would fail (capabilities' harnesses[].reason).
+  const off = workflow ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
+  const offText = off ? `${off.id} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
   const facts: [string, string, string?][] = [
     ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
@@ -95,8 +96,9 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, efforts = []
             <div key={k} className="flex items-baseline gap-2"><dt className="caps text-[10px] text-muted-foreground">{k}</dt><dd className="font-mono text-[12px]" title={title}>{v}</dd></div>
           ))}
         </dl>
+        {offText && <p className="mt-3 font-mono text-[12px] text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
       </header>
-      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} />}
+      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} />}
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map((t) => (
           <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}

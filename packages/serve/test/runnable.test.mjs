@@ -23,7 +23,7 @@ const nothingSaved = async (api, id) => assert.equal((await api("GET", `/agents/
 
 test("a tool this host does not bind refuses the save, 422 at each tools[i] that names one", async (t) => {
   const { api } = await serve(t);
-  const refused = await api("POST", "/agents", agent("shell", { tools: ["read", "bash", "web_search"] }));
+  const refused = await api("POST", "/agents", agent("shell", { tools: ["read", "bash", "not_a_tool"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "input_invalid");
   assert.deepEqual(fields(refused), [["definition.tools[1]", "not_an_option"], ["definition.tools[2]", "not_an_option"]]);
@@ -98,7 +98,7 @@ test("a workflow is checked by what its inspection gives: a node's tool this hos
   const caller = await api("POST", "/agents", { definition: { id: "caller", name: "caller", workflow: call, tools: ["stock.check"] } });
   assert.equal(caller.status, 422, JSON.stringify(caller.body));
   assert.ok(caller.body.error.fields.every((f) => f.field === "definition.workflow"), JSON.stringify(caller.body.error.fields));
-  assert.ok(caller.body.error.fields.some((f) => /call nodes run the tools fetch_page, web_fetch, pdf_pages, llm here; this workflow also calls stock\.check/.test(f.message)), JSON.stringify(caller.body.error.fields));
+  assert.ok(caller.body.error.fields.some((f) => /call nodes run the tools web_fetch, web_search, pdf_pages, llm here; this workflow also calls stock\.check/.test(f.message)), JSON.stringify(caller.body.error.fields));
   await nothingSaved(api, "caller");
 });
 

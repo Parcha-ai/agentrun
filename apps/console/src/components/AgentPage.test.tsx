@@ -38,10 +38,10 @@ type Answer = { run: Run } | { refused: string };
 const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
 const endedPage = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string }; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run> };
-/** By default the server's stats carry no analytics, as an older server's. `followed` lists the latest run's reads (its
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run>; agentError?: unknown };
+/** By default the server's stats carry the sample analytics. `followed` lists the latest run's reads (its
  *  timeline's pages and its record), apart from the page's own reads in `asked`. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}), models, hold, strict = false, timeline, reread }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses, hold, strict = false, timeline, reread, agentError }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const followed: string[] = [];
@@ -56,7 +56,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
       const r = recorded<{ error: { code: string; message: string; fields?: FieldIssue[] } }>(answer.refused);
       throw Object.assign(new ClientError(r.status, r.body.error.code, r.body.error.message), r.body.error.fields ? { fields: r.body.error.fields } : {});
     },
-    getAgent: async (id: string) => { asked.push(`agent ${id}`); return { agent, etag: null }; },
+    getAgent: async (id: string) => { asked.push(`agent ${id}`); if (agentError) throw agentError; return { agent, etag: null }; },
     listAgentRuns: async (id: string, _limit: number, cursor?: string | null, archived?: boolean) => {
       asked.push(`runs ${id}${cursor ? ` after ${cursor}` : ""}${archived ? " archived" : ""}`);
       return cursor && more ? more() : { runs, next_cursor: next };
@@ -69,7 +69,8 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(strict ? createElement(StrictMode, null, createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, efforts, go: (h: string) => went.push(h), tab })) : createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, efforts, go: (h: string) => went.push(h), tab })));
+  const props = { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, routePrefix: models?.route_prefix, harnesses, efforts, go: (h: string) => went.push(h), tab };
+  act(() => root!.render(strict ? createElement(StrictMode, null, createElement(AgentPage, props)) : createElement(AgentPage, props)));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -123,7 +124,7 @@ describe("AgentPage", () => {
     const unknown = { ...runs[runs.length - 1], cost: null };
     const page = await open(agentFixture("invoice-checker"), { runs: [...runs.slice(0, -1), unknown] });
     expect(page.asked).toEqual(["agent invoice-checker", "runs invoice-checker"]);
-    expect(page.tabs()).toEqual(["Runs"]);
+    expect(page.tabs()).toEqual(["Runs", "Analytics"]);
     expect(page.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
     const links = [...page.host.querySelectorAll<HTMLAnchorElement>('ul[aria-label="Runs"] a')];
     expect(links.map((a) => a.getAttribute("href"))).toEqual(runs.map((r) => `#/runs/${encodeURIComponent(r.run_id)}`));
@@ -165,14 +166,16 @@ describe("AgentPage", () => {
 
   it("follows a running latest run: its timeline grows as the agent works, and its status and row move when it ends", async () => {
     const { done, release, latest, row, id, ...page } = await splitRun();
-    expect(latest().querySelectorAll("ol > li")).toHaveLength(3);
+    // Three rows, two steps: the tool's call and its result are one step.
+    expect(latest().querySelectorAll("ol > li")).toHaveLength(2);
     expect(latest().textContent).toContain("Working");
     expect(latest().textContent).toContain("Steps appear as the agent takes them.");
     expect(row().textContent).toContain("Working");
     release();
     await until(() => latest().textContent!.includes("Completed"));
-    // Seven steps now: the newest six shown, the first folded, as on the run page.
-    expect(latest().textContent).toContain("1 earlier steps");
+    // Seven rows, five steps now (each tool once, the cost so far at the end): all shown, as on the run page.
+    expect(latest().querySelectorAll("ol > li")).toHaveLength(5);
+    expect(latest().textContent).not.toContain("earlier steps");
     expect(latest().textContent).toContain(done.page.rows[6].summary);
     expect(latest().textContent).not.toContain("Steps appear as the agent takes them.");
     expect(row().textContent).toContain("Completed");
@@ -253,7 +256,7 @@ describe("AgentPage", () => {
 
   it("has a Workflow tab only for a workflow agent, at its own address", async () => {
     const page = await open(agentFixture("support-triage"), { runs: runsOf("support-triage") });
-    expect(page.tabs()).toEqual(["Runs", "Workflow"]);
+    expect(page.tabs()).toEqual(["Runs", "Workflow", "Analytics"]);
     // A workflow revision has no harness, model or thinking of its own.
     expect(page.fact("Harness")).toBeUndefined();
     await page.click(/^Workflow$/);
@@ -273,7 +276,7 @@ describe("AgentPage", () => {
 
   it("opens an agentic agent on its Runs tab whatever tab the address names", async () => {
     const page = await open(agentFixture("invoice-checker"), { tab: "workflow" });
-    expect(page.tabs()).toEqual(["Runs"]);
+    expect(page.tabs()).toEqual(["Runs", "Analytics"]);
     expect(page.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
     expect(page.host.querySelector('ul[aria-label="Runs"]')).toBeTruthy();
   });
@@ -289,7 +292,7 @@ describe("AgentPage", () => {
     expect(page.went).toEqual(["#/agents?archived=true"]);
   });
 
-  it("shows an Analytics tab only when the server's stats for this agent carry analytics", async () => {
+  it("shows an Analytics tab once the server's stats for this agent are read, and none when the read fails", async () => {
     const page = await open(agentFixture("invoice-checker"), { stats: async () => statsWith(ANALYTICS) });
     expect(page.tabs()).toEqual(["Runs", "Analytics"]);
     // One read, bounded: this agent's, over the Analytics tab's first range (from a UTC day 29 days back).
@@ -298,16 +301,13 @@ describe("AgentPage", () => {
     await page.click(/^Analytics$/);
     expect(page.went).toEqual(["#/agents/invoice-checker/analytics"]);
     act(() => root?.unmount());
-    // An older server's stats have no analytics, and one without stats fails them: no tab, and nothing in its place.
-    for (const stats of [async () => statsWith(), async () => { throw new Error("no route GET /v2/stats"); }]) {
-      const older = await open(agentFixture("invoice-checker"), { stats });
-      expect(older.tabs()).toEqual(["Runs"]);
-      expect(older.host.textContent).not.toMatch(/analytics/i);
-      act(() => root?.unmount());
-    }
+    // A read that fails: no tab, and nothing in its place.
+    const failed = await open(agentFixture("invoice-checker"), { stats: async () => { throw new Error("the store is busy"); } });
+    expect(failed.tabs()).toEqual(["Runs"]);
+    expect(failed.host.textContent).not.toMatch(/analytics/i);
   });
 
-  it("opens the address's Analytics tab once the stats say it is there, and Runs on a server without it", async () => {
+  it("opens the address's Analytics tab once the stats are read, and Runs when they can't be", async () => {
     let answer!: (v: unknown) => void;
     // The page's read waits; the tab opens on its answer, with no read of its own.
     const page = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: () => new Promise((r) => (answer = r)) });
@@ -321,9 +321,9 @@ describe("AgentPage", () => {
     expect(page.host.textContent).toContain("Success by harness and effort");
     expect(page.statsAsked).toHaveLength(1);
     act(() => root?.unmount());
-    const older = await open(agentFixture("invoice-checker"), { tab: "analytics" });
-    expect(older.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
-    expect(older.host.querySelector('ul[aria-label="Runs"]')).toBeTruthy();
+    const failed = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: async () => { throw new Error("the store is busy"); } });
+    expect(failed.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
+    expect(failed.host.querySelector('ul[aria-label="Runs"]')).toBeTruthy();
   });
 
   it("runs the agent from its page with the picked effort, never an output, and opens the run it started", async () => {
@@ -463,7 +463,7 @@ describe("AgentPage", () => {
 });
 
 describe("AgentPage, the model on a gateway server", () => {
-  const gateway = { default: "agent-model/gpt-6-luna", source: "gateway" };
+  const gateway = { default: "agent-model/gpt-6-luna", source: "gateway", route_prefix: "agent-model" };
   const on = (harness: string, model?: string): Agent => {
     const a = agentFixture("invoice-checker");
     const { model: _m, ...definition } = a.definition;
@@ -475,9 +475,82 @@ describe("AgentPage, the model on a gateway server", () => {
     expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
     expect(modelOf(page).title).toBe("agent-model/gpt-6-luna");
   });
+  it("with each harness's default named by the server, a codex agent shows the gateway's default", async () => {
+    const harnesses = [{ id: "pi", default_model: "agent-model/gpt-6-luna" }, { id: "claude-agent", default_model: null }, { id: "codex", default_model: "agent-model/gpt-6-luna" }];
+    const page = await open(on("codex"), { models: gateway, harnesses });
+    expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
+    const claude = await open(on("claude-agent"), { models: gateway, harnesses });
+    expect(modelOf(claude).textContent).toBe("no default: choose a model");
+  });
   it("a claude-agent agent naming no model has no default to show", async () => {
     const page = await open(on("claude-agent"), { models: gateway });
     expect(modelOf(page).textContent).toBe("no default: choose a model");
     expect(page.host.textContent).not.toContain("gpt-6-luna");
+  });
+});
+
+// A harness the server can't run says why on the agent's page, where its Run would fail: the reason the server gives
+// (capabilities' harnesses[].reason), and a Run that does not send.
+describe("AgentPage, an agent whose harness the server can't run", () => {
+  const on = (harness: string): Agent => {
+    const a = agentFixture("invoice-checker");
+    return { ...a, definition: { ...a.definition, harness } };
+  };
+  const harnesses = [{ id: "pi", available: true }, { id: "claude-agent", available: false, reason: "claude-agent needs ANTHROPIC_API_KEY." }, { id: "codex", available: false }];
+
+  it("says why, in place of a run that would fail, and its Run sends nothing", async () => {
+    const page = await open(on("claude-agent"), { harnesses });
+    const why = page.host.querySelector('[aria-label="Harness not available"]');
+    expect(why?.textContent).toBe("claude-agent doesn't run on this server: claude-agent needs ANTHROPIC_API_KEY.");
+    await page.set(page.input(), "Check this invoice.");
+    const run = page.button(/^Run$/)!;
+    expect(run.disabled).toBe(true);
+    await page.click(/^Run$/);
+    // Ctrl or Cmd with Enter in the message starts a run without the button: the guard holds there too.
+    for (const key of [{ ctrlKey: true }, { metaKey: true }]) {
+      await act(async () => { page.input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, ...key })); });
+    }
+    expect(page.starts).toEqual([]);
+  });
+
+  it("names the harness when the server gives no reason, and says nothing for a harness that runs", async () => {
+    const codex = await open(on("codex"), { harnesses });
+    expect(codex.host.querySelector('[aria-label="Harness not available"]')?.textContent).toBe("codex doesn't run on this server.");
+    act(() => root!.unmount()); root = undefined;
+    const pi = await open(on("pi"), { harnesses });
+    expect(pi.host.querySelector('[aria-label="Harness not available"]')).toBeNull();
+    await pi.set(pi.input(), "Check this invoice.");
+    expect(pi.button(/^Run$/)!.disabled).toBe(false);
+  });
+});
+
+// Each failed read says the server's refusal as `code: message`, and any other failure by its message.
+describe("AgentPage, a failed read's problem", () => {
+  it("says the agent's read failing: a refusal, an error and anything else thrown", async () => {
+    const refused = await open(agentFixture("invoice-checker"), { agentError: new ClientError(404, "agent_not_found", "no agent invoice-checker") });
+    expect(refused.host.querySelector('[role="alert"]')?.textContent).toBe("The agent could not be read: agent_not_found: no agent invoice-checker");
+    act(() => root?.unmount());
+    const failed = await open(agentFixture("invoice-checker"), { agentError: new TypeError("Failed to fetch") });
+    expect(failed.host.querySelector('[role="alert"]')?.textContent).toBe("The agent could not be read: Failed to fetch");
+    act(() => root?.unmount());
+    const thrown = await open(agentFixture("invoice-checker"), { agentError: "offline" });
+    expect(thrown.host.querySelector('[role="alert"]')?.textContent).toBe("The agent could not be read: offline");
+  });
+
+  it("says the next page of runs refused", async () => {
+    const runs = runsOf("invoice-checker");
+    const page = await open(agentFixture("invoice-checker"), { runs: runs.slice(0, 5), next: "c2", more: async () => { throw new ClientError(400, "invalid_cursor", "that cursor is not one this server gave"); } });
+    await page.click(/^Load more$/);
+    expect(page.host.textContent).toContain("More runs could not be read: invalid_cursor: that cursor is not one this server gave");
+  });
+
+  it("says the latest run's record refused on every try, and its timeline refused", async () => {
+    const { release, latest } = await splitRun(async () => { throw new ClientError(503, "store_busy", "the store is busy", true); });
+    release();
+    await until(() => latest().textContent!.includes("This run could not be refreshed: store_busy: the store is busy"));
+    act(() => root?.unmount());
+    const page = await open(agentFixture("invoice-checker"), { timeline: async () => { throw new ClientError(404, "run_not_found", "no run with that id"); } });
+    const panel = () => page.host.querySelector('section[aria-label="Latest run"]')!;
+    await until(() => panel().textContent!.includes("The timeline could not be read: run_not_found: no run with that id"));
   });
 });

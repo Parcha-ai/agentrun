@@ -9,6 +9,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { BLOB_EXTENSIONS, PAGE_EXTENSIONS, SHEET_EXTENSIONS, TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../packages/harness/src/scan.ts';
 import { artifactProblems, readFile, readsAs } from '../../packages/harness/src/artifact.ts';
+import { isMain } from '../is-main.mjs';
 
 export const FORMAT = 'agentrun.recording/1';
 export const SOURCES = ['workflow', 'pi', 'browser', 'vision', 'transport', 'host'];
@@ -403,7 +404,7 @@ export function validateRecording(dir) {
   return problems;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const dir = process.argv[2];
   if (!dir) { console.error('usage: node scripts/recording/validate.mjs <recording-dir>'); process.exit(2); }
   const problems = validateRecording(dir);

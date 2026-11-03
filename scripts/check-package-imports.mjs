@@ -7,6 +7,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { specifiersOf } from './upstream-attribution.mjs';
+import { isMain } from './is-main.mjs';
 
 /** Package directory pattern, and the package names (or subpaths) its manifest and source may not name. */
 export const FORBIDDEN = [
@@ -49,7 +50,7 @@ export async function packageImportProblems(root) {
   return problems;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const problems = await packageImportProblems(join(fileURLToPath(new URL('.', import.meta.url)), '..'));
   for (const problem of problems) console.error(problem);
   if (problems.length) process.exit(1);

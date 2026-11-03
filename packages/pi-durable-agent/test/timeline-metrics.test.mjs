@@ -3,7 +3,7 @@
 // of every token sum; each tool's calls pair with their results by conversation and call id, as the timeline's do.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { METRIC_NAMES, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf } from "../dist/timeline/index.js";
+import { METRIC_NAMES, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, runMetricsWithDecisions, timelineOf } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const usage = (input, output, cacheRead = 0, cacheWrite = 0, total = 0.01) => ({ input, output, cacheRead, cacheWrite, totalTokens: input + output, cost: { total } });
@@ -238,4 +238,31 @@ test("model names are kept the same way: cut past 256 characters, the 100 busies
   assert.equal(Object.keys(m.models).length, METRIC_NAMES.kept + 1);
   assert.equal(m.models[METRIC_NAMES.otherModels], 21, "p/m0 to p/m98 are kept beside the busiest; the last 21 are summed");
   assert.equal(Object.values(m.models).reduce((a, b) => a + b, 0), m.requests);
+});
+
+test("a workflow's decision requests count with its model requests: each receipt's usage summed, one with none, cancelled or kept by its driver unmetered, never 0", () => {
+  const entries = [answer([{ type: "text", text: "a" }], usage(100, 20))];
+  const decisions = [
+    { provider: "jev", model: "jev-1.14.0", usage: { input_tokens: 120, output_tokens: 0 }, status: "answered" },
+    { provider: "parallel", model: "decide-1", usage: { input_tokens: 300, output_tokens: 12 } },
+    // A failed request's counts are taken as they are, as a failed model request's are.
+    { provider: "jev", model: "jev-1.14.0", usage: { input_tokens: 40, output_tokens: 0 }, status: "failed" },
+    { provider: "jev", model: "jev-1.14.0", usage: null, status: "answered" },
+    { provider: "jev", model: "jev-1.14.0", usage: { input_tokens: 80, output_tokens: 2 }, status: "cancelled" },
+    { provider: "jev", model: "jev-1.14.0", usage: { input_tokens: 50, output_tokens: 1 }, driver_spend: true },
+    // An answer that reports no input was not measured, as a model request's zeros are.
+    { provider: "jev", model: "jev-1.14.0", usage: { input_tokens: 0, output_tokens: 0 }, status: "answered" },
+  ];
+  const m = runMetricsWithDecisions(entries, decisions);
+  assert.deepEqual(tokensOf(m), { input: 100 + 120 + 300 + 40, cacheRead: 0, cacheWrite: 0, output: 20 + 12 });
+  assert.deepEqual([m.requests, m.unmetered], [1 + 7, 4]);
+  assert.deepEqual(m.models, { "anthropic/claude-opus-5-5": 1, "jev/jev-1.14.0": 6, "parallel/decide-1": 1 });
+  assert.equal(m.model, "jev/jev-1.14.0");
+  assert.deepEqual(runMetricsWithDecisions(entries, []), runMetricsOf(entries), "no decisions: the entries' count alone");
+  assert.deepEqual([runMetricsWithDecisions([], [{ model: "jev-1.14.0" }]).requests, runMetricsWithDecisions([], [{ model: "jev-1.14.0" }]).unmetered], [1, 1], "a receipt with no usage at all");
+});
+
+test("mapping runMetricsOf over runs' entries is safe: map's index is never read as receipts", () => {
+  const entries = [answer([{ type: "text", text: "a" }], usage(10, 2)), answer([{ type: "text", text: "b" }], usage(5, 1))];
+  assert.deepEqual([entries, entries].map(runMetricsOf), [runMetricsOf(entries), runMetricsOf(entries)]);
 });

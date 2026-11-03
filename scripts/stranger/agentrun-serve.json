@@ -1,0 +1,51 @@
+{
+  "package": "@parcha/agentrun-serve",
+  "install": [
+    "dsl",
+    "jev",
+    "pi",
+    "pi-browser",
+    "pi-durable-disk",
+    "pi-durable-agent",
+    "decisions",
+    "run-adapters",
+    "run-adapters-claude-agent",
+    "run-adapters-codex",
+    "serve"
+  ],
+  "companions": [
+    "@parcha/agentrun-dsl",
+    "@parcha/agentrun-jev",
+    "@parcha/agentrun-pi",
+    "@parcha/pi-browser",
+    "@parcha/pi-durable-disk",
+    "@parcha/pi-durable-agent",
+    "@parcha/agentrun-decisions",
+    "@parcha/agentrun-kernel",
+    "@parcha/agentrun-harness-claude",
+    "@parcha/agentrun-harness-codex"
+  ],
+  "peers": [
+    "@earendil-works/chord",
+    "@earendil-works/pi-durable",
+    "@earendil-works/pi-ai"
+  ],
+  "files": [
+    {
+      "name": "check.mjs",
+      "readme": "docs/releasing.md",
+      "heading": "Check a published server",
+      "fence": "js",
+      "index": 0
+    }
+  ],
+  "command": [
+    "node",
+    "check.mjs"
+  ],
+  "expect": {
+    "exitCode": 0,
+    "pattern": "^ok: pi runs; claude-agent and codex say how to install them; the console is served$"
+  },
+  "timeoutMs": 300000
+}

@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { client, FAUX, flowAgent, follow, scratch } from "./support.mjs";
+import { client, FAUX, flowAgent, follow, printed, scratch } from "./support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
@@ -57,11 +57,7 @@ process.once("SIGTERM", () => server.close().then(() => process.exit(0)));`;
       throw error;
     }
   };
-  for (let i = 0; !seen.out.includes("\n"); i++) {
-    up();
-    assert.ok(i < 600, `the server did not start: ${seen.err}`);
-    await sleep(50);
-  }
+  await printed(server, /\n/);
   const { base, token, inEnv } = JSON.parse(seen.out.split("\n")[0]);
   assert.equal(inEnv, false, "the server holds the key with its secrets, out of its environment");
   const api = client(base, token);

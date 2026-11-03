@@ -2,7 +2,11 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, route, runsHash } from "./App";
+import { ANALYTICS } from "@/components/AgentAnalytics.sample";
 import { agentHash } from "@/components/AgentPage";
+import { agentsList, recorded } from "@/fixtures";
+import type { Agent } from "@/lib/agentForm";
+import type { Run, TimelinePage } from "@/lib/v2";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
@@ -77,7 +81,7 @@ describe("App, Mission Control after a failed read", () => {
       if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (path === "/v2/stats") return ++statsCalls === 1
         ? json(503, { error: { code: "store_busy", message: "the store is busy", retryable: true } })
-        : json(200, { agents: 3, runs: { total: 9, active: 0, needs_input: 0, failed: 0, status_unknown: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 9 }, archived: { agents: 0, runs: 0 } });
+        : json(200, { agents: 3, runs: { total: 9, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 9 }, archived: { agents: 0, runs: 0 }, analytics: ANALYTICS });
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
     });
@@ -99,14 +103,20 @@ describe("App, Mission Control after a failed read", () => {
 describe("App, Settings", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const keys = { keys: [{ id: "monid", label: "Monid", fields: [{ name: "MONID_API_KEY", set: false, source: null }], unlocks: ["monid.run"], harnesses: ["pi"] }], reenter: null };
-  async function open(features: Record<string, unknown>, hash: string) {
+  // capabilities.tools with a choice of provider (web_search, web_fetch), as a server with tool settings lists them.
+  const choiceTools = [
+    { name: "web_search", summary: "Search the web", nodes: true, calls: true, available: true, harnesses: ["pi"], providers: ["auto", "native", "exa-keyless", "parallel"], provider: "auto", default_provider: "auto", resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } },
+    { name: "web_fetch", summary: "Fetch a page", nodes: true, calls: true, available: true, harnesses: ["pi"], providers: ["kernel", "parallel"], provider: "kernel", default_provider: "kernel", resolves: { pi: "kernel", "claude-agent": "native", codex: "native" } },
+  ];
+  async function open(features: Record<string, unknown>, hash: string, tools: unknown[] = []) {
     const asked: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       asked.push(`${init?.method ?? "GET"} ${path}`);
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
       if (path.startsWith("/v2/settings/tool-keys/")) return new Response(null, { status: 204 });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
+      if (path === "/v2/settings/tools") return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } });
       if (path === "/v2/settings/tool-keys") return json(200, keys);
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
@@ -122,10 +132,62 @@ describe("App, Settings", () => {
     return { host, nav, asked };
   }
 
+  it("two saves in a row: only the newest capabilities read lands, so an older resolution never comes back", async () => {
+    const tool = (provider: string, resolved: string) => [{ ...choiceTools[0], provider, resolves: { pi: resolved, "claude-agent": resolved, codex: resolved } }];
+    let caps = 0;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") {
+        const n = ++caps;
+        const body = (tools: unknown[]) => json(200, { harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+        // The read after the first save answers last, with what was true before the second save.
+        if (n === 2) { await new Promise((r) => setTimeout(r, 300)); return body(tool("native", "native")); }
+        return body(n === 1 ? tool("auto", "exa-keyless") : tool("parallel", "parallel"));
+      }
+      if (path === "/v2/settings/tools") return json(200, init?.method === "PUT" ? JSON.parse(String(init.body)) : { web_search: { provider: "auto" } });
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/settings/tools";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const wait = async (ok: () => boolean) => { const end = Date.now() + 3000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 20)); }); };
+    const select = () => host.querySelector<HTMLSelectElement>('tr[data-tool="web_search"] select');
+    await wait(() => !!select());
+    const choose = async (p: string) => { await act(async () => { const s = select()!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, p); s.dispatchEvent(new Event("change", { bubbles: true })); }); };
+    await choose("native");
+    await choose("parallel");
+    await wait(() => caps >= 3 && !!host.querySelector('tr[data-tool="web_search"]')?.textContent?.includes("Parallel"));
+    await act(async () => { await new Promise((r) => setTimeout(r, 400)); });
+    const row = host.querySelector('tr[data-tool="web_search"]')!.textContent!;
+    expect(row).toContain("pi: Parallel");
+    expect(row).not.toContain("pi: native");
+  });
+
   it("has no Settings in the nav when the server has no features.tool_keys", async () => {
     const page = await open({}, "#/runs");
     expect(page.nav()).toContain("Runs");
     expect(page.nav()).not.toContain("Settings");
+  });
+
+  it("#/settings/tools opens Tools, with a tab for each settings page, when the server offers a choice of provider", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/tools", choiceTools);
+    expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["Tool keys", null], ["Tools", "page"]]);
+    expect(page.host.querySelector('tr[data-tool="web_search"] select')).toBeTruthy();
+    expect(page.asked).toContain("GET /v2/settings/tools");
+  });
+
+  it("a server with a choice of provider and no tool keys has Settings, which opens on Tools", async () => {
+    const page = await open({}, "#/runs", choiceTools);
+    expect(page.nav()).toContain("Settings");
+    await act(async () => { [...page.host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Navigation"] button')].find((b) => b.textContent?.trim() === "Settings")!.click(); });
+    for (let i = 0; i < 20; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(location.hash).toBe("#/settings/tools");
+    expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
+    expect(page.host.querySelector('nav[aria-label="Settings"]')).toBeNull();
   });
 
   it("shows Settings when the server has the routes, and #/settings/keys opens Tool keys", async () => {
@@ -232,5 +294,115 @@ describe("App, an agent's address", () => {
     await wait(() => !!host.textContent?.includes("Save revision"));
     expect(host.textContent).toContain("Save revision");
     expect(host.querySelector('[role="tab"]')).toBeNull();
+  });
+});
+
+// An agent made in this console is named at once wherever its runs show, never by its id until a reload.
+describe("App, the agents' names", () => {
+  const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+  const made = recorded<Agent>("write.agent-create").body;
+  const started: Run = { ...recorded<Run>("start.run").body, agent_id: made.agent_id };
+  /** A server over the recorded agents (`active`, a copy, so a create never changes the recording; `archived`) and `runs`:
+   *  a create adds the recorded create's agent, and a start of it answers `started` and lists it. `archivedFails`: its read
+   *  of the archived agents answers 503. */
+  function server({ active = [...agentsList()], archived = [] as Agent[], runs = [] as Run[], archivedFails = false } = {}) {
+    const page = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const u = new URL(url, "http://serve.test");
+      const method = init?.method ?? "GET";
+      const [, , what, id, sub] = u.pathname.split("/").map(decodeURIComponent);
+      if (what === "auth") return json(200, { password_set: true, signed_in: true });
+      if (what === "capabilities") return json(200, recorded("capabilities").body);
+      if (what === "stats") return json(200, {});
+      if (what === "agents" && !id && method === "POST") { active.push(made); return json(201, made); }
+      if (what === "agents" && !id && u.searchParams.get("archived") && archivedFails) return json(503, { error: { code: "store_busy", message: "the store is busy", retryable: true } });
+      if (what === "agents" && !id) return json(200, { agents: u.searchParams.get("archived") ? archived : active, next_cursor: null });
+      if (what === "agents" && !sub) return json(200, [...active, ...archived].find((a) => a.agent_id === id), { etag: `"${made.revision}"` });
+      if (what === "agents" && sub === "runs" && method === "POST") { runs.unshift(started); return json(202, started); }
+      if (what === "agents" && sub === "runs") return json(200, { runs: runs.filter((r) => r.agent_id === id), next_cursor: null });
+      if (what === "runs" && !id) return json(200, { runs, next_cursor: null });
+      const run = runs.find((r) => r.run_id === id);
+      if (what === "runs" && run && !sub) return json(200, run);
+      if (what === "runs" && run && sub === "timeline") return json(200, page(run));
+      if (what === "runs" && run && sub === "files") return json(200, { run_id: run.run_id, files: [], complete: true, truncated: false });
+      return json(404, { error: { code: "not_found", message: u.pathname, retryable: false } });
+    });
+  }
+  async function open(hash: string) {
+    location.hash = hash;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const until = async (ok: () => boolean) => { for (let i = 0; i < 160 && !ok(); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); expect(ok()).toBe(true); };
+    const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
+    const type = async (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+      await act(async () => { Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
+    };
+    const rows = () => [...host.querySelectorAll("tbody tr")].map((r) => r.textContent ?? "");
+    return { host, until, button, type, rows };
+  }
+
+  it("names an agent made here, not by its id, on its run's page and in Runs, with no reload", async () => {
+    server();
+    const { host, until, button, type, rows } = await open("#/agents/new");
+    // Create it from the editor, as a person does: its name and instructions, then Create.
+    await until(() => !!host.querySelector('input[placeholder="e.g., Invoice checker"]'));
+    await type(host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!, made.definition.name!);
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Describe what the agent does"]')!, made.definition.instructions!);
+    await act(async () => { button(/^Create$/)!.click(); });
+    // Its page, then a run of it from the run bar: the run's page opens.
+    await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}` && !!host.querySelector('section[aria-label="Start a run"] textarea'));
+    await type(host.querySelector<HTMLTextAreaElement>('section[aria-label="Start a run"] textarea')!, "Check the 2.3.0 entry.");
+    await act(async () => { button(/^Run$/)!.click(); });
+    await until(() => location.hash === `#/runs/${encodeURIComponent(started.run_id)}` && !!host.querySelector("h1"));
+    // The run's page names its agent in its breadcrumb.
+    await until(() => host.textContent!.includes(made.definition.name!));
+    expect(host.textContent).not.toContain(made.agent_id);
+    // Runs names it too.
+    await act(async () => { location.hash = "#/runs"; });
+    await until(() => rows().some((r) => r.includes(made.definition.name!)));
+    expect(rows().join("\n")).not.toContain(made.agent_id);
+  });
+
+  it("names a run of an archived agent, which is not gone, and shows the id of one that is", async () => {
+    const [kept, ...active] = agentsList();
+    const gone = "01a18400-0000-7000-8000-000000000000";
+    const run = recorded<Run>("start.run").body;
+    server({ active, archived: [{ ...kept, archived_at: "2026-11-02T12:00:00Z" }], runs: [{ ...run, agent_id: kept.agent_id }, { ...run, run_id: `${run.run_id}-2`, agent_id: gone }] });
+    const { until, rows } = await open("#/runs");
+    await until(() => rows().length === 2 && rows()[0].includes(kept.definition.name!));
+    expect(rows()[1]).toContain(gone);
+  });
+
+  it("keeps the active agents' names when the read of the archived ones fails, and shows no id as gone meanwhile", async () => {
+    const [mine, ...rest] = agentsList();
+    const [kept] = rest;
+    const run = recorded<Run>("start.run").body;
+    server({ active: [mine], archived: [{ ...kept, archived_at: "2026-11-02T12:00:00Z" }], archivedFails: true, runs: [{ ...run, agent_id: mine.agent_id }, { ...run, run_id: `${run.run_id}-2`, agent_id: kept.agent_id }] });
+    const { until, rows } = await open("#/runs");
+    await until(() => rows().length === 2 && rows()[0].includes(mine.definition.name!));
+    // The archived agent's name could not be read: its run shows neither a name nor an id that would read as gone.
+    expect(rows()[1]).not.toContain(kept.agent_id);
+    expect(rows()[1]).not.toContain(kept.definition.name!);
+  });
+});
+
+describe("App, the playground when its agents can't be read", () => {
+  it("says the server's refusal as code and message", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/agents") return json(400, { error: { code: "invalid_cursor", message: "that cursor is not one this server gave", retryable: false } });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/playground";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const end = Date.now() + 4000;
+    while (!host.textContent?.includes("could not be read") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(host.querySelector('[role="alert"] p')?.textContent).toBe("The agents could not be read: invalid_cursor: that cursor is not one this server gave");
   });
 });

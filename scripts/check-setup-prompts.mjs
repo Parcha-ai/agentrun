@@ -7,6 +7,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkSetupPrompt } from '@parcha/agentrun-pi/signin';
+import { isMain } from './is-main.mjs';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -29,7 +30,7 @@ export function checkDemo(dir) {
   ];
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const dirs = process.argv.length > 2 ? process.argv.slice(2) : demoDirs();
   let failed = 0;
   for (const dir of dirs) {

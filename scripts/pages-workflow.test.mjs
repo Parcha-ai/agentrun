@@ -71,6 +71,8 @@ const gate = (t, recordings) => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, 'scripts/recording'), { recursive: true });
   for (const name of ['gate.mjs', 'validate.mjs']) cpSync(join(root, 'scripts/recording', name), join(dir, 'scripts/recording', name));
+  // Both decide they are the command with scripts/is-main.mjs.
+  cpSync(join(root, 'scripts/is-main.mjs'), join(dir, 'scripts/is-main.mjs'));
   // Both import the one scanner, which lives in the harness package.
   cpSync(join(root, 'packages/harness/src/scan.ts'), join(dir, 'packages/harness/src/scan.ts'));
   // The report page is read with an HTML parser, from node_modules (the workflow installs it before the gate).

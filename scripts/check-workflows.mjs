@@ -5,6 +5,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseDocument } from 'yaml';
+import { isMain } from './is-main.mjs';
 
 /** What is wrong with a workflow's text, as `<file>:<line>:<column>: <why>`; empty when nothing is. */
 export function workflowProblems(text, file) {
@@ -19,7 +20,7 @@ export function workflowProblems(text, file) {
   });
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
   const dir = resolve(process.argv[2] ?? join(root, '.github', 'workflows'));
   const files = readdirSync(dir).filter((name) => /\.ya?ml$/.test(name)).sort();
