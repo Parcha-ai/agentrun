@@ -18,12 +18,13 @@ type Call = { method: string; path: string; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 /** A server with the webhook `state`: GET answers it, PUT sets it (201 with the secret the first time), DELETE removes
  *  it; the deliveries are `attempts`; a test or a redelivery answers `sent` and adds it to the log. */
-function server(state: { webhook: Webhook; attempts: WebhookAttempt[] }, sent: () => Response = () => json(200, attempt({ type: "webhook.test" }))) {
+function server(state: { webhook: Webhook; attempts: WebhookAttempt[]; readsFail?: boolean }, sent: () => Response = () => json(200, attempt({ type: "webhook.test" }))) {
   const calls: Call[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined };
     calls.push(call);
     const path = new URL(call.path, "http://serve.test").pathname;
+    if (state.readsFail && call.method === "GET") return json(500, { error: { code: "internal", message: "the read failed", retryable: true } });
     if (path === "/v2/settings/webhook" && call.method === "GET") return json(200, state.webhook);
     if (path === "/v2/settings/webhook" && call.method === "PUT") {
       const created = !state.webhook.configured;
@@ -118,6 +119,36 @@ describe("WebhookPage", () => {
     expect(page.host.textContent).toContain("can't sign here");
     await page.click(/^Redeliver$/, page.rows()[0]);
     expect(page.host.querySelector('[role="alert"]')?.textContent).toContain("webhook_off");
+  });
+
+  it("shows a save's answer at once, and a read after it that fails, beside what is shown", async () => {
+    const state = { webhook: { configured: false } as Webhook, attempts: [] as WebhookAttempt[], readsFail: false };
+    const { v2 } = server(state);
+    const page = await open(v2);
+    state.readsFail = true;
+    await page.type("https://hooks.example.test/agentrun");
+    await page.click(/^Save$/);
+    expect(page.host.querySelector('[aria-label="Webhook URL"]')?.textContent).toContain("https://hooks.example.test/agentrun");
+    expect(page.host.querySelector('[role="alert"]')?.textContent).toContain("could not be read");
+  });
+
+  it("offers a redelivery of a test message too, under its own webhook-id", async () => {
+    const { v2, calls } = server({ webhook: SET, attempts: [attempt({ webhook_id: "msg_test0000000000000000000000000", type: "webhook.test" })] });
+    const page = await open(v2);
+    await page.click(/^Redeliver$/, page.rows()[0]);
+    expect(calls.some((c) => c.method === "POST" && c.path.endsWith("/settings/webhook/deliveries/msg_test0000000000000000000000000/redeliver"))).toBe(true);
+  });
+
+  it("drops a secret shown this once when its webhook is removed: it no longer signs anything", async () => {
+    const { v2 } = server({ webhook: { configured: false }, attempts: [] });
+    const page = await open(v2);
+    await page.type("https://hooks.example.test/agentrun");
+    await page.click(/^Save$/);
+    expect(page.host.querySelector('[aria-label="Webhook secret"]')).not.toBeNull();
+    await page.click(/^Remove$/);
+    await page.click(/^Remove the webhook$/);
+    expect(page.host.querySelector('[aria-label="Webhook secret"]')).toBeNull();
+    expect(page.host.textContent).not.toContain(SECRET);
   });
 
   it("removes the webhook, and says when this server can't keep a secret", async () => {
