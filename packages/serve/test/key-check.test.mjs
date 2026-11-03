@@ -119,7 +119,7 @@ function recorder(answer) {
   };
   return Object.assign(fetcher, { sent });
 }
-const json = (status, body) => () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "content-type": typeof body === "string" ? "text/plain" : "application/json" } });
+const json = (status, body) => () => new Response(body === null || typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "content-type": typeof body === "object" ? "application/json" : "text/plain" } });
 const ROWS = { monid: "Monid", parallel: "Parallel", browserbase: "Browserbase", typesafe: "TypeSafe (Jev)", anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter" };
 
 test("each provider's check is one documented call that costs nothing, on the key, at the base this server sends that provider's calls to", async () => {
@@ -168,7 +168,7 @@ test("a check reads the provider's answer: 2xx accepted, 401 and 403 refused in 
     return rest;
   };
   assert.deepEqual(await outcome(json(200, { results: [] })), { state: "accepted" });
-  assert.deepEqual(await outcome(json(204, "")), { state: "accepted" });
+  assert.deepEqual(await outcome(json(204, null)), { state: "accepted" });
   assert.deepEqual(await outcome(json(401, { code: 401, message: "Invalid API key format. Keys start with monid_live_." })), { state: "refused", message: "Monid refused this key (401: Invalid API key format)" });
   assert.deepEqual(await outcome(json(403, { error: { type: "permission_error", message: "This key may not do that." } })), { state: "refused", message: "Monid refused this key (403: This key may not do that)" });
   assert.deepEqual(await outcome(json(401, { detail: "invalid key" })), { state: "refused", message: "Monid refused this key (401: invalid key)" });
@@ -187,9 +187,12 @@ test("a check reads the provider's answer: 2xx accepted, 401 and 403 refused in 
   const down = () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) }); };
   assert.deepEqual(await outcome(down), { state: "not_checked", reason: "Monid could not be reached (ECONNREFUSED)" });
   const hang = (init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true }));
+  // A server keeps its process alive while it waits; AbortSignal.timeout's timer alone does not, so this test does.
+  const alive = setTimeout(() => undefined, 5_000);
   const started = Date.now();
   assert.deepEqual(await outcome(hang, { ms: 50 }), { state: "not_checked", reason: "Monid did not answer in 0.05 s" });
   assert.ok(Date.now() - started < 5_000, "the deadline holds");
+  clearTimeout(alive);
   // No call that costs nothing for a provider, or no fetch (a faux server with no fake for it): never the network.
   assert.deepEqual(await outcome(undefined, { row: { id: "elsewhere", label: "Elsewhere" } }), { state: "not_checked", reason: "Elsewhere has no call that costs nothing to check a key with" });
   assert.deepEqual(await outcome(undefined, { fetcher: null }), { state: "not_checked", reason: "This server runs on faux providers and has no fake Monid to check the key with" });
