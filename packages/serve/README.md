@@ -768,8 +768,8 @@ says what is missing.
 `claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with `ANTHROPIC_API_KEY` and Anthropic's own
 model id, and prices the run by it: a revision's `anthropic/<model-id>`, its dots as dashes, so OpenRouter's dotted name
 (`anthropic/claude-sonnet-5.5`) and Anthropic's own (`claude-sonnet-5-5`) are one model. `codex` sends its requests to
-serve's gateway (`AGENT_MODEL_BASE_URL`), else OpenAI with `OPENAI_API_KEY`. With neither harness's own setting but
-`OPENROUTER_API_KEY`, each runs its vendor's models through OpenRouter (`https://openrouter.ai/api`, the key as a bearer
+serve's gateway (`AGENT_MODEL_BASE_URL`), else OpenAI with `OPENAI_API_KEY`. A harness with none of its own settings, where
+`OPENROUTER_API_KEY` is set, runs its vendor's models through OpenRouter (`https://openrouter.ai/api`, the key as a bearer
 token): claude-agent on its Messages endpoint, codex on its Responses API, each model named and priced as OpenRouter's
 (`openrouter/anthropic/claude-sonnet-5.5`, `openrouter/openai/gpt-6.1-sol`, which are their defaults there when nothing
 names one). A model named that way (pi's name for it) goes through OpenRouter on every harness. An endpoint the host
