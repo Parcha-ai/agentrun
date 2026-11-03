@@ -449,6 +449,24 @@ async function until(what, check, ms = 30_000) {
   for (const end = Date.now() + ms; !(await check()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, what);
 }
 
+/** The pid `file` holds once it holds a whole one, else null: a file read while it is being written can be empty. */
+function pidIn(file) {
+  try {
+    const text = readFileSync(file, "utf8");
+    return /^\d+$/.test(text) ? Number(text) : null;
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/** `pid`, once it is sure to name one other process: 0 or a negative pid signals a whole process group (this test
+ *  runner's among them), 1 is init. Anything else fails the test and is never signalled. */
+function killable(pid) {
+  assert.ok(Number.isInteger(pid) && pid > 1 && pid !== process.pid, `refusing to signal pid ${pid}: it does not name one other process`);
+  return pid;
+}
+
 /** A run under `cap` killed (SIGKILL, its own pid) while its first request is in flight; serve opens it again. */
 async function killedMidRequest(t, cap) {
   const dir = mkdtempSync(join(tmpdir(), "cap-crash-"));
@@ -457,19 +475,19 @@ async function killedMidRequest(t, cap) {
   const server = await serve(t, { faux: SIGNAL });
   assert.equal((await server.api("POST", "/agents", agent("crashed"))).status, 201);
   const runId = (await server.api("POST", "/agents/crashed/runs", { input: { content: `Signal ${signal}, then answer once ${go} exists.` }, max_cost_usd: cap })).body.run_id;
-  await until("the first request is in flight", () => existsSync(signal));
-  const pid = Number(readFileSync(signal, "utf8"));
+  let pid = null;
+  await until("the first request is in flight", () => (pid = pidIn(signal)) !== null);
   rmSync(signal);
-  process.kill(pid, "SIGKILL");
+  process.kill(killable(pid), "SIGKILL");
   return { ...server, runId, signal, go, pid };
 }
 
 test("a capped pi run whose process is killed mid-request is opened again and goes on: the cut request counts at the worst case held for it", { timeout: 120_000 }, async (t) => {
   const { api, data, runId, signal, go, pid } = await killedMidRequest(t, 10);
   // The next process reads the cut request from the store, at $1.64 held, and sends the turn's request again.
-  await until("the request is sent again, or the run ends", async () => existsSync(signal) || ["failed", "cancelled"].includes((await view(api, runId)).status));
-  assert.ok(existsSync(signal), JSON.stringify((await view(api, runId)).error));
-  assert.notEqual(Number(readFileSync(signal, "utf8")), pid, "by a new process");
+  await until("the request is sent again, or the run ends", async () => pidIn(signal) !== null || ["failed", "cancelled"].includes((await view(api, runId)).status));
+  assert.ok(pidIn(signal) !== null, JSON.stringify((await view(api, runId)).error));
+  assert.notEqual(pidIn(signal), pid, "by a new process");
   writeFileSync(go, "");
   const run = await finished(api, runId);
   assert.deepEqual([run.status, run.result?.final_answer], ["completed", "Answered after the crash."], JSON.stringify(run.error));
