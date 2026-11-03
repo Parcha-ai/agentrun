@@ -452,14 +452,19 @@ export function adapterRun(
       // That turn is over in the session, and an earlier process died before it wrote the turn's end: written now, after
       // what this open wrote and before any new turn, so the message the turn took reads answered (runs.ts noteAnswer).
       // The session says only that the turn is over: completed, or failed when the bridge wrote its error.
-      if (session.state === "idle" && unended) {
-        const status: TurnStatus = unended.failed ? "failed" : "completed";
-        await later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, status } }))));
-      }
+      const restored: TurnStatus | undefined = session.state === "idle" && unended ? (unended.failed ? "failed" : "completed") : undefined;
+      const restore = (status: TurnStatus) => later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, status } }))));
       queue.push(...accepted.values());
+      // With nothing waiting, that end is the run's: written while the door is idle. A message accepted and never sent
+      // still waits, and a server started anew counts none: the door is busy (run_start) before that end goes out, and
+      // the message's turn follows in the same busy period, so no server reads the run done before it answers.
+      if (restored && !queue.length) await restore(restored);
       openedDone();
       if (session.state === "open_turn") runTurns(() => session!.recover());
-      else if (queue.length) runTurns(sendOf(queue.shift()!));
+      else if (queue.length) {
+        const next = sendOf(queue.shift()!);
+        runTurns(restored ? async () => (await restore(restored), await next()) : next);
+      }
     },
   };
 }
