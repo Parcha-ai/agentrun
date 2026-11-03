@@ -3,7 +3,7 @@
 // the interrupt landed). With reads and appends on one chain, the new drive's first read waits for that write, so it
 // folds the outcome instead of taking the intent for one a dead process abandoned (which would report a `never` tool
 // that ran as "it may or may not have taken effect", and drop its result).
-import type { SessionWriter } from "@parcha/agentrun-adapters";
+import type { SessionWriter } from "@parcha/agentrun-kernel";
 
 /** `writer` with every read and append run one at a time, in call order. A failed one rejects for its caller only. */
 export function serialWriter(writer: SessionWriter): SessionWriter {

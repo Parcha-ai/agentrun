@@ -11,12 +11,18 @@ export type FoldSpec = {
 
 const labels = new Map<string, LabelFn>();
 const folds = new Map<string, FoldSpec>();
+const names = new Map<string, string>();
 
-/** Registers the label of one tool, in the past tense. A host adds its own tools here. */
-export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec): void {
+/** Registers the label of one tool, in the past tense, and with `name` what the tool is called where calls are counted
+ *  (a run's analytics). A host adds its own tools here. */
+export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec, { name }: { name?: string } = {}): void {
   labels.set(tool, label);
   if (fold) folds.set(tool, fold);
+  if (name) names.set(tool, name);
 }
+
+/** What a tool is called where its calls are counted, in plain words: its registered name, else the name it was called by. */
+export const nameOf = (tool: string): string => names.get(tool) ?? tool;
 
 /** A finished call's outcome, when its own result says more than that the call returned: a tool that answers a refusal
  *  or a failure as its result, not as an error (a fetch's `{ok: false, refused}`), reads as refused or failed. */
@@ -30,6 +36,14 @@ export function registerOutcome(tool: string, outcome: OutcomeFn): void {
 
 /** The outcome of a call that returned (not one that errored), when its tool tells one. */
 export const outcomeOf = (tool: string, result: { text: string; isError: boolean }) => (result.isError ? undefined : outcomes.get(tool)?.(result));
+
+/** Whether a finished call failed: an error, or a result its tool's outcome reads as failed (a refused fetch). The one
+ *  rule a call's row and a run's tool counts both read; `outcome` is the result's own (outcomeOf), so a caller that has
+ *  read it already (a row, which also shows it) reads it once: a fetch's outcome parses its whole page. */
+export const failedWith = (result: { isError: boolean }, outcome: ReturnType<OutcomeFn>): boolean => result.isError || outcome?.failed === true;
+
+/** failedWith, the outcome read here. */
+export const callFailed = (tool: string, result: { text: string; isError: boolean }): boolean => failedWith(result, outcomeOf(tool, result));
 
 const turnEnding = new Set<string>();
 
@@ -82,10 +96,10 @@ export const BROWSER_OPENERS: ReadonlySet<string> = new Set(["snapshot", "run", 
 const path = (args: Obj) => str(args.path) ?? str(args.file_path);
 const GOTO = /page\.goto\(\s*["'`]([^"'`]+)/;
 
-registerLabel("read", (a) => `Read ${path(a) ?? "a file"}`, { many: (n) => `Read ${n} files`, subject: (input) => input ?? undefined });
-registerLabel("write", (a) => `Wrote ${path(a) ?? "a file"}`, { many: (n) => `Wrote ${n} files`, subject: (input) => input ?? undefined });
-registerLabel("edit", (a) => `Edited ${path(a) ?? "a file"}`, { many: (n) => `Edited ${n} files`, subject: (input) => input ?? undefined });
-registerLabel("bash", (a) => `Ran \`${cut(scrubUrls(firstLine(str(a.command) ?? "")), 60)}\``, { many: (n) => `Ran ${n} commands` });
+registerLabel("read", (a) => `Read ${path(a) ?? "a file"}`, { many: (n) => `Read ${n} files`, subject: (input) => input ?? undefined }, { name: "Read files" });
+registerLabel("write", (a) => `Wrote ${path(a) ?? "a file"}`, { many: (n) => `Wrote ${n} files`, subject: (input) => input ?? undefined }, { name: "Write files" });
+registerLabel("edit", (a) => `Edited ${path(a) ?? "a file"}`, { many: (n) => `Edited ${n} files`, subject: (input) => input ?? undefined }, { name: "Edit files" });
+registerLabel("bash", (a) => `Ran \`${cut(scrubUrls(firstLine(str(a.command) ?? "")), 60)}\``, { many: (n) => `Ran ${n} commands` }, { name: "Run commands" });
 /** A fetch that answered its page as a result with `ok: false`: refused (the public-host guard said no, `refused`) or
  *  failed (`error`, or a message). Undefined for a page it fetched. */
 const unfetched = (result: { text: string } | undefined) => {
@@ -102,13 +116,13 @@ const fetchOutcome: OutcomeFn = (result) => {
 };
 // web_fetch and fetch_page answer the same page, `{ok, url, status, title, text, links, refused?, error?}`.
 for (const tool of ["web_fetch", "fetch_page"]) {
-  registerLabel(tool, fetchLabel, fetchFold);
+  registerLabel(tool, fetchLabel, fetchFold, { name: "Fetch web pages" });
   registerOutcome(tool, fetchOutcome);
 }
 registerLabel("web_search", (a) => {
   const query = str(a.query);
   return query ? `Searched the web for "${cut(scrubUrls(query), 60)}"` : "Searched the web";
-}, { many: (n) => `Searched the web ${n} times`, subject: (input) => (input ? `"${cut(input, 40)}"` : undefined) });
+}, { many: (n) => `Searched the web ${n} times`, subject: (input) => (input ? `"${cut(input, 40)}"` : undefined) }, { name: "Search the web" });
 registerLabel(
   "browser_read",
   (_a, result) => {
@@ -116,9 +130,10 @@ registerLabel(
     return title ? `Read the page "${cut(scrubUrls(title), 60)}"` : "Read the page";
   },
   { many: (n) => `Read ${n} pages`, subject: (_input, output) => { const url = output && /^url: (\S+)/m.exec(output)?.[1]; return url ? where(url) : undefined; } },
+  { name: "Read the browser's page" },
 );
-registerLabel("snapshot", () => "Looked at the page structure", { many: (n) => `Looked at the page structure ${n} times` });
-registerLabel("screenshot", () => "Took a screenshot", { many: (n) => `Took ${n} screenshots` });
+registerLabel("snapshot", () => "Looked at the page structure", { many: (n) => `Looked at the page structure ${n} times` }, { name: "Look at the page structure" });
+registerLabel("screenshot", () => "Took a screenshot", { many: (n) => `Took ${n} screenshots` }, { name: "Take screenshots" });
 registerLabel(
   "run",
   (a, result) => {
@@ -131,6 +146,7 @@ registerLabel(
     return requests.length ? `Acted on the page (${requests.length} request${requests.length === 1 ? "" : "s"} sent: ${list(requests)})` : "Acted on the page";
   },
   { many: (n) => `Acted on the page ${n} times` },
+  { name: "Open or act on a page in the browser" },
 );
 registerLabel(
   "browser_downloads",
@@ -140,9 +156,10 @@ registerLabel(
     return names.length === 1 ? `Downloaded ${names[0]}` : names.length ? `Downloaded ${names.length} files` : "Downloaded files";
   },
   { many: (n) => `Downloaded files ${n} times` },
+  { name: "Download files in the browser" },
 );
-registerLabel("browser_release", () => "Released the browser session");
-registerLabel("browser_relaunch", () => "Started a fresh browser session");
-registerLabel("submit", () => "Submitted the answer");
-registerLabel("codemode", () => "Ran a script", { many: (n) => `Ran ${n} scripts` });
-registerLabel("request_sign_in", () => "Asked you to sign in");
+registerLabel("browser_release", () => "Released the browser session", undefined, { name: "Release the browser session" });
+registerLabel("browser_relaunch", () => "Started a fresh browser session", undefined, { name: "Start a fresh browser session" });
+registerLabel("submit", () => "Submitted the answer", undefined, { name: "Submit the answer" });
+registerLabel("codemode", () => "Ran a script", { many: (n) => `Ran ${n} scripts` }, { name: "Run scripts" });
+registerLabel("request_sign_in", () => "Asked you to sign in", undefined, { name: "Ask you to sign in" });

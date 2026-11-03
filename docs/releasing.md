@@ -1,10 +1,10 @@
 # Release a beta
 
-The packages are `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`, `@parcha/pi-durable-disk`, `@parcha/pi-browser`, `@parcha/pi-vision`, `@parcha/pi-transport`, `@parcha/pi-durable-agent`, `@parcha/pi-git-remote` and `@parcha/pi-agent-learn`. They share a version and are published in that order (`pi-durable-disk`, `pi-browser`, `pi-vision`, `pi-transport`, `pi-durable-agent` and `pi-git-remote` depend on none of the others; `pi-agent-learn` depends on `dsl`, `pi` and `pi-git-remote`). `@parcha/agentrun-harness`, `@parcha/agentrun-serve`, `@parcha/agentrun-learn` and `@parcha/agentrun-decisions` are in the repository but held; see [Held packages](#held-packages). Publication is manual; pushes, pull requests and tags do not publish packages.
+The packages are `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`, `@parcha/pi-durable-disk`, `@parcha/pi-browser`, `@parcha/pi-vision`, `@parcha/pi-transport`, `@parcha/pi-durable-agent`, `@parcha/pi-git-remote`, `@parcha/pi-agent-learn`, `@parcha/agentrun-learn`, `@parcha/agentrun-decisions`, `@parcha/agentrun-kernel`, `@parcha/agentrun-harness-claude`, `@parcha/agentrun-harness-codex` and `@parcha/agentrun-serve`. They share a version and are published in that order (`pi-durable-disk`, `pi-browser`, `pi-vision`, `pi-transport`, `pi-durable-agent` and `pi-git-remote` depend on none of the others; `pi-agent-learn` depends on `dsl`, `pi` and `pi-git-remote`; `agentrun-learn` depends on none of them; `agentrun-decisions` and `agentrun-kernel` depend on `dsl`, `agentrun-harness-claude` and `agentrun-harness-codex` on `dsl` and `agentrun-kernel`, and `agentrun-serve` on `dsl`, `jev`, `pi`, `pi-browser`, `pi-durable-disk`, `pi-durable-agent`, `agentrun-learn`, `agentrun-decisions`, the kernel and both harnesses). `@parcha/agentrun-harness` is in the repository but held; see [Held packages](#held-packages). Publication is manual; pushes, pull requests and tags do not publish packages.
 
 ## Held packages
 
-The packages a release may publish are named, in publication order, in `releasePackageNames` in `scripts/release-preflight.mjs`: dependencies first (`dsl`, then `jev` and `pi`), then the packages that depend on none of them, `pi-agent-learn`, which uses `dsl`, `pi` and `pi-git-remote`, `learn` (`@parcha/agentrun-learn`), which uses `dsl`, `decisions` (`@parcha/agentrun-decisions`), which uses `dsl`, the harness adapters (`run-adapters`, then each harness's package), `serve` (`@parcha/agentrun-serve`), which uses `dsl`, `pi`, `pi-durable-disk`, `pi-durable-agent` and the adapters, and the reference host (`@parcha/agentrun-harness`), which uses `dsl`, `pi`, `pi-browser`, `pi-durable-disk` and `pi-vision`, last. That list is the gate for a new package: `release-preflight` fails when a workspace package is neither private nor named there, so a package is never published by accident. A package whose manifest says `"private": true` is held. It is built, tested, typechecked and checked by `verify-packages` and `verify:tarball`, and it is bumped with the workspace version in every release PR like the rest (`release-preflight` fails if its version differs from the workspace's), but it is skipped at publication: the publish set (`releasePackages`, which `verify-published` and the workflow's publish loop read) is the named packages that are not held. `@parcha/agentrun-harness`, `@parcha/agentrun-serve`, `@parcha/agentrun-learn` and `@parcha/agentrun-decisions` are held while publishing them is on hold. Lifting a hold is one commit that removes `"private": true` from the package's manifest, after its npm bootstrap and trusted publisher exist (see "Prepare publication").
+The packages a release may publish are named, in publication order, in `releasePackageNames` in `scripts/release-preflight.mjs`: dependencies first (`dsl`, then `jev` and `pi`), then the packages that depend on none of them, `pi-agent-learn`, which uses `dsl`, `pi` and `pi-git-remote`, `learn` (`@parcha/agentrun-learn`), which uses none of them, `decisions` (`@parcha/agentrun-decisions`), which uses `dsl`, the harness kernel (`@parcha/agentrun-kernel`), which uses `dsl`, and the harnesses on it (`@parcha/agentrun-harness-claude` and `@parcha/agentrun-harness-codex`), which use `dsl` and the kernel, `serve` (`@parcha/agentrun-serve`), which uses `dsl`, `pi`, `pi-durable-disk`, `pi-durable-agent`, `learn`, the kernel and the harnesses, and the reference host (`@parcha/agentrun-harness`), which uses `dsl`, `pi`, `pi-browser`, `pi-durable-disk` and `pi-vision`, last. That list is the gate for a new package: `release-preflight` fails when a workspace package is neither private nor named there, so a package is never published by accident. A package whose manifest says `"private": true` is held. It is built, tested, typechecked and checked by `verify-packages` and `verify:tarball`, and it is bumped with the workspace version in every release PR like the rest (`release-preflight` fails if its version differs from the workspace's), but it is skipped at publication: the publish set (`releasePackages`, which `verify-published` and the workflow's publish loop read) is the named packages that are not held. `@parcha/agentrun-harness` is held while publishing it is on hold. Lifting a hold is one commit that removes `"private": true` from the package's manifest, after its npm bootstrap and trusted publisher exist (see "Prepare publication").
 
 ## Verify the source and packages
 
@@ -16,9 +16,11 @@ npm ci --ignore-scripts
 npm run check
 npm run export:source
 node scripts/check-generated.mjs
-npm run verify:packages
+npm run verify:packages -- --console
 npm run verify:source
 ```
+
+`npm run check` builds first, and the root build builds the console before the workspaces (`scripts/build-console.mjs`), so the server's build copies it into the archive `@parcha/agentrun-serve` publishes, with `THIRD-PARTY-NOTICES.txt`: the console's Vite build writes that file from the bundle's own module list (each bundled package, its version, its license and its license text), and the server's `NOTICE` points to it. `--console` stops verification when the server's archive lacks either. The release workflow runs the same steps.
 
 Inspect `.release/verification.json` and `.release/source-consumer.json`. Package verification installs the exact tarballs into an empty consumer. Source verification checks the archive against its export receipt, then extracts, installs, builds and exercises its offline examples. Dependency installation requires network access.
 
@@ -26,7 +28,7 @@ Regenerate schemas, packaged demo data and the dependency inventory when their s
 
 ## Prepare publication
 
-Confirm publishing access to the `@parcha` npm organization. New packages need an initial authenticated publication before a trusted publisher can be associated with them. Arrange that bootstrap with the package owner; the release workflow does not create accounts, grant ownership or complete this first-publication setup. The existing `@parcha/agentrun` package is separate.
+Confirm publishing access to the `@parcha` npm organization. New packages need an initial authenticated publication before a trusted publisher can be associated with them. Arrange that bootstrap with the package owner; the release workflow does not create accounts, grant ownership or complete this first-publication setup. `@parcha/agentrun-serve` and `@parcha/agentrun-decisions` are new in the publish set: each needs that bootstrap and its trusted publisher before the first release that publishes it, or that release stops at it. The existing `@parcha/agentrun` package is separate.
 
 Once each package exists, configure its trusted publisher for this repository's `release.yml` workflow. This workflow publishes directly, so the association must allow direct publishing. Configure the `npm-release` GitHub environment with maintainer review and allowed tags. Subsequent workflow releases use OIDC and provenance. See [npm trust](https://docs.npmjs.com/cli/v11/commands/npm-trust/) for publisher configuration.
 
@@ -69,6 +71,50 @@ The release is complete only when every published archive matches the release pl
 After publication, test the README from an empty clone and exact-version npm installation outside the workspace. Remove private or unpublished notices only when those public paths work. Website deployment belongs to the separate website repository.
 
 See npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers/), [provenance](https://docs.npmjs.com/generating-provenance-statements/) and [scoped package](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/) documentation for account setup.
+
+## Check a published server
+
+`npx @parcha/agentrun-serve` starts AgentRun Server from npm with nothing else installed: pi runs, the Claude Agent SDK and Codex are optional peers a person installs beside it (the server's capabilities say which line), and the console is served. In an empty directory, with no model key in the environment, save this as `check.mjs` and run `node check.mjs`; it prints one line that starts with `ok:`. The stranger test (`scripts/stranger/agentrun-serve.json`) runs the same file against this tree's packed server.
+
+```js
+import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const data = mkdtempSync(join(tmpdir(), "agentrun-check-"));
+const server = spawn("npx", ["--yes", "@parcha/agentrun-serve", "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "inherit"], detached: true });
+const stop = (code) => { try { process.kill(-server.pid, "SIGTERM"); } catch {} rmSync(data, { recursive: true, force: true }); process.exit(code); };
+const fail = (why) => { console.error(`not ok: ${why}`); stop(1); };
+setTimeout(() => fail("the server did not start within 5 minutes"), 300_000).unref();
+let out = "";
+let checked = false;
+server.stdout.on("data", (chunk) => {
+  out += chunk;
+  const started = / on (http:\/\/\S+?)\/v2 /.exec(out);
+  if (!started || checked) return;
+  checked = true;
+  // A failed request or an unreadable answer is a failed check: it stops the server and removes its data like any other.
+  check(started[1]).catch((error) => fail(`the check could not finish: ${error.message}`));
+});
+async function check(base) {
+  const headers = { authorization: `Bearer ${readFileSync(join(data, ".token"), "utf8").trim()}` };
+  const caps = await (await fetch(`${base}/v2/capabilities`, { headers })).json();
+  const harness = (id) => caps.harnesses.find((offer) => offer.id === id) ?? fail(`capabilities list no ${id}`);
+  if (!harness("pi").available) fail("pi is not available");
+  for (const id of ["claude-agent", "codex"]) {
+    const { available, reason = "" } = harness(id);
+    // The install line fits how the server was started: `npm install …` beside an installed one, `npx -p …` under npx.
+    if (available || !/not installed/i.test(reason) || !/(?:npm install |npx -p )/.test(reason)) fail(`${id} does not say it is not installed and how to install it: ${reason}`);
+  }
+  const page = await fetch(`${base}/`);
+  const html = await page.text();
+  if (page.status !== 200 || !/src="\.\/assets\/[^"]+\.js"/.test(html)) fail(`the console is not served (${page.status})`);
+  console.log(`ok: pi runs; claude-agent and codex say how to install them; the console is served`);
+  stop(0);
+}
+server.on("exit", (code) => fail(`the server exited (${code}) before the check`));
+```
 
 ## Public launch
 

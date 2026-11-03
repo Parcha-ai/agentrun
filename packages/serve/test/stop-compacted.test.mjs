@@ -28,6 +28,11 @@ test("a run stopped after its conversation compacted is still stopped after a re
     assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: long(n) })).status, 202);
     await follow(api, run.run_id, ["completed"]);
   }
+  // Woken six times, compacted: its timeline still holds every message sent, in order, and every answer.
+  const grown = (await api("GET", `/runs/${run.run_id}/timeline`)).body.rows;
+  assert.ok(grown.some((r) => r.kind === "phase" && /Summarized/.test(r.summary ?? "")), "the run compacted");
+  assert.deepEqual(grown.filter((r) => r.kind === "user_message").map((r) => /Message (\d+)\./.exec(r.text ?? r.summary ?? "")?.[1]), ["1", "2", "3", "4", "5", "6"], "every message, in the order sent");
+  assert.equal(grown.filter((r) => r.kind === "final_answer").length, 6, "and every answer");
   assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "Take your time." })).status, 202);
   // Its message shown, so the stop is the turn's and not one refused while the message is still on its way.
   const shown = async () => (await api("GET", `/runs/${run.run_id}/timeline`)).body.rows.some((r) => r.kind === "user_message" && r.text === "Take your time.");

@@ -18,7 +18,7 @@ Each package's README is its API reference. Packages with no dependency on the o
 
 | Path | What an agent must know |
 | --- | --- |
-| `packages/dsl` | `@parcha/agentrun-dsl`: types, validator, interpreter (`src/workflow.ts`), CLI (`agentrun`). Node reference: `skills/author/references/language.md`, generated from `src/author.ts` (edit the source); judgment design: `jev-decisions.md` beside it. `schema/workflow.schema.json` is generated too |
+| `packages/dsl` | `@parcha/agentrun-dsl`: types, validator, interpreter (`src/workflow.ts`), CLI (`agentrun-dsl`). Node reference: `skills/author/references/language.md`, generated from `src/author.ts` (edit the source); judgment design: `jev-decisions.md` beside it. `schema/workflow.schema.json` is generated too |
 | `packages/jev`, `packages/pi` | `runJudge` adapter for Jev, and `jevProvider` (Jev as a `DecisionProvider`); the Pi extension (`/agentrun`) and Pi-backed `runNode` |
 | `packages/pi-durable-disk` | Durable pi host on Archil. Tests run on `src/*.ts`; `PDA_LIVE=1` suites need Archil (or Daytona) credentials and run nowhere by default |
 | `packages/pi-browser` | Synced snapshot of the agentrun harness's `packages/pi-browser`: never edit it here. Real-Chrome suites run only in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`) |
@@ -28,7 +28,7 @@ Each package's README is its API reference. Packages with no dependency on the o
 | `packages/serve` | Held. v2 API on `127.0.0.1:7340/v2`; each run is a `pi-durable-disk run` child; `--faux` needs no key and its tests use it |
 | `packages/pi-git-remote` | No repository hook, filter or driver ever runs; https credentials reach git only on fd 3. Tests need git 2.40+ and `openssl` |
 | `packages/pi-agent-learn` | Learning agent on `pi-git-remote`; locks `agent.json` and `AGENTS.md`, so `examples/agent-learn/agent/AGENTS.md` is runtime content. Tests need git 2.40+ |
-| `packages/learn` | Held. `SPEC.md` is the learning folder's contract (Claude Code's auto-memory format); the checker, the end-of-run prompt and the grader's prompt and verdict. Runs no git and calls no model. Depends on nothing |
+| `packages/learn` | `SPEC.md` is the learning folder's contract (Claude Code's auto-memory format); the checker, the end-of-run prompt and the grader's prompt and verdict. Runs no git and calls no model. Depends on nothing |
 | `packages/decisions` | Held. Third-party decision models as `DecisionProvider`s (the seam and its conformance suite, `./testing`, are in `dsl`): `parallelProvider` for Parallel Decisions, key `PARALLEL_API_KEY` by name. A paid request is never re-sent unasked; a failure after sending is `outcome_unknown` and escalates as an interrupted decision. Tests use a fake fetch; `test/parallel.live.test.mjs` runs only with the key. Depends on `dsl` alone |
 | `packages/harness` | Held. The reference host; `pi-transport` is an optional peer. Covered by `examples/reference*.test.mjs` |
 | `packages/run-adapters`, `run-adapters-claude-agent`, `run-adapters-codex` | Held. Host-neutral (`scripts/check-package-imports.mjs`). Code from vercel-labs/durable-harness is tracked in `vendor/durable-harness/UPSTREAM.json`; never hand-edit `vendor/durable-harness/upstream/`. `scripts/port-durable-harness.mjs` regenerates the copies from those pristine files, the named patches and the import table under `vendor/durable-harness/port/`; `npm run verify:port` (`--check`) fails on any byte it does not make. The Claude adapter pins an exact SDK/CLI pair, the Codex adapter Codex 0.164.0 (its key-holding proxy forwards only `POST /v1/responses`); their real-binary `test/tool-off.test.mjs` skips locally without the binary, and CI sets `AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1` and `AGENTRUN_CODEX_REQUIRE_BINARY=1` so it fails instead |
@@ -44,7 +44,9 @@ rest, never published; removing the flag lifts a hold. Release order: `scripts/r
 ## Setup and checks
 
 Use Node 22.19+ or 24.2+ (`.nvmrc` pins 22.23.2, the release toolchain) and npm 11 (CI pins 11.21.0).
-`scripts/check-node.mjs` refuses Node 23 and 24.0-24.1, which have no `import.meta.main`.
+`scripts/check-node.mjs` refuses Node 23 and 24.0-24.1, which have no `import.meta.main`. A script in `scripts/`
+decides it is the command with `isMain(import.meta)` (`scripts/is-main.mjs`), which refuses the command on such a Node
+instead of exiting 0 having done nothing.
 Regenerate `package-lock.json` only with npm 11 (`npm install --package-lock-only`), never by hand,
 then `npm run export:source` and commit `docs/dependencies.md`: CI's `check-generated.mjs` fails on
 a stale one and `npm run check` does not catch it.

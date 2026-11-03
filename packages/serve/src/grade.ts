@@ -16,10 +16,11 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, type Verdict } from "@parcha/agentrun-learn";
 import type { PageJudge } from "@parcha/pi-browser";
-import { claudeModel } from "./adapters.js";
+import { claudeModel, claudeProvider } from "./adapters.js";
 import { FAUX_JEV_ENV, fauxFetch, jevKey } from "./decisions.js";
+import { homeOf } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
-import { agentFolder, checkOut, git, homeDir, line, mainOf, NO_TOKENS, type Proposal, readBlobs, type Tokens, withAgentRepo } from "./learning.js";
+import { agentFolder, checkOut, git, line, mainOf, NO_TOKENS, type Proposal, readBlobs, type Tokens, withAgentRepo } from "./learning.js";
 import { type Complete, completer } from "./llm.js";
 import { runModels, thinkingOf } from "./model.js";
 import { authContextOf } from "./secrets.js";
@@ -87,7 +88,7 @@ export type GradeMain = { active: IndexEntry[]; superseded: NoteText[] };
 /** Main now, for run `runId`'s grade, in the agent's queue: merged already (a commit names the run), what stops its
  *  proposal joining main as it is now, or its active notes' index lines and the notes the proposal supersedes in full. */
 export function readForGrade(data: string, agentId: string, runId: string, proposal: Proposal): Promise<{ merged: string } | { problems: Problem[] } | GradeMain> {
-  const home = homeDir(data, agentId);
+  const home = homeOf(data, agentId);
   return withAgentRepo(data, agentId, async () => {
     const repo = await agentFolder(data, agentId);
     const sha = (await mainOf(home, repo))!;
@@ -139,15 +140,20 @@ const tokensOf = (usage: PiUsage | undefined): Tokens | null =>
 type PiModels = { getModel(provider: string, id: string): unknown; completeSimple(...args: unknown[]): Promise<{ usage?: PiUsage }> };
 
 /** One completion on the agent's own model, as its run's process picks it (app.ts): claude-agent's from pi-ai's catalog,
- *  any other harness's by runModels (the gateway, pi-ai's providers, or the faux module), at its revision's thinking;
- *  counted in `cost` (a call that fails has an unknown cost). */
+ *  sent where the run's own requests go (claudeProvider), any other harness's by runModels (the gateway, pi-ai's
+ *  providers, or the faux module), at its revision's thinking; counted in `cost` (a call that fails has an unknown cost). */
 async function agentModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost): Promise<Complete> {
   let chosen;
   if (agent.harness === "claude-agent" && !env[FAUX_HARNESS_ENV]) {
     const choice = claudeModel(env, agent.model);
     if ("why" in choice) throw new Error(choice.why);
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-    chosen = { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model };
+    // The catalog prices the model; its address is ANTHROPIC_BASE_URL's when set, as the run's, never the catalog's
+    // api.anthropic.com, so a gateway's key goes to that gateway alone.
+    const { origin } = claudeProvider(env, choice.model);
+    const catalog = builtinModels({ authContext: authContextOf(env) }) as unknown as PiModels;
+    const at = (found: unknown) => (found && typeof found === "object" ? { ...found, baseUrl: origin } : found);
+    chosen = { models: { getModel: (provider: string, id: string) => at(catalog.getModel(provider, id)), completeSimple: (...call: unknown[]) => catalog.completeSimple(...call) }, model: choice.model };
   } else chosen = await runModels(env, agent.model);
   const models = chosen.models as unknown as PiModels;
   const { model } = chosen;
@@ -225,7 +231,7 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
  *  when main, as it is now, takes the notes no more (mergeProblems). `checkout` is why the files could not be brought in
  *  line, when they could not: main is merged all the same. */
 export function mergeProposal(data: string, agentId: string, runId: string, proposal: Proposal, reason: string): Promise<{ merged: string; checkout: Error | undefined } | { problems: Problem[] }> {
-  const home = homeDir(data, agentId);
+  const home = homeOf(data, agentId);
   const added = proposedOf(proposal);
   return withAgentRepo(data, agentId, async () => {
     const repo = await agentFolder(data, agentId);

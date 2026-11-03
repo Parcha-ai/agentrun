@@ -10,8 +10,8 @@ import { constants } from "node:fs";
 import { lstat, open, opendir } from "node:fs/promises";
 import { join } from "node:path";
 import { CAPS, type Change, checkProposal, INDEX_FILE, type Problem, printable } from "@parcha/agentrun-learn";
-import { writeDurable } from "./files.js";
-import { activeOf, agentFolder, homeDir, LEARNED_SNAPSHOT, type Proposal, PROPOSAL, readSeed, withAgentRepo } from "./learning.js";
+import { homeOf, writeDurable } from "./files.js";
+import { activeOf, agentFolder, LEARNED_SNAPSHOT, type Proposal, PROPOSAL, readSeed, withAgentRepo } from "./learning.js";
 
 export type Proposed = { state: "proposed"; notes: number } | { state: "dropped"; reason: "empty" } | { state: "dropped"; reason: "checker"; problems: Problem[] };
 
@@ -85,7 +85,7 @@ async function harvest(dir: string, laid: ReadonlyMap<string, string>): Promise<
  *  in `runDir` as its proposal; or `empty` when it added nothing, or `checker` with the problems, printable. `refuse`:
  *  this host's secrets. In the agent's queue. A snapshot that is not there throws. */
 export const proposeRun = (input: { data: string; agentId: string; runDir: string; seed: string; refuse: readonly string[] }): Promise<Proposed> => withAgentRepo(input.data, input.agentId, async () => {
-  const seed = await readSeed(homeDir(input.data, input.agentId), await agentFolder(input.data, input.agentId), input.seed);
+  const seed = await readSeed(homeOf(input.data, input.agentId), await agentFolder(input.data, input.agentId), input.seed);
   const { changes, own } = await harvest(join(input.runDir, LEARNED_SNAPSHOT), new Map(Object.entries(seed.notes))).catch((error: NodeJS.ErrnoException) => {
     // Never the error's own text, which names a path of the run's: it may hold anything.
     throw new Error(`the run's copy of the folder could not be read (${error.code ?? "error"})`);

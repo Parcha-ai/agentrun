@@ -2,8 +2,9 @@
 // aggregates over store.sqlite), with what only the runs this server holds can say. Nothing under runs/ is opened: a
 // running run this server does not hold has no status here, and is counted as unknown, never as active or not waiting.
 // The learning counts are a held run's learning, from memory, and every other run's end from the learning ledger
-// (usage.ts), one file at the data directory's top.
+// (usage.ts), one file at the data directory's top (learning-run.ts counts).
 import type { AnalyticsFilter, AnalyticsGroup, RunRow, StoreAnalytics, StoreStats } from "@parcha/pi-durable-agent";
+import { nameOf } from "@parcha/pi-durable-agent/timeline";
 import { ApiError } from "./errors.js";
 import { type Runs, type Status, statusOf } from "./runs.js";
 import { ID } from "./validate.js";
@@ -25,7 +26,7 @@ export function statsView(stats: StoreStats, runs: Runs) {
   const usd = round(stats.cost.usd);
   return {
     agents: stats.agents,
-    runs: { total: stats.runs.total, active: running.active, needs_input: running.needs_input, failed: stats.runs.failed + stats.runs.escalated, status_unknown: running.status_unknown },
+    runs: { total: stats.runs.total, active: running.active, needs_input: running.needs_input, failed: stats.runs.failed, needs_review: stats.runs.escalated, status_unknown: running.status_unknown },
     per_agent: stats.byAgent.map((a) => ({ agent_id: a.id, name: a.name, runs: a.runs })),
     cost: { usd, basis: usd === null ? null : "estimate", unknown_runs: stats.cost.unknown },
     archived: { agents: stats.archivedAgents, runs: stats.archivedRuns },
@@ -70,7 +71,8 @@ export function analyticsFilter(url: URL): AnalyticsFilter {
   return filter;
 }
 
-const group = (g: AnalyticsGroup) => ({ runs: g.runs, completed: g.completed, failed: g.failed, runs_with_metrics: g.runsWithMetrics, tokens: g.tokens, cost_usd: round(g.costUsd), unknown_cost_runs: g.unknownCostRuns });
+/** A group's counts: an escalated run is completed, and needs review; never failed. */
+const group = (g: AnalyticsGroup) => ({ runs: g.runs, completed: g.completed, needs_review: g.needsReview, failed: g.failed, runs_with_metrics: g.runsWithMetrics, tokens: g.tokens, cost_usd: round(g.costUsd), unknown_cost_runs: g.unknownCostRuns });
 
 export function analyticsView(a: StoreAnalytics, filter: AnalyticsFilter) {
   const t = a.totals;
@@ -81,27 +83,10 @@ export function analyticsView(a: StoreAnalytics, filter: AnalyticsFilter) {
     by_harness_effort: a.byHarnessEffort.map((g) => ({ harness: g.harness, effort: g.effort, ...group(g) })),
     by_day: a.byDay.map((g) => ({ day: g.day, ...group(g) })),
     by_source: a.bySource.map((g) => ({ source: g.source, ...group(g) })),
-    tools: a.tools,
+    // Each tool by the name it was called (`tool`) and what a person calls it (`label`, the timeline's registry).
+    tools: a.tools.map((t) => ({ tool: t.tool, label: nameOf(t.tool), calls: t.calls, errors: t.errors })),
   };
 }
 
-/** How the runs that tried to learn fared, over the runs the analytics' `from`, `to` and `agent` pick (by when they
- *  started, unarchived): `runs` with a learning block, `merged`, `dropped` by reason, and `in_progress` (seeded,
- *  reflecting or proposed: a run this server holds). A run with learning off, a workflow's or an imported one, has
- *  none, and is not counted. */
-export function learningStats(rows: readonly RunRow[], filter: AnalyticsFilter, learningOf: (row: RunRow) => { state: string; reason: string | null } | null) {
-  const from = filter.from === undefined ? -Infinity : Date.parse(filter.from);
-  const to = filter.to === undefined ? Infinity : Date.parse(filter.to);
-  const out = { runs: 0, merged: 0, dropped: {} as Record<string, number>, in_progress: 0 };
-  for (const row of rows) {
-    const at = Date.parse(row.startedAt);
-    if (row.kind !== "agentic" || row.importedFrom || row.archivedAt || !(at >= from && at < to) || (filter.agent !== undefined && row.agent !== filter.agent)) continue;
-    const learning = learningOf(row);
-    if (!learning) continue;
-    out.runs += 1;
-    if (learning.state === "merged") out.merged += 1;
-    else if (learning.state === "dropped") out.dropped[learning.reason ?? "unknown"] = (out.dropped[learning.reason ?? "unknown"] ?? 0) + 1;
-    else out.in_progress += 1;
-  }
-  return out;
-}
+/** How the runs that tried to learn fared: learning-run.ts's, beside the counts that use it, and named here as before. */
+export { learningStats } from "./learning-run.js";

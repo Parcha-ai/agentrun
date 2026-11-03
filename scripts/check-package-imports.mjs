@@ -1,4 +1,4 @@
-// Which workspace packages a package may not reach. The harness seam (@parcha/agentrun-adapters and each harness package
+// Which workspace packages a package may not reach. The harness seam (@parcha/agentrun-kernel and each harness package
 // beside it) is host-neutral: a DSL host imports it without serve, so it may not depend on or import a host (serve, the
 // reference harness) or the Pi runtime. Read from each package's manifest and from every module specifier in its source.
 // `node scripts/check-package-imports.mjs` exits non-zero with the problems; the tests run it on this tree and on planted
@@ -7,6 +7,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { specifiersOf } from './upstream-attribution.mjs';
+import { isMain } from './is-main.mjs';
 
 /** Package directory pattern, and the package names (or subpaths) its manifest and source may not name. */
 export const FORBIDDEN = [
@@ -49,7 +50,7 @@ export async function packageImportProblems(root) {
   return problems;
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const problems = await packageImportProblems(join(fileURLToPath(new URL('.', import.meta.url)), '..'));
   for (const problem of problems) console.error(problem);
   if (problems.length) process.exit(1);

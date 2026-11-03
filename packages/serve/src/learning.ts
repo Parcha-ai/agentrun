@@ -1,5 +1,5 @@
 // Learning: an agent whose definition says `learning: true` keeps a folder of what it learned, and each of its runs
-// starts from it. The folder is `<data>/homes/<agent id>/learning/`, in Claude Code's auto-memory format
+// starts from it. The folder is its home's `learning/` (files.ts homeOf), in Claude Code's auto-memory format
 // (packages/learn notes.ts): `MEMORY.md`, the index, one line per active note, and one `<slug>.md` per note. It is plain
 // git with main checked out, so any reader sees its files. This server is its only writer. Every git call runs with the
 // repository's hooks, fsmonitor, replace refs and lazy fetches off and reads no system or global config, and every call
@@ -10,7 +10,7 @@
 // index and active notes into the run's `work/.learning/` and pins the commit in the run's directory (`learning.json`),
 // with what the run reads of the index. The run's process reads that pin (withLearned, for app.ts) and never runs git, so
 // it may run anywhere its directory is. When the run ends the server asks it one more turn, in which it may add notes to
-// that copy (runs.ts). As the run settles, before anything can open it again, the copy is moved whole out of its work
+// that copy (learning-run.ts). As the run settles, before anything can open it again, the copy is moved whole out of its work
 // (snapshotLearned); what the turn added is checked from there (propose.ts), graded and merged into main (grade.ts).
 //
 // The host never follows a symbolic link into the folder (agentFolder): a link at the agent's home, at its `learning/`
@@ -23,7 +23,7 @@ import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, type Verdict } from "@parcha/agentrun-learn";
-import { writeDurable } from "./files.js";
+import { homeOf, writeDurable } from "./files.js";
 import { isObject } from "./validate.js";
 
 /** The server's learning switch (`--learning`, AGENTRUN_SERVE_LEARNING; capabilities.features.learning). `on`, the
@@ -60,6 +60,8 @@ export type Learning = {
 };
 /** A run's learning as its view shows it: the state, why and when. */
 export const learningView = ({ state, reason, detail, at }: Learning) => ({ state, reason, detail, at });
+/** A run's learning as a list shows it: its state and reason. */
+export const shortLearning = (learning: Learning | null) => (learning ? { state: learning.state, reason: learning.reason } : null);
 /** The label of the end-of-run turn's timeline rows, and the kind and label of a run's learning row. */
 export const LEARNING_LABEL = "learning";
 
@@ -89,10 +91,9 @@ const MIN_GIT = [2, 40] as const;
 /** How long one git call may take before it is killed: a hung call would hold its agent's queue. */
 const GIT_TIMEOUT_MS = 60_000;
 
-/** The agent's home, `<data>/homes/<agent id>`, and its learning folder: the home's `learning/` entry, which only the
- *  host writes. */
-export const homeDir = (data: string, agentId: string): string => join(data, "homes", agentId);
-export const learningRepo = (data: string, agentId: string): string => join(homeDir(data, agentId), "learning");
+/** The agent's learning folder: its home's `learning/` entry, which only the host writes. The home is files.ts homeOf,
+ *  the one definition the home's routes use too, so two ids that differ only in case never share a folder. */
+export const learningRepo = (data: string, agentId: string): string => join(homeOf(data, agentId), "learning");
 
 /** Makes `dir` where it is absent: a plain `mkdir`, never recursive (which would follow a link on the way). One that is
  *  there, whatever it is, is left for the check after. */
@@ -125,7 +126,7 @@ async function refuseLink(data: string, path: string, absent = false): Promise<v
  *  points. `make`: the home and the folder are made where absent first, one level at a time, each checked after it is
  *  made (agentFolder); without it nothing is made and a missing level passes (readFolder). The one link rule. */
 async function checkedFolder(data: string, agentId: string, make: boolean): Promise<string> {
-  const home = homeDir(data, agentId);
+  const home = homeOf(data, agentId);
   const repo = learningRepo(data, agentId);
   if (make) await makeDir(dirname(home));
   for (const dir of [home, repo]) {
@@ -334,7 +335,7 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
   return withAgentRepo(data, agentId, async () => {
     const check = () => agentFolder(data, agentId);
     const repo = await check();
-    const home = homeDir(data, agentId);
+    const home = homeOf(data, agentId);
     const sha = await openAgentRepo(home, repo, check);
     return readSeed(home, repo, sha);
   });
@@ -343,7 +344,7 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
 /** What commit `sha` of the agent's folder holds for a run, as seedOf reads main: a run's seed, read again. In the
  *  agent's queue, through agentFolder. */
 export const seedAt = (data: string, agentId: string, sha: string): Promise<Seed> =>
-  withAgentRepo(data, agentId, async () => readSeed(homeDir(data, agentId), await agentFolder(data, agentId), sha));
+  withAgentRepo(data, agentId, async () => readSeed(homeOf(data, agentId), await agentFolder(data, agentId), sha));
 /** The active notes of a seed, parsed. */
 export const activeOf = (seed: Pick<Seed, "notes">): LearnedNote[] => Object.entries(seed.notes).flatMap(([file, text]) => {
   const note = parseNoteFile(file, text);
@@ -408,6 +409,17 @@ export async function pinSeed(runDir: string, work: string, seed: Seed): Promise
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+/** Takes back a seed whose copy a server went down during (runs.ts load): the run's pin, then its `work/.learning/`.
+ *  True when either was there. */
+export async function dropSeed(runDir: string, work: string): Promise<boolean> {
+  const pinFile = join(runDir, LEARNING_PIN);
+  const dir = join(work, LEARNED_DIR);
+  const there = Boolean((await lstat(pinFile).catch(() => null)) ?? (await lstat(dir).catch(() => null)));
+  await rm(pinFile, { force: true });
+  await rm(dir, { recursive: true, force: true });
+  return there;
 }
 
 /** The run's pin, as its process reads it: undefined when the run has none (its agent does not learn, its seed failed, a

@@ -9,12 +9,12 @@ import { inspectWorkflow, formatWorkflowTree } from "./inspection.js";
 
 const help = `AgentRun DSL — build, test, and run agent workflows
 
-  agentrun demo [--scenario billing|technical|ambiguous] [--json]
-  agentrun example [file.json]            Write the demo workflow (never overwrite)
-  agentrun inspect workflow.json [--json] Show structure without executing code
-  agentrun validate workflow.json [input.json] --trusted
-  agentrun dry-run workflow.json [input.json] --trusted [--strict]
-  agentrun run workflow.json input.json --trusted
+  agentrun-dsl demo [--scenario billing|technical|ambiguous] [--json]
+  agentrun-dsl example [file.json]            Write the demo workflow (never overwrite)
+  agentrun-dsl inspect workflow.json [--json] Show structure without executing code
+  agentrun-dsl validate workflow.json [input.json] --trusted
+  agentrun-dsl dry-run workflow.json [input.json] --trusted [--strict]
+  agentrun-dsl run workflow.json input.json --trusted
 
 demo runs the real interpreter with scripted judgments, without a key or network.
 run supports deterministic workflows; use the JavaScript API to supply agent,
@@ -34,7 +34,7 @@ async function main(args: string[]) {
     let scenario: DemoScenario = "billing";
     let scenarioProvided = false;
     let json = false;
-    const usage = "Usage: agentrun demo [--scenario billing|technical|ambiguous] [--json]";
+    const usage = "Usage: agentrun-dsl demo [--scenario billing|technical|ambiguous] [--json]";
     for (let i = 1; i < args.length; i++) {
       const arg = args[i];
       if (arg === "--json") { json = true; continue; }
@@ -67,19 +67,19 @@ async function main(args: string[]) {
   }
   if (command === "inspect") {
     const positional = args.slice(1).filter(arg => arg !== "--json");
-    if (positional.length !== 1 || positional[0].startsWith("--")) throw new Error("Usage: agentrun inspect workflow.json [--json]");
+    if (positional.length !== 1 || positional[0].startsWith("--")) throw new Error("Usage: agentrun-dsl inspect workflow.json [--json]");
     const inspection = inspectWorkflow(JSON.parse(await readFile(resolve(positional[0]), "utf8")));
     console.log(args.includes("--json") ? JSON.stringify(inspection, null, 2) : formatWorkflowTree(inspection));
     return;
   }
-  if (!["validate", "dry-run", "run"].includes(command)) throw new Error(`Unknown command "${command}". Use agentrun --help.`);
+  if (!["validate", "dry-run", "run"].includes(command)) throw new Error(`Unknown command "${command}". Use agentrun-dsl --help.`);
   if (!args.includes("--trusted")) throw new Error("Pass --trusted only after reviewing the workflow. Authored JavaScript may execute, including during validation.");
   const strict = command === "dry-run" && args.includes("--strict");
   const positional = args.slice(1).filter(arg => arg !== "--trusted" && !(strict && arg === "--strict"));
   const unknown = positional.find(arg => arg.startsWith("--"));
-  if (unknown) throw new Error(`Unknown option "${unknown}". Use agentrun --help.`);
+  if (unknown) throw new Error(`Unknown option "${unknown}". Use agentrun-dsl --help.`);
   if (!positional[0]) throw new Error("Provide a workflow JSON file.");
-  if (positional.length > 2) throw new Error(`Usage: agentrun ${command} workflow.json ${command === "run" ? "input.json" : "[input.json]"} --trusted${command === "dry-run" ? " [--strict]" : ""}`);
+  if (positional.length > 2) throw new Error(`Usage: agentrun-dsl ${command} workflow.json ${command === "run" ? "input.json" : "[input.json]"} --trusted${command === "dry-run" ? " [--strict]" : ""}`);
   if (command === "run" && !positional[1]) throw new Error("Provide an input JSON file.");
   const workflow = JSON.parse(await readFile(resolve(positional[0]), "utf8")) as Workflow;
   let input: Record<string, unknown> | undefined;

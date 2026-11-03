@@ -572,7 +572,8 @@ A run's metrics sit beside its row: `metrics` on `carryBack(runId, { state, cost
 are written in the transaction that writes the run's row, and `store.runMetrics(runId)` reads them back with `at`, when they were
 written (undefined for a run with none). `runMetricsOf(records)` from `@parcha/pi-durable-agent/timeline` makes them from the
 entries of every conversation of the run's store (`SELECT record FROM entries ORDER BY id`), for a run this machine ran and an
-imported one alike; the host adds what only it knows: `activeMs`, how long the run was at work, `effort`, `model` (the model it
+imported one alike; `runMetricsWithDecisions(records, decisions)` adds a workflow run's decision receipts (each a request of
+its own, its `usage` in the token sums, one with no usage or cancelled in `unmetered`); the host adds what only it knows: `activeMs`, how long the run was at work, `effort`, `model` (the model it
 ran; runMetricsOf names the one with the most requests), and `costUsdEst` with `costBasis`, an estimate of its cost apart from
 `cost_usd` and how it was made. The tokens are pi's: `input` is the input neither read from nor written to the cache,
 `cache_read` the cached input read, `cache_write` the input written to the cache, so the whole input is
@@ -591,10 +592,11 @@ metrics and gains the tables from the first `openStore`, and an earlier version 
 and reads every run and `stats` as before (one that ends a run opened again leaves its metrics as they were).
 
 `store.analytics({ from?, to?, agent? })` sums the metrics in one read, over the runs not archived that started in
-[`from`, `to`) (ISO times in UTC) and are `agent`'s, each bound optional: `totals` (the runs, how many completed and
-failed, escalated included, how many have metrics, their tokens and token kinds, requests and unmetered requests, and
-their cost as `stats` sums it), `time` (ended minus started over the ended runs, and `activeMs` over those whose metrics
-have one), `byHarnessEffort` (the revision's harness, `pi` when it names none and `workflow` for a workflow revision, then
+[`from`, `to`) (ISO times in UTC) and are `agent`'s, each bound optional: `totals` (the runs, how many completed, an
+escalated run among them, how many of those need review (`needsReview`, the escalated ones), how many failed, how
+many have metrics, their tokens and token kinds, requests and unmetered requests, and their cost as `stats` sums it),
+`time` (ended minus started over the ended runs, and `activeMs` over those whose metrics have one),
+`byHarnessEffort` (the revision's harness, `pi` when it names none and `workflow` for a workflow revision, then
 the metrics' effort, null when unset), `byDay` (the UTC date a run started), `bySource` (`live`, or the source an imported
 run came from) and `tools` (the 20 with the most calls, by name on a tie, with their errors). Each group has `runs` beside
 `runsWithMetrics`, so a run with no metrics counts as a run and never as 0 tokens; a running run's metrics are its last
@@ -711,26 +713,30 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 
 | Export | Does |
 |---|---|
-| `timelineOf(entries, options?)` | The rows of a stored conversation, in log order. The options (`TimelineOptions`) are `settled` (nothing is running: a call with no result is interrupted), `conversationId` (for entries and events that carry none), `agentLabel` (a row's `agent_label`, from its conversation id), `labels` (labels for this call only), `caps` (the cut lengths of `CAPS`), and `now`, the clock for retry and poll waits, which only live rows use |
+| `timelineOf(entries, options?)` | The rows of a stored conversation, in log order, with the usage row, when there is one, last. The options (`TimelineOptions`) are `settled` (nothing is running: a call with no result is interrupted), `conversationId` (for entries and events that carry none), `agentLabel` (a row's `agent_label`, from its conversation id), `labels` (labels for this call only), `caps` (the cut lengths of `CAPS`), and `now`, the clock for retry and poll waits, which only live rows use |
 | `timelineReducer(options?)` | Live rows, with the same options. `apply(events)` takes the `snapshot` event, then each batch from `watchEvents`, and returns `{ rows, drop }` (upsert the rows by id, delete the `drop` ids); `rows()` returns every row now, in log order; `isLive(id)` says whether a row is live (one the events made, which goes when it ends) rather than one a committed entry made, which a host keeps showing though a later snapshot of a compacted conversation no longer holds it |
 | `groupTimeline(rows)` | Rows to groups, for a page: rounds of calls, folds and nested calls, each a `Group` |
 | `foldCalls(calls)` | Adjacent calls of one tool, folded into `Fold`s. A call with inner rows keeps its own line |
 | `failedCall(call)` | Whether a call's result has `tool_status` `failed` |
 | `renderText(rowsOrGroups, { fold? })` | Plain text, one line per row or group; `fold: false` shows every call on its own line |
-| `registerLabel(tool, label, fold?)` | The label of a host's own tool, in the past tense, for every later call; `fold` says how its calls fold into one line |
+| `registerLabel(tool, label, fold?, { name? })` | The label of a host's own tool, in the past tense, for every later call; `fold` says how its calls fold into one line; `name` is what the tool is called where calls are counted (a run's analytics), in plain words |
+| `nameOf(tool)` | That name: the registered one, else the name the tool was called by. The registry is the one source of a tool's display name |
+| `callFailed(tool, result)` | Whether a finished call failed: an error, or a result its tool's outcome reads as failed (a refused fetch). A result row's `tool_status` and `runMetricsOf`'s tool `errors` both read it |
 | `registerOutcome(tool, outcome)` | How a host's tool tells its outcome from a result it returned, not an error: `outcome(result)` gives `{ failed, text }`, and the result row reads `<label>: <text>`, with `tool_status` `failed` when `failed`, in place of `<label>: ok`. `web_fetch` and `fetch_page` have theirs: a page with `ok: false` reads `refused: …` or `failed: …` |
 | `registerTurnEnding(tool)` | A host's tool that ends its turn (pi's `terminate`, as an ask-the-person tool does). A message after a round whose tools all end the turn is the person's next message, never a `(steer)` |
 | `labelOf(tool, args, result?, extra?)` | The label of one call. An unknown tool gets `Using tool: <name>` |
 | `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
 | `inputPreview(args, max)` | The input worth showing, or `null`: a `description`, `command`, `query`, `file_path`, `url`, `path` or `code` argument, with a URL's query values dropped, cut to `max` |
 | `runMetricsOf(records)` | What a run that ended used, from the entries of all its conversations, in log order: its tokens (`input`, `cacheRead`, `cacheWrite`, `output`), its `requests` as the usage row counts them and `unmetered`, those of unknown tokens (an aborted response's partial usage, and a usage with no input at all, are never summed), its requests by `provider/model` (`models`) and the busiest `model`, and each tool's `calls` and `errors` (`tools`), their names kept to what the store takes (`METRIC_NAMES`). A `RunMetrics`, for the store's `carryBack` and `importRun` ([Agents in a folder](#agents-in-a-folder-the-agent-store)) |
+| `runMetricsWithDecisions(records, decisions)` | `runMetricsOf`, with a workflow run's decision receipts (`DecisionLike`) beside its entries: each a request by `provider/model`, its `usage` (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, in `unmetered`. serve passes a workflow run's receipts at its end; `runMetricsOf` keeps one parameter, so `.map(runMetricsOf)` stays safe |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
 | `METRIC_NAMES` | How `runMetricsOf` keeps tool and model names: `max` 256 characters, the `kept` 100 busiest of each, and the names it sums the rest and a nameless tool under: `otherTools` (`…other tools`), `otherModels` (`…other models`), `unnamedTool` (`…unnamed tool`) |
-| `REQUEST_STARTED`, `REQUEST_ENDED`, `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted; and the cost of a request with no `pi.assistant` entry of its own (a compaction summary, marked `request: "compaction"`). An answer written before its cost came in is followed by `REQUEST_COST_PENDING`, and its cost comes later as `REQUEST_COST_LATE` (`usd`): it adds to the cost and is not counted as a request; the cost reads unknown while one is pending. The usage row counts each marked request and sums each cost; one with no entry or cost (cut before its answer) other than the latest still in flight makes the cost unknown. A request the host refused before it left (`REQUEST_REFUSED`) is not counted, and pi's error entry for it is not shown. A conversation with no marks reads as before |
+| `REQUEST_STARTED`, `REQUEST_ENDED`, `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted; and the cost of a request with no `pi.assistant` entry of its own (a compaction summary, marked `request: "compaction"`). An answer written before its cost came in is followed by `REQUEST_COST_PENDING`, and its cost comes later as `REQUEST_COST_LATE` (`usd`): it adds to the cost and is not counted as a request; the cost reads unknown while one is pending. A call an answer asked for, written after that answer's own entry (a harness reports each call as it runs it), follows `REQUEST_CONTINUED` in a `pi.assistant` of its own: it shows under that answer and counts as a call, not as a request, a cost or tokens. The usage row counts each marked request and sums each cost; one with no entry or cost (cut before its answer) other than the latest still in flight makes the cost unknown. A request the host refused before it left (`REQUEST_REFUSED`) is not counted, and pi's error entry for it is not shown. A conversation with no marks reads as before |
 
 Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`, `OutcomeFn`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
-`FoldSpec`, `ToolResultView`, and `RunMetrics` and `ToolMetrics` (what `runMetricsOf` returns).
+`FoldSpec`, `ToolResultView`, `RunMetrics` and `ToolMetrics` (what `runMetricsOf` returns), and `DecisionLike` (a
+workflow's decision receipt, as `runMetricsWithDecisions` reads it).
 
 ### `@parcha/pi-durable-agent/serve`
 

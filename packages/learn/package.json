@@ -1,7 +1,6 @@
 {
   "name": "@parcha/agentrun-learn",
   "version": "0.1.0-beta.28",
-  "private": true,
   "description": "Self-learning on any harness, as files: an agent's learning folder in Claude Code's auto-memory format, the checker of what a run proposes for it, the end-of-run prompt, and the grader's rubric, prompt and verdict.",
   "keywords": [
     "agentrun",
