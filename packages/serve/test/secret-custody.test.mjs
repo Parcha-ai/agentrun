@@ -40,7 +40,23 @@ const BROWSERBASE = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"];
 const TOOL_KEYS = ["MONID_API_KEY", ...BROWSERBASE];
 /** The model keys: every run's process gets each, whatever its tools. */
 const MODEL_KEYS = ["AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"];
-const READ = [...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY", "OPENROUTER_API_KEY", "MONID_API_KEY", ...DECISION_KEYS];
+/** Amazon Bedrock's keys, which pi-ai's table of keys by provider leaves out as ambient: its request reads them itself. */
+const BEDROCK = ["AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"];
+/** The keys pi-ai reads for each of its built-in providers, by its own table (findEnvKeys, asked of an environment that
+ *  sets every name), and the names each provider's auth asks its context for when none is set. */
+async function piAiKeys() {
+  const { findEnvKeys } = await import("@earendil-works/pi-ai/compat");
+  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  const every = new Proxy({}, { get: () => "set" });
+  const out = {};
+  for (const { id } of builtinModels().getProviders()) {
+    const asked = new Set();
+    await builtinModels({ authContext: { env: async (name) => void asked.add(name), fileExists: async () => false } }).getAuth(id);
+    out[id] = { table: findEnvKeys(id, every) ?? [], asked: [...asked] };
+  }
+  return out;
+}
+const READ =[...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY", "OPENROUTER_API_KEY", "MONID_API_KEY", ...DECISION_KEYS];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const digest = (value) => createHash("sha256").update(value).digest("hex").slice(0, 16);
 const read = (path) => {
@@ -392,6 +408,150 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   const shaped = answerFlow();
   shaped.root.steps[0].state = { example: { node: "extract", tools: ["browser"] } };
   assert.deepEqual(await secretsFor(workflow(shaped, ["browser"])), without(...TOOL_KEYS));
+});
+
+test("secretsFor: a provider's keys only for a pi revision whose model is that provider's, its own or the host's of each tier it runs; none through a gateway, nor on codex or claude-agent; the model keys still reach each", async () => {
+  const { secretsFor } = await import("../dist/runs.js");
+  const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
+  const agentic = (extra = {}) => revision("agentic", { instructions: "Answer.", ...extra });
+  const providers = ["GEMINI_API_KEY", "DEEPSEEK_API_KEY", ...BEDROCK];
+  const held = async (rev, env) => {
+    const names = await secretsFor(rev, undefined, env);
+    for (const name of MODEL_KEYS) assert.ok(names.includes(name), `${name} reaches every run`);
+    return providers.filter((name) => names.includes(name));
+  };
+  assert.deepEqual(await held(agentic({ model: "google/gemini-2.5-flash" }), {}), ["GEMINI_API_KEY"], "its own model's provider");
+  assert.deepEqual(await held(agentic(), { AGENT_MODEL: "deepseek/deepseek-chat" }), ["DEEPSEEK_API_KEY"], "the host's default model's");
+  assert.deepEqual(await held(agentic({ model: "google/gemini-2.5-flash" }), { AGENT_MODEL: "deepseek/deepseek-chat" }), ["GEMINI_API_KEY"], "its own wins over the host's");
+  assert.deepEqual(await held(agentic({ model: "amazon-bedrock/amazon.nova-lite-v1:0" }), {}), BEDROCK, "Bedrock's AWS keys, together");
+  assert.deepEqual(await held(agentic(), {}), [], "no model, no provider's key");
+  assert.deepEqual(await held(agentic({ model: "google/gemini-2.5-flash" }), { AGENT_MODEL_BASE_URL: "http://127.0.0.1:1" }), [], "through a gateway every model is the gateway's");
+  for (const harness of ["codex", "claude-agent"]) assert.deepEqual(await held(agentic({ harness, model: "google/gemini-2.5-flash" }), {}), [], `${harness} takes its model's key from the model keys`);
+  // A workflow: the host's model of each tier its model nodes and `llm` calls use.
+  const flow = answerFlow();
+  flow.root.steps[0].tier = "fast";
+  const workflow = revision("workflow", { workflow: flow });
+  assert.deepEqual(await held(workflow, { AGENT_MODEL: "deepseek/deepseek-chat", AGENT_MODEL_FAST: "google/gemini-2.5-flash" }), ["GEMINI_API_KEY"], "its fast tier's, not the default it does not run");
+  flow.root.steps.unshift({ node: "call", label: "draft", via: "tool", tool: "llm", args: { prompt: "{question}" }, out: "Answer", as: "draft", deadline_s: 120 });
+  assert.deepEqual(await held(revision("workflow", { workflow: flow }), { AGENT_MODEL: "deepseek/deepseek-chat", AGENT_MODEL_FAST: "google/gemini-2.5-flash" }), ["GEMINI_API_KEY", "DEEPSEEK_API_KEY"], "and the default tier an llm call runs on");
+});
+
+test("every key pi-ai reads for a provider is one of the launcher's secrets: each in pi-ai's own table, each key-shaped name a provider's auth asks for, and Bedrock's, which that table leaves out", async () => {
+  const keys = await piAiKeys();
+  assert.ok(["google", "deepseek", "amazon-bedrock"].every((id) => id in keys), Object.keys(keys).join(" "));
+  const unlisted = Object.entries(keys).flatMap(([id, { table, asked }]) => [...new Set([...table, ...asked.filter((name) => /(_API_KEY|_TOKEN)$|SECRET/i.test(name))])].filter((name) => !SECRET_NAMES.includes(name)).map((name) => `${id} ${name}`));
+  assert.deepEqual(unlisted, [], "each is held as OPENAI_API_KEY is, so no environment holds it: add it to the launcher's SECRETS");
+  assert.deepEqual(BEDROCK.filter((name) => !SECRET_NAMES.includes(name)), [], "Bedrock's keys are held too");
+});
+
+/** A run of agent `id` (started, followed to its end) and what its process reported (faux-custody.mjs). */
+const custodyReport = async (api, id) => {
+  const { status, body } = await api("POST", `/agents/${id}/runs`, { input: { content: "Report." } });
+  assert.equal(status, 202, JSON.stringify(body));
+  await follow(api, body.run_id, ["completed"]);
+  return { id: body.run_id, ...JSON.parse((await api("GET", `/runs/${body.run_id}`)).body.result.final_answer) };
+};
+
+/** Holds a turn of `runId` in its process, so the process is up while every process is read. */
+async function holdTurn(api, runId) {
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Hold." })).status, 202);
+  for (let i = 0; (await api("GET", `/runs/${runId}`)).body.state !== "working"; i++) {
+    assert.ok(i < 200, "the held turn works");
+    await sleep(50);
+  }
+  await sleep(500);
+}
+
+/** No process under `root` but `root` itself (the server, whose environment holds what its launcher was not told to
+ *  take) holds `canary` in its environment or command line. */
+function onlyTheServerHolds(root, canary) {
+  const tree = treeOf(root);
+  const under = processes().filter((p) => tree.has(p.pid) && p.pid !== root);
+  for (const p of under) {
+    assert.ok(!p.environ.includes(canary), `pid ${p.pid}'s environment holds a key-shaped variable no list names: ${p.cmdline.toString().replaceAll("\0", " ").slice(0, 120)}`);
+    assert.ok(!p.cmdline.includes(canary), `pid ${p.pid}'s command line holds it`);
+  }
+  return under.map((p) => p.cmdline.toString().replaceAll("\0", " "));
+}
+
+test("under its launcher, a key pi-ai reads for a provider (GEMINI_API_KEY) is in no process's environment, a run's and a program's it starts included, and reaches a run on that provider's model over its pipe alone; a key-shaped name no list names reaches no run's environment", { timeout: 120_000 }, async (t) => {
+  const canary = `not-a-secret-provider-${process.pid}-${Date.now()}`;
+  const gemini = `${canary}-GEMINI_API_KEY`;
+  // Named like a key and on no list: the launcher cannot know to take it, so the server's environment keeps it; no
+  // run's may.
+  const unlisted = `${canary}-ACME_API_KEY`;
+  const { root, api } = await launched(t, { AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN`, GEMINI_API_KEY: gemini, ACME_API_KEY: unlisted });
+  // On the faux model whatever they name, as a faux run is: each is handed what a run on its model is handed.
+  assert.equal((await api("POST", "/agents", agent("gemini", { model: "google/gemini-2.5-flash" }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("other", { model: "openai/gpt-4o" }))).status, 201);
+  const onGemini = await custodyReport(api, "gemini");
+  const onOther = await custodyReport(api, "other");
+  assert.equal(onGemini.handed.GEMINI_API_KEY, digest(gemini), "a run on a Gemini model is handed Gemini's key over its pipe");
+  assert.equal(onOther.handed.GEMINI_API_KEY, "none", "a run on another provider's model is not");
+  for (const report of [onGemini, onOther]) {
+    assert.deepEqual(report.keyShaped, [], "no name shaped like a key is in the run's process's environment");
+    assert.deepEqual(report.child, [], "nor in a program's it starts");
+    assert.deepEqual(report.pipe, { fd: 3, closed: true });
+  }
+  // The run on Gemini's model up, holding its turn, while every process of this user is read.
+  await holdTurn(api, onGemini.id);
+  const seen = noSecretAnywhere(root, gemini);
+  assert.ok(seen.some((cmdline) => cmdline.includes(" --app ")), "the run's process is among those read");
+  onlyTheServerHolds(root, unlisted);
+});
+
+test("on codex, with its turn held inside Codex's own process, a key pi-ai reads for a provider (GEMINI_API_KEY) is in no process's environment, Codex's included; a key-shaped name no list names is in none under the server", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
+  const canary = `not-a-secret-provider-codex-${process.pid}-${Date.now()}`;
+  const gemini = `${canary}-GEMINI_API_KEY`;
+  const unlisted = `${canary}-ACME_API_KEY`;
+  const gw = await heldGateway(t);
+  const standIn = join(await scratch(t), "codex-stand-in.mjs");
+  copyFileSync(STAND_IN, standIn);
+  const { root, api } = await launched(t, {
+    AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN`,
+    AGENT_MODEL_API_KEY: `${canary}-AGENT_MODEL_API_KEY`,
+    GEMINI_API_KEY: gemini,
+    ACME_API_KEY: unlisted,
+    AGENTRUN_CODEX_STANDIN: "1",
+    AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }),
+    AGENT_MODEL_BASE_URL: gw.origin,
+    AGENT_MODEL: "gpt-test",
+    AGENT_MODEL_PRICE: "1,2,0.5",
+  }, []);
+  assert.equal((await api("POST", "/agents", agent("coder", { harness: "codex" }))).status, 201);
+  assert.equal((await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } })).status, 202);
+  for (let i = 0; gw.seen.length === 0; i++) {
+    assert.ok(i < 400, "Codex's model request reaches the gateway");
+    await sleep(100);
+  }
+  const seen = noSecretAnywhere(root, gemini);
+  assert.ok(seen.some((cmdline) => cmdline.includes(standIn)), `Codex's process is among those read: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
+  assert.ok(onlyTheServerHolds(root, unlisted).some((cmdline) => cmdline.includes(standIn)), "Codex's process holds no key-shaped variable either");
+});
+
+test("a pi run on Amazon Bedrock hands each request the AWS keys its process holds, in pi-ai's own env option, which Bedrock's request reads them from: none needs an environment", async () => {
+  const { runModels } = await import("../dist/model.js");
+  const { createProvider } = await import("@earendil-works/pi-ai/models");
+  const canary = `not-a-secret-aws-${process.pid}`;
+  const keys = Object.fromEntries(BEDROCK.map((name) => [name, `${canary}-${name}`]));
+  // As the run's process holds its secrets (secrets.ts' withSecrets): read by name, never listed.
+  const env = { AGENT_MODEL: "amazon-bedrock/amazon.nova-lite-v1:0" };
+  for (const [name, value] of Object.entries(keys)) Object.defineProperty(env, name, { value, enumerable: false });
+  const { models, model } = await runModels(env, undefined);
+  // Bedrock's own provider and auth, its request taken here: what pi-ai would send Bedrock's request with.
+  const real = models.getProvider("amazon-bedrock");
+  let given;
+  const take = (_model, _context, options) => {
+    given = options?.env;
+    throw new Error("taken");
+  };
+  models.setProvider(createProvider({ id: real.id, name: real.name, auth: real.auth, models: real.getModels(), api: { stream: take, streamSimple: take } }));
+  const chat = models.getModel(model.provider, model.modelId);
+  await models.streamSimple(chat, { messages: [{ role: "user", content: "Hi.", timestamp: Date.now() }] }, {}).result().catch(() => undefined);
+  assert.deepEqual(Object.fromEntries(BEDROCK.map((name) => [name, given?.[name] === keys[name]])), Object.fromEntries(BEDROCK.map((name) => [name, true])), "each AWS key reached Bedrock's request");
+  given = undefined;
+  await models.completeSimple(chat, { messages: [{ role: "user", content: "Hi.", timestamp: Date.now() }] }, {}).catch(() => undefined);
+  assert.equal(given?.AWS_SECRET_ACCESS_KEY, keys.AWS_SECRET_ACCESS_KEY, "and a completion's");
 });
 
 test("under its launcher, a workflow run's judges get the TypeSafe and Parallel keys the server holds, and no process holds either in its environment or command line", { timeout: 120_000 }, async (t) => {
