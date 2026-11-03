@@ -50,6 +50,9 @@ function wideHome(root) {
   for (const dir of [alpha, beta]) mkdirSync(dir, { recursive: true });
   const first = claudeSession(home, alpha, 1);
   claudeSubagent(home, alpha, 1, 1);
+  // The same session again in a second file of its id, in another project's folder, holding only copies of the first's
+  // records: one run, read from both files, the copy adding nothing.
+  writeSession(join(home, ".claude", "projects", "-elsewhere", `${sessionId(1)}.jsonl`), readFileSync(first, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line)));
   claudeSession(home, alpha, 2, { unknownCost: true, prompt: "Price this." });
   resumed(first, 3);
   resumed(first, 4, { own: false });
@@ -122,8 +125,11 @@ test("the index pass writes every run's row, its metrics and estimate as its tra
   assert.deepEqual(rows(two.store), afterIndex, "no row changed by the transcripts pass");
 
   const one = await storeFor(t, "one");
-  await runImport(one.store, await planImport(opts, one.store), opts);
+  const single = await runImport(one.store, await planImport(opts, one.store), opts);
   assert.deepEqual(rows(one.store), afterIndex, "the rows one pass writes");
+  const skips = (report) => report.skipped.map((s) => `${s.what} ${s.why}`).sort();
+  assert.deepEqual(skips(transcripts), skips(single), "the files left out, and why, as one pass says");
+  assert.ok(single.skipped.some((s) => s.why === "holds only records of sessions imported already"), "the copy is left out");
   for (const key of keys) {
     const [a, b] = [runIdOf(one.store, key), runIdOf(two.store, key)];
     assert.deepEqual(transcriptOf(two.data, b), transcriptOf(one.data, a), `${key}: the same transcript`);

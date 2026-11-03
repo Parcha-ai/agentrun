@@ -808,17 +808,22 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       const parts: Session[] = [];
       // Every file of it read: one holding only copies adds no records, but its subagents' folder is read with the rest.
       const searched: Session[] = [];
+      const own: { file: string; part: Session; stats: Stats }[] = [];
+      const copies: typeof own = [];
       let read: SourceFile | undefined;
       for (const { file } of files) {
         const stats = await stat(file).catch(() => null);
         const part = stats ? await readSession(file, listed.source, { seen: seen(listed.source) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed" });
         if (!part || !stats) continue;
         searched.push(part);
-        // A file of it holding only copies adds nothing to it.
-        if (heldRun === undefined && ownless(part)) {
-          report.skipped.push({ what: file, why: "holds only records of sessions imported already" });
-          continue;
-        }
+        (ownless(part) ? copies : own).push({ file, part, stats });
+      }
+      // A file of it holding only copies adds nothing to it, so is left out, whichever pass reads it: the transcript is
+      // made of the files its row was. A run held already all of whose files are copies is made of them all, so its row
+      // is never left without a transcript.
+      const kept = own.length || heldRun === undefined ? own : copies;
+      if (kept === own) for (const { file } of copies) report.skipped.push({ what: file, why: "holds only records of sessions imported already" });
+      for (const { file, part, stats } of kept) {
         read ??= { path_sha256: hash(file), size: stats.size, mtime_ms: stats.mtimeMs };
         parts.push(part);
       }
