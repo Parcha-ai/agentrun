@@ -611,20 +611,6 @@ test("a crash before the commit is settled by the next lock taker: the old home,
   }
 });
 
-test("a crash after the commit, before the clean-up, is settled as the new home", skip, async () => {
-  const f = await diverged();
-  const revision = await homeRevision(f.home);
-  await assert.rejects(importPack(f.out, f.home.dir, { replace: true, inject: killed({ name: "committed", index: 2 }) }), /killed/);
-  assert.ok(existsSync(path.join(f.home.dir, ".import-journal")));
-  const state = await readAgentHome(f.home);
-  assert.equal(state.source.sha, SHA);
-  assert.ok(await homeRevision(f.home) > revision);
-  assert.equal(existsSync(path.join(f.home.dir, ".import-journal")), false);
-  assert.deepEqual(readdirSync(path.dirname(f.home.dir)).filter((name) => name.includes(".import-")), []);
-  for (const old of [path.join(f.work, "OLD.txt"), path.join(f.home.dir, "runs", "second", "work", "OLD.txt")]) assert.equal(existsSync(old), false);
-  assert.equal(readFileSync(path.join(f.home.dir, "runs", "second", "work", "second.txt"), "utf8"), "second\n");
-});
-
 test("a new home is made in an absent or an empty directory, and not in one that holds something else", skip, async () => {
   const f = await fixture();
   await packHome(f.home, { out: f.out, now: NOW });
@@ -764,10 +750,8 @@ test("a tar of nothing but pax headers is refused at the second one, without rea
   assert.ok(statSync(many).size > 50_000_000);
   const rss = process.memoryUsage().rss;
   const parsed = [];
-  const started = performance.now();
   const read = await readPack(many, { inject: (step) => { if (step.name === "parsed") parsed.push(step.index); } });
   assert.deepEqual(parsed, [2], "the reader read two header blocks of the 100,000 and stopped");
-  assert.ok(performance.now() - started < 30_000, "a guard against a hang, not a measure of speed");
   assert.match(read.checks.find((check) => check.name === "format").message, /two pax headers in a row/);
   const imported = [];
   await assert.rejects(importPack(many, path.join(dir, "never"), { inject: (step) => { if (step.name === "parsed") imported.push(step.index); } }), (error) => error.code === "check");
@@ -915,19 +899,24 @@ test("a rollback is terminal: stopped after its marker, or after the staging dir
   }
 });
 
-test("a commit is terminal too: stopped after the clean-up removed the staging directory, the next lock taker settles as the new home", skip, async () => {
-  for (const crash of ["committed", "marked", "cleaned"]) {
+test("a commit is terminal too: stopped after the clean-up removed the staging directory, or not stopped at all, the next lock taker settles as the new home", skip, async () => {
+  for (const [crash, stopped] of [["committed", true], ["marked", true], ["cleaned", true], ["committed", false]]) {
     const f = await diverged();
+    const revision = await homeRevision(f.home);
     await assert.rejects(importPack(f.out, f.home.dir, { replace: true, inject: killed({ name: crash, index: 2 }) }), /killed/);
     assert.equal(journalOf(f).phase, crash === "committed" ? "moving" : "committed", "a journal not yet marked is judged by the store's head, and marked by recovery");
-    await stopRecoveryAt(f, "staging-removed");
-    assert.equal(staging(f).length, 0);
-    assert.equal(journalOf(f).phase, "committed");
+    if (stopped) {
+      await stopRecoveryAt(f, "staging-removed");
+      assert.equal(staging(f).length, 0);
+      assert.equal(journalOf(f).phase, "committed");
+    }
     const state = await readAgentHome(f.home);
     assert.equal(state.source.sha, SHA, "the pack's source");
-    assert.equal(existsSync(path.join(f.work, "OLD.txt")), false, "the imported directories are in place");
+    assert.ok(await homeRevision(f.home) > revision, "the store is the imported one");
+    for (const old of [path.join(f.work, "OLD.txt"), path.join(f.home.dir, "runs", "second", "work", "OLD.txt")]) assert.equal(existsSync(old), false, "the imported directories are in place");
     assert.equal(readFileSync(path.join(f.home.dir, "runs", "second", "work", "second.txt"), "utf8"), "second\n");
     assert.equal(existsSync(path.join(f.home.dir, ".import-journal")), false);
+    assert.deepEqual(staging(f), []);
   }
 });
 

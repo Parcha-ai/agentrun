@@ -106,7 +106,7 @@ const stamp = (file: string, emptyIsNone = false) => {
 };
 /** What says the store changed: its size and mtime and its log's, since a writer's commits sit in the log until a checkpoint
  *  moves them into the main file. An empty log says nothing, and is what opening a store read-only leaves behind. */
-export const signature = (file: string): string => `${stamp(file)}|${stamp(`${file}-wal`, true)}`;
+const signature = (file: string): string => `${stamp(file)}|${stamp(`${file}-wal`, true)}`;
 
 /** A reader of one home's agent store: the view as of the store's last change, re-read only when its files change. */
 export function agentReader(dir: string): () => Promise<AgentView> {

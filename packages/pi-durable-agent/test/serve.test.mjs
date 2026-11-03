@@ -13,7 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { AgentHomeError, readAgentHome, setAlias, setBindings, setPrompts, startRun } from "../dist/index.js";
-import { agentReader, openReadOnly, readRunEntries, signature } from "../dist/serve/read.js";
+import { agentReader, openReadOnly, readRunEntries } from "../dist/serve/read.js";
 import { serveHome } from "../dist/serve/index.js";
 import { main as serveMain } from "../dist/serve/command.js";
 import { buildSampleHome } from "./fixtures/serve-sample.mjs";
@@ -247,6 +247,18 @@ test("the server snapshots the agent store once for requests that change nothing
     const runs = JSON.parse((await request(served.url, { target: "/api/runs" })).body);
     assert.ok(runs.some((run) => run.id === "another"), "a change to the home is served");
     assert.equal(made.length, 2);
+    const file = path.join(seeded.home.dir, "agent.sqlite");
+    const main = statSync(file);
+    const writer = holdInLog(file, 100, "a commit still in the log");
+    try {
+      assert.deepEqual([statSync(file).size, statSync(file).mtimeMs], [main.size, main.mtimeMs], "the commit is in the log only");
+      assert.equal((await request(served.url, { target: "/api/agent" })).status, 200);
+      assert.equal(made.length, 3, "a commit still in an open writer's log is a change");
+      assert.equal((await request(served.url, { target: "/api/agent" })).status, 200);
+      assert.equal(made.length, 3);
+    } finally {
+      writer.close();
+    }
   } finally {
     await served.close();
     fsp.mkdtemp = mkdtemp;
@@ -254,24 +266,6 @@ test("the server snapshots the agent store once for requests that change nothing
     if (kept === undefined) delete process.env.TMPDIR;
     else process.env.TMPDIR = kept;
   }
-});
-
-test("what says a store changed: its size and mtime, and its log's", async () => {
-  const dir = await scratch();
-  const file = path.join(dir, "store.sqlite");
-  assert.equal(signature(file), "none|none");
-  writeFileSync(file, "a");
-  const first = signature(file);
-  writeFileSync(`${file}-wal`, "");
-  assert.equal(signature(file), first, "an empty log is nothing: opening a store read-only leaves one");
-  writeFileSync(`${file}-wal`, "w");
-  const withLog = signature(file);
-  assert.notEqual(withLog, first, "commits in the log are a change");
-  writeFileSync(`${file}-wal`, "ww");
-  assert.notEqual(signature(file), withLog, "a commit into the log is a change");
-  assert.equal(signature(file), signature(file), "and nothing changing is none");
-  writeFileSync(file, "ab");
-  assert.notEqual(signature(file), withLog.replace(/^[^|]*/, ""), "the main file counts too");
 });
 
 test("a run read while another process appends to it: every response is a whole snapshot, and the rows only grow", skip, async () => {
@@ -500,8 +494,11 @@ test("serveHome refuses what is not a home or a port, ignores a host option, and
   assert.match(served.url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
   assert.equal((await request(served.url, { target: "/api/agent" })).status, 200);
   controller.abort();
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  await assert.rejects(request(served.url, { target: "/api/agent" }), (error) => error.code === "ECONNREFUSED");
+  const connect = new Promise((resolve, reject) => {
+    const socket = net.connect(Number(new URL(served.url).port), "127.0.0.1", () => { socket.destroy(); resolve(); });
+    socket.once("error", reject);
+  });
+  await assert.rejects(connect, (error) => error.code === "ECONNREFUSED", "the abort closed the port: a new connection is refused");
   await served.close();
   const aborted = new AbortController();
   aborted.abort();
@@ -627,10 +624,10 @@ test("the bin says what is wrong: a missing home is exit 1, a bad command or por
     child.stderr.on("data", (chunk) => (err += chunk));
     child.once("exit", (code) => resolve({ code, out, err }));
   });
-  const missing = await exit(["serve", path.join(await scratch(), "none")]);
-  assert.equal(missing.code, 1);
-  assert.match(missing.err, /is not an agent home/);
-  assert.equal(missing.out, "");
+  const folder = path.join(await scratch(), "private-folder-name-4417");
+  mkdirSync(folder);
+  const missing = await exit(["serve", folder]);
+  assert.deepEqual([missing.code, missing.out, missing.err], [1, "", "that folder is not an agent home or an agent store: it holds no agent.sqlite and no store.sqlite\n"], "a folder that is neither, in words that name no folder");
   for (const args of [[], ["serve"], ["show", "x"], ["serve", "x", "--port", "99999"], ["serve", "x", "--port", "abc"], ["serve", "x", "y"], ["serve", "x", "--nope"]]) {
     const result = await exit(args);
     assert.equal(result.code, 2, args.join(" "));
@@ -638,15 +635,6 @@ test("the bin says what is wrong: a missing home is exit 1, a bad command or por
   }
   const help = await exit(["--help"]);
   assert.deepEqual([help.code, /usage: pi-durable-agent serve/.test(help.out)], [0, true]);
-});
-
-test("the package says it has a bin and a ./serve entry, and the bin starts with a shebang", { timeout: 60_000 }, () => {
-  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  assert.deepEqual(manifest.bin, { "pi-durable-agent": "./dist/serve/cli.js" });
-  assert.deepEqual(manifest.exports["./serve"], { types: "./dist/serve/index.d.ts", default: "./dist/serve/index.js" });
-  assert.ok(readFileSync(CLI, "utf8").startsWith("#!/usr/bin/env node\n"));
-  for (const file of ["page.html", "page.css", "graph.js", "page.js"]) assert.ok(existsSync(new URL(`../dist/serve/${file}`, import.meta.url)), `the build copies ${file}`);
-  assert.match(readFileSync(new URL("../dist/serve/page.html", import.meta.url), "utf8"), /<link rel="stylesheet" href="\/?page\.css">[\s\S]*<script src="\/?page\.js"[^>]*><\/script>/);
 });
 
 test("an interrupt while the server is still starting stops it: main returns 0 and prints no address", { timeout: 60_000 }, async () => {

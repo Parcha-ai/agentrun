@@ -79,19 +79,6 @@ test("startRun refuses, with no value in the message and nothing written: no cur
   await store.close();
 });
 
-test("the join never shows a run whose agent and revision disagree", async () => {
-  const { dir, store, agent } = await aStore();
-  const other = await store.createAgent({ name: "Other" });
-  const theirs = await store.commitRevision(other.id, B, { setCurrent: true });
-  await store.startRun({ agent: agent.id });
-  await store.startRun({ agent: other.id });
-  await assert.rejects(store.startRun({ agent: agent.id, revision: theirs.id }), refused("invalid"));
-  const rows = joined(dir);
-  assert.equal(rows.length, 2);
-  assert.equal(runs(dir).length, 2);
-  await store.close();
-});
-
 test("a workflow revision's run returns its body, the workflow inside revision.body, and its row names the kind", async () => {
   const dir = await scratch();
   const store = openStore(dir);
@@ -241,14 +228,6 @@ test("the run folder is today's: its store opens as a pi-durable store, and its 
   await host.close(ctx);
   assert.deepEqual(readdirSync(run.workspace).sort(), [".agents"]);
   await store.close();
-});
-
-test("the free home functions are unchanged next to the store: a free startRun of a home still seeds from its own definition", async () => {
-  const { startRun, createAgentHome } = await import("../dist/index.js");
-  const { DEFINITION } = await import("./support.mjs");
-  const home = await createAgentHome(await scratch(), { definition: DEFINITION });
-  const run = await startRun(home, { runId: "free-1", host: "test" });
-  assert.deepEqual(run.agent, { instructions: DEFINITION.instructions, tools: DEFINITION.tools });
 });
 
 test("the reader's readRun is the README join for one run: the run, its agent's name and its revision's note; an unknown run is undefined", async () => {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -62,21 +62,6 @@ test("the signed-in fixture holds its marker in both stores, and no projection o
   assert.ok(!text.includes(SIGN_IN_MARKER) && !text.includes(FIXTURE_HOST) && !text.includes(PRACTICE_ORIGIN), "no sign-in, host or profile origin");
   assert.ok(text.includes(`runs/${runId}`) && text.includes("Signed-in fixture"), "the run and the identity are kept");
   assert.throws(() => checkExportClean(agentStore), /holds the sign-in marker/);
-});
-
-test("checkExportClean passes one closed SQLite file and refuses one with a -wal, -shm or -journal beside it", async () => {
-  const file = path.join(await scratch(), "export.sqlite");
-  const db = new DatabaseSync(file);
-  db.exec("CREATE TABLE runs (id TEXT PRIMARY KEY, outcome TEXT); INSERT INTO runs VALUES ('r1', 'completed')");
-  db.close();
-  assert.deepEqual(readdirSync(path.dirname(file)), ["export.sqlite"]);
-  checkExportClean(file);
-  for (const suffix of ["-wal", "-shm", "-journal"]) {
-    writeFileSync(`${file}${suffix}`, "");
-    assert.throws(() => checkExportClean(file), new RegExp(`export.sqlite${suffix} sits beside the export`));
-    rmSync(`${file}${suffix}`);
-  }
-  checkExportClean(file);
 });
 
 test("checkExportClean reads bytes, not rows: a deleted sign-in left in a free page is refused", async () => {

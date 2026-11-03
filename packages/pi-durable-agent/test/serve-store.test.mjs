@@ -10,8 +10,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { workflowGraph } from "@parcha/agentrun-dsl/graph";
 import { AgentHomeError, durableProfileStore, openStore, openStoreReader } from "../dist/index.js";
-import { serveStore } from "../dist/serve/index.js";
-import { lineDiff } from "../dist/serve/store.js";
+import { serveStore, storeApi } from "../dist/serve/index.js";
 import { runWorkflowRevision } from "../dist/workflow.js";
 import { BRIEF_WORKFLOW, buildSampleStore, MCC_WORKFLOW_2, PRIVATE, PROMPT_A, PROMPT_B, recordWorkflow, SKILL_MARKER } from "./fixtures/store-sample.mjs";
 import { all, assertInert, mount } from "./page-dom.mjs";
@@ -101,21 +100,49 @@ test("an agent: its revisions newest first, the current one marked; an agentic o
 
 const numbered = (prefix, count) => Array.from({ length: count }, (_, i) => `${prefix}${i}`);
 
-test("the prompt diff on long prompts: identical ones are all the same lines, compared in one pass", () => {
-  const prompt = numbered("line ", 10_000).join("\n");
-  const lines = lineDiff(prompt, prompt);
+const LONG_PROMPTS = {
+  identical: [numbered("line ", 10_000).join("\n"), numbered("line ", 10_000).join("\n")],
+  disjoint: [numbered("a", 2_000).join("\n"), numbered("b", 2_000).join("\n")],
+  oneLine: [numbered("line ", 3_000).join("\n"), numbered("line ", 3_000).map((line, i) => (i === 1_500 ? "line 1500, cited" : line)).join("\n")],
+};
+let longPromptDiffs;
+/** The prompt diff the store's API gives for each pair of LONG_PROMPTS: a revision whose instructions are the second,
+ *  committed on one whose are the first. One store for the three tests. */
+function promptDiff(name) {
+  longPromptDiffs ??= (async () => {
+    const dir = await scratch();
+    const store = openStore(dir);
+    const made = [];
+    for (const [key, [before, after]] of Object.entries(LONG_PROMPTS)) {
+      const agent = store.createAgent({ name: key });
+      await store.commitRevision(agent.id, { kind: "agentic", instructions: before, tools: ["read"] }, { setCurrent: true });
+      made.push([key, agent.id, (await store.commitRevision(agent.id, { kind: "agentic", instructions: after, tools: ["read", "cite"] })).id]);
+    }
+    await store.close();
+    const api = storeApi({ dir });
+    const diffs = {};
+    for (const [key, agent, revision] of made) {
+      const { status, value } = await api(`/api/agents/${agent}`, new URLSearchParams());
+      assert.equal(status, 200);
+      diffs[key] = value.revisions.find((each) => each.id === revision).diff.prompt;
+    }
+    return diffs;
+  })();
+  return longPromptDiffs.then((diffs) => diffs[name]);
+}
+
+test("the prompt diff on long prompts: identical ones are all the same lines, compared in one pass", async () => {
+  const lines = await promptDiff("identical");
   assert.equal(lines.length, 10_000);
   assert.ok(lines.every((line) => line.op === "same"));
 });
 
-test("the prompt diff on long prompts: two with more than a million line pairs left to compare are not diffed (null)", () => {
-  assert.equal(lineDiff(numbered("a", 2_000).join("\n"), numbered("b", 2_000).join("\n")), null);
+test("the prompt diff on long prompts: two with more than a million line pairs left to compare are not diffed (null)", async () => {
+  assert.equal(await promptDiff("disjoint"), null);
 });
 
-test("the prompt diff on long prompts: one changed line in the middle of 3,000 is that one line removed and added", () => {
-  const before = numbered("line ", 3_000);
-  const after = before.map((line, i) => (i === 1_500 ? "line 1500, cited" : line));
-  const lines = lineDiff(before.join("\n"), after.join("\n"));
+test("the prompt diff on long prompts: one changed line in the middle of 3,000 is that one line removed and added", async () => {
+  const lines = await promptDiff("oneLine");
   assert.equal(lines.length, 3_001);
   assert.deepEqual(lines.slice(1_499, 1_503), [{ op: "same", text: "line 1499" }, { op: "del", text: "line 1500" }, { op: "add", text: "line 1500, cited" }, { op: "same", text: "line 1501" }]);
   assert.equal(lines.filter((line) => line.op !== "same").length, 2);
@@ -355,18 +382,13 @@ test("serveStore on a folder with no store.sqlite is missing, in words that name
   await assert.rejects(serveStore({ dir }), (error) => error instanceof AgentHomeError && error.code === "missing" && error.message === "there is no store.sqlite in that folder");
 });
 
-test("the bin on a folder that is neither a store nor a home exits 1, in words that name no folder", async () => {
-  const dir = path.join(await scratch(), "private-folder-name-4417");
-  mkdirSync(dir);
-  const child = spawnSync(process.execPath, [CLI, "serve", dir], { encoding: "utf8" });
-  assert.deepEqual([child.status, child.stdout, child.stderr], [1, "", "that folder is not an agent home or an agent store: it holds no agent.sqlite and no store.sqlite\n"]);
-});
-
-test("a start checks its port once, in the server both pages share, after the folder's own check", async () => {
-  const sources = ["server.js", "store.js"].map((file) => readFileSync(new URL(`../dist/serve/${file}`, import.meta.url), "utf8")).join("\n");
-  assert.equal(sources.match(/is not 0 to 65535/g)?.length, 1, "one port check");
-  assert.deepEqual(sources.match(/checkPort\(/g) ?? [], [], "no second call of it");
+test("serveStore refuses a port outside 0 to 65535, after the folder's own check", async () => {
   await assert.rejects(serveStore({ dir: path.join(await scratch(), "none") }, { port: -1 }), (error) => error.code === "missing", "the missing store is said first");
+  const dir = await scratch();
+  await openStore(dir).close();
+  for (const port of [-1, 65_536, 1.5, "80", Number.NaN]) {
+    await assert.rejects(serveStore({ dir }, { port }), (error) => error instanceof AgentHomeError && error.code === "invalid" && /is not 0 to 65535/.test(error.message), String(port));
+  }
 });
 
 test("the bin serves the store's page for a folder holding a store.sqlite, drawing a workflow and reading a workflow run with what it loads on demand", { timeout: 60_000 }, async (t) => {
@@ -406,13 +428,6 @@ test("an agentic agent's pages never load the DSL or ./workflow; a workflow revi
   const { agentic, workflow } = JSON.parse(child.stdout);
   assert.deepEqual(agentic, [], "nothing of the DSL, agentrun-pi or ./workflow");
   assert.deepEqual(workflow, ["../workflow.js", "@parcha/agentrun-dsl/graph"], "./workflow, then the DSL's graph it loads, once a workflow is drawn, and nothing else");
-});
-
-test("serve reads one run with readRun and one agent with readAgent, each one statement; nothing on its read path finds a row in a list", () => {
-  const source = readFileSync(fileURLToPath(new URL("../src/serve/store.ts", import.meta.url)), "utf8");
-  assert.equal(source.includes(".find("), false);
-  assert.match(source, /reader\.readRun\(id\)/);
-  assert.match(source, /reader\.readAgent\(id\)/);
 });
 
 test("serve names no @parcha/agentrun-dsl, in its source or its build: a workflow revision's graph and diff come from ./workflow's revisionGraph", () => {

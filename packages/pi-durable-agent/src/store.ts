@@ -45,7 +45,7 @@ export const HEAD_SQL = "SELECT next_seq FROM durable_metadata WHERE singleton =
 
 /** The head commit number from `HEAD_SQL`'s row. It fails closed (`format`) on a missing row and on a `next_seq` that is
  *  not a safe integer of at least 1: absent, null, text, fractional, zero, negative or past 2^53 - 1. */
-export function headOf(row: { next_seq?: unknown } | undefined): number {
+function headOf(row: { next_seq?: unknown } | undefined): number {
   const value = row?.next_seq;
   const next = typeof value === "bigint" ? Number(value) : value;
   if (typeof next !== "number" || !Number.isSafeInteger(next) || next < 1) {

@@ -98,18 +98,20 @@ test("the quickstart runs as the README writes it, with the package and its peer
   assert.equal(run.stdout, block(QUICKSTART, "text").text);
 });
 
-/** The names an entry point of the built package exports, read from its declaration file, and whether each is a value (a
- *  function, a constant or a class) or only a type. */
-function exportsOf(declaration) {
-  const file = path.join(PACKAGE, "dist", declaration);
-  const program = ts.createProgram([file], { module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, target: ts.ScriptTarget.ES2023, types: ["node"], skipLibCheck: true, noEmit: true });
+/** The names each entry point of the built package exports, read from its declaration file, and whether each is a value (a
+ *  function, a constant or a class) or only a type. One program and one checker read every declaration. */
+function exportsOf(declarations) {
+  const files = declarations.map((declaration) => path.join(PACKAGE, "dist", declaration));
+  const program = ts.createProgram(files, { module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, target: ts.ScriptTarget.ES2023, types: ["node"], skipLibCheck: true, noEmit: true });
   const checker = program.getTypeChecker();
-  const source = program.getSourceFile(file);
-  assert.ok(source, `${declaration} is built`);
-  return checker.getExportsOfModule(checker.getSymbolAtLocation(source)).map((symbol) => {
-    const real = symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
-    return { name: symbol.getName(), value: Boolean(real.flags & ts.SymbolFlags.Value) };
-  }).sort((a, b) => (a.name < b.name ? -1 : 1));
+  return new Map(declarations.map((declaration, at) => {
+    const source = program.getSourceFile(files[at]);
+    assert.ok(source, `${declaration} is built`);
+    return [declaration, checker.getExportsOfModule(checker.getSymbolAtLocation(source)).map((symbol) => {
+      const real = symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+      return { name: symbol.getName(), value: Boolean(real.flags & ts.SymbolFlags.Value) };
+    }).sort((a, b) => (a.name < b.name ? -1 : 1))];
+  }));
 }
 
 /** The text of one `###` heading of the Library section, up to the next heading. */
@@ -138,9 +140,10 @@ test("every name each entry point exports is documented in that entry point's Li
     { title: "`@parcha/pi-durable-agent/serve`", declaration: "serve/index.d.ts" },
     { title: "`@parcha/pi-durable-agent/workflow`", declaration: "workflow.d.ts" },
   ];
+  const exported = exportsOf(entries.map(({ declaration }) => declaration));
   const missing = [];
   for (const { title, declaration } of entries) {
-    const names = exportsOf(declaration);
+    const names = exported.get(declaration);
     assert.ok(names.length > 0, `${title} exports something`);
     const section = documentedIn(librarySection(title));
     // `./export` is three names in its first sentence, not a table.
