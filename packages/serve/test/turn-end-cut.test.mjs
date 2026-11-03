@@ -1,8 +1,9 @@
-// A claude-agent follow-up whose turn ends showing nothing (the Claude CLI's /compact), its process killed after the turn's
-// last entry and before the turn's end (TURN_END) is written (#1424's Greptile P1). The session holds the turn as over, so
-// the relaunched process has no turn to recover, and the root has no end for it: the run must still complete, its answer
-// that turn's own (none: ""), with no other message. The kill comes at a write the process holds open (faux-harness-turn-end-cut.mjs),
-// never after a wait. The faux claude-agent harness, no network.
+// A claude-agent follow-up whose turn ends showing nothing (the Claude CLI's /compact), its process killed in the commit of
+// the turn's last entries and its end (TURN_END) (#1424's Greptile P1, then #1510's). The session holds the turn as over,
+// so the relaunched process has no turn to recover, and the root has neither the turn's end nor an answer for it: a turn
+// whose end was never recorded is not known to have completed, so the relaunch writes its end interrupted and the run
+// waits for the person (input_required), never claiming "". The kill comes at a write the process holds open
+// (faux-harness-turn-end-cut.mjs), never after a wait. The faux claude-agent harness, no network.
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -16,7 +17,7 @@ const TERMINAL = ["completed", "failed", "cancelled"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer;
 
-test("a follow-up whose turn ended showing nothing, its process killed before the turn's end was written, completes on the relaunch without another message", { timeout: 180_000 }, async (t) => {
+test("a follow-up whose turn ended showing nothing, its process killed before the turn's end was written, waits for the person on the relaunch (input_required), never completed with \"\"; a message then goes on", { timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const [arm, held] = [join(dir, "arm"), join(dir, "held")];
   withEnv(t, { TURN_END_ARM: arm, TURN_END_HELD: held });
@@ -39,13 +40,17 @@ test("a follow-up whose turn ended showing nothing, its process killed before th
   assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).holder?.pid, hold.pid, "the held process is the run's");
   process.kill(hold.pid, "SIGKILL");
 
-  // No message after the kill: the relaunched process alone ends the run.
-  const { rows, last } = await follow(api, runId, ["completed"], { deadlineMs: 45_000 });
+  // No message after the kill: the relaunched process writes the turn's end, interrupted, and the run waits for the person.
+  const { rows, last } = await follow(api, runId, ["input_required", ...TERMINAL], { deadlineMs: 45_000 });
   t.diagnostic(`rows ${JSON.stringify(rows.map((r) => [r.kind, r.summary]))}`);
-  assert.equal(last.status, "completed");
-  assert.equal(await answer(api, runId), "", "the follow-up's own answer: it showed no text");
+  assert.equal(last.status, "input_required", "a turn whose end was never recorded is not known to have completed");
+  assert.equal(await answer(api, runId), undefined, "no answer claimed for it, neither \"\" nor the earlier turn's");
   assert.deepEqual(rows.findLast((r) => r.kind === "usage")?.usage, { usd: 0.003, requests: 3 }, "the follow-up's request counts once");
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: hi", "You: /compact"], "no other message");
+  // The person's next message goes on, as after any interrupted turn.
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Go on." })).status, 202);
+  const { last: after } = await follow(api, runId, TERMINAL, { deadlineMs: 45_000 });
+  assert.equal(after.status, "completed");
 });
 
 /** Two follow-ups queued behind a held first turn (the second, "/compact", answers nothing); the run's process is killed at
