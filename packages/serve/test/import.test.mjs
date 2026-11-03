@@ -436,7 +436,7 @@ test("an import cuts every key or token of a known shape that no environment hol
 });
 
 test("the shape rules cut a prefixed key whatever its body, an AWS pair with no name, and a field named for its secret", async () => {
-  const { secretCut, shapedCut } = await import("../dist/secret-cut.js");
+  const { REDACTED, secretCut, shapedCut } = await import("../dist/secret-cut.js");
   const letters = (n) => Array.from(randomBytes(n), (b) => "abcdefghijklmnopqrstuvwxyz"[b % 26]).join("");
   const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+";
   const b64 = (n) => Array.from(randomBytes(n), (b) => B64[b % B64.length]).join("");
@@ -446,12 +446,35 @@ test("the shape rules cut a prefixed key whatever its body, an AWS pair with no 
   const secret = b64(40);
   assert.deepEqual(shapedCut(`Rotate these: ${id} ${secret} today`).text, "Rotate these: [redacted] [redacted] today", "the pair, the secret after its id");
   assert.equal(shapedCut(`${secret}\n${id}`).text, "[redacted]\n[redacted]", "the secret before its id");
+  // A value a sentence ends on: the key alone is cut and counted, the period stays.
+  const value = `${b64(22)}9z`;
+  assert.deepEqual(shapedCut(`Set DATABASE_PASSWORD=${value}. Then restart.`), { text: "Set DATABASE_PASSWORD=[redacted]. Then restart.", cut: [value] });
   const sha = "9fe2d9110a1b2c3d4e5f60718293a4b5c6d7e8f9";
   assert.equal(shapedCut(`commit ${sha} merged`).text, `commit ${sha} merged`, "a git SHA with no id near it");
   const cut = secretCut({ PATH: "/usr/bin" });
   const password = `${b64(22)}9z`;
-  assert.deepEqual(cut.json({ aws_secret_access_key: secret, DATABASE_PASSWORD: password, cacheKey: "a1", token_url: "https://auth.example.com/oauth/token", note: "ok" }), { aws_secret_access_key: "[redacted]", DATABASE_PASSWORD: "[redacted]", cacheKey: "a1", token_url: "https://auth.example.com/oauth/token", note: "ok" }, "a tool's structured input");
+  const input = { aws_secret_access_key: secret, DATABASE_PASSWORD: password, cacheKey: "a1", token_url: "https://auth.example.com/oauth/token", note: "ok" };
+  assert.deepEqual(cut.json(input), { ...input, aws_secret_access_key: REDACTED, DATABASE_PASSWORD: REDACTED }, "a tool's structured input");
   assert.equal(cut.text.removed, 2);
+});
+
+test("a key of the environment's that holds a slash, across a skill's folders, is cut out of the path the import keeps", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "deploys");
+  const [head, tail] = [randomBytes(6).toString("hex"), randomBytes(6).toString("hex")];
+  mkdirSync(join(site, ".claude", "skills", `push-${head}`, tail), { recursive: true });
+  writeFileSync(join(site, ".claude", "skills", `push-${head}`, "SKILL.md"), "---\nname: push\n---\nPush it.\n");
+  writeFileSync(join(site, ".claude", "skills", `push-${head}`, tail, "notes.md"), "Notes.\n");
+  claudeSession(at, site, 1, { prompt: "Push the release." });
+  const data = join(root, "agents");
+  const key = `${head}/${tail}`;
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", OPENAI_API_KEY: key }, out: () => {} }), 0);
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  const paths = Object.keys(reader.readAgent(agentIdOf(site)).revisions.find((r) => r.current).body.skills);
+  assert.equal(paths.length, 2, paths.join(" "));
+  assert.ok(paths.every((path) => !path.includes(key)), `no kept path holds the key: ${paths.join(" ")}`);
 });
 
 test("the shape rules leave ordinary text alone: ids, hashes, an image, a placeholder, prose", async () => {

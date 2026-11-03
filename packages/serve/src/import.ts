@@ -987,11 +987,19 @@ function openAt(env: NodeJS.ProcessEnv, port: number): string {
   return `http://${LOCAL}:${port === 0 ? "<the port the server picks>" : port}`;
 }
 
-/** A skill's path as an import keeps it: each segment as it is, unless it holds a key, then `redacted-` and a hash of
- *  it (as `keptId` keeps a session's id), so two folders named after two keys stay two. */
+/** A skill's path as an import keeps it: as it is when it holds no key; else each segment that holds one as `redacted-`
+ *  and a hash of it (as `keptId` keeps a session's id), so two folders named after two keys stay two. A key across
+ *  segments (an environment's value holding "/") takes the folders whole into one hash. */
 function keptPath(path: string, cut: (text: string) => string): string {
-  return path
+  if (cut(path) === path) return path;
+  const kept = path
     .split("/")
     .map((segment) => (cut(segment) === segment ? segment : `redacted-${hash(segment).slice(0, 12)}`))
     .join("/");
+  if (cut(kept) === kept) return kept;
+  const at = path.lastIndexOf("/");
+  const file = path.slice(at + 1);
+  const keptFile = cut(file) === file ? file : `redacted-${hash(file).slice(0, 12)}`;
+  const whole = at > 0 ? `redacted-${hash(path.slice(0, at)).slice(0, 12)}/${keptFile}` : keptFile;
+  return cut(whole) === whole ? whole : `redacted-${hash(path).slice(0, 12)}`;
 }

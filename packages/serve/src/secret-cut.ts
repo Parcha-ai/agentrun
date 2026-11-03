@@ -140,10 +140,12 @@ export function shapedCut(value: string): { text: string; cut: string[] } {
       return `${word}${REDACTED}`;
     });
   if (/[=:]/.test(out))
-    out = out.replace(ASSIGNED, (found, name: string, between: string, secret: string) => {
-      if (!keyLike(secret)) return found;
+    out = out.replace(ASSIGNED, (found, name: string, between: string, value: string) => {
+      // A sentence's own punctuation after the value ends it: `PASSWORD=<key>.` is the key, the period the sentence's.
+      const secret = value.replace(/[.:)\]}!?]+$/, "");
+      if (secret.length < 16 || !keyLike(secret)) return found;
       cut.push(secret);
-      return `${name}${between}${REDACTED}`;
+      return `${name}${between}${REDACTED}${value.slice(secret.length)}`;
     });
   return { text: out, cut };
 }
