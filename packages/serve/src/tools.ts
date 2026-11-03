@@ -20,7 +20,7 @@ import { FAUX_ENV, workflowNodes } from "./model.js";
 import { forModel } from "./result.js";
 import { fetchFor, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { capabilityOf, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, PROVIDERS, resolvesView, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { capabilityOf, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, PROVIDERS, resolvesView, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 export const ASK_TOOL = "ask_person";
@@ -66,6 +66,13 @@ export type ToolHost = {
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
 export type ToolBinding = { tools: readonly ToolRegistration[]; extensions: readonly Extension[] };
+
+/** `tool` alone in an extension named `name`, installed in the run's registry. */
+function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRegistration): ToolBinding {
+  const extension = defineExtension({ name, tools: [tool] });
+  host.install(extension);
+  return { tools: [tool], extensions: [extension] };
+}
 
 /** What a call node's effect gets from the run's process: its signal, environment and work directory, and one
  *  completion on the run's models (the `llm` tool's). */
@@ -196,23 +203,14 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     summary: "Ask the person who started the run; the turn ends until a message answers.",
     needs: [],
     nodes: false,
-    bind: async (host) => {
-      const person = defineExtension({ name: "person", tools: [askPerson] });
-      host.install(person);
-      return { tools: [askPerson as ToolRegistration], extensions: [person] };
-    },
+    bind: async (host) => installTool(host, "person", askPerson as ToolRegistration),
   },
   [WEB_FETCH_TOOL]: webFetchEntry(WEB_FETCH_TOOL),
   [WEB_SEARCH_TOOL]: {
     summary: "Search the web: the harness's own search, on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Exa's keyless search, or Parallel's Search API where Parallel is picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
     needs: [],
     nodes: true,
-    bind: async (host) => {
-      const tool = webSearchTool(host.env) as unknown as ToolRegistration;
-      const extension = defineExtension({ name: "web-search", tools: [tool] });
-      host.install(extension);
-      return { tools: [tool], extensions: [extension] };
-    },
+    bind: async (host) => installTool(host, "web-search", webSearchTool(host.env) as unknown as ToolRegistration),
     effect: async (args, run) => searchFor(run.env, args, run.signal),
   },
   browser: browserTool,
@@ -298,13 +296,14 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
  *  (`reason`). */
 export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}) => {
   const resolves = resolvesView(env, settings);
+  const picked = withDefaults(settings);
   return Object.entries(TOOLS).map(([name, entry]) => {
     const plane = (PICKABLE as readonly string[]).includes(name) ? resolves[name as Pickable] : undefined;
     const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
     const available = plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0;
     // Unavailable says why: on a tool a user picks a provider for, the resolutions' own words (`web_search is turned off in
     // settings`), else the variables it needs.
-    const reason = available ? undefined : plane ? [...new Set(Object.values(plane).filter(isUnavailable).map((resolution) => resolution.slice("unavailable: ".length)))].join("; ") : `Needs ${missing.join(", ")}`;
-    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: settings[name as Pickable]?.provider ?? PROVIDERS[name as Pickable][0], default_provider: PROVIDERS[name as Pickable][0], resolves: plane } : {}) };
+    const reason = available ? undefined : plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${missing.join(", ")}`;
+    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane } : {}) };
   });
 };

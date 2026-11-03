@@ -17,14 +17,13 @@ import { randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { writeInWork } from "./workspace.js";
-import { pathToFileURL } from "node:url";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import { registerLabel, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
-import { FAUX_ENV } from "./model.js";
+import { fauxFetch } from "./decisions.js";
 import { forModel } from "./result.js";
 import type { ToolEntry } from "./tools.js";
 import { isObject, type Json } from "./validate.js";
@@ -228,7 +227,7 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
     name: wireName(`monid.${kind}`), description, replay,
     parameters: { type: "object", additionalProperties: false, properties, required } as unknown as TSchema,
     execute: async (args, api, context) => {
-      const faux = env[FAUX_ENV] && env[FAUX_MONID_ENV] ? ((await import(pathToFileURL(env[FAUX_MONID_ENV]).href)) as { default: typeof fetch }).default : undefined;
+      const faux = await fauxFetch(env, FAUX_MONID_ENV);
       const client = monidClient({ key: env[MONID_KEY_ENV] ?? "", ...(faux ? { fetch: faux } : {}) });
       const call = () => client[kind](args as never, context?.abortSignal);
       const label = { tool: "monid.run", charged_by: "monid", call: api.callId };

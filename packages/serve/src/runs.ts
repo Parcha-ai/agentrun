@@ -183,7 +183,7 @@ export type Run = {
   finishing?: Status;
   /** A stop on its way: from its mark to its abort's answer, or a server's abort of a saved stop's turn that outlived the
    *  server before it (finishStop). The abort withdraws every input queued behind that turn, so a message meanwhile waits
-   *  for it (stopAnswered). */
+   *  for it (message). */
   stopping?: true;
   endedAt?: string;
   outcome?: Status;
@@ -1502,10 +1502,10 @@ export class Runs {
     do {
       // A stop in flight is answered first. Sent between its mark and its abort, a message would read the run stopped, go
       // to the turn the abort is cutting, and be dropped with it, its row never coming.
-      if (run.stopping) await this.stopAnswered(run);
+      if (run.stopping) await this.waitWhile(() => run.stopping === true, 50, "The run is being stopped");
       // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
       // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
-      if (run.finishing && !run.outcome) await this.endWritten(run);
+      if (run.finishing && !run.outcome) await this.waitWhile(() => Boolean(run.finishing && !run.outcome), 100, "The run's end is still being written");
       if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
       // Its harness, read from the agent store at the run's first message.
       steers = await this.steers(run);
@@ -1529,17 +1529,10 @@ export class Runs {
     return { mode, messageId };
   }
 
-  /** Waits, up to a request's deadline, for a stop in flight to answer. */
-  private async stopAnswered(run: Run): Promise<void> {
-    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.stopping; await sleep(50)) {
-      if (Date.now() > deadline) throw new ApiError("unavailable", "The run is being stopped; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
-    }
-  }
-
-  /** Waits, up to a request's deadline, for the end of a run that is finishing to be written. */
-  private async endWritten(run: Run): Promise<void> {
-    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.finishing && !run.outcome; await sleep(100)) {
-      if (Date.now() > deadline) throw new ApiError("unavailable", "The run's end is still being written; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+  /** Waits, up to a request's deadline, while `holds` (checked every `everyMs`): else 503 `unavailable`, saying `why`. */
+  private async waitWhile(holds: () => boolean, everyMs: number, why: string): Promise<void> {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); holds(); await sleep(everyMs)) {
+      if (Date.now() > deadline) throw new ApiError("unavailable", `${why}; try again.`, { retry_after_ms: 1000 }, { "retry-after": "1" });
     }
   }
 

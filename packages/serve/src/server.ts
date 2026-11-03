@@ -20,7 +20,7 @@ import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir, writeDurable } from "./files.js";
+import { HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, syncDir, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, ownedByIdentity } from "./home-path.js";
 import { EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
@@ -314,7 +314,7 @@ export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.
 
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
  *  offers: cheap, made again after each key or tool-settings write with the offers the server holds. */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[]) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -613,7 +613,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (!("took" in answer)) return void (importState = { state: "stopped" });
         // The whole import, every start's part of it: what earlier starts took is kept with the owner's yes.
         // The yes as setup wrote it is empty: no earlier start took anything.
-        const before = (await readFile(importAsked, "utf8").then((text) => (text.trim() ? (JSON.parse(text) as unknown) : null)).catch(() => null)) as { agents?: unknown; runs?: unknown } | null;
+        const before = (await readJson(importAsked)) as { agents?: unknown; runs?: unknown } | null;
         const agents = [...new Set([...(Array.isArray(before?.agents) ? before.agents.filter((id): id is string => typeof id === "string") : []), ...answer.took.agents])];
         const runs = (typeof before?.runs === "number" ? before.runs : 0) + answer.took.runs;
         if (answer.stopped) {
@@ -943,7 +943,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     let meters = endedMeters.get(key);
     if (!meters) {
       try {
-        meters = metersIn(join(data, "runs", row.id, "store", "run.sqlite"));
+        meters = metersIn(agents.store.runStorePath(row.id));
       } catch {
         meters = { tools: 0, tokens: null };
       }

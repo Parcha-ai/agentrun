@@ -91,6 +91,8 @@ export function resolveCapability(capability: Pickable, input: ResolveInput): Re
 }
 
 export const isUnavailable = (resolution: Resolution | undefined): resolution is `unavailable: ${string}` => resolution?.startsWith("unavailable: ") === true;
+/** Why a resolution is unavailable: its words after "unavailable: " (any other resolution as it is). */
+export const whyUnavailable = (resolution: string): string => resolution.replace(/^unavailable: /, "");
 
 /** The server's environment's part of every resolution: its gateway and Parallel's key. */
 const served = (env: NodeJS.ProcessEnv) => ({ gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey: PARALLEL_KEY_ENV in decisionKeysOf(env) });
