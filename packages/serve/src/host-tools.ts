@@ -10,8 +10,6 @@
 // to the harness under its wire name (catalog.ts: `monid.run` is `monid_run`), which the harness calls and journals. A
 // refusal, an error and a write's or edit's result name a path in the workspace relative to it (`hello.md`), never by
 // the server's data directory (`workspaceRelative`); in a box they name the box's paths.
-import { realpathSync } from "node:fs";
-import { dirname } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
@@ -25,6 +23,9 @@ import { monidTools } from "./monid.js";
 import { withSecrets } from "./secrets.js";
 import { WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
+import { realOf, workspaceRelative } from "./workspace-paths.js";
+
+export { workspaceRelative } from "./workspace-paths.js";
 
 /** Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again. */
 export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [FETCH_PAGE_TOOL]: "safe", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never" };
@@ -94,44 +95,10 @@ export type ToolResults = Map<string, { text: string; isError: boolean }>;
 /** The tools whose result is pi's own words about a path (`Successfully wrote to <path>`), never a file's text. */
 const SAYS_PATH = new Set(["write", "edit"]);
 
-/**
- * `text` with the workspace's absolute path taken out: `<work>/notes/a.md` reads `notes/a.md`, the workspace itself `.`,
- * a path beside it `../x` (pi's tools resolve a relative path before they refuse it), and pi's refusal ("<path>: outside
- * the workspace <work>") names no directory. `works` is the workspace as the environment names it and as the kernel
- * resolves it (they differ under a symlinked directory). For a refusal, an error, and a write's or edit's result; a
- * read's result is the file's own text and is never changed.
- */
-export function workspaceRelative(text: string, works: readonly string[]): string {
-  const escape = (path: string) => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // A name counts only where a path starts (not inside a longer one), and, unless a "/" follows, where it ends (a quote, a
-  // space, a separator or the text's end).
-  const start = "(?<![\\w./~-])";
-  const end = "(?![^'\"\\s,;:)\\]])";
-  let out = text;
-  // Longest first, so a name inside another is taken out before the outer one could take its prefix.
-  for (const work of [...new Set(works)].filter((w) => w.length > 1).sort((a, b) => b.length - a.length)) {
-    const name = `${start}${escape(work)}`;
-    out = out
-      .replace(new RegExp(`outside the workspace ${name}${end}`, "g"), "outside the workspace")
-      .replace(new RegExp(`${name}/`, "g"), "")
-      .replace(new RegExp(`${name}${end}`, "g"), ".");
-    const parent = dirname(work);
-    if (parent.length > 1) out = out.replace(new RegExp(`${start}${escape(parent)}/`, "g"), "../").replace(new RegExp(`${start}${escape(parent)}${end}`, "g"), "..");
-  }
-  return out;
-}
 
 const textOf = (content: unknown): string =>
   Array.isArray(content) ? content.map((block) => (block && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : "")).join("") : "";
 
-/** `path` as the kernel resolves it, or itself when it cannot be resolved. */
-const realOf = (path: string): string => {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-};
 
 export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults, coding: readonly ToolRegistration[] = CodingTools.tools ?? []): HostTool[] {
   // The coding source gives the coding tools and nothing else: the network tools are this machine's own, below.
