@@ -77,7 +77,7 @@ test("bash on a runner, the browser in a sandbox and a workflow in one are 422s 
     [agent("shell", { tools: ["read", "bash"] }).definition, "definition.tools[1]", "bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell: give it a sandbox place.", DOCKER_PLACE],
     [agent("shell-runner", { tools: ["read", "bash"], place: { mode: "runner" } }).definition, "definition.tools[1]", "bash runs only in a box, and this agent's place is the runner, which has no shell: give it a sandbox place.", DOCKER_PLACE],
     [agent("browsing", { tools: ["bash", "browser"], place: { mode: "sandbox", box: "docker" } }).definition, "definition.tools[1]", "browser does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.", 'Remove "browser" from definition.tools.'],
-    [flowAgent("flow", undefined, { place: { mode: "sandbox", box: "docker" } }).definition, "definition.place", "A workflow runs on the runner here: its place is runner (or none), not sandbox on docker.", "Remove definition.place."],
+    [flowAgent("flow", undefined, { place: { mode: "sandbox", box: "docker" } }).definition, "definition.place", "A workflow runs on the runner here: its place is runner (or none), not sandbox on docker.", '"place": {"mode": "runner"}'],
   ];
   for (const [definition, field, message, fix] of cases) {
     const refused = await api("POST", "/agents", { definition });
@@ -86,6 +86,21 @@ test("bash on a runner, the browser in a sandbox and a workflow in one are 422s 
     const saved = await api("POST", "/agents", { definition: fixed(definition, fix) });
     assert.equal(saved.status, 201, `${definition.id} with "${fix}": ${JSON.stringify(saved.body)}`);
   }
+});
+
+test("a sandbox agent edited into a workflow with no place keeps its sandbox place, so the 422's fix is the runner place, and the edit with it applied saves", async (t) => {
+  const { api } = await serve(t);
+  const made = await api("POST", "/agents", agent("boxed", { place: { mode: "sandbox", box: "docker" } }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const definition = { workflow: flowAgent("x").definition.workflow };
+  const edit = (body) => api("PUT", "/agents/boxed/definition", { definition: body }, { "if-match": `"${made.body.revision}"` });
+  const refused = await edit(definition);
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  const issue = issueAt(refused.body, "definition.place");
+  assert.equal(issue.fix, '"place": {"mode": "runner"}', "removing a field the edit never named would change nothing");
+  const saved = await edit(fixed(definition, issue.fix));
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual(saved.body.definition.place, { mode: "runner" });
 });
 
 test("a run request's place that is not \"runner\" is a 422 whose fix is the change that makes it one", async (t) => {

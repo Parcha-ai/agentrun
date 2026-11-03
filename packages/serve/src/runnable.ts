@@ -65,8 +65,9 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   const offer = (await harnessOffers(env)).find((h) => h.id === harness);
   if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? `This server does not run ${harness}.`, host: true, harness });
   const { place } = revision;
-  // A workflow's model and call nodes run on the runner here; in a box they do not run yet.
-  if (revision.kind === "workflow" && place && place.mode !== "runner") out.push({ field: "definition.place", reason: "not_an_option", message: `A workflow runs on the runner here: its place is runner (or none), not ${place.mode} on ${place.box ?? "no box"}.`, fix: "Remove definition.place.", host: false });
+  // A workflow's model and call nodes run on the runner here; in a box they do not run yet. Its fix names the runner: an
+  // edit that leaves the place out keeps the agent's (agents.ts), so removing the field would change nothing.
+  if (revision.kind === "workflow" && place && place.mode !== "runner") out.push({ field: "definition.place", reason: "not_an_option", message: `A workflow runs on the runner here: its place is runner (or none), not ${place.mode} on ${place.box ?? "no box"}.`, fix: placeFix({ mode: "runner" }), host: false });
   else if (place && place.mode !== "runner") {
     const box = boxAvailability(boxes).find((b) => b.id === place.box);
     // A box's reason says what to do, with no full stop of its own: the sentence ends in one, whatever the reason ends in.
