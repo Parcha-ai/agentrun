@@ -318,7 +318,9 @@ export function adapterRun(
       // A request withdrawn as its record was written (a stop came then) never left: it is no request of the run's.
       else if (record.kind === RUNNER_RECORDS.turn && data.unsent !== true) {
         const request = typeof data.turn === "number" ? data.turn : admitted;
-        booked.set(request, { ...(tokensOf(data.usage) ?? { input: 0, output: 0 }), usd: typeof data.usd === "number" ? data.usd : null, estimated: data.usd === null || data.cut === true });
+        // A request booked cut keeps saying so: an open that writes its entry marks it from its record when its start
+        // mark never reached the root, whichever open booked it.
+        booked.set(request, { ...(tokensOf(data.usage) ?? { input: 0, output: 0 }), usd: typeof data.usd === "number" ? data.usd : null, estimated: data.usd === null || data.cut === true, ...(data.cut === true ? { cut: true } : {}) });
       }
     }
     return { asked, booked, held };

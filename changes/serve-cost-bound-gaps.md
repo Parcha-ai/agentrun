@@ -7,3 +7,4 @@ Two more unknown costs now say the most they can be. On claude-agent and codex, 
 - A cost that is unknown because a model's answer came back with no price, with nothing to bound it, now says so on the timeline's usage row: "Cost so far: unknown: <model> has no price here, over N model requests".
 - A request that ended on an error after its response began, marked so on its end (`error`, with what was held for it), counts in the bound at that figure in place of its error entry's partial cost, and no longer takes another open request's figure out of the bound.
 - A late cost closes the pending cost of the request it names (its key and number), so late costs that come in another order keep each pending request's hold; one that names none closes the oldest, as before.
+- A cut request whose recovering open went too, after it booked the request cut and before its entries landed, is still marked from its record by the open that writes its entry.
