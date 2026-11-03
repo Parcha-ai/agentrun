@@ -1,0 +1,117 @@
+// The adapter on the pinned `opencode serve` itself, against a scripted provider (the proxy's fetch): no network, no
+// key. OpenCode's model requests carry only what the policy admits, offer only the host's tools, and there is one
+// request per step and no side request (no title, no summary); the host's tool runs through the adapter's MCP server; a
+// follow-up runs in a new OpenCode process that took the session back from the session's records, twenty times over with
+// every process's event stream open at the first try.
+//
+// Without the pinned binary this skips; with AGENTRUN_OPENCODE_REQUIRE_BINARY=1 (CI) it fails.
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, test } from "node:test";
+import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
+import { openCodeAdapter } from "../dist/harness-opencode/index.js";
+import { findOpenCode } from "../dist/harness-opencode/binary.js";
+import { BODY_KEYS } from "../dist/harness-opencode/host/policy.js";
+import { verifyOpenCodeBinary } from "../dist/harness-opencode/verify.js";
+
+const pinned = verifyOpenCodeBinary(findOpenCode());
+const skip = pinned instanceof Error && process.env.AGENTRUN_OPENCODE_REQUIRE_BINARY !== "1" ? pinned.message : false;
+const ROOT = mkdtempSync(join(tmpdir(), "agentrun-opencode-real-"));
+after(() => rmSync(ROOT, { recursive: true, force: true }));
+
+function answer(step, i) {
+  const events = [{ type: "response.created", response: { id: `resp_${i}`, object: "response", created_at: 1, model: "gpt-test", status: "in_progress", output: [] } }];
+  if (step.call) {
+    const item = { type: "function_call", id: `fc_${i}`, call_id: step.callId, name: step.call, arguments: JSON.stringify(step.args), status: "completed" };
+    events.push({ type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "" } });
+    events.push({ type: "response.function_call_arguments.delta", item_id: item.id, output_index: 0, delta: item.arguments });
+    events.push({ type: "response.output_item.done", output_index: 0, item });
+  } else {
+    const item = { type: "message", id: `msg_${i}`, role: "assistant", status: "completed", content: [{ type: "output_text", text: step.text, annotations: [] }] };
+    events.push({ type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } });
+    events.push({ type: "response.content_part.added", item_id: item.id, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
+    events.push({ type: "response.output_text.delta", item_id: item.id, output_index: 0, content_index: 0, delta: step.text });
+    events.push({ type: "response.output_text.done", item_id: item.id, output_index: 0, content_index: 0, text: step.text });
+    events.push({ type: "response.output_item.done", output_index: 0, item });
+  }
+  events.push({ type: "response.completed", response: { id: `resp_${i}`, object: "response", created_at: 1, model: "gpt-test", status: "completed", output: [], usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } } });
+  return events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("");
+}
+
+test("on the pinned OpenCode, the host's tool runs through the adapter, each request carries only what the policy admits and only the host's tools, and a follow-up's new process has the session back", { skip, timeout: 240_000 }, async () => {
+  const script = [{ call: "hands_lookup", callId: "call_look", args: { q: "x" } }, { text: "Found it." }, { text: "Still here." }];
+  const seen = [];
+  const fetch = async (url, init) => {
+    const i = seen.length;
+    seen.push({ url, body: JSON.parse(init.body) });
+    return new Response(answer(script[i] ?? { text: "spare" }, i), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const calls = [];
+  const lookup = { name: "lookup", description: "Look a thing up.", inputSchema: { type: "object", properties: { q: { type: "string" } }, required: ["q"] }, replay: "safe", call: async (args, { callId }) => { calls.push({ args, callId }); return { text: "found: x" }; } };
+  const a = openCodeAdapter({ model: "gpt-test", provider: { origin: "https://provider.invalid", credential: () => "provider-secret" }, price: () => 0.001, sessionsDir: join(ROOT, "sessions"), fetch });
+  const store = memorySessionStore();
+  const events = [];
+  const booked = [];
+  const io = { writer: await store.open("real"), models: { beforeRequest: async () => {}, afterRequest: async (usage) => void booked.push(usage) }, signal: new AbortController().signal, cwd: mkdtempSync(join(ROOT, "work-")), onEvent: (e) => events.push(e) };
+  const session = await a.open({ key: "real", label: "task", system: ["You look things up. INSTRUCTIONS-MARK"], tools: [lookup], context: "fresh" }, io);
+  await session.send("Look up x.");
+  assert.deepEqual(await session.turnEnd(), { status: "completed" });
+  await session.send("And now?");
+  assert.deepEqual(await session.turnEnd(), { status: "completed" });
+  await session.close();
+
+  assert.deepEqual(calls, [{ args: { q: "x" }, callId: "call_look" }], "the host's tool ran once, under the model's call id");
+  assert.deepEqual(events.filter((e) => e.type !== "text"), [
+    { type: "tool_start", callId: "call_look", name: "lookup", args: { q: "x" } },
+    { type: "tool_end", callId: "call_look", name: "lookup", isError: false, result: "found: x" },
+    { type: "turn_end", status: "completed" },
+    { type: "turn_end", status: "completed" },
+  ]);
+  assert.equal(events.filter((e) => e.type === "text").map((e) => e.delta).join(""), "Found it.Still here.");
+  assert.equal(seen.length, 3, "one request per step: no title or summary request");
+  assert.equal(booked.length, 3, "each booked");
+  for (const r of seen) {
+    assert.equal(r.url, "https://provider.invalid/v1/responses");
+    for (const key of Object.keys(r.body)) assert.ok(BODY_KEYS.has(key), key);
+    assert.deepEqual(r.body.tools.map((t) => t.name), ["hands_lookup"], "only the host's tool");
+    assert.equal(r.body.store, false);
+    assert.equal(r.body.model, "gpt-test");
+  }
+  const system = JSON.stringify(seen[0].body.input[0]);
+  assert.match(system, /INSTRUCTIONS-MARK/, "the session's instructions are the agent's prompt");
+  const last = JSON.stringify(seen[2].body.input);
+  assert.match(last, /Look up x\./, "the follow-up's process has the first turn back");
+  assert.match(last, /found: x/);
+  assert.match(last, /And now\?/);
+});
+
+test("twenty follow-ups on the pinned OpenCode, each a new process that took the session back with /sync/replay: every event stream opens at the first try and every turn completes", { skip, timeout: 600_000 }, async (t) => {
+  const seen = [];
+  const fetch = async (_url, init) => {
+    const i = seen.length;
+    seen.push(JSON.parse(init.body));
+    return new Response(answer({ text: `Answer ${i + 1}.` }, i), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const said = [];
+  const a = openCodeAdapter({ model: "gpt-test", provider: { origin: "https://provider.invalid", credential: () => "provider-secret" }, sessionsDir: join(ROOT, "loop"), fetch, log: (message) => said.push(message) });
+  const store = memorySessionStore();
+  const events = [];
+  const io = { writer: await store.open("loop"), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, cwd: mkdtempSync(join(ROOT, "loop-work-")), onEvent: (e) => events.push(e) };
+  const session = await a.open({ key: "loop", label: "task", system: ["You answer."], tools: [], context: "fresh" }, io);
+  const ends = [];
+  for (let i = 1; i <= 20; i++) {
+    await session.send(`Message ${i}.`);
+    ends.push((await session.turnEnd()).status);
+  }
+  await session.close();
+  const reopened = said.filter((m) => m.includes("event stream is opened again")).length;
+  t.diagnostic(`${ends.filter((e) => e === "completed").length}/20 drives completed on the pinned binary; ${reopened} event streams opened again`);
+  assert.deepEqual(ends, Array(20).fill("completed"));
+  assert.equal(reopened, 0, "every drive's stream opened at the first try");
+  assert.equal(seen.length, 20, "one request per turn");
+  const last = JSON.stringify(seen[19].input);
+  for (let i = 1; i <= 20; i++) assert.ok(last.includes(`Message ${i}.`), `the twentieth process has message ${i} back`);
+  assert.equal(events.filter((e) => e.type === "text").map((e) => e.delta).join(" "), Array.from({ length: 20 }, (_, i) => `Answer ${i + 1}.`).join(" "));
+});

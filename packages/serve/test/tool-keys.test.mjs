@@ -46,7 +46,7 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   assert.equal(listed.status, 200);
   assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED });
   assert.deepEqual(listed.body.keys.map((k) => [k.id, k.unlocks, k.harnesses]), [
-    ["parallel", ["web_fetch", "decisions.parallel"], ["pi", "claude-agent", "codex"]],
+    ["parallel", ["web_fetch", "decisions.parallel"], ["pi", "claude-agent", "codex", "opencode"]],
     ["monid", ["monid.discover", "monid.inspect", "monid.run"], ["pi"]],
     ["browserbase", ["browser"], ["pi"]],
   ], "only what this server binds: never web_search (keyless); the monid tools, on pi");

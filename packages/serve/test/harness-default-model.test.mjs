@@ -38,6 +38,7 @@ test("on a gateway server, codex shows the gateway's default model and claude-ag
     ["pi", true, "agent-model/gpt-test"],
     ["claude-agent", true, null],
     ["codex", true, "agent-model/gpt-test"],
+    ["opencode", true, "agent-model/gpt-test"],
   ]);
   assert.equal(caps.models.default, "agent-model/gpt-test", "pi's is the server's default");
   const claude = await api("POST", "/agents", agent("claude", { harness: "claude-agent" }));

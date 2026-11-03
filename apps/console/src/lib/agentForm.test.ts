@@ -97,6 +97,14 @@ describe("harnessOptions", () => {
   it("offers nothing the server does not list", () => {
     expect(harnessOptions([{ id: "pi", available: true }]).map((h) => h.id)).toEqual(["pi"]);
   });
+  it("offers OpenCode last of the harnesses, when the server lists it", () => {
+    const listed = [{ id: "opencode", available: false, reason: "opencode is not installed here" }, { id: "pi", available: true }, { id: "codex", available: true }];
+    expect(harnessOptions(listed)).toEqual([
+      { id: "pi", label: "Pi", available: true, reason: undefined },
+      { id: "codex", label: "Codex", available: true, reason: undefined },
+      { id: "opencode", label: "OpenCode", available: false, reason: "opencode is not installed here" },
+    ]);
+  });
 });
 
 describe("a decision agent", () => {
