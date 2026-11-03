@@ -72,6 +72,44 @@ whose `+` arrived as a space. `AGENTRUN_PUBLIC_URL`, when set, is the
 address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
 use it.
 
+## Sandbox in 60 seconds
+
+An agent with a shell, in a Docker container of its own: on a machine with Docker, in a checkout built as above, with
+a model key. Start the server with the Docker box on:
+
+```sh
+docker pull debian:bookworm-slim
+export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
+AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
+```
+
+Its log says `event=boxes available=docker`. In a second shell, export the two `AGENTRUN_` lines it printed (a later
+start prints where the key is: `export AGENTRUN_API_KEY=$(cat ~/.local/share/agentrun/agents/.token)`). Then make a
+sandbox agent, run it, watch it, and read the file it wrote:
+
+```sh
+H="authorization: Bearer $AGENTRUN_API_KEY"; J='content-type: application/json'
+curl -s "$AGENTRUN_BASE_URL/agents" -H "$H" -H "$J" -d '{"definition":{"id":"boxed","name":"Boxed","instructions":"Do each step with bash.","place":{"mode":"sandbox","box":"docker"},"tools":["bash","write","read"]}}'
+run=$(curl -s "$AGENTRUN_BASE_URL/agents/boxed/runs" -H "$H" -H "$J" -d '{"input":{"content":"Save what cat /etc/os-release prints in out.txt."}}' | node -p 'JSON.parse(require("fs").readFileSync(0)).run_id')
+curl -sN "$AGENTRUN_BASE_URL/runs/$run/timeline" -H "$H" -H 'accept: text/event-stream' | grep -o '"summary":"[^"]*"'
+curl -s "$AGENTRUN_BASE_URL/runs/$run/files" -H "$H"; curl -s "$AGENTRUN_BASE_URL/runs/$run/files/out.txt" -H "$H"
+```
+
+The timeline ends when the run does. `out.txt` names the image's Debian 12, whatever this machine runs, and it is in
+the run's `work/`, the one directory the container binds. No key? Start the server with `--faux box.mjs`, a
+[faux model](#the-faux-model) that makes one `bash` call and then answers, and run the same commands:
+
+```sh
+cat > box.mjs <<'JS'
+export default (context, faux) => context.messages.some((m) => m.role === "toolResult") ? faux.message("Saved out.txt.")
+  : faux.message(faux.toolCall("bash", { command: "cat /etc/os-release | tee out.txt" }), { stopReason: "toolUse" });
+JS
+AGENTRUN_BOXES=docker node packages/serve/dist/cli.js --faux box.mjs
+```
+
+The default image has no python or git: [the box's image](#the-boxs-image) says how to pick one that has them. The rest
+is under [Sandbox](#sandbox).
+
 ## Logs
 
 stdout gets one line per event, `at=<time> event=<name> key=value ...` (a value with a space is quoted):
@@ -112,6 +150,8 @@ docker logs agentrun | grep Open
 
 On another port, publish it there and pass the address you open, so the printed link names it:
 `-p 127.0.0.1:<port>:7340 -e AGENTRUN_PUBLIC_URL=<that address>`.
+
+The image runs runner agents only: it cannot host a sandbox's boxes yet ([in the published image](#in-the-published-image)).
 
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
 (trixie), with git 2.47 for `pi-git-remote`. Everything it keeps is under `/data`: the agent store, the runs and the
@@ -177,7 +217,127 @@ its rows, and the server writes the end to the store again every 30 s until it l
 run as the store last had it. A run whose process was killed is opened again on its next message at once: a heartbeat
 of a process that is gone is not trusted.
 
-## Boxes
+## Sandbox
+
+A sandbox agent's `read`, `write`, `edit` and `bash` run in a box, a machine apart from this server: today a Docker
+container made for each run, which binds the run's `work/` and nothing else, or a Daytona sandbox, which gets a copy of
+it; either has no network and no key. The agent's loop, its log, its model calls and every key stay on the server. An
+agent says so in its [place](#place); the server says which [boxes](#boxes) it has; [a run in a Docker
+box](#a-run-in-a-docker-box) is what the container gets, and [a run in a Daytona box](#a-run-in-a-daytona-box) what a
+Daytona sandbox gets;
+[the box's image](#the-boxs-image) is what it starts from. [Sandbox in 60 seconds](#sandbox-in-60-seconds) is all of it
+end to end. The [published image](#in-the-published-image) cannot host boxes yet.
+
+### Place
+
+A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
+the ids under [Boxes](#boxes). A runner has no shell. In a sandbox the agent's file and shell tools (`read`,
+`write`, `edit`, `bash`) run in the named box, while the agent's loop, its log and every key stay on the server, whatever
+its harness. Any other shape is `422 input_invalid` on `definition.place`. A definition that names none runs in this
+host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one that names a place keeps
+it, `runner` included. An edit that names no place keeps the agent's.
+
+A run may narrow a sandbox agent to `runner`, never widen a runner agent into a sandbox: `POST /agents/{id}/runs` takes
+`"place": "runner"`, and any other value is `422`. A narrowed run runs without `bash`, and is never refused for its box.
+The run keeps the place it resolved to, and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box,
+when they come, will be an option of `sandbox` (such as `native_tools: true`), never a third mode.
+
+`bash` may be named only by an agentic definition whose place is a sandbox (`422` on a runner, named or by default), and a
+workflow's place is `runner` or none (`422` on a sandbox).
+
+`GET /v2/capabilities` lists `places`: the modes, the default, and each box with `available` and, when not, the `reason`.
+A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
+`409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place`, the run
+request's `place` and `capabilities.places` `x-agentrun-serve: "place/1"`.
+
+### A run in a Docker box
+
+With `AGENTRUN_BOXES=docker` and a Docker daemon this server's user may use, a run whose place is
+`{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `read`, `write`, `edit` or `bash` call
+(a run with no such call gets none). Those four tools are pi's own, on every harness; their calls run in the container.
+`web_fetch` (and `fetch_page`, its legacy name), `web_search` and the `monid.*` tools stay on this server, and so do
+the run's loop, its log, its model calls and every key. What the server itself files in `work/` (monid's long answers,
+the browser's evidence) never goes through a link a box's command planted there: each directory is held open on the
+way (`/proc/self/fd`). On a host without it (macOS), where a link swapped in mid-walk could still turn a write, a sandbox run's `work/` gets none of
+these files: monid's long answers say they could not be saved, and the browser's evidence is not filed. `browser` is runner-only for now (`422` in a sandbox place): its downloads
+go through `work/` by path.
+
+- The container binds the run's `work/` alone, read-write, at `/run/agentrun/run/work`, where the tools start. Nothing
+  else of the data directory enters it. `read`, `write` and `edit` take a path in that directory, relative or absolute,
+  or under the run's own `work/` on this machine, which names the same file there (another harness's cwd may name
+  one); any other (another path of this machine, `..` out of it, `~`) is refused as outside the workspace, and their
+  errors name the box's paths, never this machine's. A mount source that is, or passes through, a link below the data directory is
+  refused: the tool call fails, and no container is made. The data directory is resolved to its real path once, at start.
+- It has no network (`--network none`); no setting opens it. Docker still binds its copies of this machine's
+  `/etc/resolv.conf`, `/etc/hostname` and `/etc/hosts` into it, read-only, so a box's command can read this machine's
+  resolver settings (its nameservers and search domains), with no network to use them. Its environment is
+  `LANG=C.UTF-8` and `HOME=/tmp` and the image's own: never this server's, so no key or token is in it. It runs as this
+  server's uid:gid, so what it writes in `work/` stays this server's. It starts from `AGENTRUN_DOCKER_IMAGE`
+  ([the box's image](#the-boxs-image)). It has no CPU, memory or process limits yet.
+- `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
+  command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
+  shell in `work/`.
+- The container is labelled `agentrun.run=<run id>`, and the label is its only record. A run's process that starts again
+  after a crash finds it by the label and first kills the commands the dead process left running. It is destroyed when
+  the run ends (completed, failed or cancelled: a follow-up after a completed run gets a fresh one, with the same
+  `work/`) and when the run is archived. A start destroys every such container whose run has ended or is archived; one
+  of a run this data directory does not know is left to its 24-hour lifetime.
+
+### A run in a Daytona box
+
+With `AGENTRUN_BOXES=daytona` and `DAYTONA_API_KEY`, a run whose place is `{"mode": "sandbox", "box": "daytona"}` gets one
+Daytona sandbox, made on its first `read`, `write`, `edit` or `bash` call, with the same tools, path rules, environment,
+`bash` and labels as a Docker box. What differs:
+
+- The key is this server's alone. The server makes, copies to and from, and destroys the sandbox itself. The run's
+  process holds no key: it reaches its sandbox only through the server's box relay, on loopback, which takes the door
+  token and adds the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs
+  and files). It refuses every other call (a create, a listing, a stop, a delete, another run's sandbox, any other host).
+- Its network is blocked (`networkBlockAll`). A sandbox Daytona does not report blocked is deleted, and the tool call
+  fails saying so. An organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot
+  override, so a run there gets no Daytona box.
+- A sandbox cannot bind `work/`. The server copies `work/` into it at `/run/agentrun/run/work` when it makes it, and
+  copies what changed back at each turn's end (a read of the run's files waits for that copy) and once more before the
+  run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
+  never a link and nothing outside `work/`, and a file this server changed since the last copy stays as this server
+  has it. A file the box removed is removed here too. What the server files in `work/` during the run (monid's long
+  answers) is copied into the sandbox as well. The copy's mark is `box-sync.json` beside the run.
+- The sandbox is destroyed after the last copy back, and only once that copy is whole: when the run ends, and when it
+  is archived (a copy that fails at an archive keeps the sandbox for the run's end). A copy that fails at the run's end
+  is tried again, and the end waits for it. One that stops for good (an archive the server cannot read, or a limit a copy
+  that brought nothing reached) keeps the sandbox, says so in the log, and lets the run end with what did come back; the
+  sandbox's 24-hour lifetime bounds it. A start pulls a run it finds waiting for the person, and copies back, then
+  destroys, the sandbox of every run that has ended or is archived. One whose copy fails is kept for the next start.
+- The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
+
+### The box's image
+
+`AGENTRUN_DOCKER_IMAGE` names the image every Docker box starts from, `debian:bookworm-slim` by default: a shell and
+Debian's base tools, with no python, git or compiler. A box has no network, so a run cannot install them; the image has
+to bring them. Pull an image that has what your agents use, then start the server with it:
+
+```sh
+docker pull python:3.12-bookworm
+AGENTRUN_DOCKER_IMAGE=python:3.12-bookworm AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
+```
+
+`python:3.12-bookworm` has python 3.12 with pip, and git. For more, build your own from the default
+(`FROM debian:bookworm-slim`, then `RUN apt-get update && apt-get install -y --no-install-recommends git python3
+ca-certificates`), tag it, and name the tag. An image based on Debian has what a box needs to run commands: `sh`,
+`sleep` and `setsid`, and `bash` for the `bash` tool when there is one (else `sh`). The image's own entrypoint
+never runs; the box's first process is a `sleep` of its lifetime.
+
+### In the published image
+
+The published image, `ghcr.io/parcha-ai/agentrun-server`, cannot host boxes yet. It has no `docker` command and no
+Docker daemon, so with `AGENTRUN_BOXES=docker` capabilities and the start's `event=boxes` line say docker is
+unavailable, and a sandbox agent's runs are `409 agent_not_runnable`. Runner agents work as before. Do not mount the
+host's Docker socket into the container to get around it: whatever can reach that socket is root on the host, and a
+box's bind of `work/` names a path in the server's container, which the host's daemon does not have. For sandboxes, run
+the server from a checkout on a machine with Docker ([Sandbox in 60 seconds](#sandbox-in-60-seconds)). A box that runs
+inside the image itself (bwrap, on Linux) comes in a later release.
+
+### Boxes
 
 A box is a machine apart from this one where a run's tools run. Runs execute in `docker` and `daytona` boxes
 ([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
@@ -234,8 +394,8 @@ A definition is checked for what keeps it from running here when it is saved, wi
 it starts:
 
 - What no setting of this host fixes refuses the save, `422 input_invalid` by field, and nothing is written: a tool
-  this host does not bind (`definition.tools[i]`, `bash` among them), a model pi-ai does not know when no gateway is
-  set (`definition.model`, saying why), empty instructions (`definition.instructions`), and a workflow that needs a tool
+  this host does not bind (`definition.tools[i]`), `bash` on an agent whose place is not a sandbox, a model pi-ai does
+  not know when no gateway is set (`definition.model`, saying why), empty instructions (`definition.instructions`), and a workflow that needs a tool
   call this host does not run, code, or a node tool other than `read`, `write` and `edit` (`definition.workflow`, one
   field per need).
 - What a setting of this host fixes saves, and the `201` or `200` carries it in `warnings` (`[{field, reason:
@@ -265,6 +425,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `read` | Read a file in the run's `work/` | nothing | yes, no |
 | `write` | Write a file in the run's `work/` | nothing | yes, no |
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
+| `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 300 s when the call names no timeout | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)): `{url}` in, a Page out, `{ok, url, status, title, text, truncated?, original_chars?, links, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else keyless through Exa, or through Parallel where it is picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
@@ -275,7 +436,8 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/`, the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
 
-There is no `bash`: a run gets no shell (see [Safety](#safety)). `fetch_page` is a legacy name for `web_fetch`: a
+`bash` runs only in a box: a runner agent, and a workflow, get no shell on this machine (see [Safety](#safety)). In a
+sandbox place `read`, `write` and `edit` run in the box too. `fetch_page` is a legacy name for `web_fetch`: a
 revision, a model node or a call node that names it still saves and runs, and gets `web_fetch` under that name (the
 same Page with `via`, resolved as `web_fetch` is: the guarded fetch, Parallel only where picked). The table lists it no
 more.
@@ -643,86 +805,6 @@ system prompt, as every skill is on `pi` and `codex`; so do all of them when tog
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
 `serve/1`), and lists them in `info.x-agentrun-serve.fields`.
 
-## Place
-
-A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
-`bwrap`, `docker`, `modal` or `daytona`. A runner has no shell. In a sandbox the agent's file and shell tools (`read`,
-`write`, `edit`, `bash`) run in the named box, while the agent's loop, its log and every key stay on the server, whatever
-its harness. Any other shape is `422 input_invalid` on `definition.place`. A definition that names none runs in this
-host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one that names a place keeps
-it, `runner` included. An edit that names no place keeps the agent's.
-
-A run may narrow a sandbox agent to `runner`, never widen a runner agent into a sandbox: `POST /agents/{id}/runs` takes
-`"place": "runner"`, and any other value is `422`. A narrowed run runs without `bash`, and is never refused for its box.
-The run keeps the place it resolved to, and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box,
-when they come, will be an option of `sandbox` (such as `native_tools: true`), never a third mode.
-
-`bash` may be named only by an agentic definition whose place is a sandbox (`422` on a runner, named or by default), and a
-workflow's place is `runner` or none (`422` on a sandbox).
-
-`GET /v2/capabilities` lists `places`: the modes, the default, and each box with `available` and, when not, the `reason`.
-A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
-`409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place`, the run
-request's `place` and `capabilities.places` `x-agentrun-serve: "place/1"`.
-
-### A run in a Docker box
-
-With `AGENTRUN_BOXES=docker` and a Docker daemon this server's user may use, a run whose place is
-`{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `read`, `write`, `edit` or `bash` call
-(a run with no such call gets none). Those four tools are pi's own, on every harness; their calls run in the container.
-`web_fetch` (and `fetch_page`, its legacy name), `web_search` and the `monid.*` tools stay on this server, and so do
-the run's loop, its log, its model calls and every key. What the server itself files in `work/` (monid's long answers,
-the browser's evidence) never goes through a link a box's command planted there: each directory is held open on the
-way (`/proc/self/fd`). On a host without it (macOS), where a link swapped in mid-walk could still turn a write, a sandbox run's `work/` gets none of
-these files: monid's long answers say they could not be saved, and the browser's evidence is not filed. `browser` is runner-only for now (`422` in a sandbox place): its downloads
-go through `work/` by path.
-
-- The container binds the run's `work/` alone, read-write, at `/run/agentrun/run/work`, where the tools start. Nothing
-  else of the data directory enters it. `read`, `write` and `edit` take a path in that directory, relative or absolute,
-  or under the run's own `work/` on this machine, which names the same file there (another harness's cwd may name
-  one); any other (another path of this machine, `..` out of it, `~`) is refused as outside the workspace, and their
-  errors name the box's paths, never this machine's. A mount source that is, or passes through, a link below the data directory is
-  refused: the tool call fails, and no container is made. The data directory is resolved to its real path once, at start.
-- It has no network (`--network none`); no setting opens it. Its environment is `LANG=C.UTF-8` and `HOME=/tmp` and the
-  image's own: never this server's, so no key or token is in it. It runs as this server's uid:gid, so what it writes in
-  `work/` stays this server's. `AGENTRUN_DOCKER_IMAGE` names the image (default `debian:bookworm-slim`, which has no
-  python or git). It has no CPU, memory or process limits yet.
-- `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
-  command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
-  shell in `work/`.
-- The container is labelled `agentrun.run=<run id>`, and the label is its only record. A run's process that starts again
-  after a crash finds it by the label and first kills the commands the dead process left running. It is destroyed when
-  the run ends (completed, failed or cancelled: a follow-up after a completed run gets a fresh one, with the same
-  `work/`) and when the run is archived. A start destroys every such container whose run has ended or is archived; one
-  of a run this data directory does not know is left to its 24-hour lifetime.
-
-### A run in a Daytona box
-
-With `AGENTRUN_BOXES=daytona` and `DAYTONA_API_KEY`, a run whose place is `{"mode": "sandbox", "box": "daytona"}` gets one
-Daytona sandbox, made on its first `read`, `write`, `edit` or `bash` call, with the same tools, path rules, environment,
-`bash` and labels as a Docker box. What differs:
-
-- The key is this server's alone. The server makes, copies to and from, and destroys the sandbox itself. The run's
-  process holds no key: it reaches its sandbox only through the server's box relay, on loopback, which takes the door
-  token and adds the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs
-  and files). It refuses every other call (a create, a listing, a stop, a delete, another run's sandbox, any other host).
-- Its network is blocked (`networkBlockAll`). A sandbox Daytona does not report blocked is deleted, and the tool call
-  fails saying so. An organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot
-  override, so a run there gets no Daytona box.
-- A sandbox cannot bind `work/`. The server copies `work/` into it at `/run/agentrun/run/work` when it makes it, and
-  copies what changed back at each turn's end (a read of the run's files waits for that copy) and once more before the
-  run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
-  never a link and nothing outside `work/`, and a file this server changed since the last copy stays as this server
-  has it. A file the box removed is removed here too. What the server files in `work/` during the run (monid's long
-  answers) is copied into the sandbox as well. The copy's mark is `box-sync.json` beside the run.
-- The sandbox is destroyed after the last copy back, and only once that copy is whole: when the run ends, and when it
-  is archived (a copy that fails at an archive keeps the sandbox for the run's end). A copy that fails at the run's end
-  is tried again, and the end waits for it. One that stops for good (an archive the server cannot read, or a limit a copy
-  that brought nothing reached) keeps the sandbox, says so in the log, and lets the run end with what did come back; the
-  sandbox's 24-hour lifetime bounds it. A start pulls a run it finds waiting for the person, and copies back, then
-  destroys, the sandbox of every run that has ended or is archived. One whose copy fails is kept for the next start.
-- The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
-
 ## Decision workflows
 
 A workflow's typed questions (its `judge`, `pick`, `sift`, `route` and `ask` nodes) run on a decision provider when
@@ -851,8 +933,8 @@ cookie to every server on the same host name, whatever its port, so another app 
 2. The app reads the run's revision from the store.
    - An agentic revision runs as the root agent: its instructions and skills, its model, and the tools it names of the
      workspace's `read`, `write` and `edit`, and `ask_person`, which ends the turn; the timeline then shows a `waiting`
-     row, and the run is `input_required` and `waiting` until a message answers it. `bash` is not bound, so a
-     definition that names it is not saved here. The run is `queued` until its first message shows; while the process runs, the
+     row, and the run is `input_required` and `waiting` until a message answers it. `bash` is bound only in a
+     [sandbox](#sandbox), where it and the file tools run in the run's box. The run is `queued` until its first message shows; while the process runs, the
      timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`. Once the run is idle and its
      newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
      (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)).
@@ -1040,11 +1122,11 @@ carries no cost at all, as from a provider that does not price the model. The te
   included, is resolved and refused (`outside the workspace`), so a run reads neither the server's token, the door
   token, `store.sqlite`, another run's files (its `work/` or its `tmp/`) nor `/proc`, and writes nowhere else. This is
   pi-durable-disk's confinement inside the run's process, not an operating-system boundary: the run and the server
-  share a user (one uid in the container), so the confinement holds only because the run has no shell.
-- No path offers a shell. `bash` is not bound: a definition that names it is not saved here (`422`), one saved before
-  that check is not runnable (`409`), and a model that
-  calls it anyway, as an agent or as a workflow's model node, is answered that the tool is not available and runs
-  nothing. There is no sandbox box in this phase, so shell stays off.
+  share a user (one uid in the container), so the confinement holds only because the run has no shell on this machine.
+- No path offers a shell on this machine. On the runner `bash` is not bound: a definition that names it is not saved
+  here (`422`), one saved before that check is not runnable (`409`), and a model that calls it anyway, as an agent or as
+  a workflow's model node, is answered that the tool is not available and runs nothing. In a [sandbox](#sandbox) it runs
+  in the run's box, which binds the run's `work/` alone, has no network, and holds no key or token.
 - Files are served from a run's `work/` and an agent's home only. A path with an empty, `.` or `..` segment, a
   backslash or a NUL is `400 invalid_file_path`; a segment that starts with `.` (the run's skills under `.agents/`) is
   `403 system_file_forbidden`; a symlink on the way is `404` (a write or a delete in a home through one, `403`). Every
