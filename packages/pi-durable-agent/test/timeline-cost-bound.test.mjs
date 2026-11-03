@@ -51,11 +51,26 @@ test("a cap's refusal marks no request and holds nothing: it never makes a bound
   assert.deepEqual(usageOf([user("go"), started(0.2), priced("one"), ...refusal, started(0.5)]).at_most_usd, 0.51);
 });
 
-test("a cost unknown for another reason leaves no bound: an answer from before requests were marked, a cost still pending", () => {
+test("a cost unknown for another reason leaves no bound: an answer from before requests were marked", () => {
   assert.deepEqual(usageOf([user("old"), noPrice(), user("go"), started(0.5)]), { usd: null, requests: 2 }, "an unmarked answer of unknown cost");
-  const pending = [user("go"), started(0.2), assistant([{ type: "text", text: "early" }], 0, { usage: { input: 0, output: 0, cost: {} } }), custom(REQUEST_COST_PENDING, { request: 1 })];
-  assert.deepEqual(usageOf(pending), { usd: null, requests: 1 });
+});
+
+const early = () => assistant([{ type: "text", text: "early" }], 0, { usage: { input: 0, output: 0, cost: {} } });
+
+test("a cost still pending reads at most what its host held for it, live and settled: its pending mark's figure, else its start's; once its late cost is in, the cost is known", () => {
+  const pending = [user("go"), started(0.2), early(), custom(REQUEST_COST_PENDING, { request: 1 })];
+  assert.deepEqual(usageOf(pending), { usd: null, requests: 1, at_most_usd: 0.2 }, "settled: at its start's figure");
+  assert.deepEqual(usageOf(pending, false), { usd: null, requests: 1, at_most_usd: 0.2 }, "live: the same, while its cost is on its way");
+  const held = [user("go"), started(0.2), priced("one"), started(0.5), early(), custom(REQUEST_COST_PENDING, { request: 2, heldUsd: 0.5 })];
+  assert.deepEqual(usageOf(held), { usd: null, requests: 2, at_most_usd: 0.51 }, "at the figure on its pending mark");
   assert.deepEqual(usageOf([...pending, custom(REQUEST_COST_LATE, { request: 1, usd: 0.03 })]), { usd: 0.03, requests: 1 }, "once the late cost is in, the cost is known");
+  assert.deepEqual(usageOf([...held, custom(REQUEST_COST_LATE, { request: 2, usd: null, heldUsd: 0.5 })]), { usd: null, requests: 2, at_most_usd: 0.51 }, "a late cost that is unknown after all: at the figure it names");
+  assert.deepEqual(usageOf([user("go"), started(), early(), custom(REQUEST_COST_PENDING, { request: 1 })]), { usd: null, requests: 1 }, "a pending cost whose request has no figure anywhere: unbounded");
+});
+
+test("a request whose start mark a crash lost, marked again from its host's record before its cut answer, counts at its own figure, never at another start's", () => {
+  // Request 1 (held 0.01) answered at $0.002; request 2 (held 0.5) cut, its start written by the next open.
+  assert.deepEqual(usageOf([user("go"), started(0.01), priced("one", 0.002), started(0.5), noPrice()]), { usd: null, requests: 2, at_most_usd: 0.502 });
 });
 
 test("a summary stopped before its end counts at its end's figure, apart from the generation's", () => {
@@ -64,6 +79,14 @@ test("a summary stopped before its end counts at its end's figure, apart from th
   assert.deepEqual(usageOf(entries), { usd: null, requests: 2, at_most_usd: 0.31 });
   const closed = [user("go"), started(0.2), priced("one"), custom(REQUEST_STARTED, { ...summary, heldUsd: 0.3 }), custom(REQUEST_COST, { ...summary, usd: 0.02 })];
   assert.deepEqual(usageOf(closed), { usd: 0.03, requests: 2 }, "a summary that closed with its cost is known");
+});
+
+test("a cost unknown because its model has no price says so in the usage row's summary; a cut, or one bounded, does not", () => {
+  const unpriced = (model) => assistant([{ type: "text", text: "answered" }], 0, { model, usage: { input: 10, output: 5, cost: {} } });
+  const summaryOf = (entries) => timelineOf(entries, { settled: true }).find((row) => row.kind === "usage")?.summary;
+  assert.equal(summaryOf([user("go"), started(), unpriced("gateway-model-x")]), "Cost so far: unknown: gateway-model-x has no price here, over 1 model request");
+  assert.equal(summaryOf([user("go"), started(), priced("one"), started(), aborted()]), "Cost so far: unknown over 2 model requests", "a stopped request, no figure: unknown, with no price named");
+  assert.equal(summaryOf([user("go"), started(0.2), unpriced("gateway-model-x")]), "Cost so far: unknown over 1 model request", "an answer with no price whose request had a figure: bounded, so the bound speaks, not this");
 });
 
 test("a known cost has no bound", () => {
