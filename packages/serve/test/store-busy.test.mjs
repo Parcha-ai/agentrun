@@ -152,27 +152,6 @@ test("the agent home's own busy on a read no storeError wraps reaches the server
   assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.retryable, answer.body.error?.retry_after_ms], [409, "home_busy", true, 500], JSON.stringify(answer.body));
 });
 
-test("two edits held by a reader of the store are each checked against the revision current when it commits", async (t) => {
-  const { api, data, port, token } = await serve(t);
-  assert.equal((await api("POST", "/agents", agent("raced"))).status, 201);
-  const put = (instructions, version) => timed(port, token, "PUT", "/agents/raced/definition", agent("raced", { instructions, version }));
-  // Both ask for version 2: the second to commit is one more, so it is refused, not written as version 3.
-  let release = hold(t, data, "READ");
-  const versions = [put("Answer A.", 2), put("Answer B.", 2)];
-  await sleep(500);
-  release();
-  const answered = (await Promise.all(versions)).map((answer) => [answer.status, answer.body.error?.fields?.[0]?.field ?? null]).sort();
-  assert.deepEqual(answered, [[200, null], [422, "definition.version"]]);
-  assert.equal((await api("GET", "/agents/raced/revisions")).body.revisions.length, 2, "one edit made a revision");
-  // The same edit twice makes one revision: the second finds it current.
-  release = hold(t, data, "READ");
-  const same = [put("Answer C.", 3), put("Answer C.", 3)];
-  await sleep(500);
-  release();
-  assert.deepEqual((await Promise.all(same)).map((answer) => answer.status), [200, 200]);
-  assert.equal((await api("GET", "/agents/raced/revisions")).body.revisions.length, 3, "the same edit twice made one revision");
-});
-
 /** A workflow agent whose run is working, its model node answering 1.5 s after it starts, or once a file exists when
  *  `instructions` say "Answer once <file> exists.". */
 async function workingFlow(api, id, instructions = "Answer soon.") {
@@ -206,10 +185,17 @@ test("a workflow that ends while the agent store is held past a request's 2 s wa
 });
 
 test("a workflow whose end outlasts the run end's retries is settled again, not left until the next start", async (t) => {
-  const { api, data } = await serve(t, { carryBackRetry: { delaysMs: [50, 50] }, settleRetryMs: 300 });
+  // The store is let go only once the run end's retries ran out and a later settle was refused too.
+  const delaysMs = [50, 50];
+  let exhausted = 0;
+  const onBusy = (_id, attempt) => void (attempt === delaysMs.length && exhausted++);
+  const { api, data } = await serve(t, { carryBackRetry: { delaysMs, onBusy }, settleRetryMs: 300 });
   const runId = await workingFlow(api, "settled-again");
   const release = hold(t, data, "EXCLUSIVE");
-  await sleep(3_000);
+  for (let i = 0; exhausted < 2; i++) {
+    assert.ok(i < 600, `the run's end ran out of retries, then was tried again: ${exhausted} times out of retries`);
+    await sleep(50);
+  }
   release();
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 15_000 });
   assert.equal(last.status, "completed", JSON.stringify(last));
@@ -250,8 +236,8 @@ test("a run's view is of one moment: a run that ends while its read waits is ans
   assert.deepEqual([viewed.status, viewed.body.status, viewed.body.result?.final_answer], [200, "completed", "Now."], JSON.stringify(viewed.body));
 });
 
-/** Holds each of the next two workflow commits until both have arrived: each read its current revision and passed its
- *  checks, and both reach the store's own check of the body together, as two edits in flight at once do. */
+/** Holds each of the next two commits until both have arrived: each read its current revision and passed its checks, and
+ *  both reach the store's own check of the body together, as two edits in flight at once do. */
 async function twoCommitsAtOnce(t) {
   const probe = await scratch(t);
   const store = openStore(probe);
@@ -262,7 +248,7 @@ async function twoCommitsAtOnce(t) {
   const arrived = [];
   let armed = true;
   proto.commitRevision = async function (agentId, input, options) {
-    if (armed && input.kind === "workflow") {
+    if (armed) {
       await new Promise((resolve) => {
         arrived.push(resolve);
         if (arrived.length === 2) (armed = false), arrived.forEach((go) => go());
@@ -273,7 +259,7 @@ async function twoCommitsAtOnce(t) {
   return () => assert.equal(arrived.length, 2, "both edits reached the store's commit together");
 }
 
-test("two workflow edits whose body checks are in flight together are each checked against the revision current when it commits", async (t) => {
+test("two edits in flight together, of a workflow or an agentic agent, are each checked against the revision current when it commits", async (t) => {
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent("flowed"))).status, 201);
   const put = (instructions, extra = {}, headers = {}) => api("PUT", "/agents/flowed/definition", flowAgent("flowed", answerFlow(instructions), extra), headers);
@@ -298,10 +284,22 @@ test("two workflow edits whose body checks are in flight together are each check
   assert.deepEqual(outcome(await Promise.all([put("Answer D.", {}, { "if-match": etag }), put("Answer E.", {}, { "if-match": etag })])), [[200, null, null], [412, "precondition_failed", null]]);
   both();
   assert.equal(await count(), 4);
+
+  // An agentic agent's edits the same way: both asking for version 2, the second refused; the same edit twice, one revision.
+  assert.equal((await api("POST", "/agents", agent("raced"))).status, 201);
+  const edit = (instructions, version) => api("PUT", "/agents/raced/definition", agent("raced", { instructions, version }));
+  both = await twoCommitsAtOnce(t);
+  assert.deepEqual(outcome(await Promise.all([edit("Answer A.", 2), edit("Answer B.", 2)])), [[200, null, null], [422, "input_invalid", "definition.version"]]);
+  both();
+  both = await twoCommitsAtOnce(t);
+  assert.deepEqual(outcome(await Promise.all([edit("Answer C.", 3), edit("Answer C.", 3)])), [[200, null, null], [200, null, null]]);
+  both();
+  assert.equal((await api("GET", "/agents/raced/revisions")).body.revisions.length, 3, "the same edit twice made one revision");
 });
 
 test("an escalated workflow's review.at is its ended_at, one saved end time, even when its end waits for a held store, and after a restart", async (t) => {
-  const { api, data, close } = await serve(t, { carryBackRetry: { delaysMs: Array(60).fill(100) }, settleRetryMs: 120_000 });
+  let refused = 0;
+  const { api, data, close } = await serve(t, { carryBackRetry: { delaysMs: Array(60).fill(100), onBusy: () => void refused++ }, settleRetryMs: 120_000 });
   const gated = answerFlow("Answer soon.");
   gated.schemas.In.properties.amount = { type: "number" };
   gated.root.steps.push({ node: "escalate", label: "too big", when: { predicate: "gte", path: "amount", n: 500 }, kind: "review", stage: "gate", summary: "needs a person" });
@@ -312,7 +310,10 @@ test("an escalated workflow's review.at is its ended_at, one saved end time, eve
   await follow(api, runId, ["working"]);
   // Another writer holds the store past the run's end: its end is written, and its ended_at stamped, when it lets go.
   const release = hold(t, data);
-  await sleep(2_500);
+  for (let i = 0; refused === 0; i++) {
+    assert.ok(i < 600, "the run's end met the held store");
+    await sleep(50);
+  }
   release();
   await follow(api, runId, ["completed"], { deadlineMs: 15_000 });
   const same = (view) => [view.status, view.review?.kind, view.review?.at === view.ended_at];

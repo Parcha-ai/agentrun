@@ -45,6 +45,10 @@ test("the files a run wrote are listed and served raw; dot segments, .. and syml
       });
       req.once("error", reject).end();
     });
+  // A link to a directory of the server's is neither served through nor listed.
+  await symlink(data, join(work, "d"));
+  assert.equal(await code("d/outside.txt"), "not_found");
+  assert.ok(!(await api("GET", `/runs/${run_id}/files`)).body.files.some((f) => f.path === "d" || f.path.startsWith("d/")), "a linked directory is not listed");
   assert.equal(await code(".agents/skills/cite/SKILL.md"), "system_file_forbidden");
   assert.equal(await code("sub/%2E%2E/report.md"), "invalid_file_path");
   assert.equal(await code("sub/../../../agent.sqlite"), "invalid_file_path");
