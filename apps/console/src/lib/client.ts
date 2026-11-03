@@ -46,7 +46,7 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
   return `?${q}`;
 };
 
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature } };
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean; min_cap_usd?: number | null }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and

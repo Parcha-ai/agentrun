@@ -1,5 +1,19 @@
 export type StartBody = { input: unknown; revision?: string; effort?: string; max_cost_usd?: number };
-export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string };
+/** The request as the form has it, for the code pane: a cap that is not a number is kept as typed. */
+export type PreviewBody = Omit<StartBody, "max_cost_usd"> & { max_cost_usd?: number | string };
+/** `minCapUsd`: the agent's least cap (GET /agents/{id} min_cap_usd): a cap under it is refused here as the server
+ *  refuses it (`cap >= min_cap_usd`); null, no cap can be kept on its model; absent, the server said nothing. */
+export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string; minCapUsd?: number | null };
+
+/** The least cap in dollars, rounded up to a cent, so a cap of what it says is never under it. */
+const dollarsAtLeast = (usd: number) => `$${(Math.ceil(usd * 100 - 1e-9) / 100).toFixed(2)}`;
+/** The cap field's hint from the agent's least cap: the least (at default effort, when another effort is chosen: the
+ *  server works it out at the agent's default), that none can be kept, or nothing when the server says nothing. */
+export function capHint(minCapUsd: number | null | undefined, effortChosen: boolean): string | undefined {
+  if (minCapUsd === undefined) return undefined;
+  if (minCapUsd === null) return "No cap can be kept on this agent's model.";
+  return `At least ${dollarsAtLeast(minCapUsd)} for this agent${effortChosen ? ", at default effort" : ""}.`;
+}
 
 /** The body of `POST /v2/agents/{id}/runs` from the form. An agentic run's input is its first message, `{content}`; a
  *  workflow run's is its typed input, as JSON. A workflow run takes no spend cap (the server refuses one). */
@@ -17,9 +31,26 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
   if (kind === "agentic" && f.maxCostUsd?.trim()) {
     const cap = Number(f.maxCostUsd);
     if (!Number.isFinite(cap) || cap <= 0) return { ok: false, field: "max_cost_usd", message: "A spend cap is a positive number of dollars." };
+    if (f.minCapUsd === null) return { ok: false, field: "max_cost_usd", message: "No cap can be kept on this agent's model." };
+    if (typeof f.minCapUsd === "number" && cap < f.minCapUsd) return { ok: false, field: "max_cost_usd", message: `At least ${dollarsAtLeast(f.minCapUsd)} for this agent.` };
     body.max_cost_usd = cap;
   }
   return { ok: true, body };
+}
+
+/** The request the form says, as entered, for the code pane and the JSON view: startBody's body when the form is valid,
+ *  else the same fields with nothing refused or dropped (a workflow input that is not JSON, as typed; a cap under the
+ *  agent's least, as the number it is; one that is not a number, as typed). A copied request is then refused as the form
+ *  is, never sent without the cap, revision or effort the form names. */
+export function previewBody(kind: "agentic" | "workflow", f: Omit<StartForm, "minCapUsd">): PreviewBody {
+  let input: unknown = kind === "agentic" ? { content: f.text } : f.text;
+  if (kind === "workflow") { try { input = JSON.parse(f.text); } catch { /* kept as typed */ } }
+  const body: PreviewBody = { input };
+  if (f.revision) body.revision = f.revision;
+  if (f.effort) body.effort = f.effort;
+  const cap = f.maxCostUsd?.trim();
+  if (kind === "agentic" && cap) body.max_cost_usd = Number.isFinite(Number(cap)) ? Number(cap) : cap;
+  return body;
 }
 
 type Schema = { $ref?: string; type?: string | string[]; properties?: Record<string, Schema>; required?: string[]; items?: Schema; examples?: unknown[]; default?: unknown; enum?: unknown[]; description?: string; definitions?: Record<string, Schema> };
@@ -75,7 +106,7 @@ export { keeper };
 const sh = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /** The request as cURL for the code pane. The token is `$AGENTRUN_TOKEN`: a value never appears. */
-export function curlFor(origin: string, agentId: string, body: StartBody, key: string): string {
+export function curlFor(origin: string, agentId: string, body: PreviewBody, key: string): string {
   return [
     `curl -X POST ${sh(`${origin}/v2/agents/${encodeURIComponent(agentId)}/runs`)} \\`,
     `  -H "Authorization: Bearer $AGENTRUN_TOKEN" \\`,

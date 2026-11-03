@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, route, runsHash } from "./App";
 import { ANALYTICS } from "@/components/AgentAnalytics.sample";
 import { agentHash } from "@/components/AgentPage";
-import { agentsList, recorded } from "@/fixtures";
+import { agentFixture, agentsList, recorded } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
 import type { Run, TimelinePage } from "@/lib/v2";
 
@@ -384,6 +384,59 @@ describe("App, the agents' names", () => {
     // The archived agent's name could not be read: its run shows neither a name nor an id that would read as gone.
     expect(rows()[1]).not.toContain(kept.agent_id);
     expect(rows()[1]).not.toContain(kept.definition.name!);
+  });
+});
+
+// The playground reads the picked agent's least cap (GET /agents/{id} min_cap_usd) and hints it under the cap field; a
+// server that names none gives no hint, and the harness's (capabilities' harnesses[].min_cap_usd) stands in until the
+// agent's is read.
+describe("App, the playground's least cap", () => {
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  async function open(agentMin: number | null | undefined | (() => number | null), harnessMin?: number | null) {
+    const record = () => { const min = typeof agentMin === "function" ? agentMin() : agentMin; return { ...agentFixture("invoice-checker"), ...(min !== undefined ? { min_cap_usd: min } : {}) }; };
+    const agent = record();
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/runs") return json(200, { runs: [], next_cursor: null });
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [{ id: "pi", available: true, ...(harnessMin !== undefined ? { min_cap_usd: harnessMin } : {}) }], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/agents") return json(200, { agents: [record()], next_cursor: null });
+      if (path === `/v2/agents/${agent.agent_id}`) return json(200, record());
+      if (path === `/v2/agents/${agent.agent_id}/revisions`) return json(200, { revisions: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/playground";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const end = Date.now() + 4000;
+    while (!host.querySelector('input[placeholder="e.g. 0.50"]') && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    return host.querySelector('input[placeholder="e.g. 0.50"]')!.parentElement!;
+  }
+
+  it("hints the agent's least cap, read from its own record", async () => {
+    expect((await open(0.105, 0.05)).textContent).toContain("At least $0.11 for this agent.");
+  });
+  it("takes the harness's when the agent's record names none, and hints nothing when neither does", async () => {
+    expect((await open(undefined, 0.05)).textContent).toContain("At least $0.05 for this agent.");
+    act(() => root!.unmount()); root = undefined;
+    expect((await open(undefined, undefined)).textContent).not.toContain("At least");
+  });
+  // An agent edited elsewhere (another model or harness) keeps its id: the playground reads its least cap again each
+  // time it opens, never the one it read before.
+  it("reads the agent's least cap again when the playground opens again, so an edit shows", async () => {
+    let min: number | null = 0.5;
+    expect((await open(() => min)).textContent).toContain("At least $0.50 for this agent.");
+    min = 0.05;
+    const field = () => document.querySelector('input[placeholder="e.g. 0.50"]')?.parentElement?.textContent ?? "";
+    for (const hash of ["#/runs", "#/playground"]) {
+      act(() => { location.hash = hash; window.dispatchEvent(new HashChangeEvent("hashchange")); });
+      for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    }
+    const end = Date.now() + 4000;
+    while (!field().includes("$0.05") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(field()).toContain("At least $0.05 for this agent.");
   });
 });
 

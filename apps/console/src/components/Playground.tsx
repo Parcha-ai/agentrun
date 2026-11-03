@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
-import { curlFor, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
+import { capHint, curlFor, exampleInput, keeper, previewBody, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { cn } from "@/lib/utils";
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
@@ -25,11 +25,13 @@ export type PlaygroundProps = {
   result?: StartResult | null;
   /** The run the request started, followed live as the run page follows it (its rows, its answer, a follow-up). */
   live?: (runId: string) => React.ReactNode;
+  /** The chosen agent's least cap (min_cap_usd): null, none can be kept; absent, the server said nothing (runStart). */
+  minCapUsd?: number | null;
 };
 
 /** The hosted console's API playground for starting a run: the request on the left (a form, or its JSON), the same
  *  request as code on the right, and the server's answer, with a way into the run it started. */
-export function Playground({ agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onSend, onOpenRun, result: initialResult = null, live }: PlaygroundProps) {
+export function Playground({ agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onSend, onOpenRun, result: initialResult = null, live, minCapUsd }: PlaygroundProps) {
   const [agentId, setAgentId] = useState(initialAgent ?? agents[0]?.agent_id ?? "");
   // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept.
   useEffect(() => {
@@ -63,8 +65,18 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   }, [result]);
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
-  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap });
-  const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text };
+  // The least cap is the current revision's: an older revision may run another model, so its start is left to the server.
+  const atCurrent = !revision || revisions.some((r) => r.revision === revision && r.current);
+  const least = atCurrent ? minCapUsd : undefined;
+  const form = { text, revision, effort, maxCostUsd: cap };
+  const built = startBody(kind, { ...form, minCapUsd: least });
+  // A cap the server refused as too low says why under the field, as the server says it, while the form is still the
+  // request it refused: a change of agent, revision, effort or cap takes it away.
+  const asked = JSON.stringify([agentId, revision, effort, cap]);
+  const [sentAs, setSentAs] = useState(asked);
+  const capRefused = result?.status === 422 && sentAs === asked ? (result.body as { error?: { fields?: { field?: string; message?: string }[] } } | null)?.error?.fields?.find((f) => f.field === "max_cost_usd")?.message : undefined;
+  const hint = capHint(least, effort !== "");
+  const body = previewBody(kind, form);
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
     : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
@@ -72,7 +84,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     if (!built.ok || !onSend) return;
     setSending(true);
     const r = await submitStart(keys, agentId, built.body, onSend);
-    setSending(false); setResult(r); setPane("response");
+    setSending(false); setResult(r); setSentAs(asked); setPane("response");
   };
   const placeholder = kind === "agentic" ? "The run's first message, e.g. Summarize the standup: we ship Friday." : '{ "subject": "...", "body": "..." }';
   return (
@@ -119,7 +131,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   <div className="flex gap-2">{["", ...efforts].map((e) => <button key={e || "default"} type="button" onClick={() => setEffort(e)} className={cn("caps border px-3 py-2 text-[12px]", effort === e ? "border-foreground" : "text-muted-foreground")}>{e || "default"}</button>)}</div>
                 </Label>
                 {kind === "agentic" && (
-                  <Label name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
+                  <Label name="max_cost_usd" note={hint ? `A spend cap in dollars; empty means none. ${hint}` : "A spend cap in dollars; empty means none."} error={!built.ok && built.field === "max_cost_usd" ? built.message : capRefused}>
                     <input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />
                   </Label>
                 )}

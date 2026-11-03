@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { curlFor, exampleInput, keeper, startBody, started, submitStart } from "./runStart";
+import { capHint, curlFor, exampleInput, keeper, previewBody, startBody, started, submitStart } from "./runStart";
 
 describe("startBody", () => {
   it("starts an agentic run with its first message as content, and only the options given", () => {
@@ -117,5 +117,45 @@ describe("exampleInput", () => {
     const e = exampleInput(w)!;
     expect(JSON.parse(e.text)).toEqual({ id: "", owner: { name: "" } });
     expect(e.fields).toEqual([{ name: "id", note: "The ticket." }, { name: "owner" }]);
+  });
+});
+
+// The agent's least cap (GET /agents/{id} min_cap_usd, a serve extension): the start checks a cap against it as the
+// server does, `cap >= min_cap_usd`, at the boundary exactly; null means no cap can be kept; absent means no check.
+describe("startBody, the agent's least cap", () => {
+  const go = (maxCostUsd: string, minCapUsd?: number | null) => startBody("agentic", { text: "hi", maxCostUsd, minCapUsd });
+  it("takes a cap at the least or above, and refuses one under it, saying the least", () => {
+    expect(go("0.105", 0.105)).toEqual({ ok: true, body: { input: { content: "hi" }, max_cost_usd: 0.105 } });
+    expect(go("0.5", 0.105).ok).toBe(true);
+    expect(go("0.1049", 0.105)).toEqual({ ok: false, field: "max_cost_usd", message: "At least $0.11 for this agent." });
+  });
+  it("refuses any cap when none can be kept, and checks nothing when the server says nothing", () => {
+    expect(go("1", null)).toEqual({ ok: false, field: "max_cost_usd", message: "No cap can be kept on this agent's model." });
+    expect(go("", null).ok).toBe(true);
+    expect(go("0.0001", undefined).ok).toBe(true);
+  });
+});
+
+// The code pane's request: the one sent when the form is valid (so its Idempotency-Key is the send's), and what the form
+// names when it is not, so a copied request is refused as the form is.
+describe("previewBody", () => {
+  it("is startBody's body for a valid form, and keeps every option the form names for one it refuses", () => {
+    const f = { text: "Go.", revision: "r1", effort: "high", maxCostUsd: "0.50" };
+    const built = startBody("agentic", f);
+    expect(built.ok && built.body).toEqual(previewBody("agentic", f));
+    expect(startBody("agentic", { ...f, minCapUsd: 1 }).ok).toBe(false);
+    expect(previewBody("agentic", { ...f, text: "" })).toEqual({ input: { content: "" }, revision: "r1", effort: "high", max_cost_usd: 0.5 });
+    expect(previewBody("agentic", { ...f, maxCostUsd: "five" }).max_cost_usd).toBe("five");
+    expect(previewBody("workflow", { text: "{", maxCostUsd: "1" })).toEqual({ input: "{" });
+  });
+});
+
+describe("capHint", () => {
+  it("says the least in dollars, rounded up to a cent, at default effort when an effort is chosen; nothing when unknown", () => {
+    expect(capHint(0.105, false)).toBe("At least $0.11 for this agent.");
+    expect(capHint(0.105, true)).toBe("At least $0.11 for this agent, at default effort.");
+    expect(capHint(2, false)).toBe("At least $2.00 for this agent.");
+    expect(capHint(null, false)).toBe("No cap can be kept on this agent's model.");
+    expect(capHint(undefined, false)).toBeUndefined();
   });
 });
