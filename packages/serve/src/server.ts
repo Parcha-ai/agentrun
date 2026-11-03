@@ -12,7 +12,7 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir } from "./files.js";
+import { HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, syncDir } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, ownedByIdentity } from "./home-path.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
@@ -433,11 +433,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     .recover()
     .then(async () => {
       const rows = (await agents.request(() => agents.store.listRuns())).filter((row) => !row.importedFrom);
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      // An end's notice from its row and its serve.json alone, as the run list reads an ended run (summaryOfRow): never
+      // its own store, whose read can fail, so a busy store loses no end. The same body a live end's notice has.
       await webhooks.catchUp(rows, async (id) => {
-        const run = await runs.get(id);
-        if (!run) return null;
-        const { run_id, agent_id, status, title } = await runs.view(run);
-        return { run_id, agent_id, status, title };
+        const row = byId.get(id);
+        if (!row) return null;
+        const meta = await readJson(join(agents.dir, "runs", id, RUN_META));
+        return { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: isObject(meta) && typeof meta.title === "string" ? meta.title : "" };
       });
     })
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
