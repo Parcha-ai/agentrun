@@ -670,7 +670,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
-| `POST /files`, `PUT /files/{id}` | [Uploads](#uploads): a file reserved (`POST /v2/files`), then its bytes sent (`PUT /v2/files/{id}`). |
+| `POST /files`, `PUT /files/{id}`, `GET /files`, `GET` and `DELETE /files/{id}` | [Uploads](#uploads): a file sent in one call (`POST /v2/files?path=...`, its bytes the body), or reserved and then sent (`PUT /v2/files/{id}`); the server's uploads listed, read and deleted. |
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
 | `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. The query bounds `analytics` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; a poll never answers `home_busy` (`stale: true` marks a last whole view). An agentic run has none (`404`). |
@@ -689,24 +689,46 @@ above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap
 
 ## Uploads
 
-A run's input files. `POST /v2/files` with `{path, size_bytes, content_type?, sha256?}` reserves one, `pending`, and
-answers where to send its bytes: `upload.url`, relative to `/v2`, which is `PUT /v2/files/{id}`. `PUT` them there as the
-raw body, any content type. With no `content_type`, the file's type is its path's extension's, as a run's files are
-served (`plan.md` is `text/markdown; charset=utf-8`), and `application/octet-stream` for an extension not known.
-They are streamed to disk, never held whole, so `max_body_bytes` does not apply; their length must be `size_bytes` and
-their SHA-256 the `sha256` given (`422 input_invalid` at that field), and then the file is `ready`, with its `sha256`. A
-file is at most `limits.max_upload_bytes`, 50 MiB (`413`). The same bytes sent again change nothing; other bytes are a
-`422`. A run names up to `limits.max_files_per_run`, 20, ready files in `file_ids`: an unknown, pending or repeated one is
+A run's input files. Send one in one call, its bytes the body and its path in the query:
+
+```sh
+curl -s "$AGENTRUN_BASE_URL/files?path=plan.md" -H "authorization: Bearer $AGENTRUN_API_KEY" --data-binary @plan.md
+```
+
+It answers `201` with the file `ready`: its `file_id`, `size_bytes` (the body's length) and `sha256` (the body's own).
+Its `content_type` is the query's `content_type`, else the request's own type when it names one (not
+`application/octet-stream`, not curl's `application/x-www-form-urlencoded`), else its path's extension's, as a run's files
+are served (`plan.md` is `text/markdown; charset=utf-8`), else `application/octet-stream`. A `sha256` in the query is
+checked against the bytes (`422 input_invalid` when they differ). A multipart form (`curl -F`) is `415`: send the bytes
+themselves. Without `path` a body that is not JSON is `422` at `path`, saying how to call. `Idempotency-Key` replays the
+first file for the same bytes.
+
+Or, as the contract has it, in two calls: `POST /v2/files` with the JSON `{path, size_bytes, content_type?, sha256?}`
+reserves the file, `pending`, and answers where to send its bytes, `upload.url`; `PUT` them there as the raw body, any
+content type. Their length must be `size_bytes` and their SHA-256 the `sha256` given (`422 input_invalid` at that
+field), and then the file is `ready`. `upload.url` is a path from the server's root, `/v2/files/{id}`: send it to the
+server's address (`curl -X PUT --data-binary @plan.md "${AGENTRUN_BASE_URL%/v2}$url"`), not after the `/v2` base, where a
+`404` says so. With no `content_type` the reservation's type is its path's extension's.
+
+Either way the bytes are streamed to disk, never held whole, so `max_body_bytes` does not apply; a file is at most
+`limits.max_upload_bytes`, 50 MiB (`413`). The same bytes sent again change nothing; other bytes are a `422`.
+`GET /v2/files` lists the server's uploads, pending and ready, newest first (`limit`, `cursor`), `GET /v2/files/{id}` reads
+one's record, and `DELETE /v2/files/{id}` removes it and its bytes (`204`): these three are this server's own
+(`x-agentrun-serve: "files/1"`).
+
+A run names up to `limits.max_files_per_run`, 20, ready files in `file_ids`: an unknown, pending or repeated one is
 `422` at `file_ids` before anything starts. Each is copied, never linked, into the run's `work/inputs/` at its `path`,
-folders kept, before the run's process starts; a name already taken gets a suffix (`notes-2.txt`, `docs-2/`), the same
-for the same files in the same order. The run reads them as any file of its workspace, and `GET /v2/runs/{id}/files`
-lists them. An agentic run is told of them in its first message, on every harness: after the input's `content` and a
-blank line, one line, `Files for this run: inputs/notes.txt (32 B), inputs/docs/plan.md (1.5 KB).`, each file by the
-path the run's tools take and its size, at most 20 and then how many more, and never past what the run's door takes in
-one message (fewer named, then only how many). That is the message the harness gets, so it
-is the timeline's first `user_message`; the run's `input` stays as it was sent. A run given no files is sent its
-`content` as it is. Each upload is kept in `DIR/files/<file_id>/`, 0600. `upload.expires_at`, which the contract requires, is
-advisory and not enforced in this release: a `PUT` after it is still taken, and nothing deletes an upload.
+folders kept, before the run's process starts, whatever its harness; a name already taken gets a suffix (`notes-2.txt`,
+`docs-2/`), the same for the same files in the same order. The run reads them as any file of its workspace, and
+`GET /v2/runs/{id}/files` lists them. An agentic run is told of them in its first message, on every harness: after the
+input's `content` and a blank line, one line,
+`Files for this run: inputs/notes.txt (32 B), inputs/docs/plan.md (1.5 KB).`, each file by the path the run's tools take
+and its size, at most 20 and then how many more, and never past what the run's door takes in one message (fewer named,
+then only how many). That is the message the harness gets, so it is the timeline's first `user_message`; the run's
+`input` stays as it was sent. A run given no files is sent its `content` as it is. A deleted upload stays in the runs
+that copied it; a run started after names it in vain. Each upload is kept in `DIR/files/<file_id>/`, 0600.
+`upload.expires_at`, which the contract requires, is advisory and not enforced in this release: a `PUT` after it is
+still taken.
 
 ## Agent home
 
@@ -893,8 +915,8 @@ token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the printed link (
 without the token. The cookie's value is derived from the token, never the token itself, and it lasts until the browser
 closes. Without it, the console says to open the link. Either cookie takes the place of `Authorization: Bearer` on
 `/api/*` and `/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
-and its body is `application/json`, or, on a `PUT` to a route that takes bytes (`PUT /v2/files/{id}`), of any content
-type. A request that sends an `Authorization` header is checked on that header alone.
+and its body is `application/json`, or, on a `PUT` or `POST` to a route that takes bytes (`PUT /v2/files/{id}`,
+`POST /v2/files`), of any content type. A request that sends an `Authorization` header is checked on that header alone.
 
 The repository's `npm ci && npm run build` builds the console (`apps/console`) first, and the server's build copies it
 into `dist/console`; the image always carries it. A server built without it answers `/` with a 404 that says so. `/console/`
