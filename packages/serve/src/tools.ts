@@ -10,7 +10,7 @@ import type { AppContext } from "@parcha/pi-durable-disk";
 import type { Revision } from "@parcha/pi-durable-agent";
 import type { CodingSource } from "./coding-tools.js";
 import { writeInWork } from "./workspace.js";
-import { FETCH_PAGE_TOOL, fetchOptions, TEXT_CAP } from "./fetch-page.js";
+import { FETCH_PAGE_TOOL, fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./fetch-page.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
@@ -99,7 +99,7 @@ const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): To
 
 /** web_fetch, bound under `name`: its own, or a legacy name for it (LEGACY_NAMES, fetch_page). */
 const webFetchEntry = (name: string): ToolEntry => ({
-  summary: "Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars; the page fetched once a run): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, links, links_omitted?, via, parallel?, refused?, error? }; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.",
+  summary: `Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars; the page fetched once a run): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error? }; html_chars, the page's whole length, when its HTML was cut at ${HTML_READ_CHARS.toLocaleString("en-US")} characters before it was read, so its text is only the start of the page; converted: "text" when the text is plain text, its conversion to markdown having run out of time; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.`,
   needs: [],
   nodes: true,
   bind: async (host) => {

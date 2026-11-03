@@ -35,8 +35,8 @@ export const FAUX_WEB_ENV = "AGENTRUN_SERVE_FAUX_WEB";
 export const TEXT_CAP = 50_000;
 export const PAGE_CHARS = 20_000;
 export const MAX_CHARS_MIN = 200;
-/** The most of a page's text web_fetch reads, from either provider: its first million characters, as much as
- *  pi-browser's readPage keeps of a page (READ_MAX_CHARS). A part reads within it, Parallel is never asked for more of a
+/** The most of a page's TEXT web_fetch reads, from either provider: its first million characters (not HTML_READ_CHARS,
+ *  readPage's cut of the HTML before any text is read). A part reads within it, Parallel is never asked for more of a
  *  page than that and one character (web-fetch.ts), and an offset at or past it is refused. */
 export const PAGE_READ_MAX_CHARS = 1_000_000;
 /** A page's links, with its first part only: at most LINKS_CAP of them, in at most LINKS_CHARS characters of the answer. */
@@ -46,6 +46,10 @@ export const TITLE_CAP = 500;
 /** The longest URL fetched: a longer one is refused before anything is sent. */
 export const URL_MAX = 4_096;
 export const TIMEOUT_MS = 30_000;
+/** Where readPage cuts a page's HTML before it reads it, scripts and styles aside (not PAGE_READ_MAX_CHARS, the most of
+ *  the text read): pi-browser's READ_MAX_CHARS, held here so the tool's words name it without loading pi-browser where
+ *  nothing is fetched (fetch-page-cut.test holds the two equal). */
+export const HTML_READ_CHARS = 1_000_000;
 
 export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 

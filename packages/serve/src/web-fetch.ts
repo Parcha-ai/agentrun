@@ -23,7 +23,7 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
-import { clip, fetchOptions, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
+import { clip, fetchOptions, HTML_READ_CHARS, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 import { isUnavailable, planeOf } from "./tool-plane.js";
@@ -191,13 +191,19 @@ export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: Gu
   return resolved === "parallel" && !extract ? { ...page, parallel: "not tried: this run holds no Parallel key" } : page;
 }
 
+/** What the part no part follows says of a page whose HTML readPage cut before it was read (html_chars). */
+const CUT_LINE = `The page was cut at ${HTML_READ_CHARS.toLocaleString("en-US")} characters of HTML before reading; the rest wasn't read.`;
+
 /** Where a part of a page is in it, for the model: which characters of how many, and the call that reads on; the end of
- *  the page; or that the offset is past it. Nothing for a page read whole, or one that was not read. */
+ *  the page, or where it was cut before it was read; or that the offset is past it. Nothing for a page read whole, or
+ *  one that was not read. */
 function partLine(page: Page, name: string): string | undefined {
   if (!page.ok || page.chars === undefined) return undefined;
   const start = page.offset ?? 0;
   const end = start + page.chars;
   if (page.truncated) return `Characters ${start}-${end} of ${page.original_chars ?? "a longer page"}: call ${name} again with offset=${page.next_offset ?? end} for the rest.`;
+  // No part follows, and the page was cut before it was read: its text ends at the cut, not at the page's end.
+  if (page.html_chars !== undefined) return CUT_LINE;
   if (page.beyond_read) return `Characters ${start}-${end}${page.original_chars === undefined ? "" : ` of ${page.original_chars}`}: the page goes on, but web_fetch reads only a page's first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters.`;
   if (page.original_chars === undefined) return undefined;
   if (page.chars === 0) return `Nothing at offset=${start}: the page has ${page.original_chars} characters.`;
@@ -221,7 +227,7 @@ export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): Too
   if (planeOf(env).web_fetch === "parallel") parallelOf(env);
   return defineTool({
     name,
-    description: `Read one web page from a public host, a part at a time. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page). A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
+    description: `Read one web page from a public host, a part at a time. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page). A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page whose HTML is longer than ${HTML_READ_CHARS.toLocaleString("en-US")} characters (scripts and styles aside) is cut before it is read: html_chars gives its whole length on every part, its text is only the start of the page, and the last part's line says it was cut. converted is "text" when the text is the page's plain text, its conversion to markdown having run out of time. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {
