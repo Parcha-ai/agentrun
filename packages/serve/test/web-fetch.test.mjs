@@ -283,6 +283,27 @@ test("the run keeps what it read of its last 8 pages: a page used since stays, t
   assert.deepEqual(reads.slice(9), [`${PUBLIC}1`], "page 0 from what was read; page 1 read again");
 });
 
+test("calls for one URL at once share its one read: one extract, both parts of the same text; a read that fails is shared too and not kept, so a later call reads again", async () => {
+  const first = `${"first ".repeat(5_000)}end`;
+  const second = `${"second ".repeat(5_000)}end`;
+  // Parallel would answer a second extract with another version of the page.
+  const { asked, send } = paging((n) => ({ text: n === 1 ? first : second }));
+  const extract = parallelExtract(CANARY, send);
+  const held = new Map();
+  const [a, b] = await Promise.all([0, 20_000].map((offset) => webFetch(PUBLIC, { ...network(), parallel: extract, pages: held, offset })));
+  assert.deepEqual(asked, [1_000_001], "one billed extract for both calls");
+  assert.equal(a.text + b.text, first.slice(0, 40_000), "both parts of the one read");
+  assert.equal((await webFetch(PUBLIC, { ...network(), parallel: extract, pages: held, offset: 40_000 })).text, first.slice(40_000), "and the next part too");
+  assert.equal(asked.length, 1);
+  let fetched = 0;
+  const fetchImpl = async () => (++fetched === 1 ? new Response("down", { status: 503, headers: { "content-type": "text/plain" } }) : new Response("back", { status: 200, headers: { "content-type": "text/plain" } }));
+  const direct = new Map();
+  const failed = await Promise.all([0, 0].map(() => webFetch(`${PUBLIC}flaky`, { ...network(), fetchImpl, pages: direct })));
+  assert.deepEqual([failed.map((page) => [page.ok, page.error]), fetched, direct.size], [[[false, "the page answered 503"], [false, "the page answered 503"]], 1, 0], "one fetch for both, which failed, and nothing kept");
+  const later = await webFetch(`${PUBLIC}flaky`, { ...network(), fetchImpl, pages: direct });
+  assert.deepEqual([later.ok, later.text, fetched, direct.size], [true, "back", 2, 1], "a later call reads again");
+});
+
 test("a page fetched directly is fetched once a run too, and so is one Parallel gave none of: its parts are all the direct page's, each saying why, Parallel asked once", async () => {
   const body = `${"plain ".repeat(9_000)}end`;
   let fetched = 0;
