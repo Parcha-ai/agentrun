@@ -50,14 +50,14 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ text: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }> };
+type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }> };
 async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {}) {
   const calls: string[] = [];
   const agents: Agent[] = [];
   const v2 = {
     agentLearning: async (id: string) => { calls.push(`learning ${id}`); return (fake.learning ?? (async () => view()))(); },
     listAgentRuns: async (id: string) => { calls.push(`runs ${id}`); return { runs: fake.runs ?? RUNS, next_cursor: null }; },
-    readNote: async (_id: string, file: string) => { calls.push(`read ${file}`); return (fake.read ?? (async (f: string) => ({ text: view().notes.items.find((x) => x.file === f)!.text, etag: `"v-${f}"` })))(file); },
+    readNote: async (_id: string, file: string) => { calls.push(`read ${file}`); return (fake.read ?? (async (f: string) => ({ note: view().notes.items.find((x) => x.file === f)!.text, etag: `"v-${f}"` })))(file); },
     writeNote: async (_id: string, file: string, text: string, on: unknown) => { calls.push(`write ${file} ${JSON.stringify(on)}`); return (fake.write ?? (async () => ({ text, etag: '"v2"' })))(file, text, on); },
     retireNote: async (_id: string, file: string, etag: string) => { calls.push(`retire ${file} ${etag}`); return (fake.retire ?? (async () => ({ text: "", etag: '"v3"' })))(file, etag); },
     getAgent: async () => { calls.push("agent"); return { agent: a, etag: '"rv1"' }; },
@@ -151,19 +151,19 @@ describe("the before and after", () => {
   it("shows run time and cost before and after it learned, on the after side's runs", async () => {
     const t = await open(agent(true), { learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 18, median_cost_usd: 0.11 }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.03 } } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
-    expect(card.getAttribute("aria-label")).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 instead of $0.11 a run");
+    expect(card.getAttribute("aria-label")).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
     expect(card.textContent).toContain("Answers in12sinstead of 18s−33%");
-    expect(card.textContent).toContain("A run costs$0.03instead of $0.11−73%");
+    expect(card.textContent).toContain("A run costs$0.03 est.instead of $0.11 est.−73%");
     expect(card.textContent).toContain("on 4 runs");
     expect(card.textContent).not.toContain("Learning itself");
   });
   it("says what learning itself costs a run when the server does, and a costlier after as it is, in the warning colour", async () => {
     const t = await open(agent(true), { learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 1.2, median_cost_usd: 0.000814, cost_runs: 2 }, after: { runs: 4, median_duration_s: 1.1, median_cost_usd: 0.000837, cost_runs: 4, median_learning_usd: 0.008 } } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
-    expect(card.textContent).toContain("Learning itself≈ $0.008 a run");
+    expect(card.textContent).toContain("Learning itself$0.0080 est. a run");
     const up = [...card.querySelectorAll("span")].find((x) => x.textContent === "+3%")!;
     expect(up.className).toContain("text-warning-text");
-    expect(card.querySelector('[title^="Medians of 2 runs"]')?.getAttribute("title")).toContain("Costs are of the 2 and 4 runs whose cost is known, and are estimates.");
+    expect(card.querySelector('[title^="Medians of 2 runs"]')?.getAttribute("title")).toContain("Costs are of the 2 and 4 runs whose cost is known.");
   });
   it("is hidden when the server has none, or an older server says nothing", async () => {
     for (const impact of [null, undefined]) {
@@ -208,7 +208,7 @@ describe("editing a note", () => {
   it("a note changed since it was opened is not written over: it says so, loads the newest and keeps the edit to copy", async () => {
     let reads = 0;
     const t = await open(agent(true), {
-      read: async () => ({ text: `---\nname: Try it first\ndescription: d\ntype: feedback\n---\n${reads++ ? "The newest body.\n" : "The old body.\n"}`, etag: `"v${reads}"` }),
+      read: async () => ({ note: `---\nname: Try it first\ndescription: d\ntype: feedback\n---\n${reads++ ? "The newest body.\n" : "The old body.\n"}`, etag: `"v${reads}"` }),
       write: async () => { throw new ClientError(412, "precondition_failed", "The note changed since it was read."); },
     });
     await t.click(/^Edit Try/);
@@ -248,18 +248,18 @@ describe("retiring a note", () => {
     await t.click(/^Retire Keep/);
     const dialog = t.host.querySelector('[role="alertdialog"]')!;
     expect(dialog.textContent).toContain("Retire it? It leaves every later run's instructions; the record stays.");
-    expect(document.activeElement?.textContent).toBe("Retire");
+    expect(document.activeElement?.textContent).toBe("Yes, retire");
     await t.key(dialog, "Escape");
     expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
     await t.click(/^Retire Keep/);
-    await t.click(/^Retire$/);
+    await t.click(/^Yes, retire$/);
     expect(t.calls).toContain(`retire ${MINE} "v-${MINE}"`);
     expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(2);
   });
   it("one changed since says so, and is not retired", async () => {
     const t = await open(agent(true), { retire: async () => { throw new ClientError(412, "precondition_failed", "changed"); } });
     await t.click(/^Retire Keep/);
-    await t.click(/^Retire$/);
+    await t.click(/^Yes, retire$/);
     expect(t.text()).toContain("It changed since you opened it.");
   });
 });
@@ -268,7 +268,7 @@ describe("the switch and the empty states", () => {
   it("with no note and learning off: one sentence on what learning is, and the switch, which saves a revision with learning on", async () => {
     const off = agent(undefined);
     const t = await open(off, { learning: async () => view({ main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null } }), runs: [] });
-    expect(t.text()).toContain("Let it learn from its runs");
+    expect(t.text()).toContain("Learning is off for this agent.");
     expect(t.text()).toContain("With learning on, it keeps short notes on what worked after each run, and every later run reads them before it starts.");
     const sw = t.host.querySelector('[role="switch"]') as HTMLButtonElement;
     expect(sw.getAttribute("aria-checked")).toBe("false");
@@ -284,7 +284,8 @@ describe("the switch and the empty states", () => {
     const sw = t.host.querySelector('[role="switch"]') as HTMLButtonElement;
     await act(async () => { sw.click(); });
     await settle();
-    expect(t.text()).toContain("Not changed: Another revision was saved first.");
+    expect(t.text()).toContain("Learning was not changed.");
+    expect(t.text()).toContain("Another revision was saved first. (precondition_failed)");
     expect(sw.getAttribute("aria-checked")).toBe("false");
   });
   it("with learning on and nothing learned yet: says so, and how many runs looked back", async () => {
@@ -325,7 +326,8 @@ describe("loading and errors", () => {
   it("a failed read says so with the server's message, and reads again on Try again", async () => {
     let n = 0;
     const t = await open(agent(true), { learning: async () => { if (n++ === 0) throw new ClientError(500, "internal", "The agent's notes could not be read."); return view(); } });
-    expect(t.text()).toContain("What this agent learned could not be read: The agent's notes could not be read.");
+    expect(t.text()).toContain("What this agent learned could not be read.");
+    expect(t.text()).toContain("The agent's notes could not be read. (internal)");
     await t.click(/Try again/);
     expect(t.text()).toContain("What it has learned");
   });

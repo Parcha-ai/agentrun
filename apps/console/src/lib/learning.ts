@@ -4,6 +4,8 @@
 // before and after (`impact`) and a plain sentence for each outcome (`detail`); each is read only when it is there, so an
 // older server's answer shows less and never breaks.
 
+import { cost } from "./format";
+import { elapsed } from "./runGraph";
 import type { TimelineRow } from "./v2";
 
 export type LearningState = "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
@@ -38,8 +40,9 @@ export type ImpactSide = { runs: number; median_duration_s: number; median_cost_
 export type Impact = { before: ImpactSide; after: ImpactSide } | null;
 /** GET /v2/agents/{id}/learning. `main` is null until the agent first learns. */
 export type AgentLearning = { agent: string; main: string | null; index: string; notes: Page<LearningNote>; log: Page<LearningChange>; counts: LearningCounts; impact?: Impact };
-/** A note as GET .../learning/files/{file} answers it, and as a write answers it: its whole text and its version. */
-export type NoteText = { text: string; etag: string | null };
+/** A note as GET .../learning/files/{file} answers it, and as a write answers it: its whole text and its version, as
+ *  getAgent gives an agent and its ETag. */
+export type NoteText = { note: string; etag: string | null };
 /** Why the server's checks refused a note a person wrote: each problem, printable. */
 export type NoteProblem = { rule: string; path?: string; detail: string };
 
@@ -113,24 +116,10 @@ export function dropWords(l: NonNullable<RunLearning>): string {
 /** A run's learning while it goes, in a few words. */
 export const goingWords = (state: LearningState) => (state === "seeded" ? "Learns after the run" : "Looking back");
 
-/** "18s", "1m 05s": a duration in seconds as the console writes run times. */
-export function seconds(s: number): string {
-  // Under ten seconds a tenth still tells two runs apart: 1.2s, 9.8s.
-  if (s < 9.95) return `${Math.max(0, Math.round(s * 10) / 10)}s`;
-  const t = Math.max(0, Math.round(s));
-  const m = Math.floor(t / 60);
-  return m ? `${m}m ${String(t % 60).padStart(2, "0")}s` : `${t}s`;
-}
-/** A median cost, to two significant figures: $0.11, $0.031, $1.20. */
-export function dollars(usd: number): string {
-  if (usd >= 1) return `$${usd.toFixed(2)}`;
-  if (usd <= 0) return "$0";
-  if (usd < 0.000001) return "<$0.000001";
-  // Two significant figures, at least two decimals: $0.03, not $0.030; $0.10, not $0.1.
-  const v = Number(usd.toPrecision(2));
-  const decimals = (String(v).split(".")[1] ?? "").length;
-  return `$${decimals < 2 ? v.toFixed(2) : v.toFixed(Math.min(6, decimals))}`;
-}
+/** A median time, as the console writes how long a run took ("12s", "1m 05s"). */
+export const took = (seconds: number) => elapsed(seconds * 1000);
+/** A median cost, as the console writes a run's: the medians are of estimates, so each says so. */
+export const money = (usd: number) => cost({ usd, basis: "estimate", source: "estimate", charge_state: null, cap_usd: null });
 /** The change from `a` to `b` as a whole percent: -33 is a third less. Null when `a` is not above zero. */
 export const change = (a: number, b: number) => (a > 0 ? Math.round(((b - a) / a) * 100) : null);
 /** Whether both sides' costs are known, so they can be set side by side. */
@@ -138,13 +127,13 @@ export const costsShown = (i: NonNullable<Impact>) => typeof i.before.median_cos
 /** The median cost of learning itself on the after side, when the server says. */
 export const learningCost = (i: NonNullable<Impact>) => (typeof i.after.median_learning_usd === "number" ? i.after.median_learning_usd : null);
 /** The before and after in one line, as the card says it and a screen reader reads it, whichever way the numbers went:
- *  "Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 instead of $0.11 a run · learning itself ≈
- *  $0.008 a run". */
+ *  "Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run · learning
+ *  itself $0.0080 est. a run". */
 export function impactWords(i: NonNullable<Impact>): string {
-  const parts = [`answers in ${seconds(i.after.median_duration_s)} instead of ${seconds(i.before.median_duration_s)}`];
-  if (costsShown(i)) parts.push(`${dollars(i.after.median_cost_usd!)} instead of ${dollars(i.before.median_cost_usd!)} a run`);
+  const parts = [`answers in ${took(i.after.median_duration_s)} instead of ${took(i.before.median_duration_s)}`];
+  if (costsShown(i)) parts.push(`${money(i.after.median_cost_usd!)} instead of ${money(i.before.median_cost_usd!)} a run`);
   const learning = learningCost(i);
-  if (learning !== null) parts.push(`learning itself ≈ ${dollars(learning)} a run`);
+  if (learning !== null) parts.push(`learning itself ${money(learning)} a run`);
   return `Since it learned (on ${runsWord(i.after.runs)}): ${parts.join(" · ")}`;
 }
 /** Whether an impact the server sent is whole enough to show: both sides, two runs each, a duration each. */

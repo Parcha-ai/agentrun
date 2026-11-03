@@ -1,4 +1,5 @@
 import type { ClientError } from "./client";
+import type { NoteProblem } from "./learning";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
@@ -142,6 +143,16 @@ export function saveError(e: ClientError): SaveProblem {
   if (e.status === 412 || e.code === "precondition_failed") return { kind: "conflict", message: e.message };
   if (e.status === 422 && e.fields?.length) return { kind: "invalid", message: e.message, fields: Object.fromEntries(e.fields.map((f) => [f.field, f.message])) };
   return { kind: "other", message: e.message };
+}
+
+/** What a refused note write means for the Learning tab, as saveError does for a definition: a stale If-Match (412) is
+ *  a change made since the note was read, or, creating one, a name already taken; a 400 with `problems` lists what the
+ *  checks refuse; anything else is shown as the server said it. */
+export type NoteSaveProblem = { kind: "conflict" } | { kind: "taken" } | { kind: "refused"; problems: NoteProblem[] } | { kind: "other"; message: string; code: string };
+export function noteSaveError(e: ClientError, creating = false): NoteSaveProblem {
+  if (e.status === 412 || e.code === "precondition_failed") return creating ? { kind: "taken" } : { kind: "conflict" };
+  if (e.problems?.length) return { kind: "refused", problems: e.problems };
+  return { kind: "other", message: e.fields?.[0]?.message ?? e.message, code: e.code };
 }
 
 /** The warnings that name `field` of the definition, or a part of it (`tools` takes `definition.tools[2]`). */

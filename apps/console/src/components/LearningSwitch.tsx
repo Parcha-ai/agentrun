@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Switch } from "@/components/ui/switch";
 import { type AgentFields, type ToolOffer, toolsFor } from "@/lib/agentForm";
 import { cn } from "@/lib/utils";
@@ -8,7 +9,7 @@ import { cn } from "@/lib/utils";
  *  step and the agent's Learning tab both show it; neither owns its look. */
 export function LearningSwitch({ id, checked, onChange, busy, disabled, quiet, server, noWrite, onAddWrite, problem, className }: {
   id: string; checked: boolean; onChange: (on: boolean) => void; busy?: boolean; disabled?: boolean; quiet?: boolean; server?: "on" | "off" | null;
-  noWrite?: boolean; onAddWrite?: () => void; problem?: string | null; className?: string;
+  noWrite?: boolean; onAddWrite?: () => void; problem?: ReactNode; className?: string;
 }) {
   return (
     <div className={cn("space-y-2", className)}>
@@ -25,7 +26,7 @@ export function LearningSwitch({ id, checked, onChange, busy, disabled, quiet, s
           : " Add it in the editor's Tools step."}</p>
       )}
       {server === "off" && <p className="font-mono text-[11px] text-warning-text">This server has learning turned off, so no run learns until it's on.</p>}
-      {problem && <p className="text-[12px] text-destructive-text" role="alert">{problem}</p>}
+      {problem}
     </div>
   );
 }

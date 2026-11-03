@@ -62,7 +62,7 @@ describe("AgentPage's Learning tab", () => {
   it("at its address, opens before the server's capabilities are read, and stays once they say it learns", async () => {
     const p = await open(agent(), { tab: "learning" });
     expect(p.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Learning");
-    expect(p.text()).toContain("Let it learn from its runs");
+    expect(p.text()).toContain("Learning is off for this agent.");
     p.render({ tab: "learning", learning: "on" });
     await settle();
     expect(p.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Learning");

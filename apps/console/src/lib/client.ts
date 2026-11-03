@@ -81,7 +81,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
   const note = (id: string, file: string) => `${agent(id)}/learning/files/${encodeURIComponent(file)}`;
   // A note is text (text/markdown) both ways round, with its version as the ETag; a refusal is still JSON.
-  const asNote = (r: { body: string; etag: string | null }): NoteText => ({ text: r.body, etag: r.etag });
+  const asNote = (r: { body: string; etag: string | null }): NoteText => ({ note: r.body, etag: r.etag });
   const noteAccept = { accept: "text/markdown, application/json" };
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),

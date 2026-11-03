@@ -114,7 +114,7 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
     // Retire their own note, after the confirm: it leaves the notes in use and shows under Earlier notes.
     await page.click(/^Retire Keep/);
     expect(page.text()).toContain("Retire it? It leaves every later run's instructions; the record stays.");
-    await page.click(/^Retire$/);
+    await page.click(/^Yes, retire$/);
     expect(page.card(MINE)).toBeNull();
     expect(page.text()).toContain("1 note in use.");
     await page.click(/^Earlier notes/);
@@ -140,7 +140,7 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
   it("an agent with no notes turns learning on from its empty tab: a new revision, and the tab says nothing is learned yet", async () => {
     const s = replay(["learning.off-agent", "learning.stats", "learning.off-view", "learning.off-runs", "learning.off-switch"]);
     const page = await mount(s.v2, "release-notes");
-    expect(page.text()).toContain("Let it learn from its runs");
+    expect(page.text()).toContain("Learning is off for this agent.");
     expect(page.text()).toContain("rev 1 of 1");
     await act(async () => { (page.host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
     await settle();

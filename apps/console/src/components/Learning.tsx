@@ -3,12 +3,12 @@ import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useStat
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { LearningSwitch } from "@/components/LearningSwitch";
-import { type Agent, editBody } from "@/lib/agentForm";
+import { type Agent, editBody, noteSaveError } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import {
-  type AgentLearning, bodyOf, change, costsShown, dollars, dropKind, learningCost, dropWords, fileFor, impactWords, type LearningNote, type NoteParts, noteParts,
-  type NoteProblem, notes, noteText, NOTE_TYPES, provenance, runsWord, seconds, shortTitle, shownImpact, TYPE_HINT, typeLabel, usedBy,
+  type AgentLearning, bodyOf, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
+  type NoteProblem, notes, noteText, NOTE_TYPES, provenance, runsWord, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
 } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
@@ -16,7 +16,18 @@ import type { Run } from "@/lib/v2";
 /** `server`: the server's own learning switch (capabilities `features.learning`); "off" means no run learns there. */
 export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server?: "on" | "off" | null; onAgent?: (agent: Agent) => void };
 
-const problemOf = (e: unknown) => (e instanceof ClientError ? e.message : e instanceof Error ? e.message : String(e));
+/** A read or a write that failed, in one place, so it moves to the console's problem card in one line: what failed, in
+ *  words, then the server's own words and its code, small. */
+function Problem({ what, error, onRetry, inline = false }: { what: string; error: unknown; onRetry?: () => void; inline?: boolean }) {
+  const said = error instanceof ClientError ? { words: error.fields?.[0]?.message ?? error.message, code: error.code } : { words: error instanceof Error ? error.message : String(error), code: null };
+  return (
+    <div role="alert" className={inline ? "border border-destructive/40 bg-destructive/5 px-4 py-3" : "border p-5"}>
+      <p className={cn("text-destructive-text", inline ? "text-[13px]" : "text-[14px]")}>{what}</p>
+      <p className="mt-1 font-mono text-[11px] text-muted-foreground">{said.words}{said.code && ` (${said.code})`}</p>
+      {onRetry && <Button size="sm" className="mt-3" onClick={onRetry}><RotateCw aria-hidden /> Try again</Button>}
+    </div>
+  );
+}
 const runTitle = (runs: Map<string, Run>, id: string) => runs.get(id)?.title || `run ${id.slice(0, 8)}`;
 /** A rendered note body: markdown, sanitized, in the console's type at a note's size. */
 const PROSE = "text-[14px] leading-[1.65] [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2 [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[12.5px] [&_h1]:mb-2 [&_h1]:text-[15px] [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-[14px] [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:mb-0.5 [&_ol]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:mb-2 [&_pre]:overflow-x-auto [&_pre]:border [&_pre]:bg-background [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-[12px] [&_ul]:mb-2 [&_ul]:list-disc [&_ul]:pl-5";
@@ -30,15 +41,15 @@ const field = "w-full border bg-background px-3 py-2 font-mono text-[13px] outli
  *  before and after once there is one, and what the next run reads. */
 export function LearningTab({ agent, v2, focus = [], server, onAgent }: LearningProps) {
   const [view, setView] = useState<AgentLearning | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [runs, setRuns] = useState<Run[]>([]);
-  const [later, setLater] = useState<{ items: LearningNote[]; cursor: string | null; error?: string }>({ items: [], cursor: null });
+  const [later, setLater] = useState<{ items: LearningNote[]; cursor: string | null; error?: unknown }>({ items: [], cursor: null });
   const [adding, setAdding] = useState(false);
   const asked = useRef(0);
   const read = () => {
     const n = ++asked.current;
     setError(null);
-    v2.agentLearning(agent.agent_id).then((r) => { if (n === asked.current) { setView(r); setLater({ items: [], cursor: r.notes.next_cursor }); } }, (e) => { if (n === asked.current) setError(problemOf(e)); });
+    v2.agentLearning(agent.agent_id).then((r) => { if (n === asked.current) { setView(r); setLater({ items: [], cursor: r.notes.next_cursor }); } }, (e) => { if (n === asked.current) setError(e ?? new Error("unknown")); });
     // The agent's latest runs: what each read and kept, the titles a note's source is named by, and the drops.
     v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) setRuns(r.runs); }, () => {});
   };
@@ -47,7 +58,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
     if (!later.cursor) return;
     v2.learningNotes(agent.agent_id, later.cursor).then(
       (p) => setLater((x) => ({ items: [...x.items, ...p.items.filter((i) => !x.items.some((y) => y.file === i.file))], cursor: p.next_cursor })),
-      (e) => setLater((x) => ({ ...x, error: problemOf(e) })),
+      (e) => setLater((x) => ({ ...x, error: e ?? new Error("unknown") })),
     );
   };
 
@@ -66,12 +77,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   }, [runs]);
   const lookedBack = runs.filter((r) => r.learning && (r.learning.state === "merged" || r.learning.state === "dropped")).length;
 
-  if (error && !view) return (
-    <div className="border p-5" role="alert">
-      <p className="text-[14px] text-destructive-text">What this agent learned could not be read: {error}</p>
-      <Button size="sm" className="mt-3" onClick={read}><RotateCw aria-hidden /> Try again</Button>
-    </div>
-  );
+  if (error && !view) return <Problem what="What this agent learned could not be read." error={error} onRetry={read} />;
   if (!view) return <Skeleton />;
 
   const switchRow = (quiet: boolean) => <SavedSwitch agent={agent} v2={v2} onAgent={onAgent} server={server} disabled={readOnly} quiet={quiet} />;
@@ -85,7 +91,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   return (
     <div className="space-y-6">
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <section className="min-w-0 space-y-3" aria-label="Notes">
           <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
             <div className="min-w-0 flex-1">
@@ -103,7 +109,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
               </li>
             ))}
           </ul>
-          {later.error && <p className="border p-3 text-[13px] text-destructive-text" role="alert">More notes could not be read: {later.error}</p>}
+          {later.error !== undefined && <Problem inline what="More notes could not be read." error={later.error} />}
           {later.cursor && <div className="flex justify-center"><Button size="sm" onClick={more}>Load more notes</Button></div>}
           {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} />}
         </section>
@@ -117,14 +123,11 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   );
 }
 
-/** A titled box at the side: the caps header bar the console's sections have. */
-function Panel({ title, note, children, label }: { title: string; note?: ReactNode; children: ReactNode; label?: string }) {
+/** A titled box at the side, as Mission Control's lists are: a bordered section under a caps header. */
+function Panel({ title, children, label }: { title: string; children: ReactNode; label?: string }) {
   return (
     <section className="border" aria-label={label ?? title}>
-      <div className="flex items-center gap-3 border-b px-4 py-2.5">
-        <h3 className="caps text-[11px] font-semibold">{title}</h3>
-        {note && <span className="ml-auto font-mono text-[11px] text-muted-foreground">{note}</span>}
-      </div>
+      <h2 className="caps border-b px-4 py-3 text-[12px] font-semibold">{title}</h2>
       {children}
     </section>
   );
@@ -152,12 +155,12 @@ function Skeleton() {
 function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }) {
   const { before: b, after: a } = impact;
   const stats: { label: string; now: string; was: string; delta: number | null; unit?: string }[] = [
-    { label: "Answers in", now: seconds(a.median_duration_s), was: seconds(b.median_duration_s), delta: change(b.median_duration_s, a.median_duration_s) },
-    ...(costsShown(impact) ? [{ label: "A run costs", now: dollars(a.median_cost_usd!), was: dollars(b.median_cost_usd!), delta: change(b.median_cost_usd!, a.median_cost_usd!) }] : []),
+    { label: "Answers in", now: took(a.median_duration_s), was: took(b.median_duration_s), delta: change(b.median_duration_s, a.median_duration_s) },
+    ...(costsShown(impact) ? [{ label: "A run costs", now: money(a.median_cost_usd!), was: money(b.median_cost_usd!), delta: change(b.median_cost_usd!, a.median_cost_usd!) }] : []),
   ];
   const learning = learningCost(impact);
   const basis = [`Medians of ${runsWord(b.runs)} before its first note and ${runsWord(a.runs)} that started from its notes.`,
-    ...(typeof a.cost_runs === "number" && typeof b.cost_runs === "number" ? [`Costs are of the ${b.cost_runs} and ${a.cost_runs} runs whose cost is known, and are estimates.`] : ["Costs are estimates."])].join(" ");
+    ...(typeof a.cost_runs === "number" && typeof b.cost_runs === "number" ? [`Costs are of the ${b.cost_runs} and ${a.cost_runs} runs whose cost is known.`] : [])].join(" ");
   return (
     <section className="border border-primary/40 bg-gradient-to-br from-primary/[0.07] via-transparent to-transparent" aria-label={impactWords(impact)}>
       <div className="flex flex-wrap items-center gap-x-8 gap-y-4 px-5 py-4">
@@ -180,7 +183,7 @@ function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }
           {learning !== null && (
             <div className="flex items-baseline gap-3">
               <dt className="caps text-[10px] text-muted-foreground">Learning itself</dt>
-              <dd className="font-mono text-[13px] text-muted-foreground">≈ {dollars(learning)} a run</dd>
+              <dd className="font-mono text-[13px] text-muted-foreground">{money(learning)} a run</dd>
             </div>
           )}
         </dl>
@@ -193,7 +196,7 @@ function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }
  *  now, shown as it goes and put back if the save fails. */
 function SavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
   const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [problem, setProblem] = useState<unknown>(null);
   const [shown, setShown] = useState<boolean | null>(null);
   const flip = async (next: boolean) => {
     setBusy(true); setProblem(null); setShown(next);
@@ -202,12 +205,13 @@ function SavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: A
       const body = editBody(now, { learning: next }, next ? "Learning on" : "Learning off");
       if (body.unchanged) onAgent?.(now);
       else { const { unchanged: _u, ...send } = body; onAgent?.((await v2.updateDefinition(agent.agent_id, send, etag)).agent); }
-    } catch (e) { setProblem(`Not changed: ${problemOf(e)}`); }
+    } catch (e) { setProblem(e ?? new Error("unknown")); }
     setShown(null); setBusy(false);
   };
   return (
     <LearningSwitch id={`learns-${agent.agent_id}`} className="px-4 py-4" quiet={quiet} checked={shown ?? agent.definition.learning === true} onChange={(v) => void flip(v)}
-      busy={busy} disabled={disabled} server={server} noWrite={!(agent.definition.tools ?? []).includes("write")} problem={problem} />
+      busy={busy} disabled={disabled} server={server} noWrite={!(agent.definition.tools ?? []).includes("write")}
+      problem={problem ? <Problem inline what="Learning was not changed." error={problem} /> : null} />
   );
 }
 
@@ -220,14 +224,15 @@ function Off({ server }: { server?: "on" | "off" | null }) {
   );
 }
 
-/** No note yet: what learning is, in one sentence, with the switch; or, with learning on, that nothing is learned yet. */
+/** No note yet, as the console says a tab is empty: a bordered centred line, one sentence on what learning is, and the
+ *  switch as the next step (or, with learning on, how many runs looked back). */
 function Empty({ on, lookedBack, switchRow, onAdd }: { on: boolean; lookedBack: number; switchRow: ReactNode; onAdd?: () => void }) {
   return (
     <section className="mx-auto max-w-xl border" aria-label="Learning">
-      <div className="flex flex-col items-center px-6 pb-6 pt-10 text-center">
-        <span className="flex size-10 items-center justify-center border border-primary/50 bg-primary/10"><Sparkles className="size-5 text-primary" aria-hidden /></span>
-        <h2 className="mt-4 text-lg font-semibold">{on ? "Nothing learned yet" : "Let it learn from its runs"}</h2>
-        <p className="mt-2 max-w-md text-[14px] text-muted-foreground">
+      <div className="px-6 py-12 text-center">
+        <Sparkles className="mx-auto mb-3 size-5 text-primary" aria-hidden />
+        <p className="font-mono text-[13px] text-muted-foreground">{on ? "Nothing learned yet." : "Learning is off for this agent."}</p>
+        <p className="mx-auto mt-2 max-w-md text-[14px] text-muted-foreground">
           {on ? "After each run, it looks back and keeps a note when something will help next time. Its notes show here, and every later run reads them first."
             : "With learning on, it keeps short notes on what worked after each run, and every later run reads them before it starts."}
         </p>
@@ -272,7 +277,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, on
         {!readOnly && !retiring && (
           <div className="-ml-3 flex shrink-0 items-center gap-1 sm:ml-0">
             <Button size="sm" variant="ghost" onClick={() => setEditing(true)} aria-label={`Edit ${note.name}`}><Pencil aria-hidden /> Edit</Button>
-            <Button size="sm" variant="ghost" onClick={() => setRetiring(true)} aria-label={`Retire ${note.name}`}>Retire</Button>
+            <Button size="sm" variant="destructive" onClick={() => setRetiring(true)} aria-label={`Retire ${note.name}`}>Retire</Button>
           </div>
         )}
       </header>
@@ -308,11 +313,12 @@ function Body({ text }: { text: string }) {
   );
 }
 
-/** Retire, after a confirm: Enter retires, Esc keeps it. Made on the note as it is now (its version read first), so a
- *  change made since is never retired unseen. */
+/** Retire, after a confirm in place as the run header's cancel is: "Yes, retire" takes the focus, so Enter retires,
+ *  and Esc or Keep keeps it. Made on the note as it is now (its version read first), so a change made since is never
+ *  retired unseen. */
 function RetireConfirm({ note, v2, agentId, onDone }: { note: LearningNote; v2: Client; agentId: string; onDone: (retired: boolean) => void }) {
   const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [problem, setProblem] = useState<ReactNode>(null);
   const yes = useRef<HTMLButtonElement>(null);
   useEffect(() => { yes.current?.focus(); }, []);
   const go = async () => {
@@ -323,15 +329,16 @@ function RetireConfirm({ note, v2, agentId, onDone }: { note: LearningNote; v2: 
       onDone(true);
     } catch (e) {
       setBusy(false);
-      setProblem(e instanceof ClientError && e.status === 412 ? "It changed since you opened it. Reload the tab to see the newest version." : `Not retired: ${problemOf(e)}`);
+      const p = e instanceof ClientError ? noteSaveError(e) : null;
+      setProblem(p?.kind === "conflict" ? <p className="text-[12px] text-destructive-text" role="alert">It changed since you opened it. Reload the tab to see the newest version.</p> : <Problem inline what="The note was not retired." error={e} />);
     }
   };
   return (
     <div role="alertdialog" aria-label={`Retire ${note.name}?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onDone(false); } }}
       className="flex flex-wrap items-center gap-3 border-t border-destructive/40 bg-destructive/5 px-5 py-3">
       <p className="min-w-0 flex-1 text-[13px]"><span className="font-semibold">Retire it?</span> It leaves every later run's instructions; the record stays.</p>
-      {problem && <p className="w-full text-[12px] text-destructive-text" role="alert">{problem}</p>}
-      <Button ref={yes} size="sm" variant="destructive" onClick={() => void go()} disabled={busy}>{busy ? "Retiring" : "Retire"}</Button>
+      {problem && <div className="w-full">{problem}</div>}
+      <Button ref={yes} size="sm" variant="destructive" onClick={() => void go()} disabled={busy}>{busy ? "Retiring" : "Yes, retire"}</Button>
       <Button size="sm" variant="ghost" onClick={() => onDone(false)} disabled={busy}>Keep</Button>
     </div>
   );
@@ -340,18 +347,19 @@ function RetireConfirm({ note, v2, agentId, onDone }: { note: LearningNote; v2: 
 /** A note to edit (`file`: read first, with its version) or a new one: name, description and type as fields, the body as
  *  markdown. ⌘/Ctrl+Enter saves anywhere in it and Enter saves in a one-line field; Esc cancels. A note that changed
  *  since it was opened is not written over: the newest version loads, and the edit stays below to copy. */
-function NoteEditor({ title, v2, agentId, file, taken = [], onDone }: { title: string; v2: Client; agentId: string; file?: string; taken?: string[]; onDone: (saved: boolean) => void }) {
+function NoteEditor({ title, v2, agentId, file, taken: names = [], onDone }: { title: string; v2: Client; agentId: string; file?: string; taken?: string[]; onDone: (saved: boolean) => void }) {
   const [parts, setParts] = useState<NoteParts | null>(file ? null : { name: "", description: "", type: "feedback", body: "\n", rest: [] });
   const [etag, setEtag] = useState<string | null>(null);
-  const [readError, setReadError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const [problems, setProblems] = useState<NoteProblem[]>([]);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [problem, setProblem] = useState<unknown>(null);
+  const [taken, setTaken] = useState(false);
   const [stale, setStale] = useState<string | null>(null);
   const first = useRef<HTMLInputElement>(null);
   const load = async () => {
     if (!file) return;
-    try { const n = await v2.readNote(agentId, file); setParts(noteParts(n.text)); setEtag(n.etag); setReadError(null); } catch (e) { setReadError(problemOf(e)); }
+    try { const n = await v2.readNote(agentId, file); setParts(noteParts(n.note)); setEtag(n.etag); setReadError(null); } catch (e) { setReadError(e ?? new Error("unknown")); }
   };
   useEffect(() => { void load(); }, [file]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (parts) first.current?.focus(); }, [parts === null]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -359,19 +367,19 @@ function NoteEditor({ title, v2, agentId, file, taken = [], onDone }: { title: s
   const ready = !!parts && parts.name.trim() !== "" && parts.description.trim() !== "" && !busy;
   const save = async () => {
     if (!parts || !ready) return;
-    setBusy(true); setProblem(null); setProblems([]);
+    setBusy(true); setProblem(null); setProblems([]); setTaken(false);
     const text = noteText(parts);
     try {
-      await v2.writeNote(agentId, file ?? fileFor(parts.name, taken), text, file ? { etag: etag ?? "" } : { create: true });
+      await v2.writeNote(agentId, file ?? fileFor(parts.name, names), text, file ? { etag: etag ?? "" } : { create: true });
       onDone(true);
     } catch (e) {
       setBusy(false);
-      if (e instanceof ClientError && e.status === 412 && file) {
-        // Someone, or a run, changed it since it was opened: show the newest, keep this edit to copy.
-        setStale(text);
-        await load();
-      } else if (e instanceof ClientError && e.problems?.length) setProblems(e.problems);
-      else setProblem(e instanceof ClientError && e.status === 412 ? "A note by this name exists already: change its name." : problemOf(e));
+      const p = e instanceof ClientError ? noteSaveError(e, !file) : null;
+      // Someone, or a run, changed it since it was opened: show the newest, keep this edit to copy.
+      if (p?.kind === "conflict") { setStale(text); await load(); }
+      else if (p?.kind === "refused") setProblems(p.problems);
+      else if (p?.kind === "taken") setTaken(true);
+      else setProblem(e ?? new Error("unknown"));
     }
   };
   const keys = (e: KeyboardEvent) => {
@@ -384,8 +392,8 @@ function NoteEditor({ title, v2, agentId, file, taken = [], onDone }: { title: s
         <h3 className="caps text-[11px] font-semibold">{title}</h3>
         <span className="ml-auto hidden font-mono text-[11px] text-muted-foreground sm:inline"><kbd>{MAC ? "⌘" : "Ctrl"}+Enter</kbd> save · <kbd>Esc</kbd> cancel</span>
       </div>
-      {readError && <p className="px-5 py-4 text-[13px] text-destructive-text" role="alert">The note could not be read: {readError}</p>}
-      {!parts && !readError && <div className="space-y-3 p-5"><div className="h-9 animate-pulse bg-muted" /><div className="h-24 animate-pulse bg-muted/70" /></div>}
+      {readError !== null && <div className="p-5"><Problem inline what="The note could not be read." error={readError} /></div>}
+      {!parts && readError === null && <div className="space-y-3 p-5"><div className="h-9 animate-pulse bg-muted" /><div className="h-24 animate-pulse bg-muted/70" /></div>}
       {parts && (
         <div className="space-y-4 px-5 py-4">
           {stale && (
@@ -419,11 +427,12 @@ function NoteEditor({ title, v2, agentId, file, taken = [], onDone }: { title: s
               <ul className="mt-1 list-disc space-y-0.5 pl-5">{problems.map((p, i) => <li key={i}>{p.detail}</li>)}</ul>
             </div>
           )}
-          {problem && <p className="text-[13px] text-destructive-text" role="alert">Not saved: {problem}</p>}
+          {taken && <p className="text-[13px] text-destructive-text" role="alert">Not saved: a note by this name exists already. Change its name.</p>}
+          {problem !== null && <Problem inline what="The note was not saved." error={problem} />}
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="solid" onClick={() => void save()} disabled={!ready}>{busy ? "Saving" : file ? "Save" : "Add note"}</Button>
             <Button size="sm" variant="ghost" onClick={() => onDone(false)} disabled={busy}>Cancel</Button>
-            {!file && parts.name.trim() && <span className="ml-auto font-mono text-[11px] text-muted-foreground">{fileFor(parts.name, taken)}</span>}
+            {!file && parts.name.trim() && <span className="ml-auto font-mono text-[11px] text-muted-foreground">{fileFor(parts.name, names)}</span>}
           </div>
         </div>
       )}
@@ -437,9 +446,9 @@ function Earlier({ notes: list, all, from, focus }: { notes: LearningNote[]; all
   const nameOf = (file: string | null) => all.find((x) => x.file === file)?.name ?? file;
   return (
     <section className="border" aria-label="Earlier notes">
-      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-4 py-2.5 text-left hover:bg-accent">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-accent">
         <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", !open && "-rotate-90")} aria-hidden />
-        <span className="caps text-[11px] font-semibold">Earlier notes</span>
+        <span className="caps text-[12px] font-semibold">Earlier notes</span>
         <span className="font-mono text-[11px] text-muted-foreground">{list.length} no longer read</span>
       </button>
       {open && (
@@ -496,9 +505,9 @@ function NextRun({ index }: { index: string }) {
   const lines = index.split("\n").filter((l) => l.trim()).length;
   return (
     <section className="border" aria-label="What the next run reads">
-      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-4 py-2.5 text-left hover:bg-accent">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-accent">
         <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", !open && "-rotate-90")} aria-hidden />
-        <span className="caps text-[11px] font-semibold">What the next run reads</span>
+        <span className="caps text-[12px] font-semibold">What the next run reads</span>
         <span className="ml-auto font-mono text-[11px] text-muted-foreground">{lines ? `${lines} ${lines === 1 ? "line" : "lines"}` : "nothing"}</span>
       </button>
       {open && (
