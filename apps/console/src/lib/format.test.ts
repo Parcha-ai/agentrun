@@ -88,25 +88,14 @@ describe("cost in the runs list", () => {
   });
 });
 
-describe("cost, by whose number it is (cost.source)", () => {
-  it("a cost every part of which a provider reported reads plainly, though its basis is estimate", () => {
-    expect(cost({ usd: 0.00003, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("<$0.0001");
-    expect(cost({ usd: 1.5, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("$1.50");
-  });
-  it("an estimated cost reads est., whatever its basis says", () => {
-    expect(cost({ usd: 1.5, basis: "estimate", source: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
-    expect(cost({ usd: 1.5, basis: "charge", source: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
-  });
-  it("an older server that says no source: the basis decides, as before", () => {
+describe("cost, by its basis", () => {
+  it("an estimate reads est., a charge reads plainly", () => {
     expect(cost({ usd: 1.5, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
     expect(cost({ usd: 1.5, basis: "charge", charge_state: null, cap_usd: null })).toBe("$1.50");
   });
-  it("an unknown cost is Unknown whatever its source says", () => {
-    expect(cost({ usd: null, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("Unknown");
-  });
 });
 
-// A cost unknown because requests were cut, each with a recorded figure, reads as its bound: "≤ $x", never a bare "$x".
+// The run's cost bound, when the server knows one (requests cut or stopped), reads as the bound: "≤ $x", never a bare "$x".
 describe("a cost bounded by cut requests (at_most_usd)", () => {
   const base = (unpriced as { body: { cost: { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null } } }).body.cost;
   it("reads ≤ the bound, rounded up so it never reads below it, never a bare $x and never Unknown", () => {
@@ -141,4 +130,3 @@ describe("a cost bounded by cut requests (at_most_usd)", () => {
     expect(html).not.toContain("Unknown");
   });
 });
-

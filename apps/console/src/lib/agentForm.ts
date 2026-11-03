@@ -81,17 +81,16 @@ export function createBody(f: { name: string; description: string; instructions:
 }
 
 /** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
- *  (`summary`), and, when the server says, which harnesses run it. An older server lists bare names. */
-export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; harnesses?: string[]; call_only?: true; nodes?: boolean };
+ *  (`summary`), and, when the server says, which harnesses run it. */
+export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; harnesses?: string[]; call_only?: true; sandbox_only?: true; nodes?: boolean };
 
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
-    if (typeof t === "string") return [{ name: t, available: true }];
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
-    const { name, available, summary, missing, harnesses, call_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; missing?: string[]; harnesses?: string[]; call_only?: unknown; nodes?: unknown };
+    const { name, available, summary, missing, harnesses, call_only, sandbox_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; missing?: string[]; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; nodes?: unknown };
     return [{
       name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(missing?.length ? { missing } : {}), ...(harnesses ? { harnesses } : {}),
-      ...(call_only === true ? { call_only: true as const } : {}), ...(typeof nodes === "boolean" ? { nodes } : {}),
+      ...(call_only === true ? { call_only: true as const } : {}), ...(sandbox_only === true ? { sandbox_only: true as const } : {}), ...(typeof nodes === "boolean" ? { nodes } : {}),
     }];
   });
 }
@@ -105,8 +104,14 @@ export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
   return offers.filter((t) => !t.call_only && (t.harnesses ? t.harnesses.includes(harness) : harness === "pi" || FILE_TOOLS.includes(t.name)));
 }
 
-/** A new agent's tools: on by default, every tool its harness runs here that the server can run now. */
-export const defaultTools = (harness: string, offers: ToolOffer[]) => toolsFor(harness, offers).filter((t) => t.available).map((t) => t.name);
+/** Why `tool` cannot be ticked on an agent whose definition names `place`: a sandbox-only tool (bash) runs in a box, and
+ *  this form shows no place, so a new agent's is the runner. Undefined when it can be ticked. */
+export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined =>
+  tool.sandbox_only && (place as { mode?: unknown } | undefined)?.mode !== "sandbox" ? "Sandbox-only: it runs in a box, and this agent's place is the runner" : undefined;
+
+/** A new agent's tools: on by default, every tool its harness runs here that the server can run now, but a sandbox-only
+ *  one (bash): a new agent's place is the runner, which has no shell. */
+export const defaultTools = (harness: string, offers: ToolOffer[]) => toolsFor(harness, offers).filter((t) => t.available && !t.sandbox_only).map((t) => t.name);
 
 /** The tools that reach the web: a page read (fetch_page, web_fetch) or a search (web_search). The server's capabilities
  *  mark no tool as one, so they are named here. */

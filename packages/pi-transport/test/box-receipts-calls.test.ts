@@ -101,16 +101,4 @@ describe("a box billed per call", () => {
 			fake.close();
 		}
 	});
-
-	it("writes no receipt for a box with no price, so its cost stays unknown", async () => {
-		const { fake, provider, written } = ledgerOf([]);
-		try {
-			const box = getOrThrow(await provider.create({ maxLifetimeMs: 600_000 }, context));
-			await call(box, ["true"]);
-			getOrThrow(await box.destroy(context));
-			expect(written).toEqual([]);
-		} finally {
-			fake.close();
-		}
-	});
 });

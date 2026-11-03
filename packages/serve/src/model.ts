@@ -4,7 +4,7 @@
 // faux module's (no key, no network); with `AGENT_MODEL_BASE_URL` every model id goes to that one OpenAI Responses
 // gateway; otherwise pi-ai's providers serve it, with their keys from the environment.
 import { pathToFileURL } from "node:url";
-import type { ModelCost, ModelThinkingLevel, ProviderStreams } from "@earendil-works/pi-ai";
+import type { ModelCost, ModelThinkingLevel, Provider, ProviderStreams } from "@earendil-works/pi-ai";
 import { authContextOf } from "./secrets.js";
 
 /** The child's environment names the faux module by absolute path. */
@@ -14,6 +14,10 @@ export const FAUX_PREFIX = "AGENTRUN_SERVE_FAUX";
 /** `env` without a test hook's name: serve sets those from startServe's options alone, so a name the server's own
  *  environment holds (an operator's export, a leftover) never gives its runs fake answers or loads a module. */
 export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith(FAUX_PREFIX)));
+/** Under `--faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through (the
+ *  tests' fake upstream), in place of their APIs. With it they are registered beside the faux model, for a tool's own
+ *  request to the provider the revision's model names (web_search's, hosted-search.ts); the run's turns stay faux. */
+export const FAUX_UPSTREAM_ENV = "AGENTRUN_SERVE_FAUX_UPSTREAM";
 /** A run's `effort`, passed to its child. */
 export const EFFORT_ENV = "AGENTRUN_SERVE_EFFORT";
 export const MODEL_PROVIDER = "agent-model";
@@ -32,15 +36,19 @@ const tierModel = (env: NodeJS.ProcessEnv, tier: Tier): string | undefined => en
 /** A faux model id per tier: `faux-1`, or the id a tier's variable names. */
 const fauxModel = (env: NodeJS.ProcessEnv, tier: Tier): string => (tier === "default" ? undefined : env[TIER_ENV[tier]]) || "faux-1";
 
-export type ModelSource = { source: "faux" | "gateway" | "providers" } & Record<Tier, string | null>;
+/** `route_prefix`: the routing prefix this server puts before a gateway's model ids (MODEL_PROVIDER), which a reader takes off
+ *  to show the gateway's own id; null with any other source. */
+/** The values `models.source` takes here: a faux module, a gateway, or each provider with its own key. */
+export const MODEL_SOURCES = ["faux", "gateway", "providers"] as const;
+export type ModelSource = { source: (typeof MODEL_SOURCES)[number]; route_prefix: string | null } & Record<Tier, string | null>;
 
 /** What capabilities say about models here: where they come from, and the model of each tier (`default` is also what a
  *  revision that names none runs on). */
 export function modelSource(env: NodeJS.ProcessEnv): ModelSource {
   const each = (name: (tier: Tier) => string | null) => Object.fromEntries(TIERS.map((tier) => [tier, name(tier)])) as Record<Tier, string | null>;
-  if (env[FAUX_ENV]) return { source: "faux", ...each((tier) => `faux/${fauxModel(env, tier)}`) };
-  if (env.AGENT_MODEL_BASE_URL) return { source: "gateway", ...each((tier) => (tierModel(env, tier) ? `${MODEL_PROVIDER}/${tierModel(env, tier)}` : null)) };
-  return { source: "providers", ...each((tier) => tierModel(env, tier) ?? null) };
+  if (env[FAUX_ENV]) return { source: "faux", route_prefix: null, ...each((tier) => `faux/${fauxModel(env, tier)}`) };
+  if (env.AGENT_MODEL_BASE_URL) return { source: "gateway", route_prefix: MODEL_PROVIDER, ...each((tier) => (tierModel(env, tier) ? `${MODEL_PROVIDER}/${tierModel(env, tier)}` : null)) };
+  return { source: "providers", route_prefix: null, ...each((tier) => tierModel(env, tier) ?? null) };
 }
 
 /** A workflow's nodes as the DSL's inspection lists them, each read from the document at its path: only what the
@@ -143,7 +151,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     return { models: builtinModels({ authContext: authContextOf(env) }), model, byTier, unpriced: new Set<string>() };
   }
   const ids = [...new Set([...byTier.values()].map((m) => m.modelId))];
-  const models = createModels();
+  const models = createModels({ authContext: authContextOf(env) });
   const unpriced = new Set<string>();
   if (!ids.length) return { models, model, byTier, unpriced };
   if (faux) {
@@ -183,6 +191,14 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
       models: core.models,
       api: { stream: priced, streamSimple: priced, fetchDeferred: core.fetchDeferred, cancelDeferred: core.cancelDeferred },
     }));
+    if (env[FAUX_UPSTREAM_ENV]) {
+      const send = ((await import(pathToFileURL(env[FAUX_UPSTREAM_ENV]).href)) as { default: typeof fetch }).default;
+      const [{ anthropicProvider }, { openaiProvider }] = await Promise.all([import("@earendil-works/pi-ai/providers/anthropic"), import("@earendil-works/pi-ai/providers/openai")]);
+      for (const provider of [anthropicProvider(), openaiProvider()] as Provider[]) {
+        const via = <F extends (model: never, context: never, options?: { fetch?: typeof fetch }) => unknown>(stream: F) => ((model: never, context: never, options?: object) => stream(model, context, { ...options, fetch: send })) as F;
+        models.setProvider(Object.assign(Object.create(provider) as Provider, { stream: via(provider.stream.bind(provider)), streamSimple: via(provider.streamSimple.bind(provider)) }));
+      }
+    }
     return { models, model, byTier, unpriced };
   }
   const baseUrl = env.AGENT_MODEL_BASE_URL!.replace(/\/+$/, "");

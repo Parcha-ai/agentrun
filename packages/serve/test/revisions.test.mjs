@@ -1,7 +1,11 @@
 // Edits are revisions: each definition an agent had is kept, a run pins one, and every run of every agent is listed.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { test } from "node:test";
-import { agent, answerFlow, flowAgent, follow, serve, startRun, storeRun } from "./support.mjs";
+import { Agents } from "../dist/agents.js";
+import { checkDefinitionBody } from "../dist/validate.js";
+import { agent, answerFlow, flowAgent, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 
 test("PUT definition commits a new revision whose parent is the current one and makes it current; skills carry over", async (t) => {
@@ -154,7 +158,7 @@ test("GET /runs lists every agent's runs newest first, filtered by agent, revisi
   await follow(api, c.run_id, ["completed"]);
   const all = (await api("GET", "/runs")).body;
   assert.deepEqual(all.runs.map((r) => r.run_id), [c.run_id, b.run_id, a.run_id]);
-  assert.deepEqual(Object.keys(all.runs[0]).sort(), ["agent_id", "agent_version", "archived_at", "cost", "created_at", "ended_at", "error", "imported_from", "kind", "pending", "review", "revision", "run_id", "sha", "state", "status", "title"]);
+  assert.deepEqual(Object.keys(all.runs[0]).sort(), ["agent_id", "agent_version", "archived_at", "cost", "created_at", "ended_at", "error", "imported_from", "kind", "learning", "pending", "review", "revision", "run_id", "sha", "state", "status", "title"]);
   assert.deepEqual(all.runs.map((r) => r.review), [null, null, null], "no run here escalated, so none waits for review");
   assert.deepEqual((await api("GET", "/runs?agent=one")).body.runs.map((r) => r.run_id), [c.run_id, a.run_id]);
   assert.deepEqual((await api("GET", "/runs?status=failed")).body.runs.map((r) => [r.run_id, r.agent_id, r.error.code]), [[b.run_id, "two", "run_failed"]], "a failed run keeps its own error");
@@ -204,4 +208,47 @@ test("two PUTs that read the same ETag race: the store compares If-Match inside 
     const revisions = (await api("GET", `/agents/raced-${i}/revisions`)).body.revisions;
     assert.deepEqual(revisions.map((r) => r.parent), [created.revision, null], "one edit landed, on the revision both read");
   }
+});
+
+/** JSON with every object's keys sorted, as the agent store hashes a revision. */
+const canonical = (value) => (Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value));
+
+test("the switch: kept on a revision when a definition sets it, true or false, and carried over by an edit that leaves it out; absent, the revision's id is the one it had before the switch, and a workflow keeps none", async (t) => {
+  const { api } = await serve(t);
+  const made = (await api("POST", "/agents", agent("plain"))).body;
+  assert.equal("learning" in made.definition, false, "absent: no default is echoed");
+  const body = { instructions: "Answer.", skills: {}, tools: [] };
+  assert.equal(made.revision, createHash("sha256").update(canonical({ agent: "plain", parent: null, kind: "agentic", body })).digest("hex"), "a definition that leaves it out hashes as before");
+  for (const learning of [true, false]) {
+    const id = `set-${learning}`;
+    const created = (await api("POST", "/agents", agent(id, { learning }))).body;
+    assert.equal(created.definition.learning, learning);
+    const edited = await api("PUT", `/agents/${id}/definition`, { definition: { name: id, instructions: "Answer briefly." } });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    assert.equal(edited.body.definition.learning, learning, "an edit that leaves it out keeps it");
+  }
+  const wrong = await api("POST", "/agents", agent("wrong", { learning: "yes" }));
+  assert.deepEqual(wrong.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "wrong_type"]]);
+  const flow = await api("POST", "/agents", flowAgent("flow", undefined, { learning: true }));
+  assert.deepEqual(flow.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "not_allowed"]]);
+});
+
+test("an edit that leaves the switch out, checked while another edit turns learning on, lands on that edit and keeps learning on", async (t) => {
+  const agents = new Agents(join(await scratch(t), "agents"));
+  t.after(() => agents.close());
+  const edit = (definition) => checkDefinitionBody({ definition: { name: "x", ...definition } }, { creating: false });
+  const read = await agents.create(checkDefinitionBody(agent("x")));
+  assert.equal(read.revision.body.learning, undefined);
+  // B leaves the switch out and reads the agent before A; its checks hold until A, which turns learning on, has landed.
+  let started, release;
+  const running = new Promise((resolve) => (started = resolve));
+  const held = new Promise((resolve) => (release = resolve));
+  const b = agents.commit(read, edit({ instructions: "Answer briefly." }), { check: () => (started(), held) });
+  await running;
+  const a = await agents.commit(read, edit({ instructions: "Answer.", learning: true }));
+  assert.equal(a.revision.body.learning, true);
+  release();
+  const landed = await b;
+  assert.deepEqual([landed.revision.parent, landed.version, landed.revision.body.instructions], [a.revision.id, 3, "Answer briefly."], "B landed on A, no If-Match");
+  assert.equal(landed.revision.body.learning, true, "B keeps the switch of the revision it landed on, not the one it first read");
 });

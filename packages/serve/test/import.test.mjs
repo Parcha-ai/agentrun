@@ -5,7 +5,7 @@
 // are left out by name; an imported run takes no message, and a stop, a cancel or a restart moves nothing of it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -16,6 +16,7 @@ import { startServe } from "../dist/index.js";
 import { agentIdOf, importCommand, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { summaryLines } from "../dist/import-summary.js";
+import { ToolKeys } from "../dist/tool-keys.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, scratch } from "./support.mjs";
@@ -303,6 +304,127 @@ test("the CLI's --dry-run lists each project and writes nothing; the import itse
   assert.equal(real.status, 0, real.stderr);
   assert.match(real.stdout, /runs imported into/);
   assert.ok(!real.stdout.includes(CANARY));
+  // OPENAI_API_KEY is one of the launcher's secrets, out of process.env once the CLI starts: still read by name, and cut.
+  const written = readdirSync(data, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
+  for (const file of written) assert.ok(!readFileSync(file).includes(CANARY), `no key value in ${file}`);
+});
+
+test("the CLI's import cuts the server's own keys out of what it keeps, wherever a session holds one: its text, a subagent's, its first message (the run's title), its project's path and its file's name", async (t) => {
+  const root = await scratch(t);
+  const h = home(root);
+  // The key in a subagent's answer, in a session's first message, in a project's directory name, and in the name of a
+  // session file whose records carry no session id (the import then names the session after its file).
+  claudeSubagent(h.at, h.site, 1, 1, { answer: `The config holds ${CANARY}.` });
+  claudeSession(h.at, h.site, 11, { prompt: `Rotate the key ${CANARY} today.` });
+  const keyed = join(h.at, "code", `deploy-${CANARY}`);
+  mkdirSync(keyed, { recursive: true });
+  claudeSession(h.at, keyed, 12);
+  const named = claudeSession(h.at, h.site, 13, { prompt: "Check the logs." });
+  const lines = readFileSync(named, "utf8").trimEnd().split("\n").map((line) => { const { sessionId: _, ...rest } = JSON.parse(line); return JSON.stringify(rest); });
+  rmSync(named);
+  writeFileSync(join(dirname(named), `${CANARY}.jsonl`), `${lines.join("\n")}\n`);
+  utimesSync(join(dirname(named), `${CANARY}.jsonl`), new Date(minute(10)), new Date(minute(10)));
+  const data = join(root, "agents");
+  // No launcher: the key is in the environment the server starts with, which its start moves out of process.env.
+  const env = { ...process.env, HOME: h.at, OPENAI_API_KEY: CANARY };
+  const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all"], { env, encoding: "utf8" });
+  assert.equal(ran.status, 0, ran.stderr);
+  // Every byte the import kept, the store's write-ahead log included, and every path under the data directory.
+  const kept = [];
+  const walk = (at) => { for (const entry of readdirSync(at, { withFileTypes: true })) { const path = join(at, entry.name); if (entry.isDirectory()) walk(path); else kept.push([path, readFileSync(path)]); } };
+  walk(data);
+  assert.deepEqual(kept.filter(([path, bytes]) => bytes.includes(CANARY) || path.includes(CANARY)).map(([path]) => path.slice(data.length + 1).replaceAll(CANARY, "<key>")), [], "the key is nowhere in what the import kept");
+  assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
+  // Each case was imported, so none passes by being left out.
+  const reader = openStoreReader(data);
+  const runs = reader.listRuns();
+  reader.close();
+  assert.ok(kept.some(([path, bytes]) => path.endsWith("serve.json") && bytes.includes("Rotate the key [redacted]")), "the run titled with the key is in, its title cut");
+  assert.ok(kept.some(([, bytes]) => bytes.includes("deploy-[redacted]")), "the project named with the key is in, its name cut");
+  assert.ok(runs.some((run) => run.importedFrom?.source === "claude-code" && !/^0{8}-/.test(run.importedFrom.session)), "the session named after its file is in");
+  // The file named with the key grows by a turn, and a second import finds the run the first made of it under the id as
+  // kept: no second run of it.
+  const last = JSON.parse(lines.at(-1));
+  appendFileSync(join(dirname(named), `${CANARY}.jsonl`), `${JSON.stringify({ ...last, type: "user", uuid: "u9-13", parentUuid: last.uuid ?? null, timestamp: minute(9), message: { role: "user", content: "One more thing." } })}\n`);
+  utimesSync(join(dirname(named), `${CANARY}.jsonl`), new Date(minute(20)), new Date(minute(20)));
+  const again = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all"], { env, encoding: "utf8" });
+  assert.equal(again.status, 0, again.stderr);
+  const after = openStoreReader(data);
+  t.after(() => after.close());
+  assert.equal(after.listRuns().length, runs.length, "no run made twice");
+});
+
+/** The server's own key names: the launcher's SECRETS list, read as secrets.ts reads it (loading secrets.ts here would take
+ *  them out of this process's environment). */
+const SERVER_KEYS = /^SECRETS='([A-Z0-9_ ]+)'$/m.exec(readFileSync(new URL("../launcher/agentrun-serve", import.meta.url), "utf8"))[1].split(" ").filter(Boolean);
+/** A canary per key name, each its own value. */
+const canaryOf = (name) => `CANARY-${name}-${createHash("sha256").update(name).digest("hex").slice(0, 16)}`;
+/** Every file under `dir` (its path and bytes), and every path. */
+const keptUnder = (dir) => {
+  const kept = [];
+  const walk = (at) => { for (const entry of readdirSync(at, { withFileTypes: true })) { const path = join(at, entry.name); if (entry.isDirectory()) walk(path); else kept.push([path, readFileSync(path)]); } };
+  walk(dir);
+  return kept;
+};
+const cliImport = (h, data, env) => {
+  const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all"], { env: { ...process.env, HOME: h.at, ...env }, encoding: "utf8" });
+  assert.equal(ran.status, 0, ran.stderr);
+  return ran;
+};
+
+test("the CLI's import cuts every one of the server's own keys, whatever its name: each launcher secret, its own value, is nowhere in what it keeps", async (t) => {
+  // The list holds names no key pattern matches (the seal key's among them): each one's value is cut all the same.
+  assert.ok(SERVER_KEYS.includes("AGENTRUN_SEAL_KEY") && SERVER_KEYS.includes("OPENAI_API_KEY") && SERVER_KEYS.some((name) => !/(_API_KEY|_TOKEN)$|SECRET/i.test(name)), SERVER_KEYS.join(" "));
+  const root = await scratch(t);
+  const h = home(root);
+  const values = SERVER_KEYS.map(canaryOf);
+  appendFileSync(join(h.site, "CLAUDE.md"), `Keys: ${values.join(" ")}\n`);
+  claudeSession(h.at, h.site, 14, { prompt: "Print the environment.", output: values.join(" ") });
+  const data = join(root, "agents");
+  cliImport(h, data, Object.fromEntries(SERVER_KEYS.map((name) => [name, canaryOf(name)])));
+  const kept = keptUnder(data);
+  const found = SERVER_KEYS.filter((name) => kept.some(([path, bytes]) => bytes.includes(canaryOf(name)) || path.includes(canaryOf(name))));
+  assert.deepEqual(found, [], "no server key's value is in what the import kept");
+  assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "their places are marked");
+});
+
+test("two session files named after two different keys, in two projects, stay two runs under two ids; neither key is kept, and a second import makes no new run", async (t) => {
+  const root = await scratch(t);
+  const h = home(root);
+  const [a, b] = [canaryOf("OPENAI_API_KEY"), canaryOf("ANTHROPIC_API_KEY")];
+  // Each file's records carry no session id: the import names each session after its file.
+  const renamed = [];
+  for (const [cwd, n, key] of [[h.site, 15, a], [h.notes, 16, b]]) {
+    const file = claudeSession(h.at, cwd, n, { prompt: `Session ${n}.` });
+    const lines = readFileSync(file, "utf8").trimEnd().split("\n").map((line) => { const { sessionId: _, ...rest } = JSON.parse(line); return JSON.stringify(rest); });
+    rmSync(file);
+    const named = join(dirname(file), `${key}.jsonl`);
+    writeFileSync(named, `${lines.join("\n")}\n`);
+    utimesSync(named, new Date(minute(10)), new Date(minute(10)));
+    renamed.push([named, lines]);
+  }
+  const data = join(root, "agents");
+  const env = { OPENAI_API_KEY: a, ANTHROPIC_API_KEY: b };
+  cliImport(h, data, env);
+  const kept = keptUnder(data);
+  assert.deepEqual(kept.filter(([path, bytes]) => [a, b].some((key) => bytes.includes(key) || path.includes(key))).map(([path]) => path.slice(data.length + 1)), [], "neither key is kept");
+  const reader = openStoreReader(data);
+  const named = reader.listRuns().filter((run) => run.importedFrom?.source === "claude-code" && !/^0{8}-/.test(run.importedFrom.session));
+  const count = reader.listRuns().length;
+  reader.close();
+  assert.equal(named.length, 2, "two runs");
+  assert.equal(new Set(named.map((run) => run.importedFrom.session)).size, 2, "under two ids");
+  assert.notEqual(new Set(named.map((run) => run.agentId ?? run.agent)).size, 1, "in their two projects");
+  // Each file grows by a turn; a second import finds each one's run under its own id.
+  for (const [file, lines] of renamed) {
+    const last = JSON.parse(lines.at(-1));
+    appendFileSync(file, `${JSON.stringify({ ...last, type: "user", uuid: `u9-${file.length}`, parentUuid: null, timestamp: minute(9), message: { role: "user", content: "One more thing." } })}\n`);
+    utimesSync(file, new Date(minute(20)), new Date(minute(20)));
+  }
+  cliImport(h, data, env);
+  const after = openStoreReader(data);
+  t.after(() => after.close());
+  assert.equal(after.listRuns().length, count, "no new run");
 });
 
 test("a skill folder this user cannot read, or a skills directory it cannot read, is named unreadable, never dropped silently; the rest still imports", { skip: process.getuid?.() === 0 ? "root reads a mode 000 folder" : false }, async (t) => {
@@ -826,6 +948,24 @@ test("a subagent whose file names no parent is no session and no run: its tokens
   assert.equal(store.listRuns().length, 1, "no run for the subagent");
 });
 
+test("a tool key saved through the settings API is cut from every file the import writes, opened on the host with the seal key; with no seal key it is not known, so not cut", async (t) => {
+  const root = await scratch(t);
+  const h = home(root);
+  const seal = randomBytes(32).toString("base64");
+  const saved = `not-a-secret-saved-${randomBytes(8).toString("hex")}`;
+  assert.ok(readFileSync(claudeSession(h.at, h.site, 13, { prompt: "Which key?", output: `MONID_API_KEY=${saved}` })).includes(saved));
+  const into = async (name, env) => {
+    const data = join(root, name);
+    mkdirSync(data, { recursive: true });
+    new ToolKeys(data, { AGENTRUN_SEAL_KEY: seal }, () => undefined).save("monid", { values: { MONID_API_KEY: saved } });
+    assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: h.at, env, out: () => undefined }), 0);
+    const files = readdirSync(data, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name !== "tool-keys.json").map((entry) => join(entry.parentPath, entry.name));
+    return files.filter((file) => readFileSync(file).includes(saved));
+  };
+  assert.deepEqual(await into("agents", { ...ENV, AGENTRUN_SEAL_KEY: seal }), [], "cut from every file the import writes");
+  assert.notDeepEqual(await into("unsealed", ENV), [], "the control: the same import with no seal key keeps it");
+});
+
 test("one number per run: an imported run's timeline usage row counts its subagents' requests, as its stored metrics do, and its transcript gives the same totals", async (t) => {
   const { data, store, runs } = await importedOne(t, (home, project) => {
     claudeSession(home, project, 115);
@@ -908,6 +1048,39 @@ test("a Codex thread resumed in a new file of the same id is one run, in the pro
     assert.equal(runs[0].metrics.requests, 6, `${name}: each file's 2 requests and the child's 2, once`);
     assert.deepEqual([found, measured], [1, imported], `${name}: the dry run counts what the import holds`);
   }
+});
+
+test("a dry run counts sessions as the import takes them: a thread resumed in a second file of the same id is one session in its project's line and in the plan's total, as the summary found it", async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "counted");
+  mkdirSync(project, { recursive: true });
+  const first = codexSession(home, project, 201);
+  // The thread resumed an hour later, in a new file of the same id.
+  const later = shifted(codexSession(home, project, 202), `rollout-2026-10-20T10-00-00-${sessionId(202)}.jsonl`, 60, (r) => (r.type === "session_meta" ? { ...r, payload: { ...r.payload, id: sessionId(201) } } : r));
+  claudeSession(home, project, 203);
+  const data = join(root, "agents");
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    return lines;
+  };
+  const dry = await run("--dry-run");
+  const line = dry.find((l) => l.startsWith(`${project}  `));
+  assert.match(line, /[ ,]codex 1(,|  )/, "the thread's two files, one session");
+  assert.match(line, /[ ,]claude-code 1(,|  )/);
+  assert.match(line, /cost known 1\/2$/, "a session's cost is known when each of its files' is: the Claude Code session's");
+  assert.match(dry.find((l) => l.includes("nothing was written")), /^1 projects?, 2 sessions; /);
+  assert.match(dry.find((l) => l.startsWith("Found ")), /^Found 2 sessions /, "the summary's count, the same");
+  // Imported, then both of the thread's files touched a minute on (still long ended): planned again, as one session the
+  // store holds already.
+  assert.equal((await run()).find((l) => l.includes("runs imported into")).split(" ")[2], "2");
+  for (const file of [first, later]) {
+    const touched = new Date(statSync(file).mtimeMs + 60_000);
+    utimesSync(file, touched, touched);
+  }
+  const again = (await run("--dry-run")).find((l) => l.startsWith(`${project}  `));
+  assert.match(again, /codex 1 {2}cost known 0\/1 {2}already imported 1$/);
 });
 
 test("a Codex child counts in its thread's run whichever of the thread's files the import keeps", async (t) => {

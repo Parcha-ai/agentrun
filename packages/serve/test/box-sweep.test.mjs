@@ -209,18 +209,25 @@ test("a start sweep that fails once is tried again by the next run, not kept: on
     reap: async () => ({ empty: true, left: 0, by: "pidns" }),
     cgroups: {
       list: async () => {
-        if (lists++ === 0) throw Object.assign(new Error("EIO: i/o error, scandir '/cg'"), { code: "EIO" });
+        // The start's own sweep and the first run's fail; the next run's lists.
+        if (++lists <= 2) throw Object.assign(new Error("EIO: i/o error, scandir '/cg'"), { code: "EIO" });
         return [];
       },
       remove: async () => {},
     },
   };
-  const { api } = await servedWithRecord(t, { pid: 4242, startTime: "9", writer: await goneWriter() }, box);
+  const { api } = await serve(t, { box });
+  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  // The start's sweep has failed once it listed: nothing it awaits comes after the list.
+  for (let i = 0; lists === 0; i++) {
+    assert.ok(i < 400, "the start sweeps");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
   const first = await api("POST", "/agents/plain/runs", { input: { content: "And 3 + 3?" } });
   assert.notEqual(first.status, 202, `the run the failed sweep was for is not started: ${JSON.stringify(first.body)}`);
   const second = await api("POST", "/agents/plain/runs", { input: { content: "And 4 + 4?" } });
   assert.equal(second.status, 202, `the next run sweeps again and starts: ${JSON.stringify(second.body)}`);
-  assert.equal(lists, 2, "swept twice: once failed, once whole");
+  assert.equal(lists, 3, "swept three times: at start and for the first run, each failed, then whole");
   await follow(api, second.body.run_id, ["completed"]);
 });
 
