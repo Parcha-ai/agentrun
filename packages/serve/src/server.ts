@@ -70,8 +70,14 @@ const FILE_LIST_CAP = 2_000;
 const STOP_MARGIN_MS = 120_000;
 /** A wait, as the stop's lines give it: whole seconds, rounded up, one at least. */
 const seconds = (ms: number) => `${Math.max(1, Math.ceil(ms / 1000))} s`;
-/** Where the stop's lines go (ServeOptions.notice). */
-const noticeOf = (options: Pick<ServeOptions, "notice">) => options.notice ?? ((line: string) => void process.stderr.write(`agentrun-serve: ${line}\n`));
+/** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
+const noticeOf = (options: Pick<ServeOptions, "notice">) => (line: string): void => {
+  try {
+    (options.notice ?? ((said: string) => void process.stderr.write(`agentrun-serve: ${said}\n`)))(line);
+  } catch {
+    // The line is told, not needed: the stop and the wait go on without it.
+  }
+};
 /** Why a home's PUT or DELETE is 501 where `capabilities.home.writes` is false (workspace.ts writesHeld). */
 const HOME_WRITES_OFF = "This server can't write a home's files safely here: a write needs /proc/self/fd, as on Linux, which this platform lacks. Reads and the list still work.";
 const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
