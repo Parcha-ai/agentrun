@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, retire } from "@parcha/agentrun-learn";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
-import { agentFolder, checkOut, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, type Shown, withAgentRepo } from "./learning.js";
+import { agentFolder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
@@ -407,9 +407,9 @@ export async function runLearning(run: Run, shown: Shown, secrets: readonly stri
   const learning = run.meta.learning;
   if (!learning) return null;
   const pin = await readPin(run.dir).catch(() => undefined);
-  const { state, reason, detail, at, verdict, problems, merged, cost_usd, tokens } = learning;
+  const { state, reason, at, verdict, problems, merged, cost_usd, tokens } = learning;
   return {
-    run: run.id, state, reason, detail: detail === null ? null : shown.text(detail), at,
+    run: run.id, state, reason, detail: detailShown(learning, shown), at,
     // Once it settled (a run that runs again for a follow-up is still reading).
     ...notesView(learning, shown, run.settled),
     seed: pin?.seed ?? null,

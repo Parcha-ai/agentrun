@@ -437,8 +437,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let caps!: Awaited<ReturnType<typeof readingOf>>["caps"];
   let latest = 0;
   const keysChanged = async () => {
-    // A run's learning, as its view and a list show it, is cut of the keys saved now (learning-run.ts shown).
-    runs.learning.keysChanged();
+    // A run's learning, as its view, a list and its timeline row show it, is cut of the keys saved now (runs.ts).
+    runs.keysChanged();
     const mine = ++latest;
     const next = await readingOf(base, maxRuns, storedKeys, learning);
     if (mine === latest) ({ env, caps } = next);
