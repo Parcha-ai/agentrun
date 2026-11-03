@@ -15,3 +15,5 @@ Mission Control's agent filter offers searchable options, selection markers and 
 Sending a follow-up opens its timeline and acknowledges acceptance until the saved message appears. Failed sends preserve the draft.
 
 The API playground keeps its request and response tabs vertically centered at the same height when switching between Code and Response.
+
+Tab indicators use straight underlines throughout the console, including the API playground's request, response and language tabs.

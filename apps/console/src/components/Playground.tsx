@@ -152,7 +152,7 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
           </header>
           {pane === "code" ? (
             <>
-              <div className="flex gap-5 border-b px-5 text-[12px] md:px-6">{(["curl", "fetch"] as const).map((l) => <button key={l} type="button" onClick={() => setLang(l)} className={cn("-mb-px border-b-2 py-2.5", lang === l ? "border-primary" : "border-transparent text-muted-foreground")}>{l === "curl" ? "cURL" : "JavaScript"}</button>)}</div>
+              <div className="flex gap-5 border-b px-5 text-[12px] md:px-6">{(["curl", "fetch"] as const).map((l) => <button key={l} type="button" onClick={() => setLang(l)} className={cn("ar-tab -mb-px border-b-2 py-2.5", lang === l ? "border-primary" : "border-transparent text-muted-foreground")}>{l === "curl" ? "cURL" : "JavaScript"}</button>)}</div>
               <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-[12px] leading-[1.8] md:px-6">{code}</pre>
               <footer className="border-t px-5 py-3 text-[12px] text-muted-foreground md:px-6">The same request from your code: set AGENTRUN_TOKEN in your environment.</footer>
             </>
@@ -182,7 +182,7 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
 }
 
 const paneHeader = "flex h-14 shrink-0 items-center justify-between border-b px-5 md:px-6";
-const paneTab = "inline-flex h-8 items-center border-b";
+const paneTab = "ar-tab inline-flex h-8 items-center border-b";
 const field = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
 function Label({ name, required, note, error, children }: { name: string; required?: boolean; note?: string; error?: string; children: React.ReactNode }) {

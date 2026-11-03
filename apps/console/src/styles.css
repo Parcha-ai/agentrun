@@ -70,7 +70,7 @@
   input[type="checkbox"], input[type="radio"] { border-radius: 3px; }
   section.border, [class~="border"][class~="bg-card"], .grid > .border, dialog > div { border-radius: var(--ar-card-radius); }
   form:has(#composer) { border-radius: var(--ar-composer-radius); }
-  [role="tab"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  [role="tab"], .ar-tab { border-radius: 0; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   }
