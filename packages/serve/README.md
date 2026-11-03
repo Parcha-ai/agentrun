@@ -179,8 +179,8 @@ of a process that is gone is not trusted.
 
 ## Boxes
 
-A box is a machine apart from this one where a run's tools could run. No run uses a box yet. This release sets the boxes
-up and says which ones this server has. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
+A box is a machine apart from this one where a run's tools run. Runs execute in `docker` boxes ([place](#place)); the
+others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
 (`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
 refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
 log line says what the server found:
@@ -582,14 +582,49 @@ its harness. Any other shape is `422 input_invalid` on `definition.place`. A def
 host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one that names a place keeps
 it, `runner` included. An edit that names no place keeps the agent's.
 
-A run may narrow a sandbox agent to `runner`, never widen a runner agent into a sandbox. The run request's field for it
-comes later. A harness's own tools in the box, when they come, will be an option of `sandbox` (such as
-`native_tools: true`), never a third mode.
+A run may narrow a sandbox agent to `runner`, never widen a runner agent into a sandbox: `POST /agents/{id}/runs` takes
+`"place": "runner"`, and any other value is `422`. A narrowed run runs without `bash`, and is never refused for its box.
+The run keeps the place it resolved to, and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box,
+when they come, will be an option of `sandbox` (such as `native_tools: true`), never a third mode.
+
+`bash` may be named only by an agentic definition whose place is a sandbox (`422` on a runner, named or by default), and a
+workflow's place is `runner` or none (`422` on a sandbox).
 
 `GET /v2/capabilities` lists `places`: the modes, the default, and each box with `available` and, when not, the `reason`.
-This server has no box yet: a definition naming one saves with a warning on `definition.place`, and a run of it is
-`409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place` and `capabilities.places`
-`x-agentrun-serve: "place/1"`.
+A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
+`409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place`, the run
+request's `place` and `capabilities.places` `x-agentrun-serve: "place/1"`.
+
+### A run in a Docker box
+
+With `AGENTRUN_BOXES=docker` and a Docker daemon this server's user may use, a run whose place is
+`{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `read`, `write`, `edit` or `bash` call
+(a run with no such call gets none). Those four tools are pi's own, on every harness; their calls run in the container.
+`fetch_page`, `web_fetch` and the `monid.*` tools stay on this server, and so do the run's loop, its log, its model
+calls and every key. What the server itself files in `work/` (monid's long answers, the browser's evidence) never goes
+through a link a box's command planted there: each directory is held open on the way (`/proc/self/fd`). On a host
+without it (macOS), where a link swapped in mid-walk could still turn a write, a sandbox run's `work/` gets none of
+these files: monid's long answers say they could not be saved, and the browser's evidence is not filed. `browser` is runner-only for now (`422` in a sandbox place): its downloads
+go through `work/` by path.
+
+- The container binds the run's `work/` alone, read-write, at `/run/agentrun/run/work`, where the tools start. Nothing
+  else of the data directory enters it. `read`, `write` and `edit` take a path in that directory, relative or absolute,
+  or under the run's own `work/` on this machine, which names the same file there (another harness's cwd may name
+  one); any other (another path of this machine, `..` out of it, `~`) is refused as outside the workspace, and their
+  errors name the box's paths, never this machine's. A mount source that is, or passes through, a link below the data directory is
+  refused: the tool call fails, and no container is made. The data directory is resolved to its real path once, at start.
+- It has no network (`--network none`); no setting opens it. Its environment is `LANG=C.UTF-8` and `HOME=/tmp` and the
+  image's own: never this server's, so no key or token is in it. It runs as this server's uid:gid, so what it writes in
+  `work/` stays this server's. `AGENTRUN_DOCKER_IMAGE` names the image (default `debian:bookworm-slim`, which has no
+  python or git). It has no CPU, memory or process limits yet.
+- `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
+  command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
+  shell in `work/`.
+- The container is labelled `agentrun.run=<run id>`, and the label is its only record. A run's process that starts again
+  after a crash finds it by the label and first kills the commands the dead process left running. It is destroyed when
+  the run ends (completed, failed or cancelled: a follow-up after a completed run gets a fresh one, with the same
+  `work/`) and when the run is archived. A start destroys every such container whose run has ended or is archived; one
+  of a run this data directory does not know is left to its 24-hour lifetime.
 
 ## Decision workflows
 
