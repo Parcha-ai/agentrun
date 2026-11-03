@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { LAUNCH_COUNT_ENV, LAUNCH_JAM_ENV, LAUNCH_KILL_ENV } from "./fixtures/faux-launch-kills-server.mjs";
@@ -16,7 +16,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A server in a process of its own on `data`, its runs' processes on the launch fixture with `env`. */
 async function serverProcess(t, data, env) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX_LAUNCH, "--drain-timeout", "2s"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+  // A home beside the data, not this machine's: a first start counts the sessions in its home for setup's offer.
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX_LAUNCH, "--drain-timeout", "2s"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data), ...env } });
   t.after(() => child.exitCode === null && child.signalCode === null && child.kill("SIGKILL"));
   let out = "";
   let err = "";
@@ -77,35 +78,6 @@ test("a run whose launch took its server down is failed by the next start, once,
   assert.doesNotMatch(second.stderr(), /opening it again/);
   const listed = (await second.api("GET", "/runs")).body.runs.find((r) => r.run_id === runId);
   assert.deepEqual(listed.error, run.error, "the list says the same");
-});
-
-test("a run whose process served and then died with its server is opened again by the next start, and completes", async (t) => {
-  const dir = await scratch(t);
-  const data = join(dir, "agents");
-  const env = { [LAUNCH_COUNT_ENV]: join(dir, "launches"), [LAUNCH_KILL_ENV]: join(dir, "kill") };
-  const first = await serverProcess(t, data, env);
-  assert.equal((await first.api("POST", "/agents", agent("calc"))).status, 201);
-  const { body: started } = await first.api("POST", "/agents/calc/runs", { input: { content: "Answer soon." } });
-  await until("the run works", async () => {
-    const { body } = await first.api("GET", `/runs/${started.run_id}`);
-    return body.status === "working" && body.state === "working";
-  });
-  first.child.kill("SIGKILL");
-  await exited(first.child);
-  const { holder } = JSON.parse(await readFile(join(data, "runs", started.run_id, "run.json"), "utf8"));
-  if (processAlive(holder.pid)) process.kill(holder.pid, "SIGKILL");
-  await until("the run's process is gone", () => !processAlive(holder.pid), 10_000);
-  assert.equal(await launchCount(env[LAUNCH_COUNT_ENV]), 1);
-
-  const second = await serverProcess(t, data, env);
-  const run = await until("the run completes", async () => {
-    const { body } = await second.api("GET", `/runs/${started.run_id}`);
-    assert.notEqual(body.status, "failed", JSON.stringify(body.error));
-    return body.status === "completed" && body.poll_after_ms === 0 ? body : undefined;
-  });
-  assert.equal(run.result.final_answer, "Soon.");
-  assert.equal(await launchCount(env[LAUNCH_COUNT_ENV]), 2, "opened again once");
-  assert.equal(storeRun(data, started.run_id).state, "completed");
 });
 
 test("a launch mark the server cannot remove is logged by name, and the server stays up and the run completes", async (t) => {

@@ -3,12 +3,10 @@
 // within the cap, or the request is not sent. The server's check after each response stays as a backstop, and keeps
 // the answer it stopped. A run's cost and /usage are never null for a run that made no request.
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { openStore } from "@parcha/pi-durable-agent";
-import { startServe } from "../dist/index.js";
-import { agent, client, follow, responsesEndpoint, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, follow, responsesEndpoint, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
 /** The gateway models' max output tokens (model.ts), which the requests below send as max_output_tokens. */
@@ -38,17 +36,7 @@ const ended = async (api, runId, until = ["completed", "failed", "cancelled"]) =
   return (await api("GET", `/runs/${runId}`)).body;
 };
 
-test("a request whose worst case alone passes max_cost_usd is never sent: the run ends failed with spend_cap_reached at $0", async (t) => {
-  // $1 per million each way: the request's 32k max output tokens alone are $0.032, over a $0.01 cap.
-  const { api, posts } = await gateway(t, { price: "1,1" });
-  const run = await ended(api, (await start(api, "capped", "What is six times seven?", { max_cost_usd: 0.01 })).run_id);
-  assert.equal(posts(), 0, "the gateway got no request");
-  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run));
-  assert.equal(run.cost.usd, 0);
-  assert.equal(run.result, null, "no answer was paid for");
-});
-
-test("the worst case is the request's max output tokens at the model's output price, plus its input at the input price", async (t) => {
+test("the worst case is the request's max output tokens at the model's output price: the ones the request is sent with", async (t) => {
   // Output only, $1 per million: the worst case is exactly the max output tokens' price.
   const { api, endpoint, posts } = await gateway(t, { price: "0,1" });
   const worst = GATEWAY_MAX_OUTPUT / 1e6;
@@ -78,14 +66,6 @@ async function asked(t) {
   await follow(server.api, run.run_id, ["input_required"]);
   return { ...server, runId: run.run_id, first };
 }
-
-test("spent so far counts the run's earlier requests: a request that fits alone is not sent once the run has spent too much", async (t) => {
-  const { api, runId, first } = await asked(t);
-  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "eu" })).body.mode, "answer");
-  const run = await ended(api, runId);
-  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run));
-  assert.equal(run.cost.usd, first, "only the ask was paid for");
-});
 
 test("a request the cap refuses never reaches the model: the run's second request, its input alone over the cap, is not made", async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
@@ -151,6 +131,7 @@ test("a run cancelled while its request answers costs unknown (the request may h
   // Cancelled while its first request is still answering: the request is cut, and may have been billed.
   const slow = await start(api, "slow", "Take your time.");
   await follow(api, slow.run_id, ["working"]);
+  assert.equal((await api("GET", `/runs/${slow.run_id}`)).body.cost.usd, 0, "$0 until its first response, not null");
   await api("POST", `/runs/${slow.run_id}/cancel`);
   const run = await ended(api, slow.run_id, ["cancelled"]);
   assert.equal(run.cost.usd, null, JSON.stringify(run.cost));
@@ -160,41 +141,6 @@ test("a run cancelled while its request answers costs unknown (the request may h
   for (const usage of await usages(api)) {
     assert.ok(Math.abs(usage.total_usd - paid.cost.usd) < 1e-9, JSON.stringify(usage));
     assert.ok(usage.lines.every((line) => typeof line.usd === "number"), JSON.stringify(usage));
-  }
-});
-
-test("a run costs $0 until its first response, not null", async (t) => {
-  const { api } = await serve(t, { faux: OUTPUT_PRICED });
-  const go = join(await scratch(t), "go");
-  const run = await start(api, "waits", `Answer once ${go} exists.`);
-  await follow(api, run.run_id, ["working"]);
-  assert.equal((await api("GET", `/runs/${run.run_id}`)).body.cost.usd, 0);
-  await writeFile(go, "");
-  assert.equal((await ended(api, run.run_id)).status, "completed");
-});
-
-test("/usage sums the runs whose cost is known: one run with no recorded cost does not make a total or a line null", async (t) => {
-  const data = join(await scratch(t), "agents");
-  const one = await startServe({ data, port: 0, faux: OUTPUT_PRICED });
-  const first = client(one.baseUrl, one.token);
-  const paid = await ended(first, (await start(first, "paid", "What is six times seven?")).run_id);
-  await one.close();
-  // A run an earlier server carried back without a cost.
-  const store = openStore(data);
-  try {
-    const { runId } = await store.startRun({ agent: "paid" });
-    store.carryBack(runId, { state: "failed", summary: "no cost recorded" });
-  } finally {
-    store.close();
-  }
-  const two = await startServe({ data, port: 0, faux: OUTPUT_PRICED });
-  t.after(() => two.close());
-  const api = client(two.baseUrl, two.token);
-  for (const usage of await usages(api)) {
-    assert.ok(Math.abs(usage.total_usd - paid.cost.usd) < 1e-9, JSON.stringify(usage));
-    assert.ok(usage.lines.every((line) => typeof line.usd === "number"), JSON.stringify(usage));
-    assert.equal(usage.unpriced_runs, 1, "the run with no recorded cost is counted, not passed off as $0");
-    assert.equal(usage.lines.reduce((n, line) => n + line.unpriced_runs, 0), 1);
   }
 });
 
@@ -208,6 +154,7 @@ test("a response of unknown price leaves the run's cost unknown (null), not $0, 
   assert.equal((await ended(api, none.run_id, ["cancelled"])).cost.usd, 0, "no request: $0");
   for (const usage of await usages(api)) {
     assert.deepEqual([usage.total_usd, usage.unpriced_runs], [0, 1], JSON.stringify(usage));
+    assert.ok(usage.lines.every((line) => typeof line.usd === "number"), JSON.stringify(usage));
     assert.equal(usage.lines.reduce((n, line) => n + line.unpriced_runs, 0), 1, JSON.stringify(usage));
   }
 });
@@ -224,6 +171,8 @@ test("a refused request is final: one refusal, never retried, and the model is n
   assert.match(run.error.message, /\$0\.000500/, "the amount that reads as a 500");
   assert.equal(rows.filter((r) => r.kind === "error").length, 1, "one refusal: the request was not tried again");
   assert.equal(posts(), 0);
+  assert.equal(run.cost.usd, 0, "never sent: $0");
+  assert.equal(run.result, null, "no answer was paid for");
   assert.ok(Date.now() - from < 10_000, "no retry backoff");
 });
 

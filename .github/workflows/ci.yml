@@ -96,13 +96,29 @@ jobs:
       - if: matrix.shard == 'checks' && (matrix.node == '22.19.0' || github.event_name == 'merge_group')
         run: node scripts/check-typescript-floor.mjs
       - if: matrix.shard != 'checks'
-        run: node scripts/ci-shard.mjs ${{ matrix.shard }}
+        run: |
+          if [ -n "$LEAN_SWEEP_DIR" ]; then export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$GITHUB_WORKSPACE/spec/lean/sweep/capture-register.mjs"; fi
+          node scripts/ci-shard.mjs ${{ matrix.shard }}
         env:
           # The Claude Agent adapter's real-CLI test runs on the pinned CLI (the SDK's platform package, a dev dependency):
           # here a missing or different one fails, not skips.
           AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY: '1'
           # The Codex adapter's tool-off test runs on the pinned binary (a dev dependency): here a missing one fails, not skips.
           AGENTRUN_CODEX_REQUIRE_BINARY: '1'
+          # On 22.23.2 the core and example shards record every workflow their DSL, pi and example tests validate or run
+          # (spec/lean/sweep, preloaded above), for the lean job's validator sweep. Empty elsewhere: no hook.
+          LEAN_SWEEP_DIR: ${{ matrix.node == '22.23.2' && (matrix.shard == 'core' || startsWith(matrix.shard, 'examples-')) && format('{0}/lean-sweep', runner.temp) || '' }}
+      # The lean job reads these and fails on a missing one; this step never fails a test shard.
+      - name: Keep the workflows the tests validated, for the lean job
+        if: matrix.node == '22.23.2' && (matrix.shard == 'core' || startsWith(matrix.shard, 'examples-'))
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: lean-sweep-${{ matrix.shard }}
+          path: ${{ runner.temp }}/lean-sweep/*.json
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true
       - name: Retain package verification evidence
         if: always() && matrix.shard == 'checks'
         uses: actions/upload-artifact@v4
@@ -367,9 +383,10 @@ jobs:
   transport-docker:
     # @parcha/pi-transport's formatter and linter, and its box conformance suite on real Docker containers. They are not
     # part of the verify matrix: the suite needs a Docker daemon and an image, not three Node versions. A daemon that
-    # cannot start a box fails a test here instead of skipping it.
+    # cannot start a box fails a test here instead of skipping it. Then serve's boxed tools on the same daemon, advisory
+    # (a failure shows, and blocks nothing): a sandbox run's bash and file tools in a box with no network and no key.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -381,6 +398,17 @@ jobs:
       - run: npm run lint -w @parcha/pi-transport
       - run: docker pull debian:bookworm-slim
       - run: npm run test:live:docker -w @parcha/pi-transport
+      - name: Build, for serve's boxed tools on Docker (advisory)
+        continue-on-error: true
+        run: npm run build
+      - name: Serve's boxed tools on Docker, no network and no key in the box, and the default box image built (advisory)
+        continue-on-error: true
+        working-directory: packages/serve
+        env:
+          AGENTRUN_SERVE_LIVE_DOCKER: '1'
+          AGENTRUN_SERVE_LIVE_DOCKER_BUILD: '1'
+        # The flag bounds the whole file, which builds the default box image (python, git, curl) once.
+        run: node --test --test-timeout=900000 test/boxed-tools.docker.test.mjs
 
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's
@@ -570,7 +598,11 @@ jobs:
   lean:
     # The Lean model of the workflow language (spec/lean): proofs, axiom audit, the model's
     # side of the conformance corpus, and the validator sweep. The TypeScript side of the
-    # conformance corpus runs in `npm test` above.
+    # conformance corpus runs in `npm test` above. The sweep's workflows come from the test
+    # shards on 22.23.2, so it waits for them; it runs when one failed too, and the sweep fails
+    # if a shard's captures are missing. verify does not need it.
+    needs: [test]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -605,11 +637,19 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
-      - name: Build the TypeScript packages
+      - name: Build the DSL, whose validator gives TypeScript's verdicts
         working-directory: .
-        run: node scripts/npm-ci-retry.mjs --ignore-scripts && npm run build
-      - name: Collect every workflow the test suites validate, with TypeScript's verdicts
+        run: node scripts/npm-ci-retry.mjs --ignore-scripts && npm run build -w @parcha/agentrun-dsl
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lean-sweep-*
+          path: ${{ runner.temp }}/lean-sweep
+      - name: Every workflow the test shards validated, with TypeScript's verdicts
         working-directory: .
-        run: node spec/lean/sweep/collect.mjs spec/lean/.lake/validator-corpus.json
+        env:
+          CAPTURES: ${{ runner.temp }}/lean-sweep
+        run: >-
+          node spec/lean/sweep/collect.mjs --captures "$CAPTURES/lean-sweep-core" --captures "$CAPTURES/lean-sweep-examples-1"
+          --captures "$CAPTURES/lean-sweep-examples-2" --captures "$CAPTURES/lean-sweep-examples-3" spec/lean/.lake/validator-corpus.json
       - name: The Lean validator accepts everything the TypeScript validator accepts
         run: lake exe validator-sweep .lake/validator-corpus.json

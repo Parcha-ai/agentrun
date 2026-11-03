@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test as nodeTest } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
@@ -19,9 +19,11 @@ const alive = processAlive;
 
 /** A server in a process of its own, so a test can kill it the way a crash does and leave its runs behind. It is ready
  *  when it prints its banner, which it does once it listens: its address and key lines, whole. A server that exits first
- *  fails the test with what it said. No clock: a slow start, on a loaded machine, is still a start. */
-async function serverProcess(data) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"] });
+ *  fails the test with what it said. No clock: a slow start, on a loaded machine, is still a start. `execArgv` and `env`
+ *  go to its node (a preloaded test hook, say). */
+async function serverProcess(data, { execArgv = [], env = {} } = {}) {
+  // A home beside the data, not this machine's: a first start counts the sessions in its home for setup's offer.
+  const child = spawn(process.execPath, [...execArgv, CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data), ...env } });
   let out = "";
   let err = "";
   // Read to the end, so the server never blocks on a full pipe; its last lines say why, should it exit before it listens.
@@ -90,7 +92,45 @@ test("a run whose process died with its server is relaunched on its directory by
   assert.equal((await api("GET", `/runs/${runId}`)).body.result.final_answer, "Soon.");
   assert.equal(storeRun(data, runId).state, "completed");
   assert.ok(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation >= 2, "opened again on its directory");
+  // A launch that served removes its mark: the next server opens the run again once, never fails it as lost at launch.
+  assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation, 2, "opened again once");
 });
+
+// A server that goes down while it copies what a learning run's agent learned: before the copy starts, or once it is
+// whole and pinned but its learning not yet saved. The run's input is saved before the copy, so the next server relaunches
+// it with its first message; a copy it finds unsaved goes, so the run starts again with nothing learned.
+const HOLD_SEED = new URL("./fixtures/hold-seed.mjs", import.meta.url).href;
+for (const [seam, learning] of [["beforePin", null], ["afterPin", { state: "dropped", reason: "seed_failed" }]]) {
+  test(`a server killed while a learning run's seed is copied (${seam}): the next one relaunches the run with its first message, and it completes with nothing learned`, async (t) => {
+    const data = join(await scratch(t), "agents");
+    const signal = join(await scratch(t), "held");
+    const first = await serverProcess(data, { execArgv: ["--import", HOLD_SEED], env: { AGENTRUN_TEST_HOLD_SEED: seam, AGENTRUN_TEST_HOLD_SIGNAL: signal } });
+    t.after(() => first.child.kill("SIGKILL"));
+    assert.equal((await first.api("POST", "/agents", agent("learner", { learning: true }))).status, 201);
+    // The start waits on the held copy, so it never answers: the run is found by its directory once the copy holds.
+    const starting = first.api("POST", "/agents/learner/runs", { input: { content: "Answer soon." } }).catch(() => undefined);
+    let runDir = "";
+    for (let i = 0; !(runDir = await readFile(signal, "utf8").catch(() => "")); i++) {
+      assert.ok(i < 1200, "the run's seed copy was reached");
+      await sleep(50);
+    }
+    first.child.kill("SIGKILL");
+    await new Promise((resolve) => first.child.once("exit", resolve));
+    await starting;
+    const runId = basename(runDir);
+    assert.equal(storeRun(data, runId).state, "running");
+    assert.equal(existsSync(join(runDir, "learning.json")), seam === "afterPin", "a pin only once the copy was whole");
+    const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    t.after(() => next.close());
+    const api = client(next.baseUrl, next.token);
+    await follow(api, runId, ["completed"]);
+    const read = (await api("GET", `/runs/${runId}`)).body;
+    assert.equal(read.result.final_answer, "Soon.", "its first message reached it");
+    assert.deepEqual(read.learning && { state: read.learning.state, reason: read.learning.reason }, learning);
+    assert.equal(existsSync(join(runDir, "learning.json")), false, "no pin");
+    assert.equal(existsSync(join(runDir, "work", ".learning")), false, "no copy of the notes");
+  });
+}
 
 test("a workflow run whose process died with its server is relaunched by the next one and completes from its journal", async (t) => {
   const { data, runId, pid } = await crashMidRun(t, undefined, { create: flowAgent("flow"), input: { question: "Answer soon." } });
@@ -104,7 +144,7 @@ test("a workflow run whose process died with its server is relaunched by the nex
   assert.equal(storeRun(data, runId).state, "completed");
 });
 
-test("a run released but not carried back when its server stopped is carried back when the next one starts", async (t) => {
+test("a run released but not carried back when its server stopped is carried back by the next one, its run store read again once free if still locked, so the run still ends final", async (t) => {
   const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
   await sleep(2_500);
   process.kill(pid, "SIGTERM");
@@ -112,25 +152,7 @@ test("a run released but not carried back when its server stopped is carried bac
     assert.ok(i < 200, "the run's process exits on SIGTERM");
     await sleep(50);
   }
-  assert.equal(storeRun(data, runId).state, "running", "nobody carried it back yet");
-  const next = await startServe({ data, port: 0, faux: FAUX });
-  t.after(() => next.close());
-  const api = client(next.baseUrl, next.token);
-  const { last } = await follow(api, runId, ["completed"]).catch(async (error) => {
-    throw new Error(`${error.message}: ${JSON.stringify((await api("GET", `/runs/${runId}`)).body.error)}`);
-  });
-  assert.equal(last.final, true);
-  assert.equal(storeRun(data, runId).state, "completed");
-});
-
-test("a run store still locked when the next server reads it is read again once free, so the run still ends final", async (t) => {
-  const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
-  await sleep(2_500);
-  process.kill(pid, "SIGTERM");
-  for (let i = 0; alive(pid); i++) {
-    assert.ok(i < 200, "the run's process exits on SIGTERM");
-    await sleep(50);
-  }
+  assert.equal(storeRun(data, runId).state, "running", "released, and nobody carried it back yet");
   // Another holder keeps the run's store locked across the next server's start, as the run's own process does until it exits.
   const store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 0 });
   store.exec("PRAGMA locking_mode = EXCLUSIVE");
@@ -187,10 +209,14 @@ async function adopting(t, data, runId, options = {}) {
   return api;
 }
 
-test("an adopted run that released is read only once its process has exited, so its store is never read while held", async (t) => {
-  const { data, runId, standIn, release } = await adoptedStandIn(t);
+test("an adopted run that released is read only once its process has exited, so its store is never read while held; a record read half written neither crashes the server nor settles the run", async (t) => {
+  const { data, runId, standIn, release, tear } = await adoptedStandIn(t);
   let busy = 0;
   const api = await adopting(t, data, runId, { carryBackRetry: { delaysMs: Array(20).fill(50), onBusy: () => busy++ } });
+  // Two of the server's 500 ms reads of a torn record: nothing to wait on but the window, since a torn read changes nothing.
+  await tear();
+  await sleep(1_000);
+  assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false, "not settled on an unreadable record");
   const store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 0 });
   store.exec("PRAGMA locking_mode = EXCLUSIVE");
   store.exec("BEGIN EXCLUSIVE");
@@ -200,19 +226,6 @@ test("an adopted run that released is read only once its process has exited, so 
   assert.equal(busy, 0, "the store was not read while the run's process lived");
   assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false);
   store.close();
-  standIn.kill("SIGKILL");
-  const { last } = await follow(api, runId, ["completed"]);
-  assert.equal(last.final, true);
-  assert.equal(storeRun(data, runId).state, "completed");
-});
-
-test("a run record read half written neither crashes the server nor settles the run: it is read again", async (t) => {
-  const { data, runId, standIn, release, tear } = await adoptedStandIn(t);
-  const api = await adopting(t, data, runId);
-  await tear();
-  await sleep(1_600);
-  assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false, "not settled on an unreadable record");
-  await release();
   standIn.kill("SIGKILL");
   const { last } = await follow(api, runId, ["completed"]);
   assert.equal(last.final, true);
@@ -254,8 +267,10 @@ test("a record unreadable for longer than 5 s while the process lives is still w
   t.after(() => (process.stderr.write = write));
   const api = await adopting(t, data, runId);
   await tear();
-  await sleep(6_500);
-  assert.ok(lines.some((line) => line.includes(runId) && line.includes("still watching")), "the server said it is still watching");
+  for (let i = 0; !lines.some((line) => line.includes(runId) && line.includes("still watching")); i++) {
+    assert.ok(i < 600, "the server said it is still watching");
+    await sleep(50);
+  }
   assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false, "not settled while the process lives");
   await heal();
   await release();
@@ -505,6 +520,83 @@ test("a stop saved before its abort reached the run is finished by the next serv
   await untilState(api, run_id, ["input_required", "idle"]);
   // Behind a turn still running (60 s), the follow-up would wait past follow's 30 s.
   assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "go on" })).body.mode, "follow_up");
-  await follow(api, run_id, ["completed"], { deadlineMs: 20_000 });
+  await follow(api, run_id, ["completed"], { deadlineMs: 20_000 }).catch(async (error) => { error.message += `\ntimeline: ${await api.fresh("GET", `/runs/${run_id}/timeline?limit=500`).then(({ body }) => JSON.stringify(body), (cause) => `unavailable (${cause.message})`)}`; throw error; });
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
+});
+
+/** An accepted message never vanishes. Answered 2xx with a mode, it shows as the person's row and the run goes on past it
+ *  to an answer, or the run ends with its error stated. A message a stop's abort withdrew would show nothing, and the run
+ *  would read working from then on: the follow below would run out. */
+async function neverDropped(api, runId, sent, content) {
+  assert.ok(sent.status >= 200 && sent.status < 300 && typeof sent.body.mode === "string", `accepted: ${JSON.stringify(sent.body)}`);
+  const { rows, last } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 20_000 }).catch(async (error) => {
+    error.message += `\ntimeline: ${await api.fresh("GET", `/runs/${runId}/timeline?limit=500`).then(({ body }) => JSON.stringify(body), (cause) => `unavailable (${cause.message})`)}`;
+    throw error;
+  });
+  const at = rows.findIndex((row) => row.kind === "user_message" && row.text === content);
+  assert.ok(at >= 0, `the message shows as the person's row: ${JSON.stringify(rows.map((row) => row.summary))}`);
+  if (last.status === "completed") assert.ok(rows.slice(at + 1).some((row) => row.kind === "final_answer"), "and an answer after it");
+  else assert.ok((await api("GET", `/runs/${runId}`)).body.error?.message, `or the run ends with its error stated: ${last.status}`);
+}
+
+test("a run that reads stopped runs the follow-up it takes, even while the abort of its turn is still on its way (the next server ending a saved stop): the abort never drops the message, live or after a restart", { timeout: 60_000 }, async (t) => {
+  const start = servers(t);
+  const data = join(await scratch(t), "agents");
+  const first = await serverProcess(data);
+  t.after(() => first.child.kill("SIGKILL"));
+  const { run_id } = await startRun(first.api, "slow", "Take your time.");
+  await untilState(first.api, run_id, ["working", "working"]);
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { holder } = JSON.parse(await readFile(join(data, "runs", run_id, "run.json"), "utf8"));
+  t.after(() => alive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  const meta = join(data, "runs", run_id, "serve.json");
+  await writeFile(meta, `${JSON.stringify({ ...JSON.parse(await readFile(meta, "utf8")), stopped_after: 1 })}\n`);
+  // The order a loaded machine can give: the next server's abort reaches the run's door only after a message has (or
+  // after 3 s, when none comes). A message that reaches the door first is queued behind the turn the abort then ends.
+  const realFetch = globalThis.fetch;
+  let reached;
+  const submitted = new Promise((resolve) => (reached = resolve));
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+    if (path === "/abort") await Promise.race([submitted, sleep(3_000)]);
+    const answer = await realFetch(input, init);
+    if (path === "/submit") reached();
+    return answer;
+  };
+  t.after(() => (globalThis.fetch = realFetch));
+  const next = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const api = client(next.baseUrl, next.token);
+  await untilState(api, run_id, ["input_required", "idle"]);
+  const sent = await api("POST", `/runs/${run_id}/messages`, { content: "go on" });
+  assert.equal(sent.body.mode, "follow_up");
+  await neverDropped(api, run_id, sent, "go on");
+  assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
+  await next.close();
+  const after = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  await neverDropped(client(after.baseUrl, after.token), run_id, sent, "go on");
+});
+
+test("a message sent while a stop is on its way runs after it, never dropped: a live stop held between its mark and its abort, live and after a restart", { timeout: 60_000 }, async (t) => {
+  const start = servers(t);
+  const data = join(await scratch(t), "agents");
+  let atAbort, release;
+  const reachedAbort = new Promise((resolve) => (atAbort = resolve));
+  const held = new Promise((resolve) => (release = resolve));
+  const one = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s", beforeAbort: async () => { atAbort(); await held; } });
+  const api = client(one.baseUrl, one.token);
+  const { run_id } = await startRun(api, "slow", "Take your time.");
+  await untilState(api, run_id, ["working", "working"]);
+  const stopping = api("POST", `/runs/${run_id}/stop`);
+  // The stop has saved its mark and the run reads stopped; its abort waits at the seam.
+  await reachedAbort;
+  const sending = api("POST", `/runs/${run_id}/messages`, { content: "go on" });
+  await Promise.race([sending, sleep(1_000)]);
+  release();
+  const [stop, sent] = await Promise.all([stopping, sending]);
+  assert.equal(stop.body.stopped, true, JSON.stringify(stop.body));
+  await neverDropped(api, run_id, sent, "go on");
+  await one.close();
+  const after = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  await neverDropped(client(after.baseUrl, after.token), run_id, sent, "go on");
 });

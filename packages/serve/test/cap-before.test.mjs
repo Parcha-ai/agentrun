@@ -3,7 +3,9 @@
 // pi's own cap holds them, so neither can pass the cap with the other.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { capBefore } from "../dist/cap.js";
+import { capBefore, NATIVE_SEARCH_ALLOWANCE_TOKENS } from "../dist/cap.js";
+import { nativeOptions } from "../dist/adapters.js";
+import { withOverCap } from "../dist/runs.js";
 
 // One request may cost 0.6 of the cap: a 1000-token ceiling at $600 a million output tokens is $0.60, under a $1 cap.
 const model = { id: "m", api: "openai-responses", provider: "p", maxTokens: 1000, contextWindow: 8000, cost: { input: 0, output: 600, cacheRead: 0, cacheWrite: 0 } };
@@ -49,4 +51,20 @@ test("a model serve has no price for is refused under a cap, and only under one;
   assert.equal(await capBefore(undefined, model, { listed: false }), undefined, "no cap, no refusal, priced or not");
   const free = await capBefore(0.000001, { ...model, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
   assert.equal(free.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 1_000_000 }), undefined, "a listed $0 model passes any cap");
+});
+
+test("claude-agent's own search is opened with the stated allowance, 8 searches of 25,000 tokens, which its proxy adds to a search request's bound; codex's own search, live (its adapter books each search); nothing where web_search does not resolve native", () => {
+  assert.equal(NATIVE_SEARCH_ALLOWANCE_TOKENS, 200_000);
+  const plane = (web_search) => ({ AGENTRUN_SERVE_TOOL_PLANE: JSON.stringify({ web_search }) });
+  assert.deepEqual(nativeOptions("claude-agent", plane("native")), { webSearch: true, webSearchAllowance: 200_000 });
+  assert.deepEqual(nativeOptions("codex", plane("native")), { webSearch: "live" });
+  for (const [harness, env] of [["pi", plane("native")], ["codex", plane("exa-keyless")], ["claude-agent", plane("parallel")], ["codex", {}]]) assert.deepEqual(nativeOptions(harness, env), {}, `${harness} ${JSON.stringify(env)}`);
+});
+
+test("the over-cap row: after the usage row, once its booked cost is past the cap, saying by how much; none at or under it, or with no cap or no known cost", () => {
+  const usage = (usd) => ({ id: "1:usage", kind: "usage", summary: "Cost so far", seq: 9, text: null, usage: { usd, requests: 2 } });
+  const rows = (usd) => [{ id: "1:3", kind: "final_answer", summary: "Done.", seq: 8, text: "Done." }, usage(usd)];
+  const [, , over] = withOverCap(rows(1.25), 1);
+  assert.deepEqual([over.id, over.kind, over.summary, over.seq, "usage" in over], ["1:usage:over_cap", "phase", "Spent $1.2500, $0.2500 over the run's cap of $1", 9, false]);
+  for (const [usd, cap] of [[1, 1], [0.5, 1], [null, 1], [2, undefined]]) assert.equal(withOverCap(rows(usd), cap).length, 2, `${usd} under ${cap}`);
 });

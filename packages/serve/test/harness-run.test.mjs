@@ -10,6 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
+import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { LONG_ANSWER } from "./fixtures/faux-harness.mjs";
 
@@ -17,6 +18,7 @@ import { LONG_ANSWER } from "./fixtures/faux-harness.mjs";
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
+const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer;
 
@@ -117,13 +119,13 @@ test("a message to a run working on a harness that cannot steer answers follow_u
   assert.equal(await answer(api, runId), "Answered the chat.");
 });
 
-/** How many of the run's store entries are of `kind` (a session's runner record, or the root's request marker). */
-function storeCount(data, runId, kind) {
+/** The run's store entries of `kind` (a session's record, or the root's request marker). */
+function storeRecords(data, runId, kind) {
   // The run's process writes the store meanwhile: a read that finds it locked tries again.
   for (let tries = 0; ; tries++) {
     const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
-      return db.prepare("SELECT record FROM entries").all().filter((row) => JSON.parse(String(row.record)).kind === kind).length;
+      return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((record) => record.kind === kind);
     } catch (error) {
       if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
     } finally {
@@ -131,6 +133,7 @@ function storeCount(data, runId, kind) {
     }
   }
 }
+const storeCount = (data, runId, kind) => storeRecords(data, runId, kind).length;
 
 const killRun = async (data, runId) => {
   const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
@@ -143,6 +146,19 @@ test("a request whose price is unknown makes the run's cost unknown, never 0", {
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.deepEqual(usageOf(rows), { usd: null, requests: 1 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null);
+});
+
+test("a run whose booked spend passes its cap shows by how much on its timeline, once, and ends spend_cap_reached saying so", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  assert.equal((await api("POST", "/agents", agent("over", { harness: "codex", instructions: "Overspend." }))).status, 201);
+  const run = await api("POST", "/agents/over/runs", { input: { content: "hi" }, max_cost_usd: 0.3 });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows } = await follow(api, run.body.run_id, ["failed"], { deadlineMs: 55_000 });
+  const over = rows.filter((row) => row.id.endsWith(":over_cap"));
+  assert.deepEqual(over.map((row) => [row.kind, row.summary]), [["phase", "Spent $0.5000, $0.2000 over the run's cap of $0.3"]]);
+  assert.equal(usageOf(rows).usd, 0.5, "the usage row it reads: the refused request cost nothing");
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.deepEqual([view.error.code, view.error.message], ["spend_cap_reached", "The run cost $0.5000, $0.2000 over its cap of $0.3."]);
 });
 
 test("a request admitted and cut by a crash is booked once, unknown: on resume the cost is unknown and every admitted request counts once", { timeout: 90_000 }, async (t) => {
@@ -223,7 +239,7 @@ test("a run on another harness gets pi's own file tools: a write then a read of 
 });
 
 for (const harness of ["claude-agent", "codex"]) {
-  test(`fetch_page runs on ${harness}: the definition saves with no warning, its run is not refused, and the tool reads the page`, { timeout: 60_000 }, async (t) => {
+  test(`fetch_page, web_fetch's legacy name, runs on ${harness}: the definition saves with no warning, its run is not refused, and web_fetch reads the page`, { timeout: 60_000 }, async (t) => {
     const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB });
     const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title.", tools: ["fetch_page"] }));
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
@@ -233,14 +249,14 @@ for (const harness of ["claude-agent", "codex"]) {
     const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
     const results = toolResults(rows);
     assert.equal(results.length, 1, JSON.stringify(results));
-    assert.match(results[0][0], /Public page/, "the page's title, read through the guarded fetch");
+    assert.match(results[0][0], /"title":"Public page".*"via":"direct"/s, "web_fetch's Page, read through the guarded fetch");
   });
 
-  test(`web_fetch runs on ${harness} as a host tool: the run is handed Parallel's key and reads the page through Parallel`, { timeout: 60_000 }, async (t) => {
+  test(`web_fetch runs on ${harness} as a host tool: with Parallel picked the run is handed Parallel's key and reads the page through Parallel`, { timeout: 60_000 }, async (t) => {
     const calls = join(await scratch(t), "parallel.jsonl");
     withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, ["AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT"]);
     const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB, fauxParallel: FAUX_PARALLEL });
-    const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title with web_fetch.", tools: ["web_fetch"] }));
+    const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title with web_fetch.", tools: ["web_fetch"], tool_settings: { web_fetch: { provider: "parallel" } } }));
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
     assert.doesNotMatch(JSON.stringify(saved.body), /not bound yet/, "no warning that the tool is pi's only");
     const run = await api("POST", `/agents/web-${harness}/runs`, { input: { content: "hi" } });
@@ -252,15 +268,54 @@ for (const harness of ["claude-agent", "codex"]) {
     const sent = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.urls]), [["/v1/extract", true, ["http://public.example/"]]], "on the key the server handed the run");
   });
+
+  test(`web_search runs on ${harness} as a host tool where Parallel is picked: the run is handed Parallel's key and searches through Parallel`, { timeout: 60_000 }, async (t) => {
+    const calls = join(await scratch(t), "parallel.jsonl");
+    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, ["AGENTRUN_TEST_FAUX_PARALLEL_SEARCH"]);
+    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxParallel: FAUX_PARALLEL });
+    const saved = await api("POST", "/agents", agent(`search-${harness}`, { harness, instructions: "Search the web for widgets delaware and say what you found.", tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }));
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    assert.doesNotMatch(JSON.stringify(saved.body), /not bound yet/, "no warning that the tool is pi's only");
+    const run = await api("POST", `/agents/search-${harness}/runs`, { input: { content: "hi" } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const results = toolResults(rows);
+    assert.equal(results.length, 1, JSON.stringify(results));
+    assert.match(results[0][0], /\{"provider":"parallel","query":"widgets delaware","results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results");
+    const sent = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.queries]), [["/v1/search", true, ["widgets delaware"]]], "on the key the server handed the run");
+  });
 }
 
-test("capabilities say which harnesses run each tool: the file tools, fetch_page and web_fetch on every harness, the rest on pi", async (t) => {
+for (const harness of ["claude-agent", "codex"]) {
+  test(`monid.run runs on ${harness} as monid_run: it saves with no warning, reaches monid on the key from the run's pipe, and is journaled and shown under its wire name`, { timeout: 60_000 }, async (t) => {
+    const log = join(await scratch(t), "monid-calls.jsonl");
+    withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
+    const saved = await api("POST", "/agents", agent(`monid-${harness}`, { harness, instructions: "Run monid's /person/enrich on Ada.", tools: ["monid.discover", "monid.inspect", "monid.run"] }));
+    assert.deepEqual([saved.status, saved.body.warnings], [201, []], JSON.stringify(saved.body));
+    const run = await api("POST", `/agents/monid-${harness}/runs`, { input: { content: "hi" } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const seen = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(seen.map((call) => [call.method, call.path, call.authorized]), [["POST", "/v1/run", true]], "sent once, on the key");
+    assert.ok(seen.every((call) => call.pid !== process.pid), "from the run's process");
+    assert.deepEqual(storeRecords(data, run.body.run_id, "faux.call").map((record) => record.data?.name), ["monid_run"], "the harness's journal names the wire name");
+    assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => r.tool_name), ["monid_run"]);
+    const results = toolResults(rows);
+    assert.equal(results.length, 1, JSON.stringify(results));
+    assert.match(results[0][0], /"full_name":"Ada"/, "the run's output reaches the timeline");
+    assert.equal(results[0][1], "success");
+  });
+}
+
+test("capabilities say which harnesses run each tool: the file tools, bash (in a box), the web tools and monid's three on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
   const every = ["pi", "claude-agent", "codex"];
-  const host = ["read", "write", "edit", "fetch_page", "web_fetch"];
-  for (const name of host) assert.deepEqual(tools[name], every, name);
-  for (const [name, harnesses] of Object.entries(tools)) if (!host.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
+  const hosted = ["read", "write", "edit", "bash", "web_fetch", "web_search", "monid.discover", "monid.inspect", "monid.run"];
+  for (const name of hosted) assert.deepEqual(tools[name], every, name);
+  for (const [name, harnesses] of Object.entries(tools)) if (!hosted.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });
 
 test("pi's confinement holds for another harness's read: a link out of the workspace is refused with pi's words", { timeout: 90_000 }, async (t) => {
@@ -468,6 +523,20 @@ test("a capped run with a request cut by a crash goes on: the cut request counts
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 55_000 });
   const ended = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([ended.status, ended.result?.final_answer], ["completed", "After the cut."], JSON.stringify(ended.error));
+  assert.equal(ended.cost.usd, null, "the cut request's own price never came in: the shown cost is unknown");
+  // What the cap held for each request, on its record: the model's $0 worst case, so the cut one counts at $0.
+  for (let tries = 0; ; tries++) {
+    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    try {
+      const held = db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data.heldUsd);
+      assert.deepEqual(held, [0, 0, 0], "the first, the cut one, and the one after it, each held at $0");
+      break;
+    } catch (error) {
+      if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
+    } finally {
+      db.close();
+    }
+  }
 });
 
 // Three runs in turn, each followed for up to 55 s.
