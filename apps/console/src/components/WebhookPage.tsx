@@ -9,7 +9,7 @@ import type { ApiError, Webhook, WebhookAttempt } from "@/lib/v2";
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 const when = (iso: string) => new Date(iso).toLocaleString();
 const SIGNING: Record<Exclude<Extract<Webhook, { configured: true }>["signing"], "sealed">, string> = {
-  seal_key_missing: "Its secret can't sign here: this server was started without its seal key. Nothing is sent until the webhook is removed and set again.",
+  seal_key_missing: "Its secret can't sign here: this server was started without its seal key. Restart it with its original seal key (AGENTRUN_SEAL_KEY) to send messages again. Removing the webhook drops the messages waiting, and it can't be set again without a seal key.",
   unreadable: "Its secret can't sign here: it was sealed under another key, or is damaged. Nothing is sent until the webhook is removed and set again.",
 };
 
