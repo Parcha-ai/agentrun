@@ -1,9 +1,10 @@
 // The values of an environment's key-shaped variables, cut out of text this server keeps: the rule of the harness log's
 // cut, for what the importer writes (a transcript can hold a key a tool printed or was given).
 
-/** Names whose values are secrets, whatever list names them or none does: the harness log's cut and a run's environment
- *  (secrets.ts' withoutSecrets) take the same rule. */
-export const SECRET_NAME = /(_API_KEY|_TOKEN)$|SECRET/i;
+/** Names whose values are secrets, whatever list names them or none does: `*_API_KEY`, `*_TOKEN`, and any with SECRET or
+ *  PASSWORD in it, in any case. The one rule: this cut, the harness log's and a run's environment (secrets.ts'
+ *  withoutSecrets) take it, so what one leaves out the others do. */
+export const SECRET_NAME = /(_API_KEY|_TOKEN)$|SECRET|PASSWORD/i;
 export const REDACTED = "[redacted]";
 
 /** A cut of every value of the key-shaped variables (8 characters or more) of `envs`, one environment or several (the

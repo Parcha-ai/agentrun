@@ -887,7 +887,7 @@ carries no cost at all, as from a provider that does not price the model. The te
 - Each run's door listens on loopback and takes only the server's door token.
 - A run's process gets the server's environment (the `AGENT_MODEL` variables among it) without the server's token or any
   key: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key
-  (`*_API_KEY`, `*_TOKEN`, any with `SECRET`), whether the launcher's list names it or not. The keys it needs come over
+  (`*_API_KEY`, `*_TOKEN`, any with `SECRET` or `PASSWORD`), whether the launcher's list names it or not. The keys it needs come over
   its pipe. It gets none of the boxes' keys ([Boxes](#boxes)). A tool key reaches it only when its revision names a tool
   the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` `browser`; a workflow's tools are those its model
   and call nodes name), and a provider's key only when its model is that provider's ([Models](#models)), read from the
