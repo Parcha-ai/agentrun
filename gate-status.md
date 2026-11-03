@@ -41,3 +41,5 @@ The console lockfile retains 14 inherited audit findings: 7 moderate, 3 high and
 The [stack trial](stack-trial.md) inspected all 12 approved and queued PRs. The candidate is clean against the inspected main. Applying it after queued #1400 conflicts in App.tsx; the report records the intended reconciliation. Three other overlapping PRs merge cleanly. The combined queue also has an unrelated README conflict before this candidate enters it.
 
 Maintainer approval and a refreshed merge gate remain required.
+
+Final CI outcome:64 successful checks,1 failing pi1.2.0 test job and3 failed aggregate verification checks. Pi1.3.0 first passed. No check remains running. The sole underlying failing assertion is the webhook receipt-count case documented above.

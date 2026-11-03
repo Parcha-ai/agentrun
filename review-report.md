@@ -24,3 +24,5 @@ The [pi-1-2 1.3.0 first job](https://github.com/Parcha-ai/agentrun/actions/runs/
 Owner decisions on the #1406/native queued-stop dependency and inherited dependencies remain outside the review loop. This report does not imply merge approval. The root agent reports final local proof of 385 console checks, 27 browser rows, 69 native checks and 8 container checks; this read-only audit did not rerun that proof.
 
 This audit made no API mutations, source edits, dependency changes or review triggers.
+
+Final CI run41559597077 completed with64 successful checks and4 failed checks. The sole failing test job was the pi1.2.0 first leg, documented in [webhook diagnosis](webhook-ci-failure.md). The pi1.3.0 first leg passed. The other3 failures were aggregate verify checks after the matrix failure. Review remains exact-head5/5 with zero unresolved threads; this is a review-clean result, not a merge-ready verdict.
