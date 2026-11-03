@@ -154,6 +154,8 @@ export default function reply(context, faux) {
   // "Answer once <file> exists.": the test says when, by making the file.
   const once = /^Answer once (\S+) exists\.$/.exec(first);
   if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
+  // A follow-up whose answer stops at its length (max output tokens): text, no tool call, stopReason "length".
+  if (first.includes("Stop the follow-up at its length") && users.length > 1) return faux.message("The follow-up's answer, cut at its length", { stopReason: "length" });
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
   if (first.includes("as JSON")) return faux.message(first.includes("wrongly") ? '{"answer": "forty-two"}' : '```json\n{"answer": 42}\n```');
   return faux.message(`On ${last}: done.`);

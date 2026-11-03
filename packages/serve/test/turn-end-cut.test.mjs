@@ -48,9 +48,11 @@ test("a follow-up whose turn ended showing nothing, its process killed before th
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: hi", "You: /compact"], "no other message");
 });
 
-test("a follow-up still queued behind an answerless turn whose process died before that turn's end, with the server down too, is answered before the run completes", { timeout: 240_000 }, async (t) => {
-  // #1424's second Greptile P1: the relaunch writes the missing turn end while the door is idle, before the queue is
-  // restored, and a server started anew counts no message waiting; it must not read that end as the run's.
+/** Two follow-ups queued behind a held first turn (the second, "/compact", answers nothing); the run's process is killed at
+ *  the write the arm file `armed` names (faux-harness-turn-end-cut.mjs), the server closed and another started. The run
+ *  must read neither terminal nor working in the new process before the last follow-up's answer, "Answer 3.", and then
+ *  completed. `holds` checks what the held process wrote and where it held. */
+async function queuedRelaunch(t, armed, reaching, holds) {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const [arm, held, gate, first, last] = [join(dir, "arm"), join(dir, "held"), join(dir, "gate"), join(dir, "first"), join(dir, "last")];
@@ -72,13 +74,11 @@ test("a follow-up still queued behind an answerless turn whose process died befo
   }
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "And then?" })).status, 202);
-  // Turn 1's end passes; the process holds at the next one's write: the answerless /compact turn's.
-  await writeFile(arm, "1");
+  await writeFile(arm, armed);
   await writeFile(first, "");
   let hold = null;
-  for (const end = Date.now() + 55_000; !(hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))); await sleep(50)) assert.ok(Date.now() < end, "the /compact turn reaches the write of its end");
-  const ended = hold.since.lastIndexOf("faux.turn_end");
-  assert.ok(ended >= 0 && hold.since.lastIndexOf("pi.assistant") > ended && hold.since.includes("adapter.turn_end"), `written since the arm: ${hold.since.join(", ")}`);
+  for (const end = Date.now() + 55_000; !(hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))); await sleep(50)) assert.ok(Date.now() < end, reaching);
+  holds(hold);
   assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).holder?.pid, hold.pid, "the held process is the run's");
   // The run's process and the server go down together: the next server counts no message waiting.
   process.kill(hold.pid, "SIGKILL");
@@ -105,8 +105,32 @@ test("a follow-up still queued behind an answerless turn whose process died befo
   await writeFile(last, "");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   t.diagnostic(`ended before the queued follow-up answered: ${JSON.stringify(early ?? null)}; rows ${JSON.stringify(rows.map((r) => [r.kind, r.summary]))}`);
-  assert.deepEqual(JSON.parse(await readFile(gate, "utf8").catch(() => "null")), { streamed: true }, "the reopen went on once the new server followed its door");
+  // No end before the answer first: a server that reads the run done from its store stops the process before its open
+  // reaches the gate.
   assert.equal(early, undefined, `the run read ${JSON.stringify(early)} before its queued follow-up answered`);
+  assert.deepEqual(JSON.parse(await readFile(gate, "utf8").catch(() => "null")), { streamed: true }, "the reopen went on once the new server followed its door");
   assert.equal(await answer(api, runId), "Answer 3.", "the queued follow-up's answer");
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: hi", "You: /compact", "You: And then?"]);
+}
+
+test("a follow-up still queued behind an answerless turn whose process died before that turn's end, with the server down too, is answered before the run completes", { timeout: 240_000 }, async (t) => {
+  // #1424's second Greptile P1: the relaunch writes the missing turn end while the door is idle, before the queue is
+  // restored, and a server started anew counts no message waiting; it must not read that end as the run's.
+  // Turn 1's end passes; the process holds at the next one's write: the answerless /compact turn's.
+  await queuedRelaunch(t, "1", "the /compact turn reaches the write of its end", (hold) => {
+    const ended = hold.since.lastIndexOf("faux.turn_end");
+    assert.ok(ended >= 0 && hold.since.lastIndexOf("pi.assistant") > ended && hold.since.includes("adapter.turn_end"), `written since the arm: ${hold.since.join(", ")}`);
+  });
+});
+
+test("a follow-up still queued behind an answerless turn whose end was written, its process killed before the follow-up was sent, with the server down too, is answered before the run completes", { timeout: 240_000 }, async (t) => {
+  // #1424 (the lead's review): runTurns writes a turn's end, then sends the next queued message and writes its entry and
+  // its end in a commit of its own. A process that dies between the two leaves the /compact turn answered, with its end,
+  // and the last follow-up accepted (adapter.message) with no end; a server started anew counts no message waiting.
+  // Both turn ends pass; the process holds at its next write, the session's record of the follow-up it sends.
+  await queuedRelaunch(t, "2 after", "the queued follow-up's send reaches the session after the /compact turn's end", (hold) => {
+    assert.equal(hold.at, "faux.user", `held at the session's record of the follow-up, after: ${hold.since.join(", ")}`);
+    assert.equal(hold.since.filter((kind) => kind === "adapter.turn_end").length, 2, `both turn ends written: ${hold.since.join(", ")}`);
+    assert.ok(!hold.since.slice(hold.since.lastIndexOf("adapter.turn_end")).includes("pi.user"), `the follow-up's entry not written: ${hold.since.join(", ")}`);
+  });
 });
