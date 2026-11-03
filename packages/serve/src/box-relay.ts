@@ -13,8 +13,10 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { DOOR_TOKEN_FILE, readJson, writeWhole } from "./files.js";
 
-/** The relay's address in the data directory: `{"url": "http://127.0.0.1:<port>"}`. */
+/** The relay's address in the data directory: `{"url": "http://<loopback>:<port>"}`. */
 export const BOX_RELAY_FILE = ".box-relay";
+/** Where the relay listens: only this machine's runs reach it. */
+const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the relay listens on this machine's loopback only, for this machine's runs
 /** What a run's Daytona provider sends as its key: never a key. The relay sends the server's in its place. */
 export const RELAYED_KEY = "relayed-by-the-server";
 /** The header that names the Daytona URL a relayed call is for. */
@@ -156,9 +158,9 @@ export async function startBoxRelay(options: BoxRelayOptions): Promise<BoxRelay>
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
+    server.listen(0, LOOPBACK, () => resolve());
   });
-  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const url = `http://${LOOPBACK}:${(server.address() as AddressInfo).port}`;
   await writeWhole(join(options.root, BOX_RELAY_FILE), `${JSON.stringify({ url })}\n`);
   return {
     url,
