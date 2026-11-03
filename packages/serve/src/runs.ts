@@ -307,10 +307,12 @@ export function costView(rows: readonly TimelineEvent[], stored: number | null |
   return usage.usage?.usd ?? null;
 }
 /** What a run whose cost is unknown has cost so far (costsofar/1): the sum of its charges whose cost is known, and how many
- *  have none, from its usage row, plus a workflow's decisions (`decisions`: their known sum and how many are not known).
- *  Undefined while the cost is known, or when the row says neither (an older run's). No ceiling is claimed. */
+ *  have none, from its usage row, plus a workflow's decisions (`decisions`: their known sum and how many are not known;
+ *  null when they could not be read, which says nothing). Undefined while the cost is known, when the row says neither
+ *  (an older run's), or when a workflow's decisions are unreadable. No ceiling is claimed. */
 export type SoFar = { so_far_usd: number; unpriced: number };
-export function soFarOf(rows: readonly TimelineEvent[], decisions?: { known: number; unpriced: number }): SoFar | undefined {
+export function soFarOf(rows: readonly TimelineEvent[], decisions?: { known: number; unpriced: number } | null): SoFar | undefined {
+  if (decisions === null) return undefined;
   const usage = usageOf(rows)?.usage;
   const models = !usage ? { known: 0, unpriced: 0 } : usage.usd !== null ? { known: usage.usd, unpriced: 0 } : usage.so_far_usd !== undefined && usage.unpriced !== undefined ? { known: usage.so_far_usd, unpriced: usage.unpriced } : undefined;
   if (!models) return undefined;
@@ -1257,7 +1259,7 @@ export class Runs {
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     // An unknown cost keeps what it cost so far beside it, for the list row read from the store.
-    const soFar = cost === null && !run.imported ? soFarOf(run.rows, run.decisionCost === undefined ? undefined : run.decisionsPriced) : undefined;
+    const soFar = cost === null && !run.imported ? soFarOf(run.rows, run.decisionCost === undefined ? undefined : (run.decisionsPriced ?? null)) : undefined;
     if (soFar) run.meta.cost_so_far = soFar;
     else delete run.meta.cost_so_far;
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
@@ -1758,7 +1760,7 @@ export class Runs {
     const usd = run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd, run.decisionCost);
     // Unknown: what it cost so far and how many charges have no price (costsofar/1), from its rows, else what it said at
     // its end (a run carried back with no rows read since).
-    const soFar = usd === null && !run.imported ? (soFarOf(run.rows, run.decisionCost === undefined ? undefined : run.decisionsPriced) ?? (run.rows.length ? undefined : soFarOfMeta(run.meta))) : undefined;
+    const soFar = usd === null && !run.imported ? (soFarOf(run.rows, run.decisionCost === undefined ? undefined : (run.decisionsPriced ?? null)) ?? (run.rows.length ? undefined : soFarOfMeta(run.meta))) : undefined;
     return { usd, basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null, ...(soFar ?? {}) };
   }
 
