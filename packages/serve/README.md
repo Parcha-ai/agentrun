@@ -228,7 +228,11 @@ the models come from:
   as the gateway does not say whose model answers. A run's `max_cost_usd` therefore now stops a gateway run on such a model with
   `spend_cap_reached`; at $0 it never did.
 - Otherwise pi-ai's providers serve them, each with its key from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-  ...), and its catalog prices the run. The `AGENT_MODEL` variables are then `provider/model-id` too.
+  `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, Bedrock's `AWS_*` keys, ...), and its catalog prices the run. The `AGENT_MODEL`
+  variables are then `provider/model-id` too. The launcher holds every key pi-ai reads, as it holds the rest, and a run's
+  process is handed a provider's key only when its model is that provider's: a run on Gemini gets `GEMINI_API_KEY`, and
+  no other run does. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` and `AGENT_MODEL_API_KEY` go to every
+  run, as codex, claude-agent, the gateway and Jev's judges take them.
 
 A definition is checked for what keeps it from running here when it is saved, with the same checks a run makes before
 it starts:
@@ -881,11 +885,15 @@ carries no cost at all, as from a provider that does not price the model. The te
   and fonts) hold no data; everything it shows comes through those routes. It loads nothing from the network, and its
   CSP allows this origin only.
 - Each run's door listens on loopback and takes only the server's door token.
-- A run's process gets the server's environment (model keys and the `AGENT_MODEL` variables among it) without the
-  server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token. It gets none of
-  the boxes' keys either ([Boxes](#boxes)). A tool key reaches it only when its revision names a tool the key unlocks
-  (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` `browser`; a workflow's tools are those its model and call nodes
-  name), read from the revision at each launch, a relaunch or a resume after a restart included.
+- A run's process gets the server's environment (the `AGENT_MODEL` variables among it) without the server's token or any
+  key: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key
+  (`*_API_KEY`, `*_TOKEN`, any with `SECRET`), whether the launcher's list names it or not. The keys it needs come over
+  its pipe. It gets none of the boxes' keys ([Boxes](#boxes)). A tool key reaches it only when its revision names a tool
+  the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` `browser`; a workflow's tools are those its model
+  and call nodes name), and a provider's key only when its model is that provider's ([Models](#models)), read from the
+  revision at each launch, a relaunch or a resume after a restart included. A variable named like a key that is not on
+  the launcher's list (`capabilities.secrets.names`) stays in the server's own environment, which a process of the same
+  user can read.
 - A run's file tools (`read`, `write`, `edit`) reach its own `work/`, and two places of its own beside it: `read` also
   reaches the run's `tmp/` (next to `work/`, where a command's spilled output would go), and a write may also land in a
   temporary directory the run's environment made for a tool (`createTempDir`). Every other path, a link inside `work/`

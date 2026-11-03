@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
+import { PROVIDER_KEYS } from "../dist/model.js";
 import { BOX_KEYS } from "../dist/boxes.js";
 import { ToolKeys } from "../dist/tool-keys.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
@@ -40,6 +41,9 @@ const BROWSERBASE = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"];
 const TOOL_KEYS = ["MONID_API_KEY", ...BROWSERBASE];
 /** The model keys: every run's process gets each, whatever its tools. */
 const MODEL_KEYS = ["AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"];
+/** The keys of pi-ai's providers but the model keys: a run's process gets one only when its model is that provider's,
+ *  and none here names a model. */
+const PROVIDER_ONLY = [...new Set(Object.values(PROVIDER_KEYS).flat())].filter((name) => !MODEL_KEYS.includes(name) && !DECISION_KEYS.includes(name));
 /** Amazon Bedrock's keys, which pi-ai's table of keys by provider leaves out as ambient: its request reads them itself. */
 const BEDROCK = ["AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"];
 /** The keys pi-ai reads for each of its built-in providers, by its own table (findEnvKeys, asked of an environment that
@@ -215,7 +219,7 @@ test("started by its launcher, no process of its user holds a secret in its envi
   const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
   await follow(api, run.run_id, ["completed"]);
   const report = JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer);
-  for (const name of SECRET_NAMES) assert.equal(report.handed[name], [...SERVER_ONLY, ...DECISION_KEYS, ...TOOL_KEYS].includes(name) ? "none" : digest(secrets[name]), `${name} handed to the run's process`);
+  for (const name of SECRET_NAMES) assert.equal(report.handed[name], [...SERVER_ONLY, ...DECISION_KEYS, ...TOOL_KEYS, ...PROVIDER_ONLY].includes(name) ? "none" : digest(secrets[name]), `${name} handed to the run's process`);
   assert.deepEqual(report.inEnv, [], "no secret in the run's process's environment, so none in a child's");
   assert.deepEqual(report.pipe, { fd: 3, closed: true }, "the run's process read its pipe and closed it");
 
@@ -349,7 +353,7 @@ process.on("SIGUSR2", async () => {
   const { root, child, api } = await launched(t, secrets, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
   // Each agent's tools, and the tool keys its runs get.
   const agents = { monid: [["monid.run"], ["MONID_API_KEY"]], browse: [["browser"], BROWSERBASE], reader: [["read"], []] };
-  const expected = (unlocked) => Object.fromEntries(SECRET_NAMES.map((name) => [name, [...SERVER_ONLY, ...DECISION_KEYS].includes(name) || (TOOL_KEYS.includes(name) && !unlocked.includes(name)) ? "none" : digest(secrets[name])]));
+  const expected = (unlocked) => Object.fromEntries(SECRET_NAMES.map((name) => [name, [...SERVER_ONLY, ...DECISION_KEYS, ...PROVIDER_ONLY].includes(name) || (TOOL_KEYS.includes(name) && !unlocked.includes(name)) ? "none" : digest(secrets[name])]));
   const report = async (call, runId, after) => {
     await follow(call, runId, ["completed"], { after, deadlineMs: 60_000 });
     return JSON.parse((await call("GET", `/runs/${runId}`)).body.result.final_answer).handed;
@@ -379,35 +383,37 @@ process.on("SIGUSR2", async () => {
 
 test("secretsFor: a tool key's fields only for a revision naming a tool its row unlocks, the tools read as the run's process binds them; every other secret for each", async () => {
   const { RUN_SECRETS, secretsFor } = await import("../dist/runs.js");
+  // On no host model: a revision naming no model takes no provider's key (the next test).
+  const secretsOf = (rev, rows) => secretsFor(rev, rows, {});
   const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-01T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
   const agentic = (tools) => revision("agentic", { instructions: "Answer.", tools });
   const workflow = (flow, tools = []) => revision("workflow", { workflow: flow, tools });
-  const without = (...names) => RUN_SECRETS.filter((name) => !names.includes(name));
+  const without = (...names) => RUN_SECRETS.filter((name) => !names.includes(name) && !PROVIDER_ONLY.includes(name));
   for (const name of [...TOOL_KEYS, ...MODEL_KEYS]) assert.ok(RUN_SECRETS.includes(name), `${name} is among a run's secrets`);
 
-  assert.deepEqual(await secretsFor(agentic(["monid.run"])), without(...BROWSERBASE));
-  assert.deepEqual(await secretsFor(agentic(["read", "browser"])), without("MONID_API_KEY"));
-  assert.deepEqual(await secretsFor(agentic(["monid.discover", "browser"])), RUN_SECRETS);
-  assert.deepEqual(await secretsFor(agentic(["read", "fetch_page", "ask_person"])), without(...TOOL_KEYS));
-  assert.deepEqual(await secretsFor(agentic([])), without(...TOOL_KEYS));
+  assert.deepEqual(await secretsOf(agentic(["monid.run"])), without(...BROWSERBASE));
+  assert.deepEqual(await secretsOf(agentic(["read", "browser"])), without("MONID_API_KEY"));
+  assert.deepEqual(await secretsOf(agentic(["monid.discover", "browser"])), without());
+  assert.deepEqual(await secretsOf(agentic(["read", "fetch_page", "ask_person"])), without(...TOOL_KEYS));
+  assert.deepEqual(await secretsOf(agentic([])), without(...TOOL_KEYS));
   // Only a `tool` row's fields are scoped: a key of another kind (a model's) reaches a run that names no tool.
   const { TOOL_KEYS: ROWS } = await import("../dist/tool-keys.js");
   assert.deepEqual(ROWS.map((row) => row.kind), ["tool", "tool", "tool", "tool"]);
   const rows = [...ROWS, { id: "openai", kind: "model", fields: ["OPENAI_API_KEY"], unlocks: [] }];
-  assert.deepEqual(await secretsFor(agentic([]), rows), without(...TOOL_KEYS), "OPENAI_API_KEY with them, the tool keys still not");
-  assert.deepEqual(await secretsFor(agentic([]), rows.map((row) => (row.id === "openai" ? { ...row, kind: "tool" } : row))), without(...TOOL_KEYS, "OPENAI_API_KEY"), "the same row as a tool key is scoped");
+  assert.deepEqual(await secretsOf(agentic([]), rows), without(...TOOL_KEYS), "OPENAI_API_KEY with them, the tool keys still not");
+  assert.deepEqual(await secretsOf(agentic([]), rows.map((row) => (row.id === "openai" ? { ...row, kind: "tool" } : row))), without(...TOOL_KEYS, "OPENAI_API_KEY"), "the same row as a tool key is scoped");
 
   // A workflow: the tools its model nodes name and its call nodes run, wherever the node is, never a name only its
   // definition lists, nor data shaped like a node.
   const browsing = answerFlow();
   browsing.root.steps[0].tools = ["browser"];
-  assert.deepEqual(await secretsFor(workflow(browsing, ["browser", "monid.run"])), without("MONID_API_KEY"));
+  assert.deepEqual(await secretsOf(workflow(browsing, ["browser", "monid.run"])), without("MONID_API_KEY"));
   const calling = answerFlow();
   calling.root.steps.unshift({ node: "map", label: "each", itemsPath: "question", as: "found", resultPath: "found", maxConcurrency: 1, body: { node: "call", label: "find", via: "tool", tool: "monid.run", args: { q: "{item}" }, out: "Answer", as: "answer", deadline_s: 20 } });
-  assert.deepEqual(await secretsFor(workflow(calling)), without(...BROWSERBASE));
+  assert.deepEqual(await secretsOf(workflow(calling)), without(...BROWSERBASE));
   const shaped = answerFlow();
   shaped.root.steps[0].state = { example: { node: "extract", tools: ["browser"] } };
-  assert.deepEqual(await secretsFor(workflow(shaped, ["browser"])), without(...TOOL_KEYS));
+  assert.deepEqual(await secretsOf(workflow(shaped, ["browser"])), without(...TOOL_KEYS));
 });
 
 test("secretsFor: a provider's keys only for a pi revision whose model is that provider's, its own or the host's of each tier it runs; none through a gateway, nor on codex or claude-agent; the model keys still reach each", async () => {
@@ -442,6 +448,12 @@ test("every key pi-ai reads for a provider is one of the launcher's secrets: eac
   const unlisted = Object.entries(keys).flatMap(([id, { table, asked }]) => [...new Set([...table, ...asked.filter((name) => /(_API_KEY|_TOKEN)$|SECRET/i.test(name))])].filter((name) => !SECRET_NAMES.includes(name)).map((name) => `${id} ${name}`));
   assert.deepEqual(unlisted, [], "each is held as OPENAI_API_KEY is, so no environment holds it: add it to the launcher's SECRETS");
   assert.deepEqual(BEDROCK.filter((name) => !SECRET_NAMES.includes(name)), [], "Bedrock's keys are held too");
+  // And each is handed to a run on its provider's model: model.ts' PROVIDER_KEYS names every one under its provider,
+  // and only providers pi-ai has, every name on the launcher's list.
+  const unhanded = Object.entries(keys).flatMap(([id, { table, asked }]) => [...new Set([...table, ...asked.filter((name) => /(_API_KEY|_TOKEN)$|SECRET/i.test(name)), ...(id === "amazon-bedrock" ? BEDROCK : [])])].filter((name) => !(PROVIDER_KEYS[id] ?? []).includes(name)).map((name) => `${id} ${name}`));
+  assert.deepEqual(unhanded, [], "add it to model.ts' PROVIDER_KEYS under its provider");
+  assert.deepEqual(Object.keys(PROVIDER_KEYS).filter((id) => !(id in keys)), [], "a provider pi-ai does not have");
+  assert.deepEqual(Object.values(PROVIDER_KEYS).flat().filter((name) => !SECRET_NAMES.includes(name)), [], "a provider's key the launcher does not hold");
 });
 
 /** A run of agent `id` (started, followed to its end) and what its process reported (faux-custody.mjs). */

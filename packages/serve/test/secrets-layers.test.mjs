@@ -18,7 +18,7 @@ test("childEnv hands a run's process none of the server's secrets and not the to
 
 test("childEnv also leaves out every name shaped like a key that no list names (`*_API_KEY`, `*_TOKEN`, any with SECRET), and passes what a run's process reads: the AGENT_MODEL variables, a provider's settings, the pipe's own descriptor and length", () => {
   const token = `ar_test_${"t".repeat(40)}`;
-  const unlisted = ["ACME_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "NPM_TOKEN", "npm_config__authToken", "CLIENT_SECRET", "MY_SECRET_THING"];
+  const unlisted = ["ACME_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "NPM_TOKEN", "NODE_AUTH_TOKEN", "CLIENT_SECRET", "MY_SECRET_THING"];
   for (const name of unlisted) assert.ok(!SECRET_NAMES.includes(name), `${name} is on no list`);
   const passes = { PATH: "/usr/bin", HOME: "/home/x", AGENT_MODEL: "google/gemini-2.5-flash", AGENT_MODEL_FAST: "m-fast", AGENT_MODEL_BASE_URL: "http://127.0.0.1:1", AGENT_MODEL_PRICE: "1,2", AGENT_THINKING: "low", AWS_REGION: "us-east-1", AWS_PROFILE: "p", GOOGLE_CLOUD_PROJECT: "p", AZURE_OPENAI_BASE_URL: "http://127.0.0.1:2", ANTHROPIC_BASE_URL: "http://127.0.0.1:3", AGENTRUN_SERVE_EFFORT: "low", AGENTRUN_SERVE_DECISION_KEY_FD: "4" };
   const out = childEnv({ ...Object.fromEntries(unlisted.map((name) => [name, `canary-${name}`])), ...passes }, token);

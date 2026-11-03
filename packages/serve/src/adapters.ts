@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import type { ModelRef } from "./model.js";
+import { SECRET_NAME } from "./secret-cut.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 
 /** The one line that installs each harness beside serve. */
@@ -40,9 +41,6 @@ export const CODEX_STANDIN_ENV = "AGENTRUN_SERVE_CODEX_STANDIN";
 /** The event of a harness's own lines in the run's log (its model proxy's refusals and failures): a failed run's message
  *  is never taken from one (runs.ts lastLogLine). */
 export const HARNESS_LOG_EVENT = "harness";
-
-/** Names whose values are secrets: no line of the run's log carries one. */
-const SECRET_NAME = /(_API_KEY|_TOKEN)$|SECRET/i;
 
 /**
  * A harness's log, into the run's log: the run process's stderr, which serve opens on the run's process.log. One JSON
