@@ -20,7 +20,7 @@ import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-d
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
-import { activeOf, dropSeed, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, secretsShown, shortLearning, type Shown, snapshotLearned, withAgentGrade } from "./learning.js";
+import { activeOf, dropSeed, KEPT_LEARNING, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, secretsShown, shortLearning, type Shown, snapshotLearned, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
@@ -140,9 +140,18 @@ export function learningStats(rows: readonly RunRow[], filter: AnalyticsFilter, 
   return out;
 }
 
-/** One side of an agent's impact: how many runs, and their median run time and cost. */
-export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null };
+/** One side of an agent's impact: how many runs, their median time to the answer, the median of their job's own cost
+ *  over the `cost_runs` whose cost is known, and the median of what learning itself cost a run (its look-back and its
+ *  grade), over the runs that learn whose learning cost is known. */
+export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null; cost_runs: number; median_learning_usd: number | null };
 export type Impact = { before: ImpactSide; after: ImpactSide } | null;
+/** What a run's learning tells its impact (learning-run.ts ofAgent), from memory or from its ledger line: how it
+ *  ended and when, how many notes it started from, when its answer was final and its costs; `grade_usd` once it ended
+ *  (0 when nothing was graded), and `look_back_usd` 0 for a run that never looked back. */
+export type ImpactLearning = { state: string; reason: string | null; at: string; seed_notes?: number; answered_at?: string; job_cost_usd?: number | null; look_back_usd?: number | null; grade_usd?: number | null };
+/** A completed run as its impact counts it: from its start to its answer, its job's own cost, and what its learning
+ *  cost (undefined for a run with learning off; null when unknown). */
+type Figures = { seconds: number; cost: number | null; learning?: number | null };
 /** The middle of `values` (the mean of the two middle ones when there is an even count); undefined for none. */
 const median = (values: readonly number[]): number | undefined => {
   if (!values.length) return undefined;
@@ -150,24 +159,38 @@ const median = (values: readonly number[]): number | undefined => {
   const mid = sorted.length >> 1;
   return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 };
-const sideOf = (rows: readonly RunRow[]): ImpactSide => {
-  const costs = rows.flatMap((row) => (typeof row.costUsd === "number" ? [row.costUsd] : []));
-  const cost = median(costs);
+const usd = (value: number | undefined) => (value === undefined ? null : Math.round(value * 1e6) / 1e6);
+const sideOf = (runs: readonly Figures[]): ImpactSide => {
+  const costs = runs.flatMap((run) => (run.cost === null ? [] : [run.cost]));
   return {
-    runs: rows.length,
-    median_duration_s: Math.round(median(rows.map((row) => (Date.parse(row.endedAt!) - Date.parse(row.startedAt)) / 1000))! * 10) / 10,
-    median_cost_usd: cost === undefined ? null : Math.round(cost * 1e6) / 1e6,
+    runs: runs.length,
+    median_duration_s: Math.round(median(runs.map((run) => run.seconds))! * 10) / 10,
+    median_cost_usd: usd(median(costs)),
+    cost_runs: costs.length,
+    median_learning_usd: usd(median(runs.flatMap((run) => (typeof run.learning === "number" ? [run.learning] : [])))),
   };
 };
-/** What learning changed for an agent, from its run rows (`rows`) and what its runs' learning says (`learningOf`: how
- *  many notes each run started from, and how its learning ended and when), never a run's files. `after`: its completed
- *  agentic runs that started from at least one active note. `before`: its completed agentic runs that started before
- *  its first note, the earlier of its first merge's end and the start of its first run that started from a note (a
- *  person's note comes first that way); none of them could have. Each side's median run time (ended less started, in
- *  seconds to a tenth, as the run's view shows them) and median cost (of the runs whose cost is known; null when none
- *  is). An imported or archived run is on neither side, nor is a later one with learning off or seeded with no note
- *  (every note retired). Null unless both sides hold 2 runs or more. */
-export function learningImpact(rows: readonly RunRow[], learningOf: (row: RunRow) => { state: string; at: string; seed_notes?: number } | null | undefined): Impact {
+/** Completed run `row` as its impact counts it, `learning` what its learning says. One that looked back answered when
+ *  its job ended, and its job's cost is what it had cost by then; any other's are its row's end and cost, which no look
+ *  back follows. Undefined for one whose learning a server before these figures kept (it says neither how many notes
+ *  it started from nor when it answered): its row's end and cost hold its look-back too. */
+function figuresOf(row: RunRow, learning: ImpactLearning | null | undefined): Figures | undefined {
+  if (learning && learning.seed_notes === undefined && learning.reason !== "seed_failed") return undefined;
+  const looked = learning?.answered_at !== undefined;
+  const answered = looked ? Date.parse(learning!.answered_at!) : Date.parse(row.endedAt!);
+  const cost = looked ? (learning!.job_cost_usd ?? null) : (row.costUsd ?? null);
+  if (!learning) return { seconds: (answered - Date.parse(row.startedAt)) / 1000, cost };
+  const { look_back_usd: back, grade_usd: grade } = learning;
+  return { seconds: (answered - Date.parse(row.startedAt)) / 1000, cost, learning: typeof back === "number" && typeof grade === "number" ? back + grade : null };
+}
+/** What learning changed for an agent, from its run rows (`rows`) and what its runs' learning says (`learningOf`),
+ *  never a run's files. `after`: its completed agentic runs that started from at least one active note. `before`: its
+ *  completed agentic runs that started before its first note, the earlier of its first merge's end and the start of its
+ *  first run that started from a note (a person's note comes first that way); none of them could have. Each side's
+ *  figures (sideOf, figuresOf): its time to the answer in seconds to a tenth, its job's own cost, what learning cost.
+ *  An imported or archived run is on neither side, nor is a later one with learning off or seeded with no note (every
+ *  note retired), nor one whose learning predates these figures. Null unless both sides hold 2 runs or more. */
+export function learningImpact(rows: readonly RunRow[], learningOf: (row: RunRow) => ImpactLearning | null | undefined): Impact {
   const done = rows.filter((row) => row.kind === "agentic" && !row.importedFrom && !row.archivedAt && row.state === "completed" && row.endedAt);
   const after = done.filter((row) => (learningOf(row)?.seed_notes ?? 0) > 0);
   const merges = rows.flatMap((row) => {
@@ -175,8 +198,9 @@ export function learningImpact(rows: readonly RunRow[], learningOf: (row: RunRow
     return learning?.state === "merged" ? [Date.parse(learning.at)] : [];
   });
   const first = Math.min(...merges, ...after.map((row) => Date.parse(row.startedAt)));
-  const before = done.filter((row) => Date.parse(row.startedAt) < first);
-  return before.length >= 2 && after.length >= 2 ? { before: sideOf(before), after: sideOf(after) } : null;
+  const counted = (side: readonly RunRow[]) => side.flatMap((row) => figuresOf(row, learningOf(row)) ?? []);
+  const [before, later] = [counted(done.filter((row) => Date.parse(row.startedAt) < first)), counted(after)];
+  return before.length >= 2 && later.length >= 2 ? { before: sideOf(before), after: sideOf(later) } : null;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -456,9 +480,18 @@ export class LearningRuns {
    *  holds it, else its end from its ledger line; never a run's files. */
   async ofAgent(rows: readonly RunRow[], agentId: string): Promise<{ counts: Omit<ReturnType<typeof learningStats>, "runs">; impact: Impact }> {
     const ledger = await outcomes(this.options.agents.dir);
-    const learningOf = (row: RunRow) => {
+    const learningOf = (row: RunRow): ImpactLearning | null => {
       const held = this.kernel.held(row.id);
-      return held ? (held.meta.learning ?? null) : (ledger.get(row.id) ?? null);
+      if (!held) {
+        const line = ledger.get(row.id);
+        return line ? { ...line, grade_usd: line.cost } : null;
+      }
+      const learning = held.meta.learning;
+      if (!learning) return null;
+      // As its ledger line will say it (usage.ts outcomeOf): its grade's cost and its look-back's once it ended.
+      const over = ended(learning);
+      const { look_back_usd, ...rest } = learning;
+      return { ...rest, ...(over ? { grade_usd: learning.cost_usd ? learning.cost_usd.grade : 0 } : {}), ...(learning.answered_at !== undefined ? { look_back_usd } : over ? { look_back_usd: 0 } : {}) };
     };
     const { runs: _, ...counts } = learningStats(rows, { agent: agentId }, learningOf);
     return { counts, impact: learningImpact(rows, learningOf) };
@@ -482,11 +515,13 @@ export class LearningRuns {
     });
   }
 
-  /** Moves the run's learning on, and shows its row. The notes the run read (`used`) stay with it, whatever its
-   *  learning does after. Saved by the caller, or with the run's end. */
+  /** Moves the run's learning on, and shows its row. What it keeps whatever it does after (learning.ts KEPT_LEARNING:
+   *  the notes the run read, how many it started from, its answer's time and costs) stays with it. Saved by the caller,
+   *  or with the run's end. */
   private setLearning(run: Run, state: LearningState, reason: LearningReason | null = null, detail: string | null = null, more: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = {}): void {
-    const { used, seed_notes } = run.meta.learning ?? {};
-    run.meta.learning = { state, reason, detail, at: new Date().toISOString(), ...(used ? { used } : {}), ...(seed_notes === undefined ? {} : { seed_notes }), ...more };
+    const before = run.meta.learning;
+    const kept = Object.fromEntries(KEPT_LEARNING.flatMap((key) => (before?.[key] === undefined ? [] : [[key, before[key]]])));
+    run.meta.learning = { state, reason, detail, at: new Date().toISOString(), ...kept, ...more };
     run.updatedAt = run.meta.learning.at;
     this.kernel.show(run);
   }
@@ -542,7 +577,8 @@ export class LearningRuns {
     run.meta.reflect = { outcome, after, deadline: new Date(Date.now() + (this.options.reflectTimeoutMs ?? REFLECT_TIMEOUT_MS)).toISOString() };
     // The job's error, kept for a restart: the turn's is never the run's.
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
-    this.setLearning(run, "reflecting", null, said.reflecting);
+    // Its answer is final now: when, and what its job cost, before the end-of-run turn spends any more.
+    this.setLearning(run, "reflecting", null, said.reflecting, { answered_at: run.endedAt, job_cost_usd: this.kernel.costOf(run.rows) });
     this.kernel.mark(run);
     void this.reflectTurn(run);
   }
@@ -603,6 +639,12 @@ export class LearningRuns {
     if (learning?.state === "seeded") return this.setLearning(run, "dropped", ...((run.cancel || outcome === "cancelled" ? ["cancelled", said.stopped(STOPPED.cancelled)] : ["crashed", said.stopped(STOPPED.crashed)]) as [LearningReason, string]));
     if (!reflect || reflect.until !== undefined) return;
     reflect.until = run.lastEntry ?? reflect.after;
+    // What the turn cost: the run's cost now, its job's set apart; unknown when either is.
+    if (learning) {
+      const total = this.kernel.costOf(run.rows);
+      const job = learning.job_cost_usd;
+      run.meta.learning = { ...learning, look_back_usd: total === null || job === null || job === undefined ? null : Math.max(0, Math.round((total - job) * 1e9) / 1e9) };
+    }
     if (learning?.state !== "reflecting") return;
     const last = run.rows.findLast((row) => row.agent_label === LEARNING_LABEL && shows(row));
     if (run.cancel) this.setLearning(run, "dropped", "cancelled", said.stopped(STOPPED.cancelledLooking));
