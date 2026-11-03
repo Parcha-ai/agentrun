@@ -18,6 +18,7 @@ import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
+import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV, workflowTools } from "./tools.js";
@@ -115,7 +116,11 @@ type RunMeta = {
   /** Where it runs, as its start resolved it (place.ts): its process reads it. Absent for a run an older server started,
    *  which ran on the runner. */
   place?: Place;
+  /** Where the run's learning stands (learning.ts); absent for a run that does not learn. */
+  learning?: Learning;
 };
+/** A run's learning as a list shows it: its state and reason. */
+const shortLearning = (learning: Learning | null) => (learning ? { state: learning.state, reason: learning.reason } : null);
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */
@@ -345,7 +350,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; fauxBox?: string; runBoxes?: BoxProvider; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; fauxExa?: string };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxHarness?: string; fauxBox?: string; runBoxes?: BoxProvider; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; fauxExa?: string; learning?: LearningMode };
 /** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
  *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
 export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => void;
@@ -468,6 +473,8 @@ export class Runs {
   private starting = 0;
   /** The start sweep of the boxes runs left: once, before any run opens a box (sweepOnce). */
   private swept?: Promise<void>;
+  /** Why this host keeps no learning folder, said once. */
+  private learningOff?: string;
   constructor(private readonly options: RunsOptions) {}
 
   private get store() {
@@ -517,7 +524,15 @@ export class Runs {
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
       ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
+      ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
     };
+    // A server that went down while it copied what the run's agent learned saved the run's input and no learning, and
+    // left the copy half made, or whole with its pin: the copy goes, so the run starts again with nothing learned.
+    if (row.state === "running" && stored && !meta.learning && (await dropSeed(dir, join(dir, "work")))) {
+      meta.learning = { state: "dropped", reason: "seed_failed", detail: "The server stopped while it copied what the agent learned into the run, so the run started with nothing learned.", at: new Date().toISOString() };
+      await writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`);
+      warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
+    }
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, known?.revision);
     this.runs.set(row.id, run);
@@ -1308,17 +1323,68 @@ export class Runs {
     }
   }
 
+  /** What a run of `agentId` starts from: its learning folder's main (learning.ts), the folder made first when it is
+   *  absent; else why it starts with nothing learned. A learning fault never refuses a run: a host without the git
+   *  learning needs is said once, and a folder that cannot be made or read once per run. */
+  private async seedFor(agentId: string): Promise<{ seed: Seed } | { failed: string }> {
+    const blocked = await learningBlocker(process.env);
+    if (blocked) {
+      if (this.learningOff !== blocked) process.stderr.write(`agentrun-serve: runs start with nothing learned: ${blocked}\n`);
+      this.learningOff = blocked;
+      return { failed: "This host has no git that learning can use, so the run started with nothing learned." };
+    }
+    return seedOf(this.options.agents.dir, agentId).then((seed) => ({ seed }), (error: Error) => {
+      process.stderr.write(`agentrun-serve: the agent ${agentId}'s learning folder could not be read, so its run starts with nothing learned: ${error.message}\n`);
+      return { failed: "The agent's learning folder could not be read, so the run started with nothing learned." };
+    });
+  }
+
+  /** Writes the serve.json of a run being set up. When it fails, the store has the run as running and no process will
+   *  run it: it ends failed here, never left for a later start to open with half its files. */
+  private async setUp(runId: string, dir: string, meta: RunMeta): Promise<void> {
+    try {
+      await writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`);
+    } catch (error) {
+      const summary = `The run could not be set up: ${(error as Error).message}`;
+      await this.options.agents.request(() => this.store.carryBack(runId, { state: "failed", summary })).catch((undo: Error) => warn(runId, `not ended after its setup failed: ${undo.message}`));
+      throw error;
+    }
+  }
+
   private async start(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
+    // A run learns when the server's switch (`--learning`) is on and its agent's definition says `learning: true`. Its
+    // seed is read before the run is made, so the folder is read once whatever the run's setup does.
+    const learns = this.options.learning !== "off" && revision.kind === "agentic" && revision.body.learning === true;
+    const seeded = learns ? await this.seedFor(entry.agent.id) : undefined;
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
+    const at = new Date().toISOString();
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
-      created_at: new Date().toISOString(),
+      created_at: at,
       input: options.input,
       place: options.place,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
     };
-    await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
+    // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
+    // next one relaunches with its first message.
+    await this.setUp(started.runId, started.dir, meta);
+    if (seeded) {
+      let failed = "failed" in seeded ? seeded.failed : undefined;
+      if ("seed" in seeded) {
+        try {
+          await pinSeed(started.dir, started.workspace, seeded.seed);
+          for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
+        } catch (error) {
+          warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
+          failed = "What the agent learned could not be copied into the run, so it started with nothing learned.";
+        }
+      }
+      // Then its learning, once the copy is whole or gone. A server that goes down during the copy leaves none saved,
+      // and the next one takes the copy back (load).
+      meta.learning = failed === undefined ? { state: "seeded", reason: null, detail: null, at } : { state: "dropped", reason: "seed_failed", detail: failed, at };
+      await this.setUp(started.runId, started.dir, meta);
+    }
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, revision);
     run.moment = "other";
     // Before the run is known here, so nothing launches it first.
@@ -1615,13 +1681,14 @@ export class Runs {
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
+      learning: run.meta.learning ?? null,
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
     };
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning: shortLearning(learning) };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -1649,6 +1716,7 @@ export class Runs {
       // A run read from its row alone has ended: it waits on nothing.
       pending: null,
       imported_from: row.importedFrom ?? null,
+      learning: shortLearning(isObject(meta?.learning) ? meta.learning : null),
     };
   }
 
