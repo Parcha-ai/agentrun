@@ -1,6 +1,6 @@
 // web_search: the web searched by the provider the run's plane resolves it to (tool-plane.ts). On pi, natively, one
 // request to the run's own model provider with its hosted search (hosted-search.ts); on claude-agent, natively, Claude's
-// own search, so this tool is not offered there; with no native search (codex, whose own is not bound yet, a gateway,
+// own search, and on codex Codex's own, so this tool is not offered there; with no native search (codex behind a gateway or under a spend cap, a gateway,
 // another model provider), or where it is picked, Exa's keyless MCP endpoint (exa-keyless.ts); where Parallel is picked, Parallel's
 // Search API (POST https://api.parallel.ai/v1/search, https://docs.parallel.ai/api-reference/search/search) in its fast
 // mode, the one Parallel recommends for an agent's tool calls (about 700 ms, $0.001 a search). Every provider answers

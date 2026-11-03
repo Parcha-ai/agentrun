@@ -1,13 +1,15 @@
 // The tools a revision may name here: one closed table. Each entry is how the run's process binds the name and which
 // environment variables it needs. A name outside the table cannot be named, and nothing is loaded from anywhere else.
-// `bash` is not in it: a run gets no shell on this machine.
+// The file tools and `bash` bind from the run's coding source (coding-tools.ts): on the runner, pi's coding tools
+// without `bash`, so a run gets no shell on this machine; in a box, pi's four, each call made in the box. `bash` may be
+// named only by an agent whose place is a box (runnable.ts).
 import type { TSchema } from "@earendil-works/pi-ai";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
-import { ArchilCodingTools, type AppContext } from "@parcha/pi-durable-disk";
+import type { AppContext } from "@parcha/pi-durable-disk";
 import type { Revision } from "@parcha/pi-durable-agent";
+import type { CodingSource } from "./coding-tools.js";
+import { writeInWork } from "./workspace.js";
 import { FETCH_PAGE_TOOL, fetchOptions } from "./fetch-page.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
@@ -45,15 +47,13 @@ export const askPerson = defineTool({
   },
 });
 
-// pi-durable-disk's types name the pi-durable it resolves, which a build at another pi version (the pi-floor legs) can
-// hold apart from this package's own: the extension crosses that boundary as a value, typed on this side.
-export const CodingTools = ArchilCodingTools as unknown as Extension;
-
 /** What a tool's binding gets from the run's process. */
 export type ToolHost = {
   where: AppContext;
   /** The run's environment: the server's, without the server's token. */
   env: NodeJS.ProcessEnv;
+  /** The run's coding tools, by its place (coding-tools.ts codingSource). */
+  coding: CodingSource;
   /** Installs an extension in the run's registry, before the run opens. */
   install(extension: Extension): void;
   /** Runs in the commit that creates each of the run's conversations. */
@@ -85,6 +85,11 @@ export type ToolEntry = {
   effect?(args: Record<string, unknown>, run: EffectRun): Promise<unknown>;
   /** Only a workflow's call node runs it: no agent and no model node may name it. */
   callOnly?: true;
+  /** Only an agent whose place is a sandbox may name it: it runs in the box (runnable.ts). */
+  sandboxOnly?: true;
+  /** No agent whose place is a sandbox may name it: it writes the run's work/ from this machine by paths a box's command
+   *  could turn through a link (runnable.ts). */
+  runnerOnly?: true;
 };
 
 const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): ToolEntry => ({
@@ -106,11 +111,16 @@ const webFetchEntry = (name: string): ToolEntry => ({
   effect: async (args, run) => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), signal: run.signal }),
 });
 
-const fileTool = (name: string, summary: string): ToolEntry => ({
+/** A coding tool, from the run's coding source: a name it does not hold (bash on the runner) binds no tool. */
+const fileTool = (name: string, summary: string, sandboxOnly = false): ToolEntry => ({
   summary,
   needs: [],
-  nodes: true,
-  bind: async () => ({ tools: (CodingTools.tools ?? []).filter((tool) => tool.name === name), extensions: [CodingTools] }),
+  nodes: !sandboxOnly,
+  ...(sandboxOnly ? { sandboxOnly: true as const } : {}),
+  bind: async (host) => {
+    const tools = host.coding.tools.filter((tool) => tool.name === name);
+    return { tools, extensions: tools.length ? [host.coding.extension] : [] };
+  },
 });
 
 /** Where the browser files what it reads: `work/evidence/`, so the run's files show it and the agent can read it back. A
@@ -121,20 +131,19 @@ export const evidenceIn = (work: string) => {
   let seq = 0;
   return {
     file: async (label: string, record: { tool: string; facts: Record<string, unknown>; body: string | Uint8Array; ext?: string }) => {
-      const dir = join(work, "evidence");
-      await mkdir(dir, { recursive: true });
       const facts = JSON.stringify({ label, tool: record.tool, ...record.facts });
       const text = typeof record.body === "string";
       for (;;) {
         const name = `${String(++seq).padStart(4, "0")}-${record.tool}`;
         try {
-          await writeFile(join(dir, text ? `${name}.md` : `${name}.json`), text ? `${facts}\n\n${record.body}` : `${facts}\n`, { flag: "wx" });
+          // Never through a link a box's command planted in work/ (files.ts).
+          await writeInWork(work, ["evidence"], text ? `${name}.md` : `${name}.json`, text ? `${facts}\n\n${record.body}` : `${facts}\n`);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
           throw error;
         }
         if (text) return { path: `evidence/${name}.md`, bodyLine: 3 };
-        await writeFile(join(dir, `${name}.${record.ext ?? "bin"}`), record.body);
+        await writeInWork(work, ["evidence"], `${name}.${record.ext ?? "bin"}`, record.body);
         return { path: `evidence/${name}.json`, bodyPath: `evidence/${name}.${record.ext ?? "bin"}` };
       }
     },
@@ -147,6 +156,8 @@ const browserTool: ToolEntry = {
   summary: "Drive a Browserbase browser: open pages, read and screenshot them, and act on them.",
   needs: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
   nodes: true,
+  // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
+  runnerOnly: true,
   bind: async (host) => {
     const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY }] = await Promise.all([
       import("@earendil-works/chord/context"),
@@ -180,6 +191,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   read: fileTool("read", "Read a file in the run's work/."),
   write: fileTool("write", "Write a file in the run's work/."),
   edit: fileTool("edit", "Edit a file in the run's work/."),
+  bash: fileTool("bash", "Run a bash command in the run's box, from its work/: an agent whose place is a sandbox only (none runs on this machine). Its output's tail; 300 s unless the call names a timeout.", true),
   [ASK_TOOL]: {
     summary: "Ask the person who started the run; the turn ends until a message answers.",
     needs: [],
@@ -204,7 +216,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     effect: async (args, run) => searchFor(run.env, args, run.signal),
   },
   browser: browserTool,
-  // monid's catalog on one key (monid.ts): pi binds each under its wire name, `monid_discover` and the rest.
+  // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.
   "monid.discover": monidTool("discover"),
   "monid.inspect": monidTool("inspect"),
   "monid.run": monidTool("run"),
@@ -289,6 +301,6 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     const plane = (PICKABLE as readonly string[]).includes(name) ? resolves[name as Pickable] : undefined;
     const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
     const available = plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0;
-    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), available, ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: settings[name as Pickable]?.provider ?? PROVIDERS[name as Pickable][0], default_provider: PROVIDERS[name as Pickable][0], resolves: plane } : {}) };
+    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: settings[name as Pickable]?.provider ?? PROVIDERS[name as Pickable][0], default_provider: PROVIDERS[name as Pickable][0], resolves: plane } : {}) };
   });
 };

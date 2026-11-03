@@ -3,7 +3,7 @@
 // agent's own (`definition.tool_settings`) over the server's (`PUT /v2/settings/tools`), optional; (2) the native tool:
 // the harness's own (claude-agent's WebSearch), or on pi one request to the run's own model provider with its hosted
 // search (hosted-search.ts); (3) the kernel's keyless fallback: web_fetch's guarded direct fetch, and web_search on Exa's
-// public keyless MCP endpoint (exa-keyless.ts). Codex's own search is not bound yet: on codex, web_search is keyless Exa
+// public keyless MCP endpoint (exa-keyless.ts). Codex's own search on codex, keyless Exa behind a gateway or under a spend cap; `off` turns web_search off
 // unless Parallel is picked. web_search's default, `auto`, is that order; a pick of `native` is native only,
 // unavailable where there is none, never Exa. A grant names a capability, never a provider. A pick of parallel without
 // PARALLEL_API_KEY resolves unavailable, never to something else. The server resolves a run's tools at its first
@@ -29,8 +29,9 @@ export type Capability = (typeof CAPABILITIES)[number];
 /** The providers a user may pick for each capability that has a choice, its default first: `auto`, the native search
  *  where there is one, else keyless Exa; `native`, the harness's own tool or its model provider's hosted one, and
  *  nothing else; `exa-keyless`, Exa's public MCP endpoint, no key; `kernel`, the guarded direct fetch; `parallel`,
- *  Parallel's Search and Extract APIs on PARALLEL_API_KEY. */
-export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel"], web_fetch: ["kernel", "parallel"] } as const);
+ *  Parallel's Search and Extract APIs on PARALLEL_API_KEY; `off`, web_search turned off: nothing is searched, and an
+ *  agent naming it is refused until it is turned on again. */
+export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"] } as const);
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
 /** Older names a revision may still grant, and the capability each one is: `fetch_page` runs web_fetch, under its own
@@ -46,6 +47,8 @@ export type ToolSettingsMap = Partial<Record<Pickable, ToolSetting>>;
 /** What a capability resolves to on a run: the native tool, the kernel's own, keyless Exa, Parallel, or why not. */
 export type Resolution = "native" | "kernel" | "exa-keyless" | "parallel" | `unavailable: ${string}`;
 export const NO_PARALLEL_KEY: Resolution = "unavailable: parallel picked, no PARALLEL_API_KEY";
+/** web_search with `off` picked: no search leaves the server. */
+export const SEARCH_OFF: Resolution = "unavailable: web_search is turned off in settings";
 /** The model providers whose hosted web search pi's web_search asks (hosted-search.ts), by pi-ai's provider id. */
 export const HOSTED_SEARCH_PROVIDERS: readonly string[] = ["anthropic", "openai"];
 
@@ -61,19 +64,23 @@ export type ResolveInput = {
   pick?: string;
   /** The server holds PARALLEL_API_KEY. */
   parallelKey: boolean;
+  /** The run has a spend cap: Codex's own search sends a request with no input bound, which a cap cannot admit. */
+  capped?: boolean;
 };
 
 /** What `capability` resolves to on a run of `input`. */
 export function resolveCapability(capability: Pickable, input: ResolveInput): Resolution {
   const chosen = input.override ?? input.pick ?? PROVIDERS[capability][0];
+  if (chosen === "off") return SEARCH_OFF;
   if (chosen === "parallel") return input.parallelKey ? "parallel" : NO_PARALLEL_KEY;
   if (capability === "web_fetch") return "kernel";
   if (chosen === "exa-keyless") return "exa-keyless";
   // Native, where there is one. Claude's model goes to Anthropic's Messages API (or its own ANTHROPIC_BASE_URL), never
-  // through the other harnesses' gateway; Codex's own search is not bound yet; a gateway has no known hosted search, and
-  // pi asks Anthropic's or OpenAI's. Where there is none, `auto` falls back to keyless Exa and `native` is unavailable.
+  // through the other harnesses' gateway; Codex's own search goes to OpenAI with its request, except behind a gateway
+  // (no known hosted search) or under a spend cap (its request has no input bound, which a cap cannot admit); pi asks
+  // Anthropic's or OpenAI's. Where there is none, `auto` falls back to keyless Exa and `native` is unavailable.
   const vendor = input.model?.slice(0, Math.max(0, input.model.indexOf("/")));
-  const none = input.harness === "claude-agent" ? undefined : input.harness === "codex" ? "codex yet" : input.gateway ? `${input.harness} behind a gateway` : vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor) ? undefined : input.model ?? "a model with none named";
+  const none = input.harness === "claude-agent" ? undefined : input.harness === "codex" ? (input.gateway ? "codex behind a gateway" : input.capped ? "codex under a spend cap" : undefined) : input.gateway ? `${input.harness} behind a gateway` : vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor) ? undefined : input.model ?? "a model with none named";
   if (none === undefined) return "native";
   return chosen === "native" ? `unavailable: no native search for ${none}` : "exa-keyless";
 }
@@ -107,7 +114,7 @@ export type Tooling = { harness?: string; tools: readonly string[]; model?: stri
 export const TOOL_PLANE_ENV = "AGENTRUN_SERVE_TOOL_PLANE";
 
 /** The Plane of a run of `tooling`, in the server's `env` (with its secrets) under its `settings`. */
-export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap): Plane {
+export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false }: { capped?: boolean } = {}): Plane {
   const harness = tooling.harness ?? DEFAULT_HARNESS;
   // A workflow's model nodes may each run on another tier's model, and a native search asks one model's provider: a
   // workflow's search resolves with no model (keyless Exa, or Parallel where picked), never on a model a node may not use.
@@ -115,7 +122,7 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   const plane: Plane = {};
   const granted = tooling.tools.map(capabilityOf);
   for (const name of PICKABLE) {
-    if (granted.includes(name)) plane[name] = resolveCapability(name, { ...served(env), harness, ...(model ? { model } : {}), ...picked(name, settings, tooling.overrides) });
+    if (granted.includes(name)) plane[name] = resolveCapability(name, { ...served(env), harness, capped, ...(model ? { model } : {}), ...picked(name, settings, tooling.overrides) });
   }
   if (plane.web_search === "native" && harness === DEFAULT_HARNESS && model) plane.model = model;
   return plane;

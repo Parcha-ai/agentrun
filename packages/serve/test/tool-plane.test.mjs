@@ -11,6 +11,7 @@ import { CAPABILITIES, planeFor, PROVIDERS, recheckPlane, resolveCapability, set
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { blockersOf } from "../dist/runnable.js";
 
 const base = { gateway: false, parallelKey: false };
 
@@ -18,13 +19,14 @@ test("the capabilities a grant may name are tools the table binds, fetch_page an
   assert.deepEqual([...CAPABILITIES], ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"]);
   for (const name of CAPABILITIES) assert.ok(BOUND_TOOLS.includes(name), name);
   for (const name of ["fetch_page", "pdf_pages", "llm", "monid.discover"]) assert.ok(!CAPABILITIES.includes(name), name);
-  assert.deepEqual(PROVIDERS, { web_search: ["auto", "native", "exa-keyless", "parallel"], web_fetch: ["kernel", "parallel"] });
+  assert.deepEqual(PROVIDERS, { web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"] });
 });
 
 test("the resolver: the agent's pick over the server's; auto is native where the harness or a direct Anthropic or OpenAI model has it, else keyless Exa; native is native only; the kernel's fetch; Parallel only with its key, never in its place", () => {
   const search = (input) => resolveCapability("web_search", { ...base, ...input });
   assert.equal(search({ harness: "claude-agent" }), "native");
-  assert.equal(search({ harness: "codex" }), "exa-keyless", "Codex's own search is not bound yet");
+  assert.equal(search({ harness: "codex" }), "native", "Codex's own search");
+  assert.equal(search({ harness: "codex", capped: true }), "exa-keyless", "under a spend cap, Codex's search request has no input bound: keyless Exa");
   assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-4-5" }), "native");
   assert.equal(search({ harness: "pi", model: "openai/gpt-5" }), "native");
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro" }), "exa-keyless", "a provider with no hosted search here");
@@ -42,8 +44,12 @@ test("the resolver: the agent's pick over the server's; auto is native where the
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro", pick: "native" }), "unavailable: no native search for google/gemini-2.5-pro");
   assert.equal(search({ harness: "pi", pick: "native" }), "unavailable: no native search for a model with none named");
   assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-4-5", gateway: true, pick: "native" }), "unavailable: no native search for pi behind a gateway");
-  assert.equal(search({ harness: "codex", override: "native" }), "unavailable: no native search for codex yet");
-  assert.equal(search({ harness: "codex", gateway: true, override: "native" }), "unavailable: no native search for codex yet");
+  assert.equal(search({ harness: "codex", override: "native" }), "native");
+  assert.equal(search({ harness: "codex", capped: true, override: "native" }), "unavailable: no native search for codex under a spend cap");
+  assert.equal(search({ harness: "codex", gateway: true, override: "native" }), "unavailable: no native search for codex behind a gateway");
+  // off: nothing is searched, on any harness, whatever else is picked or held.
+  for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(search({ harness, pick: "off", parallelKey: true }), "unavailable: web_search is turned off in settings");
+  assert.equal(search({ harness: "pi", override: "off", pick: "parallel", parallelKey: true }), "unavailable: web_search is turned off in settings", "the agent's off over the server's pick");
   assert.equal(search({ harness: "claude-agent", gateway: true, pick: "native" }), "native");
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro", pick: "auto" }), "exa-keyless", "auto, said, is the default");
   for (const harness of ["pi", "claude-agent", "codex"]) {
@@ -56,7 +62,8 @@ test("a run's plane: each web tool its revision names, resolved in the server's 
   const env = { AGENT_MODEL: "anthropic/claude-sonnet-4-5", PARALLEL_API_KEY: "not-a-secret" };
   assert.deepEqual(planeFor(env, { tools: ["read", "web_search", "web_fetch"] }, {}), { web_search: "native", web_fetch: "kernel", model: "anthropic/claude-sonnet-4-5" });
   assert.deepEqual(planeFor(env, { tools: ["web_search"], model: "openai/gpt-5" }, {}), { web_search: "native", model: "openai/gpt-5" }, "the revision's model over the default");
-  assert.deepEqual(planeFor(env, { harness: "codex", tools: ["web_search", "web_fetch"] }, { web_fetch: { provider: "parallel" } }), { web_search: "exa-keyless", web_fetch: "parallel" });
+  assert.deepEqual(planeFor(env, { harness: "codex", tools: ["web_search", "web_fetch"] }, { web_fetch: { provider: "parallel" } }), { web_search: "native", web_fetch: "parallel" });
+  assert.deepEqual(planeFor(env, { harness: "codex", tools: ["web_search"] }, {}, { capped: true }), { web_search: "exa-keyless" }, "a capped codex run searches keyless");
   assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"] }, {}), { web_search: "native" }, "no model to name: Claude's is its own");
   assert.deepEqual(planeFor(env, { tools: ["web_search"], overrides: { web_search: { provider: "exa-keyless" } } }, { web_search: { provider: "parallel" } }), { web_search: "exa-keyless" });
   assert.deepEqual(planeFor({}, { tools: ["read"] }, {}), {}, "no web tool, nothing to say");
@@ -89,7 +96,7 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   meets("/capabilities", "get", catalog);
   assert.deepEqual(catalog.tools.filter((tool) => tool.providers).map((tool) => [tool.name, tool.providers, tool.provider, tool.default_provider, tool.resolves]), [
     ["web_fetch", ["kernel", "parallel"], "kernel", "kernel", { pi: "kernel", "claude-agent": "kernel", codex: "kernel" }],
-    ["web_search", ["auto", "native", "exa-keyless", "parallel"], "auto", "auto", { pi: "native", "claude-agent": "native", codex: "exa-keyless" }],
+    ["web_search", ["auto", "native", "exa-keyless", "parallel", "off"], "auto", "auto", { pi: "native", "claude-agent": "native", codex: "native" }],
   ]);
 
   for (const [body, fields] of [
@@ -138,7 +145,7 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   process.env.AGENT_MODEL_BASE_URL = "https://gateway.example/v1";
   const gateway = await serve(t);
   assert.equal((await gateway.api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
-  assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "unavailable: no native search for pi behind a gateway", "claude-agent": "native", codex: "unavailable: no native search for codex yet" });
+  assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "unavailable: no native search for pi behind a gateway", "claude-agent": "native", codex: "unavailable: no native search for codex behind a gateway" });
   assert.equal((await gateway.api("PUT", "/settings/tools", {})).status, 200);
   assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "exa-keyless", "claude-agent": "native", codex: "exa-keyless" }, "auto falls back to keyless Exa");
   delete process.env.AGENT_MODEL_BASE_URL;
@@ -213,4 +220,16 @@ test("a run keeps the tools its first launch resolved: a PUT between its launche
   assert.deepEqual(via((await follow(api, next.body.run_id, ["completed"])).rows), ["parallel"], "the next run takes the new setting");
   const sent = (await readFile(files.parallel, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(sent.map((call) => [call.path, call.authorized]), [["/v1/extract", true]], "only the next run asked Parallel");
+});
+
+test("the run check resolves search as the run does: a workflow picking native search is refused before it starts, and so is a capped codex run picking it", async () => {
+  const env = { AGENT_MODEL: "anthropic/claude-sonnet-4-5", ANTHROPIC_API_KEY: "not-a-secret" };
+  const said = (blockers) => blockers.map((blocker) => blocker.message).join(" ");
+  const flow = answerFlow();
+  flow.root.steps[0].tools = ["web_search"];
+  const native = { web_search: { provider: "native" } };
+  assert.match(said(await blockersOf(env, { kind: "workflow", workflow: flow, toolSettings: native }, {})), /The tool web_search does not run here on pi: no native search for a model with none named\./, "a workflow's nodes may run on another tier: never the default model's native search");
+  const codex = { kind: "agentic", harness: "codex", instructions: "Search the web.", tools: ["web_search"], toolSettings: native };
+  assert.doesNotMatch(said(await blockersOf(env, codex, {})), /web_search/, "uncapped: Codex's own search");
+  assert.match(said(await blockersOf(env, codex, {}, { capped: true })), /The tool web_search does not run here on codex: no native search for codex under a spend cap\./, "capped: refused, never a search that cannot run");
 });

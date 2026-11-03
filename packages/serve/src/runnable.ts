@@ -8,6 +8,7 @@ import { REPLAY } from "./host-tools.js";
 import type { InputIssue } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
 import { chooseModel, llmTiers, type ModelRef, nodeTiers, workflowNodes } from "./model.js";
+import type { BoxOffer } from "./boxes.js";
 import { boxAvailability } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
 import { capabilityOf, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap } from "./tool-plane.js";
@@ -54,13 +55,14 @@ export const NOT_SET_UP = "not_set_up_here";
  *  `new Function` transform, which is no sandbox. Off by default. */
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 
-/** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}): Promise<Blocker[]> {
+/** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
+ *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. */
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [] }: { capped?: boolean; boxes?: readonly BoxOffer[] } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. */
   const unavailable = (field: string, tools: readonly string[], tool: string) => {
-    const resolved = planeFor(env, { tools, harness, ...(revision.kind === "agentic" && revision.model ? { model: revision.model } : {}), ...(revision.toolSettings ? { overrides: revision.toolSettings } : {}) }, settings)[capabilityOf(tool) as Pickable];
+    const resolved = planeFor(env, { tools, harness, ...(revision.kind === "workflow" ? { workflow: true as const } : {}), ...(revision.kind === "agentic" && revision.model ? { model: revision.model } : {}), ...(revision.toolSettings ? { overrides: revision.toolSettings } : {}) }, settings, { capped })[capabilityOf(tool) as Pickable];
     if (isUnavailable(resolved)) out.push({ field, reason: NOT_SET_UP, message: `The tool ${tool} does not run here on ${harness}: ${resolved.slice("unavailable: ".length)}.`, host: true, ...(resolved === NO_PARALLEL_KEY ? { missing: { tool, vars: [PARALLEL_KEY_ENV] } } : {}) });
   };
   /** A bound tool whose variables this host does not set: a warning at save, a 409 at a run. */
@@ -72,16 +74,22 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   const offer = (await harnessOffers(env)).find((h) => h.id === harness);
   if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? `This server does not run ${harness}.`, host: true, harness });
   const { place } = revision;
-  if (place && place.mode !== "runner") {
-    const box = boxAvailability(env).find((b) => b.id === place.box);
-    if (!box?.available) out.push({ field: "definition.place", reason: NOT_SET_UP, message: `This agent's place is ${place.mode} on ${place.box ?? "no box"}, and ${box?.reason ?? "that is not a box this server has."}`, host: true, ...(place.box ? { box: place.box } : {}) });
+  // A workflow's model and call nodes run on the runner here; in a box they do not run yet.
+  if (revision.kind === "workflow" && place && place.mode !== "runner") out.push({ field: "definition.place", reason: "not_an_option", message: `A workflow runs on the runner here: its place is runner (or none), not ${place.mode} on ${place.box ?? "no box"}.`, host: false });
+  else if (place && place.mode !== "runner") {
+    const box = boxAvailability(boxes).find((b) => b.id === place.box);
+    if (!box?.available) out.push({ field: "definition.place", reason: NOT_SET_UP, message: `This agent's place is ${place.mode} on ${place.box ?? "no box"}, and this server cannot run it there: ${box?.reason ?? "that is not a box this server has"}.`, host: true, ...(place.box ? { box: place.box } : {}) });
   }
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {
       if (!allows(BOUND_TOOLS, tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
-      // Another harness gets the host tools only (host-tools.ts: the file tools, fetch_page, web_fetch and web_search):
-      // any other tool this host binds, ask_person among them, is pi's here and refuses the run, never runs without it.
+      // A shell runs only in a box: no place, or the runner, has none (a run narrowed to the runner drops it, server.ts).
+      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} runs only in a box: name it on an agent whose place is sandbox. A runner place has no shell.`, host: false, tool });
+      else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} writes the run's files from this machine by paths a box's command could turn through a link: it runs on the runner only, not in a sandbox place yet.`, host: false, tool });
+      // Another harness gets the host tools only (host-tools.ts: the file tools, fetch_page, web_fetch, web_search and
+      // monid's): any other tool this host binds, ask_person among them, is pi's here and refuses the run, never runs
+      // without it.
       else if (harness !== DEFAULT_HARNESS && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
       else {
         unset(`definition.tools[${index}]`, tool);
