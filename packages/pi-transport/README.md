@@ -180,9 +180,12 @@ It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `iso
 `snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
 container every GPU of the host. `dockerBoxes({ user: "1000:1000" })` runs every program of its boxes as that uid:gid
 (`--user`), so what a box writes in a bound directory stays the host user's. `dockerBoxes({ cpus: 2, memory: "4g",
-pidsLimit: 1024 })` bounds every box: `--cpus 2`, `--memory 4g` with `--memory-swap 4g` (so swap never adds to it) and
-`--pids-limit 1024`. `memory` is bytes or Docker's size (`512m`, `4g`); a spec's own `cpus` or `memoryMb` takes the
-option's place, and `facts()` says what the box got. With none of them a box has no limit.
+pidsLimit: 1024 })` bounds every box: `--cpu-period 100000 --cpu-quota 200000`, `--memory 4g` with `--memory-swap 4g` (so
+swap never adds to it) and `--pids-limit 1024`. CPUs, the option's or a spec's, are the CFS quota `--cpus` would set,
+which Docker never checks against its own CPU count (a VM's, under Docker Desktop) and drops with a warning where it has no
+CPU controller; `--cpus` fails in both. `cpus` is at least `0.01`, `memory` is bytes or Docker's size (`512m`, `4g`), and
+`pidsLimit` is at most 4194304. A spec's own `cpus` or `memoryMb` takes the option's place, and `facts()` says what the box
+got. With none of them a box has no limit.
 It alone binds a spec's `mounts` (`[{ source: "/data/run", target: "/workspace/run", readOnly: true }]`, canonical paths used as given, at most 8) with `--mount type=bind`, never `-v`, and refuses a source this machine lacks with `not_found`; `provider.mounts` says whether a provider binds them, and every other one refuses them as `unsupported`.
 
 ### Archil exec

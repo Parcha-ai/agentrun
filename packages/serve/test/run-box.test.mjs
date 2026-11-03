@@ -8,7 +8,6 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
-import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -146,38 +145,39 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   assert.equal(args[args.indexOf("--entrypoint") + 2], "registry.example/agentrun-box:1", "AGENTRUN_DOCKER_IMAGE");
   for (const never of ["-e", "-v", "--volume", "--privileged", "--env-file", "--cap-add", "-p", "--publish"]) assert.ok(!args.includes(never), never);
   // Its limits, at their defaults: a runaway build or a fork bomb in the box stops there, and swap adds nothing to the
-  // memory. 2 CPUs, or this machine's count when it has fewer (Docker refuses more than it has).
-  assert.deepEqual(limits(args), [["--cpus", String(Math.min(2, availableParallelism()))], ["--memory", "4g"], ["--memory-swap", "4g"], ["--pids-limit", "1024"]]);
+  // memory. 2 CPUs' time as a CFS quota, never --cpus, which Docker refuses above its own CPU count (a VM's, on a laptop)
+  // and refuses outright with no CPU controller (rootless Docker without one delegated).
+  assert.deepEqual(limits(args), [["--cpu-period", "100000"], ["--cpu-quota", "200000"], ["--memory", "4g"], ["--memory-swap", "4g"], ["--pids-limit", "1024"]]);
+  assert.ok(!args.includes("--cpus"), "no --cpus");
   // Its destroy at the run's end: removed by the id its label lists.
   await until(() => docker.removed().length === 1 && docker.gone(docker.removed()[0]), "the destroy at the run's end");
   assert.deepEqual(await docker.containers(), [], "no container is left");
 });
 
-test("fake docker: AGENTRUN_BOX_CPUS, AGENTRUN_BOX_MEMORY and AGENTRUN_BOX_PIDS change a run's box's limits, and none drops one", { timeout: 120_000 }, async (t) => {
-  const docker = await fakeDocker(t, { AGENTRUN_BOX_CPUS: "none", AGENTRUN_BOX_MEMORY: "512m", AGENTRUN_BOX_PIDS: "256" });
+test("fake docker: AGENTRUN_BOX_CPUS, AGENTRUN_BOX_MEMORY and AGENTRUN_BOX_PIDS change a run's box's limits", { timeout: 120_000 }, async (t) => {
+  const docker = await fakeDocker(t, { AGENTRUN_BOX_CPUS: "1.5", AGENTRUN_BOX_MEMORY: "512m", AGENTRUN_BOX_PIDS: "256" });
   const { api } = await serve(t, { faux: PROBE });
   await boxedAgent(api);
   const runId = await probe(api, [{ tool: "bash", args: { command: "true" } }]);
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   const [args] = docker.runs();
-  assert.deepEqual(limits(args), [["--memory", "512m"], ["--memory-swap", "512m"], ["--pids-limit", "256"]], "no --cpus: none");
+  assert.deepEqual(limits(args), [["--cpu-period", "100000"], ["--cpu-quota", "150000"], ["--memory", "512m"], ["--memory-swap", "512m"], ["--pids-limit", "256"]]);
 });
 
-test("a box's limits: each setting's default when it is unset or empty, its value, or none; only the CPUs' default yields to a machine with fewer", async () => {
+test("a box's limits: each setting's default when it is unset or empty, else its value, at the bounds every create needs", async () => {
   const { boxLimitsOf } = await import("../dist/run-box.js");
   const defaults = { cpus: 2, memory: "4g", pidsLimit: 1024 };
-  assert.deepEqual(boxLimitsOf({}, 8), defaults);
-  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "", AGENTRUN_BOX_MEMORY: "", AGENTRUN_BOX_PIDS: "" }, 8), defaults);
-  assert.deepEqual(boxLimitsOf({}, 1), { ...defaults, cpus: 1 }, "a one-CPU machine: Docker refuses --cpus 2 there");
-  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "4" }, 4), { ...defaults, cpus: 4 }, "all of this machine's CPUs");
-  assert.throws(() => boxLimitsOf({ AGENTRUN_BOX_CPUS: "4" }, 2), /^Error: AGENTRUN_BOX_CPUS is a number of CPUs above 0 and at most this machine's 2, such as 2 or 1.5, or none for no limit; it is "4"$/, "Docker refuses more CPUs than it has: the start does, not a run's first box");
-  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "0.5", AGENTRUN_BOX_MEMORY: "8G", AGENTRUN_BOX_PIDS: "4096" }, 8), { cpus: 0.5, memory: "8G", pidsLimit: 4096 });
-  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_MEMORY: "6m" }, 8), { ...defaults, memory: "6m" }, "Docker's least memory");
-  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_MEMORY: "0.5g" }, 8), { ...defaults, memory: "0.5g" });
-  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "none", AGENTRUN_BOX_MEMORY: "none", AGENTRUN_BOX_PIDS: "none" }, 8), {});
+  assert.deepEqual(boxLimitsOf({}), defaults);
+  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "", AGENTRUN_BOX_MEMORY: "", AGENTRUN_BOX_PIDS: "" }), defaults);
+  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "1.5", AGENTRUN_BOX_MEMORY: "8G", AGENTRUN_BOX_PIDS: "4096" }), { cpus: 1.5, memory: "8G", pidsLimit: 4096 });
+  // A quota needs no machine's CPU count: more CPUs than any machine here is still a value.
+  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "512" }), { ...defaults, cpus: 512 });
+  // The least of each: a 1 ms quota, Docker's least memory; and the kernel's most processes.
+  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_CPUS: "0.01", AGENTRUN_BOX_MEMORY: "6m", AGENTRUN_BOX_PIDS: "4194304" }), { cpus: 0.01, memory: "6m", pidsLimit: 4194304 });
+  assert.deepEqual(boxLimitsOf({ AGENTRUN_BOX_MEMORY: "0.5g" }), { ...defaults, memory: "0.5g" });
 });
 
-test("a box limit setting that is no limit refuses the start, naming the setting, before the server takes its data directory", async (t) => {
+test("a box limit setting that every create would fail on refuses the start, naming the setting, before the server takes its data directory", async (t) => {
   withEnv(t, {}, LIMIT_SETTINGS);
   const refused = async (name, value) => {
     process.env[name] = value;
@@ -193,12 +193,12 @@ test("a box limit setting that is no limit refuses the start, naming the setting
       delete process.env[name];
     }
   };
-  const here = availableParallelism();
-  for (const value of ["0", "-1", "two", "1,5", "Infinity", String(here + 1)]) assert.equal(await refused("AGENTRUN_BOX_CPUS", value), `AGENTRUN_BOX_CPUS is a number of CPUs above 0 and at most this machine's ${here}, such as 2 or 1.5, or none for no limit; it is ${JSON.stringify(value)}`);
+  // Below 0.01 CPUs the quota is under the kernel's 1 ms, and `none` is no value: a bigger number is the way to more.
+  for (const value of ["0", "-1", "0.005", "two", "1,5", "Infinity", "none"]) assert.equal(await refused("AGENTRUN_BOX_CPUS", value), `AGENTRUN_BOX_CPUS is a number of CPUs of at least 0.01, such as 2 or 1.5; it is ${JSON.stringify(value)}`);
   // A size counts in bytes, as Docker reads it: a fraction of a byte, one past the largest safe count, or less than Docker's
   // least memory would fail every run's first box, so the start refuses it.
-  for (const value of ["4096", "0g", "4 g", "4x", "-1g", "0.1b", "9007199254740991g", "1m", "6143k"]) assert.equal(await refused("AGENTRUN_BOX_MEMORY", value), `AGENTRUN_BOX_MEMORY is a size of at least 6m with its unit (b, k, m or g), such as 512m or 4g, or none for no limit; it is ${JSON.stringify(value)}`);
-  for (const value of ["0", "1.5", "lots", "-5", "9007199254740993"]) assert.equal(await refused("AGENTRUN_BOX_PIDS", value), `AGENTRUN_BOX_PIDS is a whole number above 0, such as 1024, or none for no limit; it is ${JSON.stringify(value)}`);
+  for (const value of ["4096", "0g", "4 g", "4x", "-1g", "0.1b", "9007199254740991g", "1m", "6143k", "none"]) assert.equal(await refused("AGENTRUN_BOX_MEMORY", value), `AGENTRUN_BOX_MEMORY is a size of at least 6m with its unit (b, k, m or g), such as 512m or 4g; it is ${JSON.stringify(value)}`);
+  for (const value of ["0", "1.5", "lots", "-5", "4194305", "9007199254740993", "none"]) assert.equal(await refused("AGENTRUN_BOX_PIDS", value), `AGENTRUN_BOX_PIDS is a whole number from 1 to 4194304, such as 1024; it is ${JSON.stringify(value)}`);
 });
 
 test("fake docker: a run's box is found by its label and taken over, its left commands killed first, with no create", { timeout: 90_000 }, async (t) => {

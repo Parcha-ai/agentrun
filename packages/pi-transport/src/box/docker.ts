@@ -35,7 +35,12 @@ export type DockerBoxesOptions = {
 	 * binds its own directories in names its own ids, so what the box writes there stays the host's to manage.
 	 */
 	readonly user?: string;
-	/** The CPUs a box may use (`--cpus`), such as `2` or `1.5`, for a spec that names no `cpus`. Default: no limit. */
+	/**
+	 * The CPUs a box may use, such as `2` or `1.5`, at least `0.01`, for a spec that names no `cpus`. Default: no limit. A
+	 * box's CPUs, these or the spec's, are the CFS quota `--cpus` would set (`--cpu-period 100000 --cpu-quota <cpus x
+	 * 100000>`), which Docker never checks against the CPUs it has: more than a VM's daemon has is no tighter than the VM,
+	 * and a host with no CPU controller (rootless Docker without it delegated) drops it with a warning, where `--cpus` fails.
+	 */
 	readonly cpus?: number;
 	/**
 	 * The memory a box may use, for a spec that names no `memoryMb`: a whole number of bytes, or Docker's own size, a
@@ -43,7 +48,10 @@ export type DockerBoxesOptions = {
 	 * spec's, is also its memory and swap together (`--memory-swap` the same), so swap never adds to it.
 	 */
 	readonly memory?: number | string;
-	/** The most processes and threads a box may have at once (`--pids-limit`), where a fork bomb stops. Default: no limit. */
+	/**
+	 * The most processes and threads a box may have at once (`--pids-limit`), where a fork bomb stops: 1 to 4194304, the
+	 * kernel's most. Default: no limit.
+	 */
 	readonly pidsLimit?: number;
 };
 
@@ -183,6 +191,12 @@ async function checkSources(mounts: readonly ParsedMount[]): Promise<BoxError | 
 	return undefined;
 }
 
+/** The CFS period of a box's CPU quota, in µs: `--cpus`'s own. */
+const CPU_PERIOD_US = 100_000;
+/** The fewest CPUs a quota can give: the kernel's least quota is 1 ms of each period. */
+const MIN_CPUS = 0.01;
+/** The most processes a cgroup may be given (the kernel's PID_MAX_LIMIT): a larger `--pids-limit` fails the create. */
+const MAX_PIDS = 4_194_304;
 const MIB = 1024 * 1024;
 const SIZE_UNITS: Readonly<Record<string, number>> = { "": 1, b: 1, k: 1024, m: MIB, g: 1024 * MIB };
 
@@ -231,20 +245,24 @@ function createError(stderr: string): BoxError {
  * asked. The paths go to Docker as given, never resolved here, so the caller passes canonical ones. The daemon must run on this
  * machine, where the sources are checked.
  *
- * The options' `cpus`, `memory` and `pidsLimit` bound every box (`--cpus`, `--memory` with `--memory-swap` the same, and
- * `--pids-limit`); a spec's own `cpus` or `memoryMb` takes the place of the option's, and `facts()` says what a box got.
- * A value that is not positive, or not a number or size, throws here, before any box.
+ * The options' `cpus`, `memory` and `pidsLimit` bound every box (a CFS quota, `--memory` with `--memory-swap` the same,
+ * and `--pids-limit`); a spec's own `cpus` or `memoryMb` takes the place of the option's, and `facts()` says what a box got.
+ * A value out of its bounds (under 0.01 CPUs, a memory that is not a positive size, a `pidsLimit` outside 1 to 4194304)
+ * throws here, before any box.
  */
 export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 	if (options.user !== undefined && !/^\d+(:\d+)?$/.test(options.user)) {
 		throw new Error(`the docker user ${options.user} is not uid or uid:gid`);
 	}
-	if (options.cpus !== undefined && !(Number.isFinite(options.cpus) && options.cpus > 0)) {
-		throw new Error(`the docker cpus ${shown(options.cpus)} is not a positive number`);
+	if (options.cpus !== undefined && !(Number.isFinite(options.cpus) && options.cpus >= MIN_CPUS)) {
+		throw new Error(`the docker cpus ${shown(options.cpus)} is not a number of CPUs of at least ${MIN_CPUS}`);
 	}
 	const memory = memoryOption(options.memory);
-	if (options.pidsLimit !== undefined && !(Number.isSafeInteger(options.pidsLimit) && options.pidsLimit > 0)) {
-		throw new Error(`the docker pidsLimit ${shown(options.pidsLimit)} is not a positive integer`);
+	if (
+		options.pidsLimit !== undefined &&
+		!(Number.isSafeInteger(options.pidsLimit) && options.pidsLimit > 0 && options.pidsLimit <= MAX_PIDS)
+	) {
+		throw new Error(`the docker pidsLimit ${shown(options.pidsLimit)} is not a whole number from 1 to ${MAX_PIDS}`);
 	}
 	const docker = new Docker(options.docker ?? "docker");
 
@@ -294,7 +312,9 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			for (const [key, value] of Object.entries(spec.env ?? {})) args.push("--env", `${key}=${value}`);
 			if (network.kind === "none") args.push("--network", "none");
 			if (options.user !== undefined) args.push("--user", options.user);
-			if (cpus !== undefined) args.push("--cpus", String(cpus));
+			// The CFS quota `--cpus` sets, with no check against Docker's own CPU count (see DockerBoxesOptions.cpus).
+			if (cpus !== undefined)
+				args.push("--cpu-period", String(CPU_PERIOD_US), "--cpu-quota", String(Math.round(cpus * CPU_PERIOD_US)));
 			// Memory and swap together are the memory: swap never adds to it.
 			if (boxMemory !== undefined) args.push("--memory", boxMemory.flag, "--memory-swap", boxMemory.flag);
 			if (options.pidsLimit !== undefined) args.push("--pids-limit", String(options.pidsLimit));

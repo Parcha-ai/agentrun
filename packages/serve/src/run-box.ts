@@ -5,7 +5,6 @@
 // so no key or token enters it), no network, this server's user, and limits on its CPUs, memory and processes. pi-transport
 // is an optional peer of this package: it is loaded only for a run whose place is a box.
 import { lstat, realpath } from "node:fs/promises";
-import { availableParallelism } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
@@ -27,52 +26,50 @@ export const BASH_TIMEOUT_MS = 300_000;
 /** The image a Docker box starts from. */
 export const DOCKER_IMAGE_ENV = "AGENTRUN_DOCKER_IMAGE";
 export const DEFAULT_DOCKER_IMAGE = "debian:bookworm-slim";
-/** The settings that bound a Docker box, each a value or `none` for no limit; unset, their defaults: enough for a build,
- *  and safe on a laptop, where one run's runaway build or fork bomb would otherwise starve everything else. */
+/** The settings that bound a Docker box; unset, their defaults: enough for a build, and safe on a laptop, where one run's
+ *  runaway build or fork bomb would otherwise starve everything else. */
 export const BOX_CPUS_ENV = "AGENTRUN_BOX_CPUS";
 export const BOX_MEMORY_ENV = "AGENTRUN_BOX_MEMORY";
 export const BOX_PIDS_ENV = "AGENTRUN_BOX_PIDS";
-/** 2 CPUs, or this machine's count when it has fewer: Docker refuses more CPUs than it has. */
+/** 2 CPUs' time: a CFS quota (pi-transport's Docker provider), which holds whatever CPU count Docker's VM has. */
 export const DEFAULT_BOX_CPUS = 2;
 /** 4 GiB, swap included (--memory-swap the same). */
 export const DEFAULT_BOX_MEMORY = "4g";
 /** Processes and threads at once. */
 export const DEFAULT_BOX_PIDS = 1024;
 
-/** A Docker box's limits, as pi-transport's Docker provider takes them; an absent one is no limit. */
-export type BoxLimits = { cpus?: number; memory?: string; pidsLimit?: number };
+/** A Docker box's limits, as pi-transport's Docker provider takes them. */
+export type BoxLimits = { cpus: number; memory: string; pidsLimit: number };
 
+/** The fewest CPUs a quota gives: the kernel's least quota is 1 ms of each 100 ms period. */
+const MIN_BOX_CPUS = 0.01;
 const MIB = 1024 * 1024;
 /** A size's units as Docker reads them, each 1024 of the one before. */
 const SIZE_UNITS: Readonly<Record<string, number>> = { b: 1, k: 1024, m: MIB, g: 1024 * MIB };
 /** The least memory Docker gives a container. */
 const MIN_BOX_MEMORY = 6 * MIB;
+/** The most processes a cgroup may be given (the kernel's PID_MAX_LIMIT); above it, every create fails. */
+const MAX_BOX_PIDS = 4_194_304;
 
-/** A Docker box's limits from `env`: each setting's value, `none` for no limit, or its default when unset or empty (the
- *  CPUs' lowered to `cpusHere`, this machine's count). A value Docker would refuse at a box's create (more CPUs than this
- *  machine has, less memory than Docker gives) is refused here, with any value that is not one, naming its setting: the
- *  start checks them (startServe), so no run meets one. */
-export function boxLimitsOf(env: NodeJS.ProcessEnv, cpusHere = availableParallelism()): BoxLimits {
-  const read = (name: string, what: string, takes: (value: string) => boolean): string | undefined | null => {
+/** A Docker box's limits from `env`: each setting's value, or its default when unset or empty. A value that is not one, or
+ *  that every create would fail on (less than a 1 ms quota, less memory than Docker gives, more processes than the kernel
+ *  allows), throws, naming its setting: the start checks them (startServe), so no run meets one. */
+export function boxLimitsOf(env: NodeJS.ProcessEnv): BoxLimits {
+  const read = (name: string, what: string, takes: (value: string) => boolean): string | undefined => {
     const value = env[name];
     if (!value) return undefined;
-    if (value === "none") return null;
-    if (!takes(value)) throw new Error(`${name} is ${what}, or none for no limit; it is ${JSON.stringify(value)}`);
+    if (!takes(value)) throw new Error(`${name} is ${what}; it is ${JSON.stringify(value)}`);
     return value;
   };
-  const cpus = read(BOX_CPUS_ENV, `a number of CPUs above 0 and at most this machine's ${cpusHere}, such as 2 or 1.5`, (value) => /^\d+(\.\d+)?$/.test(value) && Number(value) > 0 && Number(value) <= cpusHere);
+  const cpus = read(BOX_CPUS_ENV, "a number of CPUs of at least 0.01, such as 2 or 1.5", (value) => /^\d+(\.\d+)?$/.test(value) && Number(value) >= MIN_BOX_CPUS);
   const memory = read(BOX_MEMORY_ENV, "a size of at least 6m with its unit (b, k, m or g), such as 512m or 4g", (value) => {
     const size = /^(\d+(?:\.\d+)?)([bkmg])$/i.exec(value);
     // Its bytes as Docker reads them, and pi-transport's Docker provider: the number times the unit, the fraction dropped.
     const bytes = size ? Math.floor(Number(size[1]) * SIZE_UNITS[size[2].toLowerCase()]) : 0;
     return Number.isSafeInteger(bytes) && bytes >= MIN_BOX_MEMORY;
   });
-  const pids = read(BOX_PIDS_ENV, "a whole number above 0, such as 1024", (value) => /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0);
-  return {
-    ...(cpus === null ? {} : { cpus: cpus === undefined ? Math.min(DEFAULT_BOX_CPUS, cpusHere) : Number(cpus) }),
-    ...(memory === null ? {} : { memory: memory ?? DEFAULT_BOX_MEMORY }),
-    ...(pids === null ? {} : { pidsLimit: pids === undefined ? DEFAULT_BOX_PIDS : Number(pids) }),
-  };
+  const pids = read(BOX_PIDS_ENV, "a whole number from 1 to 4194304, such as 1024", (value) => /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= MAX_BOX_PIDS);
+  return { cpus: cpus === undefined ? DEFAULT_BOX_CPUS : Number(cpus), memory: memory ?? DEFAULT_BOX_MEMORY, pidsLimit: pids === undefined ? DEFAULT_BOX_PIDS : Number(pids) };
 }
 
 /** Under `--faux` only: a module whose default export, given the data root, is the provider runs' boxes come from in

@@ -185,14 +185,16 @@ const limits = (args: readonly string[]) =>
 	args.flatMap((arg, n) => (/^--(cpu|memory|pids)/.test(arg) ? [[arg, args[n + 1]]] : []));
 
 describe("docker boxes: resource limits", () => {
-	it("map cpus, memory and pidsLimit to --cpus, --memory, --memory-swap the same (so swap adds nothing) and --pids-limit, before the image, and say them in the facts", () =>
+	it("map cpus, memory and pidsLimit to the CFS quota --cpus sets, --memory and --memory-swap the same (so swap adds nothing) and --pids-limit, before the image, and say them in the facts", () =>
 		withScriptedDocker(
 			async (provider, _directory, calls) => {
 				const made = await provider.create({ maxLifetimeMs: 60_000 }, context);
 				if (!made.ok) throw made.error;
 				const [args = []] = calls();
+				// A quota, never --cpus: Docker checks --cpus against its own CPU count (a VM's), and a quota it does not.
 				expect(limits(args)).toEqual([
-					["--cpus", "1.5"],
+					["--cpu-period", "100000"],
+					["--cpu-quota", "150000"],
 					["--memory", "4g"],
 					["--memory-swap", "4g"],
 					["--pids-limit", "512"],
@@ -202,6 +204,26 @@ describe("docker boxes: resource limits", () => {
 			},
 			{ cpus: 1.5, memory: "4g", pidsLimit: 512 },
 		));
+
+	it("give a quota of each CPU's 100 ms: 2 is 200000 µs, 1.5 is 150000, 0.01 (the least) is 1000", async () => {
+		for (const [cpus, quota] of [
+			[2, "200000"],
+			[1.5, "150000"],
+			[0.01, "1000"],
+		] as const)
+			await withScriptedDocker(
+				async (provider, _directory, calls) => {
+					const made = await provider.create({ maxLifetimeMs: 60_000 }, context);
+					if (!made.ok) throw made.error;
+					expect(limits(calls()[0] ?? [])).toEqual([
+						["--cpu-period", "100000"],
+						["--cpu-quota", quota],
+					]);
+					expect(calls()[0]).not.toContain("--cpus");
+				},
+				{ cpus },
+			);
+	});
 
 	it("take memory as bytes too, and give Docker the same bytes", () =>
 		withScriptedDocker(
@@ -223,7 +245,8 @@ describe("docker boxes: resource limits", () => {
 				const made = await provider.create({ maxLifetimeMs: 60_000, cpus: 1, memoryMb: 512 }, context);
 				if (!made.ok) throw made.error;
 				expect(limits(calls()[0] ?? [])).toEqual([
-					["--cpus", "1"],
+					["--cpu-period", "100000"],
+					["--cpu-quota", "100000"],
 					["--memory", "512m"],
 					["--memory-swap", "512m"],
 					["--pids-limit", "64"],
@@ -246,14 +269,18 @@ describe("docker boxes: resource limits", () => {
 			dockerBoxes({ docker: "/nonexistent/pi-transport-docker", ...options });
 		// A string as JSON, so an empty one shows; a number as JavaScript writes it (NaN, Infinity).
 		const shown = (value: unknown) => (typeof value === "string" ? JSON.stringify(value) : String(value));
-		for (const cpus of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, "2" as unknown as number])
-			expect(make({ cpus })).toThrow(`the docker cpus ${shown(cpus)} is not a positive number`);
+		// 0.01 is the least: a quota is at least 1 ms of each 100 ms period.
+		for (const cpus of [0, -1, 0.001, Number.NaN, Number.POSITIVE_INFINITY, "2" as unknown as number])
+			expect(make({ cpus })).toThrow(`the docker cpus ${shown(cpus)} is not a number of CPUs of at least 0.01`);
 		for (const memory of [0, -1, 1.5, Number.NaN, "", "0g", "-1g", "4x", "g", "4 g", "1e9"])
 			expect(make({ memory })).toThrow(
 				`the docker memory ${shown(memory)} is not a positive whole number of bytes, nor a size such as 512m or 4g`,
 			);
-		for (const pidsLimit of [0, -1, 1.5, Number.NaN])
-			expect(make({ pidsLimit })).toThrow(`the docker pidsLimit ${shown(pidsLimit)} is not a positive integer`);
-		expect(make({ cpus: 0.5, memory: "512M", pidsLimit: 1 })).not.toThrow();
+		for (const pidsLimit of [0, -1, 1.5, Number.NaN, 4_194_305])
+			expect(make({ pidsLimit })).toThrow(
+				`the docker pidsLimit ${shown(pidsLimit)} is not a whole number from 1 to 4194304`,
+			);
+		expect(make({ cpus: 0.01, memory: "512M", pidsLimit: 1 })).not.toThrow();
+		expect(make({ pidsLimit: 4_194_304 })).not.toThrow();
 	});
 });
