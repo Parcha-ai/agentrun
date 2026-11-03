@@ -7,7 +7,7 @@ it ran. Each run is a [`@parcha/pi-durable-disk`](../pi-durable-disk/README.md) 
 pointed at it works the way it works against the hosted API; the capabilities document says what this server does not
 offer.
 
-Published to npm from the next release (`@beta`): `npx @parcha/agentrun-serve` then starts it with nothing else installed, its
+Published to npm from the next release (`@latest`): `npx @parcha/agentrun-serve` then starts it with nothing else installed, its
 console included. Until then, run it from a checkout (below) or the container.
 
 ## Quick start (no key, no network)
