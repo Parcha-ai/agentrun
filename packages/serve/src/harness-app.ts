@@ -342,14 +342,16 @@ export function adapterRun(
           const why = refused ?? halted?.message ?? (failed === undefined ? undefined : `${harness}: ${failed}`);
           refused = undefined;
           if (why !== undefined) await commit(async (tx) => void (await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] })));
+          // A cost that came in while this turn ended, after its flush: written now, while the run still reads busy, so a
+          // message that comes in meanwhile waits its place below and goes on as the next turn of this busy period.
+          if (costed.length) await flush().catch(() => undefined);
         }
         const next = queue.shift();
         start = next === undefined ? undefined : sendOf(next);
       }
+      // Nothing from here to run_end waits: a message that comes in once the run reads idle starts the next busy period,
+      // after this run_end. A cost that comes in from now on is written as it comes in (onModel).
       turn = undefined;
-      // A cost that came in after the last turn's flush, while that turn was still ending: written now, before the run
-      // reads idle. One that comes in later is written as it comes in (onModel).
-      if (costed.length) await flush().catch(() => undefined);
       emit?.({ type: "run_end" });
     })();
   };
