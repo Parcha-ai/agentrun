@@ -9,7 +9,7 @@ export function NoModelBanner({ needs, settings }: { needs?: "key" | "model" | n
         "This server's default model doesn't run here: set AGENT_MODEL to a model it knows, and restart."
       ) : (
         <>
-          No model yet. Set ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY and restart
+          No model yet. Set OPENROUTER_API_KEY (or ANTHROPIC_API_KEY or OPENAI_API_KEY) and restart
           {settings ? <>, or <a href="#/settings/keys" className="underline underline-offset-2">add a key in Settings</a></> : null}.
         </>
       )}

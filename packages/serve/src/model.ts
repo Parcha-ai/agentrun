@@ -131,7 +131,7 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
   if (env[FAUX_ENV]) return { model: { provider: "faux", modelId: fauxModel(env, tier) } };
   const named = ref ?? hostModel(env, tier, harness);
   // In a person's words (a first run from npx sees them): what to add and where. Operator detail is the README's.
-  const none = tier === "default" ? "No model yet" : `No model yet for this workflow's ${tier} steps`;
+  const none = tier === "default" ? "No model yet" : `No model yet for this workflow's ${tier} tier`;
   if (env.AGENT_MODEL_BASE_URL) {
     if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or add a model key in Settings → Model keys.`, host: true, needs: "key" };
     const slash = ref?.indexOf("/") ?? -1;
