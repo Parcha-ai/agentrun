@@ -208,6 +208,39 @@ test("a pull takes nothing from a lying box but the files it listed: an archive'
   assert.ok(!lstatSync(join(runDir, "work", "out.txt")).isSymbolicLink());
 });
 
+test("a pull a box's archive stops (unreadable) is not a whole copy: the run ends, and its box is kept, never destroyed with what it holds", { timeout: 180_000 }, async (t) => {
+  // Not a tar at all: the extractor stops at it, having written nothing.
+  const fake = await daytonaSandboxes(t, { key: KEY, hostileTar: Buffer.from("this is not an archive ".repeat(64)) });
+  const { api, data } = await onDaytona(t, fake);
+  assert.equal((await api("POST", "/agents", { definition: { id: "torn", name: "torn", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
+  const run = await probe(api, "torn", [{ tool: "bash", args: { command: "printf kept > out.txt" } }]);
+  await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
+  assert.deepEqual(await fileList(api, run.run_id), [], "nothing came back");
+  assert.equal(fake.sandboxes.size, 1, "the box that holds out.txt is kept");
+  const [kept] = fake.sandboxes.keys();
+  assert.equal(readFileSync(fake.pathOf(kept, "run/agentrun/run/work/out.txt"), "utf8"), "kept");
+  assert.ok(existsSync(join(data, "runs", run.run_id, BOX_SYNC_FILE)), "the mark of what did come back is kept");
+});
+
+test("a run found waiting at a start is pulled then: a turn's end whose pull failed before the server went is brought back", { timeout: 180_000 }, async (t) => {
+  // The seed's listing is the first; the first turn's end's pull (the second) fails, and the next server's pull lands.
+  const fake = await daytonaSandboxes(t, { key: KEY, failListings: [2] });
+  const data = join(await scratch(t), "agents");
+  withEnv(t, { AGENTRUN_BOXES: "daytona", DAYTONA_API_KEY: KEY, DAYTONA_API_URL: fake.url });
+  const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  const firstApi = client(first.baseUrl, first.token);
+  assert.equal((await firstApi("POST", "/agents", { definition: { id: "waiter", name: "waiter", instructions: "Probe.", place: DAYTONA, tools: ["bash", "ask_person"] } })).status, 201);
+  const run = await probe(firstApi, "waiter", [{ tool: "bash", args: { command: "printf one > turn1.txt" } }, { tool: "ask_person", args: { question: "Go on?" } }]);
+  await follow(firstApi, run.run_id, ["input_required"], { deadlineMs: 120_000 });
+  await until(() => fake.state.listings >= 2, "the turn's end's pull");
+  assert.deepEqual(await fileList(firstApi, run.run_id), [], "its pull failed");
+  await first.close();
+  const second = await serve(t, { data, faux: PROBE });
+  await follow(second.api, run.run_id, ["input_required"], { deadlineMs: 60_000 });
+  await until(async () => (await fileList(second.api, run.run_id)).includes("turn1.txt"), "the start's pull of a waiting run");
+  assert.equal(fake.sandboxes.size, 1, "the box lives while the run waits");
+});
+
 test("a Daytona that does not block a box's network gets no run's tool: the call fails naming why, and no box is left", { timeout: 120_000 }, async (t) => {
   const fake = await daytonaSandboxes(t, { key: KEY, blocks: false });
   const { api, data } = await onDaytona(t, fake);
