@@ -17,7 +17,8 @@
 // So a page's parts are always one read's, by one provider. Parallel's extract has no offset (its full
 // content always starts at the page's start), so it is asked once for the most of a page web_fetch reads
 // (PAGE_READ_MAX_CHARS) and one character more, so a page it cut there shows as going on; the page's whole length is
-// known when Parallel gave less (or more) than it was asked for.
+// known only when Parallel gave less than it was asked for (a cut text can be longer, in UTF-16 units, where Parallel
+// counts code points).
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -102,7 +103,7 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
         const row = results?.find((r) => typeof r?.url === "string" && typeof r.full_content === "string" && r.full_content.trim() !== "");
         if (!row) return errors?.length ? "listed the URL in errors" : "answered no content";
         const text = row.full_content as string;
-        return { ok: true, url: clip(row.url as string, URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...textOf(text, text.length !== asked), ...linksWithin(linksOf(text)) };
+        return { ok: true, url: clip(row.url as string, URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...textOf(text, text.length < asked), ...linksWithin(linksOf(text)) };
       } catch (error) {
         const name = (error as Error)?.name;
         return name === "TimeoutError" ? "timed out" : name === "AbortError" ? "was stopped" : `failed: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
