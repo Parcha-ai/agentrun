@@ -1,7 +1,7 @@
 import { agentHash } from "@/components/AgentPage";
 import { StatusBadge } from "@/components/StatusBadge";
 import { bounded, cost, when } from "@/lib/format";
-import { costParts, type MissionView } from "@/lib/mission";
+import type { MissionView } from "@/lib/mission";
 import { cn } from "@/lib/utils";
 import { AnalyticsFilter, MissionAnalytics } from "@/components/MissionAnalytics";
 import { RANGES, type StatsRange } from "@/lib/mission";
@@ -31,9 +31,9 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, startHer
       </div>
     </div>
   );
-  const spent = costParts(view.cost);
   const name = (id: string) => view.perAgent.find((a) => a.agentId === id)?.name ?? id;
-  // Each count links to its list, filtered to it; the cost and the active runs have no one list of their own.
+  // Each count links to its list, filtered to it; the active runs have no one list of their own. The cost is said once,
+  // in the range's analytics below, never again here.
   const tiles: [string, string, string | undefined, string?, string?][] = [
     ["Agents", String(view.agents), "#/agents"],
     ["Runs", String(view.runs.total), "#/runs"],
@@ -43,14 +43,13 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, startHer
     ["Needs input", String(view.runs.needsInput), "#/runs?status=input_required", view.runs.needsInput ? "text-warning-text" : undefined],
     // Escalated runs waiting for review are counted apart from the failed: said under Failed, never in it.
     ["Failed", String(view.runs.failed), "#/runs?status=failed", view.runs.failed ? "text-destructive-text" : undefined, view.runs.needsReview ? `${view.runs.needsReview} ${view.runs.needsReview === 1 ? "needs" : "need"} review` : undefined],
-    ["Total cost", spent.total, undefined, undefined, [spent.note, spent.bound].filter(Boolean).join(" · ") || undefined],
   ];
   return (
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-[1600px] space-y-8 px-6 py-8">
         <h1 className="text-2xl font-semibold">Mission Control</h1>
         {needsYou}
-        <ul className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <ul className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
           {tiles.map(([label, value, href, tone, note]) => {
             const body = <><p className="caps text-[11px] text-muted-foreground">{label}</p><p className={cn("mt-2 font-mono text-xl font-semibold", tone)}>{value}</p>{note && <p className="mt-1 font-mono text-[11px] text-muted-foreground">{note}</p>}</>;
             return <li key={label}>{href ? <a href={href} className="block h-full border p-4 hover:border-border-strong hover:bg-accent">{body}</a> : <div className="h-full border p-4">{body}</div>}</li>;
@@ -77,7 +76,9 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, startHer
             {view.recent.length ? (
               <ul>{view.recent.map((r) => (
                 <li key={r.run_id} className="border-b last:border-b-0"><a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex items-center gap-3 px-4 py-3 hover:bg-accent">
-                  <StatusBadge run={r} /><span className="min-w-0 flex-1 truncate text-[14px]">{r.title}</span>
+                  <StatusBadge run={r} />
+                  {/* The run's title, then its chips (what it learned and used) right after it. */}
+                  <span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 truncate text-[14px]">{r.title}</span></span>
                   <span className="hidden shrink-0 text-[13px] text-muted-foreground md:inline">{name(r.agent_id)}</span>
                   {r.ended_at && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
                   {r.cost && (r.cost.usd !== null || bounded(r.cost)) && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline">{cost(r.cost)}</span>}

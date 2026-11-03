@@ -54,6 +54,8 @@ describe("StartHere", () => {
     // The server's own setup: a provider's key or a gateway where it runs (Settings holds tool keys, not models).
     expect(h).toContain("ANTHROPIC_API_KEY");
     expect(h).toContain("AGENT_MODEL_BASE_URL");
+    // A key alone names no model: the default model is AGENT_MODEL, for a provider's key and for a gateway alike.
+    expect(h.match(/AGENT_MODEL</g)).toHaveLength(2);
     expect(h).not.toContain('href="#/settings/keys"');
     expect(h).not.toContain(">Try it<");
   });

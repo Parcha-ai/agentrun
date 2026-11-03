@@ -50,7 +50,7 @@ describe("AnalyticsTab", () => {
 
   it("shows tokens with the cached share, output, coverage and unmetered requests; run time; success; and the cost with the runs it leaves out", async () => {
     const tab = await open();
-    expect(tab.tile("Tokens")?.textContent).toBe("Tokens1.3M83% of input cached · 50K outputtokens from 5 of 8 runs2 requests unmetered: in no token sum");
+    expect(tab.tile("Tokens")?.textContent).toBe("Tokens1.3M83% of input cached · 50K outputtokens from 5 of 8 runs2 requests with no token count");
     expect(tab.tile("Run time")?.textContent).toBe("Run time2.5 hwall time of 7 ended runs1.5 h active, over 4 runs");
     expect(tab.tile("Success rate")?.textContent).toBe("Success rate71%5 completed · 2 failed");
     expect(tab.tile("Cost")?.textContent).toBe("Cost$0.75 est.3 runs unknown");

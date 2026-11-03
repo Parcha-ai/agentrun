@@ -139,7 +139,7 @@ describe("MissionControl's analytics", () => {
     const a = analytics({ totals: { ...analytics().totals, runs_with_metrics: 9, unmetered: 2 }, time: { ended_runs: 11, wall_ms: 5_400_000, active_runs: 3, active_ms: 1_800_000 } });
     const html = render(withA(a), scope);
     expect(html).toContain("tokens from 9 of 12 runs");
-    expect(html).toContain("2 requests unmetered: in no token sum");
+    expect(html).toContain("2 requests with no token count");
     expect(html).toContain("30 min active, over 3 runs");
     const row = render(withA(analytics({ by_harness_effort: [{ harness: "pi", effort: null, ...g(5, 4, 1, 3, 1000, 0.1) }] })), scope);
     expect(row).toContain("tokens from 3 of 5 runs");
@@ -243,16 +243,16 @@ describe("the cost of cut runs (bounded_unknown)", () => {
     expect(costParts({ ...before, bounded: { runs: 0, atMostUsd: null } })).toEqual(costParts(before));
     expect(costParts({ ...before, bounded: { runs: 2, atMostUsd: null } })).toEqual(costParts(before));
   });
-  it("missionFrom reads /v2/stats' bounded_unknown, and the page shows it under the total and under the analytics' cost", () => {
+  it("missionFrom reads /v2/stats' bounded_unknown, and the page says the cost once: the range's, with its own bound", () => {
     const stats: Stats = { agents: 1, runs: { total: 4, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: 0.012, basis: "estimate", unknown_runs: 2, bounded_unknown: { runs: 2, at_most_usd: 0.0311 } }, analytics: analytics() };
     const v = missionFrom(stats, []);
     expect(v.cost.bounded).toEqual({ runs: 2, atMostUsd: 0.0311 });
     const a = analytics({ totals: { ...analytics().totals, bounded_unknown: { runs: 1, at_most_usd: 0.25 } } });
     const html = render({ ...v, analytics: a }, scope);
-    expect(html).toContain("up to $0.04 more for 2 cut runs");
     expect(html).toContain("up to $0.25 more for 1 cut run");
-    // The known total stays the known sum.
-    expect(html).toContain("$0.01 est.");
+    // The known total stays the known sum, and there is one cost on the page.
+    expect(html).toContain("$1.23 est.");
+    expect(html).not.toContain("up to $0.04 more");
   });
   it("stats with no bounded_unknown read exactly as before", () => {
     const stats: Stats = { agents: 1, runs: { total: 4, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: 0.012, basis: "estimate", unknown_runs: 2 }, analytics: analytics() };
@@ -270,6 +270,12 @@ describe("MissionControl, the counts as links and the latest runs in full", () =
     for (const [label, href] of [["Agents", "#/agents"], ["Runs", "#/runs"], ["Needs input", "#/runs?status=input_required"], ["Failed", "#/runs?status=failed"]]) {
       expect(html, label).toMatch(new RegExp(`<a[^>]*href="${href.replace(/[?]/g, "\\?")}"[^>]*>(?:(?!</a>).)*${label}`));
     }
+  });
+  it("says the cost once, in the range's analytics, never again among the counts", () => {
+    const html = render(view, scope);
+    expect(html).not.toContain("Total cost");
+    // One cost tile: the range's (the per-harness table's Cost column is a column, not a total).
+    expect(html.match(/>Cost<\/p>/g)).toHaveLength(1);
   });
   it("leaves Active unlinked: it counts queued, working and paused runs, which no one list holds", () => {
     expect(render(view)).not.toContain('href="#/runs?status=working"');
