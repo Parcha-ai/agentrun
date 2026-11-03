@@ -24,9 +24,12 @@ export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choice
     v2.toolSettings().then((s) => { if (n === asked.current) { setAnswer(s); setLoadError(null); } }, (e) => { if (n === asked.current) setLoadError(apiError(e)); });
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Whether the last capabilities read this page asked for failed: then a row it would have answered offers Retry.
-  const [capsFailed, setCapsFailed] = useState(false);
-  const readCaps = () => { setCapsFailed(false); void Promise.resolve(onOpen?.()).then((ok) => { if (ok === false) setCapsFailed(true); }); };
+  // Where the last capabilities read this page asked for stands: under way, failed, or landed. Once it has ended, a row
+  // its answer still doesn't cover (it failed, or the provider moved again between the two reads) offers Retry, which
+  // reads the settings and the capabilities again; only while it is under way does a row say "reading…".
+  const [capsRead, setCapsRead] = useState<"reading" | "failed" | "landed">("reading");
+  const readCaps = () => { setCapsRead("reading"); void Promise.resolve(onOpen?.()).then((ok) => setCapsRead(ok === false ? "failed" : "landed")); };
+  const retry = () => { load(); readCaps(); };
   useEffect(readCaps, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (!answer) return loadError
     ? (
@@ -63,8 +66,8 @@ export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choice
           {choices.length ? (
             <ToolTable label="This server's tool providers" rows={choices} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onChange={(next) => void save(next)}
               resolvesOf={(t, provider) => (provider === t.provider ? <PerHarness choice={t} />
-                : capsFailed ? <span className="block text-[12px] text-muted-foreground">What it resolves to couldn't be read. <button type="button" onClick={readCaps} className="caps ml-1 border px-2 py-0.5 text-[11px] hover:bg-accent">Retry</button></span>
-                : <span className="block font-mono text-[12px] text-muted-foreground">reading…</span>)} />
+                : capsRead === "reading" ? <span className="block font-mono text-[12px] text-muted-foreground">reading…</span>
+                : <span className="block text-[12px] text-muted-foreground">{capsRead === "failed" ? "What it resolves to couldn't be read." : "It changed while this page read it."} <button type="button" onClick={retry} className="caps ml-1 border px-2 py-0.5 text-[11px] hover:bg-accent">Retry</button></span>)} />
           ) : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">This server offers no tool with a choice of provider.</p>}
           {rest.map((m) => <p key={m} className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}
           {problem?.error && <div className="mt-3 border"><RunError error={problem.error} title="The change was not saved" /></div>}

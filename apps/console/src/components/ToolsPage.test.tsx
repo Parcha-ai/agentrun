@@ -119,7 +119,8 @@ describe("Settings → Tools, capabilities older than the settings", () => {
     let opened = 0;
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: stale, onSaved: () => {}, onOpen: () => { opened++; } } as never)));
+    // The fresh read is still under way.
+    act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: stale, onSaved: () => {}, onOpen: () => { opened++; return new Promise<boolean>(() => {}); } } as never)));
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     const row = host.querySelector('tr[data-tool="web_search"]')!;
     expect((row.querySelector("select") as HTMLSelectElement).value).toBe("off");
@@ -163,5 +164,24 @@ describe("Settings → Tools, a capabilities read that fails", () => {
     expect(row().textContent).toContain("couldn't be read");
     await act(async () => { [...row().querySelectorAll("button")].find((b) => /Retry/.test(b.textContent ?? ""))!.click(); });
     expect(reads).toBe(2);
+  });
+});
+
+describe("Settings → Tools, reads that land but still disagree", () => {
+  it("offers Retry, which reads the settings and the capabilities again, once a finished read still leaves a mismatch", async () => {
+    const stale = toolChoices([{ name: "web_search", providers: ["auto", "exa-keyless", "off"], provider: "exa-keyless", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } }]);
+    let settingsReads = 0, capsReads = 0;
+    const v2 = { toolSettings: async () => { settingsReads++; return { web_search: { provider: "off" } }; }, saveToolSettings: async (b: ToolSettings) => b };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    // Both reads land, but the capabilities still name the old provider (another tab changed it between the two reads).
+    act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: stale, onSaved: () => {}, onOpen: async () => { capsReads++; return true; } } as never)));
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const row = () => host.querySelector('tr[data-tool="web_search"]')!;
+    expect(row().textContent).not.toContain("reading…");
+    expect(row().textContent).not.toContain("pi: Exa keyless");
+    await act(async () => { [...row().querySelectorAll("button")].find((b) => /Retry/.test(b.textContent ?? ""))!.click(); });
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect([settingsReads, capsReads]).toEqual([2, 2]);
   });
 });
