@@ -4,7 +4,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dirname, extname, join, posix, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
@@ -13,6 +13,7 @@ import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir } from "./files.js";
+import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, ownedByIdentity } from "./home-path.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
@@ -651,23 +652,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return { files: out, deep, owned };
   }
 
-  /** A file path as the URL sends it, each segment percent-decoded. */
-  function decodedPath(raw: string): string {
-    try {
-      return raw.split("/").map(decodeURIComponent).join("/");
-    } catch {
-      throw new ApiError("invalid_file_path", "the path is not percent-encoded right");
-    }
-  }
-
-  /** `rel`, refused unless it is a relative path of names; a segment that starts with . is `own`'s. */
-  function checkedPath(rel: string, own: string): string {
-    const parts = rel.split("/");
-    if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || parts.some((p) => p === "" || p === "." || p === "..")) throw new ApiError("invalid_file_path", "the path has an empty, . or .. segment, a backslash, a NUL or a leading /");
-    if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", `a path segment that starts with . is ${own}`);
-    return rel;
-  }
-
   /** The file `rel` under `root`, raw; `unreadable` says why one this server cannot read is private. */
   async function sendFile(req: IncomingMessage, res: ServerResponse, url: URL, root: string, rel: string, unreadable: string): Promise<void> {
     if (!(await lstat(root).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
@@ -699,28 +683,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- an agent's home --------------------------------------------------------------------------------------------------
 
-  /** The host-owned path of the home that `path` is at or under, if any: on the path as normalized, and in any case, as a
-   *  disk that folds case (macOS's, by default) reaches learning/ as Learning/ too. */
-  const hostOwnedOf = (path: string) => {
-    const at = posix.normalize(path).replace(/^\/+/, "").toLowerCase();
-    return HOME_HOST_OWNED.find((owned) => at === owned.toLowerCase() || at.startsWith(`${owned.toLowerCase()}/`));
-  };
-
-  /** A path in an agent's home as its routes take it, checked as a run's file path is, and at most 1024 characters with
-   *  no segment over 255 bytes. Anything at or under a host-owned path is refused first, read or written, so
-   *  `./learning/x`, `a/../LeArNiNg/x` and `Learning/x` are refused as learning/ is; and a write goes no deeper than the
-   *  list does. */
-  function homePath(raw: string, agentId: string, write: boolean): string {
-    const rel = decodedPath(raw);
-    const owned = hostOwnedOf(rel);
-    // Its notes are read through the learning API alone, which redacts them; never raw here.
-    if (owned) throw new ApiError("system_file_forbidden", write ? `${owned}/ is written by the server, not through the API` : `read it through /v2/agents/${agentId}/${owned}`, { details: { reason: "host_owned" } });
-    checkedPath(rel, "the server's own, not a file of the home");
-    if (rel.length > 1024 || rel.split("/").some((p) => Buffer.byteLength(p) > 255)) throw new ApiError("invalid_file_path", "the path is over 1024 characters, or a segment of it over 255 bytes");
-    if (write && rel.split("/").length - 1 > WALK_DEPTH) throw new ApiError("invalid_file_path", `a file is written at most ${WALK_DEPTH} directories deep, as deep as the list goes`);
-    return rel;
-  }
-
   /** The agent's home, `homes/<its home key>/`: null while nothing was ever written to it, made with homes/ (0700) when
    *  `make`. Neither is ever a link: a read finds no home there, and a write is refused. */
   async function homeDir(agentId: string, make: boolean): Promise<string | null> {
@@ -733,6 +695,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       return null;
     }
     return home;
+  }
+
+  /** Refused when `rel`'s first segment is, on this disk, the same entry as a host-owned path of the home (home-path.ts):
+   *  the name check holds for the spellings it knows, and this for any other a disk takes. */
+  async function notHostOwned(home: string, rel: string, agentId: string, write: boolean): Promise<void> {
+    const owned = await ownedByIdentity(home, rel);
+    if (owned) throw hostOwnedRefusal(owned, agentId, write);
   }
 
   /** A write to the home or a removal from it refused (workspace.ts), as its answer. */
@@ -998,6 +967,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const rel = homePath(second!, id, false);
         const home = await homeDir(id, false);
         if (!home) throw new ApiError("not_found", "no such file");
+        await notHostOwned(home, rel, id, false);
         return sendFile(req, res, url, home, rel, "another user");
       }
       case "writeHomeFile": {
@@ -1006,7 +976,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const rel = homePath(second!, id, true);
         const bytes = await bytesOf(req);
         // Each write lands whole (a temporary file renamed over the old one); of two at once, the last rename wins.
-        const st = await homeDir(id, true).then((home) => writeWorkFile(home!, rel, bytes)).catch(homeRefusal);
+        const st = await homeDir(id, true)
+          .then(async (home) => {
+            await notHostOwned(home!, rel, id, true);
+            return writeWorkFile(home!, rel, bytes);
+          })
+          .catch(homeRefusal);
         return send(res, 200, fileView(rel, st));
       }
       case "deleteHomeFile": {
@@ -1015,6 +990,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const rel = homePath(second!, id, true);
         const home = await homeDir(id, false);
         if (!home) throw new ApiError("not_found", "no such file");
+        await notHostOwned(home, rel, id, true);
         await removeWorkFile(home, rel).catch(homeRefusal);
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();

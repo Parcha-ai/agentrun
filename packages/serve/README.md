@@ -459,9 +459,12 @@ at once, the last wins. A body over `capabilities.home.max_file_bytes` (`limits.
 as a run's are, a write goes at most 16 directories deep (as deep as the list goes), and a link anywhere on the way is
 never followed: a read is `404`, a write or a delete
 `403 system_file_forbidden`. `learning/` is the server's alone: the list shows it as one entry,
-`{"path": "learning", "host_owned": true}`, with none of its notes, and a `GET`, `PUT` or `DELETE` at or under it, in
-any case and however the path is spelled (`./Learning/x`), is `403 system_file_forbidden` (`details.reason`
-`host_owned`); its notes are read through `/v2/agents/{id}/learning`. An archived agent's home is read and written as
+`{"path": "learning", "host_owned": true}`, with none of its notes, and a `GET`, `PUT` or `DELETE` at or under it,
+however the path is spelled (`./Learning/x`), is `403 system_file_forbidden` (`details.reason` `host_owned`); its notes
+are read through `/v2/agents/{id}/learning`. A host-owned name is matched by its first segment folded (compatibility
+form, any case, no combining marks) and, where that segment and `learning/` are both on disk, by identity (the same
+device and inode), so a disk that takes another spelling for one name is refused the same way. A path takes only plain
+segments: each its own NFC form, with no default-ignorable code point, or it is `400 invalid_file_path`. An archived agent's home is read and written as
 its definition is. A write is held to its directory through `/proc/self/fd`; where there is none (macOS),
 `capabilities.home.writes` is `false` and `PUT` and `DELETE` are `501 unsupported_here`, as Node has no `openat` to
 write safely by path, while the list and reads still work. `GET` and `PUT /agents/{id}/home`, the contract's packed home, stay `501`.
