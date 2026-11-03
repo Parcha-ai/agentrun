@@ -3,10 +3,11 @@
 // into the run's workspace beside the revision's, and the run's system prompt carries the ordered mandate, at the pack's
 // thinking level. A body with neither is today's run, byte for byte. Faux model and faux harness: no key, no network.
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { openStoreReader } from "@parcha/pi-durable-agent";
 import { shippedPacks } from "../dist/packs.js";
 import { agent, flowAgent, follow, serve } from "./support.mjs";
 
@@ -30,7 +31,7 @@ async function made(api, id, extra = {}, skills = SKILLS) {
   assert.equal(answer.status, 201, JSON.stringify(answer.body));
 }
 
-/** A pack registered as shipped for this test, with its skills in a directory of their own. */
+/** A pack registered as shipped for this test, with its skills in a directory of their own: that directory. */
 async function shipped(t, name, value, skills) {
   const dir = await mkdtemp(join(tmpdir(), "agentrun-serve-pack-"));
   for (const [path, text] of Object.entries(skills)) {
@@ -44,6 +45,7 @@ async function shipped(t, name, value, skills) {
     else shippedPacks().delete(name);
     await rm(dir, { recursive: true, force: true });
   });
+  return dir;
 }
 
 /** No pack shipped for this test, as a server that ships none; the shipped ones are back after it. */
@@ -166,4 +168,19 @@ test("the shipped default pack on an agent with its own report-writer: the revis
   // Both go to the adapter from the run's workspace: report-writer as staged there, the caller's.
   assert.match(said, /^Native: effort-low, report-writer$/m, "the adapter loads both, the caller's report-writer among them");
   assert.ok(!said.includes("THE CALLER'S OWN REPORT WRITER"), "the Skill tool's, not written out");
+});
+
+test("a run whose pack skill cannot be copied fails to start and is not left running: the store ends it failed, saying why", async (t) => {
+  const { api, data } = await serve(t);
+  await made(api, "unstaged", {}, { "own-x/SKILL.md": md("own-x") });
+  // The pack bundles effort-x, one of whose files the server cannot read: its copy into the run's workspace fails.
+  const dir = await shipped(t, "unreadable", pack(), { ...SKILLS, "effort-x/notes.md": "notes" });
+  await chmod(join(dir, "effort-x", "notes.md"), 0o000);
+  const started = await api("POST", "/agents/unstaged/runs", { input: { content: "hi" }, profile: "unreadable" });
+  assert.equal(started.status, 500, JSON.stringify(started.body));
+  const reader = openStoreReader(data);
+  const runs = reader.listRuns().filter((row) => row.agent === "unstaged");
+  reader.close();
+  assert.deepEqual(runs.map((row) => [row.state, /^The run could not be set up: .*EACCES/.test(row.summary ?? "")]), [["failed", true]], `the run the store made ends failed with its setup's error, never left running: ${JSON.stringify(runs)}`);
+  assert.equal((await api("GET", `/runs/${runs[0].id}`)).body.status, "failed", "and reads failed");
 });
