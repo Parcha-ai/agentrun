@@ -82,16 +82,22 @@ function bodyOf(payload: Record<string, unknown>, images: Record<string, Decisio
 const readsTokenAnywhere = (model: string): boolean => /^~?(typesafe\/)?jev-/.test(model);
 
 /** The state a non-Jev model reads its images in: an array state with each token a top-level item goes as it is; an object
- *  state (a workflow node's) whose tokens are top-level values goes as `[{ the other fields }, "<token>", ...]`. Null when
- *  a token stands anywhere else. */
+ *  state (a workflow node's) whose tokens are top-level values goes as `[{ the other fields, image_fields }, "<token>",
+ *  ...]`, where `image_fields` names, in order, the field each image item after it stood in (`["invoice", "receipt"]`), so
+ *  a question that compares them can tell which is which. Names, not tokens: OpenRouter refuses a token anywhere but as a
+ *  top-level item. A state that has its own `image_fields` keeps it, and the names go under `_image_fields`. Null when a
+ *  token stands anywhere else. */
 function itemizedState(state: unknown, tokens: string[]): unknown[] | null {
   if (Array.isArray(state)) return tokens.every((token) => state.includes(token)) ? state : null;
   if (!isRecord(state)) return null;
   const isToken = (value: unknown): value is string => typeof value === "string" && tokens.includes(value);
   const placed = Object.values(state).filter(isToken);
   if (!tokens.every((token) => placed.includes(token))) return null;
-  const rest = Object.fromEntries(Object.entries(state).filter(([, value]) => !isToken(value)));
-  return [...(Object.keys(rest).length ? [rest] : []), ...placed];
+  const rest: Record<string, unknown> = Object.fromEntries(Object.entries(state).filter(([, value]) => !isToken(value)));
+  let key = "image_fields";
+  while (Object.hasOwn(rest, key)) key = `_${key}`;
+  rest[key] = Object.entries(state).filter(([, value]) => isToken(value)).map(([name]) => name);
+  return [rest, ...placed];
 }
 
 /** Every string value in the state, an instruction or a criterion: the places Jev reads an image token. */
