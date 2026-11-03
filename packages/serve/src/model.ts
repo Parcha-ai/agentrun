@@ -43,6 +43,10 @@ export const MODEL_KEYS = [
   { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/anthropic/claude-sonnet-5.5", harnesses: [DEFAULT_HARNESS] },
 ] as const;
 
+/** What a person does when no model runs here: add a model provider's key in the console, or set one where AgentRun
+ *  starts (MODEL_KEYS' fields). */
+export const ADD_A_KEY = `add a model key in Settings → Model keys, or set ${MODEL_KEYS.map((row) => row.field).join(", ").replace(/, ([^,]+)$/, " or $1")} where AgentRun starts.`;
+
 /** Whether `harness` runs the model `id`: pi any; claude-agent an Anthropic model (`anthropic/...`), as it talks to
  *  Anthropic's endpoint only; codex an OpenAI model, or a gateway's own id (no provider, through AGENT_MODEL_BASE_URL),
  *  as it takes that gateway for its OpenAI-compatible endpoint. On the faux harness every harness runs the run's model. */
@@ -126,14 +130,15 @@ export type ModelNeeds = "key" | "model";
 export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefined, tier: Tier = "default", harness: string = DEFAULT_HARNESS): Promise<{ model: ModelRef; namedProvider?: string } | { why: string; host: boolean; needs: ModelNeeds }> {
   if (env[FAUX_ENV]) return { model: { provider: "faux", modelId: fauxModel(env, tier) } };
   const named = ref ?? hostModel(env, tier, harness);
-  const none = tier === "default" ? "The revision names no model, and this host has no default" : `A workflow node of the ${tier} tier has no model here (${TIER_ENV[tier]}), and this host has no default`;
+  // In a person's words (a first run from npx sees them): what to add and where. Operator detail is the README's.
+  const none = tier === "default" ? "No model yet" : `No model yet for this workflow's ${tier} steps`;
   if (env.AGENT_MODEL_BASE_URL) {
-    if (!named) return { why: `${none}: set AGENT_MODEL, save a model provider's key, or name a model in the definition.`, host: true, needs: "key" };
+    if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or add a model key in Settings → Model keys.`, host: true, needs: "key" };
     const slash = ref?.indexOf("/") ?? -1;
     const sent = ref && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? ref.slice(slash + 1) : named;
     return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(ref && slash > 0 ? { namedProvider: ref.slice(0, slash) } : {}) };
   }
-  if (!named) return { why: `${none}: save a model provider's key, set AGENT_MODEL to a provider/model-id, start agentrun-serve with --faux MODULE, or name a model in the definition.`, host: true, needs: "key" };
+  if (!named) return { why: `${none}: ${ADD_A_KEY}`, host: true, needs: "key" };
   const slash = named.indexOf("/");
   if (slash < 1) return { why: `The host's default model ${named} is not a provider/model-id.`, host: true, needs: "model" };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
@@ -141,7 +146,11 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
   const models = builtinModels({ authContext: authContextOf(env) });
   const model = models.getModel(provider, modelId);
   if (!model) return { why: `pi-ai knows no model ${modelId} of ${provider}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined, needs: "model" };
-  if (!(await models.getAuth(model))) return { why: `pi-ai finds no key for ${provider} in this environment (${models.getProvider(provider)?.auth.apiKey?.name ?? "its API key"}): set it where agentrun-serve starts.`, host: true, needs: "key" };
+  if (!(await models.getAuth(model))) {
+    const row = MODEL_KEYS.find((r) => r.id === provider);
+    const field = row?.field ?? models.getProvider(provider)?.auth.apiKey?.name ?? "its API key";
+    return { why: `No ${row?.label ?? provider} key here for ${named}: ${row ? `add one in Settings → Model keys, or set ${field}` : `set ${field}`} where AgentRun starts.`, host: true, needs: "key" };
+  }
   return { model: { provider, modelId } };
 }
 

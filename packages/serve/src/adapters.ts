@@ -168,7 +168,7 @@ export function claudeModelId(model: ModelRef): string {
  *  claudeProvider's to say. */
 export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { model: ModelRef } | { why: string; host: boolean } {
   const named = ref ?? hostModel(env, "default", "claude-agent");
-  if (!named) return { why: "The revision names no model, and this host has no default: save an Anthropic key, or name an anthropic/<model-id> in the definition.", host: true };
+  if (!named) return { why: "No model yet for claude-agent: add an Anthropic key in Settings → Model keys, or set ANTHROPIC_API_KEY where AgentRun starts.", host: true };
   const slash = named.indexOf("/");
   if (slash < 1) return { why: `claude-agent runs a model named anthropic/<model-id>; the run's model is ${named}.`, host: ref === undefined };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];

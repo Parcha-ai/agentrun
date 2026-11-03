@@ -12,7 +12,7 @@ import type { Agent } from "@/lib/agentForm";
 import { type Client, problemOf } from "@/lib/client";
 import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
-import { harnessDefault, type HarnessInfo, modelLabel } from "@/lib/models";
+import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import { rangeFrom, type Stats } from "@/lib/mission";
@@ -64,7 +64,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   const model = d.model ? modelLabel(d.model, models)
     : fallback ? (({ text, title }) => ({ text: `${text} (default)`, title }))(modelLabel(fallback, models))
     // A server that names each harness's default and names none for this one: there is none, for pi too.
-    : { text: (d.harness ?? "pi") === "pi" && !harnesses?.some((h) => h.id === "pi" && "default_model" in h) ? "default" : "no default: choose a model" };
+    : { text: (d.harness ?? "pi") === "pi" && !harnesses?.some((h) => h.id === "pi" && "default_model" in h) ? "default" : NO_MODEL_YET };
   // A harness the server can't run: why, where its Run would fail (capabilities' harnesses[].reason).
   const off = workflow ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
   const offText = off ? `${off.id} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
