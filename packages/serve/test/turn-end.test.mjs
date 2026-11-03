@@ -59,7 +59,7 @@ test("a store with the turn-end markers reads the same rows, the same metrics an
 
 // ---- How a run's messages and their turns' ends are read (turns.ts) ------------------------------------------------------
 
-const message = (id, ref, ends = true) => ({ kind: MESSAGE, id, conversationId: 1, data: { key, id: ref, content: "hi", ...(ends ? { ends: true } : {}) } });
+const message = (id, ref) => ({ kind: MESSAGE, id, conversationId: 1, data: { key, id: ref, content: "hi" } });
 const sent = (id, ref, yes = true) => ({ kind: MESSAGE_END, id, conversationId: 1, data: { key, id: ref, sent: yes } });
 const ended = (id, data) => ({ kind: TURN_END, id, conversationId: 1, data: { key, ...data } });
 const read = (list, submissions = [], skip) => {
@@ -106,20 +106,22 @@ test("records read twice read the same, a turn's first end stands, and the end-o
   assert.deepEqual([reflected.open, answerOf(reflected)], [0, "Answer 1."], "the end-of-run turn opens no message and answers nothing");
 });
 
-test("an older bridge's records still read: #1424's turn end with no message, and no turn end at all", () => {
+test("an older bridge's records: #1424's turn end with no message closes the message sent last; with no turn end at all, a message stays open until a turn end names it", () => {
   // #1424's first form: { key, status }, for the message sent last; its answer, the newest bridge stop with text since.
-  const first = [message(1, "a", false), user(2, "hi"), sent(3, "a"), assistant(4, [{ type: "text", text: "Answer 1." }], "stop", 0.001)];
+  const first = [message(1, "a"), user(2, "hi"), sent(3, "a"), assistant(4, [{ type: "text", text: "Answer 1." }], "stop", 0.001)];
   const old = read([...first, ended(5, { status: "completed" })]);
-  assert.deepEqual([old.open, old.legacy, answerOf(old)], [0, false, "Answer 1."]);
-  // Before #1424 no turn end was written: the newest message is read by the run's rows (legacy), and a later message
-  // sent closes the one before it (the turns are taken one at a time).
+  assert.deepEqual([old.open, answerOf(old)], [0, "Answer 1."]);
+  // Before #1424 no turn end was written: the newest message stays open, never read by the run's rows (the run's next
+  // process writes its turn end as it opens, harness-app.ts), and a later message sent closes the one before it (the
+  // turns are taken one at a time).
   const none = read(first);
-  assert.deepEqual([none.open, none.legacy], [1, true]);
-  const next = read([...first, message(5, "b", false), user(6, "and?"), sent(7, "b")]);
-  assert.deepEqual([next.open, next.legacy], [1, true], "the newest is open and read by its rows");
+  assert.deepEqual([none.open, none.end()], [1, undefined]);
+  assert.equal("legacy" in none, false, "no message's end is read by the run's rows");
+  const next = read([...first, message(5, "b"), user(6, "and?"), sent(7, "b")]);
+  assert.deepEqual([next.open, next.end()], [1, undefined], "the newest is open");
   next.note([ended(8, { message: "b", status: "completed", answer: null })]);
-  assert.deepEqual([next.open, next.legacy, answerOf(next)], [0, false, ""], "and a new bridge's end closes it");
-  assert.equal(new Turns().known, false, "no message named: the run is read by its rows");
+  assert.deepEqual([next.open, answerOf(next)], [0, ""], "and the turn end naming it closes it");
+  assert.equal(new Turns().known, false, "no message named");
 });
 
 test("pi's input submissions: open while queued or placed, closed by their settlement in the answer's commit; one withdrawn before it was placed had no turn", () => {
