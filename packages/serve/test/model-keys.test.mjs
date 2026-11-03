@@ -32,6 +32,26 @@ test("with no AGENT_MODEL a provider's key gives the default: anthropic, then op
   assert.equal(hostModel(keyed("openai", "openrouter"), "default", "claude-agent"), undefined, "claude-agent runs Anthropic's only");
 });
 
+test("the host's model counts for a harness only when that harness runs it: claude-agent Anthropic's, codex OpenAI's or the gateway's, pi any; else the harness takes its own key's default", () => {
+  const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "gpt-6-luna" };
+  // A gateway id names no provider: pi and codex run it through the gateway; claude-agent, which talks to Anthropic only,
+  // takes its own key's default (a placeholder key behind a broker counts as a key).
+  assert.equal(hostModel({ ...gateway, ...keyed("anthropic") }, "default", "pi"), "gpt-6-luna");
+  assert.equal(hostModel({ ...gateway, ...keyed("anthropic") }, "default", "codex"), "gpt-6-luna");
+  assert.equal(hostModel({ ...gateway, ...keyed("anthropic") }, "default", "claude-agent"), "anthropic/claude-sonnet-5-5");
+  assert.equal(hostModel({ ...gateway, ANTHROPIC_API_KEY: "placeholder", ANTHROPIC_BASE_URL: "http://127.0.0.1:8" }, "default", "claude-agent"), "anthropic/claude-sonnet-5-5", "the broker case");
+  assert.equal(hostModel(gateway, "default", "claude-agent"), undefined, "no Anthropic key: none");
+  // A provider's id runs on its own harness and on pi only.
+  assert.equal(hostModel({ AGENT_MODEL: "openai/gpt-6-luna" }, "default", "claude-agent"), undefined);
+  assert.equal(hostModel({ AGENT_MODEL: "openai/gpt-6-luna" }, "default", "codex"), "openai/gpt-6-luna");
+  assert.equal(hostModel({ AGENT_MODEL: "anthropic/claude-opus-5-5", ...keyed("openai") }, "default", "codex"), "openai/gpt-6.1-sol");
+  assert.equal(hostModel({ AGENT_MODEL: "anthropic/claude-opus-5-5", ...keyed("openai") }, "default", "claude-agent"), "anthropic/claude-opus-5-5");
+  assert.equal(hostModel({ AGENT_MODEL: "anthropic/claude-opus-5-5", ...keyed("openai") }), "anthropic/claude-opus-5-5", "pi runs any");
+  // A tier's own model the harness can't run is skipped, never an error: the default stands in.
+  assert.equal(hostModel({ AGENT_MODEL_FAST: "openai/gpt-6-mini", AGENT_MODEL: "anthropic/claude-haiku-5" }, "fast", "claude-agent"), "anthropic/claude-haiku-5");
+  assert.equal(hostModel({ AGENT_MODEL_FAST: "openai/gpt-6-mini", AGENT_MODEL: "anthropic/claude-haiku-5" }, "fast"), "openai/gpt-6-mini");
+});
+
 test("each default is a model pi-ai's catalog lists and prices, of the key's own provider, and not that provider's dearest", () => {
   const models = builtinModels();
   for (const row of MODEL_KEYS) {
