@@ -59,6 +59,47 @@ function lateBooking() {
   return { adapter, book: () => book.resolve() };
 }
 
+/** An adapter whose turns run the scripts given, one per send. A script asks requests (`ask`, which gives each one's
+ *  number), writes text, and books any request asked so far (`book`), in any order. A request whose booking a script
+ *  leaves out is booked later, by `book` on what this returns, after its turn ended, as the proxy books a response
+ *  when its stream closes. */
+function scripted(turns) {
+  const tickets = new Map();
+  let io;
+  const book = (request, usd) => io.models.afterRequest({ ...TOKENS, usd }, tickets.get(request));
+  const adapter = {
+    id: "late",
+    version: "0",
+    capabilities: () => ({ fork: false }),
+    check: () => [],
+    async open(_spec, given) {
+      io = given;
+      let ended = deferred();
+      let next = 0;
+      const ask = async () => {
+        const ticket = await io.models.beforeRequest({ model: MODEL });
+        tickets.set(ticket.turn, ticket);
+        return ticket.turn;
+      };
+      const say = (text) => io.onEvent({ type: "text", delta: text });
+      return {
+        state: "new",
+        async send() {
+          ended = deferred();
+          const script = turns[next++];
+          if (script) await script({ ask, book, say });
+          ended.resolve({ status: "completed" });
+        },
+        async recover() {},
+        turnEnd: () => ended.promise,
+        async interrupt() {},
+        async close() {},
+      };
+    },
+  };
+  return { adapter, book };
+}
+
 const runOf = (harness) => ({ harness, env: async () => ({ confinePrefix: () => ["/usr/bin/setpriv", "--no-new-privs", "--"] }) });
 
 async function opened(storage, adapter, wrap = (harness) => harness) {
@@ -175,6 +216,89 @@ test("a late cost the session booked but the root never got (its process went fi
   assert.equal(bookedMarks(after).length, 1, "booked once");
   assert.equal(after.filter((e) => e.kind === PRICED_LATE).length, 1, "its late cost written once");
   assert.deepEqual(after.find((e) => e.kind === PRICED_LATE).data.usage, TOKENS, "with the tokens the session booked");
+});
+
+/** The requests an entry kind names, in the root's order. */
+const requestsOf = (entries, kind) => entries.filter((e) => e.kind === kind).map((e) => e.data.request);
+const lateCosts = (entries) => entries.filter((e) => e.kind === PRICED_LATE).map((e) => [e.data.request, e.data.usd]);
+/** How many times each request's cost is written: with its answer (BOOKED, not unpriced), or after it (PRICED_LATE). */
+const pricings = (entries) => {
+  const counts = {};
+  for (const e of entries) if ((e.kind === BOOKED && e.data.unpriced !== true) || e.kind === PRICED_LATE) counts[e.data.request] = (counts[e.data.request] ?? 0) + 1;
+  return counts;
+};
+
+test("a late cost booked after a later request's (held past its turn's wait, and past the next request's booking) is written at once, once: the run's cost is known as that turn ends, not after an open", { timeout: BOOKING_WAIT_MS * 6 }, async () => {
+  const storage = new MemoryStorage();
+  // Request 1's booking is held past its turn's end. In the next turn request 2 is booked first, then request 1.
+  const script = scripted([
+    async ({ ask, say }) => {
+      await ask();
+      say("First.");
+    },
+    async ({ ask, book, say }) => {
+      const second = await ask();
+      say("Second.");
+      await book(second, 0.002);
+      await book(1, 0.003);
+    },
+  ]);
+  const first = await opened(storage, script.adapter);
+  assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
+  await until(() => first.events.includes("run_end"), BOOKING_WAIT_MS * 3);
+  assert.deepEqual(usage(await rootOf(first.harness)), { usd: null, requests: 1 }, "request 1 written at unknown cost, its cost still out");
+  assert.deepEqual(await first.app.door.submit({ requestId: "m2", content: "again", whenBusy: "followUp" }, first.door), { accepted: true });
+  await until(() => first.events.filter((e) => e === "run_end").length === 2, BOOKING_WAIT_MS * 3);
+  const entries = await rootOf(first.harness);
+  assert.deepEqual(lateCosts(entries), [[1, 0.003]], "request 1's late cost, once");
+  assert.deepEqual(usage(entries), { usd: 0.005, requests: 2 }, "the run's cost is known as the turn ends");
+  assert.equal(spend(entries), 0.005, "each cost counted once, as the cap's spend reads a store");
+  assert.deepEqual(requestsOf(entries, BOOKED), [1, 2], "each request written once");
+  assert.deepEqual(pricings(entries), { 1: 1, 2: 1 }, "and each one's cost once");
+  // A later process opens the run: it has nothing left to write.
+  const next = await opened(storage, scripted([]).adapter);
+  const after = await rootOf(next.harness);
+  assert.deepEqual(lateCosts(after), [[1, 0.003]], "still one late cost");
+  assert.deepEqual(requestsOf(after, BOOKED), [1, 2], "still each request once");
+  assert.equal(spend(after), 0.005, "nor any cost counted twice");
+  assert.deepEqual(usage(after, true), { usd: 0.005, requests: 2 });
+});
+
+test("costs that trail their requests by more than a turn: each request still gets one entry and its cost once, so the run's cost is known once they are in, not after an open", { timeout: BOOKING_WAIT_MS * 8 }, async () => {
+  const storage = new MemoryStorage();
+  // Turn 1 asks requests 1 and 2: 2 is booked, 1 is held past the turn's end. Turn 2 asks request 3 and books request 1;
+  // request 3 is booked only after turn 2 has ended.
+  const script = scripted([
+    async ({ ask, book, say }) => {
+      await ask();
+      say("Calling.");
+      const second = await ask();
+      say(" Done.");
+      await book(second, 0.002);
+    },
+    async ({ ask, book, say }) => {
+      await ask();
+      say("Again.");
+      await book(1, 0.001);
+    },
+  ]);
+  const first = await opened(storage, script.adapter);
+  assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
+  await until(() => first.events.includes("run_end"), BOOKING_WAIT_MS * 3);
+  assert.deepEqual(await first.app.door.submit({ requestId: "m2", content: "again", whenBusy: "followUp" }, first.door), { accepted: true });
+  await until(() => first.events.filter((e) => e === "run_end").length === 2, BOOKING_WAIT_MS * 3);
+  await script.book(3, 0.004);
+  for (const released = Date.now(); spend(await rootOf(first.harness)) !== 0.007 && Date.now() - released < 1_000; ) await new Promise((resolve) => setTimeout(resolve, 10));
+  const entries = await rootOf(first.harness);
+  assert.deepEqual(requestsOf(entries, BOOKED).sort((a, b) => a - b), [1, 2, 3], "every request on the root, once");
+  assert.deepEqual(pricings(entries), { 1: 1, 2: 1, 3: 1 }, "each one's cost written once, with its entry or after it");
+  assert.equal(spend(entries), 0.007, "each cost counted once");
+  assert.deepEqual(usage(entries), { usd: 0.007, requests: 3 }, "the run's cost is known once its costs are in");
+  const next = await opened(storage, scripted([]).adapter);
+  const after = await rootOf(next.harness);
+  assert.deepEqual(requestsOf(after, BOOKED).sort((a, b) => a - b), [1, 2, 3], "the next open writes no request again");
+  assert.deepEqual(pricings(after), { 1: 1, 2: 1, 3: 1 }, "nor any cost");
+  assert.equal(spend(after), 0.007);
 });
 
 test("the next open re-books what the session booked with its tokens and model; a journal from before bookings kept tokens re-books with none", async () => {
