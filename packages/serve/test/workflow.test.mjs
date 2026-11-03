@@ -126,7 +126,7 @@ test("a run loads only the tiers its revision uses: a fast-only workflow runs on
   const started = await api("POST", "/agents/fast-only/runs", { input: { question: "What is six times seven?" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   assert.equal((await api("POST", "/agents", flowAgent("default-too"))).status, 201);
-  assert.match((await api("POST", "/agents/default-too/runs", { input: { question: "x" } })).body.error.message, /no default/, "a default-tier node still needs AGENT_MODEL");
+  assert.match((await api("POST", "/agents/default-too/runs", { input: { question: "x" } })).body.error.message, /No model yet: name the gateway's model in AGENT_MODEL/, "a default-tier node still needs AGENT_MODEL");
   // The run's process loaded its app (no default asked for) and opened the run.
   const log = join(data, "runs", started.body.run_id, "process.log");
   for (let i = 0; !(await readFile(log, "utf8").catch(() => "")).includes('"event":"running"'); i++) {
