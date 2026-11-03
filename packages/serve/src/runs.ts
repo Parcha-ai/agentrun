@@ -1270,16 +1270,22 @@ export class Runs {
     });
   }
 
-  /** Writes the serve.json of a run being set up. When it fails, the store has the run as running and no process will
-   *  run it: it ends failed here, never left for a later start to open with half its files. */
-  private async setUp(runId: string, dir: string, meta: RunMeta): Promise<void> {
+  /** One step of setting up a run the store has made (its serve.json, its pack's skills). When it fails, the store has the
+   *  run as running and no process will run it: it ends failed here, never left for a later start to open with half its
+   *  files. */
+  private async setUpStep<T>(runId: string, step: () => Promise<T>): Promise<T> {
     try {
-      await writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`);
+      return await step();
     } catch (error) {
       const summary = `The run could not be set up: ${(error as Error).message}`;
       await this.options.agents.request(() => this.store.carryBack(runId, { state: "failed", summary })).catch((undo: Error) => warn(runId, `not ended after its setup failed: ${undo.message}`));
       throw error;
     }
+  }
+
+  /** Writes the serve.json of a run being set up (setUpStep). */
+  private setUp(runId: string, dir: string, meta: RunMeta): Promise<void> {
+    return this.setUpStep(runId, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
   }
 
   private async start(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
@@ -1288,8 +1294,10 @@ export class Runs {
     const learns = this.options.learning !== "off" && revision.kind === "agentic" && revision.body.learning === true;
     const seeded = learns ? await this.seedFor(entry.agent.id) : undefined;
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
-    // The pack's bundled skills, beside the revision's that startRun seeded: once, as the revision's are seeded once.
-    const staged = options.profile ? await stageSkills(started.workspace, options.profile.bundled) : [];
+    // The pack's bundled skills, beside the revision's that startRun seeded: once, as the revision's are seeded once. A copy
+    // that fails ends the run failed, as any failed setup does.
+    const profile = options.profile;
+    const staged = profile ? await this.setUpStep(started.runId, () => stageSkills(started.workspace, profile.bundled)) : [];
     const at = new Date().toISOString();
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
