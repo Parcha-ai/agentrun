@@ -69,7 +69,7 @@ export const fauxBoxes = async (module: string, root: string): Promise<BoxProvid
 
 /** A run's box, as its tools' environment: found by its label or made on the first call, once; made again on the call
  *  after it was lost. A box that cannot be had fails that call; nothing falls back to this machine. */
-export type RunBox = { env(context: Context): Promise<ExecutionEnv>; hostWork: string; bound(): Promise<boolean> };
+export type RunBox = { env(context: Context): Promise<ExecutionEnv>; hostWork: string; bound(): Promise<boolean>; leftEnded(context: Context): Promise<void> };
 
 export function runBox(provider: () => Promise<BoxProvider>, run: { id: string; root: string; dir: string; place: Place }): RunBox {
   let held: Promise<ExecutionEnv> | undefined;
@@ -97,6 +97,14 @@ export function runBox(provider: () => Promise<BoxProvider>, run: { id: string; 
     return boxEnv(box, { maxExecMs: BASH_TIMEOUT_MS, onLost: () => void (held = undefined) }) as unknown as ExecutionEnv;
   };
   let binds: Promise<boolean> | undefined;
+  let checked: Promise<void> | undefined;
+  const env = (context: Context): Promise<ExecutionEnv> => {
+    held ??= open(context).catch((error: unknown) => {
+      held = undefined;
+      throw error;
+    });
+    return held;
+  };
   return {
     // The bind's source: a path another harness names under it is the same file in the box (coding-tools.ts boxPath).
     hostWork: join(run.dir, "work"),
@@ -108,12 +116,20 @@ export function runBox(provider: () => Promise<BoxProvider>, run: { id: string; 
       });
       return binds;
     },
-    env(context) {
-      held ??= open(context).catch((error: unknown) => {
-        held = undefined;
+    env,
+    // Before a file tool works on work/ here, once a process: a box an earlier process of the run left may still run a
+    // command that changes work/, so that box is taken over (env: its left commands killed first). None, none is made.
+    leftEnded(context) {
+      checked ??= (async () => {
+        if (held) return void (await held);
+        const listed = await (await provider()).list({ [RUN_LABEL]: run.id }, context);
+        if (!listed.ok) throw listed.error;
+        if (listed.value.length) await env(context);
+      })().catch((error: unknown) => {
+        checked = undefined;
         throw error;
       });
-      return held;
+      return checked;
     },
   };
 }

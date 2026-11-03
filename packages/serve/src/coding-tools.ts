@@ -35,7 +35,7 @@ export type CodingSource = { readonly extension: Extension; readonly tools: read
 
 /** The environment a boxed tool's call runs on: the run's box's (run-box.ts). `hostWork`: the run's own work/ on this
  *  machine, the source the box binds at BOX_WORK; `bound`, whether the box's provider binds it there (Docker does). */
-export type BoxedEnv = { env(context: Context): Promise<unknown>; hostWork?: string; bound?(): Promise<boolean> };
+export type BoxedEnv = { env(context: Context): Promise<unknown>; hostWork?: string; bound?(): Promise<boolean>; leftEnded?(context: Context): Promise<void> };
 
 /** A failed call's error with what the file environment said, where pi's message gives only its code (edit's "Error
  *  code: permission_denied."), so the model reads why and what it can do. */
@@ -90,8 +90,12 @@ export function codingSource(place: Place, box?: BoxedEnv, narrowed = false): Co
       const inBox = typeof path === "string" ? boxPath(path, box.hostWork) : undefined;
       if (typeof path === "string" && inBox === undefined) throw new Error(`${path}: outside the workspace ${BOX_WORK}`);
       const given = inBox === undefined ? args : { ...(args as object), path: inBox };
-      // read, write and edit on this machine's work/, where the box binds it; no box is made for them.
-      if (here && tool.name !== "bash" && (await box.bound?.()) === true) return tool.execute(given as typeof args, { ...api, env: here as typeof api.env }, context).catch((error: unknown) => Promise.reject(withCause(error)));
+      // read, write and edit on this machine's work/, where the box binds it; no box is made for them. A box an earlier
+      // process left has its left commands killed first, so none of them changes work/ under these tools.
+      if (here && tool.name !== "bash" && (await box.bound?.()) === true) {
+        await box.leftEnded?.(context);
+        return tool.execute(given as typeof args, { ...api, env: here as typeof api.env }, context).catch((error: unknown) => Promise.reject(withCause(error)));
+      }
       return tool.execute(given as typeof args, { ...api, env: (await box.env(context)) as typeof api.env }, context);
     },
   }));

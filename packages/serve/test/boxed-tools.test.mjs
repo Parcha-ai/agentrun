@@ -11,6 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startServe } from "../dist/index.js";
+import { writesHeld } from "../dist/workspace.js";
 import fauxBoxes, { fauxRoot } from "./fixtures/faux-box.mjs";
 import { client, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -136,8 +137,10 @@ test("demo (pi): in a Docker place bash runs in the run's box, and read, write a
     mounts: [{ source: join(data, "runs", run.run_id, "work"), target: "/run/agentrun/run/work" }],
     labels: { "agentrun.run": run.run_id, "agentrun.box": "run" }, network: "none", maxLifetimeMs: 86_400_000,
   });
-  // bash's calls ran in the box, one command each; read, write and edit ran none (bound-files.ts).
-  assert.equal(execs(data).length, plan.filter((step) => step.tool === "bash").length, JSON.stringify(execs(data)));
+  // bash's calls ran in the box, one command each; read, write and edit ran none where they run here (bound-files.ts),
+  // and at least one each where this host reaches directories by path.
+  if (writesHeld()) assert.equal(execs(data).length, plan.filter((step) => step.tool === "bash").length, JSON.stringify(execs(data)));
+  else assert.ok(execs(data).length >= plan.length, "every call ran a command in the box");
   const view = (await api("GET", `/runs/${run.run_id}`)).body;
   assert.deepEqual(view.place, SANDBOX);
   await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");

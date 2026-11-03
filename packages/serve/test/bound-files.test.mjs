@@ -14,10 +14,14 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { confineTestHooks as confineHooks } from "@parcha/pi-durable-disk/internals";
 import { boundFiles } from "../dist/bound-files.js";
 import { codingSource } from "../dist/coding-tools.js";
-import { workspaceTestHooks } from "../dist/workspace.js";
+import { workspaceTestHooks, writesHeld } from "../dist/workspace.js";
 import { fauxRoot } from "./fixtures/faux-box.mjs";
 import { follow, scratch, serve } from "./support.mjs";
 
+// The file tools run here only where the confinement holds directory handles (Linux's /proc/self/fd); elsewhere (macOS)
+// all four run in the box, which the last test checks on every host.
+const HELD = writesHeld();
+const NEEDS_HELD = { skip: !HELD && "needs held directory handles (/proc/self/fd)" };
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
@@ -58,7 +62,7 @@ async function boxed(t) {
   return { ...server, ran };
 }
 
-test("a link bash plants in work/, to the data root's token, to a directory outside or to a file inside, is refused by read, write and edit here, and nothing outside work/ is read or written", { timeout: 90_000 }, async (t) => {
+test("a link bash plants in work/, to the data root's token, to a directory outside or to a file inside, is refused by read, write and edit here, and nothing outside work/ is read or written", { ...NEEDS_HELD, timeout: 90_000 }, async (t) => {
   const server = await boxed(t);
   const data = realpathSync(server.data);
   const token = join(data, ".token");
@@ -104,7 +108,7 @@ test("a link bash plants in work/, to the data root's token, to a directory outs
   assert.equal(execs(server.data).length, 2, "the two bash calls ran in the box; read, write and edit ran nothing there");
 });
 
-test("a hard link bash makes in work/ is refused by read, write and edit here; a file's mode is kept by an edit, and a new one is 0644", { timeout: 90_000 }, async (t) => {
+test("a hard link bash makes in work/ is refused by read, write and edit here; a file's mode is kept by an edit, and a new one is 0644", { ...NEEDS_HELD, timeout: 90_000 }, async (t) => {
   const server = await boxed(t);
   const plan = [
     { tool: "bash", args: { command: "printf one > a.txt && ln a.txt b.txt && printf 'echo hi\\n' > run.sh && chmod 755 run.sh" } },
@@ -130,7 +134,7 @@ test("a hard link bash makes in work/ is refused by read, write and edit here; a
   assert.equal(statSync(join(work, "made", "new.txt")).uid, process.getuid());
 });
 
-test("a directory of work/ swapped for a link between the check and the use is refused, held: nothing is written or read through it", async (t) => {
+test("a directory of work/ swapped for a link between the check and the use is refused, held: nothing is written or read through it", NEEDS_HELD, async (t) => {
   const work = realpathSync(await scratch(t));
   const elsewhere = realpathSync(await scratch(t));
   await mkdir(join(work, "sub"));
@@ -158,7 +162,7 @@ test("a directory of work/ swapped for a link between the check and the use is r
   assert.equal(await readFile(join(elsewhere, "kept.txt"), "utf8"), "outside");
 });
 
-test("the environment names the box's paths: one outside work/ is refused, a missing file names its box path, and it runs no command and offers nothing else", async (t) => {
+test("the environment names the box's paths: one outside work/ is refused, a missing file names its box path, and it runs no command and offers nothing else", NEEDS_HELD, async (t) => {
   const work = realpathSync(await scratch(t));
   await writeFile(join(work, "a.txt"), "a");
   const files = boundFiles(work);
@@ -191,8 +195,10 @@ test("where the confinement reaches directories by path (the test hook), or the 
     await call(source, "edit", { path: "b.txt", edits: [{ oldText: "b", newText: "c" }] }),
     await call(source, "bash", { command: "true" }),
   ];
-  assert.deepEqual(await where(codingSource(SANDBOX, box(true))), ["here", "here", "here", "box"]);
-  assert.equal(await readFile(join(work, "b.txt"), "utf8"), "c");
+  if (HELD) {
+    assert.deepEqual(await where(codingSource(SANDBOX, box(true))), ["here", "here", "here", "box"]);
+    assert.equal(await readFile(join(work, "b.txt"), "utf8"), "c");
+  }
   assert.deepEqual(await where(codingSource(SANDBOX, box(false))), ["box", "box", "box", "box"], "a box that binds nothing");
   workspaceTestHooks.byPath = true;
   t.after(() => void (workspaceTestHooks.byPath = undefined));
