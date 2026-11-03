@@ -15,7 +15,7 @@ export type TurnEnd = { status: "answered" | "asked" | "failed" | "interrupted";
 /** The request id prefix of a run's end-of-run turn (learning-run.ts): the server's message, never the person's. */
 export const REFLECT_REQUEST = "learn-reflect-";
 
-type Message = { key: string; order: number; end?: TurnEnd; legacy?: true; sent?: true; status?: unknown };
+type Message = { key: string; order: number; end?: TurnEnd; sent?: true; status?: unknown };
 type Obj = Record<string, unknown>;
 const isObject = (value: unknown): value is Obj => typeof value === "object" && value !== null && !Array.isArray(value);
 /** An answer's whole text: its text blocks, as a run's answer has always read. */
@@ -59,7 +59,7 @@ export class Turns {
         if (text && fresh) this.#newestText = text;
         if (text && fresh && first.api === ADAPTER_API) this.#since = id;
       } else if (value.kind === MESSAGE && typeof data?.id === "string") {
-        this.#take(`m:${data.id}`, data.ends !== true, now, id ?? this.#seen);
+        this.#take(`m:${data.id}`, now, id ?? this.#seen);
       } else if (value.kind === MESSAGE_END && typeof data?.id === "string") {
         const message = this.#messages.get(`m:${data.id}`);
         if (!message || message.sent) continue;
@@ -98,7 +98,7 @@ export class Turns {
       if (known && !known.end) this.#messages.delete(key);
       return;
     }
-    const message = known ?? this.#take(key, false, now, value.id);
+    const message = known ?? this.#take(key, now, value.id);
     if (message.end) return;
     // Only a move of its status is its turn's progress: a reconnect's snapshot carries the same record again.
     const moved = message.status !== value.status;
@@ -114,10 +114,10 @@ export class Turns {
     } else if (moved && this.open > 0) this.#progress = now;
   }
 
-  #take(key: string, legacy: boolean, now: number, order: number): Message {
+  #take(key: string, now: number, order: number): Message {
     const known = this.#messages.get(key);
     if (known) return known;
-    const message: Message = { key, order, ...(legacy ? { legacy: true as const } : {}) };
+    const message: Message = { key, order };
     this.#messages.set(key, message);
     this.#progress = now;
     return message;
@@ -134,18 +134,6 @@ export class Turns {
     let n = 0;
     for (const message of this.#messages.values()) if (!message.end) n++;
     return n;
-  }
-
-  /** Whether the records name any message: a run whose records name none (an import, a store an older server wrote, a
-   *  live process of an older server) is read by its rows. */
-  get known(): boolean {
-    return this.#messages.size > 0;
-  }
-
-  /** Whether the newest message is one an older bridge took and no end has closed: its end is read by its rows. */
-  get legacy(): boolean {
-    const newest = this.#newest();
-    return newest?.legacy === true && !newest.end;
   }
 
   /** The newest message's turn's end, once no message is open. */

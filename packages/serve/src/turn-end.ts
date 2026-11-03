@@ -6,9 +6,9 @@
  *  last entries. #1424's first form held only `key` and `status`, and closes the message sent last before it. */
 export const TURN_END = "adapter.turn_end";
 
-/** The root's record of a message the door accepted (`{ key, id, content, ends }`), and of its end (`{ key, id, sent }`):
- *  `sent` to the session, or dropped by a stop. `ends`: the bridge writes a TURN_END naming this message once its turn
- *  is over; a message an older bridge accepted has none, and its turn's end is read as that bridge's were. */
+/** The root's record of a message the door accepted (`{ key, id, content }`), and of its end (`{ key, id, sent }`):
+ *  `sent` to the session, or dropped by a stop. The bridge writes a TURN_END naming the message once its turn is over;
+ *  for a message an older bridge sent and wrote no end for, the run's next process writes it as it opens. */
 export const MESSAGE = "adapter.message";
 export const MESSAGE_END = "adapter.message_end";
 

@@ -424,7 +424,7 @@ export function adapterRun(
       if (turn && input.whenBusy === "reject") return { accepted: false, reason: "busy" };
       const id = randomUUID();
       const content = textOf(input.content);
-      const message: Message = { id, content, recorded: commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id, content, ends: true } }))) };
+      const message: Message = { id, content, recorded: commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id, content } }))) };
       if (turn) queue.push(message);
       else runTurns(sendOf(message));
       await message.recorded;

@@ -12,4 +12,4 @@ What this changes:
 - `GET /runs/{id}` has `last_progress_at`: while a message is open, when its turn last wrote anything, so a run working through a long tool phase shows whether it is moving.
 - pi-durable-disk's door `GET /events?inputs=1` adds `inputs` to its snapshot: pi's input submissions from the newest settled one on, so a server adopting a live pi run knows how its newest turn ended. Without the parameter the stream is as before.
 
-A run a store holds no such record for (an import, or a live process of an older server) is read by its rows as before.
+No agentic run ends on its rows any more. A run whose records hold no turn end, an import or a workflow, still reads its answer from its rows as before. A claude-agent or codex message an older server sent and wrote no end for is closed by the run's next process, which writes that turn's end as it opens; until then a live process of an older server keeps its run open.

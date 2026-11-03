@@ -301,10 +301,10 @@ const lastAnswer = (run: Run) => run.turns.newestText ?? run.rows.findLast((r) =
 /** A row's store entry, from its id (`<conversation>:<entry>[:...]`). */
 const entryOfRow = (id: string) => Number(id.split(":")[1]);
 /** The answer of a run that completed: the whole text of the entry its turn's end names, "" when that turn showed no text,
- *  never an earlier turn's. A run whose records name no message (an import, a store an older server wrote) answers as
- *  those servers did: its newest answer row, whole. */
+ *  never an earlier turn's. A run whose records hold no turn's end (a workflow, an import, a store an older server wrote)
+ *  answers as those servers did: its newest answer row, whole. */
 function answerOfRun(run: Run): string | null {
-  const end = run.turns.legacy ? undefined : run.turns.end();
+  const end = run.turns.end();
   if (end?.status === "answered") {
     if (end.answer === null) return "";
     // The entry's row when its text was not read here: a final answer's, or a text row's (a stop at the length limit).
@@ -369,7 +369,7 @@ export function statusOf(run: Run): { status: Status; state: State } {
   if (!users) return { status: "queued", state: "working" };
   // Every message's turn is over and the newest one's ended interrupted, with no stop of the person's saying so (the
   // harness ended it on its own): the run waits for the person, as after a stop, never working for good.
-  if (run.kind === "agentic" && run.submitted === 0 && !run.turns.legacy && run.turns.end()?.status === "interrupted") return { status: "input_required", state: "idle" };
+  if (run.kind === "agentic" && run.submitted === 0 && run.turns.end()?.status === "interrupted") return { status: "input_required", state: "idle" };
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
@@ -701,8 +701,9 @@ export class Runs {
 
   /** How an agentic run ends: over its cap, or as the turn of the person's newest message ended (turns.ts), once every
    *  message the run took has had its turn. Undefined while one is open, or when the run stopped, waits, or its turn
-   *  ended interrupted (the run then waits for the person). Never from the order of its rows, or from when its door said
-   *  idle. A workflow run ends when its workflow does. */
+   *  ended interrupted (the run then waits for the person), or while its records name no message (a live process of an
+   *  older server: the run's next process writes its turn's end as it opens). Never from the order of its rows, or from
+   *  when its door said idle. A workflow run ends when its workflow does. */
   private decide(run: Run): { outcome: Status; error?: RunError; abort?: boolean } | undefined {
     if (run.kind === "workflow") return undefined;
     // A cancel is the run's end already (cancel()): nothing decides another.
@@ -711,7 +712,6 @@ export class Runs {
     const cost = costOf(run.rows);
     if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
     if (run.submitted > 0) return undefined;
-    if (!run.turns.known || run.turns.legacy) return this.decideByRows(run);
     if (run.turns.open > 0 || stopped(run)) return undefined;
     const end = run.turns.end();
     if (end?.status === "answered") return { outcome: "completed" };
@@ -720,17 +720,6 @@ export class Runs {
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     if (message.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: message.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
     return { outcome: "failed", error: { code: "run_failed", message, retryable: false } };
-  }
-
-  /** The end of a run whose records name no message's turn (an import, a live process of an older server, a store such
-   *  a server wrote): read from its rows, as that server read it. */
-  private decideByRows(run: Run): { outcome: Status; error?: RunError } | undefined {
-    if (run.working) return undefined;
-    const last = meaningful(run.rows);
-    if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
-    if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
-    if (stopped(run)) return undefined;
-    return answerOf(run.rows) ? { outcome: "completed" } : undefined;
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
@@ -1279,9 +1268,8 @@ export class Runs {
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
     // Its process is gone: its box goes with its end, whatever the end (a follow-up after it gets a fresh box; work/ stays).
     await this.dropBox(run);
-    const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
-    const line = summary ?? (outcome === "completed" ? (answerOfRun(run) ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
+    const line = summary ?? (outcome === "completed" ? answerOfRun(run) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
     const counted = run.metrics;

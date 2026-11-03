@@ -121,7 +121,7 @@ test("an older bridge's records: #1424's turn end with no message closes the mes
   assert.deepEqual([next.open, next.end()], [1, undefined], "the newest is open");
   next.note([ended(8, { message: "b", status: "completed", answer: null })]);
   assert.deepEqual([next.open, answerOf(next)], [0, ""], "and the turn end naming it closes it");
-  assert.equal(new Turns().known, false, "no message named");
+  assert.deepEqual([new Turns().open, new Turns().end()], [0, undefined], "no message named: none open, and no end");
 });
 
 test("pi's input submissions: open while queued or placed, closed by their settlement in the answer's commit; one withdrawn before it was placed had no turn", () => {
@@ -144,7 +144,8 @@ test("pi's input submissions: open while queued or placed, closed by their settl
   assert.deepEqual(read([], [{ ...placed, status: "unanswered", reason: "model_error", detail: "spend_cap_reached: no room" }]).end(), { status: "failed", answer: null, error: "spend_cap_reached: no room" });
   const withdrawn = read([], [placed, { ...placed, status: "done", answer: 5 }, { id: 7, conversationId: 1, type: "input", status: "queued" }, { id: 7, conversationId: 1, type: "input", status: "unanswered", reason: "aborted" }]);
   assert.deepEqual([withdrawn.open, withdrawn.end()?.status], [0, "answered"]);
-  assert.equal(read([], [{ ...queued, requestId: "learn-reflect-r1" }]).known, false, "the end-of-run turn's message is the server's");
+  const reflect = read([], [{ ...queued, requestId: "learn-reflect-r1" }]);
+  assert.deepEqual([reflect.open, reflect.end()], [0, undefined], "the end-of-run turn's message is the server's");
 });
 
 test("a working turn's last progress: when its message was taken, then each entry since; none once every message is closed", () => {
