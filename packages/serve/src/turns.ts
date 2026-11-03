@@ -52,7 +52,8 @@ export class Turns {
       const data = isObject(value.data) ? value.data : undefined;
       const first = Array.isArray(value.model) && isObject(value.model[0]) ? value.model[0] : undefined;
       if (value.kind === "pi.assistant" && id !== undefined && Array.isArray(first?.content) && first.content.some((b) => isObject(b) && b.type === "toolCall")) this.#calls.add(id);
-      if (value.kind === "pi.assistant" && first?.stopReason === "stop" && id !== undefined) {
+      // An answer's text: a stop's, or a stop at the length limit (pi ends the turn on both, settled on that entry).
+      if (value.kind === "pi.assistant" && (first?.stopReason === "stop" || first?.stopReason === "length") && id !== undefined) {
         const text = textOf(first.content);
         this.#texts.set(id, text);
         if (text && fresh) this.#newestText = text;

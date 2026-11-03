@@ -307,7 +307,8 @@ function answerOfRun(run: Run): string | null {
   const end = run.turns.legacy ? undefined : run.turns.end();
   if (end?.status === "answered") {
     if (end.answer === null) return "";
-    return run.turns.text(end.answer) ?? run.rows.findLast((r) => r.kind === "final_answer" && entryOfRow(r.id) === end.answer)?.text ?? "";
+    // The entry's row when its text was not read here: a final answer's, or a text row's (a stop at the length limit).
+    return run.turns.text(end.answer) ?? run.rows.findLast((r) => (r.kind === "final_answer" || r.kind === "text_block") && entryOfRow(r.id) === end.answer)?.text ?? "";
   }
   const answer = answerOf(run.rows);
   return answer ? (lastAnswer(run) ?? answer.text ?? answer.summary ?? null) : lastAnswer(run);

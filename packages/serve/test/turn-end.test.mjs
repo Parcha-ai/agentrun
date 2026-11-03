@@ -129,6 +129,9 @@ test("pi's input submissions: open while queued or placed, closed by their settl
   assert.deepEqual([read([], [queued]).open, read([], [placed]).open], [1, 1]);
   const done = read([user(3, "hi"), answer], [placed, { ...placed, status: "done", answer: 5 }]);
   assert.deepEqual([done.open, answerOf(done)], [0, ""], "a stop with only thinking is answered, with no text");
+  // A stop at the length limit is its turn's answer, with its own text.
+  const cut = { kind: "pi.assistant", id: 7, conversationId: 1, model: [{ role: "assistant", content: [{ type: "text", text: "Cut short" }], api: "faux", stopReason: "length" }] };
+  assert.equal(answerOf(read([user(3, "hi"), cut], [{ ...placed, status: "done", answer: 7 }])), "Cut short");
   // ask_person ends the turn on the entry that asked for it: the person is asked, and the run waits, not answered.
   const ask = assistant(6, [{ type: "toolCall", id: "c1", name: "ask_person", arguments: { question: "Which?" } }], "toolUse", 0.001);
   assert.deepEqual(read([user(3, "hi"), ask], [{ ...placed, status: "done", answer: 6 }]).end(), { status: "asked", answer: null });
