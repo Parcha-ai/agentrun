@@ -284,7 +284,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const modelsReady = caps?.models?.ready;
   useEffect(() => {
     if (modelsReady !== false) return;
-    const again = () => void v2.capabilities().then(setCaps).catch(() => {});
+    // Through the one guarded reader, so an older answer never undoes a newer one.
+    const again = () => readCaps();
     const timer = setInterval(again, MODEL_CHECK_MS);
     window.addEventListener("focus", again);
     return () => { clearInterval(timer); window.removeEventListener("focus", again); };
@@ -312,7 +313,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         : where.section === "mission"
         // The first screen asks for a model key while the server says no agent that names no model runs here yet.
         ? <div className="flex h-full flex-col">
-            {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} atRest={caps.features.tool_keys?.at_rest} onSaved={() => { v2.capabilities().then(setCaps).catch(() => {}); }} />}
+            {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} atRest={caps.features.tool_keys?.at_rest} onSaved={readCaps} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
