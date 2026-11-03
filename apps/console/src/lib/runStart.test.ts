@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { capHint, curlFor, exampleInput, keeper, startBody, started, submitStart } from "./runStart";
+import { capHint, curlFor, exampleInput, keeper, previewBody, startBody, started, submitStart } from "./runStart";
 
 describe("startBody", () => {
   it("starts an agentic run with its first message as content, and only the options given", () => {
@@ -133,6 +133,20 @@ describe("startBody, the agent's least cap", () => {
     expect(go("1", null)).toEqual({ ok: false, field: "max_cost_usd", message: "No cap can be kept on this agent's model." });
     expect(go("", null).ok).toBe(true);
     expect(go("0.0001", undefined).ok).toBe(true);
+  });
+});
+
+// The code pane's request: the one sent when the form is valid (so its Idempotency-Key is the send's), and what the form
+// names when it is not, so a copied request is refused as the form is.
+describe("previewBody", () => {
+  it("is startBody's body for a valid form, and keeps every option the form names for one it refuses", () => {
+    const f = { text: "Go.", revision: "r1", effort: "high", maxCostUsd: "0.50" };
+    const built = startBody("agentic", f);
+    expect(built.ok && built.body).toEqual(previewBody("agentic", f));
+    expect(startBody("agentic", { ...f, minCapUsd: 1 }).ok).toBe(false);
+    expect(previewBody("agentic", { ...f, text: "" })).toEqual({ input: { content: "" }, revision: "r1", effort: "high", max_cost_usd: 0.5 });
+    expect(previewBody("agentic", { ...f, maxCostUsd: "five" }).max_cost_usd).toBe("five");
+    expect(previewBody("workflow", { text: "{", maxCostUsd: "1" })).toEqual({ input: "{" });
   });
 });
 
