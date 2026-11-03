@@ -78,6 +78,12 @@ export const turnOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs"
 /** The commits on main that name run `runId` in a Run-Id trailer. */
 export const mergesOf = (repo, runId) => git(repo, ["log", "--format=%H %(trailers:key=Run-Id,valueonly)", "main"]).split("\n").filter((entry) => entry.split(" ")[1] === runId);
 
+/** What a prompt holds under `# Learned`, to the end of the run's instructions (pi's system prompt closes them with
+ *  `</instructions>`), or undefined: as the run's pin keeps it (`section`). */
+export const learnedIn = (prompt) => /\n# Learned\n\n([\s\S]*?)(?:\n<\/instructions>|$)/.exec(prompt)?.[1];
+/** The notes a section under `# Learned` gives whole, in order, by their headings, `## <name> (<file>)`. */
+export const wholeIn = (section) => [...(section ?? "").matchAll(/^## .* \(([A-Za-z0-9][A-Za-z0-9._-]*\.md)\)$/gm)].map((match) => match[1]);
+
 /** The end-of-run turn's own rows, and the run's learning rows. */
 export const reflectRows = (rows) => rows.filter((row) => row.agent_label === "learning" && row.kind !== "learning");
 export const learningRows = (rows) => rows.filter((row) => row.kind === "learning");

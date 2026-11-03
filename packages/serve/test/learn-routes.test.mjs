@@ -7,8 +7,9 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { parseNoteFile } from "../dist/learn/notes.js";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, made, objects, repoOf, savedOf, settled, started } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learnedIn, learner, made, objects, repoOf, savedOf, settled, started, wholeIn } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { learningTestHooks } from "../dist/learning.js";
 import { agent, call, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -24,8 +25,6 @@ const added = (text) => {
   const lines = text.split("\n").slice(0, -1);
   return `@@ -0,0 +1,${lines.length} @@\n${lines.map((one) => `+${one}\n`).join("")}`;
 };
-/** The index under `# Learned` in a prompt, or undefined. */
-const learnedIn = (prompt) => /\n# Learned\n\n[^\n]*\n\n([\s\S]*?)(?:\n\n|\n<\/instructions>|\n?$)/.exec(prompt)?.[1];
 
 test("a person sees what the agent learned and controls it: the view, the log by run and by person, a run's diff and its drop, an edit, a create and a retire through preconditions, the checks on a person's note, and the next run reading the result", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, data, token } = await serve(t, { learning: "on", faux: LEARN });
@@ -177,7 +176,10 @@ test("a person sees what the agent learned and controls it: the view, the log by
   // The next run reads the edit and the new note, and not the retired one.
   const three = await started(api, id);
   const third = await ended(api, three);
-  assert.equal(learnedIn(third.view.result.final_answer), index, third.view.result.final_answer);
+  // Each note whole, the one changed last first: the one a person created, then the one they edited.
+  const section = learnedIn(third.view.result.final_answer);
+  assert.deepEqual(wholeIn(section), ["ask-first.md", "check-units.md"], third.view.result.final_answer);
+  assert.ok(section.includes(parseNoteFile("check-units.md", EDITED).body.trim()), section);
   // Its copy, as the run settled: set aside from its work, as its end-of-run turn left it.
   assert.ok(existsSync(join(copyOf(data, three), "ask-first.md")) && !existsSync(join(copyOf(data, three), "quote-sources.md")), "the retired note is not in its .learning/");
   assert.equal(readFileSync(join(copyOf(data, three), "check-units.md"), "utf8"), EDITED);
@@ -305,7 +307,7 @@ test("a restarted server counts an agent's runs that tried to learn from the lea
   await made(first.api, learner("counted", { plan: [["check-units.md", UNITS]], once: true }));
   const merged = await ended(first.api, await started(first.api, "counted"));
   settled(merged.view, merged.rows, "merged");
-  // The second run's index names the note: it plans nothing, and its learning is dropped as empty.
+  // The second run's instructions name the note: it plans nothing, and its learning is dropped as empty.
   const empty = await ended(first.api, await started(first.api, "counted"));
   settled(empty.view, empty.rows, "dropped", "empty");
   assert.equal((await first.api("GET", `/runs/${empty.view.run_id}/learning`)).body.verdict, null, "no grade ran, so no verdict");

@@ -1,7 +1,7 @@
 // An agent with learning on remembers, on pi, Claude and Codex, with no write tool (its job only reads): run 1 answers,
 // then its end-of-run turn answers with a note, in a ```note block; the server reads it from the answer, and the note is
 // checked, graded on the agent's own model and merged into the folder's main, whose MEMORY.md lists it; and run 2 starts
-// from it, the note's line in its instructions under `# Learned` and the file in its `.learning/`. The turn never
+// from it, the note whole in its instructions under `# Learned` and the file in its `.learning/`. The turn never
 // changes the job's answer. The data directory's path holds a space, and the turn's message names the folder relative
 // to the run's work, never by a host path. What each run read and learned is on its learning block, in its view and in
 // every list: run 1 learned the note (its read of it failed: it was not there yet), and run 2 used it (its read of
@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, onMain, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started, turnOf } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learnedIn, learner, onMain, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started, turnOf, wholeIn } from "./learn-support.mjs";
 import { scratch, serve } from "./support.mjs";
 
 const FILE = "check-units.md";
@@ -24,11 +24,9 @@ const readsOf = (rows, path) => {
   const calls = new Set(rows.filter((row) => row.kind === "tool_use" && row.tool_name === "read" && row.tool_input_preview === path).map((row) => row.tool_use_id));
   return rows.filter((row) => calls.has(row.tool_use_id) && row.kind === "tool_result").map((row) => row.tool_status);
 };
-/** The index under `# Learned` in a prompt, or undefined. */
-const learnedIn = (prompt) => /\n# Learned\n\n[^\n]*\n\n([\s\S]*?)(?:\n\n|\n<\/instructions>|\n?$)/.exec(prompt)?.[1];
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  test(`on ${harness}, with no write tool, run 1 learns and run 2 knows, on a data directory whose path holds a space: the end-of-run turn, which names .learning/ relative to the run's work, answers with a note that is checked, graded and merged, MEMORY.md on main lists it, and run 2 reads it under # Learned and finds it in .learning/`, { timeout: 180_000 }, async (t) => {
+  test(`on ${harness}, with no write tool, run 1 learns and run 2 knows, on a data directory whose path holds a space: the end-of-run turn, which names .learning/ relative to the run's work, answers with a note that is checked, graded and merged, MEMORY.md on main lists it, and run 2 reads it whole under # Learned and finds it in .learning/`, { timeout: 180_000 }, async (t) => {
     const data = join(await scratch(t), "learning data", "agents");
     const { api } = await serve(t, { learning: "on", faux: LEARN, fauxHarness: LEARN, data });
     const id = `loop-${harness}`;
@@ -87,7 +85,10 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     // Run 2, the same revision: it starts from the merge.
     const two = await started(api, id);
     const second = await ended(api, two);
-    assert.equal(learnedIn(second.view.result.final_answer), LINE, second.view.result.final_answer);
+    const section = learnedIn(second.view.result.final_answer);
+    assert.deepEqual(wholeIn(section), [FILE], second.view.result.final_answer);
+    assert.ok(section.includes("## Check units (check-units.md)\n\nConvert every amount to one unit before comparing\n\nAmounts in one answer came in cents and in dollars."), section);
+    assert.ok(!section.includes(LINE), "every note is whole, so the index adds nothing");
     assert.equal(readFileSync(join(copyOf(data, two), FILE), "utf8"), onMain(NOTE), "the note was in run 2's .learning/");
     assert.equal(JSON.parse(readFileSync(join(data, "runs", two, "learning.json"), "utf8")).seed, main);
     // It used the note, read as the job's first call: the note by its name, MEMORY.md (read too) no note at all. In its

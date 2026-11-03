@@ -8,8 +8,10 @@
 // When a run of such an agent is made the server makes the folder if it is absent (one host commit on main, holding an
 // empty `MEMORY.md`), resolves main's commit and reads it with plumbing, never the working tree. It copies that commit's
 // index and active notes into the run's `work/.learning/` and pins the commit in the run's directory (`learning.json`),
-// with what the run reads of the index. The run's process reads that pin (withLearned, for app.ts) and never runs git, so
-// it may run anywhere its directory is. When the run ends the server asks it one more turn, which answers with the notes
+// with what the run reads under `# Learned` (learnedOf): each active note whole while they fit the server's learning
+// budget, else the index and the notes changed last, whole, while they fit; every text cut of the server's secrets, the
+// copy's too. The run's process reads that pin (withLearned, for app.ts) and never runs git, so it may run anywhere its
+// directory is. When the run ends the server asks it one more turn, which answers with the notes
 // it would keep (learning-run.ts). As the run settles, before anything can open it again, that answer is kept in the
 // run's directory (`learning-turn.json`); its notes are checked from there (propose.ts), graded and merged into main
 // (grade.ts). The copy in the run's work is only for reading: nothing the run writes there is ever kept.
@@ -38,6 +40,19 @@ export function learningOf(env: NodeJS.ProcessEnv, given?: string): LearningMode
   const value = given ?? (env[LEARNING_ENV] || "on");
   if (!(LEARNING_MODES as readonly string[]).includes(value)) throw new Error(`learning is on or off (--learning, ${LEARNING_ENV}), not ${value}`);
   return value as LearningMode;
+}
+
+/** How much of what a run learned its instructions hold under `# Learned` by default, in UTF-8 bytes (learnedOf): its
+ *  notes whole while they fit, else the index and the notes changed last, whole, while they fit. */
+export const LEARNING_BUDGET = 8000;
+export const LEARNING_BUDGET_ENV = "AGENTRUN_SERVE_LEARNING_BUDGET";
+/** The learning budget: `given` (`--learning-budget`), else AGENTRUN_SERVE_LEARNING_BUDGET, else LEARNING_BUDGET. Any
+ *  value that is not a whole number of bytes, 0 or more, is an error, and the server does not start. */
+export function learningBudgetOf(env: NodeJS.ProcessEnv, given?: number): number {
+  const named = env[LEARNING_BUDGET_ENV];
+  const value = given ?? (named ? (/^\d+$/.test(named) ? Number(named) : Number.NaN) : LEARNING_BUDGET);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`the learning budget is a whole number of bytes, 0 or more (--learning-budget, ${LEARNING_BUDGET_ENV}), not ${given ?? named}`);
+  return value;
 }
 
 /** Where a run's learning stands (its `learning`, runs.ts): `seeded` once it starts from what its agent learned,
@@ -148,11 +163,13 @@ export const LEARNED_DIR = ".learning";
  *  settles (learning-run.ts beforeSettle), where the host alone reads it: what propose.ts checks. */
 export const LEARNING_TURN = "learning-turn.json";
 export type Turn = { answer: string; asked: string[] };
-/** What a run's pin holds: the commit of main it was seeded from, and what it reads of the index, when that holds a line. */
-export type Pin = { seed: string; learned?: string };
+/** What a run's pin holds: the commit of main it was seeded from, and what it reads under `# Learned` (learnedOf), when
+ *  it learned anything. `learned`, the index alone, is a pin an earlier server wrote, read as that server gave it. */
+export type Pin = { seed: string; section?: string; learned?: string };
 /** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
- *  top. `skipped` names what was there and not read. */
-export type Seed = { sha: string; index?: string; notes: Record<string, string>; files: string[]; skipped: string[] };
+ *  top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
+ *  changed last on main first. */
+export type Seed = { sha: string; index?: string; notes: Record<string, string>; files: string[]; skipped: string[]; recent?: string[] };
 
 /** A file main holds over this is not read: a note is short, and the index is read only so far (loadedIndex). */
 const FILE_CAP = 1 << 20;
@@ -401,15 +418,34 @@ export async function readSeed(cwd: string, repo: string, sha: string): Promise<
   return seed;
 }
 
+/** Each file's place in main's first-parent log from `sha`, by the newest commit that changed it: 0 for those the newest
+ *  commit changed, and so on, so two changes in one second keep their order. A run's notes (seedOf) and a person's view
+ *  of them (learning-routes.ts) are in this order, the one changed last first. */
+export async function changedOrder(cwd: string, repo: string, sha: string): Promise<Map<string, number>> {
+  const walked = (await git(cwd, repo, ["log", "--first-parent", "-z", "--name-only", "--format=%x1e", sha])).toString("utf8");
+  const order = new Map<string, number>();
+  walked.split("\x1e").slice(1).forEach((record, i) => {
+    const end = record.indexOf("\0");
+    if (end < 0) return;
+    for (const file of record.slice(end + 1).split("\0").map((name) => name.replace(/^\n/, "")).filter(Boolean)) if (!order.has(file)) order.set(file, i);
+  });
+  return order;
+}
+
 /** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent, and
- *  what that commit holds. In the agent's queue. */
+ *  what that commit holds, its active notes in the order they changed on main, the one changed last first (then by
+ *  name). In the agent's queue. */
 export function seedOf(data: string, agentId: string): Promise<Seed> {
   return withAgentRepo(data, agentId, async () => {
     const check = () => agentFolder(data, agentId);
     const repo = await check();
     const home = homeOf(data, agentId);
     const sha = await openAgentRepo(home, repo, check);
-    return readSeed(home, repo, sha);
+    const seed = await readSeed(home, repo, sha);
+    const order = await changedOrder(home, repo, sha);
+    const place = (file: string) => order.get(file) ?? Number.POSITIVE_INFINITY;
+    seed.recent = Object.keys(seed.notes).sort((a, b) => place(a) - place(b) || (a < b ? -1 : a > b ? 1 : 0));
+    return seed;
   });
 }
 
@@ -451,25 +487,72 @@ export async function readTurn(runDir: string): Promise<Turn> {
   return turn as Turn;
 }
 
-/** Lays `seed`'s index and active notes in `dir`, made fresh: whatever was there goes. */
-export async function layLearned(dir: string, seed: Seed): Promise<void> {
+/** `text` cut of the host's secrets (`shown`) a line at a time: the index, which may be longer than a whole text is
+ *  read (learn/secrets.ts PRINT_MAX). */
+const linesShown = (text: string, shown: Shown) => text.split("\n").map(shown.text).join("\n");
+
+/** Lays `seed`'s index and active notes in `dir`, made fresh: whatever was there goes. Each is cut of the host's
+ *  secrets (`shown`), the index a line at a time. */
+export async function layLearned(dir: string, seed: Seed, shown: Shown): Promise<void> {
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { mode: 0o700 });
-  const files = Object.entries(seed.notes);
-  if (seed.index !== undefined) files.unshift([INDEX_FILE, seed.index]);
+  const files = Object.entries(seed.notes).map(([file, text]): [string, string] => [file, shown.text(text)]);
+  if (seed.index !== undefined) files.unshift([INDEX_FILE, linesShown(seed.index, shown)]);
   for (const [file, text] of files) await writeFile(join(dir, file), text, { flag: "wx" });
 }
 
+/** How a run reads what it learned (learnedOf): the server's learning budget, in bytes; whether its agent has the read
+ *  tool; the host's secrets, which every text is cut of. */
+export type LearnedOptions = { budget: number; read: boolean; shown: Shown };
+/** The lines that open a run's `# Learned`, and the one that names `.learning/` to an agent that can read it. */
+const KEPT = `Follow a note when it applies to what you are doing. At the end of the run you are asked what to keep, and only your answer then is kept: a file you write in \`${LEARNED_DIR}/\` is not.`;
+const WHOLE_INTRO = `What you learned in earlier runs: each note whole, newest first. ${KEPT}`;
+const SOME_INTRO = `What you learned in earlier runs: the index, one line per note, then the newest notes whole. ${KEPT}`;
+const INDEX_INTRO = `What you learned in earlier runs, one line per note. ${KEPT}`;
+const READ_LINE = `The notes not given whole here are files in \`${LEARNED_DIR}/\` in your working directory: open one with the read tool when it applies.`;
+/** How a pin an earlier server wrote, the index alone, was read: its intro then. */
+const EARLIER_INTRO = `What you learned in earlier runs, one line per note. Each note is a file in \`${LEARNED_DIR}/\` in your working directory: open one when it applies to what you are doing. At the end of the run you are asked what to keep, and only your answer then is kept: a file you write in \`${LEARNED_DIR}/\` is not.`;
+/** A note's file an index line links to. */
+const LINKED = /\]\(([^)\s]+)\)/;
+const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+
+/** A note as a run reads it whole: its name and file, its description, then its body, each cut of the host's secrets. */
+const wholeNote = (note: LearnedNote, shown: Shown): string => [`## ${shown.text(oneLine(note.name))} (${shown.name(note.file)})`, shown.text(oneLine(note.description)), shown.text(note.body.trim())].filter(Boolean).join("\n\n");
+
+/** What a run of `seed` reads under `# Learned`, the same for every harness, or undefined when it learned nothing. Its
+ *  active notes, newest first (`seed.recent`, else by name): each whole while all fit `budget`, the UTF-8 bytes of
+ *  what follows the first paragraph. Past it, or when the index names a note main does not hold whole: the index as a
+ *  run loads it (learn/notes.ts loadedIndex, the first 200 lines and no more than 25 KB, past the budget when it is
+ *  larger), then the newest notes that fit what is left, each whole, and the rest named only in the index; an agent
+ *  with the read tool is told they are in `.learning/`, one without is not. Every text is cut of the host's secrets. */
+export function learnedOf(seed: Seed, options: LearnedOptions): string | undefined {
+  const { budget, read, shown } = options;
+  const active = new Map(activeOf(seed).map((note) => [note.file, note]));
+  const notes = (seed.recent ?? [...active.keys()].sort()).flatMap((file) => active.get(file) ?? []);
+  const lines = seed.index === undefined ? [] : loadedIndex(seed.index).split("\n").filter((entry) => entry.trim() !== "");
+  if (!notes.length && !lines.length) return undefined;
+  const blocks = notes.map((note) => wholeNote(note, shown));
+  // Each part's bytes, and the blank line before it.
+  const size = (text: string) => Buffer.byteLength(text) + 2;
+  const named = lines.every((entry) => active.has(LINKED.exec(entry)?.[1] ?? ""));
+  if (named && blocks.reduce((sum, block) => sum + size(block), 0) <= budget) return [WHOLE_INTRO, ...blocks].join("\n\n");
+  const index = lines.map(shown.text).join("\n");
+  let left = budget - (index ? size(index) : 0);
+  const whole = blocks.filter((block) => size(block) <= left && ((left -= size(block)), true));
+  return [whole.length ? SOME_INTRO : INDEX_INTRO, index, ...(read && whole.length < notes.length ? [READ_LINE] : []), ...whole].filter(Boolean).join("\n\n");
+}
+
 /** Writes `seed` into the run just made in `runDir`: the index and each active note into `work/.learning/`, made fresh
- *  (whatever was there goes), then the pin, last. A write that fails leaves no `.learning/` and no pin, and throws. */
-export async function pinSeed(runDir: string, work: string, seed: Seed): Promise<Pin> {
+ *  (whatever was there goes), then the pin, last, with what the run reads under `# Learned` (learnedOf). A write that
+ *  fails leaves no `.learning/` and no pin, and throws. */
+export async function pinSeed(runDir: string, work: string, seed: Seed, options: LearnedOptions): Promise<Pin> {
   const dir = join(work, LEARNED_DIR);
   const pinFile = join(runDir, LEARNING_PIN);
   try {
     await learningTestHooks.beforePin?.(runDir);
-    await layLearned(dir, seed);
-    const learned = seed.index === undefined ? "" : loadedIndex(seed.index);
-    const pin: Pin = { seed: seed.sha, ...(learned.trim() ? { learned } : {}) };
+    await layLearned(dir, seed, options.shown);
+    const section = learnedOf(seed, options);
+    const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}) };
     await writeDurable(pinFile, `${JSON.stringify(pin)}\n`);
     await learningTestHooks.afterPin?.(runDir);
     return pin;
@@ -504,17 +587,17 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
     throw error;
   }
   const pin = JSON.parse(text) as unknown;
-  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.learned !== undefined && typeof pin.learned !== "string")) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
+  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.learned !== undefined && typeof pin.learned !== "string")) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
   return pin as Pin;
 }
 
-/** The heading and the lines before the index, in a run's instructions. */
+/** The heading of what a run learned, in its instructions. */
 export const LEARNED_HEADING = "# Learned";
-const LEARNED_INTRO = `What you learned in earlier runs, one line per note. Each note is a file in \`${LEARNED_DIR}/\` in your working directory: open one when it applies to what you are doing. At the end of the run you are asked what to keep, and only your answer then is kept: a file you write in \`${LEARNED_DIR}/\` is not.`;
 
 /** A run's instructions, with what its pin in `runDir` says it learned after them, under `# Learned`. The one path for
  *  every harness (app.ts): pi's system prompt, claude-agent's and codex's instructions. */
 export async function withLearned(runDir: string, instructions: string): Promise<string> {
   const pin = await readPin(runDir);
-  return pin?.learned ? `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${LEARNED_INTRO}\n\n${pin.learned.trim()}` : instructions;
+  const section = pin?.section ?? (pin?.learned?.trim() ? `${EARLIER_INTRO}\n\n${pin.learned.trim()}` : undefined);
+  return section ? `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${section}` : instructions;
 }
