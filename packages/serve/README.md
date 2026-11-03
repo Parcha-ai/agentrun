@@ -980,7 +980,9 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
 - `runs/<id>/learning.json` pins that commit (`seed`). It is written once: a resume or a follow-up reads the same
   commit, however `main` moves on.
 - What the agent learned goes into the run's instructions after the agent's, under `# Learned`, so a run reads it
-  whatever its tools: an agent with no `read` tool still follows its notes. Each active note is there whole (its
+  whatever its tools: an agent with no `read` tool still follows its notes. Only active notes are served: a note with
+  any other status is never there, whole or by its index line (one a hand edit left in `MEMORY.md` is dropped), and is
+  not counted toward the budget. Each active note is there whole (its
   `## name (file.md)`, its description, then its text), the one changed last on `main` first (a merge or a person's
   edit; then by name), while they all fit the server's learning budget (`--learning-budget`, 8000 bytes by default).
   Past it, the run reads the first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own),
@@ -994,7 +996,7 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   reads (`section`), so a resume or a follow-up reads the same; a pin an earlier server wrote, the index alone
   (`learned`), is read as that server gave it.
 - `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh and cut of the server's
-  secrets the same way, for the run to read; a superseded or retired note is not.
+  secrets the same way, for the run to read; a note that is not active is not, and neither is its line in the index.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a

@@ -385,7 +385,8 @@ const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 /** What commit `sha` holds for a run, read with plumbing: its index and its active notes, the `.md` files at its top.
  *  Only a regular file (mode 100644) under FILE_CAP, in UTF-8, is read, and only a note in shape (learn/notes.ts
- *  parseNoteFile); anything else is named in `skipped`. A superseded or retired note is not a run's. A read git fails (an
+ *  parseNoteFile); anything else is named in `skipped`. Only an active note is a run's: a pending, superseded or retired
+ *  one is not, and nothing serves it (learnedOf, layLearned). A read git fails (an
  *  object missing, a timeout) throws. */
 export async function readSeed(cwd: string, repo: string, sha: string): Promise<Seed> {
   const seed: Seed = { sha, notes: {}, files: [], skipped: [] };
@@ -491,13 +492,29 @@ export async function readTurn(runDir: string): Promise<Turn> {
  *  read (learn/secrets.ts PRINT_MAX). */
 const linesShown = (text: string, shown: Shown) => text.split("\n").map(shown.text).join("\n");
 
-/** Lays `seed`'s index and active notes in `dir`, made fresh: whatever was there goes. Each is cut of the host's
- *  secrets (`shown`), the index a line at a time. */
+/** A note's file an index line links to. */
+const LINKED = /\]\(([^)\s]+)\)/;
+
+/** `seed`'s index as a run is given it: each line that links to a file main holds and that is no active note (a
+ *  pending, superseded or retired one, or one not read) left out, so it is never served or counted. The host's index
+ *  names none; a hand edit might. A line naming a file main does not hold stays. */
+function servedIndex(seed: Seed): string | undefined {
+  if (seed.index === undefined) return undefined;
+  const held = new Set(seed.files);
+  return seed.index.split("\n").filter((entry) => {
+    const file = LINKED.exec(entry)?.[1];
+    return !(file !== undefined && held.has(file) && !Object.hasOwn(seed.notes, file));
+  }).join("\n");
+}
+
+/** Lays `seed`'s index and active notes in `dir`, made fresh: whatever was there goes. The index names the active notes
+ *  alone (servedIndex), and each file is cut of the host's secrets (`shown`), the index a line at a time. */
 export async function layLearned(dir: string, seed: Seed, shown: Shown): Promise<void> {
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { mode: 0o700 });
   const files = Object.entries(seed.notes).map(([file, text]): [string, string] => [file, shown.text(text)]);
-  if (seed.index !== undefined) files.unshift([INDEX_FILE, linesShown(seed.index, shown)]);
+  const index = servedIndex(seed);
+  if (index !== undefined) files.unshift([INDEX_FILE, linesShown(index, shown)]);
   for (const [file, text] of files) await writeFile(join(dir, file), text, { flag: "wx" });
 }
 
@@ -512,15 +529,15 @@ const INDEX_INTRO = `What you learned in earlier runs, one line per note. ${KEPT
 const READ_LINE = `The notes not given whole here are files in \`${LEARNED_DIR}/\` in your working directory: open one with the read tool when it applies.`;
 /** How a pin an earlier server wrote, the index alone, was read: its intro then. */
 const EARLIER_INTRO = `What you learned in earlier runs, one line per note. Each note is a file in \`${LEARNED_DIR}/\` in your working directory: open one when it applies to what you are doing. At the end of the run you are asked what to keep, and only your answer then is kept: a file you write in \`${LEARNED_DIR}/\` is not.`;
-/** A note's file an index line links to. */
-const LINKED = /\]\(([^)\s]+)\)/;
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
 /** A note as a run reads it whole: its name and file, its description, then its body, each cut of the host's secrets. */
 const wholeNote = (note: LearnedNote, shown: Shown): string => [`## ${shown.text(oneLine(note.name))} (${shown.name(note.file)})`, shown.text(oneLine(note.description)), shown.text(note.body.trim())].filter(Boolean).join("\n\n");
 
-/** What a run of `seed` reads under `# Learned`, the same for every harness, or undefined when it learned nothing. Its
- *  active notes, newest first (`seed.recent`, else by name): each whole while all fit `budget`, the UTF-8 bytes of
+/** What a run of `seed` reads under `# Learned`, the same for every harness, or undefined when it learned nothing. Only
+ *  active notes are served: a pending, superseded or retired one is never there, whole or in the index, nor counted
+ *  toward the budget (readSeed reads active notes alone, and servedIndex drops their lines). Its active notes, newest
+ *  first (`seed.recent`, else by name): each whole while all fit `budget`, the UTF-8 bytes of
  *  what follows the first paragraph. Past it, or when the index names a note main does not hold whole: the index as a
  *  run loads it (learn/notes.ts loadedIndex, the first 200 lines and no more than 25 KB, past the budget when it is
  *  larger), then the newest notes that fit what is left, each whole, and the rest named only in the index; an agent
@@ -529,17 +546,18 @@ export function learnedOf(seed: Seed, options: LearnedOptions): string | undefin
   const { budget, read, shown } = options;
   const active = new Map(activeOf(seed).map((note) => [note.file, note]));
   const notes = (seed.recent ?? [...active.keys()].sort()).flatMap((file) => active.get(file) ?? []);
-  const lines = seed.index === undefined ? [] : loadedIndex(seed.index).split("\n").filter((entry) => entry.trim() !== "");
+  const index = servedIndex(seed);
+  const lines = index === undefined ? [] : loadedIndex(index).split("\n").filter((entry) => entry.trim() !== "");
   if (!notes.length && !lines.length) return undefined;
   const blocks = notes.map((note) => wholeNote(note, shown));
   // Each part's bytes, and the blank line before it.
   const size = (text: string) => Buffer.byteLength(text) + 2;
   const named = lines.every((entry) => active.has(LINKED.exec(entry)?.[1] ?? ""));
   if (named && blocks.reduce((sum, block) => sum + size(block), 0) <= budget) return [WHOLE_INTRO, ...blocks].join("\n\n");
-  const index = lines.map(shown.text).join("\n");
-  let left = budget - (index ? size(index) : 0);
+  const shownIndex = lines.map(shown.text).join("\n");
+  let left = budget - (shownIndex ? size(shownIndex) : 0);
   const whole = blocks.filter((block) => size(block) <= left && ((left -= size(block)), true));
-  return [whole.length ? SOME_INTRO : INDEX_INTRO, index, ...(read && whole.length < notes.length ? [READ_LINE] : []), ...whole].filter(Boolean).join("\n\n");
+  return [whole.length ? SOME_INTRO : INDEX_INTRO, shownIndex, ...(read && whole.length < notes.length ? [READ_LINE] : []), ...whole].filter(Boolean).join("\n\n");
 }
 
 /** Writes `seed` into the run just made in `runDir`: the index and each active note into `work/.learning/`, made fresh
