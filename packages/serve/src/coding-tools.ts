@@ -8,7 +8,8 @@
 // app.ts) and another harness's host tools (host-tools.ts).
 import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
+import { type Extension, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
+import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
 import { ArchilCodingTools } from "@parcha/pi-durable-disk";
 import { BOX_WORK, type Place } from "./place.js";
 
@@ -24,9 +25,10 @@ export const BOXED_TOOLS: readonly string[] = ["read", "write", "edit", "bash"];
 /** A run's coding tools and the extension a conversation selects for them. */
 export type CodingSource = { readonly extension: Extension; readonly tools: readonly ToolRegistration[] };
 
-/** The environment a boxed tool's call runs on: the run's box's (run-box.ts). `hostWork`: the run's own work/ on this
- *  machine, the source the box binds at BOX_WORK. */
-export type BoxedEnv = { env(context: Context): Promise<unknown>; hostWork?: string };
+/** The environment a boxed tool's call runs on: the run's box's (run-box.ts). `note` writes a row on the run's timeline
+ *  while the box is being had (its image still coming). `hostWork`: the run's own work/ on this machine, the source the
+ *  box binds at BOX_WORK. */
+export type BoxedEnv = { env(context: Context, note?: (summary: string) => Promise<void>): Promise<unknown>; hostWork?: string };
 
 /** A boxed file tool's path as the box names it, or undefined when it leaves the box's work dir (`~` and `file:`
  *  included). A path under the run's own host work dir (another harness's cwd can name one) is the same file at
@@ -53,7 +55,9 @@ export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
       const inBox = typeof path === "string" ? boxPath(path, box.hostWork) : undefined;
       if (typeof path === "string" && inBox === undefined) throw new Error(`${path}: outside the workspace ${BOX_WORK}`);
       const given = inBox === undefined ? args : { ...(args as object), path: inBox };
-      return tool.execute(given as typeof args, { ...api, env: (await box.env(context)) as typeof api.env }, context);
+      // A row the box's wait writes goes on the run's root, as a host's phase (pi-durable-agent's timeline shows it).
+      const note = (summary: string) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data: { summary } })), context);
+      return tool.execute(given as typeof args, { ...api, env: (await box.env(context, note)) as typeof api.env }, context);
     },
   }));
   // The permission gate (allow, ask, deny) wraps this source: the one call it takes, whichever of the two lands second.

@@ -28,6 +28,7 @@ import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
+import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
@@ -422,7 +423,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let latest = 0;
   const keysChanged = async () => {
     const mine = ++latest;
-    // The box offers are probed once, below, before the first reading is made.
+    // The box offers are probed once, below, before the first reading is made, and read again when the Docker box's
+    // image comes in or its pull fails (box-image.ts), which makes a reading too.
     const next = await readingOf(base, maxRuns, storedKeys, learning, boxOffers);
     if (mine === latest) ({ env, caps } = next);
   };
@@ -430,9 +432,28 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // box stands in for Docker, and nothing asks Docker.
   const boxes = await boxRegistry(env);
   const fauxBox = options.faux && options.fauxBox ? await fauxBoxes(resolve(options.fauxBox), data) : undefined;
-  const boxOffers: BoxOffer[] = boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? { id: "docker", available: true, reason: "a faux box (tests)" } : offer));
+  // The Docker box's image, asked of Docker now and pulled in the background when Docker has none (box-image.ts): docker
+  // is preparing until it is in, and unavailable if the pull fails. Its record tells the run's processes; with no Docker
+  // box here there is none, so no run waits on one an earlier start left.
+  let image: DockerImage | undefined;
+  const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? { id: "docker", available: true, reason: "a faux box (tests)" } : offer.id === "docker" && image ? withImage(offer, image.state()) : offer));
+  const imageLog = (state: ImageState, more: Record<string, number> = {}) => log?.(logLine("box_image", { image: image!.image, state: state.state, ...more, ...("reason" in state ? { reason: state.reason } : {}) }));
+  let boxOffers: BoxOffer[] = offersNow();
+  const boxImage = !fauxBox && boxes.provider("docker") ? boxImageOf(env) : undefined;
+  if (boxImage) {
+    image = await dockerImage(env, data, boxImage, {
+      onChange: (state, ms) => {
+        boxOffers = offersNow();
+        imageLog(state, { ms });
+        void keysChanged().catch(() => undefined);
+      },
+    });
+    stops.push(async () => image?.stop());
+  } else await clearImage(data);
+  boxOffers = offersNow();
   const runBoxes = fauxBox ?? boxes.provider("docker");
   log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
+  if (image) imageLog(image.state());
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
@@ -1214,6 +1235,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     async close() {
       // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
       await runs.close();
+      image?.stop();
       await webhooks.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();

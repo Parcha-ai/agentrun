@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProvider, BoxSpec } from "@parcha/pi-transport";
+import { awaitImage, boxImageOf } from "./box-image.js";
 import { FAUX_ENV } from "./model.js";
 import { agentWorkDir, type Place } from "./place.js";
 
@@ -23,9 +24,8 @@ export const BOX_ENV: Readonly<Record<string, string>> = Object.freeze({ LANG: "
 export const BOX_LIFETIME_MS = 24 * 60 * 60_000;
 /** A bash command's timeout when the model names none. */
 export const BASH_TIMEOUT_MS = 300_000;
-/** The image a Docker box starts from. */
-export const DOCKER_IMAGE_ENV = "AGENTRUN_DOCKER_IMAGE";
-export const DEFAULT_DOCKER_IMAGE = "debian:bookworm-slim";
+/** The image a Docker box starts from (box-image.ts, where the server makes it ready). */
+export { DEFAULT_DOCKER_IMAGE, DOCKER_IMAGE_ENV } from "./box-image.js";
 /** Under `--faux` only: a module whose default export, given the data root, is the provider runs' boxes come from in
  *  place of Docker (the tests' faux box). */
 export const FAUX_BOX_ENV = "AGENTRUN_SERVE_FAUX_BOX";
@@ -52,28 +52,38 @@ export async function boxMounts(root: string, runDir: string, place: Place): Pro
   return [{ source: await mountSource(root, join(runDir, "work")), target: agentWorkDir(runDir, place) }];
 }
 
+/** The provider runs' boxes come from, and what a create of its box waits on first (`ready`, run-box below). */
+export type RunBoxes = BoxProvider & { ready?: BoxReady };
+
 /** The provider runs' boxes come from: under `--faux` with a faux box, its module's; else Docker on this machine, run as
- *  this process's user (serve's: a run's process is its child), so what a box writes in work/ stays serve's. */
-export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root: string): Promise<BoxProvider> {
+ *  this process's user (serve's: a run's process is its child), so what a box writes in work/ stays serve's, whose
+ *  create first waits while the server pulls its image (box-image.ts). */
+export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root: string): Promise<RunBoxes> {
   const faux = env[FAUX_ENV] ? env[FAUX_BOX_ENV] : undefined;
   if (faux) return fauxBoxes(faux, root);
   if (place.mode !== "sandbox" || place.box !== "docker") throw new Error(`runs in the ${place.mode === "sandbox" ? place.box : "runner"} place have no box`);
   const { dockerBoxes } = await import("@parcha/pi-transport/box/docker");
   const user = process.getuid && process.getgid ? `${process.getuid()}:${process.getgid()}` : undefined;
-  return dockerBoxes({ image: env[DOCKER_IMAGE_ENV] || DEFAULT_DOCKER_IMAGE, ...(user ? { user } : {}) });
+  const image = boxImageOf(env);
+  return { ...dockerBoxes({ image, ...(user ? { user } : {}) }), ready: (context, note) => awaitImage(root, image, context, note) };
 }
+
+/** What a run's box create waits on first, `note` taking its one timeline row: the server's pull of the Docker image
+ *  (box-image.ts). A faux box has no image, so none. */
+export type BoxReady = (context: Context, note: (summary: string) => Promise<void> | void) => Promise<void>;
 
 /** The tests' faux box provider, from its module. */
 export const fauxBoxes = async (module: string, root: string): Promise<BoxProvider> =>
   ((await import(pathToFileURL(module).href)) as { default: (root: string) => BoxProvider }).default(root);
 
 /** A run's box, as its tools' environment: found by its label or made on the first call, once; made again on the call
- *  after it was lost. A box that cannot be had fails that call; nothing falls back to this machine. */
-export type RunBox = { env(context: Context): Promise<ExecutionEnv>; hostWork: string };
+ *  after it was lost. A box that cannot be had fails that call; nothing falls back to this machine. Before a box is made,
+ *  its provider's `ready` is waited on (its image), and the call that opens it gives the `note` for its timeline row. */
+export type RunBox = { env(context: Context, note?: (summary: string) => Promise<void> | void): Promise<ExecutionEnv>; hostWork: string };
 
-export function runBox(provider: () => Promise<BoxProvider>, run: { id: string; root: string; dir: string; place: Place }): RunBox {
+export function runBox(provider: () => Promise<RunBoxes>, run: { id: string; root: string; dir: string; place: Place }): RunBox {
   let held: Promise<ExecutionEnv> | undefined;
-  const open = async (context: Context): Promise<ExecutionEnv> => {
+  const open = async (context: Context, note: (summary: string) => Promise<void> | void): Promise<ExecutionEnv> => {
     const boxes = await provider();
     const { boxEnv, endLeftCommands } = await import("@parcha/pi-transport/hands");
     let box = await attachRunBox(boxes, run.id, context);
@@ -82,6 +92,15 @@ export function runBox(provider: () => Promise<BoxProvider>, run: { id: string; 
       const ended = await endLeftCommands(box, context);
       if (!ended.ok) throw new Error(`the run's box could not be taken over: ${ended.error.message}`);
     } else {
+      // A box made while the server pulls its image waits for the image, not for a `docker run` that pulls it.
+      if (boxes.ready) {
+        try {
+          await boxes.ready(context, note);
+        } catch (error) {
+          if (context.abortSignal?.aborted) throw error;
+          throw new Error(`the run's box could not be made: ${(error as Error).message}`);
+        }
+      }
       const spec: BoxSpec = {
         env: BOX_ENV, workspace: agentWorkDir(run.dir, run.place), mounts: await boxMounts(run.root, run.dir, run.place),
         labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run" }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
@@ -99,8 +118,8 @@ export function runBox(provider: () => Promise<BoxProvider>, run: { id: string; 
   return {
     // The bind's source: a path another harness names under it is the same file in the box (coding-tools.ts boxPath).
     hostWork: join(run.dir, "work"),
-    env(context) {
-      held ??= open(context).catch((error: unknown) => {
+    env(context, note = () => undefined) {
+      held ??= open(context, note).catch((error: unknown) => {
         held = undefined;
         throw error;
       });

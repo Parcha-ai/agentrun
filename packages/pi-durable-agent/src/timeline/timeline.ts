@@ -78,6 +78,9 @@ export const TOOL_STARTED = "agentrun.tool_started";
  *  the answer's own entry was already in (a harness reports each call as it runs it, and its host writes an answer at its
  *  first call's end). It shows as that answer's, and is no request: no count, no cost, no tokens. */
 export const REQUEST_CONTINUED = "agentrun.request_continued";
+/** A host's own step, in its words (`summary`), such as a box waiting for its image: one `phase` row with that summary,
+ *  cut at CAPS.summary. No request, no cost; one without a summary shows nothing. */
+export const HOST_PHASE = "agentrun.phase";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
 const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
@@ -483,6 +486,9 @@ function createProjector(options: TimelineOptions) {
       add(make("phase", conv, base, { summary: "Context reset", text: textOf(message) || null }));
     } else if (entry.kind === "pi.compaction") {
       add(make("phase", conv, base, { summary: "Summarized older context", text: textOf(message) || null }));
+    } else if (entry.kind === HOST_PHASE) {
+      const summary = str(obj(entry.data)?.summary);
+      if (summary) add(make("phase", conv, base, { summary: firstLine(summary) }));
     } else if (entry.kind === "agent.handover") {
       const data = obj(entry.data);
       const [state, reason, tag] = [str(data?.state), str(data?.reason), str(data?.session)];
