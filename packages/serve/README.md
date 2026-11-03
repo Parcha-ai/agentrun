@@ -22,7 +22,7 @@ JS
 node packages/serve/dist/cli.js --faux faux.mjs
 ```
 
-Installed, `agentrun-serve` is a launcher that needs a POSIX `sh` with a builtin `printf` (Linux, macOS; not Windows). It hands the server its keys and token over a pipe, so none is in any process's environment, the run's processes included. Started as `node dist/cli.js`, as above, the server reads them from its own environment. `GET /v2/capabilities`' `secrets` says how they are held, and what that does not cover.
+Installed, `agentrun-serve` is a launcher that needs a POSIX `sh` with a builtin `printf` (Linux, macOS; not Windows). It hands the server its keys and token over a pipe, so none is in any process's environment, the run's processes included. Started as `node dist/cli.js`, as above, the server reads them from its own environment. `GET /v2/capabilities`' `secrets` says how they are held, and what that does not cover. Started with `npx @parcha/agentrun`, your shell and npm keep the keys you exported in their environment, as they always do; the server itself, and its runs, hold none. For the strictest custody, start this launcher directly, with each key set for that one command and not exported: once the launcher has handed a key to the server, no process holds it in its environment. The launcher takes keys from its environment only, not from a file or standard input.
 
 It prints where it listens and, at the start that made it, the token:
 

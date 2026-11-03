@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { confineTestHooks as confineHooks } from "@parcha/pi-durable-disk/internals";
 import { promptOf } from "../dist/app.js";
 import { assertHardlinkProtection, openWorkFile, walkWork, workspaceTestHooks } from "../dist/workspace.js";
-import { agent, follow, serve } from "./support.mjs";
+import { agent, follow, scratch, serve } from "./support.mjs";
 
 const CANARY = `not-a-secret-canary-${process.pid}`;
 
@@ -24,6 +24,17 @@ async function served(t) {
   const secret = join(server.data, "server-own.txt");
   await writeFile(secret, CANARY);
   return { ...server, runId: run.run_id, work, secret };
+}
+
+/** The same layout with no server, for what reads work/ through the module alone: a run's work/ in a data root that
+ *  holds a file of the server's own (the canary) outside work/. */
+async function unserved(t) {
+  const data = join(await scratch(t), "agents");
+  const work = join(data, "runs", "run-1", "work");
+  await mkdir(work, { recursive: true });
+  const secret = join(data, "server-own.txt");
+  await writeFile(secret, CANARY);
+  return { data, work, secret };
 }
 
 const get = (server, path) => server.api("GET", `/runs/${server.runId}/files${path}`);
@@ -87,7 +98,7 @@ test("the file listing walks through the confinement: a directory swapped for a 
 });
 
 test("a skill's SKILL.md is read through no link: a skill directory linked out of work/ is refused, and none of its text reaches the prompt", async (t) => {
-  const server = await served(t);
+  const server = await unserved(t);
   const outside = join(server.data, "elsewhere");
   await mkdir(outside, { recursive: true });
   await writeFile(join(outside, "SKILL.md"), CANARY);
@@ -97,7 +108,7 @@ test("a skill's SKILL.md is read through no link: a skill directory linked out o
 });
 
 test("a skill's SKILL.md swapped for a link after its check is refused", async (t) => {
-  const server = await served(t);
+  const server = await unserved(t);
   const dir = join(server.work, ".agents", "skills", "s");
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "SKILL.md"), "Be brief.");
@@ -128,7 +139,7 @@ test("serve can require that the kernel refuses hard links to files the linker c
 test("each entry left out says why: a link, not a regular file, another hard link; and a read past its cap is refused", async (t) => {
   const { execFileSync } = await import("node:child_process");
   const { readWorkBytes } = await import("../dist/workspace.js");
-  const server = await served(t);
+  const server = await unserved(t);
   await writeFile(join(server.work, "small.txt"), "12345");
   await symlink(server.secret, join(server.work, "ln"));
   await link(server.secret, join(server.work, "hard"));
@@ -165,13 +176,13 @@ test("a file this server cannot read (created private in the box) is listed, fla
 
 test("a directory the walk cannot read is reported refused, never read as empty, so no caller infers its files are gone", { skip: process.getuid?.() === 0 && "root reads every directory" }, async (t) => {
   const { chmod } = await import("node:fs/promises");
-  const server = await served(t);
+  const server = await unserved(t);
   await mkdir(join(server.work, "locked"));
   await writeFile(join(server.work, "locked", "kept.txt"), "still here");
   await chmod(join(server.work, "locked"), 0o000);
   const refused = [];
   const seen = [];
-  // The mode goes back before the test ends: the server's own cleanup, registered first, removes the directory.
+  // The mode goes back before the test ends: the scratch directory's cleanup, registered first, removes it.
   try {
     await walkWork(server.work, (path) => void seen.push(path), { refused: (path, reason) => void refused.push([path, reason]) });
   } finally {
@@ -183,7 +194,7 @@ test("a directory the walk cannot read is reported refused, never read as empty,
 
 test("a directory that lists but cannot be searched (0444) reports each entry it holds refused, never skips them, and the rest of work/ is still walked", { skip: process.getuid?.() === 0 && "root reads every directory" }, async (t) => {
   const { chmod } = await import("node:fs/promises");
-  const server = await served(t);
+  const server = await unserved(t);
   await mkdir(join(server.work, "learnings"));
   await writeFile(join(server.work, "learnings", "one.md"), "a note");
   await writeFile(join(server.work, "learnings", "two.md"), "another");
@@ -202,7 +213,7 @@ test("a directory that lists but cannot be searched (0444) reports each entry it
 
 test("an entry removed between the listing and its look is gone, not refused: nothing is said of it", async (t) => {
   const { rm } = await import("node:fs/promises");
-  const server = await served(t);
+  const server = await unserved(t);
   await writeFile(join(server.work, "stays.txt"), "x");
   await writeFile(join(server.work, "goes.txt"), "y");
   seam(t, "afterList", async (rel) => {
@@ -216,7 +227,7 @@ test("an entry removed between the listing and its look is gone, not refused: no
 });
 
 test("a directory swapped for a link after the walk listed it, and before it enters, is reported as a link, and not entered", async (t) => {
-  const server = await served(t);
+  const server = await unserved(t);
   await mkdir(join(server.work, "inner"));
   await writeFile(join(server.work, "inner", "f.txt"), "in");
   await mkdir(join(server.work, "other"));
@@ -238,7 +249,7 @@ test("a directory swapped for a link after the walk listed it, and before it ent
 
 test("work/ itself unreadable is no working copy: the walk throws, never reads as empty", { skip: process.getuid?.() === 0 && "root reads every directory" }, async (t) => {
   const { chmod } = await import("node:fs/promises");
-  const server = await served(t);
+  const server = await unserved(t);
   await chmod(server.work, 0o000);
   try {
     await assert.rejects(walkWork(server.work, () => {}), (error) => error.path === "." && error.reason === "unreadable");
@@ -287,7 +298,7 @@ test("the file view streams the bytes it opened: a swap after the open, before t
 
 test("a directory that becomes unreadable between its pin and its read is reported refused, not read as empty", { skip: process.getuid?.() === 0 && "root reads every directory" }, async (t) => {
   const { chmod } = await import("node:fs/promises");
-  const server = await served(t);
+  const server = await unserved(t);
   await mkdir(join(server.work, "late"));
   await writeFile(join(server.work, "late", "kept.txt"), "x");
   seam(t, "afterPin", async (rel) => {
@@ -304,7 +315,7 @@ test("a directory that becomes unreadable between its pin and its read is report
 
 test("work/ itself made unreadable between its pin and its read is no working copy: the walk throws, never lists nothing", { skip: process.getuid?.() === 0 && "root reads every directory" }, async (t) => {
   const { chmod } = await import("node:fs/promises");
-  const server = await served(t);
+  const server = await unserved(t);
   await writeFile(join(server.work, "kept.txt"), "x");
   seam(t, "afterPin", async (rel) => {
     if (rel === ".") await chmod(server.work, 0o000);
@@ -321,7 +332,7 @@ test("work/ itself made unreadable between its pin and its read is no working co
 test("a capped read refuses a file that grows past its cap between its size check and its read", async (t) => {
   const { appendFile } = await import("node:fs/promises");
   const { readWorkBytes } = await import("../dist/workspace.js");
-  const server = await served(t);
+  const server = await unserved(t);
   await writeFile(join(server.work, "grows.bin"), Buffer.alloc(8, 1));
   seam(t, "afterSizeCheck", (rel) => appendFile(join(server.work, rel), Buffer.alloc(8, 2)));
   await assert.rejects(readWorkBytes(server.work, "grows.bin", { maxBytes: 10 }), (error) => error.reason === "over_cap");

@@ -428,7 +428,9 @@ function createProjector(options: TimelineOptions) {
         if (thinking) add(make("thinking", conv, `${base}:${first("thinking")}`, { summary: `Thinking: ${cut(firstSentence(thinking), caps.thinking)}`, text: thinking }));
         const text = textOf(message);
         const final = message.stopReason === "stop" && !blocks.some((block) => block.type === "toolCall");
-        if (text) add(make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text }));
+        // A final stop's text block is its answer even when empty: the model ended its turn on purpose, with nothing to
+        // say. A message with no text block (a request the adapter bridge writes without content) shows none.
+        if (text || (final && first("text") >= 0)) add(make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text }));
         blocks.forEach((block, index) => {
           const [id, name] = [str(block.id), str(block.name)];
           if (block.type !== "toolCall" || !id || !name) return;

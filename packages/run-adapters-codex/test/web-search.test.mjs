@@ -64,7 +64,7 @@ test("the machine sets Codex's web search to live only when asked, and a caller 
 
 test('webSearch is "live" or absent', () => {
   for (const webSearch of ['cached', 'indexed', true]) {
-    assert.throws(() => codexAdapter({ model: 'gpt-5.4-mini', webSearch, provider: { origin: 'https://provider.invalid', credential: () => '' } }), /^TypeError: agentrun-codex: webSearch is "live" or absent/);
+    assert.throws(() => codexAdapter({ model: 'gpt-5.4-mini', webSearch, provider: { origin: 'https://provider.invalid', credential: () => '' } }), /^TypeError: agentrun-harness-codex: webSearch is "live" or absent/);
   }
 });
 

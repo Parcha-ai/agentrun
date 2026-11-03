@@ -17,7 +17,17 @@ your machine or your own server, or with us when hosted AgentRun opens.
    `@parcha/pi-durable-disk` and `@parcha/pi-transport` (where an agent and its tools run),
    `@parcha/pi-browser` and `@parcha/pi-vision` (what an agent can see and do). On npm, Apache-2.0.
 
-## Host it
+## Start it
+
+```text
+Ask your coding agent: "Read agentrun.ai/SKILL.md and set up AgentRun for me"
+npx @parcha/agentrun
+```
+
+Either one starts AgentRun on this machine and opens its console: your coding agent follows [the skill](docs/SKILL.md),
+or [`npx @parcha/agentrun`](packages/agentrun/README.md) does it in one command (Node 22.19+).
+
+## Run it on a server
 
 1. **Free**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker run` on your own machine or server, with your own model key. An OpenRouter key with a credit limit caps what your agents can spend.
 
