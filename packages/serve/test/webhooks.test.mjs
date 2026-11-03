@@ -3,7 +3,7 @@
 // tried again, then logged as failed; a pending one goes on after a restart; a 410 turns the webhook off.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -812,30 +812,56 @@ test("a run.ended whose outbox write failed is not recorded as queued, so after 
 
 const waitNotice = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8")).wait_notice;
 
-test("a run that comes to wait for its person while no server is up gives its run.needs_input from the server that adopts it, once", async (t) => {
+/** Whether the run's own store holds its ask_person call: it asked, whatever server is or is not up. */
+function asked(data, runId) {
+  let store;
+  try {
+    store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 1000 });
+    return store.prepare("SELECT record FROM entries ORDER BY id DESC LIMIT 10").all().some((row) => row.record.includes('"ask_person"'));
+  } catch {
+    return false;
+  } finally {
+    store?.close();
+  }
+}
+/** The webhook-id a run's notice has (webhooks.ts emit): its run, its type and the marker of its moment. */
+const noticeId = (runId, type, marker) => `msg_${createHash("sha256").update(`${runId}\n${type}\n${marker}`).digest("hex").slice(0, 32)}`;
+
+test("a run that comes to wait for its person while no server is up gives exactly one run.needs_input from the server that adopts it, under the wait's own id", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
   const data = join(await scratch(t), "agents");
   const gate = join(await scratch(t), "ask");
   const first = await serverProcess(t, data);
   assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  // "Pick a region once <file> exists." (fixtures/faux-model.mjs) asks only once the file is there.
   const run = await startRun(first.api, "asks-late", `Pick a region once ${gate} exists.`, { tools: ["ask_person"] });
   await follow(first.api, run.run_id, ["working"]);
   await killed(first.child);
   const { holder } = JSON.parse(readFileSync(join(data, "runs", run.run_id, "run.json"), "utf8"));
   t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   assert.ok(processAlive(holder.pid), "its process outlived the server");
+  // The run asks with no server up: its process commits the question to its own store.
   writeFileSync(gate, "");
-  // The run's process asks with no server up: its store has the question once its timeline does.
-  await sleep(1_500);
+  await until(() => asked(data, run.run_id), "the run's question, in its own store");
+  assert.deepEqual(ofType(hook.got, "run.needs_input"), [], "no server was up to notice it");
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
   await follow(api, run.run_id, ["input_required"]);
-  await until(() => ofType(hook.got, "run.needs_input").length === 1, "its wait's notice, from the server that adopted it", 10_000);
+  await until(() => ofType(hook.got, "run.needs_input").length > 0, "its wait's run.needs_input, from the server that adopted the run", 10_000);
   await until(() => waitNotice(data, run.run_id), "recorded as queued");
   await sleep(500);
-  assert.equal(ofType(hook.got, "run.needs_input").length, 1, "once");
+  const waits = ofType(hook.got, "run.needs_input");
+  const ids = [...new Set(waits.map((r) => r.headers["webhook-id"]))];
+  assert.equal(waits.length, 1, `one wait, one message: ${ids}`);
+  // Its marker is its question's row: the newest that is neither usage nor a phase (mark's).
+  const { rows } = (await api("GET", `/runs/${run.run_id}/timeline`)).body;
+  const question = rows.findLast((row) => row.kind !== "usage" && row.kind !== "phase" && !/:run:(start|end)$/.test(row.id));
+  assert.equal(ids[0], noticeId(run.run_id, "run.needs_input", question.id), "the id the wait's own marker makes");
+  assert.deepEqual(waitNotice(data, run.run_id), { marker: question.id });
+  const body = JSON.parse(waits[0].body);
+  assert.deepEqual([body.data.run_id, body.data.status, body.data.pending], [run.run_id, "input_required", { kind: "question" }]);
   assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" })).status, 202);
   await follow(api, run.run_id, ["completed"]);
   await until(() => ofType(hook.got, "run.ended").length === 1, "its end's notice");
