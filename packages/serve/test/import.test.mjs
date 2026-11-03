@@ -370,6 +370,7 @@ function shapedKeys() {
     stripe: ["sk", "live", pick(24, ALNUM)].join("_"),
     pem: { block: [`-----BEGIN RSA ${"PRIVATE"} KEY-----`, ...lines, `-----END RSA ${"PRIVATE"} KEY-----`].join("\n"), lines },
     assigned: `${pick(26, ALNUM)}9z`,
+    bearer: [pick(36, ALNUM), pick(120, ALNUM), pick(43, ALNUM)].join("."),
   };
 }
 
@@ -384,7 +385,7 @@ test("an import cuts every key or token of a known shape that no environment hol
   writeFileSync(join(site, ".claude", "skills", `rotate-${k.githubFine}`, "SKILL.md"), `---\nname: rotate\n---\nThe old id was ${k.awsId}, aws_secret_access_key = ${k.awsSecret}\n`);
   // A session's text (a .env an agent printed), its first message (the run's title), a subagent's answer, and a
   // session file named after a key (its records carry no session id, so the import names the session after its file).
-  claudeSession(at, site, 1, { prompt: `Rotate ${k.anthropic} and ${k.github} today.`, output: `cat .env:\nOPENAI_API_KEY=${k.openai}\nDATABASE_PASSWORD=${k.assigned}\nSLACK=${k.slack}` });
+  claudeSession(at, site, 1, { prompt: `Rotate ${k.anthropic} and ${k.github} today.`, output: `cat .env:\nOPENAI_API_KEY=${k.openai}\nDATABASE_PASSWORD=${k.assigned}\nSLACK=${k.slack}\ncurl -H "Authorization: ${"Bearer"} ${k.bearer}" https://api.example.com/v1/me` });
   claudeSubagent(at, site, 1, 1, { answer: `The colleague's key is ${k.openai} and the bot's ${k.slack}.` });
   const named = claudeSession(at, site, 2, { prompt: "Check the logs.", output: `Found ${k.openaiProject} in the logs.` });
   const records = readFileSync(named, "utf8").trimEnd().split("\n").map((line) => { const { sessionId: _, ...rest } = JSON.parse(line); return JSON.stringify(rest); });
@@ -410,7 +411,7 @@ test("an import cuts every key or token of a known shape that no environment hol
   assert.deepEqual(left, [], "no key or token is anywhere in what the import kept");
   assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
   assert.match(dry.find((l) => / would be removed$/.test(l)) ?? "", /^[1-9]\d* secrets? would be removed$/, "the dry run says what it would remove");
-  // Each is counted once, however many places held it: the 11 values (the PEM block one of them).
+  // Each is counted once, however many places held it: the 12 values (the PEM block one of them).
   assert.ok(lines.includes(`${kinds} secrets removed`), `the import says it removed ${kinds}: ${lines.filter((l) => /removed/.test(l))}`);
   const reader = openStoreReader(data);
   t.after(() => reader.close());
@@ -430,6 +431,8 @@ test("the shape rules leave ordinary text alone: ids, hashes, an image, a placeh
     `The task-runner and the ${"desk"}-lamp-controller-module-v2 ship with scikit-learn; ask the risk-assessment team.`,
     "Our AWS account is in us-east-1; the key rotation runbook lives in docs/aws-secret-rotation.md.",
     "passwords should be long: a passphrase like correct horse battery staple",
+    "pip install sk-learn is a typo; a risk-free task-1234 and sk-v2 stay as they are.",
+    "Send the Bearer token in the Authorization header: Authorization: Bearer ${TOKEN}, or Bearer <your token>.",
   ];
   for (const text of ordinary) assert.deepEqual(shapedCut(text), { text, cut: [] }, text.slice(0, 60));
 });

@@ -66,6 +66,8 @@ const SHAPED = new RegExp(
 );
 /** An AWS secret access key: 40 characters of base64, only beside its name, the shape alone being too common. */
 const AWS_SECRET = /(aws_?secret_?access_?key|aws_?secret_?key|aws_secret)(["']?\s{0,3}[:=]\s{0,3}["']?)([A-Za-z0-9/+]{40})(?![A-Za-z0-9/+=])/gi;
+/** A bearer token (`Authorization: Bearer …`, a curl -H line, a JWT): its value, when it looks like a key. */
+const BEARER = /(?<![A-Za-z0-9_])(bearer\s{1,3})([A-Za-z0-9._~+/=-]{20,2000})/gi;
 /** `NAME=value` or `name: value` where the name says key, token, secret or password and the value looks like one. */
 const ASSIGNED = /(?<![A-Za-z0-9_])([A-Za-z0-9_]{0,40}(?:api_?key|access_?key|secret|token|password|passwd|private_?key)[A-Za-z0-9_]{0,20})(["']?\s{0,3}[=:]\s{0,3}["']?)([^\s"'`<>,;]{16,300})/gi;
 
@@ -96,6 +98,12 @@ export function shapedCut(value: string): { text: string; cut: string[] } {
     out = out.replace(AWS_SECRET, (_, name: string, between: string, secret: string) => {
       cut.push(secret);
       return `${name}${between}${REDACTED}`;
+    });
+  if (/bearer/i.test(out))
+    out = out.replace(BEARER, (found, word: string, token: string) => {
+      if (!keyLike(token)) return found;
+      cut.push(token);
+      return `${word}${REDACTED}`;
     });
   if (/[=:]/.test(out))
     out = out.replace(ASSIGNED, (found, name: string, between: string, secret: string) => {
