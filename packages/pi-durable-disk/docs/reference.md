@@ -563,11 +563,13 @@ and a takeover whose start was slowed 5 s before its first `run.json` write star
   `tmp/`, where the bash tool tells the model its long output went, and `readRoots` the app names; writes may also go
   inside a directory the environment's `createTempDir` returned, for the tool it was handed to). An agent cannot `write
   ../store/run.sqlite`, `../run.json` or `../owner.lock`: the call fails with a `PathOutsideWorkError` the model sees as
-  a failed tool result. A path is opened one component at a time from a held handle of `work/`, without following links,
-  so a link a command swaps in after the check is refused too (on Linux; on macOS the walk is by path, see [On
-  macOS](#on-macos)). This covers the file tools only; a command still runs as the run user and can reach anything that
-  user can, which is what an app's own command sandbox is for. `archilEnv(claim, { confineFiles: false })` turns it off
-  where `/proc/self/fd` is unavailable.
+  a failed tool result. Its message names no path (`outside the workspace`): pi's tools resolve a path against the
+  workspace before they ask for it, so the path, the workspace and a link's target would all be the host's own. An app
+  that shows the refusal names the path its caller gave, telling the error by `refusalOf(error)`. A path is opened one
+  component at a time from a held handle of `work/`, without following links, so a link a command swaps in after the
+  check is refused too (on Linux; on macOS the walk is by path, see [On macOS](#on-macos)). This covers the file tools
+  only; a command still runs as the run user and can reach anything that user can, which is what an app's own command
+  sandbox is for. `archilEnv(claim, { confineFiles: false })` turns it off where `/proc/self/fd` is unavailable.
 - **`--serve` authenticates only with a bearer token.** On 127.0.0.1 (the default) the token is optional. A non-loopback
   `--serve-host` requires `--serve-token-file`, a file of mode 0600 holding the token (never argv or the environment); every
   request must send `authorization: Bearer <token>`, and it is compared in constant time. The file is readable by the run

@@ -106,7 +106,7 @@ function refused(result: Result<unknown, FileError>, path: string, reason: "outs
   assert.ok(result.error instanceof PathOutsideWorkError, `${path}: ${result.error.name}: ${result.error.message}`);
   assert.equal(result.error.reason, reason, result.error.message);
   assert.equal(result.error.code, "permission_denied");
-  assert.ok(result.error.message.includes(path), `the message names the path: ${result.error.message}`);
+  assert.doesNotMatch(result.error.message, /\//, `${path}: the message names no path`);
 }
 
 async function closeIfOpened(result: Result<unknown, FileError>): Promise<void> {

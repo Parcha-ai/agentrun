@@ -1,8 +1,12 @@
 // How serve names a path in the run's workspace to a person or a model: relative to the workspace, never by the server's
-// data directory (F20, F25). The rule is one for every place that shows a path: a host tool's error or write result
-// (host-tools.ts), and a timeline row's file (runs.ts, through the projector's `path` option).
+// data directory. The rule is one for every place that shows a path: a host tool's error or write result
+// (host-tools.ts), and a timeline row's file (runs.ts, through the projector's `path` option). A refusal of a path
+// outside the workspace names the path the call gave, as it gave it, and no other (`asGivenRefusals`), wherever the
+// coding tools come from (coding-tools.ts: pi's own runs and the other harnesses' host tools, on the runner and in a box).
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import type { ToolRegistration } from "@earendil-works/pi-durable";
+import { PathOutsideWorkError, refusalOf } from "@parcha/pi-durable-disk";
 
 /**
  * `text` with the workspace's absolute path taken out: `<work>/notes/a.md` reads `notes/a.md`, the workspace itself `.`,
@@ -29,6 +33,43 @@ export function workspaceRelative(text: string, works: readonly string[]): strin
     if (parent.length > 1) out = out.replace(new RegExp(`${start}${escape(parent)}/`, "g"), "../").replace(new RegExp(`${start}${escape(parent)}${end}`, "g"), "..");
   }
   return out;
+}
+
+/** A refusal already named by the path the call gave: `asGivenRefusals` passes it on as it is. */
+class GivenPathRefusal extends PathOutsideWorkError {}
+
+/**
+ * Refuses `given`, a path a call gave that leaves the workspace, in the one words every refusal uses:
+ * `<given>: outside the workspace`, and no other path (not the workspace, a box's work dir, or where it resolves). It is
+ * the confinement's typed refusal (`PathOutsideWorkError`, `outside_work`), so `refusalOf` tells it from any other error.
+ * For a tool that checks a path itself (a box's file tools); pi's own tools refuse through the confinement, named by
+ * `asGivenRefusals`.
+ */
+export function refuseOutsideWorkspace(given: string): never {
+  throw new GivenPathRefusal(given, "outside_work", `${given}: outside the workspace`);
+}
+
+/**
+ * pi's file `tools`, each with its confinement's refusal named by the path the call gave, as it gave it:
+ * `../../.token: outside the workspace`. The confinement names no path itself: pi's tools resolve a path against the
+ * workspace before they ask for it, so every path it sees is the host's own (`<data>/runs/.token`), and the call's `path`
+ * is the only one the model gave. A refusal is told by its type (`refusalOf`), never by its text; one already named
+ * (`refuseOutsideWorkspace`), every other error, and every result are the tool's own.
+ */
+export function asGivenRefusals(tools: readonly ToolRegistration[]): ToolRegistration[] {
+  return tools.map((tool): ToolRegistration => ({
+    ...tool,
+    async execute(args, api, context) {
+      try {
+        return await tool.execute(args, api, context);
+      } catch (error) {
+        const reason = refusalOf(error);
+        const given = (args as { path?: unknown } | undefined)?.path;
+        if (reason === undefined || error instanceof GivenPathRefusal || typeof given !== "string" || given === "") throw error;
+        throw new GivenPathRefusal(given, reason, `${given}: ${(error as Error).message}`);
+      }
+    },
+  }));
 }
 
 /** `path` as the kernel resolves it, or itself when it cannot be resolved. */

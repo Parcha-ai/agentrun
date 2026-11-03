@@ -1,7 +1,8 @@
 // The coding tools a run's process registers: pi's (ArchilCodingTools, `read` declared replay-safe) without `bash`. A
 // run gets no shell on this machine, so this is the only coding-tools extension serve installs (app.ts, tools.ts) and
-// the only one its host tools are taken from (host-tools.ts). The tools left are pi's own objects, and the extension
-// keeps everything else pi's carries (its name, so a conversation selects it as before).
+// the only one its host tools are taken from (host-tools.ts). The tools left are pi's own, with only their execute
+// wrapped so a refusal names the path the call gave (asGivenRefusals), and the extension keeps everything else pi's
+// carries (its name, so a conversation selects it as before).
 //
 // A run whose place is a box gets codingSource's instead: pi's own read, write, edit and bash, each call made on the
 // box's environment (run-box.ts), so the shell exists only in the box. One source feeds pi's tool table (tools.ts,
@@ -11,12 +12,15 @@ import type { Context } from "@earendil-works/chord";
 import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
 import { ArchilCodingTools } from "@parcha/pi-durable-disk";
 import { BOX_WORK, type Place } from "./place.js";
+import { asGivenRefusals } from "./workspace-paths.js";
 
 // pi-durable-disk's types name the pi-durable it resolves, which a build at another pi version (the pi-floor legs) can
 // hold apart from this package's own: the extension crosses that boundary as a value, typed on this side.
 const pis = ArchilCodingTools as unknown as Extension;
 
-export const CodingTools: Extension = { ...pis, tools: (pis.tools ?? []).filter((tool) => tool.name !== "bash") };
+/** pi's coding tools on the runner, without bash, each refusal of a path outside the workspace named by the path the
+ *  call gave (`asGivenRefusals`): the model reads that refusal, and the run's timeline shows it. */
+export const CodingTools: Extension = { ...pis, tools: asGivenRefusals((pis.tools ?? []).filter((tool) => tool.name !== "bash")) };
 
 /** The tools a box runs: pi's, by name. */
 export const BOXED_TOOLS: readonly string[] = ["read", "write", "edit", "bash"];

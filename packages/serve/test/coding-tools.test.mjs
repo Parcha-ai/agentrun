@@ -9,13 +9,20 @@ import { BOUND_TOOLS, missingEnv, TOOLS } from "../dist/tools.js";
 
 const names = (extension) => (extension.tools ?? []).map((tool) => tool.name);
 
-test("the coding tools serve installs have no bash; read, write and edit are pi's own, and the rest of pi's extension is kept", () => {
+test("the coding tools serve installs have no bash; read, write and edit are pi's own, only their refusals named by the path given, and the rest of pi's extension is kept", () => {
   assert.ok(names(ArchilCodingTools).includes("bash"), "pi's coding tools carry bash, which serve leaves out");
   assert.ok(!names(CodingTools).includes("bash"));
   for (const name of ["read", "write", "edit"]) assert.ok(names(CodingTools).includes(name), name);
   const pis = ArchilCodingTools.tools.filter((tool) => tool.name !== "bash");
   assert.equal(CodingTools.tools.length, pis.length);
-  CodingTools.tools.forEach((tool, index) => assert.equal(tool, pis[index], `${tool.name} is pi's tool, not a copy`));
+  // pi's tool, not a copy: every field pi's, the schema and replay included, and only execute wrapped (asGivenRefusals).
+  CodingTools.tools.forEach((tool, index) => {
+    const { execute: _ours, ...fields } = tool;
+    const { execute: _pis, ...theirs } = pis[index];
+    assert.deepEqual(Object.keys(fields), Object.keys(theirs), tool.name);
+    for (const key of Object.keys(theirs)) assert.equal(fields[key], theirs[key], `${tool.name}.${key} is pi's`);
+    assert.notEqual(tool.execute, pis[index].execute, `${tool.name}'s refusals are named by the path given`);
+  });
   const { tools: _ours, ...ours } = CodingTools;
   const { tools: _theirs, ...theirs } = ArchilCodingTools;
   assert.deepEqual(ours, theirs, "everything but the tools is pi's extension's, its name included");
