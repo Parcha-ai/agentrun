@@ -349,6 +349,18 @@ test("web_fetch reads a page's first 1,000,000 characters: an offset at or past 
   assert.equal(where(last), "Characters 980000-1000000 of 1000050: the page goes on, but web_fetch reads only a page's first 1,000,000 characters.");
 });
 
+test("the cut at a page's first 1,000,000 characters never splits a character: 999,999 then an emoji keeps 999,999, and the last part ends on a whole character", async () => {
+  const body = `${"a".repeat(999_999)}😀${"b".repeat(50)}`;
+  const fetchImpl = async () => new Response(body, { status: 200, headers: { "content-type": "text/plain" } });
+  const last = await webFetch(PUBLIC, { ...network(), fetchImpl, offset: 980_000, maxChars: 50_000 });
+  assert.deepEqual([last.chars, last.text, "truncated" in last, last.beyond_read, last.original_chars], [19_999, "a".repeat(19_999), false, true, body.length], "the emoji's first half is not kept");
+  assert.equal(where(last), `Characters 980000-999999 of ${body.length}: the page goes on, but web_fetch reads only a page's first 1,000,000 characters.`);
+  // Through Parallel too: what it gave is cut the same way.
+  const { send } = paging(() => ({ text: body }));
+  const viaParallel = await webFetch(PUBLIC, { ...network(), parallel: parallelExtract(CANARY, send), offset: 980_000, maxChars: 50_000 });
+  assert.deepEqual([viaParallel.via, viaParallel.chars, /[\uD800-\uDBFF]$/.test(viaParallel.text), viaParallel.beyond_read], ["parallel", 19_999, false, true]);
+});
+
 test("in a run, web_fetch's agent tool and a call node's web_fetch share what the run read: a page is fetched once for both", async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "dialled.txt");
