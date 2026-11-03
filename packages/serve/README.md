@@ -555,7 +555,8 @@ folders kept, before the run's process starts; a name already taken gets a suffi
 for the same files in the same order. The run reads them as any file of its workspace, and `GET /v2/runs/{id}/files`
 lists them. An agentic run is told of them in its first message, on every harness: after the input's `content` and a
 blank line, one line, `Files for this run: inputs/notes.txt (32 B), inputs/docs/plan.md (1.5 KB).`, each file by the
-path the run's tools take and its size, at most 20 and then how many more. That is the message the harness gets, so it
+path the run's tools take and its size, at most 20 and then how many more, and never past what the run's door takes in
+one message (fewer named, then only how many). That is the message the harness gets, so it
 is the timeline's first `user_message`; the run's `input` stays as it was sent. A run given no files is sent its
 `content` as it is. Each upload is kept in `DIR/files/<file_id>/`, 0600. `upload.expires_at`, which the contract requires, is
 advisory and not enforced in this release: a `PUT` after it is still taken, and nothing deletes an upload.

@@ -1,10 +1,10 @@
 // A run is told of the files given to it: its first message names each file it finds in work/inputs/ (run-manifest.ts),
 // so "summarize the attached file" finds the file, on pi, claude-agent and codex alike, through the API.
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { filesLine, MANIFEST_ENTRIES, sizeOf } from "../dist/run-manifest.js";
+import { filesLine, FIRST_MESSAGE_BYTES, firstMessage, MANIFEST_ENTRIES, sizeOf } from "../dist/run-manifest.js";
 import { agent, follow, scratch, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -85,4 +85,26 @@ test("the line names at most MANIFEST_ENTRIES files, then counts the rest; sizes
   assert.equal(filesLine("Files", [{ path: "inputs/a\nb\u0007.txt", size: 3 }]), "Files: inputs/a?b?.txt (3 B).");
   assert.equal(filesLine("Files", [{ path: "inputs/notes\u2028final\u2029\u0085.txt", size: 3 }]), "Files: inputs/notes?final??.txt (3 B).", "a line or paragraph separator too");
   assert.deepEqual([0, 1023, 1024, 1536, 1024 * 1024, 5 * 1024 * 1024 + 1].map(sizeOf), ["0 B", "1023 B", "1.0 KB", "1.5 KB", "1.0 MB", "5.0 MB"]);
+});
+
+test("the line never takes the first message past what the run's door takes: fewer files named, then only how many, then none", async (t) => {
+  const work = await scratch(t);
+  await mkdir(join(work, "inputs"), { recursive: true });
+  for (const name of ["a.txt", "b.txt", "c.txt"]) await writeFile(join(work, "inputs", name), "x");
+  const content = "Read them.";
+  const sent = (text) => Buffer.byteLength(JSON.stringify(text));
+  const all = `${content}\n\nFiles for this run: inputs/a.txt (1 B), inputs/b.txt (1 B), inputs/c.txt (1 B).`;
+  const two = `${content}\n\nFiles for this run: inputs/a.txt (1 B), inputs/b.txt (1 B), and 1 more.`;
+  const one = `${content}\n\nFiles for this run: inputs/a.txt (1 B), and 2 more.`;
+  const count = `${content}\n\nFiles for this run: 3 files.`;
+  assert.equal(await firstMessage(content, work), all);
+  assert.equal(await firstMessage(content, work, sent(all)), all);
+  assert.equal(await firstMessage(content, work, sent(all) - 1), two);
+  assert.equal(await firstMessage(content, work, sent(one)), one);
+  assert.equal(await firstMessage(content, work, sent(one) - 1), count);
+  assert.equal(await firstMessage(content, work, sent(count) - 1), content, "no room: the content alone, as it was taken");
+  // A message the run took near the door's limit stays within it with its line.
+  const big = "y".repeat(FIRST_MESSAGE_BYTES - 40);
+  assert.ok(sent(await firstMessage(big, work)) <= FIRST_MESSAGE_BYTES);
+  assert.ok(FIRST_MESSAGE_BYTES < 1 << 20, "below the door's 1 MiB body, with room for the request's other fields");
 });
