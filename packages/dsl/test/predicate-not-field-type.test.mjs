@@ -18,12 +18,6 @@ const guarded = (when) => ({
 const run = (when, score) => runWorkflow(guarded(when), { answer: score === undefined ? {} : { score } }, { runCode: async (node, state) => ({ accepted: { score: state.answer.score } }) });
 const errorsOf = (when) => { const checked = validateWorkflow(guarded(when), { executeCode: false, input: { answer: { score: 3 } } }); return checked.ok ? [] : checked.errors; };
 
-test('an escalate on not field_type number fires on a present value that is not a number', async () => {
-  const result = await run(notNumber, 'abc');
-  assert.equal(result.status, 'escalated');
-  assert.equal(result.escalation.label, 'gate');
-});
-
 test('not field_type number fires for "abc", null, NaN, Infinity, an object and an absent score, and not for 3', async () => {
   // undefined: the answer has no score at all, so a missing answer fails closed.
   for (const score of ['abc', null, NaN, Infinity, -Infinity, { value: 3 }, [3], true, undefined]) {
