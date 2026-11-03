@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { capModels } from "../dist/cap.js";
+import { sideRequests } from "../dist/cap.js";
 
 const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
 const model = (cost, maxTokens = 1_000) => ({ id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: true, input: ["text"], cost, contextWindow: 128_000, maxTokens });
@@ -149,5 +150,21 @@ test("a capped pi run on a chat-completions gateway, or on a provider with no do
     const tokens = bound(ctx) + overhead;
     assert.equal(await sentUnder(api, ctx, tokens * 1.001), true, `${api}: sent within its bound`);
     assert.equal(await sentUnder(api, ctx, tokens * 0.999), false, `${api}: priced, with its overhead`);
+  }
+});
+
+test("a tool's own request adds its hosted tool's allowance to its input bound and its most fee to its worst case: pi's web search is held at its context plus 5 searches of 25,000 tokens, and 5 searches' fee", async () => {
+  // $1 per million input tokens and nothing else: the worst case is the input bound alone.
+  const priced = model({ input: 1, output: 0, cacheRead: 0, cacheWrite: 0 });
+  const search = { messages: [{ role: "user", content: "Search the web for: widgets", timestamp: 0 }] };
+  sideRequests.set(search, { label: "web_search", extraInputTokens: 125_000, maxFeeUsd: 0.05, feeUsd: () => 0.01 });
+  const worst = (bound(search) + 125_000) / 1e6 + 0.05;
+  for (const [cap, sent] of [[worst - 1e-6, 0], [worst, 1]]) {
+    const { models, sent: requests } = fakeModels();
+    const capped = await capModels(models, cap, 0);
+    const answer = capped.completeSimple(priced, search);
+    assert.equal(requests.length, sent, `a cap of $${cap}`);
+    requests[0]?.end(0.001);
+    if (!sent) assert.match((await answer).errorMessage, /^spend_cap_reached: /);
   }
 });

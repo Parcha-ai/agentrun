@@ -2,8 +2,9 @@
 // writes its entry), never leaving the turn waiting; an aborted one marks its end, with the provider's id.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { markRequests } from "../dist/request-start.js";
+import { sideRequests } from "../dist/cap.js";
 
 /** Until `list` holds `n` items, or a second passes: the end mark follows the answer, which a terminal event settles. */
 const until = async (list, n) => {
@@ -205,4 +206,18 @@ test("a run cancelled while its summary's start mark waits sends no summary requ
   assert.equal(result.stopReason, "error");
   assert.deepEqual(marks, [{ kind: REQUEST_STARTED, data: { request: "compaction" } }, { kind: REQUEST_ENDED, data: { request: "compaction", unsent: true } }]);
   assert.deepEqual(timelineOf([{ kind: REQUEST_STARTED, data: {} }, priced, ...marks], { settled: true }).at(-1).usage, { usd: 0.01, requests: 1 });
+});
+
+test("a tool's own request is marked under its label, and booked with its fee on top of its tokens, on the answer the cap counts too", async () => {
+  const answer = { role: "assistant", content: [{ type: "text", text: "found" }], api: "faux", provider: "faux", model: "m", stopReason: "stop", timestamp: 0, usage: { input: 10, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 11, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0025 } } };
+  const entries = [];
+  const run = { harness: { commit: async (change) => change({ appendEntry: async (_conversation, entry) => void entries.push(entry) }) } };
+  const { models, open } = await markRequests({ completeSimple: async () => structuredClone(answer) });
+  open(run);
+  const context = { messages: [{ role: "user", content: "Search the web for: widgets", timestamp: 0 }] };
+  sideRequests.set(context, { label: "web_search", extraInputTokens: 125_000, maxFeeUsd: 0.05, feeUsd: () => 0.02 });
+  const result = await models.completeSimple({ api: "faux", provider: "faux", id: "m" }, context, {});
+  assert.equal(result.usage.cost.total, 0.0225, "the answer carries its fee");
+  assert.deepEqual(entries.map((entry) => [entry.kind, entry.data]), [[REQUEST_STARTED, { request: "web_search" }], [REQUEST_COST, { request: "web_search", usd: 0.0225, usage: { input: 10, output: 1, cacheRead: 0, cacheWrite: 0 } }]], "its tokens with it, as a summary's");
+  assert.deepEqual(timelineOf(entries).at(-1).usage, { usd: 0.0225, requests: 1 }, "the run's cost counts it once");
 });

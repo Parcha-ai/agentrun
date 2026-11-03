@@ -30,7 +30,9 @@ import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
-import { parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
+import { handsParallel, planeOf } from "./tool-plane.js";
+import { parallelOf } from "./web-fetch.js";
+import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
@@ -116,8 +118,13 @@ export function adapterRun(
   cwd?: string,
   coding?: readonly ToolRegistration[],
 ): AdapterRun {
-  // web_fetch's Parallel key, read as the run's app loads, before its process starts one of its own (web-fetch.ts).
-  if (tools.includes(WEB_FETCH_TOOL)) parallelOf(process.env);
+  const plane = planeOf(process.env);
+  // The web tools' Parallel key, when one resolves to Parallel, read as the run's app loads, before its process starts
+  // one of its own (web-fetch.ts).
+  if (handsParallel(plane)) parallelOf(process.env);
+  // web_search resolved native is the harness's own search (adapters.ts turns it on, with its input allowance): no host
+  // tool of the name.
+  if (plane.web_search === "native") tools = tools.filter((name) => name !== WEB_SEARCH_TOOL);
   // The run's cap, or its cancel, refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
   const CANCELLED = "the run was cancelled: the model request was not sent";
