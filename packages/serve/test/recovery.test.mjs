@@ -519,6 +519,6 @@ test("a stop saved before its abort reached the run is finished by the next serv
   await untilState(api, run_id, ["input_required", "idle"]);
   // Behind a turn still running (60 s), the follow-up would wait past follow's 30 s.
   assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "go on" })).body.mode, "follow_up");
-  await follow(api, run_id, ["completed"], { deadlineMs: 20_000 });
+  await follow(api, run_id, ["completed"], { deadlineMs: 20_000 }).catch(async (error) => { error.message += `\ntimeline: ${await api.fresh("GET", `/runs/${run_id}/timeline?limit=500`).then(({ body }) => JSON.stringify(body), (cause) => `unavailable (${cause.message})`)}`; throw error; });
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
 });
