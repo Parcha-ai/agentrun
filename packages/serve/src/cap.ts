@@ -154,12 +154,11 @@ export function spentIn(storeFile: string): number | null {
   return entries.reduce((sum, entry) => sum + costOf(entry), 0);
 }
 
-/** /usage's meters for a run, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is, or, once the
- *  run ended, when a call was cut (marked, never settled: what it charged no one knows); and `tokens`, the rest of its
- *  root conversation as its timeline prices it (settled once it ended). `live`: the run goes on, so a call still marked
- *  is in flight, no charge yet, and an unknown charge leaves its known model spend priced. A mark is never a charge
- *  here (the cap's alone). */
-export function metersIn(storeFile: string, { live = false }: { live?: boolean } = {}): { tools: number | null; tokens: number | null } {
+/** /usage's meters for a run that ended, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is,
+ *  or when a call was cut (marked, never settled: what it charged no one knows); and `tokens`, the rest of its root
+ *  conversation as its settled timeline prices it. A mark is never a charge here (the cap's alone). Never for a live
+ *  run: its process holds the store exclusively. */
+export function metersIn(storeFile: string): { tools: number | null; tokens: number | null } {
   if (!existsSync(storeFile)) return { tools: 0, tokens: null };
   const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
   try {
@@ -172,9 +171,9 @@ export function metersIn(storeFile: string, { live = false }: { live?: boolean }
       if (entry.kind === TOOL_STARTED) marks.add(data.call);
       else if (entry.kind === TOOL_COST) marks.delete(data.call), charges.push(figureOf(data.usd));
     }
-    const tools = (!live && marks.size) || charges.some((usd) => usd === undefined) ? null : (charges as number[]).reduce((sum, usd) => sum + usd, 0);
+    const tools = marks.size || charges.some((usd) => usd === undefined) ? null : (charges as number[]).reduce((sum, usd) => sum + usd, 0);
     const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
-    const usage = timelineOf(rest, { settled: !live }).find((row) => row.kind === "usage");
+    const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
     return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0 };
   } finally {
     db.close();

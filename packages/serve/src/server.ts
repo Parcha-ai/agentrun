@@ -778,19 +778,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return meters;
   };
 
-  // A live run's meters: `tools` from its rows, the same records as its cost, so the split never goes negative while a
-  // call is in flight. When both are unknown (an unknown tool charge, a monid.run that timed out), its known model spend
-  // is read from its store as an ended run's is, live (metersIn), so it stays priced. A store a write holds now gives none.
-  const liveMeters = (id: string, live: Run, usd: number | null) => {
-    const tools = toolCostOf(live.rows);
-    if (usd !== null || tools !== null) return { tools, tokens: null };
-    try {
-      return { tools, tokens: metersIn(join(data, "runs", id, "store", "run.sqlite"), { live: true }).tokens };
-    } catch {
-      return { tools, tokens: null };
-    }
-  };
-
   async function usage(url: URL) {
     const now = new Date();
     const fromText = url.searchParams.get("from");
@@ -811,7 +798,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // By meter, what a run's paid tools charged (monid's) is `tools`, the rest `tokens`, both from the same records: a
       // live run's rows (a call still marked is no charge), else its store as it ended (a call a crash cut makes `tools`
       // unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
-      const meters = group !== "meter" || usd === 0 ? undefined : live ? liveMeters(row.id, live, usd) : metersOf(row);
+      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null } : metersOf(row);
       const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
       const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(meters.tools !== 0 ? [["tools", meters.tools] as [string, number | null]] : [])];
       // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
@@ -1205,7 +1192,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       await webhooks.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();
-        lock.release();
+      lock.release();
     },
   };
 }
