@@ -40,11 +40,12 @@ const DECISION_KEYS = ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"];
  *  tools, `browser`). Browserbase's project id is a field of its key, and goes with it. */
 const BROWSERBASE = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"];
 const TOOL_KEYS = ["MONID_API_KEY", ...BROWSERBASE];
-/** The model keys: every run's process gets each, whatever its tools. */
-const MODEL_KEYS = ["AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"];
-/** The keys of pi-ai's providers but the model keys: a run's process gets one only when its model is that provider's,
- *  and none here names a model. */
-const PROVIDER_ONLY = [...new Set(Object.values(PROVIDER_KEYS).flat())].filter((name) => !MODEL_KEYS.includes(name) && !DECISION_KEYS.includes(name));
+/** The model keys: every key of pi-ai's providers and the gateway's. A run's process gets those its model needs and no
+ *  other: a pi run its model's provider's (per tier), or the gateway's behind AGENT_MODEL_BASE_URL; codex OpenAI's, or
+ *  the gateway's; claude-agent Anthropic's. TypeSafe's is a decision key, never on the pipe. */
+const MODEL_KEYS = [...new Set([...Object.values(PROVIDER_KEYS).flat(), "AGENT_MODEL_API_KEY"])].filter((name) => !DECISION_KEYS.includes(name));
+/** The names a run's process was handed (faux-custody.mjs' report), sorted. */
+const heldBy = (handed) => Object.entries(handed).filter(([, value]) => value !== "none").map(([name]) => name).sort();
 /** Amazon Bedrock's keys, which pi-ai's table of keys by provider leaves out as ambient: its request reads them itself. */
 const BEDROCK = ["AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"];
 /** The keys pi-ai reads for each of its built-in providers, by its own table (findEnvKeys, asked of an environment that
@@ -168,7 +169,7 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
   });
   const out = await printed(child, /^AGENTRUN_BASE_URL=\S+$/m);
   assert.deepEqual(readdirSync(tmp), [], "the launcher's FIFO and its directory are gone");
-  return { root: child.pid, child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], env.AGENTRUN_TOKEN), output: () => out };
+  return { root: child.pid, child, data, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], env.AGENTRUN_TOKEN), output: () => out };
 }
 
 /** `root` and every process under it (a harness's CLI may start a session of its own, so not by session). */
@@ -215,14 +216,15 @@ test("started by its launcher, no process of its user holds a secret in its envi
   const { root, api } = await launched(t, { ...secrets, LC_ALL: "C.UTF-8" });
   // The launcher counts bytes in the C locale, for its own shell only: the server gets the caller's locale back.
   assert.ok(read(`/proc/${root}/environ`).toString().split("\0").includes("LC_ALL=C.UTF-8"), "the server keeps the caller's LC_ALL");
-  assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
+  assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-4o" } })).status, 201);
 
-  // A run's process says what it was handed: each secret but the server's own, the decision keys and (its revision
-  // naming no tool) the tool keys, none in its environment, its pipe closed.
+  // A run's process says what it was handed: of every secret set, its model's key alone (OpenAI's), none in its
+  // environment, its pipe closed.
   const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
   await follow(api, run.run_id, ["completed"]);
   const report = JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer);
-  for (const name of SECRET_NAMES) assert.equal(report.handed[name], [...SERVER_ONLY, ...DECISION_KEYS, ...TOOL_KEYS, ...PROVIDER_ONLY].includes(name) ? "none" : digest(secrets[name]), `${name} handed to the run's process`);
+  for (const name of SECRET_NAMES) assert.equal(report.handed[name], name === "OPENAI_API_KEY" ? digest(secrets[name]) : "none", `${name} handed to the run's process`);
+  assert.deepEqual(heldBy(report.handed), ["OPENAI_API_KEY"], "exactly its model's key");
   assert.deepEqual(report.inEnv, [], "no secret in the run's process's environment, so none in a child's");
   assert.deepEqual(report.pipe, { fd: 3, closed: true }, "the run's process read its pipe and closed it");
 
@@ -339,7 +341,7 @@ process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
   }
 });
 
-test("under its launcher, a run's process holds a tool key only when its revision names a tool the key unlocks, and the same again after a restart; the model keys reach every run", { timeout: 120_000 }, async (t) => {
+test("under its launcher, a run's process holds a tool key only when its revision names a tool the key unlocks, and its model's key alone, and the same again after a restart", { timeout: 120_000 }, async (t) => {
   const { secrets } = canaries();
   // The server as the launcher's COMMAND, with the tests' fake browser; SIGUSR2 closes it and starts it again on the
   // same data, so the new server reads each run, and its revision, from the store.
@@ -356,19 +358,19 @@ process.on("SIGUSR2", async () => {
   const { root, child, api } = await launched(t, secrets, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
   // Each agent's tools, and the tool keys its runs get.
   const agents = { monid: [["monid.run"], ["MONID_API_KEY"]], browse: [["browser"], BROWSERBASE], reader: [["read"], []] };
-  const expected = (unlocked) => Object.fromEntries(SECRET_NAMES.map((name) => [name, [...SERVER_ONLY, ...DECISION_KEYS, ...PROVIDER_ONLY].includes(name) || (TOOL_KEYS.includes(name) && !unlocked.includes(name)) ? "none" : digest(secrets[name])]));
+  // Each on an OpenAI model: OpenAI's key is the one model key each holds.
+  const expected = (unlocked) => Object.fromEntries(SECRET_NAMES.map((name) => [name, [...unlocked, "OPENAI_API_KEY"].includes(name) ? digest(secrets[name]) : "none"]));
   const report = async (call, runId, after) => {
     await follow(call, runId, ["completed"], { after, deadlineMs: 60_000 });
     return JSON.parse((await call("GET", `/runs/${runId}`)).body.result.final_answer).handed;
   };
   const runs = {};
   for (const [id, [tools, unlocked]] of Object.entries(agents)) {
-    assert.equal((await api("POST", "/agents", agent(id, { tools }))).status, 201);
+    assert.equal((await api("POST", "/agents", agent(id, { tools, model: "openai/gpt-4o" }))).status, 201);
     const { status, body } = await api("POST", `/agents/${id}/runs`, { input: { content: "Report." } });
     assert.equal(status, 202, JSON.stringify(body));
     runs[id] = { runId: body.run_id, handed: await report(api, body.run_id) };
-    assert.deepEqual(runs[id].handed, expected(unlocked), `a run of ${id} (${tools.join(", ")}) holds ${unlocked.join(", ") || "no tool key"}, and every model key`);
-    for (const name of MODEL_KEYS) assert.equal(runs[id].handed[name], digest(secrets[name]), `${name} reaches the run of ${id}`);
+    assert.deepEqual(runs[id].handed, expected(unlocked), `a run of ${id} (${tools.join(", ")}) holds ${unlocked.join(", ") || "no tool key"}, and OpenAI's key, no other model key`);
   }
 
   // A restart: the new server reads each run from the store, and a follow-up opens it again in a new process, which
@@ -391,7 +393,7 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-01T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
   const agentic = (tools) => revision("agentic", { instructions: "Answer.", tools });
   const workflow = (flow, tools = []) => revision("workflow", { workflow: flow, tools });
-  const without = (...names) => RUN_SECRETS.filter((name) => !names.includes(name) && !PROVIDER_ONLY.includes(name));
+  const without = (...names) => RUN_SECRETS.filter((name) => !names.includes(name) && !MODEL_KEYS.includes(name));
   for (const name of [...TOOL_KEYS, ...MODEL_KEYS]) assert.ok(RUN_SECRETS.includes(name), `${name} is among a run's secrets`);
 
   assert.deepEqual(await secretsOf(agentic(["monid.run"])), without(...BROWSERBASE));
@@ -399,12 +401,14 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   assert.deepEqual(await secretsOf(agentic(["monid.discover", "browser"])), without());
   assert.deepEqual(await secretsOf(agentic(["read", "fetch_page", "ask_person"])), without(...TOOL_KEYS));
   assert.deepEqual(await secretsOf(agentic([])), without(...TOOL_KEYS));
-  // Only a `tool` row's fields are scoped: a key of another kind (a model's) reaches a run that names no tool.
+  // Only a `tool` row's fields are scoped by the tools: a row of another kind (a model's) leaves its field to the model,
+  // so a run on OpenAI's model gets OpenAI's key, unless the same row is a tool key's that unlocks none of its tools.
   const { TOOL_KEYS: ROWS } = await import("../dist/tool-keys.js");
   assert.deepEqual(ROWS.map((row) => row.kind), ["tool", "tool", "tool", "tool"]);
   const rows = [...ROWS, { id: "openai", kind: "model", fields: ["OPENAI_API_KEY"], unlocks: [] }];
-  assert.deepEqual(await secretsOf(agentic([]), rows), without(...TOOL_KEYS), "OPENAI_API_KEY with them, the tool keys still not");
-  assert.deepEqual(await secretsOf(agentic([]), rows.map((row) => (row.id === "openai" ? { ...row, kind: "tool" } : row))), without(...TOOL_KEYS, "OPENAI_API_KEY"), "the same row as a tool key is scoped");
+  const onOpenai = revision("agentic", { instructions: "Answer.", tools: [], model: "openai/gpt-4o" });
+  assert.deepEqual(await secretsOf(onOpenai, rows), [...without(...TOOL_KEYS), "OPENAI_API_KEY"].sort((a, b) => RUN_SECRETS.indexOf(a) - RUN_SECRETS.indexOf(b)), "OPENAI_API_KEY with them, the tool keys still not");
+  assert.deepEqual(await secretsOf(onOpenai, rows.map((row) => (row.id === "openai" ? { ...row, kind: "tool" } : row))), without(...TOOL_KEYS), "the same row as a tool key is scoped");
 
   // A workflow: the tools its model nodes name and its call nodes run, wherever the node is, never a name only its
   // definition lists, nor data shaped like a node.
@@ -419,30 +423,42 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   assert.deepEqual(await secretsOf(workflow(shaped, ["browser"])), without(...TOOL_KEYS));
 });
 
-test("secretsFor: a provider's keys only for a pi revision whose model is that provider's, its own or the host's of each tier it runs; none through a gateway, nor on codex or claude-agent; the model keys still reach each", async () => {
-  const { secretsFor } = await import("../dist/runs.js");
+test("secretsFor: a run is handed exactly the model keys its model needs: a pi run its model's provider's, per tier, or the gateway's behind AGENT_MODEL_BASE_URL; codex OpenAI's or the gateway's; claude-agent Anthropic's; and of the rest, what it would be with no model", async () => {
+  const { RUN_SECRETS, secretsFor } = await import("../dist/runs.js");
   const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
   const agentic = (extra = {}) => revision("agentic", { instructions: "Answer.", ...extra });
-  const providers = ["GEMINI_API_KEY", "DEEPSEEK_API_KEY", ...BEDROCK];
+  const others = RUN_SECRETS.filter((name) => !MODEL_KEYS.includes(name) && !TOOL_KEYS.includes(name));
+  /** The model keys a run of `rev` is handed on a host of `env`, sorted; and the rest exactly what a run naming no
+   *  model and no tool gets. */
   const held = async (rev, env) => {
     const names = await secretsFor(rev, undefined, env);
-    for (const name of MODEL_KEYS) assert.ok(names.includes(name), `${name} reaches every run`);
-    return providers.filter((name) => names.includes(name));
+    assert.deepEqual(names.filter((name) => !MODEL_KEYS.includes(name)), others, "no model key, and nothing but the model keys changes");
+    return names.filter((name) => MODEL_KEYS.includes(name)).sort();
   };
-  assert.deepEqual(await held(agentic({ model: "google/gemini-2.5-flash" }), {}), ["GEMINI_API_KEY"], "its own model's provider");
+  const GATEWAY = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:1" };
+  const ANTHROPIC = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN"];
+  assert.deepEqual(await held(agentic({ model: "google/gemini-2.5-flash" }), {}), ["GEMINI_API_KEY"], "its own model's provider's");
+  assert.deepEqual(await held(agentic({ model: "openrouter/anthropic/claude-sonnet-4.5" }), {}), ["OPENROUTER_API_KEY"], "OpenRouter's alone for a model through OpenRouter");
+  assert.deepEqual(await held(agentic({ model: "openai/gpt-4o" }), {}), ["OPENAI_API_KEY"]);
+  assert.deepEqual(await held(agentic({ model: "anthropic/claude-haiku-4-5" }), {}), ANTHROPIC, "each key Anthropic's provider reads");
   assert.deepEqual(await held(agentic(), { AGENT_MODEL: "deepseek/deepseek-chat" }), ["DEEPSEEK_API_KEY"], "the host's default model's");
   assert.deepEqual(await held(agentic({ model: "google/gemini-2.5-flash" }), { AGENT_MODEL: "deepseek/deepseek-chat" }), ["GEMINI_API_KEY"], "its own wins over the host's");
-  assert.deepEqual(await held(agentic({ model: "amazon-bedrock/amazon.nova-lite-v1:0" }), {}), BEDROCK, "Bedrock's AWS keys, together");
-  assert.deepEqual(await held(agentic(), {}), [], "no model, no provider's key");
-  assert.deepEqual(await held(agentic({ model: "google/gemini-2.5-flash" }), { AGENT_MODEL_BASE_URL: "http://127.0.0.1:1" }), [], "through a gateway every model is the gateway's");
-  for (const harness of ["codex", "claude-agent"]) assert.deepEqual(await held(agentic({ harness, model: "google/gemini-2.5-flash" }), {}), [], `${harness} takes its model's key from the model keys`);
+  assert.deepEqual(await held(agentic({ model: "amazon-bedrock/amazon.nova-lite-v1:0" }), {}), [...BEDROCK].sort(), "Bedrock's AWS keys, together");
+  assert.deepEqual(await held(agentic(), {}), [], "no model, no model key");
+  assert.deepEqual(await held(agentic({ model: "google/gemini-2.5-flash" }), GATEWAY), ["AGENT_MODEL_API_KEY"], "through a gateway every model is the gateway's, on its key");
+  assert.deepEqual(await held(agentic({ harness: "codex", model: "openai/gpt-4o" }), {}), ["OPENAI_API_KEY"], "codex: OpenAI's");
+  assert.deepEqual(await held(agentic({ harness: "codex" }), { ...GATEWAY, AGENT_MODEL: "gpt-test" }), ["AGENT_MODEL_API_KEY"], "codex behind a gateway: the gateway's");
+  assert.deepEqual(await held(agentic({ harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }), {}), ["ANTHROPIC_API_KEY"], "claude-agent: Anthropic's");
+  assert.deepEqual(await held(agentic({ harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }), { ...GATEWAY, ANTHROPIC_BASE_URL: "http://127.0.0.1:2" }), ["ANTHROPIC_API_KEY"], "claude-agent's model is its own, never the gateway's");
   // A workflow: the host's model of each tier its model nodes and `llm` calls use.
   const flow = answerFlow();
   flow.root.steps[0].tier = "fast";
   const workflow = revision("workflow", { workflow: flow });
   assert.deepEqual(await held(workflow, { AGENT_MODEL: "deepseek/deepseek-chat", AGENT_MODEL_FAST: "google/gemini-2.5-flash" }), ["GEMINI_API_KEY"], "its fast tier's, not the default it does not run");
   flow.root.steps.unshift({ node: "call", label: "draft", via: "tool", tool: "llm", args: { prompt: "{question}" }, out: "Answer", as: "draft", deadline_s: 120 });
-  assert.deepEqual(await held(revision("workflow", { workflow: flow }), { AGENT_MODEL: "deepseek/deepseek-chat", AGENT_MODEL_FAST: "google/gemini-2.5-flash" }), ["GEMINI_API_KEY", "DEEPSEEK_API_KEY"], "and the default tier an llm call runs on");
+  const drafting = revision("workflow", { workflow: flow });
+  assert.deepEqual(await held(drafting, { AGENT_MODEL: "deepseek/deepseek-chat", AGENT_MODEL_FAST: "google/gemini-2.5-flash" }), ["DEEPSEEK_API_KEY", "GEMINI_API_KEY"], "and the default tier an llm call runs on");
+  assert.deepEqual(await held(drafting, { ...GATEWAY, AGENT_MODEL: "m-1" }), ["AGENT_MODEL_API_KEY"], "a workflow behind a gateway: the gateway's");
 });
 
 test("every key pi-ai reads for a provider is one of the launcher's secrets: each in pi-ai's own table, each key-shaped name a provider's auth asks for, and Bedrock's, which that table leaves out", async () => {
@@ -492,48 +508,62 @@ function onlyTheServerHolds(root, canary) {
 /** The names of `names` shaped like a key (secret-cut.ts' rule, the env cut's and the import cut's). */
 const keyShapedIn = (names) => names.filter((name) => SECRET_NAME.test(name));
 
-test("under its launcher, a key pi-ai reads for a provider (GEMINI_API_KEY) is in no process's environment, a run's, a program's it starts and a tool's program included, and a run on that provider's model gets it over its pipe alone; a run on another provider's model gets it nowhere; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) reach no run", { timeout: 120_000 }, async (t) => {
-  const canary = `not-a-secret-provider-${process.pid}-${Date.now()}`;
-  const gemini = `${canary}-GEMINI_API_KEY`;
+test("under its launcher, with every secret set, a pi run is handed exactly its model's provider's key over its pipe (Gemini's, OpenRouter's, OpenAI's), no other, and none is in any process's environment, a run's, a program's it starts and a tool's program included; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) reach no run", { timeout: 120_000 }, async (t) => {
+  const { canary, secrets } = canaries();
   // Named like a key and on no list: the launcher cannot know to take them, so the server's environment keeps them; no
-  // run's may.
-  const foo = `${canary}-FOO_API_KEY`;
-  const password = `${canary}-FOO_PASSWORD`;
-  const { root, api } = await launched(t, { AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN`, GEMINI_API_KEY: gemini, FOO_API_KEY: foo, FOO_PASSWORD: password });
+  // run's may. Their own canary: the server's environment holds them.
+  const unlisted = `nak-unlisted-${process.pid}-${Date.now().toString(36)}`;
+  const foo = `${unlisted}-FOO_API_KEY`;
+  const password = `${unlisted}-FOO_PASSWORD`;
+  const { root, api } = await launched(t, { ...secrets, FOO_API_KEY: foo, FOO_PASSWORD: password });
   // On the faux model whatever they name, as a faux run is: each is handed what a run on its model is handed, and its
   // model call answers.
-  assert.equal((await api("POST", "/agents", agent("gemini", { model: "google/gemini-2.5-flash" }))).status, 201);
-  assert.equal((await api("POST", "/agents", agent("other", { model: "openai/gpt-4o" }))).status, 201);
-  const onGemini = await custodyReport(api, "gemini");
-  const onOther = await custodyReport(api, "other");
-  assert.equal(onGemini.handed.GEMINI_API_KEY, digest(gemini), "a run on a Gemini model is handed Gemini's key over its pipe");
-  assert.equal(onOther.handed.GEMINI_API_KEY, "none", "a run on another provider's model is not handed it at all");
-  for (const report of [onGemini, onOther]) {
+  const models = { gemini: ["google/gemini-2.5-flash", "GEMINI_API_KEY"], openrouter: ["openrouter/anthropic/claude-sonnet-4.5", "OPENROUTER_API_KEY"], openai: ["openai/gpt-4o", "OPENAI_API_KEY"] };
+  const reports = {};
+  for (const [id, [model]] of Object.entries(models)) assert.equal((await api("POST", "/agents", agent(id, { model }))).status, 201);
+  for (const [id, [, key]] of Object.entries(models)) {
+    reports[id] = await custodyReport(api, id);
+    assert.deepEqual(heldBy(reports[id].handed), [key], `a run on ${id}'s model is handed ${key} alone`);
+    assert.equal(reports[id].handed[key], digest(secrets[key]), "over its pipe, whole");
+  }
+  for (const [id, report] of Object.entries(reports)) {
     assert.deepEqual(report.pipe, { fd: 3, closed: true }, "its pipe, fd 3, read and closed");
     for (const where of ["env", "child", "toolChild"]) {
-      assert.deepEqual(report[where].filter((name) => ["GEMINI_API_KEY", "FOO_API_KEY", "FOO_PASSWORD"].includes(name)), [], `none of them in ${where} of a run on ${report === onGemini ? "Gemini" : "another provider"}`);
+      assert.deepEqual(report[where].filter((name) => SECRET_NAMES.includes(name) || ["FOO_API_KEY", "FOO_PASSWORD"].includes(name)), [], `no secret's name in ${where} of the run on ${id}`);
       assert.deepEqual(keyShapedIn(report[where]), [], `no key-shaped name at all in ${where}`);
     }
   }
   // The run on Gemini's model up, holding its turn, while every process of this user is read.
-  await holdTurn(api, onGemini.id);
-  const seen = noSecretAnywhere(root, gemini);
+  await holdTurn(api, reports.gemini.id);
+  const seen = noSecretAnywhere(root, canary);
   assert.ok(seen.some((cmdline) => cmdline.includes(" --app ")), "the run's process is among those read");
   for (const value of [foo, password]) onlyTheServerHolds(root, value);
 });
 
-test("on codex, with its turn held inside Codex's own process (a child of the run's), a key pi-ai reads for a provider (GEMINI_API_KEY) is in no process's environment, Codex's included, which every command it starts inherits; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) are in none under the server", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
-  const canary = `not-a-secret-provider-codex-${process.pid}-${Date.now()}`;
-  const gemini = `${canary}-GEMINI_API_KEY`;
-  const foo = `${canary}-FOO_API_KEY`;
-  const password = `${canary}-FOO_PASSWORD`;
+/** Every file under `dir` (a run's directory: its store, process.log, harness/), and which holds any of `values`. */
+function filesHolding(dir, ...values) {
+  const files = [];
+  const walk = (at) => {
+    for (const entry of readdirSync(at, { withFileTypes: true })) {
+      const path = join(at, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile()) files.push(path);
+    }
+  };
+  walk(dir);
+  return { files, holding: files.filter((path) => values.some((value) => readFileSync(path).includes(value))) };
+}
+
+test("on codex, with every secret set and its turn held inside Codex's own process (a child of the run's), no process's environment holds a secret, Codex's included, which every command it starts inherits; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) are in none under the server; and no file of the run's holds a key, its store, its log and Codex's own files included", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
+  const { canary, secrets } = canaries();
+  const unlisted = `nak-unlisted-codex-${process.pid}-${Date.now().toString(36)}`;
+  const foo = `${unlisted}-FOO_API_KEY`;
+  const password = `${unlisted}-FOO_PASSWORD`;
   const gw = await heldGateway(t);
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
   copyFileSync(STAND_IN, standIn);
-  const { root, api } = await launched(t, {
-    AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN`,
-    AGENT_MODEL_API_KEY: `${canary}-AGENT_MODEL_API_KEY`,
-    GEMINI_API_KEY: gemini,
+  const { root, api, data } = await launched(t, {
+    ...secrets,
     FOO_API_KEY: foo,
     FOO_PASSWORD: password,
     AGENTRUN_CODEX_STANDIN: "1",
@@ -543,15 +573,22 @@ test("on codex, with its turn held inside Codex's own process (a child of the ru
     AGENT_MODEL_PRICE: "1,2,0.5",
   }, []);
   assert.equal((await api("POST", "/agents", agent("coder", { harness: "codex" }))).status, 201);
-  assert.equal((await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } })).status, 202);
+  const started = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
+  assert.equal(started.status, 202);
   for (let i = 0; gw.seen.length === 0; i++) {
     assert.ok(i < 400, "Codex's model request reaches the gateway");
     await sleep(100);
   }
-  const seen = noSecretAnywhere(root, gemini);
+  assert.equal(gw.seen[0].authorization, `Bearer ${secrets.AGENT_MODEL_API_KEY}`, "the gateway's key reached Codex's request through the run's proxy");
+  const seen = noSecretAnywhere(root, canary);
   assert.ok(seen.some((cmdline) => cmdline.includes(standIn)), `Codex's process is among those read: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
   assert.ok(seen.some((cmdline) => cmdline.includes(" --app ")), "and the run's, Codex's parent");
   for (const value of [foo, password]) assert.ok(onlyTheServerHolds(root, value).some((cmdline) => cmdline.includes(standIn)), "neither holds a key-shaped variable no list names");
+  // Everything the run has kept by its model request, read for a key while Codex holds the turn: its store, its log and
+  // Codex's own files (its home, its config, its rollout).
+  const { files, holding } = filesHolding(join(data, "runs", started.body.run_id), canary, unlisted);
+  assert.ok(files.some((path) => path.endsWith("process.log")) && files.some((path) => path.includes("/harness/")), `the run's log and Codex's files are among those read: ${files.length} files`);
+  assert.deepEqual(holding, [], "no file of the run's holds a key");
 });
 
 test("a pi run on Amazon Bedrock hands each request the AWS keys its process holds, in pi-ai's own env option, which Bedrock's request reads them from: none needs an environment", async () => {
@@ -690,7 +727,7 @@ async function heldGateway(t) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { seen, origin: `http://127.0.0.1:${server.address().port}` };
+  return { seen, release: () => release(), origin: `http://127.0.0.1:${server.address().port}` };
 }
 
 test("on codex, with its turn held inside Codex's own process, no process of the user holds a secret; Codex's model request still carries the gateway's key", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
@@ -752,8 +789,8 @@ test("a secret is handed over byte for byte, never read as shell: one full of sh
   const token = `not-a-secret-${"token"}-${process.pid}-${"t".repeat(24)}`;
   // Command substitution, backticks, a separator, quotes and spaces, then enough to come near the 4096-byte limit.
   const hostile = `not-a-secret-$(touch ${join(dir, "PWNED")})\`touch ${join(dir, "PWNED2")}\`;x 'y "z ${"k".repeat(3_600)}`;
-  // A model key, which every run's process gets whatever its tools.
-  const { api } = await launched(t, { AGENTRUN_TOKEN: token, AGENT_MODEL_API_KEY: hostile });
+  // The gateway's key, which a run behind the gateway gets (under --faux its model answers, the gateway never asked).
+  const { api } = await launched(t, { AGENTRUN_TOKEN: token, AGENT_MODEL_API_KEY: hostile, AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" });
   assert.equal((await api("POST", "/agents", { definition: { id: "bytes", version: 1, name: "bytes", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
   const { body: run } = await api("POST", "/agents/bytes/runs", { input: { content: "Report." } });
   await follow(api, run.run_id, ["completed"]);
