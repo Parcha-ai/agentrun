@@ -90,6 +90,8 @@ test("a run whose process died with its server is relaunched on its directory by
   assert.equal((await api("GET", `/runs/${runId}`)).body.result.final_answer, "Soon.");
   assert.equal(storeRun(data, runId).state, "completed");
   assert.ok(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation >= 2, "opened again on its directory");
+  // A launch that served removes its mark: the next server opens the run again once, never fails it as lost at launch.
+  assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation, 2, "opened again once");
 });
 
 test("a workflow run whose process died with its server is relaunched by the next one and completes from its journal", async (t) => {
