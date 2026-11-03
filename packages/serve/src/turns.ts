@@ -15,7 +15,7 @@ export type TurnEnd = { status: "answered" | "asked" | "failed" | "interrupted";
 /** The request id prefix of a run's end-of-run turn (learning-run.ts): the server's message, never the person's. */
 export const REFLECT_REQUEST = "learn-reflect-";
 
-type Message = { key: string; order: number; end?: TurnEnd; legacy?: true; sent?: true };
+type Message = { key: string; order: number; end?: TurnEnd; legacy?: true; sent?: true; status?: unknown };
 type Obj = Record<string, unknown>;
 const isObject = (value: unknown): value is Obj => typeof value === "object" && value !== null && !Array.isArray(value);
 /** An answer's whole text: its text blocks, as a run's answer has always read. */
@@ -100,6 +100,9 @@ export class Turns {
     }
     const message = known ?? this.#take(key, false, now, value.id);
     if (message.end) return;
+    // Only a move of its status is its turn's progress: a reconnect's snapshot carries the same record again.
+    const moved = message.status !== value.status;
+    message.status = value.status;
     if (value.status === "done") {
       const answer = typeof value.answer === "number" ? value.answer : null;
       if (answer !== null && typeof value.answer_text === "string") this.#texts.set(answer, value.answer_text);
@@ -108,7 +111,7 @@ export class Turns {
       message.end = answer !== null && (this.#calls.has(answer) || value.answer_calls === true) ? { status: "asked", answer: null } : { status: "answered", answer };
     } else if (value.status === "unanswered") {
       message.end = value.reason === "aborted" ? { status: "interrupted", answer: null } : { status: "failed", answer: null, error: typeof value.detail === "string" ? value.detail : String(value.reason ?? "the turn failed") };
-    } else if (this.open > 0) this.#progress = now;
+    } else if (moved && this.open > 0) this.#progress = now;
   }
 
   #take(key: string, legacy: boolean, now: number, order: number): Message {
