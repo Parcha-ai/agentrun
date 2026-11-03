@@ -10,6 +10,11 @@
 // written on the request's end mark (request-start.ts), so a later process counts it the same. Nor can a spend no one
 // knows (a request a crash cut, a cost that is not a number) or a model whose output is priced and that has no output
 // ceiling be kept within a cap: under one, each refuses the request, never passes as $0.
+// A request carrying a native web search tool reads pages into its input that its body does not hold: on claude-agent
+// its bound is its body's plus a stated allowance (NATIVE_SEARCH_ALLOWANCE_TOKENS, which its adapter adds, adapters.ts),
+// and pi's own search request is held at its context plus HOSTED_SEARCH_ALLOWANCE_TOKENS and its most fee; what it
+// cost, booked once it answers, stops the next request. A run whose booked spend passes its cap shows by how much on its
+// timeline (runs.ts withOverCap).
 //
 // A paid tool's charge (monid.run's, monid.ts) is the run's spend too: booked in the run's store as a TOOL_COST, which
 // the run's cost and spentIn both count (an unknown one makes the spend unknown), and added to what the run's process
@@ -36,6 +41,17 @@ export const HELD_FIELD = "heldUsd";
 /** The field of the start mark (REQUEST_STARTED) written for a request this cap refused: it never left, and pi's error
  *  entry for it answers this mark, never an earlier request's. */
 export const CAP_REFUSED_FIELD = "capRefused";
+
+/** The input a request carrying claude-agent's native web search may read in beyond its body, added to its input bound
+ *  by its adapter (adapters.ts hands it over): Claude's CLI asks for at most 8 searches a request (max_uses 8), and each
+ *  search's results are billed as input, about 25,000 tokens a search as a working estimate. */
+export const NATIVE_SEARCH_ALLOWANCE_TOKENS = 8 * 25_000;
+
+/** A tool's own request through the run's models (`completeSimple`), by its context: the label its marks carry, the
+ *  input its hosted tool may add beyond its context (results billed as input) and the most fee it can run up, which the
+ *  cap holds (cap.ts), and the fee its tokens do not show (its searches), read once it ended. */
+export type SideRequest = { label: string; extraInputTokens: number; maxFeeUsd: number; feeUsd(): number };
+export const sideRequests = new WeakMap<object, SideRequest>();
 
 /** The run's cap from its process's environment; absent for a run without one. */
 export function capOf(env: NodeJS.ProcessEnv): number | undefined {
@@ -73,7 +89,8 @@ function openRequests(entries: readonly EntryLike[]): { generation: number; comp
   for (const entry of entries) {
     const message = entry.model?.[0] as { stopReason?: unknown } | undefined;
     const data = (entry.data ?? {}) as Record<string, unknown>;
-    const summary = data.request === "compaction";
+    // A side request (a compaction's summary, a tool's own request): marked with a label, as the timeline reads it.
+    const summary = typeof data.request === "string";
     if (entry.kind === REQUEST_REFUSED) refused += 1;
     else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") refused -= 1;
     else if (entry.kind === REQUEST_CONTINUED) continued += 1;
@@ -115,7 +132,7 @@ export function spentIn(storeFile: string): number | null {
       if (entry.kind === TOOL_COST) calls.delete(data.call);
       if (entry.kind === REQUEST_STARTED) {
         marked = true;
-        starts[data.request === "compaction" ? "compaction" : "generation"].push(figureOf(data[HELD_FIELD]));
+        starts[typeof data.request === "string" ? "compaction" : "generation"].push(figureOf(data[HELD_FIELD]));
       }
       // pi's entry for a marked request stopped before its end (what had streamed of it): the request is counted by its
       // marks instead, at the figure its end holds, or cut. Before the first mark (an older run) it stays unknown.
@@ -124,8 +141,8 @@ export function spentIn(storeFile: string): number | null {
       const held = data[HELD_FIELD];
       if (entry.kind !== REQUEST_ENDED || data.unsent === true || typeof held !== "number" || !Number.isFinite(held)) continue;
       // The stopped request closed at what the cap held for it: a summary by its cost, a generation by an answer.
-      entries.push(data.request === "compaction"
-        ? { kind: REQUEST_COST, data: { request: "compaction", usd: held } }
+      entries.push(typeof data.request === "string"
+        ? { kind: REQUEST_COST, data: { request: data.request, usd: held } }
         : { kind: "pi.assistant", ...(entry.conversationId !== undefined ? { conversationId: entry.conversationId } : {}), model: [{ role: "assistant", content: [], stopReason: "stop", usage: { cost: { total: held } }, timestamp: 0 }] });
     }
   } finally {
@@ -337,9 +354,11 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const transcript = context as unknown as Parameters<typeof clampMaxTokensToContext>[1];
     const added = overhead(model, context);
     if (added === undefined) return undefined;
-    const input = inputBound(JSON.stringify(context), added);
+    // A tool's own request adds what its hosted tool may read (hosted-search.ts), and its most fee.
+    const side = sideRequests.get(context);
+    const input = inputBound(JSON.stringify(context), added + (side?.extraInputTokens ?? 0));
     const output = ceiling === 0 ? 0 : clampMaxTokensToContext(model, transcript, Math.max(options?.maxTokens ?? 0, ceiling));
-    return worstOf(calculateCost, model)(input, output);
+    return worstOf(calculateCost, model)(input, output) + (side?.maxFeeUsd ?? 0);
   };
   /** A request's worst case, or why the cap refuses it. */
   const judge = (model: Model<Api>, context: Context, options?: { maxTokens?: number }): { worst: number } | { why: string } => {
