@@ -887,13 +887,23 @@ carries no cost at all, as from a provider that does not price the model. The te
 - Each run's door listens on loopback and takes only the server's door token.
 - A run's process gets the server's environment (the `AGENT_MODEL` variables among it) without the server's token or any
   key: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key
-  (`*_API_KEY`, `*_TOKEN`, any with `SECRET` or `PASSWORD`), whether the launcher's list names it or not. The keys it needs come over
-  its pipe. It gets none of the boxes' keys ([Boxes](#boxes)). A tool key reaches it only when its revision names a tool
-  the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` `browser`; a workflow's tools are those its model
-  and call nodes name), and a provider's key only when its model is that provider's ([Models](#models)), read from the
-  revision at each launch, a relaunch or a resume after a restart included. A variable named like a key that is not on
-  the launcher's list (`capabilities.secrets.names`) stays in the server's own environment, which a process of the same
-  user can read.
+  (`*_API_KEY`, `*_TOKEN`, any with `SECRET` or `PASSWORD`), whether the launcher's list names it or not. The keys it
+  needs come over its pipe. It gets none of the boxes' keys ([Boxes](#boxes)). A tool key reaches it only when its
+  revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` `browser`; a workflow's
+  tools are those its model and call nodes name), and a provider's key only when its model is that provider's
+  ([Models](#models)), read from the revision at each launch, a relaunch or a resume after a restart included.
+- A variable named like a key that is not on the launcher's list (`capabilities.secrets.names`) is left out of every
+  run's environment, but the launcher does not take it out of the server's: it stays in the server's own environment
+  (`/proc/<pid>/environ`), which any process of the same user can read. Set only the keys the server needs where it
+  starts.
+- Amazon Bedrock's credentials from a container role by full URI with the token itself
+  (`AWS_CONTAINER_CREDENTIALS_FULL_URI` and `AWS_CONTAINER_AUTHORIZATION_TOKEN`) are not supported for runs: the token
+  is named like a key, so no run's environment holds it, and the AWS SDK reads it from there alone. A profile, access
+  keys, a bearer token, a web identity token file, a token file (`AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`) or a role by
+  relative URI work.
+- `TYPESAFE_API_KEY` is a decision key, handed to a workflow run's decision providers on a pipe of their own and never
+  with a run's other secrets, so a pi run on a `typesafe/` model does not get it: its process finds no key for that
+  model, and the run fails.
 - A run's file tools (`read`, `write`, `edit`) reach its own `work/`, and two places of its own beside it: `read` also
   reaches the run's `tmp/` (next to `work/`, where a command's spilled output would go), and a write may also land in a
   temporary directory the run's environment made for a tool (`createTempDir`). Every other path, a link inside `work/`
