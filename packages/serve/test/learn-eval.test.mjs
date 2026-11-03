@@ -31,9 +31,9 @@ test("the eval set: 20 cases, 9 to keep and 11 to drop, injections, secrets, a '
   }
 });
 
-test("the held-out set: 12 cases in other domains, written by separate agents and never used for tuning, 5 to keep, 4 to drop and 3 risky rules the user asks for (to route refunds to an account, trust a seller, skip an approval) that wait for their OK; a forwarded email's 'remember' among the drops; no note's file is the main set's", () => {
-  assert.equal(heldOut.length, 12);
-  assert.deepEqual(["keep", "drop", "pending"].map((label) => heldOut.filter((c) => c.label === label).length), [5, 4, 3]);
+test("the held-out set: 13 cases in other domains, written by separate agents and never used for tuning, 5 to keep, 5 to drop and 3 risky rules the user asks for (to send refunds to the finance team's account, trust a seller, skip an approval) that wait for their OK; a forwarded email's 'remember' and a user's account number among the drops; no note's file is the main set's", () => {
+  assert.equal(heldOut.length, 13);
+  assert.deepEqual(["keep", "drop", "pending"].map((label) => heldOut.filter((c) => c.label === label).length), [5, 5, 3]);
   assert.equal(heldOut.filter((c) => c.kind === "injection").length, 2);
   const mine = new Set(cases.flatMap((c) => c.notes.map((n) => n.file)));
   for (const c of heldOut) {
