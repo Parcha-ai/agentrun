@@ -333,7 +333,7 @@ test("under its launcher the seal key is made once, outside the data directory, 
   holdsNone(said.join("\n"), forms, "the server's log and answers");
 });
 
-test("a key saved later makes a harness available with no restart: each key write makes the harnesses' offers again from the server's reading", async (t) => {
+test("a key a harness reads, saved later, makes the harness available with no restart: the server's reading probes the harnesses' offers with it", async (t) => {
   if (secret("ANTHROPIC_API_KEY")) return t.skip("this process holds an Anthropic key of its own");
   let saved;
   const stored = (name) => (name === "ANTHROPIC_API_KEY" ? saved : undefined);
@@ -396,4 +396,6 @@ test("a tool-settings PUT and a tool key's PUT and DELETE answer without probing
   assert.equal(writes.length, 6, JSON.stringify(writes));
   const bound = Math.max(50, probe / 4);
   assert.deepEqual(writes.filter(([, ms]) => ms >= bound), [], `each write answers in under ${Math.round(bound)} ms (one probe here: ${Math.round(probe)} ms): ${JSON.stringify(writes)}`);
+  // The server's own word for it: it probed the harnesses once, at its start, and no write probed them again.
+  assert.deepEqual(lines.filter((line) => / event=harness_offers /.test(line)).map((line) => /why=(\S+)/.exec(line)[1]), ["start"]);
 });
