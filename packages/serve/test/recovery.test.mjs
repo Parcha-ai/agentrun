@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test as nodeTest } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
@@ -22,7 +22,8 @@ const alive = processAlive;
  *  fails the test with what it said. No clock: a slow start, on a loaded machine, is still a start. `execArgv` and `env`
  *  go to its node (a preloaded test hook, say). */
 async function serverProcess(data, { execArgv = [], env = {} } = {}) {
-  const child = spawn(process.execPath, [...execArgv, CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+  // A home beside the data, not this machine's: a first start counts the sessions in its home for setup's offer.
+  const child = spawn(process.execPath, [...execArgv, CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data), ...env } });
   let out = "";
   let err = "";
   // Read to the end, so the server never blocks on a full pipe; its last lines say why, should it exit before it listens.
@@ -519,6 +520,6 @@ test("a stop saved before its abort reached the run is finished by the next serv
   await untilState(api, run_id, ["input_required", "idle"]);
   // Behind a turn still running (60 s), the follow-up would wait past follow's 30 s.
   assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "go on" })).body.mode, "follow_up");
-  await follow(api, run_id, ["completed"], { deadlineMs: 20_000 });
+  await follow(api, run_id, ["completed"], { deadlineMs: 20_000 }).catch(async (error) => { error.message += `\ntimeline: ${await api.fresh("GET", `/runs/${run_id}/timeline?limit=500`).then(({ body }) => JSON.stringify(body), (cause) => `unavailable (${cause.message})`)}`; throw error; });
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
 });
