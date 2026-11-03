@@ -148,21 +148,32 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
   mkdirSync(tmp);
   // The seal key the launcher makes when none is given goes in the test's own config directory, never the user's.
   const child = spawn(LAUNCHER, typeof args === "function" ? args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), ...env, TMPDIR: tmp } });
+  // Whether the launcher's pid is still its own: once it exits and Node reaps it, that number, and so its group's id, can
+  // be given to another process (on this box the PIDs wrap in minutes under test load, so another lane's), and a kill of
+  // it or of the group, or a walk from it, would reach that process. Each is done only while it is alive.
+  let alive = true;
+  child.once("exit", () => {
+    alive = false;
+  });
   t.after(async () => {
     // Every process under the launcher, found before it goes (its children then belong to init), killed, and waited for.
-    const tree = new Set([...treeOf(child.pid)]);
+    // Read and signalled in one turn of the event loop, so the launcher is not reaped between the check and the kill.
+    const tree = new Set(alive ? treeOf(child.pid) : []);
     for (let round = 0; round < 2; round++) {
       for (const pid of [...tree]) for (const under of treeOf(pid)) tree.add(under);
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {}
+      if (alive) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {}
+      }
       for (const pid of tree) {
         try {
           process.kill(pid, "SIGKILL");
         } catch {}
       }
     }
-    for (const end = Date.now() + 10_000; [...tree].some((pid) => processAlive(pid)); await sleep(50)) {
+    // The launcher is waited for by its exit (alive), never by its number, which another process may hold once reaped.
+    for (const end = Date.now() + 10_000; [...tree].some((pid) => (pid === child.pid ? alive : processAlive(pid))); await sleep(50)) {
       if (Date.now() > end) throw new Error(`still running after the test: ${[...tree].filter((pid) => processAlive(pid)).map((pid) => `${pid} ${read(`/proc/${pid}/cmdline`)?.toString().replaceAll("\0", " ").slice(0, 80)}`).join("; ")}`);
     }
     await rm(dir, { recursive: true, force: true });
