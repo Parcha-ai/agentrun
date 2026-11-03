@@ -395,7 +395,9 @@ test("a capped pi run stopped mid-answer goes on while its cap allows: in its pr
   let run = await finished(api, runId);
   assert.deepEqual([run.status, run.error?.code ?? null, run.result.final_answer], ["completed", null, "On go on: done."], "the same process admits the next request");
   assert.equal(run.cost.usd, null, "the stopped request's cost shows unknown, never $0");
-  assert.deepEqual((await api("GET", `/runs/${runId}/timeline`)).body.rows.findLast((r) => r.kind === "usage")?.usage, { usd: null, requests: 2 }, "the stopped request is booked: counted, at an unknown cost");
+  const stoppedUsage = (await api("GET", `/runs/${runId}/timeline`)).body.rows.findLast((r) => r.kind === "usage")?.usage;
+  assert.deepEqual([stoppedUsage?.usd, stoppedUsage?.requests, stoppedUsage?.unpriced], [null, 2, 1], "the stopped request is booked: counted, at an unknown cost, the one charge with no price");
+  assert.ok(stoppedUsage.so_far_usd > 0 && stoppedUsage.so_far_usd === run.cost.so_far_usd, `the follow-up's known cost so far, as the run says: ${JSON.stringify([stoppedUsage, run.cost])}`);
   const spent = spentIn(storeFileOf(data, runId));
   assert.ok(spent >= FAUX_WORST && spent < FAUX_WORST * 1.5, `the store says what the cap counts: the held worst case and the answer since, $${spent}`);
   // Completed, the run's process is gone: the next message opens a new one, which reads its spend from the store.

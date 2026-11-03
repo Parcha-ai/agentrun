@@ -133,7 +133,7 @@ test("a request whose cost comes after the wait: its answer is written at unknow
   t.mock.timers.tick(BOOKING_WAIT_MS);
   await settles(() => first.events.includes("run_end"), "the turn ends once the wait runs out");
   // Its cost not in yet: the run's cost reads unknown, never a known $0.
-  assert.deepEqual(usage(await rootOf(first.harness)), { usd: null, requests: 1 }, "one request, its cost unknown while it is out");
+  assert.deepEqual(usage(await rootOf(first.harness)), { usd: null, requests: 1, so_far_usd: 0, unpriced: 1 }, "one request, its cost unknown while it is out");
   // The cost comes in after the answer was written: it goes in on its own, with no next turn to carry it.
   late.book();
   await settles(async () => spend(await rootOf(first.harness)) === 0.003, "the late cost is in the run's spend with no next turn");

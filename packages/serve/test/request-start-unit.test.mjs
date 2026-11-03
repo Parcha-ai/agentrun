@@ -92,7 +92,7 @@ test("an aborted compaction summary is closed with its end, never priced: the ru
   assert.deepEqual(marks, [{ kind: REQUEST_STARTED, data: { request: "compaction" } }, { kind: REQUEST_ENDED, data: { request: "compaction" } }], "no cost written");
   const answered = { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "a" }], stopReason: "stop", usage: { input: 1, output: 1, cost: { total: 0.01 } } }] };
   const usage = timelineOf([{ kind: REQUEST_STARTED, data: {} }, answered, ...marks]).at(-1).usage;
-  assert.deepEqual(usage, { usd: null, requests: 2 });
+  assert.deepEqual(usage, { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 });
 });
 
 test("a cancelled run sends no summary request either: the model is never called, and nothing is marked", async () => {

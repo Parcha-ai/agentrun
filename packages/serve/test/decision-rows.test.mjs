@@ -47,9 +47,17 @@ test("a decision's cost joins the run's usage row; one unknown makes the total u
   assert.deepEqual(known.at(-1).usage, { usd: 0.016, requests: 3 });
   assert.deepEqual(known.map((row) => row.kind), ["decision", "decision", "usage"]);
   const unknown = withDecisions([usageRow(0.01, 1)], [receipt(), receipt({ id: "d2", cost_usd: null })]);
-  assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 3 });
+  assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 3, so_far_usd: 0.014, unpriced: 1 }, "unknown, and what is known so far: the model requests' and the priced decision's");
   assert.equal(decisionRows([receipt({ cost_usd: null })])[0].usage.usd, null, "a decision whose cost is unknown says so on its row");
   assert.deepEqual(withDecisions([usageRow(0.01, 1)], []), [usageRow(0.01, 1)], "no decisions: the rows as they were");
+});
+
+test("a workflow whose model request was cut says on its usage row what it cost so far and how many charges have no price, its decisions' among them", () => {
+  const cut = { ...usageRow(null, 2), usage: { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 } };
+  const row = withDecisions([cut], [receipt({ id: "d1", cost_usd: 0.004 }), receipt({ id: "d2", at: "2026-10-29T23:00:01.000Z", cost_usd: null })]).at(-1);
+  assert.deepEqual(row.usage, { usd: null, requests: 4, so_far_usd: 0.014, unpriced: 2 }, "the model row's known 0.01 and the priced decision's 0.004; the cut request and the unpriced decision");
+  assert.equal(row.summary, "Cost so far: $0.0140 known, 2 not priced, over 2 model requests and 2 decisions");
+  assert.deepEqual(withDecisions([usageRow(0.01, 1)], [receipt({ cost_usd: 0.004 })]).at(-1).usage, { usd: 0.014, requests: 2 }, "every cost known: neither field");
 });
 
 test("decision rows sit among the run's rows by time, the usage row last", () => {
