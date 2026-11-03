@@ -41,6 +41,9 @@ export const TOOL_KEYS = [
   { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: ["TYPESAFE_API_KEY"], unlocks: ["decisions.jev"] },
 ] as const;
 const FIELDS: readonly string[] = TOOL_KEYS.flatMap((row) => row.fields);
+/** The fields of the `tool` rows: keys a tool or a decision provider reads, and no harness (the harnesses read their
+ *  packages, their pins and their models' keys). A row of another kind (a model's) is outside them. */
+export const TOOL_FIELDS: readonly string[] = TOOL_KEYS.filter((row) => row.kind === "tool").flatMap((row) => row.fields);
 
 /** What `candidates` unlock here, as capabilities show it: the tools of `tools` (capabilities' `tools`, available or
  *  not) and the providers of `providers` (its `workflows.decisions.providers`) named among them, and the harnesses

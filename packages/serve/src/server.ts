@@ -41,7 +41,7 @@ import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { keyOf, SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
+import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
@@ -266,14 +266,28 @@ export function workflowTitle(name: string, input: Record<string, unknown>): str
   return words.length ? `${name}${/[?!:.]$/.test(name) ? "" : ":"} ${words.join(", ")}` : name;
 }
 
-/** The server's reading of `base` with its secrets, saved keys among them, and its capabilities on it, the harnesses'
- *  offers included, under its learning switch (`learning`, AGENTRUN_SERVE_LEARNING's when not given) and its tool
- *  settings (`toolSettings`, what each web tool resolves to): made at the start and again at each save or delete of a key
- *  and each PUT of the tool settings, so a key saved later can make a harness or a provider available with no restart.
- *  `boxes`: what the box registry set up at the start (boxes.ts), the same in every reading. */
+/** `env` as the harnesses' offers are made from it: without the tool keys' fields (TOOL_FIELDS), which no harness reads.
+ *  So the offers never depend on a tool key, and its save or delete leaves them as they are. */
+export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const descriptors = Object.getOwnPropertyDescriptors(env);
+  for (const name of TOOL_FIELDS) delete descriptors[name];
+  return Object.defineProperties({}, descriptors) as NodeJS.ProcessEnv;
+}
+
+/** What of `env` a write can change that the harnesses' offers are made from: each secret but the tool keys' fields (a
+ *  saved key is one of those; the rest of the environment is the server's start's). Held to tell whether a write needs
+ *  the offers probed again, never shown. */
+const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]);
+
+/** The server's reading of `base`, whole: its secrets, saved keys among them (`env`), the harnesses' offers, probed from
+ *  env without the tool keys (offersEnvOf), and its capabilities made from both under its learning switch (`learning`,
+ *  AGENTRUN_SERVE_LEARNING's when not given), its tool settings (`toolSettings`, what each web tool resolves to) and the
+ *  box offers (`boxes`, what the box registry set up at the start, boxes.ts). The server makes it once at its start and
+ *  then remakes only the parts a write changes (startHolding). */
 export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const env = withSecrets(base, "all", stored);
-  return { env, caps: await capabilities(env, maxRuns, learning ?? learningOf(env), toolSettings, boxes) };
+  const offers = await harnessOffers(offersEnvOf(env));
+  return { env, offers, caps: capabilitiesWith(env, maxRuns, offers, learning ?? learningOf(env), toolSettings, boxes) };
 }
 
 /** The capabilities document GET /v2/capabilities answers for `env`: each harness's offer resolved, its `default_model`
@@ -285,7 +299,7 @@ export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.
 }
 
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
- *  offers (capabilities, through readingOf at the start and after each key or tool-settings write). */
+ *  offers: cheap, made again after each key or tool-settings write with the offers the server holds. */
 function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const models = modelSource(env);
   return {
@@ -457,20 +471,37 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   toolKeys.view();
   // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
   const settings = new ToolSettings(data);
-  // The server's reading, saved keys with it (storedKeys), and its capabilities under its tool settings: made again at
-  // each save or delete of a key, the one writer of its file, and at each PUT of the tool settings, both through this one
-  // recompute, so capabilities, the harnesses' offers, save checks and run checks see either with no restart and no
-  // request opening the file. A reading a later write overtook is dropped, so a key write and a settings write never
-  // leave capabilities stale. The first is made once saved keys are read (below), so the offers are checked once at the
-  // start.
+  // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
+  // `offers`, what each harness offers, probed from env without the tool keys (offersEnvOf), the one slow part (each
+  // CLI's package and pins, codex's binary hashed); and `caps`, the capabilities document made from both under the tool
+  // settings and the box offers. A write remakes only the parts it changes, before it answers: a PUT of the tool
+  // settings, caps; a save or delete of a key, env and caps, and the offers only when what they are made from changed,
+  // which no tool key is. So a write answers at once, and capabilities, save checks and run checks after it see it, with
+  // no restart and no request opening the file. The offers are probed once saved keys are read (below), at the start.
   let env = withSecrets(base, "all", storedKeys);
-  let caps!: Awaited<ReturnType<typeof readingOf>>["caps"];
-  let latest = 0;
+  let offers!: HarnessCapability[];
+  let caps!: ReturnType<typeof capabilitiesWith>;
+  // The box offers are probed once, below, before the first reading is made.
+  const recompose = () => void (caps = capabilitiesWith(env, maxRuns, offers, learning, settings.get(), boxOffers));
+  // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
+  let offersFrom: readonly (string | undefined)[] | undefined;
+  let probes = 0;
+  const probe = async (why: string) => {
+    const mine = ++probes;
+    const from = offersInputs(env);
+    const started = performance.now();
+    const next = await harnessOffers(offersEnvOf(env));
+    log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
+    if (mine !== probes) return;
+    [offers, offersFrom] = [next, from];
+    recompose();
+  };
+  /** After a save or delete of a key, the one writer of its file: env again, then what reads it. */
   const keysChanged = async () => {
-    const mine = ++latest;
-    // The box offers are probed once, below, before the first reading is made.
-    const next = await readingOf(base, maxRuns, storedKeys, learning, settings.get(), boxOffers);
-    if (mine === latest) ({ env, caps } = next);
+    env = withSecrets(base, "all", storedKeys);
+    const inputs = offersInputs(env);
+    if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
+    else await probe("key");
   };
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
   // box stands in for Docker, and nothing asks Docker.
@@ -509,7 +540,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
-  await keysChanged();
+  await probe("start");
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
@@ -676,7 +707,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const shape = { ...shapeOf(revision), place };
     if (shape.kind === "agentic" && place.mode === "runner" && revision.body.place?.mode === "sandbox") shape.tools = (shape.tools ?? []).filter((tool) => !toolOf(tool)?.sandboxOnly);
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers });
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
@@ -692,7 +723,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision), settings.get(), { boxes: boxOffers });
+    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision), settings.get(), { boxes: boxOffers, offers });
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);
@@ -1245,7 +1276,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const { issues, warnings } = await workflowIssues(body.workflow, body.tools as string[] | undefined);
         // What a save refuses on this host (a model node's tool, a code node where none runs), and what it lacks yet.
         if (!issues.length) {
-          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never, ...(body.tools ? { tools: body.tools as string[] } : {}) }, settings.get()).catch(() => [])) {
+          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never, ...(body.tools ? { tools: body.tools as string[] } : {}) }, settings.get(), { offers }).catch(() => [])) {
             if (blocker.host) warnings.push(blocker.message);
             else issues.push({ path: "", code: "NOT_RUNNABLE_HERE", message: blocker.message });
           }
@@ -1298,9 +1329,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const issues = settingsIssues(body);
         if (issues.length) throw invalid(issues);
         settings.put(body as ToolSettingsMap);
-        // The same recompute a key write makes (keysChanged): env and capabilities again, under these settings and the
-        // keys saved now, so neither write can leave the other's capabilities stale.
-        await keysChanged();
+        // A setting changes what the web tools resolve to, never env or what a harness offers: capabilities again.
+        recompose();
         return send(res, 200, withDefaults(settings.get()));
       }
       case "getWebhook":
