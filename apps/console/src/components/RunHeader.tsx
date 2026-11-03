@@ -21,10 +21,13 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   return (
     <header className="border-b px-5 py-4 md:px-8">
       <nav className="caps flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground" aria-label="Breadcrumb">
-        <ArrowLeft className="size-3.5 shrink-0" aria-hidden />
-        <span className="truncate">{agentName}</span>
+        <a href={`#/agents/${encodeURIComponent(run.agent_id)}/runs`} aria-label={`Back to ${agentName || "agent"}`}
+          className="inline-flex min-w-0 items-center gap-2 hover:text-foreground">
+          <ArrowLeft className="size-3.5 shrink-0" aria-hidden />
+          <span className="truncate">{agentName}</span>
+        </a>
         <span aria-hidden>/</span>
-        <span className="truncate">Run {run.run_id.slice(0, 8)}</span>
+        <span className="truncate" aria-current="page">Run {run.run_id.slice(0, 8)}</span>
       </nav>
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">

@@ -55,8 +55,8 @@ describe("Mission Control's range, against the server", () => {
     await act(async () => { radio("all").click(); });
     await wait(() => asked.length === 3);
     expect(asked[2]).toBe("");
-    const select = host.querySelector("select[aria-label='Agent']") as HTMLSelectElement;
-    await act(async () => { select.value = "calc"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { host.querySelector<HTMLButtonElement>("button[aria-label='Agent']")!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>("[role='option'][aria-label='Calc']")!.click(); });
     await wait(() => asked.length === 4);
     expect(asked[3]).toBe("?agent=calc");
   });

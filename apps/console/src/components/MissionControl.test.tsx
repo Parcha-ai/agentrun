@@ -220,7 +220,7 @@ describe("MissionControl's analytics", () => {
     expect(imported).toContain("Run here: 9 runs · Imported from codex: 3 runs");
   });
 
-  it("the range picker is native radios (arrow keys, one Tab stop) that ask for another range, and the agent picker for one agent", async () => {
+  it("keeps range changes independent from the searchable agent filter and applies an explicitly selected agent", async () => {
     const onRange = vi.fn(), onAgent = vi.fn();
     const host = document.body.appendChild(document.createElement("div"));
     const root = createRoot(host);
@@ -231,10 +231,27 @@ describe("MissionControl's analytics", () => {
     await act(async () => { radio("7d").click(); });
     await act(async () => { radio("all").click(); });
     expect(onRange.mock.calls).toEqual([["7d"], ["all"]]);
-    const select = host.querySelector("select[aria-label='Agent']") as HTMLSelectElement;
-    await act(async () => { select.value = "calc"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const picker = host.querySelector<HTMLButtonElement>("button[aria-label='Agent']");
+    expect(picker).not.toBeNull();
+    await act(async () => { picker!.click(); });
+    const search = document.querySelector<HTMLInputElement>("input[role='combobox']")!;
+    expect(document.activeElement).toBe(search);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "calc");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(document.querySelector("[role='option'][aria-label='Meeting notes']")).toBeNull();
+    expect(onAgent).not.toHaveBeenCalled();
+    await act(async () => { search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
     expect(onAgent).toHaveBeenCalledWith("calc");
+    expect(picker!.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(picker);
+    await act(async () => { picker!.click(); });
+    await act(async () => { document.querySelector("input[role='combobox']")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true })); });
+    expect(document.activeElement).toBe(radio("30d"));
+    expect(onAgent.mock.calls).toEqual([["calc"]]);
     act(() => root.unmount());
+    host.remove();
   });
 });
 
