@@ -3,7 +3,7 @@
 // arrive, and the signed-in owner can read how the import stands.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
@@ -407,4 +407,21 @@ test("setup counts sessions as the import takes them: a thread resumed in a seco
   let found = await read();
   for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
   assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 2 }], "the Claude Code session and the thread, not its two files");
+});
+
+test("a setup with the box ticked that cannot keep the owner's yes sets no owner: it fails whole, and a retry sets the owner and imports", { timeout: 60_000 }, async (t) => {
+  const server = await serve(t, { accounts: true, openSetup: true, ...(await machine(t)) });
+  // A directory where the yes is kept: writing it fails.
+  const yes = join(server.data, ".import-at-setup");
+  mkdirSync(yes);
+  const failed = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
+  assert.ok(failed.status >= 500, `${failed.status} ${failed.text}`);
+  const session = await call(server.port, { path: "/v2/auth/session", headers: page(server) });
+  assert.equal(session.json.password_set, false, "no owner was set");
+  rmSync(yes, { recursive: true });
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
+  assert.deepEqual([made.status, made.json], [201, { signed_in: true, importing: true }], made.text);
+  const state = async () => (await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
+  for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
+  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 2, skipped: 0 });
 });
