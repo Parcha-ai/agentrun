@@ -8,7 +8,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { useSpend } from "../dist/cap.js";
+import { spentIn, useSpend } from "../dist/cap.js";
+import { PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
 import { parallelExtract, webFetch } from "../dist/web-fetch.js";
 import { PARALLEL_SEARCH_URL, webSearch } from "../dist/web-search.js";
 import { exaSearch } from "../dist/exa-keyless.js";
@@ -161,13 +162,44 @@ test("a pi run's search and page read through Parallel are booked as its tool co
     ["Tool cost: parallel charged $0.0010 for web_search", "web_search", ids.web_search],
     ["Tool cost: parallel charged $0.0010 for web_fetch", "web_fetch", ids.web_fetch],
   ]);
+  // Each mark holds its call at its price (heldUsd), the figure a cap, and a run's cost bound, read for a call a crash cut.
+  assert.deepEqual([PARALLEL_SEARCH_USD, PARALLEL_EXTRACT_USD], [0.001, 0.001], "Parallel's published prices");
   assert.deepEqual(paidRecords(data, runId), [
-    { kind: "agentrun.tool_started", tool: "web_search", charged_by: "parallel", call: ids.web_search, heldUsd: 0.001 },
-    { kind: "agentrun.tool_cost", tool: "web_search", charged_by: "parallel", call: ids.web_search, usd: 0.001 },
-    { kind: "agentrun.tool_started", tool: "web_fetch", charged_by: "parallel", call: ids.web_fetch, heldUsd: 0.001 },
-    { kind: "agentrun.tool_cost", tool: "web_fetch", charged_by: "parallel", call: ids.web_fetch, usd: 0.001 },
+    { kind: "agentrun.tool_started", tool: "web_search", charged_by: "parallel", call: ids.web_search, heldUsd: PARALLEL_SEARCH_USD },
+    { kind: "agentrun.tool_cost", tool: "web_search", charged_by: "parallel", call: ids.web_search, usd: PARALLEL_SEARCH_USD },
+    { kind: "agentrun.tool_started", tool: "web_fetch", charged_by: "parallel", call: ids.web_fetch, heldUsd: PARALLEL_EXTRACT_USD },
+    { kind: "agentrun.tool_cost", tool: "web_fetch", charged_by: "parallel", call: ids.web_fetch, usd: PARALLEL_EXTRACT_USD },
   ]);
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002, "the faux model is $0: the run's cost is Parallel's two fees");
+  assert.equal(spentIn(join(data, "runs", runId, "store", "run.sqlite")), 0.002, "and what a restarted process reads as spent, against its cap");
+  const meters = (await api("GET", "/usage?group_by=meter")).body.lines.map((line) => [line.meter, line.usd, line.unpriced_runs]);
+  assert.deepEqual(meters.find(([meter]) => meter === "tools"), ["tools", 0.002, 0]);
+});
+
+test("a workflow's call nodes are booked as an agent's calls are: its search and its page read through Parallel are marked and settled in its store, part of its cost, of /usage's tools meter and of what a restarted process reads as spent", { timeout: 60_000 }, async (t) => {
+  const seen = await calls(t, true);
+  withEnv(t, {}, [EXTRACT_MODE]);
+  const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL, fauxWeb: FAUX_WEB });
+  const Search = { type: "object", required: ["query", "results"], properties: { query: { type: "string" }, results: { type: "array", minItems: 2, maxItems: 2 } } };
+  const Page = { type: "object", required: ["via"], properties: { via: { const: "parallel" } } };
+  const flow = { v: 2, name: "booked", schemas: { In: { type: "object", required: ["q"], properties: { q: { type: "string" } } }, Search, Page }, input: { schemaId: "In" }, output: { schemaId: "Search", path: "found" }, root: { node: "chain", steps: [
+    { node: "call", label: "Search", via: "tool", tool: "web_search", args: { query: "{q}", n: 2 }, out: "Search", as: "found", deadline_s: 60 },
+    { node: "call", label: "Read", via: "tool", tool: "web_fetch", args: { url: "http://public.example/" }, out: "Page", as: "page", deadline_s: 60 },
+  ] } };
+  const parallel = { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } };
+  assert.equal((await api("POST", "/agents", { definition: { id: "booked-flow", name: "booked-flow", workflow: flow, tools: ["web_search", "web_fetch"], tool_settings: parallel } })).status, 201);
+  const run = await api("POST", "/agents/booked-flow/runs", { input: { q: "acme registry" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["completed"]);
+  assert.deepEqual((await seen()).map((call) => [call.path, call.authorized]), [["/v1/search", true], ["/v1/extract", true]]);
+  const paid = paidRecords(data, run.body.run_id);
+  assert.deepEqual(paid.map((entry) => [entry.kind, entry.tool, entry.charged_by, entry.heldUsd ?? entry.usd]), [
+    ["agentrun.tool_started", "web_search", "parallel", PARALLEL_SEARCH_USD], ["agentrun.tool_cost", "web_search", "parallel", PARALLEL_SEARCH_USD],
+    ["agentrun.tool_started", "web_fetch", "parallel", PARALLEL_EXTRACT_USD], ["agentrun.tool_cost", "web_fetch", "parallel", PARALLEL_EXTRACT_USD],
+  ]);
+  assert.ok(paid[0].call && paid[0].call === paid[1].call && paid[2].call === paid[3].call && paid[0].call !== paid[2].call, `each call node's mark and charge name it: ${paid.map((entry) => entry.call)}`);
+  assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd, 0.002, "the run's cost is Parallel's two fees");
+  assert.equal(spentIn(join(data, "runs", run.body.run_id, "store", "run.sqlite")), 0.002);
   const meters = (await api("GET", "/usage?group_by=meter")).body.lines.map((line) => [line.meter, line.usd, line.unpriced_runs]);
   assert.deepEqual(meters.find(([meter]) => meter === "tools"), ["tools", 0.002, 0]);
 });
