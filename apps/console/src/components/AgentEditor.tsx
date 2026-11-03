@@ -1,5 +1,5 @@
 import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { AgentToolSettings } from "@/components/ToolSettings";
@@ -67,6 +67,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
   // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own.
   const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools) : d?.tools ?? [], ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
+  // The form as it is now, for a save's answer to compare with what that save sent.
+  const formNow = useRef(f);
+  formNow.current = f;
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
@@ -106,9 +109,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
     }
     const p = await onSave(fields, note);
-    setSaving(false); setProblem(p); setSaved(!p); if (!p) setNote("");
-    // Saved, the tool settings are the agent's own: the form shows them as the definition has them.
-    if (!p) setF(({ tool_settings: _saved, ...rest }) => rest);
+    // A provider picked while the save was under way is not in it: the form keeps that pick, unsaved. Saved and unchanged
+    // since, the tool settings are the agent's own: the form shows them as the definition has them.
+    const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
+    setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
+    if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
   };
   // The tools that reach the web which this agent's harness runs here, for the notice when it has none of them.
   // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix

@@ -117,7 +117,11 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const asked = useRef(0);
   const go = (hash: string) => { location.hash = hash; };
   useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
-  useEffect(() => { v2.capabilities().then(setCaps).catch(() => {}); }, [v2]);
+  // The capabilities, read at the start and again after a settings save: only the newest read lands, so an answer to an
+  // earlier read (two saves in a row) never puts back what an earlier save left.
+  const capsAsked = useRef(0);
+  const readCaps = () => { const n = ++capsAsked.current; v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); }).catch(() => {}); };
+  useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
   // view opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere, is named at once.
   // Only the newest read lands.
@@ -212,8 +216,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
-            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} onSaved={() => { v2.capabilities().then(setCaps).catch(() => {}); }} />
-              : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={() => { v2.capabilities().then(setCaps).catch(() => {}); }} />}
+            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} onSaved={readCaps} />
+              : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} />}
           </Settings>
         : where.section === "mission"
         ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}

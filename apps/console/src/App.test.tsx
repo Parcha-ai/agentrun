@@ -132,6 +132,40 @@ describe("App, Settings", () => {
     return { host, nav, asked };
   }
 
+  it("two saves in a row: only the newest capabilities read lands, so an older resolution never comes back", async () => {
+    const tool = (provider: string, resolved: string) => [{ ...choiceTools[0], provider, resolves: { pi: resolved, "claude-agent": resolved, codex: resolved } }];
+    let caps = 0;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") {
+        const n = ++caps;
+        const body = (tools: unknown[]) => json(200, { harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+        // The read after the first save answers last, with what was true before the second save.
+        if (n === 2) { await new Promise((r) => setTimeout(r, 300)); return body(tool("native", "native")); }
+        return body(n === 1 ? tool("auto", "exa-keyless") : tool("parallel", "parallel"));
+      }
+      if (path === "/v2/settings/tools") return json(200, init?.method === "PUT" ? JSON.parse(String(init.body)) : { web_search: { provider: "auto" } });
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/settings/tools";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const wait = async (ok: () => boolean) => { const end = Date.now() + 3000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 20)); }); };
+    const select = () => host.querySelector<HTMLSelectElement>('tr[data-tool="web_search"] select');
+    await wait(() => !!select());
+    const choose = async (p: string) => { await act(async () => { const s = select()!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, p); s.dispatchEvent(new Event("change", { bubbles: true })); }); };
+    await choose("native");
+    await choose("parallel");
+    await wait(() => caps >= 3 && !!host.querySelector('tr[data-tool="web_search"]')?.textContent?.includes("Parallel"));
+    await act(async () => { await new Promise((r) => setTimeout(r, 400)); });
+    const row = host.querySelector('tr[data-tool="web_search"]')!.textContent!;
+    expect(row).toContain("pi: Parallel");
+    expect(row).not.toContain("pi: native");
+  });
+
   it("has no Settings in the nav when the server has no features.tool_keys", async () => {
     const page = await open({}, "#/runs");
     expect(page.nav()).toContain("Runs");
