@@ -1,7 +1,7 @@
 // A claude-agent follow-up whose turn ends showing nothing (the Claude CLI's /compact), its process killed after the turn's
 // last entry and before the turn's end (TURN_END) is written (#1424's Greptile P1). The session holds the turn as over, so
 // the relaunched process has no turn to recover, and the root has no end for it: the run must still complete, its answer
-// the earlier one, with no other message. The kill comes at a write the process holds open (faux-harness-turn-end-cut.mjs),
+// that turn's own (none: ""), with no other message. The kill comes at a write the process holds open (faux-harness-turn-end-cut.mjs),
 // never after a wait. The faux claude-agent harness, no network.
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
@@ -43,7 +43,7 @@ test("a follow-up whose turn ended showing nothing, its process killed before th
   const { rows, last } = await follow(api, runId, ["completed"], { deadlineMs: 45_000 });
   t.diagnostic(`rows ${JSON.stringify(rows.map((r) => [r.kind, r.summary]))}`);
   assert.equal(last.status, "completed");
-  assert.equal(await answer(api, runId), "Answer 1.", "the earlier answer stands");
+  assert.equal(await answer(api, runId), "", "the follow-up's own answer: it showed no text");
   assert.deepEqual(rows.findLast((r) => r.kind === "usage")?.usage, { usd: 0.003, requests: 3 }, "the follow-up's request counts once");
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: hi", "You: /compact"], "no other message");
 });

@@ -351,7 +351,7 @@ test("another harness's file tools name the workspace's paths relative to it: a 
   for (const root of new Set([data, realpathSync(data)])) assert.deepEqual(results.filter(([, , text]) => text.includes(root)), [], `no result names ${root}`);
 });
 
-test("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) ends the run completed, its answer the earlier one, without waiting for another message", { timeout: 60_000 }, async (t) => {
+test("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) ends the run completed, its answer that turn's own (none), without waiting for another message", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "answerless", "The second turn answers nothing.");
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -360,7 +360,7 @@ test("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) en
   // Well inside the 60 s a message-less run sat working/idle before (key-custody probe, run3/run4).
   const { rows, last } = await follow(api, runId, ["completed"], { deadlineMs: 20_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.map((r) => [r.kind, r.summary])));
-  assert.equal(await answer(api, runId), "Answer 1.", "the earlier answer stands");
+  assert.equal(await answer(api, runId), "", "the turn's own answer: it showed no text, and the earlier turn's is not its");
   assert.deepEqual(usageOf(rows), { usd: 0.003, requests: 3 }, "the follow-up's request counts");
 });
 
@@ -417,7 +417,7 @@ test("pi: a message sent while a turn works is placed at that turn's end and ans
   assert.equal(await answer(api, runId), "Answer 2.");
 });
 
-test("after a follow-up whose turn ends showing nothing, the run's answer is the earlier one whole, past the 2,000 characters its summary keeps, on this server and the next", { timeout: 90_000 }, async (t) => {
+test("a run's answer is whole, past the 2,000 characters its summary keeps, on this server and the next; a follow-up that then shows nothing answers \"\"", { timeout: 90_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const one = await startServe({ data, port: 0, faux: FAUX, fauxHarness: FAUX_HARNESS, drainTimeout: "5s" });
   let closed = false;
@@ -427,14 +427,15 @@ test("after a follow-up whose turn ends showing nothing, the run's answer is the
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(LONG_ANSWER.length > 2_000, true);
   assert.equal(await answer(api, runId), LONG_ANSWER, "the first turn's answer, whole");
-  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
-  await follow(api, runId, ["completed"], { deadlineMs: 20_000 });
-  assert.equal(await answer(api, runId), LONG_ANSWER, "after the turn that showed nothing, still whole: never the summary the store keeps");
   await one.close();
   closed = true;
   const two = await startServe({ data, port: 0, faux: FAUX, fauxHarness: FAUX_HARNESS, drainTimeout: "5s" });
   t.after(() => two.close());
-  assert.equal(await answer(client(two.baseUrl, two.token), runId), LONG_ANSWER, "and on the next server, read from the run's store");
+  const next = client(two.baseUrl, two.token);
+  assert.equal(await answer(next, runId), LONG_ANSWER, "and on the next server, read from the run's store: never the summary the store keeps");
+  assert.equal((await next("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
+  await follow(next, runId, ["completed"], { deadlineMs: 20_000 });
+  assert.equal(await answer(next, runId), "", "a follow-up that shows nothing answers with its own text, none");
 });
 
 /** Until the run's store holds `n` entries of `kind`. */
@@ -476,7 +477,7 @@ test("a cancel of a turn that has shown nothing reads working, then cancelled: n
   assert.ok(user >= 0 && entries.slice(user + 1).some((e) => e.kind === "agentrun.request_started"), "the case: the request was admitted after the person's message (its start mark is in the store)");
 });
 
-test("pi: after a stopped turn's commentary and a follow-up answered with nothing, the run's answer is the earlier answer, never the commentary, on this server and the next", { timeout: 120_000 }, async (t) => {
+test("pi: after a stopped turn's commentary and a follow-up answered with nothing, the run's answer is that follow-up's own (empty), never the commentary or the earlier answer, on this server and the next", { timeout: 120_000 }, async (t) => {
   // Review F3: commentary that came with a call is no answer, though it is the run's newest text.
   const data = join(await scratch(t), "agents");
   const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
@@ -498,12 +499,12 @@ test("pi: after a stopped turn's commentary and a follow-up answered with nothin
   await follow(api, runId, ["input_required"], { deadlineMs: 30_000 });
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  assert.equal(await answer(api, runId), "Report written.", "the earlier answer, not the stopped turn's commentary");
+  assert.equal(await answer(api, runId), "", "the follow-up's own answer, empty: not the stopped turn's commentary, and not the earlier answer");
   await one.close();
   closed = true;
   const two = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => two.close());
-  assert.equal(await answer(client(two.baseUrl, two.token), runId), "Report written.", "and on the next server, read from the run's store");
+  assert.equal(await answer(client(two.baseUrl, two.token), runId), "", "and on the next server, read from the run's store");
 });
 
 test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {
