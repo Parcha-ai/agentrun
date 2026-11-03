@@ -10,7 +10,7 @@
 // The Agent SDK is the host's: an exact optional peer dependency (`CLAUDE_AGENT_SDK_VERSION`), never shipped here.
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
@@ -158,30 +158,19 @@ export function claudeAgentCliPins(): { sha256?: string; version: string } {
   return sha256 ? { sha256, version: CLAUDE_CODE_VERSION } : { version: CLAUDE_CODE_VERSION };
 }
 
-
-/** The sha256 of the file at `path`, read a megabyte at a time: the binary is hundreds of megabytes, and read whole it
- *  stays in the host's memory until a collection, on a small host for as long as the host runs. */
-function fileSha256(path: string): string {
-  const hash = createHash("sha256");
-  const chunk = Buffer.allocUnsafe(2 ** 20);
-  const fd = openSync(path, "r");
-  try {
-    for (let n = 0; (n = readSync(fd, chunk, 0, chunk.length, null)) > 0; ) hash.update(chunk.subarray(0, n));
-  } finally {
-    closeSync(fd);
-  }
-  return hash.digest("hex");
-}
 /** The CLI at `path`, checked against the pins: its path, or the typed reason it is not the pinned build. */
 export function verifyClaudeAgentCli(path: string | undefined, pins = claudeAgentCliPins()): { path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled {
   if (!path) return new ClaudeAgentNotInstalled(`no CLI of @anthropic-ai/claude-agent-sdk ${CLAUDE_AGENT_SDK_VERSION} for ${platformSuffix()} (its platform package, an optional dependency npm installs with it), and no cliPath`, CLAUDE_AGENT_SDK_INSTALL);
-  let found: string;
+  let bytes: Buffer;
   try {
-    found = fileSha256(path);
+    bytes = readFileSync(path);
   } catch {
     return new ClaudeAgentNotInstalled(`no CLI at ${path}`);
   }
-  if (pins.sha256 && found !== pins.sha256) return new ClaudeAgentPinMismatch("cli_sha256", pins.sha256, found, path);
+  if (pins.sha256) {
+    const found = createHash("sha256").update(bytes).digest("hex");
+    if (found !== pins.sha256) return new ClaudeAgentPinMismatch("cli_sha256", pins.sha256, found, path);
+  }
   let version: string;
   try {
     version = execFileSync(path, ["--version"], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", DISABLE_AUTOUPDATER: "1" }, encoding: "utf8", timeout: 15_000 }).trim().split(/\s/)[0] ?? "";

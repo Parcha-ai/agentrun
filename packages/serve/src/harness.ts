@@ -8,7 +8,7 @@ export type HarnessId = (typeof HARNESSES)[number];
 export const DEFAULT_HARNESS: HarnessId = "pi";
 
 /** The memory one run of each harness reserves while its process lives, in MiB: what admission counts (host.ts).
- *  Measured 2026-11-03 on 529c3882e with this table's change (the pinned binaries hashed in chunks, not read whole): a
+ *  Measured 2026-11-03 on 529c3882e with the pinned binaries' sha256 checked a chunk at a time, not read whole: a
  *  real server in a cgroup of its own (MemoryMax 2048M, no swap), models on a loopback stand-in, one agent with read
  *  and write asked to write a file, read it back and answer; the cgroup's anon (memory.stat) sampled every 100 ms. A
  *  run's size is (the most anon with the runs going − the server's own after boot) / n, for n = 1 and n = 3, twice
@@ -18,7 +18,8 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
  *    claude-agent: n=1 215, 208; n=3 211, 208 MB a run → 288 (+34%)
  *  The margin covers a longer conversation than the probe's three steps; the CLI harnesses (codex, claude-agent) grow
  *  more with one, so theirs is larger. At a 512M limit the same build completed pi x3, codex x2 and claude-agent x1
- *  (and x2), where reading the binaries whole killed the container at claude-agent x1. The faux model and the faux
+ *  (and x2). A check that reads a binary whole adds its size to the server and to each run (294 MB for codex, 230 MB
+ *  for the claude-agent CLI), and these sizes do not cover it. The faux model and the faux
  *  harness reserve the size of the harness they stand in for, so tests admit as a real server does. */
 export const RUN_MIB: Readonly<Record<HarnessId, number>> = { pi: 128, "claude-agent": 288, codex: 192 };
 

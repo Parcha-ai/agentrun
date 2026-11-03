@@ -10,9 +10,9 @@ import { DEFAULT_HARNESS, HARNESSES, type HarnessId, RUN_MIB } from "./harness.j
 const MiB = 2 ** 20;
 /** Memory the server keeps for itself, before any run, in MiB. Measured with RUN_MIB (harness.ts): the server's anon
  *  3 s after its start, 32 starts at limits of 512M to 2048M, was 58 to 81 MB, with no peak at the start over that;
- *  reserved for the high end, 81, plus 47 (+58%), since what it holds grows with the agents and runs it keeps. Before the
- *  pinned binaries were hashed in chunks, its start read the codex binary (294 MB) and the claude-agent CLI (230 MB)
- *  whole, and on a host of 1 GB or less the last of those buffers stayed: 341 to 348 MB from the start. */
+ *  reserved for the high end, 81, plus 47 (+58%), since what it holds grows with the agents and runs it keeps. That is
+ *  with the pinned binaries' sha256 checked a chunk at a time: a start that reads the codex binary (294 MB) and the
+ *  claude-agent CLI (230 MB) whole sat at 341 to 348 MB on a host of 1 GB or less. */
 export const SERVER_MIB = 128;
 /** Free disk under the data directory below which health fails, unless the server says otherwise. */
 export const MIN_FREE_MIB = 64;
