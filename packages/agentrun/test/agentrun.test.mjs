@@ -1,5 +1,4 @@
-// `npx @parcha/agentrun`: the bin starts AgentRun Server on a free loopback port with its data in the server's own default
-// store (~/.local/share/agentrun/agents), prints the
+// `npx @parcha/agentrun`: the bin starts AgentRun Server on a free loopback port with its data in ~/.agentrun, prints the
 // console's address on one line, and a subcommand goes to the server's own CLI. With no model key the server starts and
 // says it has no model, and the console asks for its first password. npm exec of the packed package runs this bin.
 import assert from "node:assert/strict";
@@ -17,8 +16,10 @@ import { DEFAULT_PORT, freePort, KEY_MODELS, modelEnv, openLineUrl, openUrl, sho
 const PACKAGE = new URL("..", import.meta.url).pathname;
 const BIN = join(PACKAGE, "bin", "agentrun.mjs");
 const VERSION = JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8")).version;
-/** The server's default store, under the fresh home `bare` makes: the one every entry point opens with no --data. */
-const STORE = (home) => join(home, ".local", "share", "agentrun", "agents");
+/** This command's store, under the fresh home `bare` makes: ~/.agentrun, handed to the server as --data. */
+const STORE = (home) => join(home, ".agentrun");
+/** The server's own default store (agentrun-serve with no --data), which this command never uses. */
+const SERVE_STORE = (home) => join(home, ".local", "share", "agentrun", "agents");
 const MODEL_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENTRUN_TOKEN"];
 
 /** This environment with a fresh home, no model key, and no browser. */
@@ -51,14 +52,14 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   assert.equal((await (await fetch(`${base}/v2/capabilities`)).json()).models.default, null, "no model: none was given");
   // Until a single-use sign-in link replaces the plain address, the console's first visit sets the owner's password.
   assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { password_set: false, signed_in: false });
-  assert.ok(existsSync(join(STORE(home), ".token")), "the data directory is the server's own default, which its hints and `agentrun-serve` open too");
-  assert.equal(existsSync(join(home, ".agentrun")), false, "no second store");
+  assert.ok(existsSync(join(STORE(home), ".token")), "the data directory is ~/.agentrun");
+  assert.equal(existsSync(SERVE_STORE(home)), false, "no second store");
   child.kill("SIGTERM");
   assert.equal(await exited, 0, err);
   assert.equal(out.split("\n").filter(Boolean).length, 1, "nothing more on stdout");
 });
 
-test("a subcommand is the server's own, on the same store: import --dry-run", { timeout: 60_000 }, async (t) => {
+test("a subcommand is the server's own, on ~/.agentrun: import --dry-run", { timeout: 60_000 }, async (t) => {
   const { home, env } = bare(t);
   const child = spawn(process.execPath, [BIN, "import", "--dry-run"], { env, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
@@ -67,7 +68,19 @@ test("a subcommand is the server's own, on the same store: import --dry-run", { 
   assert.equal(await new Promise((resolve) => child.on("exit", resolve)), 0, out);
   assert.match(out, /0 projects, 0 sessions; nothing was written \(dry run\)/);
   assert.equal(existsSync(join(STORE(home), ".token")), false, "a dry run writes nothing");
-  assert.equal(existsSync(join(home, ".agentrun")), false, "nor makes a directory of its own");
+  assert.equal(existsSync(SERVE_STORE(home)), false, "nor opens the server's own default store");
+  // reset-password says which store it cleared: ~/.agentrun, or the one --data names.
+  const reset = (...args) => spawnSync(process.execPath, [BIN, "reset-password", ...args], { env, encoding: "utf8", timeout: 30_000 });
+  mkdirSync(STORE(home), { mode: 0o700 });
+  const cleared = reset();
+  assert.equal(cleared.status, 0, cleared.stderr);
+  assert.ok(cleared.stdout.includes(`(${STORE(home)})`), cleared.stdout);
+  const other = join(home, "other");
+  mkdirSync(other, { mode: 0o700 });
+  const named = reset("--data", other);
+  assert.equal(named.status, 0, named.stderr);
+  assert.ok(named.stdout.includes(`(${other})`), named.stdout);
+  assert.equal(existsSync(SERVE_STORE(home)), false, "never the server's own default store");
 });
 
 test("npm exec of the packed package runs this package's own agentrun bin", { timeout: 120_000 }, (t) => {
@@ -127,6 +140,7 @@ test("demo: when the server cannot be downloaded, the command says so in one lin
   assert.equal(err.trimEnd().split("\n").at(-1), "Couldn't download the AgentRun server (@parcha/agentrun-serve: not on npm). Your network or the release is the problem; nothing was started.", err);
   assert.doesNotMatch(err, /did not start on/, "never a port to debug");
   assert.equal(existsSync(STORE(home)), false, "no store made");
+  assert.equal(existsSync(SERVE_STORE(home)), false, "in either place");
 });
 
 test("a provider key picks the server's model when none is set, the first of Anthropic, OpenAI and OpenRouter; a model or a gateway already set wins; each is in pi-ai's catalog", () => {
@@ -191,7 +205,7 @@ test("on Node 20 the bin says, in one line, which Node it needs, and exits 1 bef
 // `npm exec --package=<server> -c "command -v agentrun-serve"`, which installs it and prints where its bin is, then runs
 // that bin itself: a download that fails is never a server that did not start. A fake npm first on PATH records its argv
 // and, as npm would, prints a stub server's path; the stub prints its "Open " line.
-test("with no server beside it, the command fetches the server with npm exec, then runs its bin with only the server's own arguments, telling it which command started it", { timeout: 60_000 }, async (t) => {
+test("with no server beside it, the command fetches the server with npm exec, then runs its bin with ~/.agentrun and the port, telling it which command started it", { timeout: 60_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-fetch-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   // This package alone, outside the workspace, so no installed server resolves from it.
@@ -220,7 +234,7 @@ if (argv[0] === "exec" && argv.includes("-c") && argv[argv.indexOf("-c") + 1] ==
 else { console.error("npm: unexpected " + JSON.stringify(argv)); process.exit(2); }
 `);
   chmodSync(join(dir, "fake", "npm"), 0o755);
-  const { env } = bare(t);
+  const { home, env } = bare(t);
   // Started from inside another npm command (`npm exec -c …`, a workspace), whose settings npm hands down in its environment.
   const outer = { npm_config_call: "node --test", npm_config_workspace: "@parcha/agentrun", npm_config_workspaces: "true" };
   const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), "--no-open"], { env: { ...env, ...outer, PATH: `${join(dir, "fake")}:${env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
@@ -238,7 +252,7 @@ else { console.error("npm: unexpected " + JSON.stringify(argv)); process.exit(2)
   assert.deepEqual(argv, ["exec", "--yes", "--package=@parcha/agentrun-serve@latest", "-c", "command -v agentrun-serve"], "npm fetches the server and says where its bin is");
   assert.deepEqual(existsSync(`${record}.env`) ? JSON.parse(readFileSync(`${record}.env`, "utf8")) : null, [], "an outer npm's -c command and workspace do not reach this npm exec");
   const { args, npx } = existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {};
-  assert.deepEqual(args?.filter((arg) => arg !== args[args.indexOf("--port") + 1]), ["--port"], "the server gets its port and nothing else: no data directory of this command's own");
+  assert.deepEqual(args?.filter((arg) => arg !== args[args.indexOf("--port") + 1]), ["--data", STORE(home), "--port"], "the server gets this command's store, ~/.agentrun as an absolute path, and its port");
   assert.equal(npx, `@parcha/agentrun@${VERSION}`, "the server is told this command started it");
   assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, `${out}${err}`);
   child.kill("SIGTERM");

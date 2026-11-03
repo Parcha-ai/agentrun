@@ -202,34 +202,40 @@ test("demo: run from npx, a missing Codex says the npx line that starts this ser
   assert.ok((await reason(false)).endsWith(`; ${codex.CODEX_INSTALL}`));
 });
 
-test("demo: a server started by npx @parcha/agentrun hints that same command, one line for a Claude Code user: the SDK beside it, the same store", () => {
+test("demo: a server started by npx @parcha/agentrun hints that same command, one line for a Claude Code user: the SDK beside it, on ~/.agentrun", () => {
   const sdk = "@anthropic-ai/claude-agent-sdk@0.3.286";
-  const env = home({ AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0", AGENTRUN_SERVE_DATA: "/home/person/.local/share/agentrun/agents" });
-  assert.equal(adapters.npxLine?.(sdk, env, none), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun`);
+  const env = home({ AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0", AGENTRUN_SERVE_DATA: "/home/person/.agentrun" });
+  assert.equal(adapters.npxLine?.(sdk, env, none), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun --data /home/person/.agentrun`);
   // Following one harness's hint never takes away another already beside the server.
-  assert.equal(adapters.npxLine?.(sdk, env, codexHere), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p @openai/codex@0.164.0 -p ${sdk} agentrun`);
-  assert.equal(adapters.npxLine?.("@openai/codex@0.164.0", env, codexHere), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p @openai/codex@0.164.0 agentrun`, "the harness's own package is named once");
+  assert.equal(adapters.npxLine?.(sdk, env, codexHere), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p @openai/codex@0.164.0 -p ${sdk} agentrun --data /home/person/.agentrun`);
+  assert.equal(adapters.npxLine?.("@openai/codex@0.164.0", env, codexHere), `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p @openai/codex@0.164.0 agentrun --data /home/person/.agentrun`, "the harness's own package is named once");
   // Only this command's own package at a version is taken from the environment: anything else hints the server's own.
   for (const door of ["@parcha/agentrun", "@parcha/agentrun@latest; rm -rf ~", "other@1.0.0", "@parcha/agentrun-serve@1.0.0"]) {
-    assert.equal(adapters.npxLine?.(sdk, { ...env, AGENTRUN_NPX_PACKAGE: door }, none), `npx -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun-serve`, door);
+    assert.equal(adapters.npxLine?.(sdk, { ...env, AGENTRUN_NPX_PACKAGE: door }, none), `npx -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun-serve --data /home/person/.agentrun`, door);
   }
 });
 
-test("the hinted command opens the store this server has: the default one with no --data, any other named with --data", () => {
+// npx @parcha/agentrun keeps its data in ~/.agentrun and hands it to the server as --data; agentrun-serve's own default
+// is ~/.local/share/agentrun/agents. A hint names the store whenever the command it names would not open it by default.
+test("the hinted command opens the store this server has: npx @parcha/agentrun's line always names it; agentrun-serve's names any but its own default", () => {
   const sdk = "@anthropic-ai/claude-agent-sdk@0.3.286";
-  const door = { AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0" };
-  const line = (env) => adapters.npxLine?.(sdk, { ...door, ...env }, none);
-  const plain = `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun`;
-  // One default for every entry point: the server's, its import's and reset-password's, and npx @parcha/agentrun's.
+  const npx = (env) => adapters.npxLine?.(sdk, { AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0", ...env }, none);
+  const serve = (env) => adapters.npxLine?.(sdk, env, none);
+  const agentrun = `npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun`;
+  const plain = `npx -p @parcha/agentrun-serve@${SERVE} -p ${sdk} agentrun-serve`;
+  // agentrun-serve's default, which its import and reset-password share; npx @parcha/agentrun never relies on it.
   assert.equal(files.defaultData?.(home()), join("/home/person", ".local", "share", "agentrun", "agents"));
   assert.equal(files.defaultData?.(home({ XDG_DATA_HOME: "/data/xdg" })), join("/data/xdg", "agentrun", "agents"));
   assert.equal(files.DATA_ENV, "AGENTRUN_SERVE_DATA");
-  assert.equal(line(home({ AGENTRUN_SERVE_DATA: "/home/person/.local/share/agentrun/agents" })), plain, "the default store: no --data");
-  assert.equal(line(home({ AGENTRUN_SERVE_DATA: "/home/person/.local/share/agentrun/agents/" })), plain, "the same directory, however it is written");
-  assert.equal(line(home({ XDG_DATA_HOME: "/data/xdg", AGENTRUN_SERVE_DATA: "/data/xdg/agentrun/agents" })), plain, "XDG_DATA_HOME's default");
-  assert.equal(line(home({ AGENTRUN_SERVE_DATA: "/home/person/.agentrun" })), `${plain} --data /home/person/.agentrun`);
-  assert.equal(line(home({ AGENTRUN_SERVE_DATA: "/home/person/my agents/it's" })), `${plain} --data '/home/person/my agents/it'\\''s'`, "quoted for the shell");
-  assert.equal(line(home()), plain, "a server that does not say where its store is: none named");
+  assert.equal(npx(home({ AGENTRUN_SERVE_DATA: "/home/person/.agentrun" })), `${agentrun} --data /home/person/.agentrun`, "~/.agentrun, as an absolute path");
+  assert.equal(npx(home({ AGENTRUN_SERVE_DATA: "/home/person/.local/share/agentrun/agents" })), `${agentrun} --data /home/person/.local/share/agentrun/agents`, "a store given with --data, even agentrun-serve's default: without it the command would open ~/.agentrun");
+  assert.equal(npx(home({ AGENTRUN_SERVE_DATA: "/home/person/my agents/it's" })), `${agentrun} --data '/home/person/my agents/it'\\''s'`, "quoted for the shell");
+  assert.equal(npx(home({ AGENTRUN_SERVE_DATA: "relative/store" })), `${agentrun} --data ${join(process.cwd(), "relative", "store")}`, "a relative --data, made absolute, so the line opens it from any directory");
+  assert.equal(npx(home()), agentrun, "a server that does not say where its store is: none named");
+  assert.equal(serve(home({ AGENTRUN_SERVE_DATA: "/home/person/.local/share/agentrun/agents" })), plain, "agentrun-serve's own default: no --data");
+  assert.equal(serve(home({ AGENTRUN_SERVE_DATA: "/home/person/.local/share/agentrun/agents/" })), plain, "the same directory, however it is written");
+  assert.equal(serve(home({ XDG_DATA_HOME: "/data/xdg", AGENTRUN_SERVE_DATA: "/data/xdg/agentrun/agents" })), plain, "XDG_DATA_HOME's default");
+  assert.equal(serve(home({ AGENTRUN_SERVE_DATA: "/home/person/.agentrun" })), `${plain} --data /home/person/.agentrun`);
 });
 
 test("npx is told by where serve's files are: under npm's _npx cache, not a project's node_modules, and not this checkout", () => {

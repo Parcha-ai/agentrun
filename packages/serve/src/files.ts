@@ -17,11 +17,12 @@ export const RUN_LAUNCHING = "launching";
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
 
-/** The data directory when none is given (`--data`): `agentrun/agents` under XDG_DATA_HOME, or ~/.local/share. The
- *  server, its import and reset-password, and `npx @parcha/agentrun` all default to it, so each opens the same store. */
+/** The server's data directory when none is given (`--data`): `agentrun/agents` under XDG_DATA_HOME, or ~/.local/share.
+ *  The server, its import and reset-password default to it. `npx @parcha/agentrun` keeps its own, ~/.agentrun, and
+ *  passes it as --data. */
 export const defaultData = (env: NodeJS.ProcessEnv = process.env): string => join(env.XDG_DATA_HOME || join(env.HOME || homedir(), ".local", "share"), "agentrun", "agents");
-/** The server's own data directory, on its reading of the environment (startServe): an npx hint names it when it is
- *  not the default (adapters.ts npxLine). */
+/** The server's own data directory, on its reading of the environment (startServe): an npx hint names it (adapters.ts
+ *  npxLine). */
 export const DATA_ENV = "AGENTRUN_SERVE_DATA";
 
 export const HOMES_DIR = "homes";
