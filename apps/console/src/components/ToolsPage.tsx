@@ -9,8 +9,10 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
 
 /** Settings → Tools: this server's provider per capability that has a choice (`choices`, from capabilities), which every
  *  agent without its own takes, and what each resolves to on each harness. A change is saved at once (PUT), and
- *  `onSaved` reads the capabilities again: what each capability resolves to is the server's to say. */
-export function ToolsPage({ v2, choices, onSaved }: { v2: Client; choices: ToolChoice[]; onSaved: () => void }) {
+ *  `onSaved` reads the capabilities again: what each capability resolves to is the server's to say. `onOpen` reads them as
+ *  the page opens, since the settings it reads may be newer than capabilities read earlier (another tab's change); until
+ *  capabilities name the provider a row shows, its resolution reads "reading…". */
+export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choices: ToolChoice[]; onSaved: () => void; onOpen?: () => void }) {
   const [answer, setAnswer] = useState<ToolSettings | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [problem, setProblem] = useState<{ fields: Record<string, string>; error: ApiError | null } | null>(null);
@@ -21,6 +23,7 @@ export function ToolsPage({ v2, choices, onSaved }: { v2: Client; choices: ToolC
     v2.toolSettings().then((s) => { if (n === asked.current) { setAnswer(s); setLoadError(null); } }, (e) => { if (n === asked.current) setLoadError(apiError(e)); });
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { onOpen?.(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (!answer) return loadError
     ? (
       <div className="m-8 border p-4" role="alert">
@@ -55,7 +58,7 @@ export function ToolsPage({ v2, choices, onSaved }: { v2: Client; choices: ToolC
         <section aria-label="This server's providers">
           {choices.length ? (
             <ToolTable label="This server's tool providers" rows={choices} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onChange={(next) => void save(next)}
-              resolvesOf={(t) => <PerHarness choice={t} />} />
+              resolvesOf={(t, provider) => (provider === t.provider ? <PerHarness choice={t} /> : <span className="block font-mono text-[12px] text-muted-foreground">reading…</span>)} />
           ) : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">This server offers no tool with a choice of provider.</p>}
           {rest.map((m) => <p key={m} className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}
           {problem?.error && <div className="mt-3 border"><RunError error={problem.error} title="The change was not saved" /></div>}

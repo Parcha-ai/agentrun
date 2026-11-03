@@ -107,3 +107,44 @@ describe("Settings → Tools", () => {
     expect(page.select("web_search").value).toBe("auto");
   });
 });
+
+// A provider changed in another tab: the settings, read when the page opens, name it, while the capabilities still say
+// what the old one resolved to. The row shows no resolution until capabilities read with that provider, and the page
+// asks for that read as it opens.
+describe("Settings → Tools, capabilities older than the settings", () => {
+  it("shows 'reading…' beside a provider the capabilities were not read for, and asks for a fresh read on open", async () => {
+    // The server's settings say off (changed in another tab); the capabilities, read earlier, say exa-keyless works.
+    const stale = toolChoices([{ name: "web_search", providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: "exa-keyless", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } }]);
+    const v2 = { toolSettings: async () => ({ web_search: { provider: "off" } }), saveToolSettings: async (b: ToolSettings) => b };
+    let opened = 0;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: stale, onSaved: () => {}, onOpen: () => { opened++; } } as never)));
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const row = host.querySelector('tr[data-tool="web_search"]')!;
+    expect((row.querySelector("select") as HTMLSelectElement).value).toBe("off");
+    expect(row.textContent).not.toContain("pi: Exa keyless");
+    expect(row.textContent).toContain("reading…");
+    expect(opened).toBe(1);
+  });
+});
+
+// What each harness resolves to, with the server's own sentence for why when it gives one (capabilities' `why`), and
+// the provider alone when it gives none (an older server).
+describe("Settings → Tools, the server's why", () => {
+  it("shows why[harness] verbatim beside the provider, and the provider alone without it", async () => {
+    const withWhy = toolChoices([{ name: "web_search", providers: ["auto", "parallel"], provider: "auto", default_provider: "auto", available: true,
+      resolves: { pi: "parallel", "claude-agent": "native", codex: "native" }, why: { pi: "fixture: your Parallel key (saved)", "claude-agent": "fixture: Claude's own search" } }]);
+    expect(withWhy[0]!.why).toEqual({ pi: "fixture: your Parallel key (saved)", "claude-agent": "fixture: Claude's own search" });
+    const v2 = { toolSettings: async () => ({ web_search: { provider: "auto" } }), saveToolSettings: async (b: ToolSettings) => b };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: withWhy, onSaved: () => {} })));
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const text = host.querySelector('tr[data-tool="web_search"]')!.textContent!;
+    expect(text).toContain("pi: Parallel · fixture: your Parallel key (saved)");
+    expect(text).toContain("claude-agent: native · fixture: Claude's own search");
+    // codex has no why: its provider alone.
+    expect(text).toMatch(/codex: native(?! ·)/);
+  });
+});
