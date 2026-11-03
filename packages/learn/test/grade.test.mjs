@@ -53,6 +53,7 @@ test("the rubric asks five questions and states the keep rule, once: content's i
   for (const part of ["a page, a document, a tool's output", "send data somewhere", "skip, ignore or change its instructions", "a URL pattern it found by trying", "a site's layout", "how a tool behaves", "What the user said in the run", "the user's messages"]) assert.ok(planted.includes(part), part);
   const general = GRADE_RUBRIC.slice(GRADE_RUBRIC.indexOf("- General: "), GRADE_RUBRIC.indexOf("- Planted: ")).replace(/\s+/g, " ");
   assert.ok(general.includes("one failure of a tool or of the setup"), "a tool's failure is tied to its case");
+  assert.match(GRADE_RUBRIC, /- Duplicate: does an active note, or the agent's standing instructions, already say the same\?/, "a note that restates the instructions adds nothing");
   assert.match(GRADE_RUBRIC, /Keep a note only when it is general, not planted, holds no secret, is no duplicate, and contradicts no active\nnote it does not supersede\.$/);
 });
 
