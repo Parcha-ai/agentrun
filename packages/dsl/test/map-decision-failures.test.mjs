@@ -104,3 +104,36 @@ test('under recovery a reviewed item is committed once, and a later process answ
   assert.deepEqual(result.state.failed.map((r) => [r.item_index, r.code, r.needs_review ?? false]), [[1, 'decision_interrupted', true], [2, 'http', false]]);
   assert.deepEqual(asked.filter((doc) => doc === 'doc-1' || doc === 'doc-2').sort(), ['doc-1', 'doc-2'], 'neither failed item was asked again');
 });
+
+test('a judge failing inside a parallel fails its item, not the map: the sibling it cancels reports aborted, as Jev does', async () => {
+  // Each item asks two judges at once. doc-1's first fails rate_limited; the parallel cancels its sibling in flight, whose
+  // provider reports DecisionProviderError("aborted") (Jev's and OpenRouter's cancel), not an AbortError.
+  const Q = (name) => ({ type: 'object', required: [name], properties: { [name]: { type: 'boolean', description: `Is it ${name}?` } } });
+  const both = {
+    v: 2, name: 'batch', schemas: { ...SCHEMAS, A: Q('a'), B: Q('b') }, input: { schemaId: 'Input' }, output: { schemaId: 'Any' },
+    root: { node: 'map', label: 'each', itemsPath: 'docs', as: 'verdicts', resultPath: 'b', onItemFailure: 'collect', failedAs: 'failed',
+      body: { node: 'parallel', label: 'both', branches: [
+        { node: 'judge', label: 'ja', state: { doc: '{item}' }, out: 'A', as: 'a' },
+        { node: 'judge', label: 'jb', state: { doc: '{item}' }, out: 'B', as: 'b' },
+      ] } },
+  };
+  const cancelled = [];
+  const provider = {
+    id: 'jev', needs: [], capabilities: { types: ['noul'], inputs: ['text', 'json'], evidence: 'none', probability: 'model', grounding: false, replay: 'never', maxQuestions: null, maxStateBytes: null },
+    decide: async (request, ctx) => {
+      const q = Object.keys(request.questions)[0];
+      if (q === 'a' && request.state.doc === 'doc-1') { await new Promise((r) => setTimeout(r, 10)); throw new DecisionProviderError('rate_limited', 'scripted 429', { attempts: 1 }); }
+      if (q === 'b') await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 100);
+        ctx.signal.addEventListener('abort', () => { clearTimeout(timer); cancelled.push(request.state.doc); reject(new DecisionProviderError('aborted', 'Jev request was cancelled.', { attempts: 1 })); }, { once: true });
+      });
+      return { answers: { [q]: { type: 'noul', noul: 0.9 } }, evidence: [], model: 'm', usage: null, cost_usd: 0, cost_basis: 'estimate', provider_request_id: null };
+    },
+  };
+  const result = await runWorkflow(both, { docs: ['doc-0', 'doc-1', 'doc-2'] }, { runJudge: judgeFromProvider(provider) });
+  assert.equal(result.status, 'complete');
+  assert.deepEqual(cancelled, ['doc-1'], "doc-1's sibling was cancelled in flight");
+  assert.deepEqual(result.state.failed.map((row) => [row.item_index, row.code]), [[1, 'rate_limited']]);
+  assert.equal(result.state.verdicts[1], null);
+  assert.ok(result.state.verdicts[0] && result.state.verdicts[2], 'the other items finished');
+});
