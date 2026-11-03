@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/env.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 002-names, 008-tool-description-max
+// Changed by Parcha, patches: 002-names, 008-tool-description-max, 016-mcp-output-tokens
 /**
  * The durable environment of the `claude` CLI in the session's VM
  * (docs/workspaces.md §5.6 "Env"). It replaces the parent's environment
@@ -48,6 +48,11 @@ export interface DurableEnvOptions {
    * `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` says more; above that, it's set to this, so the model reads each one whole.
    */
   toolDescriptionMax?: number;
+  /**
+   * The most tokens an MCP tool's result may take (`MAX_MCP_OUTPUT_TOKENS`). Past it the CLI saves the result to a file
+   * and tells the model to read it, or cuts a result that holds an image; its default is 25,000.
+   */
+  mcpOutputTokens?: number;
   /**
    * The app's own variables (`sandbox({ env })`, checked there and again at
    * spawn): added under everything above, so none can replace the model
@@ -110,6 +115,7 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
     CLAUDE_AGENT_SDK_CLIENT_APP: 'agentrun-claude-agent',
   });
   if (options.toolDescriptionMax !== undefined && options.toolDescriptionMax > MCP_DESCRIPTION_CUT) env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = String(options.toolDescriptionMax);
+  if (options.mcpOutputTokens !== undefined) env.MAX_MCP_OUTPUT_TOKENS = String(Math.max(1, Math.floor(options.mcpOutputTokens)));
   if (options.bashTimeoutMs !== undefined) {
     const max = Math.max(1_000, Math.floor(options.bashTimeoutMs));
     env.BASH_MAX_TIMEOUT_MS = String(max);

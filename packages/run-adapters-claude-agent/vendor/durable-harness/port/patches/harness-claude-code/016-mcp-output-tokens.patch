@@ -1,0 +1,52 @@
+Patch: 016-mcp-output-tokens
+Reason: the CLI saves an MCP tool's result past MAX_MCP_OUTPUT_TOKENS (25,000 by default) to a file and tells the model to read it, which a confined session cannot, and cuts one that holds an image; the harness sets it to the host's result bound (MCP_OUTPUT_TOKENS, from the tool server, which lists every tool with that bound as its anthropic/maxResultSizeChars), so a result within the bound reaches the model whole
+Upstream: ours
+Pins: every host tool is listed to the CLI with the host's result bound as its maxResultSizeChars, and the CLI's MAX_MCP_OUTPUT_TOKENS is that bound
+Pins: on the pinned CLI, a result with an image whose text is past the CLI's default token limit reaches the model whole: its MCP token limit is the host's bound
+---
+diff --git a/packages/harness-claude-code/src/env.ts b/packages/harness-claude-code/src/env.ts
+index add679a..afcf67d 100644
+--- a/packages/harness-claude-code/src/env.ts
++++ b/packages/harness-claude-code/src/env.ts
+@@ -45,6 +45,11 @@ export interface DurableEnvOptions {
+    * `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` says more; above that, it's set to this, so the model reads each one whole.
+    */
+   toolDescriptionMax?: number;
++  /**
++   * The most tokens an MCP tool's result may take (`MAX_MCP_OUTPUT_TOKENS`). Past it the CLI saves the result to a file
++   * and tells the model to read it, or cuts a result that holds an image; its default is 25,000.
++   */
++  mcpOutputTokens?: number;
+   /**
+    * The app's own variables (`sandbox({ env })`, checked there and again at
+    * spawn): added under everything above, so none can replace the model
+@@ -107,6 +112,7 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
+     CLAUDE_AGENT_SDK_CLIENT_APP: 'agentrun-claude-agent',
+   });
+   if (options.toolDescriptionMax !== undefined && options.toolDescriptionMax > MCP_DESCRIPTION_CUT) env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = String(options.toolDescriptionMax);
++  if (options.mcpOutputTokens !== undefined) env.MAX_MCP_OUTPUT_TOKENS = String(Math.max(1, Math.floor(options.mcpOutputTokens)));
+   if (options.bashTimeoutMs !== undefined) {
+     const max = Math.max(1_000, Math.floor(options.bashTimeoutMs));
+     env.BASH_MAX_TIMEOUT_MS = String(max);
+diff --git a/packages/harness-claude-code/src/harness.ts b/packages/harness-claude-code/src/harness.ts
+index bbc6570..4f05772 100644
+--- a/packages/harness-claude-code/src/harness.ts
++++ b/packages/harness-claude-code/src/harness.ts
+@@ -32,7 +32,7 @@ import { durableEnv, nativeModelId } from './env.ts';
+ import { uuidFrom } from './ids.ts';
+ import { MessageQueue } from './inbox.ts';
+ import { sandboxSpawn } from './spawn.ts';
+-import { toolServer } from './host/tool-server.ts';
++import { MCP_OUTPUT_TOKENS, toolServer } from './host/tool-server.ts';
+ import { JournalSessionStore } from './store.ts';
+ import { MCP_SERVER, TranscriptBuilder, type TurnEnd } from './transcript.ts';
+ import { CLAUDE_AGENT_CLI_SKILL_NAMES } from './cli-names.ts';
+@@ -665,6 +665,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+           ...(sandbox.commandTimeoutMs ? { bashTimeoutMs: sandbox.commandTimeoutMs } : {}),
+           ...(sandbox.env ? { extra: sandbox.env } : {}),
+           toolDescriptionMax: Math.max(0, ...bridge.tools.map((t) => t.description.length)),
++          // A host tool's result within the host's bound reaches the model whole (each tool is listed with it, too).
++          mcpOutputTokens: MCP_OUTPUT_TOKENS,
+         });
+         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
+         const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));
