@@ -314,6 +314,17 @@ test("a reservation with no content_type takes its path's extension's type, as a
   assert.equal(await typeOf({ path: "plan.md", content_type: "text/x-custom" }), "text/x-custom", "a named type wins");
 });
 
+test("an extension that names an object's own property (.constructor, .__proto__, .toString) is not known: octet-stream, and the file takes its bytes", async (t) => {
+  const server = await serve(t);
+  for (const path of ["report.constructor", "notes.__proto__", "a.toString", "b.hasOwnProperty"]) {
+    const made = await server.api("POST", "/files", { path, size_bytes: 2 });
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    assert.equal(made.body.file.content_type, "application/octet-stream", path);
+    const sent = await put(server.port, `/v2/files/${made.body.file.file_id}`, Buffer.from("ok"), bearer(server));
+    assert.deepEqual([sent.status, sent.json?.status, sent.json?.content_type], [200, "ready", "application/octet-stream"], `${path}: ${sent.text}`);
+  }
+});
+
 test("a refusal that points at an upload route names it in full, under /v2", async (t) => {
   const server = await serve(t);
   const { api } = server;
