@@ -1019,6 +1019,8 @@ export class Runs {
     // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts). Each launch path
     // reads its revision's first (pinSecrets); one that did not hands no tool key.
     const secrets = handover(this.secrets.get(run.revision) ?? NO_TOOL_KEYS, this.options.storedKeys);
+    // What it was handed, for the check of what its end-of-run turn writes (learning-run.ts).
+    this.learning.onLaunch(run, this.secrets.get(run.revision) ?? NO_TOOL_KEYS);
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
       [SECRETS_FD_ENV]: "3",

@@ -5,6 +5,7 @@
 //   onLoad        a run read at a start, before the kernel holds it: a seed copy a server went down during taken back
 //   beforeFinish  its job ended: the end-of-run turn asked first, and the run let go once the turn ends
 //   onAdopt       a running run read at a start: one a server left in its end-of-run turn finishes, its turn asked again
+//   onLaunch      its process launched: the saved keys it was handed, kept for the check of what its turn writes
 //   beforeSettle  its end being written: the turn's rows closed, and what the turn wrote set aside
 //   afterSettle   its end written: what the turn wrote checked (propose.ts), graded and merged (grade.ts)
 //   onReopen, afterReopen   a follow-up: its copy laid again, and a turn its process went in aborted
@@ -21,7 +22,7 @@ import { readJson, RUN_META } from "./files.js";
 import { dropSeed, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, shortLearning, snapshotLearned, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
-import { hostSecrets, withSecrets } from "./secrets.js";
+import { hostSecrets, secret, withSecrets } from "./secrets.js";
 import { ended, outcomeOf, outcomes, record } from "./usage.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -137,6 +138,11 @@ export type LearningKernel = {
 export class LearningRuns {
   /** Why this host keeps no learning folder, said once. */
   private learningOff?: string;
+  /** The secrets each launch of a run that learns handed its process (runs.ts launch()), by run id, so a key a person
+   *  replaced or deleted while the run lived is still refused in what its end-of-run turn wrote. In memory only, never on
+   *  disk: a server that restarts loses them, and the run's next launch hands it the keys as they are then, which the
+   *  check reads too. Dropped once the run's learning ends, and when the server closes. */
+  private readonly handed = new Map<string, Set<string>>();
   /** Aborted as the server closes: a grade's screen and grader stop, and leave the run's learning `proposed`. */
   private readonly stopping = new AbortController();
   /** The runs whose learning's end is in the learning ledger (usage.ts): read at the start, and each one written since. */
@@ -180,6 +186,7 @@ export class LearningRuns {
   /** The run's serve.json holds `learning` now: the learning ledger's line for the run (usage.ts), once, when that
    *  learning has ended. Never rejects: a line not written is written by the next save, or by the next start's pass. */
   onSaved(run: Pick<Run, "id" | "agentId">, learning: Learning | null | undefined): Promise<void> {
+    if (ended(learning)) this.handed.delete(run.id);
     if (!ended(learning) || this.recorded.has(run.id)) return Promise.resolve();
     this.recorded.add(run.id);
     return record(this.options.agents.dir, outcomeOf(run.id, run.agentId, learning)).catch((error: Error) => {
@@ -211,6 +218,17 @@ export class LearningRuns {
     await save();
     warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
     await this.onSaved({ id: row.id, agentId: row.agent }, meta.learning);
+  }
+
+  /** A run's process launched, handed the secrets named `names`: what each held then, as handover read it, kept beside
+   *  the run while its learning is under way (a key replaced since stays refused in its notes). */
+  onLaunch(run: Run, names: readonly string[]): void {
+    if (!run.meta.learning || ended(run.meta.learning)) return;
+    const values = names.flatMap((name) => secret(name, this.options.storedKeys) ?? []);
+    if (!values.length) return;
+    const kept = this.handed.get(run.id) ?? new Set<string>();
+    for (const value of values) kept.add(value);
+    this.handed.set(run.id, kept);
   }
 
   /** A running run read at a start, `live` when its process serves it still. One a server left while its end-of-run turn
@@ -293,6 +311,7 @@ export class LearningRuns {
   /** The server closing: a grade's screen and grader stop, and leave the run's learning `proposed`; nothing new starts. */
   close(): void {
     this.stopping.abort();
+    this.handed.clear();
   }
 
   /** Once every run has settled: each check in flight, then each grade, ended. */
@@ -451,8 +470,9 @@ export class LearningRuns {
       const pin = await readPin(run.dir);
       if (!pin) throw new Error("the run has no learning pin");
       const { proposeRun } = await import("./propose.js");
-      // The secrets this server holds, wherever its launcher put them, the keys saved on it, and its own tokens.
-      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, refuse: [...hostSecrets(process.env, this.options.storedKeys), this.options.token, this.options.doorToken] });
+      // The secrets this server holds, wherever its launcher put them, the keys saved on it, what each launch handed the
+      // run, and its own tokens.
+      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, refuse: [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken] });
       if (proposed.state === "proposed") this.setLearning(run, "proposed", null, `The run proposes ${proposed.notes === 1 ? "one new note" : `${proposed.notes} new notes`}, which passed the checks and are being graded.`);
       else if (proposed.reason === "empty") this.setLearning(run, "dropped", "empty", "The end-of-run turn added no note.");
       else this.setLearning(run, "dropped", "checker", `The checks refused what the run wrote: ${[...new Set(proposed.problems.map((problem) => problem.rule))].join(", ")}.`, { problems: proposed.problems });
@@ -520,8 +540,9 @@ export class LearningRuns {
   }
 
   /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a
-   *  child's, and the test hooks a run's process gets. */
+   *  child's, the keys saved on it with them (a Jev key saved through the settings API screens as one in the environment
+   *  does), and the test hooks a run's process gets. */
   private hostEnv(): NodeJS.ProcessEnv {
-    return withSecrets({ ...withoutFaux(process.env), ...this.kernel.fauxEnv() });
+    return withSecrets({ ...withoutFaux(process.env), ...this.kernel.fauxEnv() }, "all", this.options.storedKeys);
   }
 }
