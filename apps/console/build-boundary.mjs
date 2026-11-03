@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
+import { NOTICES_FILE, noticesFor, packageDirOf } from './third-party-notices.mjs';
 
 /** Browser runtime dependencies are deliberately reviewed separately from development/build tooling. */
 export const RUNTIME_DEPENDENCIES = new Set([
@@ -24,21 +25,14 @@ export function assertBrowserText(text, name) {
 
 /** An installed package containing a bundled module, including a scoped package. */
 export function packageRoot(id) {
-  const path = id.replace(/^\0+/, '').split('?')[0].replaceAll('\\', '/');
-  const at = path.lastIndexOf('/node_modules/');
-  if (at < 0) return null;
-  const parts = path.slice(at + '/node_modules/'.length).split('/');
-  return path.slice(0, at + '/node_modules/'.length) + parts.slice(0, parts[0]?.startsWith('@') ? 2 : 1).join('/');
+  return packageDirOf(id.replaceAll('\\', '/')) ?? null;
 }
 
-function licenseEntry(root) {
+function assertBundledLicense(root) {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  assertBundledPackage(pkg.name);
   const files = readdirSync(root).filter((name) => /^(?:licen[cs]e|copying|ofl)(?:[.-].*)?$/i.test(name)).sort();
   if (!files.length) throw new Error(`Bundled package has no license file: ${pkg.name}`);
-  return {
-    name: pkg.name, version: pkg.version, license: pkg.license ?? 'UNKNOWN',
-    text: files.map((name) => readFileSync(join(root, name), 'utf8').trim()).join('\n\n'),
-  };
 }
 
 /** Fail closed on private browser integrations and distribute the licenses of bundled code and fonts. */
@@ -54,12 +48,13 @@ export function consoleBoundary() {
     generateBundle(_options, bundle) {
       const roots = new Set();
       for (const item of Object.values(bundle)) {
+        const ids = item.type === 'chunk' ? item.moduleIds : (item.originalFileNames ?? []).map((name) => isAbsolute(name) ? name : join(app, name));
+        for (const id of ids) {
+          const root = packageRoot(id);
+          if (root && existsSync(join(root, 'package.json'))) roots.add(root);
+        }
         if (item.type === 'chunk') {
           assertBrowserText(item.code, item.fileName);
-          for (const id of item.moduleIds) {
-            const root = packageRoot(id);
-            if (root && existsSync(join(root, 'package.json'))) roots.add(root);
-          }
         } else if (/\.(?:html|css|js|json)$/.test(item.fileName)) {
           assertBrowserText(String(item.source), item.fileName);
         }
@@ -68,11 +63,9 @@ export function consoleBoundary() {
       for (const name of RUNTIME_DEPENDENCIES) {
         if (name.startsWith('@fontsource/')) roots.add(join(app, 'node_modules', name));
       }
-      const entries = [...roots].map(licenseEntry).sort((a, b) => a.name.localeCompare(b.name));
-      for (const entry of entries) assertBundledPackage(entry.name);
-      this.emitFile({ type: 'asset', fileName: 'THIRD-PARTY-NOTICES.txt', source:
-        'Third-party software distributed with the AgentRun console\n\n' + entries.map((entry) => `${entry.name} ${entry.version} (${entry.license})\n\n${entry.text}\n`).join('\n-----\n\n') });
-      const files = Object.keys(bundle).filter((name) => !name.endsWith('.map')).sort();
+      for (const root of roots) assertBundledLicense(root);
+      this.emitFile({ type: 'asset', fileName: NOTICES_FILE, source: noticesFor([...roots]).text });
+      const files = [...new Set([...Object.keys(bundle), NOTICES_FILE])].filter((name) => !name.endsWith('.map')).sort();
       this.emitFile({ type: 'asset', fileName: 'asset-manifest.json', source: JSON.stringify({ files }, null, 2) + '\n' });
     },
   };

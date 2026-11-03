@@ -32,6 +32,6 @@ The administration layout and visual behavior follow the AgentRun console design
 
 The root build first builds the standalone static page and embeddable library, then copies the page, exact asset manifest and notices into the native server. Browser runtime dependencies are reviewed independently from development tooling. Compiled assets are scanned for private integrations, and the source export includes the browser lockfile in its runtime inventory.
 
-The embeddable package remains held. No build, source export or verification command publishes it or lifts any native package's publication hold. Releases retain the repository's reviewed workflow.
+The embeddable package remains held. Build, source export and verification commands perform no publication. Native packages follow the repository's reviewed release policy.
 
 Verification uses small deterministic tests at the public React/client seams, a real typed client against the actual native faux server and run child processes, and a browser pass on a loopback server. Live provider/model certification is separate evidence. Native interpreter and recovery behavior remains covered by its existing suites and models.
