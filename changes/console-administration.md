@@ -13,3 +13,5 @@ Agent-card stat labels stay on one line, with card actions grouped on a separate
 Mission Control's agent filter offers searchable options, selection markers and keyboard navigation. A run's breadcrumb links to its agent's run history.
 
 Sending a follow-up opens its timeline and acknowledges acceptance until the saved message appears. Failed sends preserve the draft.
+
+The API playground keeps its request and response tabs vertically centered at the same height when switching between Code and Response.

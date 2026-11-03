@@ -101,9 +101,9 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
       {unresolved && <p className="border-b px-5 py-3 text-[13px] text-muted-foreground" role="status">The selected revision's definition is unavailable. Choose the loaded current revision, or reload to read its history before submitting.</p>}
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
         <section className="flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r">
-          <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
+          <header className={paneHeader}>
             <span className="text-[14px] font-semibold">Request</span>
-            <span className="flex gap-4 text-[12px]">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-foreground" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
+            <span className="flex items-center gap-4 text-[13px]">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn(paneTab, view === v ? "border-foreground" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
           </header>
           <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
             <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-[13px] text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
@@ -143,10 +143,10 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
           </footer>
         </section>
         <section className="flex min-h-0 flex-col">
-          <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
-            <span className="flex gap-4 text-[13px]">
-              <button type="button" onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-foreground" : "border-transparent text-muted-foreground")}>Code</button>
-              <button type="button" onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-foreground" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
+          <header className={paneHeader}>
+            <span className="flex items-center gap-4 text-[13px]">
+              <button type="button" onClick={() => setPane("code")} className={cn(paneTab, pane === "code" ? "border-foreground" : "border-transparent text-muted-foreground")}>Code</button>
+              <button type="button" onClick={() => setPane("response")} disabled={!result} className={cn(paneTab, "disabled:opacity-45", pane === "response" ? "border-foreground" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
             </span>
             {pane === "code" && <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>}
           </header>
@@ -181,6 +181,8 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
   );
 }
 
+const paneHeader = "flex h-14 shrink-0 items-center justify-between border-b px-5 md:px-6";
+const paneTab = "inline-flex h-8 items-center border-b";
 const field = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
 function Label({ name, required, note, error, children }: { name: string; required?: boolean; note?: string; error?: string; children: React.ReactNode }) {
