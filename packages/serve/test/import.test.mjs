@@ -305,20 +305,48 @@ test("the CLI's --dry-run lists each project and writes nothing; the import itse
   assert.ok(!real.stdout.includes(CANARY));
 });
 
-test("the CLI's import cuts the server's own keys out of what it keeps: a key in its environment is nowhere in the store, the runs or their files", async (t) => {
+test("the CLI's import cuts the server's own keys out of what it keeps, wherever a session holds one: its text, a subagent's, its first message (the run's title), its project's path and its file's name", async (t) => {
   const root = await scratch(t);
   const h = home(root);
+  // The key in a subagent's answer, in a session's first message, in a project's directory name, and in the name of a
+  // session file whose records carry no session id (the import then names the session after its file).
+  claudeSubagent(h.at, h.site, 1, 1, { answer: `The config holds ${CANARY}.` });
+  claudeSession(h.at, h.site, 11, { prompt: `Rotate the key ${CANARY} today.` });
+  const keyed = join(h.at, "code", `deploy-${CANARY}`);
+  mkdirSync(keyed, { recursive: true });
+  claudeSession(h.at, keyed, 12);
+  const named = claudeSession(h.at, h.site, 13, { prompt: "Check the logs." });
+  const lines = readFileSync(named, "utf8").trimEnd().split("\n").map((line) => { const { sessionId: _, ...rest } = JSON.parse(line); return JSON.stringify(rest); });
+  rmSync(named);
+  writeFileSync(join(dirname(named), `${CANARY}.jsonl`), `${lines.join("\n")}\n`);
+  utimesSync(join(dirname(named), `${CANARY}.jsonl`), new Date(minute(10)), new Date(minute(10)));
   const data = join(root, "agents");
   // No launcher: the key is in the environment the server starts with, which its start moves out of process.env.
   const env = { ...process.env, HOME: h.at, OPENAI_API_KEY: CANARY };
   const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all"], { env, encoding: "utf8" });
   assert.equal(ran.status, 0, ran.stderr);
-  // Every byte the import kept: the store (its write-ahead log too) and every file beside it.
+  // Every byte the import kept, the store's write-ahead log included, and every path under the data directory.
   const kept = [];
   const walk = (at) => { for (const entry of readdirSync(at, { withFileTypes: true })) { const path = join(at, entry.name); if (entry.isDirectory()) walk(path); else kept.push([path, readFileSync(path)]); } };
   walk(data);
-  assert.deepEqual(kept.filter(([, bytes]) => bytes.includes(CANARY)).map(([path]) => path.slice(data.length + 1)), [], "the key is nowhere in what the import kept");
+  assert.deepEqual(kept.filter(([path, bytes]) => bytes.includes(CANARY) || path.includes(CANARY)).map(([path]) => path.slice(data.length + 1).replaceAll(CANARY, "<key>")), [], "the key is nowhere in what the import kept");
   assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
+  // Each case was imported, so none passes by being left out.
+  const reader = openStoreReader(data);
+  const runs = reader.listRuns();
+  reader.close();
+  assert.ok(kept.some(([path, bytes]) => path.endsWith("serve.json") && bytes.includes("Rotate the key [redacted]")), "the run titled with the key is in, its title cut");
+  assert.ok(kept.some(([, bytes]) => bytes.includes("deploy-[redacted]")), "the project named with the key is in, its name cut");
+  assert.ok(runs.some((run) => run.importedFrom?.source === "claude-code" && !/^0{8}-/.test(run.importedFrom.session)), "the session named after its file is in");
+  // The file named with the key grows, and a second import finds the run the first made of it under the id as kept: no
+  // second run of it.
+  appendFileSync(join(dirname(named), `${CANARY}.jsonl`), "\n");
+  utimesSync(join(dirname(named), `${CANARY}.jsonl`), new Date(minute(20)), new Date(minute(20)));
+  const again = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all"], { env, encoding: "utf8" });
+  assert.equal(again.status, 0, again.stderr);
+  const after = openStoreReader(data);
+  t.after(() => after.close());
+  assert.equal(after.listRuns().length, runs.length, "no run made twice");
 });
 
 test("a skill folder this user cannot read, or a skills directory it cannot read, is named unreadable, never dropped silently; the rest still imports", { skip: process.getuid?.() === 0 ? "root reads a mode 000 folder" : false }, async (t) => {

@@ -745,7 +745,9 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
     const seen = await seenIn(store, project.agentId);
     for (const files of byRun(project.sessions)) {
       const listed = files[0]!;
-      const heldRun = held.get(`${listed.source}:${listed.id}`);
+      // A session's id is cut as its text is (one named after its file can hold a key): the run an earlier import made of
+      // it is found under the id as kept.
+      const heldRun = held.get(`${listed.source}:${text(listed.id)}`);
       if (heldRun !== undefined && existsSync(store.runStorePath(heldRun))) {
         line.already += 1;
         continue;
@@ -797,7 +799,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
             ...(session.costUsd !== undefined ? { costUsd: session.costUsd } : {}),
             ...((answer ?? session.firstPrompt) ? { summary: text(answer ?? session.firstPrompt!) } : {}),
             source: session.source,
-            session: session.id,
+            session: text(session.id),
             metrics,
           });
         }
