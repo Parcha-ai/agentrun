@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyPage, steps } from "./timeline";
 import type { TimelinePage, TimelineRow } from "./v2";
+import { recorded } from "@/fixtures";
 
 const row = (id: string, seq: number, summary = id): TimelineRow =>
   ({ id, seq, kind: "thinking", summary, text: null, timestamp: "2026-10-28T19:33:16.118Z", tool_name: null });
@@ -89,5 +90,67 @@ describe("steps", () => {
   it("keeps only the last cost so far: each says the run's total until then", () => {
     const s = steps([r(1, "usage", "Cost so far: $0.001 over 1 model request", "01.000"), r(2, "final_answer", "Done.", "02.000"), r(3, "usage", "Cost so far: $0.002 over 2 model requests", "02.000")]);
     expect(s.map((x) => x.row.summary)).toEqual(["Done.", "Cost so far: $0.002 over 2 model requests"]);
+  });
+});
+
+// One row per action (capabilities' timeline.actions): a call is its own row, so its steps are the rows as served, with
+// how long a call took once it ended, a repeated failure once, and the cost so far once.
+describe("steps, over one row per action", () => {
+  const r = (seq: number, kind: string, summary: string, at: string, over: Partial<TimelineRow> = {}): TimelineRow =>
+    ({ id: `r${seq}`, seq, kind, summary, text: null, timestamp: `2026-11-03T16:41:${at}Z`, tool_name: null, ...over });
+  it("keeps each action as its own step, whatever its status, with its duration once it ended and nothing while it runs", () => {
+    const s = steps([
+      r(1, "tool_use", "Wrote notes.md: ok", "25.569", { tool_name: "write", tool_status: "success", path: "notes.md", ended_at: "2026-11-03T16:41:25.596Z", tool_input_preview: "notes.md", tool_result_preview: "816 bytes" }),
+      r(2, "tool_use", "Read a.md", "25.615", { tool_name: "read", tool_status: "running", ended_at: null }),
+    ]);
+    expect(s.map((x) => [x.row.summary, x.row.tool_status, x.ms])).toEqual([["Wrote notes.md: ok", "success", 27], ["Read a.md", "running", undefined]]);
+    expect(s[0]!.detail).toBe("notes.md\n\n→ 816 bytes");
+    expect(s[0]!.saved).toBeUndefined();
+  });
+  it("says a failure repeated in a row once, and keeps only the last cost so far", () => {
+    const err = (seq: number, at: string) => r(seq, "error", "Model request failed: 529 overloaded", at);
+    const s = steps([r(0, "usage", "Cost so far: $0.001 over 1 model request", "20.000"), err(1, "27.356"), err(2, "29.375"), err(3, "41.398"), r(4, "usage", "Total: $0.002 · 2 model requests · 21 s", "41.500")]);
+    expect(s.map((x) => [x.row.kind, x.times ?? 1])).toEqual([["error", 3], ["usage", 1]]);
+    expect(s[1]!.row.summary).toBe("Total: $0.002 · 2 model requests · 21 s");
+  });
+});
+
+// The same pi run in both of the server's shapes (src/fixtures/timeline.*): either way a person reads each action once.
+describe("steps, over the recorded run in both shapes", () => {
+  const rowsOf = (name: string) => recorded<TimelinePage>(name).body.rows;
+  const told = (s: ReturnType<typeof steps>) => s.filter((x) => x.row.kind === "tool_use" || x.row.kind === "tool_result").map((x) => x.row.summary.replace(/:\s*ok$/, ""));
+  it("tells the settled run's actions once each, in both shapes", () => {
+    const legacy = steps(rowsOf("timeline.legacy.completed"));
+    const actions = steps(rowsOf("timeline.actions.completed"));
+    // The legacy fold: every call once, no result row, no "Saved" row, the question folded behind its waiting row.
+    expect(legacy.some((x) => x.row.kind === "phase")).toBe(false);
+    expect(told(legacy).filter((t) => t.startsWith("Read invoices/inv-"))).toEqual(["Read invoices/inv-1.md", "Read invoices/inv-2.md", "Read invoices/inv-3.md"]);
+    expect(legacy.find((x) => x.row.summary.startsWith("Wrote totals.md") && x.row.tool_status === "success")?.saved).toBe("totals.md");
+    // One row per action as served: the same reads, the miss in grey, the interrupted write and its retry.
+    expect(told(actions).filter((t) => t.startsWith("Read invoices/inv-"))).toEqual(["Read invoices/inv-1.md", "Read invoices/inv-2.md", "Read invoices/inv-3.md"]);
+    expect(actions.map((x) => x.row.tool_status).filter(Boolean)).toEqual(["missing", "success", "success", "success", "success", "success", "failed", "success", "success", "interrupted", "success"]);
+    expect(actions.at(-1)!.row.summary).toMatch(/^Total: /);
+  });
+  it("shows the live run's write as running, with no duration yet", () => {
+    const live = steps(rowsOf("timeline.actions.working"));
+    const write = live.find((x) => x.row.tool_status === "running")!;
+    expect(write.row.summary).toBe("Wrote summary.md");
+    expect(write.ms).toBeUndefined();
+  });
+});
+
+// The shapes tell themselves apart by their rows: an older server's call row carries no status (null or absent), so it
+// still pairs with its result row; only a call row with a status of its own is its whole story.
+describe("steps, an older server's call row with no status of its own", () => {
+  const r = (seq: number, kind: string, summary: string, at: string, over: Partial<TimelineRow> = {}): TimelineRow =>
+    ({ id: `r${seq}`, seq, kind, summary, text: null, timestamp: `2026-11-03T16:41:${at}Z`, tool_name: null, ...over });
+  it("pairs with its result whether its tool_status is null or absent", () => {
+    for (const status of [{ tool_status: null }, {}]) {
+      const s = steps([
+        r(1, "tool_use", "Read notes.md", "25.615", { tool_name: "read", tool_use_id: "t2", ...status }),
+        r(2, "tool_result", "Read notes.md: ok", "25.627", { tool_name: "read", tool_use_id: "t2", tool_status: "success" }),
+      ]);
+      expect(s.map((x) => [x.row.kind, x.row.summary, x.ms]), JSON.stringify(status)).toEqual([["tool_result", "Read notes.md", 12]]);
+    }
   });
 });

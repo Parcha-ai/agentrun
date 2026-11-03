@@ -12,11 +12,13 @@ export function applyPage(held: TimelineRow[], page: TimelinePage): TimelineRow[
 }
 
 /** One step of a run as a person reads it: a row, and what folds into it. `ms`: how long a tool took (its call to its
- *  result); `saved`: the file it saved; `times` and `until`: a failure repeated in a row, how many times and its last;
- *  `detail`: what opens under it (a tool's input, then its result). */
+ *  result, or to its row's `ended_at`); `saved`: the file it saved; `times` and `until`: a failure repeated in a row,
+ *  how many times and its last; `detail`: what opens under it (a tool's input, then its result). */
 export type Step = { row: TimelineRow; ms?: number; saved?: string; times?: number; until?: string; detail?: string | null };
 
-/** A run's rows told as steps. Each tool's result folds into its call (one step, its outcome without the trailing
+/** A run's rows told as steps, from either of the server's shapes. An older server sends a call row, then its result
+ *  row; one that serves one row per action (capabilities' `timeline.actions`) sends the call as its own row, changing
+ *  in place (`running`, then its outcome, `ended_at`, its result preview). Each tool's result folds into its call (one step, its outcome without the trailing
  *  ": ok", how long it took), and a phase that names the file a step saved folds into that step. An `ask_person` call
  *  folds away once the run waits: the waiting row asks the question. A failure repeated in a row is said once, with how
  *  many times. Of the cumulative "cost so far" rows, only the last stays, at the end. */
@@ -34,6 +36,12 @@ export function steps(rows: readonly TimelineRow[]): Step[] {
     const prev = out.at(-1);
     if (r.kind === "phase" && r.path && prev && (prev.row.kind === "tool_result" || prev.row.kind === "tool_use") && !prev.saved) { prev.saved = r.path; continue; }
     if (r.kind === "error" && prev?.row.kind === "error" && prev.row.summary === r.summary) { prev.times = (prev.times ?? 1) + 1; prev.until = r.timestamp; continue; }
+    // One row per action: the call's row is its whole story, with how long it took once it ended.
+    if (r.kind === "tool_use" && r.tool_status) {
+      const parts = [r.tool_input_preview, r.tool_result_preview].filter(Boolean);
+      out.push({ row: r, ...(r.ended_at ? { ms: Math.max(0, Date.parse(r.ended_at) - Date.parse(r.timestamp)) } : {}), detail: parts.length === 2 ? `${parts[0]}\n\n→ ${parts[1]}` : parts[0] ?? null });
+      continue;
+    }
     const result = r.kind === "tool_use" && r.tool_use_id ? results.get(r.tool_use_id) : undefined;
     if (result) {
       const ok = result.tool_status !== "failed";

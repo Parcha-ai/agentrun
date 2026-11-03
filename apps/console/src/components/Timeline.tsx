@@ -27,17 +27,23 @@ const took = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)
 const label = (row: TimelineRow) =>
   ({ user_message: "You", thinking: "Thinking", tool_use: row.tool_name ?? "Tool", tool_result: row.tool_name ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text" })[row.kind] ?? row.kind;
 
+/** One step. With one row per action, a call's row carries its own outcome: `running` until it ends (a spinner), a
+ *  failed or interrupted one reads as failed, and a missing one (a read that found nothing the run wrote) is grey. */
 function Row({ step, last }: { step: Step; last: boolean }) {
-  const { row } = step;
+  // The row a step shows, and so its label: the one place a row is read for display.
+  const row = step.row;
   const [open, setOpen] = useState(false);
-  const Icon = ICON[row.kind] ?? Flag;
+  const running = row.kind === "tool_use" && row.tool_status === "running";
+  const Icon = running ? LoaderCircle : ICON[row.kind] ?? Flag;
   const detail = step.detail ?? (row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text);
-  const failed = row.tool_status === "failed" || row.kind === "error";
+  const interrupted = row.tool_status === "interrupted";
+  const failed = row.tool_status === "failed" || interrupted || row.kind === "error";
+  const missing = row.tool_status === "missing";
   return (
     <li className="relative flex gap-3">
       <div className="flex w-7 shrink-0 flex-col items-center">
-        <span className={cn("mt-3 flex size-7 items-center justify-center border bg-background", row.kind === "waiting" && "border-warning/60 text-warning-text", failed && "border-destructive/60 text-destructive-text")}>
-          <Icon className="size-3.5" aria-hidden />
+        <span className={cn("mt-3 flex size-7 items-center justify-center border bg-background", row.kind === "waiting" && "border-warning/60 text-warning-text", failed && "border-destructive/60 text-destructive-text", missing && "text-muted-foreground")}>
+          <Icon className={cn("size-3.5", running && "animate-spin text-run-active")} aria-hidden />
         </span>
         {!last && <span className="w-px flex-1 bg-border" aria-hidden />}
       </div>
@@ -47,12 +53,12 @@ function Row({ step, last }: { step: Step; last: boolean }) {
             <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
               {label(row)}
               {row.kind === "waiting" && <Chip tone="warning">Input required</Chip>}
-              {failed && <Chip tone="error">Error</Chip>}
+              {failed && <Chip tone="error">{interrupted ? "Interrupted" : "Error"}</Chip>}
               {row.agent_label && <Chip>{row.agent_label}</Chip>}
               {step.ms !== undefined && <span className="font-mono text-[11px]">{took(step.ms)}</span>}
               {step.times && <span className="font-mono text-[11px]">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
-            <span className="mt-0.5 block break-words text-[15px] leading-snug">{title(row)}</span>
+            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", missing && "text-muted-foreground")}>{title(row)}</span>
             {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
           </span>
           <span className="caps shrink-0 pt-0.5 text-[11px] text-muted-foreground">{clock(row.timestamp)}</span>
@@ -64,8 +70,8 @@ function Row({ step, last }: { step: Step; last: boolean }) {
   );
 }
 
-/** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, a question once, repeated failures
- *  once): newest last, older steps folded behind "N earlier steps". */
+/** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
+ *  a question once; repeated failures once): newest last, older steps folded behind "N earlier steps". */
 export function Timeline({ rows, live, fold = 6 }: { rows: TimelineRow[]; live: boolean; fold?: number }) {
   const [all, setAll] = useState(false);
   const told = steps(rows);
