@@ -84,6 +84,12 @@ const STATS = closed({
   archived: closed({ agents: COUNT, runs: COUNT }, "Agents archived, and runs archived or of an archived agent: counted here and in nothing else."),
   analytics: { ...ANALYTICS, "x-agentrun-serve": "stats/2" },
 });
+// Optional, so not in `required`: only an answer read through a busy store carries it.
+(STATS.properties as Json).as_of = {
+  type: "string", format: "date-time",
+  description: "Present when the agent store stayed busy past the request's wait (an import's writes): the answer is the last good one for the same `from`, `to` and `agent`, read at this time. A busy store with no answer before is `409 home_busy`.",
+  "x-agentrun-serve": "importlive/1",
+};
 const NODE_STATUS = { enum: ["pending", "working", "done", "failed", "stopped", "escalated", "not_run", "needs_review"] };
 const nullable = (type: string) => ({ type: [type, "null"] });
 /** GET /runs/{run_id}/graph's answer (graph-view.ts). */
@@ -551,6 +557,13 @@ const PENDING: Json = {
  *  the addition that made it: `harness/1` and `place/1` are ones a later contract version would take on; `model/1` and
  *  `serve/1` are what this server added before it marked them. */
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  TimelinePage: {
+    transcript: {
+      enum: ["importing"],
+      description: "An imported run whose transcript the import at setup is still to write: `rows` is empty and `final` false until it lands, and `poll_after_ms` says when to read again. Absent otherwise.",
+      "x-agentrun-serve": "importlive/1",
+    },
+  },
   Run: {
     ...RUN_FIELDS,
     learning: LEARNING,

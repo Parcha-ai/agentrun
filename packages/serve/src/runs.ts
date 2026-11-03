@@ -142,6 +142,9 @@ export type Run = {
   /** Imported history (`agentrun-serve import`): the source it was run in, and its id there. It takes no message, and a
    *  stop or a cancel moves nothing. */
   imported?: { source: string; session: string };
+  /** An imported run read before its transcript was there (the import at setup writes the transcripts after the rows):
+   *  read again once it is. */
+  awaitingTranscript?: true;
   /** The revision's number among its agent's. */
   version: number;
   dir: string;
@@ -478,10 +481,12 @@ export class Runs {
     return this.runs.get(id);
   }
 
-  /** Run `id`, read from the agent store the first time this process sees it. */
+  /** Run `id`, read from the agent store the first time this process sees it, and again once the transcript of an
+   *  imported run read before it landed is there. */
   async get(id: string): Promise<Run | null> {
     const known = this.runs.get(id);
-    if (known) return known;
+    if (known && !(known.awaitingTranscript && existsSync(this.storeFile(known)))) return known;
+    if (known) this.runs.delete(id);
     const row = await this.options.agents.request(() => this.store.readRun(id));
     return row ? this.adopt(row) : null;
   }
@@ -524,6 +529,7 @@ export class Runs {
     }
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, known?.revision);
+    if (row.importedFrom && !existsSync(this.storeFile(run))) run.awaitingTranscript = true;
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
@@ -576,6 +582,11 @@ export class Runs {
     if (typeof record.heartbeatAt !== "string" || Date.now() - Date.parse(record.heartbeatAt) >= LEASE_MS) return undefined;
     const url = URL.parse(record.holder.serve);
     return url?.protocol === "http:" && isLoopback(url.hostname) ? url.origin : undefined;
+  }
+
+  /** Whether `run` is an imported run whose transcript is not there yet. */
+  awaitingTranscript(run: Run): boolean {
+    return run.awaitingTranscript === true && !existsSync(this.storeFile(run));
   }
 
   private storeFile(run: Run): string {
