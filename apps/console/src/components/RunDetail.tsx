@@ -42,8 +42,22 @@ type Tab = "graph" | "report" | "timeline" | "files";
 export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, readFileBlob, filesComplete = true, filesTruncated = false, filesSupported = true, openFile = null, actions, onMessage, tab: initial, graphView, costText }: RunDetailProps) {
   const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review, run);
   const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
+  const [accepted, setAccepted] = useState<{ text: string; prior: Set<string> } | null>(null);
   const [open, setOpen] = useState<{ file: RunFile; text: string | null; blob?: Blob; error?: string } | null>(openFile ? { file: openFile, text: null } : null);
   const waiting = pendingQuestion(run.status, run.state, rows);
+  const sent = accepted !== null && !rows.some((row) => {
+    if (row.kind !== "user_message" || accepted.prior.has(row.id)) return false;
+    const text = row.text ?? row.summary.replace(/^You(?: \(steer\))?:\s*/, "");
+    return text === accepted.text || (text.length > 3 && text.length < accepted.text.length && text.endsWith("...") && accepted.text.startsWith(text.slice(0, -3)));
+  });
+  useEffect(() => { if (accepted && !sent) setAccepted(null); }, [accepted, sent]);
+  const message = async (text: string) => {
+    if (!onMessage) return false;
+    const prior = new Set(rows.filter((row) => row.kind === "user_message").map((row) => row.id));
+    const ok = await onMessage(text);
+    if (ok !== false) { setAccepted({ text, prior }); setTab("timeline"); }
+    return ok;
+  };
   // Only the newest read lands: closing the viewer or opening another file retires a read still in flight.
   const reads = useRef(latest()).current;
   const show = async (file: RunFile) => {
@@ -105,7 +119,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
         </div>
       </div>}
       {view.canMessage && (
-        <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} /></div></div>
+        <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage ? message : undefined} sent={sent} /></div></div>
       )}
       {open && <ArtifactViewer file={open.file} text={open.text} blob={open.blob} error={open.error} onRetry={() => void show(open.file)} onClose={close} />}
     </div>

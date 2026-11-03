@@ -11,3 +11,5 @@ Sidebar selections use orange text and a subtle background.
 Agent-card stat labels stay on one line, with card actions grouped on a separate row.
 
 Mission Control's agent filter offers searchable options, selection markers and keyboard navigation. A run's breadcrumb links to its agent's run history.
+
+Sending a follow-up opens its timeline and acknowledges acceptance until the saved message appears. Failed sends preserve the draft.
