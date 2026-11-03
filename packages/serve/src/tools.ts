@@ -99,7 +99,7 @@ const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): To
 
 /** web_fetch, bound under `name`: its own, or a legacy name for it (LEGACY_NAMES, fetch_page). */
 const webFetchEntry = (name: string): ToolEntry => ({
-  summary: "Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page): { ok, url, status, title, text, truncated?, original_chars?, links, via, parallel?, refused?, error? }; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.",
+  summary: "Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page): { ok, url, status, title, text, truncated?, original_chars?, html_chars?, converted?, links, via, parallel?, refused?, error? }; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.",
   needs: [],
   nodes: true,
   bind: async (host) => {
