@@ -90,6 +90,7 @@ test("each project is one agent with a revision per harness, its CLAUDE.md or AG
   const site = report.agents[0];
   const { agent, revisions } = store.readAgent(site.id);
   assert.equal(agent.name, "acme-site");
+  assert.equal(agent.description, "Sessions imported from acme-site", "the folder by its name, never its absolute path");
   const byNote = Object.fromEntries(revisions.map((r) => [r.note, r]));
   const claude = byNote["imported from claude-code"].body;
   const codex = byNote["imported from codex"].body;

@@ -2,7 +2,7 @@
 // aggregates over store.sqlite), with what only the runs this server holds can say. Nothing under runs/ is opened: a
 // running run this server does not hold has no status here, and is counted as unknown, never as active or not waiting.
 import type { AnalyticsFilter, AnalyticsGroup, StoreAnalytics, StoreStats } from "@parcha/pi-durable-agent";
-import { nameOf } from "@parcha/pi-durable-agent/timeline";
+import { nameOf, toolOf } from "@parcha/pi-durable-agent/timeline";
 import { ApiError } from "./errors.js";
 import { type Runs, type Status, statusOf } from "./runs.js";
 import { ID } from "./validate.js";
@@ -72,6 +72,20 @@ export function analyticsFilter(url: URL): AnalyticsFilter {
 /** A group's counts: an escalated run is completed, and needs review; never failed. */
 const group = (g: AnalyticsGroup) => ({ runs: g.runs, completed: g.completed, needs_review: g.needsReview, failed: g.failed, runs_with_metrics: g.runsWithMetrics, tokens: g.tokens, cost_usd: round(g.costUsd), unknown_cost_runs: g.unknownCostRuns });
 
+/** The store's busiest tools, a registered tool's calls by an MCP name of it (toolOf) counted as its own: one row a
+ *  tool, the most calls first, by name on a tie. */
+function toolsOf(tools: StoreAnalytics["tools"]) {
+  const by = new Map<string, { tool: string; label: string; calls: number; errors: number }>();
+  for (const t of tools) {
+    const tool = toolOf(t.tool);
+    const row = by.get(tool) ?? { tool, label: nameOf(tool), calls: 0, errors: 0 };
+    row.calls += t.calls;
+    row.errors += t.errors;
+    by.set(tool, row);
+  }
+  return [...by.values()].sort((a, b) => b.calls - a.calls || (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : 0));
+}
+
 export function analyticsView(a: StoreAnalytics, filter: AnalyticsFilter) {
   const t = a.totals;
   return {
@@ -82,6 +96,6 @@ export function analyticsView(a: StoreAnalytics, filter: AnalyticsFilter) {
     by_day: a.byDay.map((g) => ({ day: g.day, ...group(g) })),
     by_source: a.bySource.map((g) => ({ source: g.source, ...group(g) })),
     // Each tool by the name it was called (`tool`) and what a person calls it (`label`, the timeline's registry).
-    tools: a.tools.map((t) => ({ tool: t.tool, label: nameOf(t.tool), calls: t.calls, errors: t.errors })),
+    tools: toolsOf(a.tools),
   };
 }

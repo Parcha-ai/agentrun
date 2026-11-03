@@ -1225,7 +1225,7 @@ export class Runs {
       if (holding.length + this.starting < max) break;
       const leaving = holding.some((run) => run.outcome || run.finishing || run.cancel);
       if (!leaving || Date.now() > deadline) {
-        throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
+        throw new ApiError("rate_limited", `This server runs at most ${max} runs at once; start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
       }
     }
     this.starting++;

@@ -21,8 +21,20 @@ export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec, { n
   if (name) names.set(tool, name);
 }
 
-/** What a tool is called where its calls are counted, in plain words: its registered name, else the name it was called by. */
-export const nameOf = (tool: string): string => names.get(tool) ?? tool;
+// A tool called by its MCP name: the Claude CLI's `mcp__<server>__<tool>`, or a name a model wrote itself in a URL's shape
+// (`mcp__hands://web_fetch`, which no server serves, so the call fails).
+const MCP_NAME = /^mcp__[A-Za-z0-9-]+?(?:__|:\/\/)([A-Za-z0-9_.-]+)$/;
+/** The tool a call names: itself when it is registered, else the registered tool its MCP name wraps, else itself. A
+ *  person reads the tool, never the server's wrapping. */
+export const toolOf = (tool: string): string => {
+  if (labels.has(tool)) return tool;
+  const bare = MCP_NAME.exec(tool)?.[1];
+  return bare !== undefined && labels.has(bare) ? bare : tool;
+};
+
+/** What a tool is called where its calls are counted, in plain words: its registered name (an MCP name of a registered
+ *  tool, that tool's), else the name it was called by. */
+export const nameOf = (tool: string): string => names.get(toolOf(tool)) ?? tool;
 
 /** A finished call's outcome, when its own result says more than that the call returned: a tool that answers a refusal
  *  or a failure as its result, not as an error (a fetch's `{ok: false, refused}`), reads as refused or failed. */
@@ -35,7 +47,7 @@ export function registerOutcome(tool: string, outcome: OutcomeFn): void {
 }
 
 /** The outcome of a call that returned (not one that errored), when its tool tells one. */
-export const outcomeOf = (tool: string, result: { text: string; isError: boolean }) => (result.isError ? undefined : outcomes.get(tool)?.(result));
+export const outcomeOf = (tool: string, result: { text: string; isError: boolean }) => (result.isError ? undefined : outcomes.get(toolOf(tool))?.(result));
 
 /** Whether a finished call failed: an error, or a result its tool's outcome reads as failed (a refused fetch). The one
  *  rule a call's row and a run's tool counts both read; `outcome` is the result's own (outcomeOf), so a caller that has
@@ -59,12 +71,12 @@ export const endsTurn = (tool: string): boolean => turnEnding.has(tool);
 /** The label of a call; `result` is given once the call has finished. Unknown tools get Grep's own fallback. */
 export function labelOf(tool: string, args: Obj, result?: ToolResultView, extra?: Record<string, LabelFn>): string {
   const own = extra && Object.hasOwn(extra, tool) ? extra[tool] : undefined;
-  return (own ?? labels.get(tool))?.(args, result) ?? `Using tool: ${tool}`;
+  return (own ?? labels.get(toolOf(tool)))?.(args, result) ?? `Using tool: ${tool}`;
 }
 
 /** One line for several calls of one tool: `Read 4 pages: a.example, b.example, +2 more`. */
 export function foldLabel(tool: string, calls: readonly { input: string | null; output: string | null }[]): string {
-  const spec = folds.get(tool);
+  const spec = folds.get(toolOf(tool));
   const head = spec ? spec.many(calls.length) : `Used ${tool} ${calls.length} times`;
   const subjects = calls.flatMap((call) => spec?.subject?.(call.input, call.output) ?? []);
   return subjects.length ? `${head}: ${list(subjects)}` : head;

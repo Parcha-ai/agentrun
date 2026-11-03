@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/pi-durable-agent
+kind: fix
+---
+A call by an MCP name of a registered tool reads as that tool. That covers the Claude CLI's `mcp__hands__web_fetch` and a name a model wrote itself, `mcp__hands://web_fetch`. `nameOf`, `labelOf`, `foldLabel` and the call's outcome all read it that way, and the new `toolOf` names the tool. `GET /v2/stats` counts such calls under the tool's own row, so the Top tools list on Mission Control and an agent's Analytics no longer shows `mcp__hands://web_fetch` beside "Fetch web pages". An MCP tool no one registered keeps the name it was called by. An imported agent's description is "Sessions imported from <folder>", in place of the folder's absolute path on its card and page. The 429 for a full server reads "This server runs at most N runs at once; start this one when another ends."; the cap's field name stays in `details.max_concurrent_runs`.
