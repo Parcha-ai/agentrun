@@ -1259,19 +1259,26 @@ export class Runs {
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
-    // A stop in flight is answered first. Sent between its mark and its abort, a message would read the run stopped, go to
-    // the turn the abort is cutting, and be dropped with it, its row never coming.
-    if (run.stopping) await this.stopAnswered(run);
-    // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
-    // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
-    if (run.finishing && !run.outcome) await this.endWritten(run);
-    if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
+    let steers: boolean;
+    // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
+    // to the count below nothing awaits, so no stop can begin in between.
+    do {
+      // A stop in flight is answered first. Sent between its mark and its abort, a message would read the run stopped, go
+      // to the turn the abort is cutting, and be dropped with it, its row never coming.
+      if (run.stopping) await this.stopAnswered(run);
+      // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
+      // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
+      if (run.finishing && !run.outcome) await this.endWritten(run);
+      if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
+      // Its harness, read from the agent store at the run's first message.
+      steers = await this.steers(run);
+    } while (run.stopping);
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
     // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
     // the same run, which the contract calls follow_up, never a steer it does not do.
     const working = status === "queued" || (status === "working" && state === "working");
-    const mode = working ? ((await this.steers(run)) ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
+    const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
     run.submitted++;
     this.refresh(run);
