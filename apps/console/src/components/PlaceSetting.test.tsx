@@ -63,3 +63,20 @@ describe("PlaceSetting", () => {
     expect(host.querySelector('[role="status"]')).toBeNull();
   });
 });
+
+describe("PlaceSetting, a server with no box it can run", () => {
+  it("keeps the server picked: Sandbox can't be picked, and each box's reason says why", () => {
+    const none: Places = { modes: ["runner", "sandbox"], default: "runner", boxes: [{ id: "bwrap", available: false, reason: "fixture: no bwrap" }, { id: "docker", available: false, reason: "fixture: docker isn't set up" }] };
+    const changes: { place: Place }[] = [];
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(PlaceSetting, { value: undefined, saved: undefined, places: none, tools: TOOLS, picked: ["read"], onChange: (p) => { changes.push(p); } })));
+    const sandbox = host.querySelector('input[name="place"][value="sandbox"]') as HTMLInputElement;
+    expect(sandbox.disabled).toBe(true);
+    act(() => sandbox.click());
+    expect(changes).toEqual([]);
+    expect((host.querySelector('input[name="place"][value="runner"]') as HTMLInputElement).checked).toBe(true);
+    expect(host.textContent).toContain("No box is set up on this server");
+    expect(host.textContent).toContain("fixture: docker isn't set up");
+  });
+});

@@ -14,7 +14,11 @@ export function PlaceSetting({ value, saved, places, tools, picked, onChange, er
 }) {
   const place = value ?? placeOf(saved);
   const mode = place?.mode ?? places.default;
-  const box = place?.mode === "sandbox" ? place.box : places.boxes.find((b) => b.available)?.id ?? places.boxes[0]?.id;
+  // A box this server can run; an agent saved in one it lacks keeps it. With none at all, Sandbox can't be picked: the
+  // server stays the place, and each box says why it isn't set up.
+  const runnable = places.boxes.find((b) => b.available)?.id;
+  const box = place?.mode === "sandbox" ? place.box : runnable;
+  const noBox = !runnable && mode !== "sandbox";
   const sandboxOnly = new Set(tools.filter((t) => t.sandbox_only).map((t) => t.name));
   // The sandbox-only tools the last move to the runner took away, said under the picker until Sandbox is picked again.
   const [dropped, setDropped] = useState<string[]>([]);
@@ -25,9 +29,9 @@ export function PlaceSetting({ value, saved, places, tools, picked, onChange, er
   };
   const toSandbox = (id: string | undefined) => { setDropped([]); if (id) onChange({ place: { mode: "sandbox", box: id } }); };
   const named = (names: string[]) => names.map((n) => n.charAt(0).toUpperCase() + n.slice(1)).join(" and ");
-  const option = (id: "runner" | "sandbox", label: string, note: ReactNode, onPick: () => void) => (
-    <label className={cn("flex cursor-pointer items-start gap-3 border px-4 py-3", mode === id ? "border-foreground" : "border-border")}>
-      <input type="radio" name="place" value={id} checked={mode === id} onChange={onPick} className="mt-1 accent-[hsl(var(--primary))]" />
+  const option = (id: "runner" | "sandbox", label: string, note: ReactNode, onPick: () => void, disabled = false) => (
+    <label className={cn("flex items-start gap-3 border px-4 py-3", mode === id ? "border-foreground" : "border-border", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
+      <input type="radio" name="place" value={id} checked={mode === id} disabled={disabled} onChange={onPick} className="mt-1 accent-[hsl(var(--primary))]" />
       <span><span className="block text-[14px] font-semibold">{label}</span><span className="mt-0.5 block text-[12px] text-muted-foreground">{note}</span></span>
     </label>
   );
@@ -36,8 +40,14 @@ export function PlaceSetting({ value, saved, places, tools, picked, onChange, er
       <div className="mb-2 caps text-[12px] font-semibold">Where it runs</div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Where it runs">
         {option("runner", "On the server", "No box and no shell: its files stay in the run's folder on the server.", toRunner)}
-        {option("sandbox", "In a sandbox", "Its file and shell tools run in a box; its keys stay on the server.", () => toSandbox(box))}
+        {option("sandbox", "In a sandbox", "Its file and shell tools run in a box; its keys stay on the server.", () => toSandbox(box), noBox)}
       </div>
+      {noBox && (
+        <div className="mt-3 border px-4 py-3 text-[12px] text-muted-foreground" role="status">
+          <p>No box is set up on this server, so this agent runs on the server.</p>
+          <ul className="mt-1">{places.boxes.map((b) => <li key={b.id}><span className="font-mono">{b.id}</span>{b.reason ? `: ${b.reason}` : ""}</li>)}</ul>
+        </div>
+      )}
       {mode === "sandbox" && (
         <ul className="mt-3 border" aria-label="Box">
           {places.boxes.map((b) => (
