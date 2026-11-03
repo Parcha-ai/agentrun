@@ -94,7 +94,16 @@ test("each run's learning in words, from its start to its end, its learning row 
     const { view, rows } = await ended(api, await started(api, id));
     settled(view, rows, "dropped", reason);
     assert.equal(view.learning.detail, detail, id);
+    assert.equal((await api("GET", `/agents/${id}/runs`)).body.runs[0].learning.detail, detail, `${id}: a list says the same`);
   }
+
+  // A reason whose first sentence is long: the run's view says it whole, a list's row at most 140 characters of it.
+  await made(api, learner("long", { instructions: "Answer the question. Grade: drop at length.", plan: [["narrow.md", note("Narrow", "One shop's page")]] }));
+  const long = (await ended(api, await started(api, "long"))).view;
+  const whole = long.learning.detail;
+  const listed = (await api("GET", "/agents/long/runs")).body.runs[0].learning.detail;
+  assert.ok(whole.startsWith("Not kept: A note is about the one case it came from, and it holds") && whole.endsWith("so it is not kept.") && whole.length > 140, whole);
+  assert.ok(listed.length <= 140 && listed.endsWith("…") && whole.startsWith(listed.slice(0, -1)), listed);
 
   // Checking: a grade held until the server closes, which leaves it checking.
   process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD = "1";
