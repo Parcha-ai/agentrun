@@ -1091,3 +1091,61 @@ test("the ledger keeps an end exactly as long as a start's catch-up looks for it
   await sleep(300);
   assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).data.run_id), ["now"], "neither earlier end sent again");
 });
+
+test("an end just inside the catch-up's day, its ledger entry at the pruning edge, is delivered exactly once across a restart: never twice, never not at all", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const day = 24 * 3_600_000;
+  // Both ends 2 min inside the day: one this server queued, one whose server was killed before the outbox had it.
+  const sent = new Date(Date.now() - day + 120_000).toISOString();
+  const lost = new Date(Date.now() - day + 120_000).toISOString();
+  writeFileSync(join(dir, "end-notices-since"), `${new Date(Date.now() - 2 * day).toISOString()}\n`);
+  const first = new Webhooks(dir, env, () => undefined, []);
+  first.save({ url: hook.url });
+  const config = JSON.parse(readFileSync(join(dir, "webhook.json"), "utf8"));
+  writeFileSync(join(dir, "webhook.json"), `${JSON.stringify({ ...config, updated_at: new Date(Date.now() - 2 * day).toISOString() })}\n`);
+  const run = (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
+  first.emit("run.ended", run("sent"), sent);
+  // A later notice prunes the ledger: the entry at the edge stays.
+  first.emit("run.ended", run("fresh"), new Date().toISOString());
+  await until(() => hook.got.length === 2, "both sent");
+  await first.close();
+  // Its message leaves the outbox as later attempts push it out of the log (ATTEMPTS_KEPT): the ledger alone keeps it.
+  const outbox = JSON.parse(readFileSync(join(dir, "webhook-outbox.json"), "utf8"));
+  writeFileSync(join(dir, "webhook-outbox.json"), `${JSON.stringify({ ...outbox, messages: [], attempts: [] })}\n`);
+  const next = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => next.close());
+  next.emit("run.ended", run("pruning"), new Date().toISOString());
+  await next.catchUp([{ id: "sent", endedAt: sent }, { id: "lost", endedAt: lost }], async (id) => run(id));
+  // A continuation tells the same end again.
+  next.emit("run.ended", run("sent"), sent);
+  await until(() => hook.got.length === 4, "the new end and the lost one");
+  await sleep(300);
+  const of = (id) => hook.got.filter((r) => JSON.parse(r.body).data.run_id === id).length;
+  assert.deepEqual([of("sent"), of("lost")], [1, 1], "each end at the edge once");
+});
+
+test("an upgrade from a serve.json that still holds the old notice record (end_notice, wait_notice) ignores it: an end it names that the outbox lacks is caught up from the agent store, once", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  // Killed after the store's end and before run.ended is queued.
+  const first = await processOn(t, data, [SERVE_END_HELD, data, FAUX]);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(first.api, "older-record", "Answer.");
+  const at = await until(() => endedIn(data, run.run_id), "its end in the store");
+  await killed(first.child);
+  // As an earlier version of this server left the run: its end recorded with it as queued, and a wait.
+  const file = join(data, "runs", run.run_id, "serve.json");
+  writeFileSync(file, `${JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), end_notice: { ended_at: at, queued: true }, wait_notice: { marker: "row_1" } })}\n`);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, from the store");
+  assert.equal(ofType(hook.got, "run.ended")[0].headers["webhook-id"], noticeId(run.run_id, "run.ended", at));
+  assert.equal((await client(next.baseUrl, next.token)("GET", `/runs/${run.run_id}`)).body.status, "completed", "the old fields are read as nothing");
+  await sleep(500);
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "once");
+  assert.equal(ofType(hook.got, "run.needs_input").length, 0, "the old wait record sends nothing");
+});
