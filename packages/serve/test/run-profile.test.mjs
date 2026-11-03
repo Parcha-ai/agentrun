@@ -170,7 +170,7 @@ test("the shipped default pack on an agent with its own report-writer: the revis
   assert.ok(!said.includes("THE CALLER'S OWN REPORT WRITER"), "the Skill tool's, not written out");
 });
 
-test("a run whose pack skill cannot be copied fails to start and is not left running: the store ends it failed, saying why", async (t) => {
+test("a run whose pack skill cannot be copied fails to start and is not left running: the store ends it failed, saying why", { skip: process.getuid?.() === 0 && "root reads a file of mode 000" }, async (t) => {
   const { api, data } = await serve(t);
   await made(api, "unstaged", {}, { "own-x/SKILL.md": md("own-x") });
   // The pack bundles effort-x, one of whose files the server cannot read: its copy into the run's workspace fails.
