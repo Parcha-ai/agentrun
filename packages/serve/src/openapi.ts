@@ -628,7 +628,7 @@ const RUN_PLACE: Json = {
     { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
     { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
   ],
-  description: "Where the run executes, as its start resolved it: the request's `runner`, else its revision's place, else runner. In a sandbox place the agent's read, write, edit and bash run in the box, which binds only the run's work/ and has no network and no key; its loop, its log and every key stay on the server.",
+  description: "Where the run executes, as its start resolved it: the request's `runner`, else its revision's place, else runner. In a sandbox place the agent's bash runs in the box, which binds only the run's work/ and has no network and no key; read, write and edit run in the box too, or on this server's copy of that work/ where the box binds it and this server holds directory handles (Docker on Linux), following no link. Its loop, its log and every key stay on the server.",
   "x-agentrun-serve": "place/1",
 };
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {

@@ -225,9 +225,10 @@ of a process that is gone is not trusted.
 
 ## Sandbox
 
-A sandbox agent's `read`, `write`, `edit` and `bash` run in a box, a machine apart from this server: today a Docker
-container made for each run, which binds the run's `work/` and nothing else, with no network and no key. The agent's
-loop, its log, its model calls and every key stay on the server. An agent says so in its [place](#place); the server
+A sandbox agent's `bash` runs in a box, a machine apart from this server: today a Docker container made for each run,
+which binds the run's `work/` and nothing else, with no network and no key. Its `read`, `write` and `edit` work on that
+same `work/`: on this server, where the box binds it and this server holds directory handles (Docker on Linux), else in
+the box. The agent's loop, its log, its model calls and every key stay on the server. An agent says so in its [place](#place); the server
 says which [boxes](#boxes) it has; [a run in a Docker box](#a-run-in-a-docker-box) is what the container gets;
 [the box's image](#the-boxs-image) is what it starts from. [Sandbox in 60 seconds](#sandbox-in-60-seconds) is all of it
 end to end. The [published image](#in-the-published-image) cannot host boxes yet.
@@ -235,9 +236,9 @@ end to end. The [published image](#in-the-published-image) cannot host boxes yet
 ### Place
 
 A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
-the ids under [Boxes](#boxes). A runner has no shell. In a sandbox the agent's file and shell tools (`read`,
-`write`, `edit`, `bash`) run in the named box, while the agent's loop, its log and every key stay on the server, whatever
-its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
+the ids under [Boxes](#boxes). A runner has no shell. In a sandbox the agent's `bash` runs in the named box and its
+file tools (`read`, `write`, `edit`) work on the `work/` the box has ([a run in a Docker box](#a-run-in-a-docker-box)),
+while the agent's loop, its log and every key stay on the server, whatever its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
 remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). A definition that
 names none runs in this host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one
 that names a place keeps it, `runner` included. An edit that names no place keeps the agent's.
@@ -260,8 +261,14 @@ request's `place` and `capabilities.places` `x-agentrun-serve: "place/1"`.
 ### A run in a Docker box
 
 With `AGENTRUN_BOXES=docker` and a Docker daemon this server's user may use, a run whose place is
-`{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `read`, `write`, `edit` or `bash` call
-(a run with no such call gets none). Those four tools are pi's own, on every harness; their calls run in the container.
+`{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `bash` call (a run with none gets no
+container). Those four tools are pi's own, on every harness. `bash` runs in the container. `read`, `write` and `edit`
+run on this server, on the `work/` the container binds, because a `docker exec` costs half a second or more per call:
+they follow no link anywhere on the way (one pointing inside `work/` included), take only a regular file with one hard
+link, and write through a temporary file renamed over the old one, keeping its mode (a new file is `0644`). A refusal
+says so and names the box's path; `bash`, in the container, can still reach the file. Where this server reaches
+directories by path (no `/proc/self/fd`, as on macOS), or a box binds nothing, all four run in the container, made on
+the first of them.
 `web_fetch` (and `fetch_page`, its legacy name), `web_search` and the `monid.*` tools stay on this server, and so do
 the run's loop, its log, its model calls and every key. What the server itself files in `work/` (monid's long answers,
 the browser's evidence) never goes through a link a box's command planted there: each directory is held open on the
