@@ -56,7 +56,14 @@ test("every host tool's largest result is within the host's result bound, which 
   assert.ok(page.links.reduce((n, link) => n + JSON.stringify(link).length + 1, 0) > pages.LINKS_CHARS - 200, "the links at theirs");
   const cjk = await web.webFetch(PUBLIC, { lookup: async () => ["93.184.216.34"], fetchImpl: async () => new Response(wide.repeat(4 * pages.TEXT_CAP), { status: 200, headers: { "content-type": "text/plain" } }), maxChars: 10 * pages.TEXT_CAP });
   assert.equal(cjk.chars, pages.TEXT_CAP, "a part of three-byte text at the most max_chars takes");
-  for (const tool of ["web_fetch", "fetch_page"]) keep(tool, web.webFetchText(page, tool), web.webFetchText(cjk, tool));
+  // The most bytes in one answer: three-byte text at the most max_chars takes, with the longest title (three-byte too),
+  // the most links, the longest URL and Parallel's failure said, together (the part above has none of them).
+  const wideHtml = `<html><head><title>${wide.repeat(4 * pages.TITLE_CAP)}</title></head><body><p>${wide.repeat(4 * pages.TEXT_CAP)}</p>${links}</body></html>`;
+  const widest = await web.webFetch(url, { lookup: async () => ["93.184.216.34"], fetchImpl: async () => new Response(wideHtml, { status: 200, headers: { "content-type": "text/html" } }), parallel: failing, maxChars: 10 * pages.TEXT_CAP });
+  assert.equal(widest.ok, true, JSON.stringify({ ...widest, text: undefined }));
+  assert.deepEqual([widest.chars, Buffer.byteLength(widest.text) > 3 * (pages.TEXT_CAP - 10), widest.url.length, Buffer.byteLength(widest.title) > 3 * (pages.TITLE_CAP - 2), Boolean(widest.parallel && widest.truncated)], [pages.TEXT_CAP, true, pages.URL_MAX, true, true], "50,000 three-byte characters, the longest URL, a title of three-byte characters at its cap, Parallel's failure said");
+  assert.ok(widest.links.reduce((n, link) => n + JSON.stringify(link).length + 1, 0) > pages.LINKS_CHARS - 200, "the links at theirs, with the text");
+  for (const tool of ["web_fetch", "fetch_page"]) keep(tool, web.webFetchText(page, tool), web.webFetchText(cjk, tool), web.webFetchText(widest, tool));
 
   // web_search: every result at its caps; the answer keeps the most relevant that fit.
   const hit = { url: `https://s.example/${'"'.repeat(pages.URL_MAX)}`, title: '"'.repeat(pages.TITLE_CAP), snippet: '"'.repeat(search.SNIPPET_MAX), published: '"'.repeat(200) };
