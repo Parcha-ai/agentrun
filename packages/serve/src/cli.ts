@@ -8,7 +8,7 @@ import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
 import { defaultData } from "./files.js";
-import { canOpen, freePort } from "./host.js";
+import { canOpen } from "./host.js";
 import { keyModel } from "./model.js";
 import { resetPassword } from "./owner.js";
 import { banner, consoleLink } from "./print.js";
@@ -108,7 +108,7 @@ if (values.help) {
   console.log(USAGE);
   process.exit(0);
 }
-const port = values.port === undefined ? await freePort(DEFAULT_PORT, values.listen ?? "127.0.0.1") : Number(values.port);
+const port = values.port === undefined ? DEFAULT_PORT : Number(values.port);
 if (!Number.isInteger(port) || port < 0 || port > 65_535) {
   console.error(`--port takes a port number\n\n${USAGE}`);
   process.exit(2);
@@ -136,7 +136,7 @@ const accounts = process.env.AGENTRUN_ACCOUNTS !== "0";
 let serve: Serve;
 try {
   serve = await startServe({
-    data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true, ...(publicUrl ? { publicUrl } : {}) } : {}),

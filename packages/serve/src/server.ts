@@ -94,6 +94,9 @@ export type ServeOptions = {
   token?: string;
   /** Default 7340; 0 is any free port. */
   port?: number;
+  /** When the port is taken at the listen, the next one that is not, of the 100 from it: the port is found by listening,
+   *  so one another process takes at the same moment is passed over. Without it a taken port fails the start. */
+  nextFreePort?: boolean;
   /** A read-only directory of documents a workflow's `pdf_pages` calls read by file name (`--documents`); default
    *  AGENTRUN_SERVE_DOCUMENTS. */
   documents?: string;
@@ -1355,8 +1358,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     route(req, res, url, raw.slice(3)).catch(fail);
   });
-  const port = options.port ?? DEFAULT_PORT;
-  await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done())));
+  const first = options.port ?? DEFAULT_PORT;
+  const last = options.nextFreePort && first !== 0 ? Math.min(first + 99, 65_535) : first;
+  for (let port = first; ; port++) {
+    try {
+      await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => (server.off("error", reject), done()))));
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+      if (port < last) continue;
+      throw last > first ? Object.assign(new Error(`every port from ${first} to ${last} on ${host} is taken`), { code: "EADDRINUSE" }) : error;
+    }
+  }
   // Only a server that started takes up the import its owner asked for, or counts for setup's offer: one that failed to
   // listen hands back no close to stop them.
   if (offersImport && existsSync(importAsked)) void importAtSetup();

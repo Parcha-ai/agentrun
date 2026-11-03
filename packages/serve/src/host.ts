@@ -1,7 +1,7 @@
 // What one host can hold, and whether it can work now. The cap on concurrent runs comes from its memory: each run is a
 // process of its own, about 67 MiB of private memory with the faux model (measured), and the server itself about 100 MiB
-// resident. Health reads the agent store and the free disk under the data directory. A start here takes the first free
-// port from the default, and opens a browser only where there is one to open.
+// resident. Health reads the agent store and the free disk under the data directory. A start here opens a browser only
+// where there is one to open.
 import { statfs } from "node:fs/promises";
 import { totalmem } from "node:os";
 import { openStoreReader } from "@parcha/pi-durable-agent";
@@ -53,19 +53,6 @@ export async function healthOf(data: string, minFreeBytes: number, fsStat: typeo
   const free = await fsStat(data).then((fs) => fs.bavail * fs.bsize, () => undefined);
   const disk = free === undefined ? "cannot_check" : free >= minFreeBytes ? "ok" : "below_floor";
   return { status: store === "ok" && disk === "ok" ? "ok" : "failing", checks: { store, disk } };
-}
-
-/** The first port from `from` that `host` can listen on, of the 100 from it. */
-export async function freePort(from: number, host: string): Promise<number> {
-  const { createServer } = await import("node:net");
-  for (let port = from; port < from + 100 && port <= 65_535; port++) {
-    const free = await new Promise<boolean>((resolve) => {
-      const probe = createServer().once("error", () => resolve(false)).once("listening", () => probe.close(() => resolve(true)));
-      probe.listen(port, host);
-    });
-    if (free) return port;
-  }
-  throw new Error(`no free port on ${host} from ${from}`);
 }
 
 /** Whether `--open` opens a browser here: not in CI, and on Linux or FreeBSD only with a display. */
