@@ -263,3 +263,46 @@ test("started directly by a shell that backgrounds it and exits, the command kee
   process.kill(pid, "SIGTERM");
   assert.ok(await healthUntil(base, false, 300), "and stops when its command is stopped");
 });
+
+// With no server beside it, the command's child is another `npm exec`, which ends on a SIGTERM or a SIGHUP and leaves the
+// server it started. A stop (the command's own SIGTERM, a terminal's SIGHUP, or its npm watch) goes to that child's whole
+// process group, so it reaches the fetched server too.
+test("with no server beside it, a SIGTERM or a SIGHUP to the command stops the fetched server, though the npm exec between them leaves it", { timeout: 90_000 }, async (t) => {
+  for (const signal of ["SIGTERM", "SIGHUP"]) {
+    const dir = mkdtempSync(join(tmpdir(), "agentrun-fetched-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
+    mkdirSync(join(dir, "fake"));
+    const pidFile = join(dir, "server.pid");
+    writeFileSync(join(dir, "fake", "npm"), `#!${process.execPath}
+const { spawn } = require("node:child_process");
+const argv = process.argv.slice(2);
+const port = argv[argv.indexOf("--port") + 1];
+// The server npm exec starts, its child, with the default signal handling.
+spawn(process.execPath, ["-e", ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); console.log("Open http://127.0.0.1:" + process.argv[1] + "/"); setInterval(() => {}, 1000);`)}, port], { stdio: "inherit" });
+// As npm does: a SIGTERM or a SIGHUP ends it, and leaves what it started.
+for (const signal of ["SIGTERM", "SIGHUP"]) process.on(signal, () => process.exit(1));
+setInterval(() => {}, 1000);
+`);
+    chmodSync(join(dir, "fake", "npm"), 0o755);
+    const { env } = bare(t);
+    const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), "--no-open"], { env: { ...strip(env), PATH: `${join(dir, "fake")}:${env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+    const exited = new Promise((resolve) => child.on("exit", resolve));
+    // Whatever the test ends with, nothing it started is left: the command, and the server by its pid.
+    t.after(() => { try { child.kill("SIGKILL"); } catch {} });
+    let out = "";
+    child.stdout.on("data", (chunk) => (out += chunk));
+    for (let i = 0; !out.includes("\n") && i < 300; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, out);
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    t.after(() => { try { process.kill(pid, "SIGKILL"); } catch {} });
+    child.kill(signal);
+    // A server left running holds the command's pipe open, so the command may not end: wait a bounded time.
+    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 10_000))]);
+    let alive = true;
+    for (let i = 0; alive && i < 100; i++) {
+      try { process.kill(pid, 0); await new Promise((resolve) => setTimeout(resolve, 100)); } catch { alive = false; }
+    }
+    assert.equal(alive, false, `${signal}: the fetched server stopped`);
+  }
+});
