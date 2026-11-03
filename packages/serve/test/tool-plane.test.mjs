@@ -27,6 +27,7 @@ test("the resolver: the agent's pick over the server's; auto is native where the
   assert.equal(search({ harness: "claude-agent" }), "native");
   assert.equal(search({ harness: "codex" }), "native", "Codex's own search");
   assert.equal(search({ harness: "codex", capped: true }), "exa-keyless", "under a spend cap, Codex's search request has no input bound: keyless Exa");
+  assert.equal(search({ harness: "claude-agent", capped: true }), "exa-keyless", "under a spend cap, Claude's own search has per-use fees the cap cannot reserve: keyless Exa");
   assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-4-5" }), "native");
   assert.equal(search({ harness: "pi", model: "openai/gpt-5" }), "native");
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro" }), "exa-keyless", "a provider with no hosted search here");
@@ -46,6 +47,7 @@ test("the resolver: the agent's pick over the server's; auto is native where the
   assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-4-5", gateway: true, pick: "native" }), "unavailable: no native search for pi behind a gateway");
   assert.equal(search({ harness: "codex", override: "native" }), "native");
   assert.equal(search({ harness: "codex", capped: true, override: "native" }), "unavailable: no native search for codex under a spend cap");
+  assert.equal(search({ harness: "claude-agent", capped: true, override: "native" }), "unavailable: no native search for claude-agent under a spend cap: Claude's own search has per-use fees a spend cap cannot reserve yet, so web_search works under a cap through the default provider, auto");
   assert.equal(search({ harness: "codex", gateway: true, override: "native" }), "unavailable: no native search for codex behind a gateway");
   // off: nothing is searched, on any harness, whatever else is picked or held.
   for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(search({ harness, pick: "off", parallelKey: true }), "unavailable: web_search is turned off in settings");
@@ -64,6 +66,7 @@ test("a run's plane: each web tool its revision names, resolved in the server's 
   assert.deepEqual(planeFor(env, { tools: ["web_search"], model: "openai/gpt-5" }, {}), { web_search: "native", model: "openai/gpt-5" }, "the revision's model over the default");
   assert.deepEqual(planeFor(env, { harness: "codex", tools: ["web_search", "web_fetch"] }, { web_fetch: { provider: "parallel" } }), { web_search: "native", web_fetch: "parallel" });
   assert.deepEqual(planeFor(env, { harness: "codex", tools: ["web_search"] }, {}, { capped: true }), { web_search: "exa-keyless" }, "a capped codex run searches keyless");
+  assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"] }, {}, { capped: true }), { web_search: "exa-keyless" }, "a capped claude-agent run searches keyless");
   assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"] }, {}), { web_search: "native" }, "no model to name: Claude's is its own");
   assert.deepEqual(planeFor(env, { tools: ["web_search"], overrides: { web_search: { provider: "exa-keyless" } } }, { web_search: { provider: "parallel" } }), { web_search: "exa-keyless" });
   assert.deepEqual(planeFor({}, { tools: ["read"] }, {}), {}, "no web tool, nothing to say");
@@ -222,7 +225,7 @@ test("a run keeps the tools its first launch resolved: a PUT between its launche
   assert.deepEqual(sent.map((call) => [call.path, call.authorized]), [["/v1/extract", true]], "only the next run asked Parallel");
 });
 
-test("the run check resolves search as the run does: a workflow picking native search is refused before it starts, and so is a capped codex run picking it", async () => {
+test("the run check resolves search as the run does: a workflow picking native search is refused before it starts, and so is a capped codex or claude-agent run picking it", async () => {
   const env = { AGENT_MODEL: "anthropic/claude-sonnet-4-5", ANTHROPIC_API_KEY: "not-a-secret" };
   const said = (blockers) => blockers.map((blocker) => blocker.message).join(" ");
   const flow = answerFlow();
@@ -232,4 +235,8 @@ test("the run check resolves search as the run does: a workflow picking native s
   const codex = { kind: "agentic", harness: "codex", instructions: "Search the web.", tools: ["web_search"], toolSettings: native };
   assert.doesNotMatch(said(await blockersOf(env, codex, {})), /web_search/, "uncapped: Codex's own search");
   assert.match(said(await blockersOf(env, codex, {}, { capped: true })), /The tool web_search does not run here on codex: no native search for codex under a spend cap\./, "capped: refused, never a search that cannot run");
+  const claude = { ...codex, harness: "claude-agent" };
+  assert.doesNotMatch(said(await blockersOf(env, claude, {})), /web_search/, "uncapped: Claude's own search");
+  assert.match(said(await blockersOf(env, claude, {}, { capped: true })), /The tool web_search does not run here on claude-agent: no native search for claude-agent under a spend cap: Claude's own search has per-use fees a spend cap cannot reserve yet/, "capped: refused, its fees never let past the cap");
+  assert.doesNotMatch(said(await blockersOf(env, { ...claude, toolSettings: {} }, {}, { capped: true })), /web_search/, "capped on auto: keyless Exa, nothing to refuse");
 });
