@@ -119,6 +119,9 @@ const allowedEndpoints = {
     ['CHANGELOG.md', 'http://127.0.0.1:7340'],
     // The agentrun.v2/0 contract, vendored unchanged for GET /v2/openapi.json: its servers list the local server's default address.
     ['dist/openapi/agentrun-v2.openapi.json', 'http://127.0.0.1:7340'],
+    // The OpenCode adapter's MCP server listens on the loopback interface, on the free port it chose, and gives OpenCode that address.
+    ['dist/harness-opencode/host/mcp.js',
+      'http://127.0.0.1/mcp'], // key-gate: loopback-rule declares the MCP address of the OpenCode adapter, which listens on 127.0.0.1 only
   ],
 };
 

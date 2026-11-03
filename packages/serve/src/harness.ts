@@ -3,7 +3,7 @@
 // before this field existed and one that names pi are the same revision. Which harnesses this server runs is said in
 // capabilities, and a revision naming one it does not run saves with a warning and is refused at run time.
 
-export const HARNESSES = ["pi", "claude-agent", "codex"] as const;
+export const HARNESSES = ["pi", "claude-agent", "codex", "opencode"] as const;
 export type HarnessId = (typeof HARNESSES)[number];
 export const DEFAULT_HARNESS: HarnessId = "pi";
 

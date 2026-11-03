@@ -61,10 +61,14 @@
     "@earendil-works/chord": ">=1.1.0 <1.4.0",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-durable": ">=1.1.0 <1.4.0",
-    "@parcha/pi-transport": "0.1.0-beta.28"
+    "@parcha/pi-transport": "0.1.0-beta.28",
+    "opencode-ai": "1.19.5"
   },
   "peerDependenciesMeta": {
     "@parcha/pi-transport": {
+      "optional": true
+    },
+    "opencode-ai": {
       "optional": true
     }
   },
@@ -72,7 +76,8 @@
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
     "@earendil-works/pi-durable": "1.1.0",
-    "@parcha/pi-transport": "0.1.0-beta.28"
+    "@parcha/pi-transport": "0.1.0-beta.28",
+    "opencode-ai": "1.19.5"
   },
   "repository": {
     "type": "git",

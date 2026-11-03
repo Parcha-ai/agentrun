@@ -1,9 +1,10 @@
 // The adapter a harness id runs on, and whether this server can run it. With a faux harness module (FAUX_HARNESS_ENV)
 // every id runs on run-adapters' faux harness, scripted by the module's `script(spec)`, as `--faux` runs pi on the
-// faux model. Otherwise codex runs on @parcha/agentrun-harness-codex and claude-agent on @parcha/agentrun-harness-claude, each
-// with serve's own model, price and endpoint, under the run's confinement; a package or a pinned CLI that is missing
-// says so with the one line that installs it: an npm install beside serve, or, when serve runs from npx, the npx line
-// that runs it with the missing package (claude-agent's SDK, Codex).
+// faux model. Otherwise codex runs on @parcha/agentrun-harness-codex, opencode on this server's own OpenCode adapter
+// (src/harness-opencode) and claude-agent on @parcha/agentrun-harness-claude, each with serve's own model, price and endpoint, under the run's
+// confinement; a package or a pinned CLI that is missing says so with the one line that installs it: an npm install beside
+// serve, or, when serve runs from npx, the npx line that runs it with the missing package (claude-agent's SDK, Codex,
+// OpenCode).
 import { readFileSync } from "node:fs";
 import { sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -16,6 +17,9 @@ import type { SkillCheck, SkillFiles } from "./skills.js";
 export const INSTALL: Record<string, string> = {
   "claude-agent": "npm install @parcha/agentrun-harness-claude @anthropic-ai/claude-agent-sdk@0.3.286 zod",
   codex: "npm install @parcha/agentrun-harness-codex @openai/codex@0.164.0",
+  // The server is named first, as the other lines name a package beside it: OpenCode's CLI is an optional peer of the
+  // server's own.
+  opencode: "npm install @parcha/agentrun-serve opencode-ai@1.19.5",
 };
 
 /** This server's version: an npx line names it, so the server it runs is the one that said what was missing. */
@@ -36,6 +40,10 @@ export function installHint(message: string, npmLine: string, spec: string, npx 
 /** For tests: a JSON `{command, args?, env?}` that speaks Codex's app-server protocol in place of Codex. agentrun-harness-codex
  *  takes it only under its own guard (AGENTRUN_CODEX_STANDIN=1, under a test runner). */
 export const CODEX_STANDIN_ENV = "AGENTRUN_SERVE_CODEX_STANDIN";
+
+/** For tests: a JSON `{command, args?, env?}` that speaks `opencode serve`'s HTTP API in place of OpenCode. The OpenCode
+ *  adapter (src/harness-opencode) takes it only under its own guard (AGENTRUN_OPENCODE_STANDIN=1, under a test runner). */
+export const OPENCODE_STANDIN_ENV = "AGENTRUN_SERVE_OPENCODE_STANDIN";
 
 /** The event of a harness's own lines in the run's log (its model proxy's refusals and failures): a failed run's message
  *  is never taken from one (runs.ts lastLogLine). */
@@ -126,10 +134,10 @@ export function gatewayBase(setting: string, value: string): string {
 
 /** Where Codex's model requests go: OpenAI with its key, or a gateway at AGENT_MODEL_BASE_URL's base (gatewayBase: the
  *  proxy sends the Responses API to <base>/v1/responses). */
-export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origin: string; credential: () => string } {
+export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef, harness = "codex"): { origin: string; credential: () => string } {
   if (env.AGENT_MODEL_BASE_URL) return { origin: gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL), credential: () => env.AGENT_MODEL_API_KEY || "none" };
-  if (model.provider !== "openai") throw new HarnessUnavailable(`codex runs OpenAI models; the run's model is ${model.provider}/${model.modelId}.`);
-  if (!env.OPENAI_API_KEY) throw new HarnessUnavailable("codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.");
+  if (model.provider !== "openai") throw new HarnessUnavailable(`${harness} runs OpenAI models; the run's model is ${model.provider}/${model.modelId}.`);
+  if (!env.OPENAI_API_KEY) throw new HarnessUnavailable(`${harness} needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.`);
   return { origin: "https://api.openai.com", credential: () => env.OPENAI_API_KEY ?? "" };
 }
 
@@ -220,8 +228,9 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   return adapter;
 }
 
-/** The run's thinking level as the harness takes it: serve's levels run to max; Codex's reasoning efforts stop at xhigh. */
-export const thinkingFor = (harness: string, level: string): SessionSpec["thinking"] => (harness === "codex" && level === "max" ? "xhigh" : level) as SessionSpec["thinking"];
+/** The run's thinking level as the harness takes it: serve's levels run to max; Codex's and OpenCode's reasoning efforts
+ *  (OpenAI's) stop at xhigh. */
+export const thinkingFor = (harness: string, level: string): SessionSpec["thinking"] => ((harness === "codex" || harness === "opencode") && level === "max" ? "xhigh" : level) as SessionSpec["thinking"];
 
 /** The bare id Codex takes: serve's "openai/<id>" without its provider. */
 
@@ -245,6 +254,28 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
   return codex.codexAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model), price: priceOf(needs), log: harnessLog("codex", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
 }
 
+/** opencode's adapter, from `load` (the installed package; a test gives its own). Its model goes where codex's does: serve's
+ *  gateway (AGENT_MODEL_BASE_URL) or OpenAI, on the Responses API, through the adapter's proxy. */
+export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<typeof import("./harness-opencode/index.js")> = () => import("./harness-opencode/index.js"), npx = startedByNpx()): Promise<AgentAdapter> {
+  const opencode = await load().catch(() => {
+    throw new HarnessUnavailable(`opencode is not installed here: ${INSTALL.opencode}`);
+  });
+  const standIn = env[OPENCODE_STANDIN_ENV] ? (JSON.parse(env[OPENCODE_STANDIN_ENV]) as { command: string; args?: string[]; env?: Record<string, string> }) : undefined;
+  if (!standIn) {
+    try {
+      opencode.verifyOpenCode();
+    } catch (error) {
+      // serve's own line, which installs the adapter with its pinned CLI, in place of the adapter's (the CLI alone).
+      const message = (error as Error).message.replace(opencode.OPENCODE_INSTALL, INSTALL.opencode);
+      const said = message.includes("npm install") ? message : `${message} (${INSTALL.opencode})`;
+      throw new HarnessUnavailable(installHint(said, INSTALL.opencode, `opencode-ai@${opencode.OPENCODE_VERSION}`, npx));
+    }
+  }
+  // TODO(#1462): pass `dateLine: environmentLine` (src/environment.ts) once #1462 merges, so OpenCode's turns carry the
+  // shared date line in their system prompt as pi's do; the adapter already sends it as each turn's `system`.
+  return opencode.openCodeAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model, "opencode"), price: priceOf(needs), log: harnessLog("opencode", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
+}
+
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
   const faux = env[FAUX_HARNESS_ENV];
   if (faux) {
@@ -253,6 +284,7 @@ export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs:
     return fauxAdapter({ script: module.script });
   }
   if (harness === "codex") return codexOf(env, needs);
+  if (harness === "opencode") return opencodeOf(env, needs);
   if (harness === "claude-agent") return claudeOf(env, needs);
   throw new HarnessUnavailable(`This server does not run ${harness} yet.`);
 }
