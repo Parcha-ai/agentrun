@@ -16,6 +16,7 @@ import { monidTool } from "./monid.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 import { parallelOf, WEB_FETCH_TOOL, webFetch, webFetchTool } from "./web-fetch.js";
+import { WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }`, in place of
@@ -196,8 +197,20 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     },
     effect: async (args, run) => webFetch(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), parallel: parallelOf(run.env), signal: run.signal }),
   },
+  // web_search: Exa's keyless endpoint, on pi (web-search.ts). Only the query leaves the server.
+  [WEB_SEARCH_TOOL]: {
+    summary: 'Search the web through Exa\'s keyless endpoint (mcp.exa.ai, no key; only the query leaves this server), {query, n?} -> {provider: "exa-keyless", query, results: [{url, title, snippet, published?}]}, or {error} (a 429 when Exa\'s free rate limit is reached).',
+    needs: [],
+    nodes: true,
+    bind: async (host) => {
+      const tool = webSearchTool(host.env) as unknown as ToolRegistration;
+      const extension = defineExtension({ name: "web-search", tools: [tool] });
+      host.install(extension);
+      return { tools: [tool], extensions: [extension] };
+    },
+  },
   browser: browserTool,
-  // monid's catalog on one key (monid.ts): pi binds each under its wire name, `monid_discover` and the rest.
+  // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.
   "monid.discover": monidTool("discover"),
   "monid.inspect": monidTool("inspect"),
   "monid.run": monidTool("run"),

@@ -109,7 +109,7 @@ test("a cancelled run's request waits for the cancel to reach the run and ends a
   const { marks, run } = store();
   let called = 0;
   const models = { streamSimple: () => (called++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }), completeSimple: async () => (called++, {}) };
-  const { models: marked, open } = await markRequests(models, () => true, { refusalWaitMs: 30_000 });
+  const { models: marked, open } = await markRequests(models, () => true);
   open(run);
   /** A streamed request's events and its message. */
   const streamed = async (signal) => {
@@ -134,12 +134,20 @@ test("a cancelled run's request waits for the cancel to reach the run and ends a
   assert.deepEqual(marks, [], "nothing to count or skip");
 });
 
-test("a cancelled run's request that no abort reaches ends, after a bounded wait, as the refusal the timeline skips", async () => {
+test("a cancelled run's request that no abort reaches ends, after a bounded wait, as the refusal the timeline skips", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const { marks, run } = store();
-  const { models: marked, open } = await markRequests({ streamSimple: () => ({}) }, () => true, { refusalWaitMs: 20 });
+  const { models: marked, open } = await markRequests({ streamSimple: () => ({}) }, () => true);
   open(run);
-  const result = await Promise.race([marked.streamSimple(summaryModel, { messages: [] }, { signal: new AbortController().signal }).result(), new Promise((resolve) => setTimeout(() => resolve("still waiting"), 40))]);
-  assert.notEqual(result, "still waiting", "it ends within twice its wait");
+  let result;
+  void marked.streamSimple(summaryModel, { messages: [] }, { signal: new AbortController().signal }).result().then((r) => (result = r));
+  const settled = () => new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(59_999);
+  await settled();
+  assert.equal(result, undefined, "it waits a minute for the cancel's abort");
+  t.mock.timers.tick(1);
+  await settled();
+  assert.notEqual(result, undefined, "and then ends");
   assert.equal(result.stopReason, "error");
   assert.match(result.errorMessage, /cancelled/);
   assert.deepEqual(marks, [{ kind: REQUEST_REFUSED, data: {} }]);
@@ -148,7 +156,7 @@ test("a cancelled run's request that no abort reaches ends, after a bounded wait
 test("a cancelled run's request whose abort came before it was refused ends aborted at once: nothing to wait for, nothing sent", async () => {
   const { marks, run } = store();
   let called = 0;
-  const { models: marked, open } = await markRequests({ streamSimple: () => (called++, {}), completeSimple: async () => (called++, {}) }, () => true, { refusalWaitMs: 30_000 });
+  const { models: marked, open } = await markRequests({ streamSimple: () => (called++, {}), completeSimple: async () => (called++, {}) }, () => true);
   open(run);
   const stop = new AbortController();
   stop.abort(new Error("cancelled"));
@@ -169,7 +177,7 @@ test("a run cancelled while its request's start mark waits sends no model reques
   const { marks, run } = store();
   let called = 0;
   let cancelled = false;
-  const { models, open } = await markRequests({ streamSimple: () => (called++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }) }, () => cancelled, { refusalWaitMs: 20 });
+  const { models, open } = await markRequests({ streamSimple: () => (called++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }) }, () => cancelled);
   const stream = models.streamSimple(summaryModel, { messages: [] }, {});
   cancelled = true;
   open(run);
@@ -188,7 +196,7 @@ test("a run cancelled while its summary's start mark waits sends no summary requ
   const { marks, run } = store();
   let called = 0;
   let cancelled = false;
-  const { models, open } = await markRequests({ completeSimple: async () => (called++, {}) }, () => cancelled, { refusalWaitMs: 20 });
+  const { models, open } = await markRequests({ completeSimple: async () => (called++, {}) }, () => cancelled);
   const summary = models.completeSimple(summaryModel, { messages: [] }, {});
   cancelled = true;
   open(run);

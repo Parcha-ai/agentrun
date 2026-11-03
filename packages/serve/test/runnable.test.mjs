@@ -23,7 +23,7 @@ const nothingSaved = async (api, id) => assert.equal((await api("GET", `/agents/
 
 test("a tool this host does not bind refuses the save, 422 at each tools[i] that names one", async (t) => {
   const { api } = await serve(t);
-  const refused = await api("POST", "/agents", agent("shell", { tools: ["read", "bash", "web_search"] }));
+  const refused = await api("POST", "/agents", agent("shell", { tools: ["read", "bash", "web_crawl"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "input_invalid");
   assert.deepEqual(fields(refused), [["definition.tools[1]", "not_an_option"], ["definition.tools[2]", "not_an_option"]]);

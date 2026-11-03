@@ -3,7 +3,7 @@
 // and no pipe any of them holds has a secret left in it. A run's process still gets its own secrets, over its pipe.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -13,14 +13,16 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { BOX_KEYS } from "../dist/boxes.js";
+import { ToolKeys } from "../dist/tool-keys.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, client, FAUX, flowAgent, follow, scratch } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, scratch } from "./support.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const CUSTODY = new URL("./fixtures/faux-custody.mjs", import.meta.url).pathname;
+const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
@@ -32,6 +34,12 @@ const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", 
 /** The decision keys: held by the server like the rest, and handed to a workflow run's process only on its decision
  *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
 const DECISION_KEYS = ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"];
+/** The tool keys on the pipe: a run's process gets one only when its revision names a tool the key unlocks (the monid
+ *  tools, `browser`). Browserbase's project id is a field of its key, and goes with it. */
+const BROWSERBASE = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"];
+const TOOL_KEYS = ["MONID_API_KEY", ...BROWSERBASE];
+/** The model keys: every run's process gets each, whatever its tools. */
+const MODEL_KEYS = ["AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"];
 const READ = [...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY", "OPENROUTER_API_KEY", "MONID_API_KEY", ...DECISION_KEYS];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const digest = (value) => createHash("sha256").update(value).digest("hex").slice(0, 16);
@@ -135,15 +143,9 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
     }
     await rm(dir, { recursive: true, force: true });
   });
-  let out = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  child.stderr.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_BASE_URL=(\S+)/.test(out); i++) {
-    assert.ok(i < 300, `the server started: ${out}`);
-    await sleep(50);
-  }
+  const out = await printed(child, /^AGENTRUN_BASE_URL=\S+$/m);
   assert.deepEqual(readdirSync(tmp), [], "the launcher's FIFO and its directory are gone");
-  return { root: child.pid, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], env.AGENTRUN_TOKEN) };
+  return { root: child.pid, child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], env.AGENTRUN_TOKEN), output: () => out };
 }
 
 /** `root` and every process under it (a harness's CLI may start a session of its own, so not by session). */
@@ -164,20 +166,22 @@ function treeOf(root) {
   return out;
 }
 
-/** No process of this user holds `canary` in its environment or command line; none under `root` (the launcher's, now
- *  the server's) holds the launcher's pipe or a pipe with `canary` unread. Answers those processes' command lines. */
-function noSecretAnywhere(root, canary) {
+/** No process of this user holds a canary in its environment or command line; none under `root` (the launcher's, now
+ *  the server's) holds the launcher's pipe or a pipe with a canary unread. Answers those processes' command lines. */
+function noSecretAnywhere(root, ...canaries) {
   const all = processes();
   const tree = treeOf(root);
   const ours = all.filter((p) => tree.has(p.pid));
   for (const p of all) {
-    assert.ok(!p.environ.includes(canary), `pid ${p.pid}'s environment holds a secret: ${p.cmdline.toString().replaceAll("\0", " ").slice(0, 120)}`);
-    assert.ok(!p.cmdline.includes(canary), `pid ${p.pid}'s command line holds a secret`);
+    for (const canary of canaries) {
+      assert.ok(!p.environ.includes(canary), `pid ${p.pid}'s environment holds a secret: ${p.cmdline.toString().replaceAll("\0", " ").slice(0, 120)}`);
+      assert.ok(!p.cmdline.includes(canary), `pid ${p.pid}'s command line holds a secret`);
+    }
   }
   for (const p of ours) {
     for (const { fd, target, unread } of descriptors(p.pid)) {
       assert.ok(!/agentrun-serve\.[^/]+\/secrets/.test(target), `pid ${p.pid} still holds the launcher's pipe on fd ${fd}`);
-      assert.ok(!unread.includes(canary), `pid ${p.pid}'s fd ${fd} (${target}) has a secret unread`);
+      for (const canary of canaries) assert.ok(!unread.includes(canary), `pid ${p.pid}'s fd ${fd} (${target}) has a secret unread`);
     }
   }
   return ours.map((p) => p.cmdline.toString().replaceAll("\0", " "));
@@ -190,12 +194,12 @@ test("started by its launcher, no process of its user holds a secret in its envi
   assert.ok(read(`/proc/${root}/environ`).toString().split("\0").includes("LC_ALL=C.UTF-8"), "the server keeps the caller's LC_ALL");
   assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
 
-  // A run's process says what it was handed: each secret but the server's own and the decision keys, none in its
-  // environment, its pipe closed.
+  // A run's process says what it was handed: each secret but the server's own, the decision keys and (its revision
+  // naming no tool) the tool keys, none in its environment, its pipe closed.
   const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
   await follow(api, run.run_id, ["completed"]);
   const report = JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer);
-  for (const name of SECRET_NAMES) assert.equal(report.handed[name], [...SERVER_ONLY, ...DECISION_KEYS].includes(name) ? "none" : digest(secrets[name]), `${name} handed to the run's process`);
+  for (const name of SECRET_NAMES) assert.equal(report.handed[name], [...SERVER_ONLY, ...DECISION_KEYS, ...TOOL_KEYS].includes(name) ? "none" : digest(secrets[name]), `${name} handed to the run's process`);
   assert.deepEqual(report.inEnv, [], "no secret in the run's process's environment, so none in a child's");
   assert.deepEqual(report.pipe, { fd: 3, closed: true }, "the run's process read its pipe and closed it");
 
@@ -213,6 +217,181 @@ test("started by its launcher, no process of its user holds a secret in its envi
   const runArgv = seen.find((cmdline) => cmdline.includes(" --app "))?.split(" ") ?? [];
   const preload = runArgv.indexOf("--import");
   assert.ok(preload > 0 && runArgv[preload + 1]?.endsWith("/dist/secrets.js") && runArgv.findIndex((arg) => arg.includes("pi-durable-disk")) > preload + 1, `the run's process preloads secrets.js before its CLI: ${runArgv.join(" ").slice(0, 200)}`);
+});
+
+/** The launcher's arguments for a server whose data directory holds `saved` (by key id, its fields) as tool keys already,
+ *  sealed under `key`: written as the server writes them, before it starts. */
+const savedBefore = (key, saved) => (data) => {
+  mkdirSync(data, { recursive: true, mode: 0o700 });
+  const keys = new ToolKeys(data, { AGENTRUN_SEAL_KEY: key }, () => undefined);
+  for (const [id, values] of Object.entries(saved)) keys.save(id, { values });
+  return ["--data", data, "--port", "0", "--faux", CUSTODY];
+};
+
+test("under its launcher, a tool key saved through the settings API reaches the next run's process over its pipe, never an environment; the launcher's value wins for a name it holds; the seal key reaches no run", { timeout: 120_000 }, async (t) => {
+  const canary = `not-a-secret-saved-${process.pid}-${Date.now()}`;
+  const seal = randomBytes(32).toString("base64");
+  const value = (name, where) => `${canary}-${where}-${name}`;
+  // BROWSERBASE_API_KEY saved before the start and held by the launcher too: the launcher's is the one a run gets.
+  const { root, api } = await launched(t, { AGENTRUN_TOKEN: value("AGENTRUN_TOKEN", "launcher"), AGENTRUN_SEAL_KEY: seal, BROWSERBASE_API_KEY: value("BROWSERBASE_API_KEY", "launcher") }, savedBefore(seal, { browserbase: { BROWSERBASE_API_KEY: value("BROWSERBASE_API_KEY", "saved") } }));
+  // Its tools name what each key unlocks: a run gets a tool key only then.
+  assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: ["monid.run", "browser"] } })).status, 201);
+  const saved = { MONID_API_KEY: value("MONID_API_KEY", "saved"), BROWSERBASE_PROJECT_ID: value("BROWSERBASE_PROJECT_ID", "saved") };
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: saved.MONID_API_KEY } })).status, 204);
+  assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: saved.BROWSERBASE_PROJECT_ID } })).status, 204);
+  const fields = Object.fromEntries((await api("GET", "/settings/tool-keys")).body.keys.flatMap((key) => key.fields.map((field) => [field.name, field.source])));
+  assert.deepEqual(fields, { PARALLEL_API_KEY: null, MONID_API_KEY: "stored", BROWSERBASE_API_KEY: "server", BROWSERBASE_PROJECT_ID: "stored", TYPESAFE_API_KEY: null }, "the launcher's is the server's; the saved ones are stored, never the server's");
+  const handed = async () => {
+    const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
+    await follow(api, run.run_id, ["completed"]);
+    return { id: run.run_id, ...JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer) };
+  };
+  const report = await handed();
+  assert.deepEqual(Object.fromEntries(["MONID_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN"].map((name) => [name, report.handed[name]])), {
+    MONID_API_KEY: digest(saved.MONID_API_KEY),
+    BROWSERBASE_PROJECT_ID: digest(saved.BROWSERBASE_PROJECT_ID),
+    BROWSERBASE_API_KEY: digest(value("BROWSERBASE_API_KEY", "launcher")),
+    AGENTRUN_SEAL_KEY: "none",
+    AGENTRUN_TOKEN: "none",
+  }, "saved after the start and handed at the run's launch; the launcher's wins; the server's own never");
+  assert.deepEqual(report.inEnv, [], "none in the run's process's environment");
+  assert.deepEqual(report.pipe, { fd: 3, closed: true });
+  // Deleted, the next run that names monid is refused for it, launching no process.
+  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
+  const refused = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
+  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.missing], [409, "agent_not_runnable", { "monid.run": ["MONID_API_KEY"] }]);
+
+  // The first run's process up again, holding its turn, while every process of this user is read once (a pipe's unread
+  // bytes are taken as they are read): no saved value, and no seal key.
+  assert.equal((await api("POST", `/runs/${report.id}/messages`, { content: "Hold." })).status, 202);
+  for (let i = 0; (await api("GET", `/runs/${report.id}`)).body.state !== "working"; i++) {
+    assert.ok(i < 200, "the held turn works");
+    await sleep(50);
+  }
+  await sleep(500);
+  const seen = noSecretAnywhere(root, canary, seal, Buffer.from(seal, "base64").toString("hex"));
+  assert.ok(seen.some((cmdline) => cmdline.includes(" --app ")), "the run's process is among those read");
+});
+
+test("under its launcher, a Parallel key saved through the settings API reaches a workflow run's decision descriptor: refused before it, answered on it after, with no restart and in no process's environment", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const calls = join(dir, "parallel-calls.jsonl");
+  const token = `not-a-secret-token-${process.pid}-${"t".repeat(24)}`;
+  const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
+const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
+const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(FAUX)}, fauxParallel: ${JSON.stringify(FAUX_PARALLEL)}, drainTimeout: "5s" });
+process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
+  // No Parallel key anywhere the launcher could take one from: the saved one is the only one.
+  const held = process.env.PARALLEL_API_KEY;
+  delete process.env.PARALLEL_API_KEY;
+  t.after(() => held !== undefined && (process.env.PARALLEL_API_KEY = held));
+  const { root, api } = await launched(t, { AGENTRUN_TOKEN: token, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
+  const coi = {
+    v: 2, name: "coi-check",
+    schemas: {
+      In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+      Coi: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is \`doc\` a certificate of incorporation?" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Coi", path: "coi" },
+    root: { node: "chain", steps: [{ node: "judge", label: "coi-parallel", state: { doc: "{question}" }, out: "Coi", as: "coi", provider: "parallel" }] },
+  };
+  const parallel = async () => (await api("GET", "/capabilities")).body.workflows.decisions.providers.find((p) => p.id === "parallel").available;
+  const start = () => api("POST", "/agents/coi/runs", { input: { question: "State of Delaware. Certificate of Incorporation of Example Widgets, Inc." } });
+  assert.equal((await api("POST", "/agents", flowAgent("coi", coi))).status, 201);
+  assert.equal(await parallel(), false);
+  const refused = await start();
+  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.decisions], [409, "agent_not_runnable", { parallel: { reason: "not_set_up_here", needs: ["PARALLEL_API_KEY"] } }]);
+
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: PARALLEL_CANARY } })).status, 204);
+  assert.equal(await parallel(), true, "no restart");
+  const { body: started } = await start();
+  const { last } = await follow(api, started.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
+  assert.equal(last.status, "completed", JSON.stringify((await api("GET", `/runs/${started.run_id}`)).body.error));
+  const sent = readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(sent.map((call) => call.authorized), [true], "Parallel answered on the saved key, handed on the decision descriptor");
+  for (const p of processes().filter((p) => treeOf(root).has(p.pid))) {
+    assert.ok(!p.environ.includes(PARALLEL_CANARY), `pid ${p.pid}'s environment holds the key`);
+    assert.ok(!p.cmdline.includes(PARALLEL_CANARY), `pid ${p.pid}'s command line holds the key`);
+  }
+});
+
+test("under its launcher, a run's process holds a tool key only when its revision names a tool the key unlocks, and the same again after a restart; the model keys reach every run", { timeout: 120_000 }, async (t) => {
+  const { secrets } = canaries();
+  // The server as the launcher's COMMAND, with the tests' fake browser; SIGUSR2 closes it and starts it again on the
+  // same data, so the new server reads each run, and its revision, from the store.
+  const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
+const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
+const options = { data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(CUSTODY)}, fauxBrowser: ${JSON.stringify(FAUX_BROWSER)}, drainTimeout: "5s" };
+let server = await startServe(options);
+process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");
+process.on("SIGUSR2", async () => {
+  await server.close();
+  server = await startServe(options);
+  process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");
+});`;
+  const { root, child, api } = await launched(t, secrets, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
+  // Each agent's tools, and the tool keys its runs get.
+  const agents = { monid: [["monid.run"], ["MONID_API_KEY"]], browse: [["browser"], BROWSERBASE], reader: [["read"], []] };
+  const expected = (unlocked) => Object.fromEntries(SECRET_NAMES.map((name) => [name, [...SERVER_ONLY, ...DECISION_KEYS].includes(name) || (TOOL_KEYS.includes(name) && !unlocked.includes(name)) ? "none" : digest(secrets[name])]));
+  const report = async (call, runId, after) => {
+    await follow(call, runId, ["completed"], { after, deadlineMs: 60_000 });
+    return JSON.parse((await call("GET", `/runs/${runId}`)).body.result.final_answer).handed;
+  };
+  const runs = {};
+  for (const [id, [tools, unlocked]] of Object.entries(agents)) {
+    assert.equal((await api("POST", "/agents", agent(id, { tools }))).status, 201);
+    const { status, body } = await api("POST", `/agents/${id}/runs`, { input: { content: "Report." } });
+    assert.equal(status, 202, JSON.stringify(body));
+    runs[id] = { runId: body.run_id, handed: await report(api, body.run_id) };
+    assert.deepEqual(runs[id].handed, expected(unlocked), `a run of ${id} (${tools.join(", ")}) holds ${unlocked.join(", ") || "no tool key"}, and every model key`);
+    for (const name of MODEL_KEYS) assert.equal(runs[id].handed[name], digest(secrets[name]), `${name} reaches the run of ${id}`);
+  }
+
+  // A restart: the new server reads each run from the store, and a follow-up opens it again in a new process, which
+  // gets what its first did.
+  // Its ready line again, or its exit: never a clock (support.mjs printed). Listened for before the signal.
+  const restarted = printed(child, /^AGENTRUN_BASE_URL=\S+$/m);
+  process.kill(root, "SIGUSR2");
+  const again = client(/AGENTRUN_BASE_URL=(\S+)/.exec(await restarted)[1], secrets.AGENTRUN_TOKEN);
+  for (const [id, { runId, handed }] of Object.entries(runs)) {
+    const sent = await again("POST", `/runs/${runId}/messages`, { content: "Report." });
+    assert.equal(sent.status, 202, JSON.stringify(sent.body));
+    assert.deepEqual(await report(again, runId), handed, `the run of ${id}, opened again after the restart, holds the same secrets`);
+  }
+});
+
+test("secretsFor: a tool key's fields only for a revision naming a tool its row unlocks, the tools read as the run's process binds them; every other secret for each", async () => {
+  const { RUN_SECRETS, secretsFor } = await import("../dist/runs.js");
+  const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-01T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
+  const agentic = (tools) => revision("agentic", { instructions: "Answer.", tools });
+  const workflow = (flow, tools = []) => revision("workflow", { workflow: flow, tools });
+  const without = (...names) => RUN_SECRETS.filter((name) => !names.includes(name));
+  for (const name of [...TOOL_KEYS, ...MODEL_KEYS]) assert.ok(RUN_SECRETS.includes(name), `${name} is among a run's secrets`);
+
+  assert.deepEqual(await secretsFor(agentic(["monid.run"])), without(...BROWSERBASE));
+  assert.deepEqual(await secretsFor(agentic(["read", "browser"])), without("MONID_API_KEY"));
+  assert.deepEqual(await secretsFor(agentic(["monid.discover", "browser"])), RUN_SECRETS);
+  assert.deepEqual(await secretsFor(agentic(["read", "fetch_page", "ask_person"])), without(...TOOL_KEYS));
+  assert.deepEqual(await secretsFor(agentic([])), without(...TOOL_KEYS));
+  // Only a `tool` row's fields are scoped: a key of another kind (a model's) reaches a run that names no tool.
+  const { TOOL_KEYS: ROWS } = await import("../dist/tool-keys.js");
+  assert.deepEqual(ROWS.map((row) => row.kind), ["tool", "tool", "tool", "tool"]);
+  const rows = [...ROWS, { id: "openai", kind: "model", fields: ["OPENAI_API_KEY"], unlocks: [] }];
+  assert.deepEqual(await secretsFor(agentic([]), rows), without(...TOOL_KEYS), "OPENAI_API_KEY with them, the tool keys still not");
+  assert.deepEqual(await secretsFor(agentic([]), rows.map((row) => (row.id === "openai" ? { ...row, kind: "tool" } : row))), without(...TOOL_KEYS, "OPENAI_API_KEY"), "the same row as a tool key is scoped");
+
+  // A workflow: the tools its model nodes name and its call nodes run, wherever the node is, never a name only its
+  // definition lists, nor data shaped like a node.
+  const browsing = answerFlow();
+  browsing.root.steps[0].tools = ["browser"];
+  assert.deepEqual(await secretsFor(workflow(browsing, ["browser", "monid.run"])), without("MONID_API_KEY"));
+  const calling = answerFlow();
+  calling.root.steps.unshift({ node: "map", label: "each", itemsPath: "question", as: "found", resultPath: "found", maxConcurrency: 1, body: { node: "call", label: "find", via: "tool", tool: "monid.run", args: { q: "{item}" }, out: "Answer", as: "answer", deadline_s: 20 } });
+  assert.deepEqual(await secretsFor(workflow(calling)), without(...BROWSERBASE));
+  const shaped = answerFlow();
+  shaped.root.steps[0].state = { example: { node: "extract", tools: ["browser"] } };
+  assert.deepEqual(await secretsFor(workflow(shaped, ["browser"])), without(...TOOL_KEYS));
 });
 
 test("under its launcher, a workflow run's judges get the TypeSafe and Parallel keys the server holds, and no process holds either in its environment or command line", { timeout: 120_000 }, async (t) => {
@@ -388,11 +567,12 @@ test("a secret is handed over byte for byte, never read as shell: one full of sh
   const token = `not-a-secret-${"token"}-${process.pid}-${"t".repeat(24)}`;
   // Command substitution, backticks, a separator, quotes and spaces, then enough to come near the 4096-byte limit.
   const hostile = `not-a-secret-$(touch ${join(dir, "PWNED")})\`touch ${join(dir, "PWNED2")}\`;x 'y "z ${"k".repeat(3_600)}`;
-  const { api } = await launched(t, { AGENTRUN_TOKEN: token, BROWSERBASE_API_KEY: hostile });
+  // A model key, which every run's process gets whatever its tools.
+  const { api } = await launched(t, { AGENTRUN_TOKEN: token, AGENT_MODEL_API_KEY: hostile });
   assert.equal((await api("POST", "/agents", { definition: { id: "bytes", version: 1, name: "bytes", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
   const { body: run } = await api("POST", "/agents/bytes/runs", { input: { content: "Report." } });
   await follow(api, run.run_id, ["completed"]);
   const report = JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer);
-  assert.equal(report.handed.BROWSERBASE_API_KEY, digest(hostile), "the run got it byte for byte");
+  assert.equal(report.handed.AGENT_MODEL_API_KEY, digest(hostile), "the run got it byte for byte");
   assert.deepEqual(readdirSync(dir).filter((name) => name.startsWith("PWNED")), [], "nothing in it ran");
 });
