@@ -2,6 +2,7 @@ import { Brain, ChevronRight, CircleAlert, CircleDollarSign, FileText, Flag, Loa
 import { useState } from "react";
 import { Chip } from "@/components/ui/chip";
 import { clock } from "@/lib/format";
+import { type Step, steps } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import type { TimelineRow } from "@/lib/v2";
 
@@ -17,15 +18,20 @@ const title = (row: TimelineRow) => {
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
   }
+  // An answer's first line as text: its markdown (a heading's #, bold's **, code's `) is not shown as typed.
+  if (row.kind === "final_answer") return text.replace(/^\s*(#{1,6}\s+|>\s+|[-*+]\s+)/, "").replace(/(\*\*|__|`)/g, "");
   return text;
 };
+/** How long a tool took: "27 ms", or "3.5 s" from a second on. */
+const took = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
 const label = (row: TimelineRow) =>
   ({ user_message: "You", thinking: "Thinking", tool_use: row.tool_name ?? "Tool", tool_result: row.tool_name ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text" })[row.kind] ?? row.kind;
 
-function Row({ row, last }: { row: TimelineRow; last: boolean }) {
+function Row({ step, last }: { step: Step; last: boolean }) {
+  const { row } = step;
   const [open, setOpen] = useState(false);
   const Icon = ICON[row.kind] ?? Flag;
-  const detail = row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text;
+  const detail = step.detail ?? (row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text);
   const failed = row.tool_status === "failed" || row.kind === "error";
   return (
     <li className="relative flex gap-3">
@@ -43,8 +49,11 @@ function Row({ row, last }: { row: TimelineRow; last: boolean }) {
               {row.kind === "waiting" && <Chip tone="warning">Input required</Chip>}
               {failed && <Chip tone="error">Error</Chip>}
               {row.agent_label && <Chip>{row.agent_label}</Chip>}
+              {step.ms !== undefined && <span className="font-mono text-[11px]">{took(step.ms)}</span>}
+              {step.times && <span className="font-mono text-[11px]">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
             <span className="mt-0.5 block break-words text-[15px] leading-snug">{title(row)}</span>
+            {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
           </span>
           <span className="caps shrink-0 pt-0.5 text-[11px] text-muted-foreground">{clock(row.timestamp)}</span>
           {detail && <ChevronRight className={cn("mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden />}
@@ -55,11 +64,13 @@ function Row({ row, last }: { row: TimelineRow; last: boolean }) {
   );
 }
 
-/** The run's live timeline as a step list: newest last, older steps folded behind "N earlier steps". */
+/** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, a question once, repeated failures
+ *  once): newest last, older steps folded behind "N earlier steps". */
 export function Timeline({ rows, live, fold = 6 }: { rows: TimelineRow[]; live: boolean; fold?: number }) {
   const [all, setAll] = useState(false);
-  const hidden = all ? 0 : Math.max(0, rows.length - fold);
-  const shown = rows.slice(hidden);
+  const told = steps(rows);
+  const hidden = all ? 0 : Math.max(0, told.length - fold);
+  const shown = told.slice(hidden);
   if (!rows.length) return <Working title={live ? "The run is starting" : "Nothing on the timeline"} note={live ? "Steps appear here as the agent works." : "This run recorded no steps."} spin={live} />;
   return (
     <div>
@@ -68,7 +79,7 @@ export function Timeline({ rows, live, fold = 6 }: { rows: TimelineRow[]; live: 
           <ChevronRight className="size-3" aria-hidden /> {hidden} earlier steps
         </button>
       )}
-      <ol>{shown.map((row, i) => <Row key={row.id} row={row} last={i === shown.length - 1 && !live} />)}</ol>
+      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} />)}</ol>
       {live && <Working title="Working" note="Steps appear as the agent takes them." spin />}
     </div>
   );

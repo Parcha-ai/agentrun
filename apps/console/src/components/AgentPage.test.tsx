@@ -166,14 +166,16 @@ describe("AgentPage", () => {
 
   it("follows a running latest run: its timeline grows as the agent works, and its status and row move when it ends", async () => {
     const { done, release, latest, row, id, ...page } = await splitRun();
-    expect(latest().querySelectorAll("ol > li")).toHaveLength(3);
+    // Three rows, two steps: the tool's call and its result are one step.
+    expect(latest().querySelectorAll("ol > li")).toHaveLength(2);
     expect(latest().textContent).toContain("Working");
     expect(latest().textContent).toContain("Steps appear as the agent takes them.");
     expect(row().textContent).toContain("Working");
     release();
     await until(() => latest().textContent!.includes("Completed"));
-    // Seven steps now: the newest six shown, the first folded, as on the run page.
-    expect(latest().textContent).toContain("1 earlier steps");
+    // Seven rows, five steps now (each tool once, the cost so far at the end): all shown, as on the run page.
+    expect(latest().querySelectorAll("ol > li")).toHaveLength(5);
+    expect(latest().textContent).not.toContain("earlier steps");
     expect(latest().textContent).toContain(done.page.rows[6].summary);
     expect(latest().textContent).not.toContain("Steps appear as the agent takes them.");
     expect(row().textContent).toContain("Completed");

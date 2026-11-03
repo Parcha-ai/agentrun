@@ -50,6 +50,10 @@ export type TimelineRow = {
   timestamp: string;
   created_at?: string;
   tool_name: string | null;
+  /** The call a tool row belongs to: a call and its result share it. */
+  tool_use_id?: string | null;
+  /** A phase row's file: the one a step saved. */
+  path?: string | null;
   tool_status?: "success" | "failed" | null;
   tool_input_preview?: string | null;
   tool_result_preview?: string | null;
