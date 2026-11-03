@@ -46,7 +46,7 @@ import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, t
 import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
-import { markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
+import { markRunning, markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -447,6 +447,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // server's outbox.
   const stops: Array<() => Promise<void>> = [];
   try {
+    // The server's record, which its stop rewrites in place (server-lock.ts): made now, so the stop makes nothing.
+    markRunning(data);
     return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
@@ -1421,12 +1423,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
     async close() {
-      // First, the mark a start on this data root waits on while the runs' processes drain and exit (server-lock.ts): this
-      // close's bound, with time for the deliveries and the listener after them. One not written leaves a start refused.
+      // First, the record a start on this data root waits on while the runs' processes drain and exit (server-lock.ts),
+      // rewritten in place: this close's bound, with time for the deliveries and the listener after them. One not
+      // written leaves a start refused.
       const { runs: busy, boundMs } = runs.stopping();
-      let unmark = () => {};
       try {
-        unmark = markStopping(data, Date.now() + boundMs + STOP_MARGIN_MS);
+        markStopping(data, Date.now() + boundMs + STOP_MARGIN_MS);
       } catch (error) {
         const fields = { reason: (error as NodeJS.ErrnoException).code ?? (error as Error).message };
         void (log ? log(logLine("stopping_mark_unwritten", fields)) : process.stderr.write(`agentrun-serve: ${logLine("stopping_mark_unwritten", fields)}\n`));
@@ -1443,10 +1445,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       await webhooks.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();
-      // A mark left behind is no stop once its time has passed (server-lock.ts), so a failed removal never holds the lock.
-      try {
-        unmark();
-      } catch {}
+      // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
       lock.release();
     },
   };

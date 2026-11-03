@@ -14,7 +14,7 @@ import { ServerLockHeldError, startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, scratch } from "./support.mjs";
 
 const alive = processAlive;
-const STOPPING = "server.stopping";
+const STATE = "server.state";
 const refusal = (data) => `another server holds this data root (${join(data, "server.lock")}): stop it, or start this one with another --data`;
 
 /** Until `check()` holds, for at most `ms`, read every 50 ms: a state the test waits on, named `what`. */
@@ -54,8 +54,8 @@ test("a start on a data root whose server is stopping waits for that stop, says 
   const data = join(await scratch(t), "agents");
   const { close, runId, pid, signal, said: stopSaid } = await midTurn(t, data);
   const closing = close();
-  // The mark goes in as the close begins, before it waits on anything: read here, checked once the start is through.
-  const mark = existsSync(join(data, STOPPING)) ? JSON.parse(readFileSync(join(data, STOPPING), "utf8")) : undefined;
+  // The record says stopping as the close begins, before it waits on anything: read here, checked once the start is through.
+  const mark = existsSync(join(data, STATE)) ? JSON.parse(readFileSync(join(data, STATE), "utf8")) : undefined;
   const markedAt = Date.now();
   let stopped = false;
   let goneAtStop;
@@ -74,7 +74,7 @@ test("a start on a data root whose server is stopping waits for that stop, says 
   assert.equal(goneAtStop, true, "and that server was done only once its run's process was gone");
   assert.equal(said.length, 1, JSON.stringify(said));
   assert.match(said[0], new RegExp(`^the server on this data root \\(pid ${process.pid}\\) is stopping; waiting for it, up to \\d+ s$`));
-  assert.equal(existsSync(join(data, STOPPING)), false, "the stopping server took its mark with it");
+  assert.deepEqual(JSON.parse(readFileSync(join(data, STATE), "utf8")), { pid: process.pid, until: null }, "the new server's record: it runs");
   // The new server opens the run its stop cut: the cut request starts again in a process of its own.
   await until(() => existsSync(signal), "the cut request started again under the new server");
   const record = JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8"));
@@ -93,22 +93,23 @@ test("a stop is over only once its runs' processes are gone: nothing of theirs r
   assert.equal(alive(pid), false, "the run's process went before the server's stop ended");
 });
 
-test("a start on a data root whose server runs is refused at once, as before, whatever stopping mark is left there", { timeout: 120_000 }, async (t) => {
+test("a start on a data root whose server runs is refused at once, as before, whatever record is left there", { timeout: 120_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const first = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => first.close());
-  // A process that is gone, for a mark left by a server that died as it stopped.
+  // A process that is gone, for a record left by a server that died as it stopped.
   const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
   await new Promise((resolve) => gone.once("exit", resolve));
   const marks = [
-    ["no mark", undefined],
-    ["a mark whose time has passed", { pid: process.pid, until: Date.now() - 1 }],
-    ["a mark whose process is gone", { pid: gone.pid, until: Date.now() + 60_000 }],
-    ["a mark that is not JSON", "{"],
+    ["no record", undefined],
+    ["the running server's own record", { pid: process.pid, until: null }],
+    ["a record whose time has passed", { pid: process.pid, until: Date.now() - 1 }],
+    ["a record whose process is gone", { pid: gone.pid, until: Date.now() + 60_000 }],
+    ["a record that is not JSON", "{"],
   ];
   for (const [what, mark] of marks) {
-    if (mark === undefined) await rm(join(data, STOPPING), { force: true });
-    else writeFileSync(join(data, STOPPING), typeof mark === "string" ? mark : JSON.stringify(mark));
+    if (mark === undefined) await rm(join(data, STATE), { force: true });
+    else writeFileSync(join(data, STATE), typeof mark === "string" ? mark : JSON.stringify(mark));
     const said = [];
     await assert.rejects(startServe({ data, port: 0, faux: FAUX, notice: (line) => said.push(line) }), (error) => error instanceof ServerLockHeldError && error.message === refusal(data), what);
     assert.deepEqual(said, [], `${what}: refused, not waited on`);
