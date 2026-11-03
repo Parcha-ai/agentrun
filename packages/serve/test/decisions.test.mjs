@@ -602,7 +602,7 @@ test("a judge's decision is a timeline row: its node, provider and each answer w
   const usage = rows.findLast((row) => row.kind === "usage");
   assert.equal(usage.usage.usd, estimate, "the model node is free under the fake, so the run's usage is the decision's estimate, unrounded");
   assert.equal(usage.usage.usd, (await api("GET", `/runs/${runId}`)).body.cost.usd, "the usage row and the run's cost agree");
-  assert.match(usage.summary, /^Cost so far: <\$0\.0001 /, "a cost above zero never reads $0.0000");
+  assert.match(usage.summary, /^Total: <\$0\.0001 · 1 model request · 1 decision · \d+ s$/, "the settled run's total, and a cost above zero never reads $0.0000");
   assert.equal(usage.usage.requests, 2, "the model node's request and the decision's");
 });
 

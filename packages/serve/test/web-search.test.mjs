@@ -70,8 +70,7 @@ test("a pi run's model searches the web: the search goes from the run's process 
   assert.deepEqual(calls[2].arguments, { query: "widgets", numResults: 2 });
   assert.ok(calls.every((call) => call.pid !== process.pid), "from the run's process");
   const rows = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body.rows;
-  assert.deepEqual(rows.filter((row) => row.kind === "tool_use").map((row) => [row.tool_name, row.summary]), [["web_search", 'Searched the web for "widgets"']]);
-  assert.deepEqual(rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_status), ["success"]);
+  assert.deepEqual(rows.filter((row) => row.kind === "tool_use").map((row) => [row.tool_name, row.summary, row.tool_status]), [["web_search", 'Searched the web for "widgets": 2 sources · public.example, result.example · Exa keyless', "success"]]);
 });
 
 test("on claude-agent web_search is not bound yet: a revision naming it saves with the pi-only warning", async (t) => {

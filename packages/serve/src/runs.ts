@@ -5,7 +5,7 @@
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, openSync, rmSync } from "node:fs";
+import { closeSync, existsSync, openSync, realpathSync, rmSync } from "node:fs";
 import { open as openFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
@@ -37,6 +37,19 @@ import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
+
+
+/** A run's workspace as its timeline names it: its path, and its target too when the path goes through a link (a
+ *  harness's CLI reports its working directory resolved, and its model writes paths under that). */
+function workDirOf(dir: string): string | string[] {
+  const work = join(dir, "work");
+  try {
+    const real = realpathSync(work);
+    return real === work ? work : [work, real];
+  } catch {
+    return work;
+  }
+}
 
 export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -207,20 +220,20 @@ registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ?
 // ask_person ends its turn (tools.ts): the person's reply is their next message, never a steer.
 registerTurnEnding(ASK_TOOL);
 
-/** The waiting row after each answered `ask_person` call, which the timeline module does not know. The question comes
- *  from the call's row, whose label this module registers. */
+/** An `ask_person` question is one row, which the timeline module does not know: its call's row, which reads as the
+ *  waiting row while nothing the person sent has answered it, and as the asked action ("Asked you: <question>") once
+ *  something has, the person's answer being the message after it. One id in both, so the served row changes in place
+ *  and the question never shows twice. The question comes from the call's label, which this module registers; the
+ *  call's own result (its "ok") says nothing more. */
 export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
-  const out: TimelineEvent[] = [];
-  const questions = new Map<string, string>();
-  for (const row of rows) {
-    out.push(row);
-    if (row.kind === "tool_use" && row.tool_name === ASK_TOOL && row.tool_use_id && row.summary?.startsWith(ASKED)) questions.set(row.tool_use_id, row.summary.slice(ASKED.length));
-    if (row.kind === "tool_result" && row.tool_name === ASK_TOOL && row.tool_status === "success") {
-      const question = questions.get(row.tool_use_id ?? "") || "the agent asked you a question";
-      out.push({ ...row, id: `${row.id}:waiting`, kind: "waiting", summary: `Waiting for you: ${clip(question, 480)}`, text: clip(question, 2000), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
-    }
-  }
-  return out;
+  const answered = rows.findLastIndex((row) => row.kind === "user_message");
+  return rows.map((row, index) => {
+    if (row.kind !== "tool_use" || row.tool_name !== ASK_TOOL || row.tool_status !== "success") return row;
+    const asked = row.summary?.startsWith(ASKED) ? row.summary.slice(ASKED.length).replace(/: ok$/, "") : "";
+    if (index < answered) return asked ? { ...row, summary: `${ASKED}${asked}` } : row;
+    const question = asked || "the agent asked you a question";
+    return { ...row, kind: "waiting", summary: `Waiting for you: ${clip(question, 480)}`, text: clip(question, 2000), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
+  });
 }
 
 /** Notes the whole text of the newest assistant message in `entries` (pi's stored entries). */
@@ -501,10 +514,11 @@ export class Runs {
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
+    // An ended run's end is known before its store is read: its total's time runs to it, never to this restart.
+    if (row.state !== "running") run.endedAt = row.endedAt;
     if (row.state !== "running" || !this.doorOf(record)) await this.storeWhenFree(run);
     if (row.state !== "running") {
       run.outcome = STATUS_OF[row.state];
-      run.endedAt = row.endedAt;
       // An ended run the store kept no cost for has an unknown cost, never $0.
       run.costUsd = row.costUsd ?? null;
       // A workflow run's decisions' cost too: an unknown one keeps the run's unknown after a restart. Unread, it is unknown.
@@ -584,7 +598,10 @@ export class Runs {
     if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteAnswer(run, entries);
-    this.take(run, timelineOf(entries as never, { settled: true }));
+    // Paths show relative to the run's workspace, and a settled run's total says how long it took: its start to its end,
+    // which is now when its process just ended, and its saved end when it ended before this server started.
+    const endedAt = run.endedAt ?? (atEnd ? new Date().toISOString() : undefined);
+    this.take(run, timelineOf(entries as never, { settled: true, workDir: workDirOf(run.dir), run: { startedAt: run.meta.created_at, endedAt } }));
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
@@ -781,7 +798,7 @@ export class Runs {
   }
 
   private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {
-    const reducer = timelineReducer();
+    const reducer = timelineReducer({ workDir: workDirOf(run.dir) });
     const up = await fetch(new URL("/events", door), { signal, headers: { ...this.headers(), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
     const decoder = new TextDecoder();

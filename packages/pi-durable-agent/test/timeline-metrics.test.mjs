@@ -132,8 +132,8 @@ test("tools: each result counts a call of its call's tool, an error result a fai
   ];
   assert.deepEqual(runMetricsOf(entries).tools, { read: { calls: 2, errors: 1 }, write: { calls: 1, errors: 1 }, bash: { calls: 1, errors: 0 } });
   // The timeline reads the same: c3 interrupted, c2 failed.
-  const failed = timelineOf(entries, { settled: true }).filter((row) => row.kind === "tool_result" && row.tool_status === "failed").map((row) => row.tool_use_id);
-  assert.deepEqual(failed.sort(), ["c2", "c3"]);
+  const failed = timelineOf(entries, { settled: true }).filter((row) => row.kind === "tool_use" && row.tool_status !== "success").map((row) => [row.tool_use_id, row.tool_status]);
+  assert.deepEqual(failed, [["c2", "failed"], ["c3", "interrupted"]]);
 });
 
 test("a failed model request is a request with its tokens; it ran no calls", () => {

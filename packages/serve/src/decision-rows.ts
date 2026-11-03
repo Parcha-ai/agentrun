@@ -88,6 +88,10 @@ export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly
   // Rounded off float noise only: a decision costs millionths of a dollar, and the row agrees with the run's cost.
   const usd = models.usd === null || spent === null ? null : Math.round((models.usd + spent) * 1e12) / 1e12;
   const base = at < 0 ? { ...decisions.at(-1)!, id: "decisions:usage", agent_label: null, text: null } : rows[at]!;
-  const summary = `Cost so far: ${usd === null ? "unknown" : usd === 0 ? "$0" : usd < 0.0001 ? "<$0.0001" : `$${usd.toFixed(4)}`} over ${plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}`;
+  const cost = usd === null ? "unknown" : usd === 0 ? "$0" : usd < 0.0001 ? "<$0.0001" : `$${usd.toFixed(4)}`;
+  // A settled run's usage row is its total (the timeline's), with the time it took: the decisions join it.
+  const total = base.summary?.startsWith("Total: ") === true;
+  const took = total ? (/ · \d+ (?:min \d+ )?s$/.exec(base.summary ?? "")?.[0] ?? "") : "";
+  const summary = total ? `Total: ${cost} · ${plural(models.requests, "model request")} · ${plural(decisions.length, "decision")}${took}` : `Cost so far: ${cost} over ${plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}`;
   return [...rest, { ...base, kind: "usage", summary, usage: { usd, requests: models.requests + decisions.length } }];
 }

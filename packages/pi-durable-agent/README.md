@@ -432,8 +432,12 @@ if (ok) await importPack("acme.tar", "./acme-copy"); // a fresh directory, or { 
 `@parcha/pi-durable-agent/timeline` turns a run into one human-readable timeline. It has no dependency and uses no Node
 built-in, so a page, a viewer and a harness can import the same code. A row has Grep's `TimelineEvent` fields
 (`kind`, `summary`, `tool_name`, `tool_use_id`, `tool_status`, the previews, `text`, with Grep's caps), plus optional
-`seq`, `conversation_id`, `round`, `parent_tool_use_id`, `session`, `path` and `usage`, and the kinds `user_message`, `waiting`
-and `usage`.
+`seq`, `conversation_id`, `round`, `parent_tool_use_id`, `session`, `path`, `ended_at` and `usage`, and the kinds `user_message`, `waiting`
+and `usage`. A tool call is one row, its `tool_use` row: `tool_status` is `running` (and `ended_at` null) until the call ends, then `success`,
+`failed`, `missing` (a read of a path the run never wrote that found nothing, shown as "not found" and not counted as an
+error) or `interrupted` (no result ever came), with `ended_at` when it ended; its `summary` is the action and a one-line result ("Wrote a.md: ok"), and
+`tool_result_preview` the result as readable text. A write's row has its file in `path`. A settled run's usage row is its
+total ("Total: $0.0062 · 5 model requests · 31 s").
 
 ```js
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -455,8 +459,9 @@ const { rows, drop } = reducer.apply(events); // upsert rows by id, delete the d
 const groups = groupTimeline(reducer.rows()); // rounds, folds and nested calls for a page
 ```
 
-Both paths read committed entries through one function, so live and replay give equal rows. A call and its result pair
-by `tool_use_id`, never by time. A row is built from pi entries and events only: it never carries a live-view URL, a
+Both paths read committed entries through one function, so live and replay give equal rows. A result joins its call's
+row by `tool_use_id`, never by time, even when it was stored before the call; live, the row changes in place under its id
+and `seq`. A row is built from pi entries and events only: it never carries a live-view URL, a
 browser context id or a cookie, and every summary, preview and text (a person's own message excepted) keeps a URL's
 origin, path and query keys but drops its query values, fragment and userinfo. `registerLabel(tool, label)` adds the label of a host's own tool, and `registerTurnEnding(tool)` names one that ends its turn.
 
@@ -713,18 +718,18 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 
 | Export | Does |
 |---|---|
-| `timelineOf(entries, options?)` | The rows of a stored conversation, in log order, with the usage row, when there is one, last. The options (`TimelineOptions`) are `settled` (nothing is running: a call with no result is interrupted), `conversationId` (for entries and events that carry none), `agentLabel` (a row's `agent_label`, from its conversation id), `labels` (labels for this call only), `caps` (the cut lengths of `CAPS`), and `now`, the clock for retry and poll waits, which only live rows use |
+| `timelineOf(entries, options?)` | The rows of a stored conversation, in log order, with the usage row, when there is one, last. The options (`TimelineOptions`) are `settled` (nothing is running: a call with no result is interrupted, and the usage row is the total), `workDir` (the run's workspace: no label or preview shows a path under it but as relative), `run` (`startedAt` and `endedAt`, for the total's time), `conversationId` (for entries and events that carry none), `agentLabel` (a row's `agent_label`, from its conversation id), `labels` (labels for this call only), `caps` (the cut lengths of `CAPS`), and `now`, the clock for retry and poll waits, which only live rows use |
 | `timelineReducer(options?)` | Live rows, with the same options. `apply(events)` takes the `snapshot` event, then each batch from `watchEvents`, and returns `{ rows, drop }` (upsert the rows by id, delete the `drop` ids); `rows()` returns every row now, in log order; `isLive(id)` says whether a row is live (one the events made, which goes when it ends) rather than one a committed entry made, which a host keeps showing though a later snapshot of a compacted conversation no longer holds it |
 | `groupTimeline(rows)` | Rows to groups, for a page: rounds of calls, folds and nested calls, each a `Group` |
 | `foldCalls(calls)` | Adjacent calls of one tool, folded into `Fold`s. A call with inner rows keeps its own line |
-| `failedCall(call)` | Whether a call's result has `tool_status` `failed` |
+| `failedCall(call)` | Whether a call ended `failed` or `interrupted` |
 | `renderText(rowsOrGroups, { fold? })` | Plain text, one line per row or group; `fold: false` shows every call on its own line |
 | `registerLabel(tool, label, fold?, { name? })` | The label of a host's own tool, in the past tense, for every later call; `fold` says how its calls fold into one line; `name` is what the tool is called where calls are counted (a run's analytics), in plain words |
 | `nameOf(tool)` | That name: the registered one, else the name the tool was called by. The registry is the one source of a tool's display name |
-| `callFailed(tool, result)` | Whether a finished call failed: an error, or a result its tool's outcome reads as failed (a refused fetch). A result row's `tool_status` and `runMetricsOf`'s tool `errors` both read it |
-| `registerOutcome(tool, outcome)` | How a host's tool tells its outcome from a result it returned, not an error: `outcome(result)` gives `{ failed, text }`, and the result row reads `<label>: <text>`, with `tool_status` `failed` when `failed`, in place of `<label>: ok`. `web_fetch` and `fetch_page` have theirs: a page with `ok: false` reads `refused: …` or `failed: …` |
+| `callFailed(tool, result)` | Whether a finished call failed: an error, or a result its tool's outcome reads as failed (a refused fetch). A call row's `tool_status` and `runMetricsOf`'s tool `errors` both read it |
+| `registerOutcome(tool, outcome, { errors? })` | How a host's tool tells its outcome from its result: `outcome(result)` (the result's `text`, `details` and `isError`) gives `{ failed, text?, sep?, line?, missing?, preview? }`. The call's row reads `<label>: <text>` (or `<label><sep><text>`), or `line` whole, in place of `<label>: ok`, with `tool_status` `failed` when `failed` and a quiet `missing` when the call found nothing; `preview` is the result as a person reads it. With `errors`, an error result is read too, so the row says it in the tool's words. `web_fetch` and `fetch_page` have theirs (`Read <host/path>: "<title>" · 12 KB`, or why the page was not read: refused, an HTTP error, a timeout), and so has `web_search`, over one result shape on every provider (`Searched the web for "<q>": 6 sources · <three domains> · <provider>`; no results is `missing`; a provider that reports none shows the query and the provider) |
 | `registerTurnEnding(tool)` | A host's tool that ends its turn (pi's `terminate`, as an ask-the-person tool does). A message after a round whose tools all end the turn is the person's next message, never a `(steer)` |
-| `labelOf(tool, args, result?, extra?)` | The label of one call. An unknown tool gets `Using tool: <name>` |
+| `labelOf(tool, args, result?, extra?)` | The label of one call. An unknown tool gets `Used <name>` |
 | `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
 | `inputPreview(args, max)` | The input worth showing, or `null`: a `description`, `command`, `query`, `file_path`, `url`, `path` or `code` argument, with a URL's query values dropped, cut to `max` |
 | `runMetricsOf(records)` | What a run that ended used, from the entries of all its conversations, in log order: its tokens (`input`, `cacheRead`, `cacheWrite`, `output`), its `requests` as the usage row counts them and `unmetered`, those of unknown tokens (an aborted response's partial usage, and a usage with no input at all, are never summed), its requests by `provider/model` (`models`) and the busiest `model`, and each tool's `calls` and `errors` (`tools`), their names kept to what the store takes (`METRIC_NAMES`). A `RunMetrics`, for the store's `carryBack` and `importRun` ([Agents in a folder](#agents-in-a-folder-the-agent-store)) |
@@ -733,7 +738,7 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `METRIC_NAMES` | How `runMetricsOf` keeps tool and model names: `max` 256 characters, the `kept` 100 busiest of each, and the names it sums the rest and a nameless tool under: `otherTools` (`…other tools`), `otherModels` (`…other models`), `unnamedTool` (`…unnamed tool`) |
 | `REQUEST_STARTED`, `REQUEST_ENDED`, `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted; and the cost of a request with no `pi.assistant` entry of its own (a compaction summary, marked `request: "compaction"`). An answer written before its cost came in is followed by `REQUEST_COST_PENDING`, and its cost comes later as `REQUEST_COST_LATE` (`usd`): it adds to the cost and is not counted as a request; the cost reads unknown while one is pending. A call an answer asked for, written after that answer's own entry (a harness reports each call as it runs it), follows `REQUEST_CONTINUED` in a `pi.assistant` of its own: it shows under that answer and counts as a call, not as a request, a cost or tokens. The usage row counts each marked request and sums each cost; one with no entry or cost (cut before its answer) other than the latest still in flight makes the cost unknown. A request the host refused before it left (`REQUEST_REFUSED`) is not counted, and pi's error entry for it is not shown. A conversation with no marks reads as before |
 
-Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`, `OutcomeFn`,
+Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`, `OutcomeFn` and the `Outcome` it gives,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
 `FoldSpec`, `ToolResultView`, `RunMetrics` and `ToolMetrics` (what `runMetricsOf` returns), and `DecisionLike` (a
 workflow's decision receipt, as `runMetricsWithDecisions` reads it).

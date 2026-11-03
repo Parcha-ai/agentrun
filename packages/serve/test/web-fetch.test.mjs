@@ -130,9 +130,9 @@ for (const key of [true, false]) {
     const started = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify([PUBLIC])}` } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const { rows } = await follow(api, started.body.run_id, ["completed"]);
-    const results = rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_result_preview);
+    const results = rows.filter((row) => row.kind === "tool_use").map((row) => row.tool_result_preview);
     assert.equal(results.length, 1, JSON.stringify(results));
-    assert.match(results[0], key ? /"title":"Read by Parallel".*"via":"parallel"/s : /"title":"Public page".*"via":"direct"/s);
+    assert.match(results[0], key ? /^title: Read by Parallel$.*^via: parallel$/ms : /^title: Public page$.*^via: direct$/ms);
     const { parallel: sent, dialled } = await seen();
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.urls]), key ? [["/v1/extract", true, [PUBLIC]]] : []);
     assert.deepEqual(dialled, key ? [] : [PUBLIC]);

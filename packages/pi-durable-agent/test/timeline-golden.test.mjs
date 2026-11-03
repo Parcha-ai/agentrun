@@ -7,6 +7,9 @@ import { entriesOf, eventsOf, lines } from "./timeline-support.mjs";
 
 const GOLDEN = fileURLToPath(new URL("./fixtures/timeline-reference-job.txt", import.meta.url));
 const bare = (rows) => rows.map(({ seq, ...row }) => row);
+/** The rows but the usage row's summary, which a settled read gives as the run's total and a live one as its cost so far. */
+const costless = (rows) => bare(rows).map((row) => (row.kind === "usage" ? { ...row, summary: null } : row));
+const unpriced = (rows) => rows.filter((row) => row.kind !== "usage");
 const increasing = (rows) => rows.every((row, i) => i === 0 || row.seq > rows[i - 1].seq);
 
 function check(actual) {
@@ -14,7 +17,7 @@ function check(actual) {
   assert.equal(`${actual}\n`, readFileSync(GOLDEN, "utf8"));
 }
 
-test("the reference run: entries and events give the same committed rows, and the text matches the golden file", () => {
+test("the reference run: entries and events give the same committed rows, the settled read's usage row its total, and the text matches the golden file", () => {
   const recording = lines("test/fixtures/reference-job");
   const stored = timelineOf(entriesOf(recording), { settled: true });
 
@@ -23,11 +26,13 @@ test("the reference run: entries and events give the same committed rows, and th
   const live = reducer.rows();
   const committed = live.filter((row) => !row.id.includes(":run:"));
 
-  assert.deepEqual(bare(committed), bare(stored));
+  assert.deepEqual(costless(committed), costless(stored));
+  assert.match(stored.findLast((row) => row.kind === "usage").summary, /^Total: /);
+  assert.match(committed.findLast((row) => row.kind === "usage").summary, /^Cost so far: /);
   assert.ok(increasing(stored) && increasing(live));
   assert.deepEqual(live.filter((row) => row.id.includes(":run:")).map((row) => row.summary), ["Run started"]);
   check(renderText(stored));
-  assert.equal(renderText(committed), renderText(stored));
+  assert.equal(renderText(unpriced(committed)), renderText(unpriced(stored)));
 });
 
 test("one batch or one event at a time, the live path gives the same rows", () => {

@@ -155,6 +155,5 @@ test("a pi run's model finds, reads and runs a monid endpoint through monid_disc
   assert.ok(seen.every((call) => call.pid !== process.pid), "each from the run's process");
   // The timeline names each call by the name pi registered, the wire name: mapping it back to the catalog name is later work.
   const rows = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body.rows;
-  assert.deepEqual(rows.filter((row) => row.kind === "tool_use").map((row) => row.tool_name), ["monid_discover", "monid_inspect", "monid_run"]);
-  assert.deepEqual(rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_status), ["success", "success", "success"]);
+  assert.deepEqual(rows.filter((row) => row.kind === "tool_use").map((row) => [row.tool_name, row.tool_status]), [["monid_discover", "success"], ["monid_inspect", "success"], ["monid_run", "success"]]);
 });

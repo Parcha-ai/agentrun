@@ -718,7 +718,10 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     list: { type: "boolean", description: "`GET /runs`.", "x-agentrun-serve": "serve/1" },
     kinds: { type: "array", items: { enum: ["agentic", "workflow"] }, description: "The kinds of run this server starts.", "x-agentrun-serve": "serve/1" },
   },
-  "Features/timeline": { live_workflow_rows: { type: "boolean", description: "Whether a workflow run's rows arrive while it runs.", "x-agentrun-serve": "serve/1" } },
+  "Features/timeline": {
+    live_workflow_rows: { type: "boolean", description: "Whether a workflow run's rows arrive while it runs.", "x-agentrun-serve": "serve/1" },
+    actions: { type: "boolean", description: "One row per action: a tool call is its call's `tool_use` row, served again under the same id and `seq` as it changes from `running` to its outcome (`tool_status`, a one-line result in `summary`, the result in `tool_result_preview`). No `tool_result` row and no \"Saved\" row follows a call.", "x-agentrun-serve": "timeline/2" },
+  },
 };
 
 /** What a run refused `409 agent_not_runnable` holds in `error.details` here: what keeps its revision from running
@@ -819,6 +822,26 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     runStatus.enum = [...runStatus.enum.slice(0, runStatus.enum.indexOf("working") + 1), "paused", ...runStatus.enum.slice(runStatus.enum.indexOf("working") + 1)];
     runStatus["x-agentrun-serve"] = "pause/1";
     fields.push("RunStatus.paused");
+  }
+  // timeline/2: one row per action. A tool call is its call's tool_use row, changed in place: `running` until it ends,
+  // then its outcome; `missing` is a read of a path the run never wrote that found nothing (a probe, not a failure), and
+  // `interrupted` a call that never got a result. No tool_result row and no "Saved" row follows it.
+  const toolStatus = ((schemas.TimelineRow as Json).properties as Record<string, Json>).tool_status as Json & { enum?: unknown[] };
+  const statuses = ["running", "missing", "interrupted"].filter((value) => Array.isArray(toolStatus.enum) && !toolStatus.enum.includes(value));
+  if (statuses.length) {
+    toolStatus.enum = [...toolStatus.enum!.filter((value) => value !== null), ...statuses, null];
+    toolStatus.description = "A tool_use row's state, one row per call: `running` until the call ends, then `success`, `failed`, `missing` (a read of a path the run never wrote found nothing: a probe, not a failure) or `interrupted` (no result ever came). Null on any other row.";
+    toolStatus["x-agentrun-serve"] = "timeline/2";
+    fields.push(...statuses.map((value) => `TimelineRow.tool_status.${value}`));
+  }
+  const rowProperties = (schemas.TimelineRow as Json).properties as Record<string, Json>;
+  if (!rowProperties.ended_at) {
+    rowProperties.ended_at = {
+      type: ["string", "null"], format: "date-time",
+      description: "A tool_use row's end: when the call's outcome came (an interrupted call's, when its run ended), at or after its `timestamp`; null while the call runs. Absent on other rows.",
+      "x-agentrun-serve": "timeline/2",
+    };
+    fields.push("TimelineRow.ended_at");
   }
   // This server's own error codes (errors.ts), beside the contract's closed list.
   const errorCode = schemas.ErrorCode as Json & { enum?: string[] };

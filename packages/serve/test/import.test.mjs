@@ -132,7 +132,7 @@ test("each project is one agent with a revision per harness, its CLAUDE.md or AG
   const rows = body.rows.map((r) => `${r.kind}:${r.text ?? r.name ?? ""}`).join("\n");
   assert.match(rows, /^user_message:List the files\.$/m);
   assert.ok(body.rows.some((r) => r.kind === "tool_use" && r.tool_name === "Bash" && r.tool_input_preview === "ls"), "the Bash call");
-  assert.ok(body.rows.some((r) => r.kind === "tool_result" && r.tool_name === "Bash"), "and its output");
+  assert.ok(body.rows.some((r) => r.kind === "tool_use" && r.tool_name === "Bash" && r.tool_status === "success" && r.tool_result_preview), "and its output, on the call's own row");
   assert.match(rows, /The files: README\.md/);
   assert.doesNotMatch(rows, /hook's note|environment_context/, "a hook's or the CLI's own user records are not the person's");
 });

@@ -1,6 +1,7 @@
 import type { TimelineEvent } from "./timeline.js";
 
-/** One call: its row, the row that closed it (by `tool_use_id`, never by time), and what it spawned. */
+/** One call: its row, the row that closed it (by `tool_use_id`, never by time: the call's own row once it has an outcome,
+ *  or a result row of an older timeline), and what it spawned. */
 export type Call = { use: TimelineEvent; result?: TimelineEvent; inner: Group[] };
 export type Group =
   | { type: "row"; row: TimelineEvent }
@@ -9,7 +10,7 @@ export type Group =
 /** Adjacent calls of one tool, shown as one line. */
 export type Fold = { tool: string; calls: Call[] };
 
-export const failedCall = (call: Call): boolean => call.result?.tool_status === "failed";
+export const failedCall = (call: Call): boolean => call.result?.tool_status === "failed" || call.result?.tool_status === "interrupted";
 
 const plain = (call: Call) => !failedCall(call) && call.inner.length === 0;
 const foldable = (group: Group): group is Extract<Group, { type: "calls" }> =>
@@ -54,7 +55,8 @@ export function groupTimeline(rows: readonly TimelineEvent[]): Group[] {
       groups.push({ type: "row", row });
       continue;
     }
-    const call: Call = { use: row, result: results.get(row.tool_use_id), inner: groupTimeline(within(row.tool_use_id).sort((a, b) => lead(a) - lead(b))) };
+    const ended = row.tool_status && row.tool_status !== "running" ? row : undefined;
+    const call: Call = { use: row, result: results.get(row.tool_use_id) ?? ended, inner: groupTimeline(within(row.tool_use_id).sort((a, b) => lead(a) - lead(b))) };
     const last = groups.at(-1);
     if (last?.type === "calls" && row.round !== undefined && last.round === row.round && last.conv === row.conversation_id) last.calls.push(call);
     else groups.push({ type: "calls", round: row.round, conv: row.conversation_id, rounds: 1, calls: [call] });

@@ -16,6 +16,8 @@ import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
+/** A call's row once the call has ended: the timeline's one row per action. */
+const callEnded = (r) => r.kind === "tool_use" && r.tool_status != null && r.tool_status !== "running";
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer;
 
@@ -53,7 +55,7 @@ test("a run whose process dies mid-turn after a paid request resumes on the next
   const go = join(await scratch(t), "go");
   const runId = await started(api, "resume", `Wait for ${go} before the answer.`);
   // The first request is paid and its tool has ended: its row is in, then the turn hangs.
-  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some(callEnded); i++) {
     assert.ok(i < 300, "the first request's tool row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -79,7 +81,7 @@ process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token 
   const first = client(base, token);
   const go = join(await scratch(t), "go");
   const runId = await started(first, "chat-resume", `Wait for ${go}, then answer the chat.`);
-  for (let i = 0; !(await first("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+  for (let i = 0; !(await first("GET", `/runs/${runId}/timeline`)).body.rows.some(callEnded); i++) {
     assert.ok(i < 300, "the first request's tool row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -103,7 +105,7 @@ test("a message to a run working on a harness that cannot steer answers follow_u
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");
   const runId = await started(api, "no-steer", `Wait for ${go}, then answer the chat.`, "codex");
-  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some(callEnded); i++) {
     assert.ok(i < 300, "the run works");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -149,7 +151,7 @@ test("a request admitted and cut by a crash is booked once, unknown: on resume t
   const go = join(await scratch(t), "go");
   const runId = await started(api, "cut", `Cut until ${go}.`);
   // The first request's entry is written at its tool's end; the second is then admitted and cut.
-  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some(callEnded); i++) {
     assert.ok(i < 300, "the first request's row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -166,7 +168,7 @@ test("a run cancelled while its harness's request is out, and never opened again
   const go = join(await scratch(t), "go");
   const runId = await started(api, "cut-cancel", `Cut until ${go}.`, "codex");
   // The first request is answered at its tool's end; the second is then admitted and cut, and the cancel lands.
-  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some(callEnded); i++) {
     assert.ok(i < 300, "the first request's row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -209,7 +211,7 @@ test("a run opened again whose new opening has a request of unknown price reads 
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "unknown, not the first opening's 0.002");
 });
 
-const toolResults = (rows) => rows.filter((r) => r.kind === "tool_result").map((r) => [`${r.summary ?? ""} ${r.tool_result_preview ?? ""}`, r.tool_status]);
+const toolResults = (rows) => rows.filter(callEnded).map((r) => [`${r.summary ?? ""} ${r.tool_result_preview ?? ""}`, r.tool_status]);
 
 test("a run on another harness gets pi's own file tools: a write then a read of the run's workspace", { timeout: 60_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
@@ -247,7 +249,7 @@ for (const harness of ["claude-agent", "codex"]) {
     const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
     const results = toolResults(rows);
     assert.equal(results.length, 1, JSON.stringify(results));
-    assert.match(results[0][0], /"title":"Read by Parallel".*"via":"parallel"/s, "read through Parallel's extract");
+    assert.match(results[0][0], /^title: Read by Parallel$.*^via: parallel$/ms, "read through Parallel's extract");
     const sent = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.urls]), [["/v1/extract", true, ["http://public.example/"]]], "on the key the server handed the run");
   });
@@ -269,7 +271,7 @@ test("pi's confinement holds for another harness's read: a link out of the works
   const secret = join(dir, "secret.txt");
   await writeFile(secret, "not for the agent");
   const runId = await started(api, "link", `Read the link after ${go}.`, "claude-agent", ["read", "write"]);
-  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some(callEnded); i++) {
     assert.ok(i < 300, "the first tool's row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -286,8 +288,8 @@ test("another harness's file tools name the workspace's paths relative to it: a 
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "edges", "Touch the edges.", "claude-agent", ["read", "write"]);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  const results = rows.filter((r) => r.kind === "tool_result").map((r) => [r.tool_name, r.tool_status, r.tool_result_preview ?? ""]);
-  assert.deepEqual(results.map(([name, status]) => [name, status]), [["write", "failed"], ["read", "failed"], ["write", "success"]], JSON.stringify(results));
+  const results = rows.filter(callEnded).map((r) => [r.tool_name, r.tool_status, r.tool_result_preview ?? ""]);
+  assert.deepEqual(results.map(([name, status]) => [name, status]), [["write", "failed"], ["read", "missing"], ["write", "success"]], JSON.stringify(results));
   assert.match(results[0][2], /^\.\.\/escape\.md: outside the workspace(?: \(it resolves to \.\.\/escape\.md\))?$/, "the refusal names the path beside the workspace, not where it is");
   assert.match(results[1][2], /^ENOENT: no such file or directory, \w+ 'missing\.md'$/);
   assert.equal(results[2][2], "Successfully wrote to sub/ok.md");
@@ -302,7 +304,7 @@ test("a capped run with a request cut by a crash goes on: the cut request counts
   const run = await api("POST", "/agents/capped-cut/runs", { input: { content: "hi" }, max_cost_usd: 1 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const runId = run.body.run_id;
-  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some(callEnded); i++) {
     assert.ok(i < 300, "the first request's tool row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }

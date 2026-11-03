@@ -296,8 +296,9 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
   function callLine(c) {
     if (c.use.tool_name === "request_sign_in") return details(c.use.id, "call signin", [pill(callState(c)), el("b", {}, "Sign-in"), el("span", { class: "s" }, c.use.summary)], c.result?.tool_result_preview ? el("pre", {}, c.result.tool_result_preview) : null);
     const inner = c.inner.length ? el("div", { class: "kids" }, c.inner.map(item)) : null;
-    const failed = failedCall(c) && c.result.tool_result_size_bytes !== null ? el("pre", {}, c.result.summary) : null;
-    return details(c.use.id, "call", [pill(callState(c)), el("b", {}, c.use.summary), el("span", { class: "s" }, c.use.tool_name)], c.use.tool_input_preview ? el("pre", {}, c.use.tool_input_preview) : null, c.result?.tool_result_preview ? el("pre", {}, c.result.tool_result_preview) : null, failed, inner);
+    // A call's own row says its outcome in its summary; an older timeline's result row says it on its own.
+    const failed = failedCall(c) && c.result !== c.use && c.result.tool_result_size_bytes !== null ? el("pre", {}, c.result.summary) : null;
+    return details(c.use.id, "call", [pill(callState(c)), el("b", {}, c.use.summary), el("span", { class: "s" }, c.use.tool_name)], c.use.tool_input_preview ? el("pre", {}, c.use.tool_input_preview) : null, c.result?.tool_result_preview ? el("pre", {}, c.result.tool_result_preview) : null, failed, savedLink(c.use), inner);
   }
 
   function foldLine(fold) {
@@ -307,7 +308,8 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     return details(`${fold.calls[0].use.id}:fold`, "call", [pill(state), el("b", {}, label), el("span", { class: "s" }, bad ? `${fold.calls.length - bad} ok, ${bad} failed` : "")], el("div", { class: "kids" }, fold.calls.map(callLine)));
   }
 
-  /** A saved file links to the Files tab when the run's file list has it (the model may have written an absolute path). */
+  /** A saved file links to the Files tab when the run's file list has it (the model may have written an absolute path):
+   *  a write's own row, or an older timeline's "Saved" phase row. */
   function savedLink(row) {
     const path = row.path;
     const known = path && [...ui.files].filter((f) => path === f || path.endsWith(`/${f}`)).sort((a, b) => b.length - a.length)[0];

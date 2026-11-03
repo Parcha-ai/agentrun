@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import { registerLabel } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerOutcome } from "@parcha/pi-durable-agent/timeline";
 import { wireName } from "./catalog.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
@@ -151,11 +151,41 @@ export async function monidText(answer: MonidAnswer, work: string, label: string
 
 type Kind = "discover" | "inspect" | "run";
 const [DISCOVER, INSPECT, RUN] = (["discover", "inspect", "run"] as const).map((kind) => wireName(`monid.${kind}`));
-// What a person reads for each call, in a run's timeline, and what each tool is called where calls are counted.
-const endpointOf = (a: Record<string, unknown>) => (typeof a.provider === "string" && typeof a.endpoint === "string" ? ` ${a.provider} ${a.endpoint}` : "");
-registerLabel(DISCOVER, (a) => (typeof a.query === "string" ? `Searched monid's catalog for "${a.query.slice(0, 60)}"` : "Searched monid's catalog"), undefined, { name: "Search monid's catalog" });
-registerLabel(INSPECT, (a) => `Looked up the monid endpoint${endpointOf(a)}`, undefined, { name: "Look up a monid endpoint" });
-registerLabel(RUN, (a) => `Ran the monid endpoint${endpointOf(a)}`, undefined, { name: "Run a monid endpoint" });
+// What a person reads for each call, in a run's timeline (one row a call: what it does while it runs, then what it found,
+// what an endpoint costs a call, or what a run did and was charged), and what each tool is called where calls are counted.
+const endpointOf = (a: Record<string, unknown>) => (typeof a.provider === "string" && typeof a.endpoint === "string" ? `${a.provider} ${a.endpoint}` : "a monid endpoint");
+const answerOf = (text: string): Json | undefined => {
+  try {
+    const value: unknown = JSON.parse(text);
+    return isObject(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+};
+const dollars = (amount: number) => `$${amount.toFixed(4)}`;
+registerLabel(DISCOVER, (a, result) => {
+  const verb = result ? "Searched" : "Searching";
+  return typeof a.query === "string" ? `${verb} monid's catalog for "${a.query.slice(0, 60)}"` : `${verb} monid's catalog`;
+}, undefined, { name: "Search monid's catalog" });
+registerOutcome(DISCOVER, ({ text }) => {
+  const answer = answerOf(text);
+  if (!answer || !Array.isArray(answer.results)) return undefined;
+  const n = answer.results.length;
+  const query = typeof answer.query === "string" ? ` for "${answer.query.slice(0, 60)}"` : "";
+  return { failed: false, line: `Found ${n} monid endpoint${n === 1 ? "" : "s"}${query}` };
+});
+registerLabel(INSPECT, (a, result) => `${result ? "Checked" : "Checking"} ${endpointOf(a)}`, undefined, { name: "Look up a monid endpoint" });
+registerOutcome(INSPECT, ({ text }) => {
+  const price = answerOf(text)?.price;
+  const amount = isObject(price) ? money(price.amount) : undefined;
+  return amount && isObject(price) ? { failed: false, text: `${dollars(amount.value)}${price.type === "PER_CALL" ? " a call" : ""}` } : undefined;
+});
+registerLabel(RUN, (a, result) => `${result ? "Ran" : "Running"} ${endpointOf(a)}`, undefined, { name: "Run a monid endpoint" });
+// A run's charge on its own row: the call's cost, as its result's details carry it (booked once, on the tools' meter).
+registerOutcome(RUN, ({ details }) => {
+  const cost = money(isObject(details) ? details.cost : undefined);
+  return cost && cost.value > 0 ? { failed: false, text: `ok · charged ${dollars(cost.value)}` } : undefined;
+});
 const named = { provider: { type: "string", minLength: 1, description: `The provider's slug, as ${DISCOVER} gave it.` }, endpoint: { type: "string", minLength: 1, description: `The endpoint's path, as ${DISCOVER} gave it.` } };
 const SPECS: Record<Kind, { summary: string; description: string; properties: Json; required: string[]; replay: "safe" | "unsafe" }> = {
   discover: {
