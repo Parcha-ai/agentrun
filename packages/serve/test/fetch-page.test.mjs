@@ -42,6 +42,8 @@ const PUBLIC = {
   ok: true, url: "http://public.example/", status: 200, title: "Public page",
   links: ["http://public.example/about", "https://other.example/x"],
 };
+/** A page less its text and `chars`, which is checked to be the text's length. */
+const textless = ({ text, chars, ...rest }) => (assert.equal(chars, text.length, "chars, the length of the text"), rest);
 
 test("the tool refuses every private, local and non-http(s) target before it is dialled, a redirect's next hop too; a public page answers", async () => {
   for (const [url, firstHop] of HOSTILE) {
@@ -54,11 +56,10 @@ test("the tool refuses every private, local and non-http(s) target before it is 
   }
   const net = network();
   const page = await fetchPage("http://public.example/", net);
-  const { text, ...rest } = page;
-  assert.deepEqual(rest, PUBLIC, "the title, and each http(s) link once, absolute, without its fragment; no mailto");
-  assert.match(text, /The answer is forty-two\./);
+  assert.deepEqual(textless(page), PUBLIC, "the title, and each http(s) link once, absolute, without its fragment; no mailto");
+  assert.match(page.text, /The answer is forty-two\./);
   assert.deepEqual(net.dialled, ["http://public.example/"]);
-  assert.deepEqual(await fetchPage("http://public.example/notes.txt", network()), { ok: true, url: "http://public.example/notes.txt", status: 200, title: "", text: "Plain notes.", links: [] });
+  assert.deepEqual(await fetchPage("http://public.example/notes.txt", network()), { ok: true, url: "http://public.example/notes.txt", status: 200, title: "", text: "Plain notes.", chars: 12, links: [] });
   assert.match((await fetchPage("http://public.example/image.png", network())).refused, /image\/png is not text/);
   assert.equal((await fetchPage("http://public.example:8080/", network())).refused, "refused: port 8080 is not 80 or 443", "a public host on another port");
   for (const url of ["http://public.example:80/", "http://public.example:443/", "https://public.example:443/"]) assert.notEqual((await fetchPage(url, network())).refused?.startsWith("refused: port"), true, url);
@@ -112,7 +113,7 @@ test("an agentic run's fetch_page, web_fetch under its legacy name, in its own p
   const pages = pagesOf(data, started.body.run_id);
   assert.equal(pages.length, urls.length);
   HOSTILE.forEach(([url], i) => assert.match(pages[i].refused ?? "", /^refused: /, `${url}: ${JSON.stringify(pages[i])}`));
-  assert.deepEqual((({ text, ...rest }) => rest)(pages.at(-1)), { ...PUBLIC, via: "direct" }, "web_fetch's Page, under fetch_page's name");
+  assert.deepEqual(textless(pages.at(-1)), { ...PUBLIC, via: "direct" }, "web_fetch's Page, under fetch_page's name");
   const dialled = (await readFile(log, "utf8")).trim().split("\n");
   assert.deepEqual(dialled, ["http://redirect.example/", "http://renamed.example/", "http://public.example/"], "only public addresses were dialled");
 });
@@ -136,7 +137,7 @@ test("a workflow's call node runs fetch_page: the Page is its output, a refusal 
     await follow(api, started.body.run_id, ["completed"]);
     return (await api("GET", `/runs/${started.body.run_id}`)).body.result.output;
   };
-  assert.deepEqual((({ text, ...rest }) => rest)(await run("http://public.example/")), { ...PUBLIC, via: "direct" });
+  assert.deepEqual(textless(await run("http://public.example/")), { ...PUBLIC, via: "direct" });
   for (const website of ["http://169.254.169.254/latest/meta-data/", "http://redirect.example/", "file:///etc/passwd"]) {
     const page = await run(website);
     assert.deepEqual([page.ok, /^refused: /.test(page.refused)], [false, true], `${website}: ${JSON.stringify(page)}`);
