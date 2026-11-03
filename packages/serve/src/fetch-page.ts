@@ -16,8 +16,9 @@ import type { PublicFetchOptions } from "@parcha/pi-browser";
 
 /** On a page that was read, `chars`: the length of `text`, the part of the page's text this answer holds. `truncated`
  *  while more of it follows this part, and `next_offset` where that begins; `offset` where this part begins, when not 0;
- *  `original_chars` the whole text's length in characters, when it is known and this part is not all of it. */
-export type Page = { ok: boolean; url: string; status: number; title: string; text: string; chars?: number; truncated?: true; original_chars?: number; offset?: number; next_offset?: number; links: string[]; refused?: string; error?: string };
+ *  `original_chars` the whole text's length in characters, when it is known and this part is not all of it;
+ *  `beyond_read` on the last part a read reaches of a page that goes on past PAGE_READ_MAX_CHARS. */
+export type Page = { ok: boolean; url: string; status: number; title: string; text: string; chars?: number; truncated?: true; original_chars?: number; beyond_read?: true; offset?: number; next_offset?: number; links: string[]; refused?: string; error?: string };
 
 /** web_fetch's legacy name: a revision or a call node naming it runs web_fetch under it (tools.ts). */
 export const FETCH_PAGE_TOOL = "fetch_page";
@@ -29,6 +30,10 @@ export const FAUX_WEB_ENV = "AGENTRUN_SERVE_FAUX_WEB";
 export const TEXT_CAP = 50_000;
 export const PAGE_CHARS = 20_000;
 export const MAX_CHARS_MIN = 200;
+/** The most of a page's text web_fetch reads, from either provider: its first million characters, as much as
+ *  pi-browser's readPage keeps of a page (READ_MAX_CHARS). Parallel is asked for that much once (web-fetch.ts); a part
+ *  reads within it, and an offset at or past it is refused. */
+export const PAGE_READ_MAX_CHARS = 1_000_000;
 /** A page's links, with its first part only: at most LINKS_CAP of them, in at most LINKS_CHARS characters of the answer. */
 export const LINKS_CAP = 200;
 export const LINKS_CHARS = 20_000;
@@ -47,6 +52,7 @@ export type Part = { offset?: number; maxChars?: number };
 export function partProblem({ offset, maxChars }: Part): string | undefined {
   const shown = (value: unknown) => (typeof value === "number" ? String(value) : String(JSON.stringify(value)).slice(0, 40));
   if (offset !== undefined && !(Number.isInteger(offset) && offset >= 0)) return `offset must be a whole number, 0 or more (it was ${shown(offset)})`;
+  if (offset !== undefined && offset >= PAGE_READ_MAX_CHARS) return `offset must be under ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")}: web_fetch reads a page's first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (it was ${shown(offset)})`;
   if (maxChars !== undefined && !(typeof maxChars === "number" && maxChars >= MAX_CHARS_MIN)) return `max_chars must be ${typeof maxChars === "number" ? "" : "a number, "}at least ${MAX_CHARS_MIN} (it was ${shown(maxChars)})`;
   return undefined;
 }
@@ -78,19 +84,24 @@ export function partEnd(text: string, start: number, budget: number): number {
   return at;
 }
 
-/** The part of a page's `text` an answer holds, and what it says of the rest. `whole`: whether `text` is all of the
- *  page's text, so its length is the page's (a provider that cut it has none to give). */
+/** The part of a page's `text` an answer holds, within its first PAGE_READ_MAX_CHARS, and what it says of the rest.
+ *  `whole`: whether `text` is all of the page's text, so its length is the page's (a provider that cut it has none to
+ *  give). */
 export function pageText(text: string, part: Part = {}, whole = true): Pick<Page, "text" | "chars" | "truncated" | "original_chars" | "offset" | "next_offset"> {
   const { offset, maxChars } = partOf(part);
-  const start = Math.min(offset, text.length);
-  const end = partEnd(text, start, maxChars);
-  const held = text.slice(start, end);
-  const more = end < text.length;
+  const readable = text.length > PAGE_READ_MAX_CHARS ? text.slice(0, PAGE_READ_MAX_CHARS) : text;
+  const start = Math.min(offset, readable.length);
+  const end = partEnd(readable, start, maxChars);
+  const held = readable.slice(start, end);
+  const more = end < readable.length;
+  // The last part a read reaches of a page that goes on past it.
+  const beyond = !more && readable.length < text.length;
   return {
     text: held,
     chars: held.length,
     ...(more ? { truncated: true as const } : {}),
-    ...(whole && (offset > 0 || more) ? { original_chars: text.length } : {}),
+    ...(whole && (offset > 0 || more || beyond) ? { original_chars: text.length } : {}),
+    ...(beyond ? { beyond_read: true as const } : {}),
     ...(offset > 0 ? { offset } : {}),
     ...(more ? { next_offset: end } : {}),
   };

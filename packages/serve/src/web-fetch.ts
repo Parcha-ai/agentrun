@@ -11,14 +11,17 @@
 // file.
 //
 // A page is read in parts (fetch-page.ts): the tool's `offset` and `max_chars` name the part, which either path reads the
-// same. Parallel is asked for the page's text up to one character past the part, so a page it cut there shows as going
-// on; its whole length is known only when Parallel gave less (or more) than it was asked for.
+// same. Parallel's extract has no offset (its full content always starts at the page's start), and each extract is
+// billed, so a run's client asks it once for the most of a page web_fetch reads (PAGE_READ_MAX_CHARS) and one character
+// more, so a page it cut there shows as going on, and keeps what it gave, by the URL asked for and the final URL, for
+// EXTRACT_KEEP_MS within EXTRACT_KEEP_BYTES: every later part of the page is read from that copy, with no request. Its
+// whole length is known when Parallel gave less (or more) than it was asked for.
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
-import { clip, fetchOptions, fetchPage, LINKS_CAP, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, type Page, pageText, type Part, partOf, partProblem, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
+import { clip, fetchOptions, fetchPage, LINKS_CAP, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, pageText, type Part, partProblem, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 import { isUnavailable, planeOf } from "./tool-plane.js";
@@ -26,6 +29,15 @@ import { isUnavailable, planeOf } from "./tool-plane.js";
 export const WEB_FETCH_TOOL = "web_fetch";
 export const PARALLEL_EXTRACT_URL = "https://api.parallel.ai/v1/extract";
 const PARALLEL_TIMEOUT_MS = 60_000;
+/** How long a run's Parallel client keeps a page it extracted, and how much of them it keeps in all (their text, at two
+ *  bytes a character in memory): the oldest go first. */
+export const EXTRACT_KEEP_MS = 10 * 60_000;
+export const EXTRACT_KEEP_BYTES = 4 * 1024 * 1024;
+/** For a test: the client's clock and its bounds. */
+export type ExtractOptions = { now?: () => number; cacheMs?: number; cacheBytes?: number };
+/** A page Parallel extracted, as the run's client keeps it: its text as Parallel gave it, whether that is the whole page,
+ *  and its links, read once. */
+type Kept = { url: string; title: string; text: string; whole: boolean; links: string[]; at: number };
 const PORTS = new Set(["", "80", "443"]);
 
 /** `parallel`, on a page fetched directly where Parallel was asked for one: why Parallel gave none. */
@@ -58,8 +70,27 @@ function linksOf(markdown: string): string[] {
 /** Parallel's extract on `apiKey`: one URL a request, its full content up to the part asked for as the page's text
  *  (markdown), its links read from it, status 200 (Parallel answers a page it could not read in `errors`, with no
  *  content). */
-export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Extract {
+export function parallelExtract(apiKey: string, send: typeof fetch = fetch, { now = Date.now, cacheMs = EXTRACT_KEEP_MS, cacheBytes = EXTRACT_KEEP_BYTES }: ExtractOptions = {}): Extract {
   let refused = false;
+  // The pages extracted, by the URL asked for and by the final URL, oldest first.
+  const kept = new Map<string, Kept>();
+  const forget = (page: Kept) => { for (const [key, held] of kept) if (held === page) kept.delete(key); };
+  const fresh = (url: string): Kept | undefined => {
+    const page = kept.get(url);
+    if (page && now() - page.at > cacheMs) forget(page);
+    return kept.get(url);
+  };
+  const keep = (url: string, page: Kept) => {
+    if (page.text.length * 2 > cacheBytes) return;
+    for (const key of [url, page.url]) { kept.delete(key); kept.set(key, page); }
+    for (let bytes = [...new Set(kept.values())].reduce((n, held) => n + held.text.length * 2, 0); bytes > cacheBytes; ) {
+      const oldest = kept.values().next().value!;
+      bytes -= oldest.text.length * 2;
+      forget(oldest);
+    }
+  };
+  /** The part `part` names of a kept page, as a Page. */
+  const answer = (page: Kept, part: Part): Page => ({ ok: true, url: page.url, status: 200, title: page.title, ...pageText(page.text, part, page.whole), links: linksWithin(page.links, part) });
   const post: Extract["post"] = async (url, body, signal) => {
     const response = await send(url, {
       method: "POST",
@@ -74,10 +105,11 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
     live: () => !refused,
     post,
     async read(url, signal, part = {}) {
+      const known = fresh(url);
+      if (known) return answer(known, part);
       try {
-        // One character past the part, so a page Parallel cut shows as going on (its whole length Parallel does not give).
-        const { offset, maxChars } = partOf(part);
-        const asked = offset + maxChars + 1;
+        // Once a page: the most a read reaches and one character more, so a page Parallel cut there shows as going on.
+        const asked = PAGE_READ_MAX_CHARS + 1;
         const response = await post(PARALLEL_EXTRACT_URL, { urls: [url], advanced_settings: { full_content: { max_chars_per_result: asked } } }, signal);
         if (!response.ok) {
           await response.body?.cancel().catch(() => undefined);
@@ -87,7 +119,9 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
         const row = results?.find((r) => typeof r?.url === "string" && typeof r.full_content === "string" && r.full_content.trim() !== "");
         if (!row) return errors?.length ? "listed the URL in errors" : "answered no content";
         const text = row.full_content as string;
-        return { ok: true, url: clip(row.url as string, URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...pageText(text, part, text.length !== asked), links: linksWithin(linksOf(text), part) };
+        const page: Kept = { url: clip(row.url as string, URL_MAX), title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), text, whole: text.length !== asked, links: linksOf(text), at: now() };
+        keep(url, page);
+        return answer(page, part);
       } catch (error) {
         const name = (error as Error)?.name;
         return name === "TimeoutError" ? "timed out" : name === "AbortError" ? "was stopped" : `failed: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
@@ -155,6 +189,7 @@ function partLine(page: Page, name: string): string | undefined {
   const start = page.offset ?? 0;
   const end = start + page.chars;
   if (page.truncated) return `Characters ${start}-${end} of ${page.original_chars ?? "a longer page"}: call ${name} again with offset=${page.next_offset ?? end} for the rest.`;
+  if (page.beyond_read) return `Characters ${start}-${end}${page.original_chars === undefined ? "" : ` of ${page.original_chars}`}: the page goes on, but web_fetch reads only a page's first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters.`;
   if (page.original_chars === undefined) return undefined;
   if (page.chars === 0) return `Nothing at offset=${start}: the page has ${page.original_chars} characters.`;
   return `Characters ${start}-${end} of ${page.original_chars}: the end of the page.`;

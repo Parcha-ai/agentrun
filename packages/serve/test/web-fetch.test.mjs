@@ -272,7 +272,7 @@ test("through Parallel the parts of one page cost one extract in a run: the firs
   assert.equal(timed.asked.length, 2, "a copy is kept ten minutes");
   // A page past the copies' bound (a few MB) is not kept: each part asks again.
   const big = paging(() => ({ text: long }));
-  const small = parallelExtract(CANARY, big.send, { cacheChars: 50_000 });
+  const small = parallelExtract(CANARY, big.send, { cacheBytes: 100_000 });
   for (const offset of [0, 20_000]) await webFetch(PUBLIC, { ...network(), parallel: small, offset });
   assert.equal(big.asked.length, 2);
 });
